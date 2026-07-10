@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
-import { fmap, lift, lift2, lift3 } from "@acpus/expression";
+import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or } from "@acpus/expression";
 import { refExpr } from "@acpus/expression/ir";
 
 describe("expression evaluator", () => {
@@ -61,6 +61,28 @@ describe("expression evaluator", () => {
       const matches = ready && kind === "release";
       return matches && maxItems > 0;
     }).__ir, adapter)).toBe(true);
+  });
+
+  it("evaluates scalar comparison and boolean predicate helpers", () => {
+    const count = refExpr<number>(["input", "count"]);
+    const ready = refExpr<boolean>(["input", "ready"]);
+    const kind = refExpr<string>(["input", "kind"]);
+
+    expect(evaluateExpr(eq(kind, "release").__ir, adapter)).toBe(true);
+    expect(evaluateExpr(eq<any>(1, "1").__ir, adapter)).toBe(false);
+    expect(evaluateExpr(ne(kind, "draft").__ir, adapter)).toBe(true);
+    expect(evaluateExpr(lt(count, 3).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(lte(count, 2).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(gt(count, 1).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(gte(count, 2).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(not(ready).__ir, adapter)).toBe(false);
+    expect(evaluateExpr(and(ready, eq(kind, "release"), gte(count, 2)).__ir, adapter)).toBe(true);
+    expect(evaluateExpr(or(false, ne(kind, "release"), ready).__ir, adapter)).toBe(true);
+  });
+
+  it("evaluates every and/or dependency eagerly", () => {
+    const throws = fmap(true, _value => (() => { throw new Error("eager"); })());
+    expect(() => evaluateExpr(or(true, throws).__ir, adapter)).toThrow("eager");
   });
 
   it("allows runtime globals and nondeterministic Math.random", () => {

@@ -1,5 +1,5 @@
 import { defineWorkflow, secret, task, z } from "acpus/core";
-import { fmap, lift, lift2, lift3, md, template } from "acpus/expression";
+import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, md, ne, not, or, template } from "acpus/expression";
 // Optional Git task helper:
 // import { createWorktree } from "acpus/tasks/git";
 
@@ -9,8 +9,9 @@ import { fmap, lift, lift2, lift3, md, template } from "acpus/expression";
  * - Do not use JavaScript if, &&, ||, ===, !, .map, .length, or untagged
  *   template strings over Expr values.
  * - Use step().if/switch/parallel/fanout/loop for graph control flow.
- * - Use template/md for Expr strings; use fmap for one Expr, lift2/lift3 for
- *   two or three Expr values, and lift for named Expr dependencies.
+ * - Use eq/ne and lt/lte/gt/gte for scalar predicates; combine booleans with
+ *   not/and/or. Use fmap/lift helpers for custom runtime computations.
+ * - Use template/md for Expr strings.
  * - Task exec callbacks run as normal runtime TypeScript and may use artifact.
  */
 export default defineWorkflow({

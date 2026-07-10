@@ -114,11 +114,11 @@ describe("workflow init source contracts", () => {
     const source = await readFile(starter, "utf8");
 
     expect(source).toContain('import { defineWorkflow, secret, task, z } from "acpus/core";');
-    expect(source).toContain('import { fmap, lift, lift2, lift3, md, template } from "acpus/expression";');
+    expect(source).toContain('import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, md, ne, not, or, template } from "acpus/expression";');
     expect(source).toContain('// import { createWorktree } from "acpus/tasks/git";');
     expect(source).toContain("input, meta, and node.output values are Expr tokens");
     expect(source).toContain("Use step().if/switch/parallel/fanout/loop for graph control flow");
-    expect(source).toContain("Use template/md for Expr strings; use fmap for one Expr, lift2/lift3");
+    expect(source).toContain("Use eq/ne and lt/lte/gt/gte for scalar predicates");
     expect(source).toContain("const normalizedTopic = fmap(input.topic, topic => topic.trim())");
     expect(source).toContain("prompt: template`Review ${normalizedTopic}");
     expect(source).toContain("const summary = lift2(");

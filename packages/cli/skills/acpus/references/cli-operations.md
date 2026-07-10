@@ -1,5 +1,9 @@
 # CLI Operations
 
+## Installation (Ask before globally install)
+
+`npm install -g acpus`
+
 ## Discover commands
 
 ```sh

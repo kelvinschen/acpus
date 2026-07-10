@@ -3,7 +3,7 @@
  * Nodes: agent, task, switch, parallel, fanout
  */
 import { defineWorkflow, z } from "acpus/core";
-import { fmap, md, template } from "acpus/expression";
+import { eq, fmap, md, template } from "acpus/expression";
 import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({
@@ -81,7 +81,7 @@ export default defineWorkflow({
       const routed = step("route_issue").switch({
         cases: [
           {
-            when: fmap(lane.output.review.route, route => route === "escalate"),
+            when: eq(lane.output.review.route, "escalate"),
             then() {
               const escalation = step("prepare_escalation").task({
                 run: {
@@ -103,7 +103,7 @@ export default defineWorkflow({
             },
           },
           {
-            when: fmap(lane.output.review.route, route => route === "now"),
+            when: eq(lane.output.review.route, "now"),
             then() {
               const queue = step("queue_now").task({
                 run: {

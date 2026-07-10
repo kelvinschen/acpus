@@ -1,10 +1,19 @@
 import { assertType, test } from "vitest";
 import {
+  and,
+  eq,
   fmap,
+  gt,
+  gte,
   lift,
   lift2,
   lift3,
+  lt,
+  lte,
   md,
+  ne,
+  not,
+  or,
   type Expr,
   type ExprValue,
   type WorkflowData,
@@ -17,13 +26,9 @@ import { expr as rootExpr } from "@acpus/expression";
 import { refExpr as rootRefExpr } from "@acpus/expression";
 // @ts-expect-error valueToExprIR is exported from @acpus/expression/ir, not the root.
 import { valueToExprIR as rootValueToExprIR } from "@acpus/expression";
-// @ts-expect-error old algebra helpers are not exported from the root surface.
-import { eq as removedEq } from "@acpus/expression";
-
 void rootExpr;
 void rootRefExpr;
 void rootValueToExprIR;
-void removedEq;
 
 type Item = {
   done: boolean;
@@ -51,6 +56,15 @@ test("authoring helpers infer expression shapes", () => {
   assertType<ExprValue<boolean>>(lift2(ready, kind, (ready, kind) => ready && kind === "release"));
   assertType<ExprValue<boolean>>(lift3(ready, kind, maxItems, (ready, kind, maxItems) => ready && kind === "release" && maxItems > 0));
   assertType<ExprValue<boolean>>(lift({ ready, kind, maxItems }, ({ ready, kind, maxItems }) => ready && kind === "release" && maxItems > 0));
+  assertType<ExprValue<boolean>>(eq(kind, "release"));
+  assertType<ExprValue<boolean>>(ne("draft", kind));
+  assertType<ExprValue<boolean>>(lt(count, maxItems));
+  assertType<ExprValue<boolean>>(lte(count, 5));
+  assertType<ExprValue<boolean>>(gt(maxItems, count));
+  assertType<ExprValue<boolean>>(gte(maxItems, 1));
+  assertType<ExprValue<boolean>>(not(ready));
+  assertType<ExprValue<boolean>>(and(ready, eq(kind, "release"), true));
+  assertType<ExprValue<boolean>>(or(ready, false));
 
   const transformedIssue = fmap(refExpr<{ title: string; labels: readonly string[] }>(["input", "issue"]), issue => ({
     title: issue.title.trim(),
@@ -81,4 +95,12 @@ test("authoring helpers reject unsupported shapes where static typing can prove 
   lift([ready, kind], ([ready, kind]) => ready && kind === "release");
   // @ts-expect-error lift does not support variadic dependencies.
   lift(ready, kind, (ready: boolean, kind: string) => ready && kind === "release");
+  // @ts-expect-error comparisons only accept number values.
+  gte(kind, "release");
+  // @ts-expect-error scalar equality does not accept arrays or objects.
+  eq(items, items);
+  // @ts-expect-error and requires at least two operands.
+  and(ready);
+  // @ts-expect-error or requires at least two operands.
+  or(false);
 });

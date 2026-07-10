@@ -1,11 +1,7 @@
 import { assertType, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext, type WorkflowDefinition } from "acpus/core";
-import { fmap, lift, lift2, lift3, template, type Expr } from "acpus/expression";
+import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or, template, type Expr } from "acpus/expression";
 import { createWorktree, type CreateWorktreeInput } from "acpus/tasks/git";
-// @ts-expect-error old algebra helpers are not exported from the facade.
-import { eq } from "acpus/expression";
-
-void eq;
 
 test("acpus facade subpaths expose separated authoring surfaces", () => {
   const Input = z.object({ ready: z.boolean(), repo: z.string() });
@@ -16,6 +12,15 @@ test("acpus facade subpaths expose separated authoring surfaces", () => {
   assertType<Expr<boolean>>(lift2(true, false, (left, right) => left || right));
   assertType<Expr<boolean>>(lift3(true, false, true, (first, second, third) => first || second || third));
   assertType<Expr<boolean>>(lift({ ready: true }, ({ ready }) => ready));
+  assertType<Expr<boolean>>(eq("release", "release"));
+  assertType<Expr<boolean>>(ne("release", "draft"));
+  assertType<Expr<boolean>>(lt(1, 2));
+  assertType<Expr<boolean>>(lte(1, 1));
+  assertType<Expr<boolean>>(gt(2, 1));
+  assertType<Expr<boolean>>(gte(1, 1));
+  assertType<Expr<boolean>>(not(false));
+  assertType<Expr<boolean>>(and(true, true));
+  assertType<Expr<boolean>>(or(false, true));
   assertType<Expr<string>>(template`repo ${"."}`);
   assertType<TaskContext<{}>>(null as unknown as TaskContext<{}>);
   assertType(task);

@@ -7,11 +7,20 @@ import * as validator from "@acpus/expression/validator";
 describe("@acpus/expression public API", () => {
   it("exports the root authoring surface", () => {
     expect(Object.keys(expression).sort()).toEqual([
+      "and",
+      "eq",
       "fmap",
+      "gt",
+      "gte",
       "lift",
       "lift2",
       "lift3",
+      "lt",
+      "lte",
       "md",
+      "ne",
+      "not",
+      "or",
       "template",
     ]);
   });

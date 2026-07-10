@@ -5,6 +5,12 @@ import type { ExprIR } from "./ir.js";
 
 type TemplatePart = { kind: "text"; value: string } | { kind: "expr"; expr: ExprIR };
 type LiftDeps = { readonly [key: string]: Resolvable<any> };
+type Comparable = string | number | boolean | null;
+type BooleanOperands = [
+  Resolvable<boolean>,
+  Resolvable<boolean>,
+  ...Resolvable<boolean>[],
+];
 type ResolvedResolvable<T> =
   T extends undefined
     ? undefined
@@ -49,6 +55,51 @@ export function lift<const Deps extends LiftDeps, R extends WorkflowData>(
 ): ExprValue<R> {
   assertPlainDeps(deps);
   return callExpr<R>("lift", [deps, fn.toString()]);
+}
+
+/** Compares two scalar workflow values with JavaScript strict equality. */
+export function eq<T extends Comparable>(a: Resolvable<T>, b: Resolvable<T>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left === right);
+}
+
+/** Compares two scalar workflow values with JavaScript strict inequality. */
+export function ne<T extends Comparable>(a: Resolvable<T>, b: Resolvable<T>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left !== right);
+}
+
+/** Checks whether the first workflow number is less than the second. */
+export function lt(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left < right);
+}
+
+/** Checks whether the first workflow number is less than or equal to the second. */
+export function lte(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left <= right);
+}
+
+/** Checks whether the first workflow number is greater than the second. */
+export function gt(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left > right);
+}
+
+/** Checks whether the first workflow number is greater than or equal to the second. */
+export function gte(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
+  return lift2(a, b, (left, right) => left >= right);
+}
+
+/** Negates a workflow boolean. */
+export function not(value: Resolvable<boolean>): ExprValue<boolean> {
+  return fmap(value, value => !value);
+}
+
+/** Checks whether every workflow boolean is true. Dependencies are evaluated eagerly. */
+export function and(...values: BooleanOperands): ExprValue<boolean> {
+  return fmap<readonly boolean[], boolean>(values, values => values.every(value => value));
+}
+
+/** Checks whether any workflow boolean is true. Dependencies are evaluated eagerly. */
+export function or(...values: BooleanOperands): ExprValue<boolean> {
+  return fmap<readonly boolean[], boolean>(values, values => values.some(value => value));
 }
 
 /**

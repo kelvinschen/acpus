@@ -3,7 +3,7 @@
  * Nodes: agent, task, signal, assert, if, loop
  */
 import { defineWorkflow, z } from "acpus/core";
-import { lift2, md, template } from "acpus/expression";
+import { gte, md, or, template } from "acpus/expression";
 
 const PlanOut = z.object({
   ready: z.boolean(),
@@ -67,7 +67,7 @@ export default defineWorkflow({
           summary: review.output.summary,
           draft: review.output.nextDraft,
         },
-        stop: lift2(review.output.ready, round, (ready, currentRound) => ready || currentRound >= 2),
+        stop: or(review.output.ready, gte(round, 2)),
       };
     },
   });

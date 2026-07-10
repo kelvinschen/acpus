@@ -3,7 +3,7 @@
  * Nodes: agent, parallel, loop
  */
 import { defineWorkflow, z } from "acpus/core";
-import { lift2, md } from "acpus/expression";
+import { gte, md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "multi-aspect-brainstorm",
@@ -267,7 +267,7 @@ export default defineWorkflow({
           delta: aspects.output.delta.aspect,
           synthesis: synthesis.output,
         },
-        stop: lift2(round, input.rounds, (currentRound, totalRounds) => currentRound >= totalRounds),
+        stop: gte(round, input.rounds),
       };
     },
   });

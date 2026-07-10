@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmap, lift, lift2, lift3 } from "@acpus/expression";
+import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or } from "@acpus/expression";
 import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 
@@ -102,6 +102,43 @@ describe("expression lowering", () => {
         { kind: "literal", value: liftFn.toString() },
       ],
     });
+  });
+
+  it("lowers predicate helpers through fmap and lift2", () => {
+    const count = refExpr<number>(["input", "count"]);
+    const ready = refExpr<boolean>(["input", "ready"]);
+    const kind = refExpr<string>(["input", "kind"]);
+
+    for (const [predicate, operator] of [
+      [eq(kind, "release"), "==="],
+      [ne(kind, "draft"), "!=="],
+      [lt(count, 3), "<"],
+      [lte(count, 2), "<="],
+      [gt(count, 1), ">"],
+      [gte(count, 2), ">="],
+    ] as const) {
+      expect(predicate.__ir).toMatchObject({
+        kind: "call",
+        fn: "lift2",
+        args: [{}, {}, { kind: "literal", value: expect.stringContaining(operator) }],
+      });
+    }
+
+    expect(not(ready).__ir).toMatchObject({
+      kind: "call",
+      fn: "fmap",
+      args: [ready.__ir, { kind: "literal", value: expect.stringContaining("!value") }],
+    });
+    for (const predicate of [and(ready, true, false), or(ready, false, true)]) {
+      expect(predicate.__ir).toMatchObject({
+        kind: "call",
+        fn: "fmap",
+        args: [
+          { kind: "array", items: [ready.__ir, { kind: "literal", value: expect.any(Boolean) }, { kind: "literal", value: expect.any(Boolean) }] },
+          { kind: "literal", value: expect.any(String) },
+        ],
+      });
+    }
   });
 
   it("treats IR-shaped user data as workflow data in public helpers", () => {

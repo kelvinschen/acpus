@@ -15,7 +15,7 @@ Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
 import { defineWorkflow, task, secret, z } from "acpus/core";
-import { template, md, fmap, lift2, lift3, lift } from "acpus/expression";
+import { template, md, eq, lte, gte, and, or, fmap, lift2, lift3, lift } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
 
@@ -23,7 +23,7 @@ The generated starter deliberately keeps broad public imports as local authoring
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
-Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, `template`/`md`, and `fmap`/`lift2`/`lift3`/`lift` for computed operations.
+Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, predicate helpers, `template`/`md`, and `fmap`/`lift2`/`lift3`/`lift` for computed operations.
 
 Use this boundary rule consistently: a plain `T` field is declaration-time structure, while `Resolvable<T>` is evaluated from workflow scope at run time. Authors normally do not need to import `Resolvable`; the public node signatures reveal which fields support both literals and expressions. For example:
 
@@ -68,9 +68,20 @@ Acpus workflows are TypeScript-authored durable graph definitions, not ordinary 
 
 An `Expr<T>` means "a value of type `T` that will exist at run time." You can project through it with field and index syntax, such as `review.output.ready` and `items[0]`, because those are still graph projections. You cannot use JavaScript control flow or operators over it at authoring time, because JavaScript would need the value immediately.
 
-Use graph nodes for control flow, `template`/`md` for rendered strings, and `fmap`/`lift*` for small computed values. Inside an `fmap`/`lift*` callback, write normal JavaScript over plain runtime values.
+Use graph nodes for control flow, predicate helpers for standard boolean conditions, `template`/`md` for rendered strings, and `fmap`/`lift*` for custom computed values. Inside an `fmap`/`lift*` callback, write normal JavaScript over plain runtime values.
 
 ### Expression Functions
+
+Prefer the standard predicate helpers when they express the whole condition:
+
+```ts
+const isRelease = eq(input.kind, "release");
+const withinLimit = lte(selectedCount, input.maxItems);
+const shouldStop = or(input.ready, gte(round, 3));
+const canRelease = and(isRelease, withinLimit);
+```
+
+`eq`/`ne` use JavaScript strict equality over scalar values. `lt`/`lte`/`gt`/`gte` compare numbers. `not` negates one boolean, while `and`/`or` combine two or more booleans. Boolean operands are evaluated eagerly; `and` and `or` do not promise JavaScript short-circuit behavior.
 
 Think of `Expr` as a functor. `fmap` maps one expression value. `lift2`, `lift3`, and `lift` lift a normal JavaScript function over multiple expression dependencies.
 
@@ -92,10 +103,10 @@ const firstId = fmap(input.items[0], item => item?.id ?? "none");
 Use `lift2`/`lift3` for concise positional dependencies:
 
 ```ts
-const shouldRelease = lift2(
-  input.ready,
+const statusLine = lift2(
   input.kind,
-  (ready, kind) => ready && kind === "release",
+  input.ready,
+  (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`,
 );
 ```
 
@@ -219,7 +230,7 @@ const gate = step("gate").if({
 ```ts
 const route = step("route").switch({
   cases: [
-    { when: fmap(input.kind, kind => kind === "bug"), then() { return { owner: "oncall" }; } },
+    { when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } },
   ],
   default() { return { owner: "backlog" }; },
 });
@@ -265,7 +276,7 @@ const refined = step("refine").loop({
         ready: state.ready,
         summary: state.summary,
       },
-      stop: fmap(round, round => round >= 3),
+      stop: gte(round, 3),
     };
   },
 });
@@ -313,6 +324,7 @@ const state = {
 - Start from the closest example by its file-header `Pattern` and `Nodes` labels; inspect declarations only when the examples do not answer the API question.
 - Use graph-level composites instead of JavaScript control flow over expression values.
 - Use field/index projection directly (`review.output.ready`, `items[0]`).
+- Prefer `eq`/`ne`, numeric comparisons, and `not`/`and`/`or` for standard predicates.
 - Use `fmap`/`lift` for small synchronous JSON transforms; prefer expression bodies, and use a short block when named intermediate values improve clarity.
 - Use `template` for compact strings and `md` for multiline prompts/messages.
 - Use signal nodes only when the workflow needs external control.
