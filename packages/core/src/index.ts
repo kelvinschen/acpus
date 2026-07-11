@@ -6,4 +6,4 @@ export type { JsonObject, JsonValue } from "./ir/types.js";
 export { task } from "./nodes/leaf/task.js";
 export type { ReusableTaskToken, TaskToken } from "./nodes/leaf/task.js";
 export type { ArtifactRef, TaskContext, TaskFunction } from "./runtime/task-context.js";
-export type { AgentCommandSpec, AgentDefinitionSpec, AgentPermissionMode, AgentRetrySpec, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";
+export type { AgentCommandSpec, AgentDefinitionSpec, AgentPermissionMode, AgentToken, AgentUseSpec } from "./nodes/leaf/agent.js";

@@ -109,6 +109,8 @@ describe("daemon lease", () => {
     });
     try {
       await expect(requestDaemonControl(dir, { requestId: "test-cancel", type: "cancel", runId: awaiting.run.id })).resolves.toMatchObject({
+        type: "cancel",
+        state: "applied",
         run: { id: awaiting.run.id, status: "canceled" },
       });
     } finally {
@@ -162,7 +164,7 @@ describe("daemon lease", () => {
         type: "cancel",
         runId: admitted.id,
         target: left.node_key,
-      })).resolves.toMatchObject({ run: { id: admitted.id, status: "running" } });
+      })).resolves.toMatchObject({ type: "cancel", state: "applied", target: left.node_key, run: { id: admitted.id, status: "running" } });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
         status: "completed",
         run: { status: "completed", output: { winner: "right", value: "right" } },
@@ -309,7 +311,14 @@ describe("daemon lease", () => {
     });
     try {
       await expect(requestDaemonControl(dir, { requestId: "test-signal-hook", type: "signal", runId: awaiting.run.id, nodeId: "approve", payload: { ok: true } }))
-        .resolves.toMatchObject({ run: { id: awaiting.run.id } });
+        .resolves.toMatchObject({
+          type: "signal",
+          state: "consumed",
+          requestedTarget: "approve",
+          target: expect.stringMatching(/^approve~[0-9a-f]{12}$/),
+          validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
+          run: { id: awaiting.run.id },
+        });
       await waitUntil(() => store.getHookJournal(awaiting.run.id).length > 0);
       expect(store.getHookJournal(awaiting.run.id)).toEqual([
         expect.objectContaining({
@@ -339,14 +348,15 @@ describe("daemon lease", () => {
     });
     try {
       const fork = await requestDaemonControl(dir, { requestId: "test-fork-hook", type: "fork", runId: source.run.id });
-      expect(fork.forkRunId).toEqual(expect.any(String));
-      await waitUntil(() => store.getHookJournal(fork.forkRunId!).length > 0);
-      expect(store.getHookJournal(fork.forkRunId!)).toEqual([
+      expect(fork).toMatchObject({ type: "fork", state: "applied", sourceRunId: source.run.id });
+      expect(fork.run.id).not.toBe(source.run.id);
+      await waitUntil(() => store.getHookJournal(fork.run.id).length > 0);
+      expect(store.getHookJournal(fork.run.id)).toEqual([
         expect.objectContaining({
           handlerId: "fork-completed",
           event: "run.completed",
           status: "completed",
-          stdout: fork.forkRunId,
+          stdout: fork.run.id,
         }),
       ]);
     } finally {
@@ -451,7 +461,7 @@ describe("daemon lease", () => {
     });
     try {
       await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id, target: "approve" }))
-        .resolves.toMatchObject({ forkRunId: expect.any(String) });
+        .resolves.toMatchObject({ type: "fork", state: "applied", sourceRunId: source.run.id, run: { id: expect.any(String) } });
       await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id }))
         .rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
     } finally {

@@ -19,6 +19,21 @@ export type WorkflowSummary = {
   };
 };
 
+export type CliAppliedControl =
+  | { type: "pause" | "resume"; state: "applied"; runId: string }
+  | { type: "retry" | "cancel"; state: "applied"; runId: string; target?: string }
+  | { type: "fork"; state: "applied"; sourceRunId: string }
+  | {
+      type: "signal";
+      state: "consumed";
+      runId: string;
+      requestedTarget: string;
+      target: string;
+      validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
+    };
+
+type CliControl = CliAppliedControl | { type: string; runId: string; state?: undefined };
+
 export type CliResult = {
   ok: boolean;
   phase: ResultPhase;
@@ -31,11 +46,10 @@ export type CliResult = {
   skippedRuns?: RunRecord[];
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
-  forkRunId?: string;
   followRunId?: string;
   checks?: RuntimeHealthCheck[];
   errorCode?: string;
-  control?: { type: string; runId: string };
+  control?: CliControl;
   hookValidation?: { count: number };
   hooks?: HookListResult;
   outputPath?: string;
@@ -101,13 +115,9 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
       }
     }
   }
-  if (result.run) {
-    stream.write(`Run: ${result.run.id}\n`);
-    stream.write(`Status: ${result.run.status}\n`);
-    stream.write(`Workflow entry: ${result.run.workflowEntry}\n`);
-  }
+  if (result.run) writeRun(stream, result.run, result.control);
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
-  if (result.control) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
+  if (result.control && result.control.state === undefined) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
   if (result.outputPath) stream.write(`Output: ${result.outputPath}\n`);
   if (result.deletedRuns) {
     for (const run of result.deletedRuns) stream.write(`Deleted: ${run.id}\t${run.status}\t${run.name}\n`);
@@ -115,7 +125,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.skippedRuns?.length) {
     for (const run of result.skippedRuns) stream.write(`Skipped: ${run.id}\t${run.status}\t${run.name}\n`);
   }
-  if (result.forkRunId) stream.write(`Fork run: ${result.forkRunId}\n`);
   if (result.followRunId) stream.write(`Next: acpus runs inspect ${result.followRunId} --follow\n`);
   if (result.checks) {
     for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
@@ -130,6 +139,27 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     }
   }
   return exitCode;
+}
+
+function writeRun(stream: Writable, run: RunRecord, control: CliControl | undefined): void {
+  if (control?.state === "applied" && control.type === "fork") {
+    stream.write(`Source run: ${control.sourceRunId}\n`);
+    stream.write(`Fork run: ${run.id}\n`);
+    stream.write(`Fork status: ${run.status}\n`);
+    stream.write(`Workflow entry: ${run.workflowEntry}\n`);
+    return;
+  }
+  stream.write(`Run: ${run.id}\n`);
+  if (control?.type === "signal" && control.state === "consumed") {
+    stream.write(`Target: ${control.requestedTarget} → ${control.target}\n`);
+    stream.write(control.validation.kind === "schema"
+      ? `Payload: validated against ${control.validation.schemaSummary}\n`
+      : "Payload: validated as raw string\n");
+  } else if (control?.type === "retry" && control.state === "applied" && control.target !== undefined) {
+    stream.write(`Target: ${control.target}\n`);
+  }
+  stream.write(`Status: ${run.status}\n`);
+  stream.write(`Workflow entry: ${run.workflowEntry}\n`);
 }
 
 function writeSkillResult(stream: Writable, result: SkillCommandResult): void {

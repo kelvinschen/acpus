@@ -78,7 +78,7 @@ export type RunInspectionStatusCounts = {
 };
 
 export type RunInspectionFailure = {
-  origin: "provider" | "scheduler" | "task" | "signal" | "unknown";
+  origin: "provider" | "runtime" | "scheduler" | "task" | "signal" | "unknown";
   code?: string;
   message: string;
   upstream?: {
@@ -174,7 +174,9 @@ export type RunInspectionItem = {
 export type RunInspectionAction =
   | { kind: "inspect-all"; omitted: number }
   | { kind: "inspect-target"; target: string }
-  | { kind: "signal"; target: string; schemaSummary?: string };
+  | { kind: "signal"; target: string; schemaSummary?: string }
+  | { kind: "retry"; target: string }
+  | { kind: "fork" };
 
 export type RunInspectionOmitted = {
   reason: "context-limit";

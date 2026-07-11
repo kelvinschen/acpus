@@ -315,58 +315,10 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
   });
 
-  it("validates current agent retry IR contract", () => {
-    const diagnostics = validateWorkflowIR(minimalWorkflow({
-      agents: {
-        reviewer: {
-          kind: "agent_definition",
-          use: "codex",
-        },
-      },
-      root: {
-        nodes: [
-          {
-            id: "agent_without_schema_retry",
-            kind: "agent",
-            run: {
-              agent: "reviewer",
-              prompt: { kind: "literal", value: "" },
-            },
-            retry: { max: { kind: "literal", value: 1 } },
-          },
-          {
-            id: "agent_bad_retry_shape",
-            kind: "agent",
-            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-            run: {
-              agent: "reviewer",
-              prompt: { kind: "literal", value: "" },
-            },
-            retry: { max: { kind: "literal", value: 1 }, on: ["output_conformance"], backoff: "linear" },
-          },
-        ],
-      },
-    } as any));
-
-    expect(diagnostics.map(diagnostic => [diagnostic.code, diagnostic.path])).toEqual([
-      ["IR001", "root.nodes.agent_without_schema_retry.retry"],
-      ["IR001", "root.nodes.agent_bad_retry_shape.retry.on"],
-      ["IR001", "root.nodes.agent_bad_retry_shape.retry.backoff"],
-    ]);
-  });
-
   it("validates literal constraints on resolvable integer fields", () => {
     const diagnostics = validateWorkflowIR(minimalWorkflow({
-      agents: { reviewer: { kind: "agent_definition", use: "codex" } },
       root: {
         nodes: [
-          {
-            id: "bad_retry",
-            kind: "agent",
-            outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-            run: { agent: "reviewer", prompt: { kind: "literal", value: "review" } },
-            retry: { max: { kind: "literal", value: -1 } },
-          },
           {
             id: "bad_parallel",
             kind: "parallel",
@@ -388,7 +340,6 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
 
     expect(diagnostics.map(diagnostic => [diagnostic.code, diagnostic.path])).toEqual([
-      ["IR001", "root.nodes.bad_retry.retry.max"],
       ["P001", "root.nodes.bad_parallel.maxConcurrency"],
       ["F002", "root.nodes.bad_fanout.count"],
       ["F001", "root.nodes.bad_fanout.maxConcurrency"],

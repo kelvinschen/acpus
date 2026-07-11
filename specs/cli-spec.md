@@ -218,6 +218,21 @@ failures to stable CLI phases and exit codes.
   timeout configuration.
 - Run control command success MUST mean the daemon applied the requested effect
   and the durable projection reflects it.
+- Successful control JSON MUST include a discriminated nested `control`
+  receipt. Fork MUST use `{ type: "fork", state: "applied", sourceRunId }`
+  with `.run` set to the child; Signal MUST use
+  `state: "consumed"` with run id, requested target, resolved dynamic target,
+  and schema-summary or raw-string validation; retry MUST use
+  `state: "applied"` and include `target` only when explicitly requested.
+- Successful control messages MUST be explicit and exhaustive: fork uses
+  `Fork run created.`, Signal uses `Signal consumed.`, retry uses
+  `Retry applied.`, and pause/resume/cancel retain `Run paused.`,
+  `Run resumed.`, and `Run canceled.`. They MUST NOT be produced by appending a
+  suffix to the control verb.
+- A non-terminal control result MUST set `followRunId` to `.run.id`; a terminal
+  result MUST omit it. Fork text MUST identify source and child separately;
+  Signal text MUST show requested-to-resolved target and validation without
+  echoing payload; run-level retry text MUST NOT invent a target.
 - Run control command timeout MUST report that application was not confirmed in
   the interactive wait window, include the run id, requested control type, and
   current run summary, exit nonzero, and MUST NOT create or expose a runtime
@@ -377,6 +392,11 @@ failures to stable CLI phases and exit codes.
   with a bounded rendered prompt preview when available, expected payload
   guidance, and a copyable `acpus runs signal` command. Target inspection MUST
   expose the complete persisted prompt and schema.
+- Terminal `signal_timeout` text MUST show the persisted deadline, timeout
+  failure, `Signal wait is closed.`, and copyable targeted retry and run fork
+  commands. It MUST NOT show expected-payload guidance or a signal command for
+  that closed wait. Overview JSON actions MUST expose inspect-target, retry,
+  and one fork action.
 - Text run status surface output MUST render completed workflow output as a full
   pretty-JSON `Output:` section and MUST omit missing or empty outputs. Follow
   output MUST render that section exactly once at terminal completion.
@@ -476,6 +496,8 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover stale non-terminal execution rendering in run inspect.
 - Tests MUST cover actionable awaiting signal status surface output including
   prompt, payload guidance, and signal command.
+- Tests MUST cover terminal Signal timeout deadline/error/closed-wait text,
+  typed retry/fork actions, and the absence of a post-timeout signal command.
 - Tests MUST cover signal command wiring through `--target`.
 - Tests MUST cover fork command wiring through `--target`, `--unsafe-reuse`,
   and empty fork target usage rejection.

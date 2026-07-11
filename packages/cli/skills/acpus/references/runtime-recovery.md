@@ -85,6 +85,13 @@ Rules:
 - Static signal aliases are accepted only when they resolve to exactly one open signal wait.
 - A dynamic `nodeKey` target is safest when fanout/loop instances create multiple waits.
 - Invalid schema-backed payloads are rejected without consuming the wait. The control may surface as `RUN_NOT_CONTROLLABLE` with a schema path message; re-inspect and send a corrected payload to the same awaiting dynamic target.
+- Successful signal control means the payload was validated and consumed, not
+  that downstream work is terminal. The receipt shows the requested target,
+  resolved dynamic node key, and schema summary or raw-string validation; use
+  its follow command until the run reaches terminal state.
+- A timed-out Signal wait is closed. Inspection shows its persisted deadline
+  and timeout failure, then offers targeted retry and run fork commands. Do not
+  send another signal to the closed wait.
 
 ## Pause, resume, and cancel
 
@@ -125,6 +132,11 @@ artifact references. Artifact contents remain separate and lazy. Use
 `--raw --json` only when the unbounded run/frozen-WorkflowIR/artifact bundle is
 specifically required. Full authored Agent commands are available under
 `.workflow.agents`; compact inspection never exposes them.
+
+Schema-backed response repair stays within one scheduler-visible Agent attempt.
+Its effective `responseRepairMax` comes from the daemon host environment and is
+recorded in attempt metadata; it is unrelated to `acpus runs retry`, which
+creates a new scheduler attempt after failure.
 
 During an active run, prefer non-TTY `--follow` output when operating through
 an agent or pipe. Its progress rows report the authored Agent key, last

@@ -154,7 +154,7 @@ Keep workflow input, Agent output, Signal output, and values passed to reusable 
 
 ### Leaf Nodes
 
-Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, Agent response repair, and artifacts only when the workflow needs them.
+Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, and artifacts only when the workflow needs them.
 
 Agent nodes run an ACP agent. Without `outputSchema`, `output` is text:
 

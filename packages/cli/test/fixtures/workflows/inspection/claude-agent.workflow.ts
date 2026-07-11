@@ -29,7 +29,6 @@ export default defineWorkflow({
 
       Make at least two tool calls so run ${meta.runId} exposes useful live tool telemetry.
     `,
-    retry: { max: 1 },
     timeout: "10m",
   });
 

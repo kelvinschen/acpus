@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { childScopes, walkNodes, type ExprIR, type NodeIR, type SchemaIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonPrimitive, JsonValue, TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
 import type {
@@ -11,6 +11,7 @@ import type {
   RunExecutionMetadata,
   RunNodeProgress,
 } from "../store/store.js";
+import { compactSchemaSummary } from "../schema-summary.js";
 import type {
   AgentInspectionState,
   RunInspectionAction,
@@ -287,7 +288,14 @@ function projectSnapshot(
       actions.push({ kind: "signal", target: wait.nodeKey, ...(outputSchema ? { schemaSummary: compactSchemaSummary(outputSchema) } : {}) });
     }
   }
-  for (const item of instanceItems) if (["failed", "timed_out", "awaiting"].includes(item.status)) actions.push({ kind: "inspect-target", target: item.nodeKey! });
+  const inspectTargets = new Set(instanceItems
+    .filter(item => ["failed", "timed_out", "awaiting"].includes(item.status))
+    .map(item => item.nodeKey!));
+  const timedOutSignals = (dynamic?.signalWaits ?? []).filter(wait => wait.status === "timed_out" && wait.terminalReason === "signal_timeout");
+  for (const wait of timedOutSignals) inspectTargets.add(wait.nodeKey);
+  for (const target of inspectTargets) actions.push({ kind: "inspect-target", target });
+  for (const wait of timedOutSignals) actions.push({ kind: "retry", target: wait.nodeKey });
+  if (timedOutSignals.length > 0) actions.push({ kind: "fork" });
   return {
     schemaVersion: 1,
     kind: "snapshot",
@@ -493,11 +501,12 @@ function instanceInspectionState(run: RunDetails, instance: RunDynamicNodeInstan
   const attempt = instance.acceptedAttemptId
     ? relevantAttempts.find(item => item.attemptId === instance.acceptedAttemptId) ?? relevantAttempts[0]
     : relevantAttempts[0];
-  const wait = run.dynamic?.signalWaits.find(item => item.nodeKey === instance.nodeKey && item.status === "awaiting");
+  const wait = run.dynamic?.signalWaits.find(item => item.nodeKey === instance.nodeKey);
+  const signalStatus = wait?.status === "awaiting" || wait?.status === "timed_out" ? wait.status : undefined;
   return {
     attempt,
     wait,
-    status: normalizeStatus(wait?.status ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)),
+    status: normalizeStatus(signalStatus ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)),
   };
 }
 
@@ -551,7 +560,10 @@ function projectTarget(
   const authoredInput = node?.kind === "task" ? Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, renderExpr(expr)])) : undefined;
   const runtimeInput = record(metadata?.metadata)?.input;
   const loopProgress = summarizeLoopProgress(frames);
-  const status = latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
+  const signalStatus = node?.kind === "signal" && (latestWait?.status === "awaiting" || latestWait?.status === "timed_out")
+    ? latestWait.status
+    : undefined;
+  const status = signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
   const agent = node?.kind === "agent" ? agentDetails(ir, run, node, metadata, currentProgress) : undefined;
   const signal = node?.kind === "signal" ? {
     target: latestWait?.nodeKey ?? latestInstance?.nodeKey ?? targetId,
@@ -910,7 +922,7 @@ function detailedFailure(node: NodeIR | undefined, error: unknown, statusReason?
   const value = record(error);
   const reasons = [statusReason, string(value?.reason)].filter((reason): reason is string => reason !== undefined);
   const explicitOrigin = string(value?.origin);
-  const origin = explicitOrigin === "provider" || explicitOrigin === "scheduler" || explicitOrigin === "task" || explicitOrigin === "signal" || explicitOrigin === "unknown"
+  const origin = explicitOrigin === "provider" || explicitOrigin === "runtime" || explicitOrigin === "scheduler" || explicitOrigin === "task" || explicitOrigin === "signal" || explicitOrigin === "unknown"
     ? explicitOrigin
     : reasons.some(schedulerFailureReason)
       ? "scheduler"
@@ -956,21 +968,6 @@ function schedulerFailureReason(reason: string): boolean {
 
 function stableFailureCode(value: string | undefined): value is string {
   return value !== undefined && /^[a-z][a-z0-9_.-]*$/i.test(value);
-}
-
-function compactSchemaSummary(schema: SchemaIR): string {
-  return boundedSummary(schemaSummary(schema), 160);
-}
-
-function schemaSummary(schema: SchemaIR): string {
-  if (schema.kind === "array") return `${schemaSummary(schema.item)}[]`;
-  if (schema.kind === "union") return schema.variants.map(schemaSummary).join(" | ");
-  if (schema.kind === "literal") return JSON.stringify(schema.value);
-  if (schema.kind === "enum") return schema.values.map(value => JSON.stringify(value)).join(" | ");
-  if (schema.kind === "record") return `record<${schemaSummary(schema.value)}>`;
-  if (schema.kind !== "object") return schema.kind;
-  const required = new Set(schema.required);
-  return `{ ${Object.entries(schema.fields).map(([name, field]) => `${name}: ${schemaSummary(field)}${required.has(name) ? "" : "?"}`).join(", ")} }`;
 }
 
 function boundedSummary(value: string, limit: number): string {

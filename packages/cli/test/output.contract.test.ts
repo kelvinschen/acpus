@@ -4,20 +4,106 @@ import { summarizeWorkflow, writeResult, type CliResult } from "../src/output.js
 import { CaptureStream } from "./support/capture-stream.js";
 
 describe("CLI result output contracts", () => {
-  it("renders an exact follow next step when a command returns a live run", () => {
+  it("renders fork output around the child run identity", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
     expect(writeResult({
       ok: true,
       phase: "control",
-      message: "Run forked.",
-      forkRunId: "run_child",
+      message: "Fork run created.",
+      control: { type: "fork", state: "applied", sourceRunId: "run_source" },
+      run: {
+        id: "run_child",
+        name: "forked",
+        status: "pending",
+        workflowEntry: "fixed.workflow.ts",
+        sourceGraphDigest: "sha256:fork",
+        createdAt: "2026-07-11T00:00:00.000Z",
+        updatedAt: "2026-07-11T00:00:00.000Z",
+        progressVersion: 0,
+      },
       followRunId: "run_child",
     }, "text", { stdout, stderr }, 0)).toBe(0);
 
-    expect(stdout.text).toContain("Next: acpus runs inspect run_child --follow");
+    expect(stdout.text).toBe([
+      "Fork run created.",
+      "Source run: run_source",
+      "Fork run: run_child",
+      "Fork status: pending",
+      "Workflow entry: fixed.workflow.ts",
+      "Next: acpus runs inspect run_child --follow",
+      "",
+    ].join("\n"));
     expect(stderr.text).toBe("");
+  });
+
+  it("renders consumed Signal validation without echoing payload", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    expect(writeResult({
+      ok: true,
+      phase: "control",
+      message: "Signal consumed.",
+      control: {
+        type: "signal",
+        state: "consumed",
+        runId: "run_1",
+        requestedTarget: "approve",
+        target: "approve~abc",
+        validation: { kind: "schema", schemaSummary: "{ approved: boolean }" },
+      },
+      run: {
+        id: "run_1",
+        name: "approval",
+        status: "running",
+        workflowEntry: "approval.workflow.ts",
+        sourceGraphDigest: "sha256:signal",
+        createdAt: "2026-07-11T00:00:00.000Z",
+        updatedAt: "2026-07-11T00:00:01.000Z",
+        progressVersion: 1,
+      },
+      followRunId: "run_1",
+    }, "text", { stdout, stderr }, 0)).toBe(0);
+
+    expect(stdout.text).toBe([
+      "Signal consumed.",
+      "Run: run_1",
+      "Target: approve → approve~abc",
+      "Payload: validated against { approved: boolean }",
+      "Status: running",
+      "Workflow entry: approval.workflow.ts",
+      "Next: acpus runs inspect run_1 --follow",
+      "",
+    ].join("\n"));
+    expect(stdout.text).not.toContain("secret-payload");
+    expect(stderr.text).toBe("");
+  });
+
+  it("renders targeted and run-level retry without inventing a root target", () => {
+    const run = {
+      id: "run_1",
+      name: "retry",
+      status: "pending" as const,
+      workflowEntry: "retry.workflow.ts",
+      sourceGraphDigest: "sha256:retry",
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:01.000Z",
+      progressVersion: 2,
+    };
+    for (const [control, targetLine] of [
+      [{ type: "retry", state: "applied", runId: "run_1", target: "review~abc" } as const, "Target: review~abc\n"],
+      [{ type: "retry", state: "applied", runId: "run_1" } as const, ""],
+    ] as const) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      expect(writeResult({ ok: true, phase: "control", message: "Retry applied.", control, run, followRunId: run.id }, "text", { stdout, stderr }, 0)).toBe(0);
+      expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --follow\n`);
+      expect(stdout.text).not.toContain("retryd");
+      expect(stdout.text).not.toContain("retried");
+      if (targetLine === "") expect(stdout.text).not.toContain("Target:");
+      expect(stderr.text).toBe("");
+    }
   });
 
   it("counts nested workflow nodes in summaries", () => {

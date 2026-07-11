@@ -123,10 +123,9 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
 
   switch (node.kind) {
     case "agent": {
-      validateKnownFields(node, ["id", "kind", "outputSchema", "run", "timeout", "retry"], diagnostics, path);
+      validateKnownFields(node, ["id", "kind", "outputSchema", "run", "timeout"], diagnostics, path);
       validateDurationExpr(node.timeout, diagnostics, `${path}.timeout`, `Agent node '${node.id}' timeout`, "IR002", refsFromScope(ctx));
       validateAgentRun(node.run, diagnostics, `${path}.run`, refsFromScope(ctx));
-      validateRetry(node.retry, diagnostics, `${path}.retry`, node.outputSchema !== undefined, refsFromScope(ctx));
       const agentKey = isRecord(node.run) && typeof node.run.agent === "string" ? node.run.agent : undefined;
       if (agentKey && !ctx.agents.has(agentKey)) {
         diagnostics.push({
@@ -265,17 +264,6 @@ function validateAgentMode(value: unknown, diagnostics: DiagnosticIR[], path: st
   if (typeof value !== "string" || value.length === 0) {
     addError(diagnostics, "A002", "Agent agentMode must be a non-empty string.", path);
   }
-}
-
-function validateRetry(value: unknown, diagnostics: DiagnosticIR[], path: string, allowed: boolean, refs: RefContext): void {
-  if (value === undefined) return;
-  if (!allowed) {
-    addError(diagnostics, "IR001", "Agent retry is only valid when outputSchema is declared.", path);
-    return;
-  }
-  if (!requireRecord(value, diagnostics, path, "IR001", "Retry must be an object.")) return;
-  validateKnownFields(value, ["max"], diagnostics, path);
-  validateIntegerExpr((value as { max?: unknown }).max, diagnostics, `${path}.max`, "Retry max", "IR001", refs, 0);
 }
 
 function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {

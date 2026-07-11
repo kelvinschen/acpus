@@ -68,7 +68,21 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{ requestId: string; type: "retry" | "cancel"; runId: string; target?: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "fork" }>>().toMatchTypeOf<{ requestId: string; type: "fork"; runId: string; target?: string; input?: JsonValue; unsafeReuse?: boolean }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{ requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue }>();
-  expectTypeOf<DaemonControlResult>().toEqualTypeOf<{ run: RunDetails; forkRunId?: string }>();
+  expectTypeOf<DaemonControlResult>().toEqualTypeOf<
+    | { type: "pause"; state: "applied"; run: RunDetails }
+    | { type: "resume"; state: "applied"; run: RunDetails }
+    | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
+    | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
+    | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
+    | {
+      type: "signal";
+      state: "consumed";
+      requestedTarget: string;
+      target: string;
+      validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
+      run: RunDetails;
+    }
+  >();
   expectTypeOf<NonNullable<RunDetails["dynamic"]>>().toEqualTypeOf<RunDynamicDetails>();
   expectTypeOf<RunDynamicDetails["frames"][number]>().toEqualTypeOf<RunDynamicFrame>();
   expectTypeOf<RunDynamicDetails["nodeInstances"][number]>().toEqualTypeOf<RunDynamicNodeInstance>();

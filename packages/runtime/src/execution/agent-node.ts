@@ -6,16 +6,19 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
+import { err, ok, type Result } from "neverthrow";
 import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
-import { ResolutionException, resolveOrThrow, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
+import { ResolutionException, resolveOrThrow, tryResolveString } from "../evaluation/resolvable.js";
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
+const DEFAULT_RESPONSE_REPAIR_MAX = 2;
+const RESPONSE_REPAIR_MAX_ENV = "ACPUS_AGENT_RESPONSE_REPAIR_MAX";
 const PROGRESS_FLUSH_INTERVAL_MS = 1_000;
 const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
 const PROGRESS_TOOL_LIMIT = 3;
@@ -32,12 +35,18 @@ export class AgentNodeTimeoutError extends AgentNodeExecutionError {
   }
 }
 
-export type AgentNodeFailure = {
-  origin: "provider";
-  code: string;
-  message: string;
-  upstream?: AgentBackendFailure["upstream"];
-};
+export type AgentNodeFailure =
+  | {
+      origin: "provider";
+      code: string;
+      message: string;
+      upstream?: AgentBackendFailure["upstream"];
+    }
+  | {
+      origin: "runtime";
+      code: "invalid_agent_response_repair_max";
+      message: string;
+    };
 
 export type AgentExecutorOptions = {
   cwd: string;
@@ -81,7 +90,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
   const turns: AgentTurnRecord[] = [];
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
-  let effectiveRepairMax: number | undefined;
+  let responseRepairMax: number | null | undefined;
   let renderedPromptForMetadata: string | undefined;
   let metadataWritten = false;
   const writeTerminalState = async (
@@ -92,12 +101,23 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
   ): Promise<void> => {
     if (result && turn !== undefined) writeAgentTerminalProgress(node, options, turn, result, status, message);
     metadataWritten = true;
-    await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, renderedPromptForMetadata, effectiveRepairMax, status, turns, message);
+    await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, renderedPromptForMetadata, responseRepairMax, status, turns, message);
   };
 
   try {
     const definition = options.agents[node.run.agent];
     if (!definition) throw new Error(`Agent '${node.run.agent}' is not declared.`);
+    if (node.outputSchema) {
+      const configured = tryResponseRepairMax(process.env[RESPONSE_REPAIR_MAX_ENV]);
+      if (configured.isErr()) {
+        responseRepairMax = null;
+        await writeTerminalState("failed", configured.error.message);
+        throw new AgentNodeExecutionError(configured.error);
+      }
+      responseRepairMax = configured.value;
+    } else {
+      responseRepairMax = 0;
+    }
     const cwd = node.run.cwd
       ? resolveOrThrow(tryResolveString(node.run.cwd, scope, "agent cwd"))
       : definition.cwd ?? options.cwd;
@@ -119,12 +139,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       ...(definition.model ? { model: definition.model } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     } satisfies Omit<AgentTurnRequest, "prompt" | "agentMode">;
-    const maxRepairTurns = node.outputSchema
-      ? node.retry?.max === undefined
-        ? 2
-        : resolveOrThrow(tryResolveInteger(node.retry.max, scope, `Agent node '${node.id}' retry max`, 0))
-      : 0;
-    effectiveRepairMax = maxRepairTurns;
+    const maxRepairTurns = responseRepairMax;
     const plainContinuation = options.initialPromptKind === "plain_continuation";
     renderedPromptForMetadata = plainContinuation
       ? CONTINUATION_PROMPT
@@ -206,6 +221,19 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
     message: failure.message,
     ...(failure.upstream ? { upstream: failure.upstream } : {}),
   };
+}
+
+function tryResponseRepairMax(value: string | undefined): Result<number, Extract<AgentNodeFailure, { origin: "runtime" }>> {
+  if (value === undefined) return ok(DEFAULT_RESPONSE_REPAIR_MAX);
+  if (/^(0|[1-9]\d*)$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return ok(parsed);
+  }
+  return err({
+    origin: "runtime",
+    code: "invalid_agent_response_repair_max",
+    message: `Environment variable ${RESPONSE_REPAIR_MAX_ENV} must be a canonical non-negative decimal safe integer; set it before starting the Acpus daemon.`,
+  });
 }
 
 function shouldCaptureRawAcpDebug(): boolean {
@@ -558,7 +586,7 @@ async function writeAgentAttemptMetadata(
   sessionName: string | undefined,
   explicitSessionKey: string | undefined,
   renderedPrompt: string | undefined,
-  repairMax: number | undefined,
+  responseRepairMax: number | null | undefined,
   status: "completed" | "failed" | "cancelled" | "timed_out",
   turns: AgentTurnRecord[],
   message?: string,
@@ -577,7 +605,7 @@ async function writeAgentAttemptMetadata(
       ...(explicitSessionKey ? { sessionKey: explicitSessionKey } : {}),
       ...(renderedPrompt === undefined ? {} : { renderedPrompt }),
       ...(options.deadlineAt ? { deadlineAt: options.deadlineAt } : {}),
-      ...(repairMax === undefined ? {} : { repairMax }),
+      ...(responseRepairMax === undefined ? {} : { responseRepairMax }),
       turnCount: turns.length,
       turns: turns.map(turn => pruneUndefined(turn) as JsonValue),
       ...(message ? { message } : {}),

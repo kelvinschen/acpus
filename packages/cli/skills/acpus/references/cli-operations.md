@@ -175,6 +175,12 @@ If `use` or `command` changes identity, inherited `model` and `agentMode` are cl
 
 Controls route through the workspace daemon and wait only until the control is confirmed applied, failed, or the fixed client wait expires. They do not wait for the entire run to become terminal after the control effect.
 
+Success messages name that applied effect: `Retry applied.`, `Fork run
+created.`, and `Signal consumed.`. Signal success also reports the requested and
+resolved dynamic targets plus validation evidence without echoing payload.
+Fork JSON uses `.run` for the child and `control.sourceRunId` for the source; it
+uses no second child-id field.
+
 Successful non-terminal controls print an exact
 `acpus runs inspect <run-id> --follow` next step. Fork output uses the created
 child run id, not the source run id.

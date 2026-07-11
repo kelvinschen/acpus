@@ -22,6 +22,7 @@ describe("scheduler control intents", () => {
           type: "pause",
         }, { ownerId: "owner-a" })).resolves.toMatchObject({
           snapshot: { projection: { run: { status: "paused" } } },
+          effect: { type: "pause", state: "applied" },
         });
 
         const resumed = await applySchedulerControlIntent(workspace, store, {
@@ -31,6 +32,7 @@ describe("scheduler control intents", () => {
         }, { ownerId: "owner-b" });
 
         const nodeKey = deriveInstanceKey(appendNode([], "root_task"));
+        expect(resumed.effect).toEqual({ type: "resume", state: "applied" });
         expect(resumed.advanced).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
       } finally {
@@ -67,6 +69,44 @@ describe("scheduler control intents", () => {
           payload: { ok: true },
           commandIdempotencyKey: `signal:${run.id}:valid`,
         }, { ownerId: "owner-c" })).resolves.toMatchObject({
+          effect: {
+            type: "signal",
+            state: "consumed",
+            requestedTarget: "approve",
+            target: nodeKey,
+            validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
+          },
+          advanced: { status: "completed" },
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("reports raw-string validation for schema-less signal controls", async () => {
+    await withRuntimeWorkspace("scheduler-control-intent-raw-signal", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rawSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const nodeKey = deriveInstanceKey(appendNode([], "approve"));
+        await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting" });
+
+        await expect(applySchedulerControlIntent(workspace, store, {
+          requestId: `signal:${run.id}:raw`,
+          runId: run.id,
+          type: "signal",
+          node: "approve",
+          payload: "yes",
+        }, { ownerId: "owner-b" })).resolves.toMatchObject({
+          effect: {
+            type: "signal",
+            state: "consumed",
+            requestedTarget: "approve",
+            target: nodeKey,
+            validation: { kind: "raw-string" },
+          },
           advanced: { status: "completed" },
         });
       } finally {
@@ -119,6 +159,7 @@ describe("scheduler control intents", () => {
           runId: run.id,
           type: "cancel",
         }, { ownerId: "owner-b", advance: false });
+        expect(canceled.effect).toEqual({ type: "cancel", state: "applied" });
         expect(canceled.snapshot.projection.run.status).toBe("canceled");
 
         const eventCount = store.getRun(run.id)?.eventCount;
@@ -150,6 +191,7 @@ describe("scheduler control intents", () => {
         };
 
         const first = await applySchedulerControlIntent(workspace, store, intent, { ownerId: "retry-owner-a", advance: false });
+        expect(first.effect).toEqual({ type: "retry", state: "applied", target: "root_task" });
         expect(first.snapshot.projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
         expect(controlEventCount(store, run.id, "instance.retry_requested")).toBe(1);
         appendControlCandidates(store, run.id, "root_task", "failed", "retry-replay");
@@ -223,6 +265,7 @@ describe("scheduler control intents", () => {
           target: "root",
         }, { ownerId: "retry-root-alias", advance: false });
 
+        expect(targeted.effect).toEqual({ type: "retry", state: "applied", target: "root" });
         expect(targeted.snapshot.projection.instances[targetedNodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
         expect(targeted.snapshot.projection.frames.root).toMatchObject({ status: "running" });
 
@@ -234,6 +277,7 @@ describe("scheduler control intents", () => {
           type: "retry",
         }, { ownerId: "retry-run", advance: false });
 
+        expect(retriedRun.effect).toEqual({ type: "retry", state: "applied" });
         expect(retriedRun.snapshot.projection).toMatchObject({ run: { status: "pending" }, frames: {}, instances: {} });
       } finally {
         store.close();
@@ -255,6 +299,7 @@ describe("scheduler control intents", () => {
           target: "root",
         }, { ownerId: "cancel-root-alias", advance: false });
 
+        expect(targeted.effect).toEqual({ type: "cancel", state: "applied", target: "root" });
         expect(targeted.snapshot.projection.instances[targetedNodeKey]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
         expect(targeted.snapshot.projection.frames.root).toMatchObject({ status: "running" });
         expect(targeted.snapshot.projection.run.status).not.toBe("canceled");
@@ -267,6 +312,7 @@ describe("scheduler control intents", () => {
           type: "cancel",
         }, { ownerId: "cancel-run", advance: false });
 
+        expect(canceledRun.effect).toEqual({ type: "cancel", state: "applied" });
         expect(canceledRun.snapshot.projection.run.status).toBe("canceled");
         expect(canceledRun.snapshot.projection.frames.root).toMatchObject({ status: "cancelled" });
       } finally {
@@ -332,5 +378,14 @@ function rootTaskWorkflow(nodeId = "root_task") {
       input: {}, exec: async () => ({ ok: true }),
     });
     return { ok: task.output.ok };
+  });
+}
+
+function rawSignalWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-control-raw-signal",
+  }).build(({ step }) => {
+    step("approve").signal({ prompt: "approve" });
+    return {};
   });
 }

@@ -241,6 +241,47 @@ describe("compact run inspection surface", () => {
     expect(output).toContain("acpus runs signal run_1 --target approve~abc --payload '<json>'");
   });
 
+  it("renders terminal Signal timeout evidence with retry and fork recovery", () => {
+    const document: RunInspectionSnapshot = {
+      ...snapshot(),
+      run: { ...snapshot().run, status: "failed", execution: { state: "terminal", lastStatus: "failed", reason: "terminal" } },
+      counts: { total: 1, timedOut: 1 },
+      actions: [
+        { kind: "inspect-target", target: "approve~abc" },
+        { kind: "retry", target: "approve~abc" },
+        { kind: "fork" },
+      ],
+      items: [{
+        key: "approve~abc",
+        role: "instance",
+        path: ["approve"],
+        label: "approve~abc",
+        kind: "signal",
+        status: "timed_out",
+        statusReason: "signal_timeout",
+        failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
+        signal: {
+          target: "approve~abc",
+          deadlineAt: "2026-07-11T00:01:00.000Z",
+          promptPreview: "Approve this release?",
+          schemaSummary: "{ ok: boolean }",
+        },
+      }],
+    };
+    delete document.output;
+    delete document.omitted;
+
+    const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:01:01.000Z"));
+    expect(output).toContain("Error (scheduler signal_timeout): Approval timed out.");
+    expect(output).toContain("Deadline: 2026-07-11T00:01:00.000Z");
+    expect(output).toContain("Signal wait is closed.");
+    expect(output).toContain("Inspect: acpus runs inspect run_1 --target approve~abc");
+    expect(output).toContain("Retry: acpus runs retry run_1 --target approve~abc");
+    expect(output).toContain("Fork: acpus runs fork run_1");
+    expect(output).not.toContain("Expected payload:");
+    expect(output).not.toContain("acpus runs signal");
+  });
+
   it("renders compact terminal hook history", () => {
     const document = snapshot();
     document.hooks = [{

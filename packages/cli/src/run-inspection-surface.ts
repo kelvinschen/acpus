@@ -120,6 +120,8 @@ function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string 
   for (const action of document.actions) {
     if (action.kind === "inspect-all") lines.push(`  More: acpus runs inspect ${document.run.id} --all`);
     if (action.kind === "inspect-target") lines.push(`  Inspect: acpus runs inspect ${document.run.id} --target ${action.target}`);
+    if (action.kind === "retry") lines.push(`  Retry: acpus runs retry ${document.run.id} --target ${action.target}`);
+    if (action.kind === "fork") lines.push(`  Fork: acpus runs fork ${document.run.id}`);
   }
   if (document.output !== undefined) {
     lines.push("", "Output:", ...prettyLines(document.output, "  "));
@@ -152,7 +154,11 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
     lines.push(`  Loop: round ${summary.loopProgress.round}  index=${summary.loopProgress.index}${summary.loopProgress.stop ? "  stopping" : ""}`);
   }
   if (summary.prompt?.text) lines.push("  Prompt:", ...summary.prompt.text.replace(/\s+$/, "").split("\n").map(line => `    ${line}`));
-  if (summary.signal) lines.push(...formatSignal(summary.signal, document.run.id, 1, summary.prompt?.text === undefined));
+  if (summary.signal) lines.push(...formatSignal(summary.signal, document.run.id, 1, summary.prompt?.text === undefined, nodeStatus === "awaiting"));
+  if (summary.signal && summary.failure?.code === "signal_timeout") {
+    lines.push(`  Retry: acpus runs retry ${document.run.id} --target ${summary.signal.target}`);
+    lines.push(`  Fork: acpus runs fork ${document.run.id}`);
+  }
 
   if (document.instances.length > 0) {
     lines.push("Instances:");
@@ -199,7 +205,7 @@ function formatItem(item: RunInspectionItem, depth: number, runId: string, nowMs
     lines.push(`${"  ".repeat(detailIndent)}${formatFailure(item.failure, 240)}`);
   }
   if (item.agent) lines.push(...formatAgent(item.agent, detailIndent, nowMs));
-  if (item.signal) lines.push(...formatSignal(item.signal, runId, detailIndent, true));
+  if (item.signal) lines.push(...formatSignal(item.signal, runId, detailIndent, true, item.status === "awaiting"));
   if (item.composite) {
     const details = [item.composite.strategy, item.composite.quorumCount === undefined ? undefined : `quorum=${item.composite.quorumCount}`, item.composite.maxConcurrency === undefined ? undefined : `maxConcurrency=${item.composite.maxConcurrency}`, item.composite.currentIteration === undefined ? undefined : `round=${item.composite.currentIteration + 1}`, item.composite.counts ? formatCounts(item.composite.counts) : undefined].filter(Boolean);
     if (details.length > 0) lines.push(`${"  ".repeat(detailIndent)}${details.join("  ")}`);
@@ -282,10 +288,15 @@ function toolStatusGlyph(status: string | undefined): string {
   return "·";
 }
 
-function formatSignal(signal: NonNullable<RunInspectionItem["signal"]>, runId: string, indent: number, includePrompt: boolean): string[] {
+function formatSignal(signal: NonNullable<RunInspectionItem["signal"]>, runId: string, indent: number, includePrompt: boolean, open: boolean): string[] {
   const prefix = "  ".repeat(indent);
   const lines: string[] = [];
   if (includePrompt && signal.promptPreview) lines.push(`${prefix}Prompt: ${oneLine(signal.promptPreview, 240)}`);
+  if (signal.deadlineAt) lines.push(`${prefix}Deadline: ${signal.deadlineAt}`);
+  if (!open) {
+    lines.push(`${prefix}Signal wait is closed.`);
+    return lines;
+  }
   lines.push(`${prefix}Expected payload: ${signal.outputSchema ? schemaSummary(signal.outputSchema) : signal.schemaSummary ?? "JSON string"}`);
   const payload = signal.outputSchema || signal.schemaSummary ? "'<json>'" : `'\"text\"'`;
   lines.push(`${prefix}Signal: acpus runs signal ${runId} --target ${signal.target} --payload ${payload}`);

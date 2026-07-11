@@ -53,19 +53,13 @@ type AgentStepBase = {
   timeout?: Resolvable<string>;
 };
 
-export type AgentRetrySpec = {
-  max?: Resolvable<number>;
-};
-
 /** Authoring spec for an Agent node. Schema-backed agents return parsed JSON; schema-less agents return text. */
 export type AgentStepSpec<
   OutSchema extends Schema<any> | undefined = Schema<any> | undefined,
 > = AgentStepBase & (OutSchema extends Schema<any> ? {
   outputSchema: OutSchema;
-  retry?: AgentRetrySpec;
 } : {
   outputSchema?: undefined;
-  retry?: never;
 });
 
 export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
@@ -114,8 +108,5 @@ export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
     outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
     run: agentSpecToRunIR(spec),
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
-    retry: spec.retry === undefined ? undefined : {
-      max: spec.retry.max === undefined ? undefined : valueToExprIR(spec.retry.max),
-    },
   }) as AgentNodeIR;
 }

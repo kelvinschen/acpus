@@ -56,6 +56,32 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     });
   });
 
+  it("returns fork JSON around the created child run", async () => {
+    await withTestWorkspace("e2e-runs-fork-identity", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const source = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      expect(source.exitCode, source.stdout || source.stderr).toBe(0);
+      const sourceRecords = source.stdout.trim().split("\n").map(line => JSON.parse(line));
+      const sourceRunId = sourceRecords[0].run.id as string;
+
+      const forked = await runSourceCli(workspace, ["runs", "fork", sourceRunId, "--json"]);
+      expect(forked.exitCode, forked.stdout || forked.stderr).toBe(0);
+      expect(forked.stderr).toBe("");
+      const result = JSON.parse(forked.stdout);
+      expect(result).toMatchObject({
+        ok: true,
+        phase: "control",
+        message: "Fork run created.",
+        control: { type: "fork", state: "applied", sourceRunId },
+        run: { name: "cli-valid" },
+      });
+      expect(result.run.id).toMatch(runIdPattern);
+      expect(result.run.id).not.toBe(sourceRunId);
+      if (["completed", "failed", "canceled"].includes(result.run.status)) expect(result.followRunId).toBeUndefined();
+      else expect(result.followRunId).toBe(result.run.id);
+    });
+  });
+
   it("signals an awaiting workflow through the subprocess CLI", async () => {
     await withTestWorkspace("e2e-runs-signal", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
@@ -68,11 +94,22 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
 
       expect(signaled.exitCode).toBe(0);
       expect(signaled.stderr).toBe("");
-      expect(JSON.parse(signaled.stdout)).toMatchObject({
+      const signaledJson = JSON.parse(signaled.stdout);
+      expect(signaledJson).toMatchObject({
         ok: true,
         phase: "control",
+        message: "Signal consumed.",
+        control: {
+          type: "signal",
+          state: "consumed",
+          runId,
+          requestedTarget: "approve",
+          validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
+        },
         run: { id: runId },
       });
+      expect(signaledJson.control.target).toMatch(/^approve~/);
+      expect(signaledJson).not.toHaveProperty("payload");
     });
   });
 

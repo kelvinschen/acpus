@@ -153,17 +153,64 @@ describe("daemon socket server", () => {
       await rm(shutdownWorkspace, { recursive: true, force: true });
     }
 
-    const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-result-"));
-    const controlServer = await startRawResponseServer(controlWorkspace, {
-      ok: true,
-      result: { run: { id: "run_1", status: "running" }, extra: true },
-    });
-    try {
-      await expect(requestDaemonControl(controlWorkspace, { requestId: "pause", type: "pause", runId: "run_1" }))
-        .rejects.toThrow("Daemon returned an invalid control response.");
-    } finally {
-      await closeRawResponseServer(controlServer);
-      await rm(controlWorkspace, { recursive: true, force: true });
+    const run = { id: "run_1", status: "running" };
+    const invalidControlResults = [
+      { type: "pause", state: "applied", run, extra: true },
+      { type: "fork", state: "applied", sourceRunId: "run_source", run, unexpected: true },
+      {
+        type: "signal",
+        state: "consumed",
+        requestedTarget: "approve",
+        target: "approve~123456789abc",
+        validation: { kind: "raw-string", extra: true },
+        run,
+      },
+    ];
+    for (const result of invalidControlResults) {
+      const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-result-"));
+      const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
+      try {
+        await expect(requestDaemonControl(controlWorkspace, { requestId: "pause", type: "pause", runId: "run_1" }))
+          .rejects.toThrow("Daemon returned an invalid control response.");
+      } finally {
+        await closeRawResponseServer(controlServer);
+        await rm(controlWorkspace, { recursive: true, force: true });
+      }
+    }
+
+    const validControlResults = [
+      { type: "pause", state: "applied", run },
+      { type: "resume", state: "applied", run },
+      { type: "retry", state: "applied", run },
+      { type: "retry", state: "applied", target: "root", run },
+      { type: "cancel", state: "applied", target: "root", run },
+      { type: "fork", state: "applied", sourceRunId: "run_source", run },
+      {
+        type: "signal",
+        state: "consumed",
+        requestedTarget: "approve",
+        target: "approve~123456789abc",
+        validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
+        run,
+      },
+      {
+        type: "signal",
+        state: "consumed",
+        requestedTarget: "approve",
+        target: "approve~123456789abc",
+        validation: { kind: "raw-string" },
+        run,
+      },
+    ];
+    for (const result of validControlResults) {
+      const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-valid-control-result-"));
+      const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
+      try {
+        await expect(requestDaemonControl(controlWorkspace, { requestId: "pause", type: "pause", runId: "run_1" })).resolves.toEqual(result);
+      } finally {
+        await closeRawResponseServer(controlServer);
+        await rm(controlWorkspace, { recursive: true, force: true });
+      }
     }
   });
 });

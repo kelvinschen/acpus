@@ -34,7 +34,6 @@ export default defineWorkflow({
     agent: agents.planner,
     cwd: input.repoPath,
     prompt: template`Draft an implementation plan for: ${input.request}`,
-    retry: { max: 1 },
     timeout: "20m",
   });
 
@@ -58,7 +57,6 @@ export default defineWorkflow({
 
           Return a ready flag, concise summary, and next draft.
         `,
-        retry: { max: 1 },
         timeout: "20m",
       });
       return {

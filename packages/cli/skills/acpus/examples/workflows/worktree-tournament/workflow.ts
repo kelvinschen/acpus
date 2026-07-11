@@ -162,7 +162,6 @@ export default defineWorkflow({
 
       Return the winning lane and a concise rationale.
     `,
-    retry: { max: 1 },
     timeout: "30m",
   });
 

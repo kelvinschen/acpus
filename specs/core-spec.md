@@ -60,7 +60,7 @@
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
 - Agent, Task, and Signal authoring specs MUST use flat kind-specific objects. Lowering MUST group their execution fields under the frozen node's `run` field. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout?, retry? })`.
+- Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
 - Signal nodes MUST use `step("id").signal({ prompt, outputSchema?, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ message? }`.
@@ -105,8 +105,6 @@
 - A reusable Task node call site's top-level `input` MUST be the graph expression binding checked against that inferred input type.
 - Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
-- Agent node `retry`, when present, MUST contain only `max?: Resolvable<number>` and MUST
-  require `outputSchema`.
 - Task invocation options MAY support top-level `cwd`, `env`, and `execution.defaultCommandTimeout`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 - Task context `artifact` MUST expose only `write(name, content, options?)` and synchronous `path(ref)` operations. It MUST NOT expose format-specific write helpers or file-read helpers.
@@ -134,11 +132,11 @@
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
 - `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout body and nested descendants.
 - `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
-- Agent, Task, and Signal `timeout`, Task `execution.defaultCommandTimeout`, Agent `retry.max`, Parallel/Fanout `maxConcurrency`, Fanout quorum `count`, prompts, session keys, assert/signal messages, conditions, fanout `over`, loop state, task input/cwd/env, and other runtime values MUST be stored as `ExprIR`.
+- Agent, Task, and Signal `timeout`, Task `execution.defaultCommandTimeout`, Parallel/Fanout `maxConcurrency`, Fanout quorum `count`, prompts, session keys, assert/signal messages, conditions, fanout `over`, loop state, task input/cwd/env, and other runtime values MUST be stored as `ExprIR`.
 - Literal duration expressions MUST contain strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds and zero MUST be accepted.
 - `DurationParseError` MUST be `{ type: "invalid-duration-syntax"; value: string } | { type: "duration-out-of-range"; value: string }`; both variants MUST preserve the original input in `value`.
 - `tryParseDurationMs(value)` MUST return the resolved integer milliseconds in a `Result`; invalid syntax MUST return `invalid-duration-syntax`, and any non-finite or non-safe-integer resolved value MUST return `duration-out-of-range`.
-- Literal quorum/concurrency values MUST be positive integers, and literal retry max values MUST be non-negative integers.
+- Literal quorum/concurrency values MUST be positive integers.
 - Agent, Task, and Signal runs MUST serialize only their meaningful execution fields and MUST NOT contain singleton run-kind tags.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", source }`, where `source` is the self-contained `exec` function source.

@@ -21,10 +21,6 @@ export type SchemaIR = SchemaTypeIR & {
   nullable?: boolean;
 };
 
-export type AgentRetryIR = {
-  max?: ExprIR;
-};
-
 export type AgentDefinitionIR =
   | {
       kind: "agent_definition";
@@ -65,7 +61,6 @@ export type AgentNodeIR = BaseNodeIR & {
   outputSchema?: SchemaIR;
   run: AgentRunIR;
   timeout?: ExprIR;
-  retry?: AgentRetryIR;
 };
 
 export type AgentRunIR = {

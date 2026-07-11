@@ -1,6 +1,6 @@
 import { advanceRuntimeRun } from "../runs/advance-runtime.js";
 import type { ActiveAttempt, AdvanceRunSummary } from "../scheduler/advance.js";
-import { applySchedulerControlIntent, type RunControlIntent } from "../scheduler/control.js";
+import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect } from "../scheduler/control.js";
 import type { RunOwnerClaim } from "../scheduler/store-port.js";
 import type { HookRunner } from "../hooks/runner.js";
 import { triggerHooksForCommittedRowsForRun, type RuntimeHookCursor } from "../scheduler/runtime-runner.js";
@@ -71,7 +71,7 @@ export class RunExecutionSessions {
       await Promise.race([waitForOwnerEpoch(session), session.promise]);
       if (!session.ownerEpoch) return undefined;
     }
-    const snapshot = applySchedulerControlIntent(this.store, controlIntent(intent), session.ownerEpoch);
+    const { snapshot, effect } = applySchedulerControlIntent(this.store, controlIntent(intent), session.ownerEpoch);
     this.triggerHooks(intent.runId, session.hookCursor);
     if (intent.type === "pause" || intent.type === "cancel" && intent.target === undefined) {
       for (const controller of session.activeAttempts.values()) controller.abort();
@@ -82,7 +82,7 @@ export class RunExecutionSessions {
     }
     const run = this.store.getRun(intent.runId);
     if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-    return { run };
+    return controlResult(effect, run);
   }
 
   private async controlWithShortSession(intent: DaemonControlIntent): Promise<DaemonControlResult> {
@@ -96,11 +96,11 @@ export class RunExecutionSessions {
     this.sessions.set(intent.runId, session);
     try {
       if (intent.type === "fork") return await this.fork(intent);
-      applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
+      const { effect } = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
       this.triggerHooks(intent.runId, session.hookCursor);
       const run = this.store.getRun(intent.runId);
       if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-      return { run };
+      return controlResult(effect, run);
     } finally {
       this.store.scheduler.releaseRun(claim);
       if (this.sessions.get(intent.runId) === session) this.sessions.delete(intent.runId);
@@ -117,9 +117,9 @@ export class RunExecutionSessions {
       ...(intent.unsafeReuse === undefined ? {} : { unsafeReuse: intent.unsafeReuse }),
     });
     if (fork.forkCreated) this.triggerHooks(fork.id, { sequence: 0 });
-    const run = this.store.getRun(intent.runId);
-    if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-    return { run, forkRunId: fork.id };
+    const run = this.store.getRun(fork.id);
+    if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Fork run '${fork.id}' was not found.`);
+    return { type: "fork", state: "applied", sourceRunId: intent.runId, run };
   }
 
   private triggerHooks(runId: string, hookCursor: RuntimeHookCursor): void {
@@ -206,6 +206,19 @@ function controlIntent(intent: DaemonControlIntent): RunControlIntent {
   if (intent.type === "retry") return { requestId: intent.requestId, runId: intent.runId, type: "retry", ...(intent.target === undefined ? {} : { target: intent.target }) };
   if (intent.type === "cancel") return { requestId: intent.requestId, runId: intent.runId, type: "cancel", ...(intent.target === undefined ? {} : { target: intent.target }) };
   throw new Error(`Unsupported active control '${intent.type}'.`);
+}
+
+function controlResult(effect: SchedulerControlEffect, run: RunDetails): DaemonControlResult {
+  if (effect.type === "pause") return { ...effect, run };
+  if (effect.type === "resume") return { ...effect, run };
+  if (effect.type === "retry") return { ...effect, run };
+  if (effect.type === "cancel") return { ...effect, run };
+  if (effect.type === "signal") return { ...effect, run };
+  return assertNever(effect);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected scheduler control effect: ${String(value)}`);
 }
 
 function isTerminal(status: RunDetails["status"]): boolean {

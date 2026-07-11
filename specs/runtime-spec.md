@@ -155,10 +155,14 @@
 - Compact Signal state MUST bound rendered prompt and schema summaries to 160
   visible characters each. Complete persisted prompts and `SchemaIR` values
   MUST remain available in target and raw inspection only.
+- A terminal Signal wait with `terminalReason: "signal_timeout"` MUST remain
+  visible as timed out with its persisted deadline and failure. Overview
+  actions MUST expose inspect-target, targeted retry, and one run fork action,
+  and MUST NOT expose a signal action for the closed wait.
 - Inspection failure projection MUST prefer a persisted explicit origin and
   otherwise distinguish scheduler expression/deadline/materialization failures
-  from provider, Task, and Signal failures using a closed set of stable
-  scheduler reasons; provider/Task codes such as `invalid_api_key` or
+  from runtime configuration, provider, Task, and Signal failures using a
+  closed set of stable scheduler reasons; provider/Task codes such as `invalid_api_key` or
   `invalid_output` MUST NOT be reclassified by a broad prefix heuristic.
 - Compact inspection MUST preserve a bounded upstream acpx summary containing
   operation, exit status, acpx code/origin, and JSON-RPC code/message when
@@ -227,17 +231,24 @@
 - A failed scheduler leaf MUST remain failed until an explicit control-plane
   retry reopens its node, frame, or run. Scheduler advance MUST NOT derive retry
   request events or reopen failed work from an attempt budget.
-- Agent node `retry.max` MUST be runtime-owned schema-backed response repair
-  budget inside one scheduler-visible attempt, not scheduler-visible automatic
-  retry.
+- Agent response repair MUST be a runtime-owned schema-backed policy inside one
+  scheduler-visible attempt, not an authoring field or scheduler-visible
+  automatic retry.
 - Task and Agent timeout expressions MUST resolve once before attempt start and MUST be persisted as scheduler attempt deadlines for scheduler-backed runs. Executors MUST consume the persisted deadline without re-evaluating the timeout expression.
 - Scheduler-backed Agent execution MUST pass the persisted deadline's remaining budget to `@acpus/agent-executor` as numeric `timeoutMs`; it MUST NOT reconstruct an authored duration string.
 - Agent execution MUST reject a malformed or non-canonical persisted deadline before invoking `@acpus/agent-executor`; durable-state corruption MUST NOT be reclassified as an executor configuration failure.
 - Task process timeout enforcement MUST preserve representable deadlines beyond Node's single-timer limit without allowing native timer overflow to trigger an early timeout. It MUST recompute the remaining budget after executor setup immediately before invoking the process runner, count synchronous process startup against that remaining budget, reject malformed persisted deadlines, and recheck monotonic elapsed time before accepting process settlement, Task results, or artifact registration. Abort and an exhausted deadline MUST remain authoritative over a synchronous startup failure.
 - Chunked runtime timeout scheduling MUST measure elapsed time with a monotonic clock and MUST NOT extend a timeout when the wall clock moves backward.
 - Signal timeout, prompt, and timeout-message expressions MUST resolve once when the instance enters awaiting state. The deadline, rendered prompt, and rendered timeout message MUST be persisted in signal wait projection state.
-- Agent response-repair max and Task default command timeout MUST resolve once in attempt scope and MUST be recorded in attempt execution metadata.
-- A runtime configuration resolution failure MUST fail its owning frame or attempt with `expression_resolution_failed` and a payload that preserves the evaluation/type/constraint error tag.
+- Agent response-repair max MUST be read once from the runtime host environment
+  at Agent attempt start. Task default command timeout MUST resolve once in
+  attempt scope. Both effective values MUST be recorded in attempt execution
+  metadata.
+- Agent attempt metadata MUST use `responseRepairMax`. Valid attempts MUST
+  record the effective number, including zero for schema-less Agents. Invalid
+  schema-backed configuration MUST record
+  `responseRepairMax: null`, zero turns, and an empty turn list.
+- An authored runtime value resolution failure MUST fail its owning frame or attempt with `expression_resolution_failed` and a payload that preserves the evaluation/type/constraint error tag.
 - An explicit Agent `sessionKey` that resolves to an empty or whitespace-only string MUST fail its attempt as an `expression_resolution_failed` constraint error.
 - A Task executor that observes an already-expired persisted attempt deadline MUST commit `attempt.timed_out`, not a generic failed attempt.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
@@ -329,13 +340,26 @@
   cause. Scheduler status reasons MUST contain the stable code rather than a
   concatenated `code: message` string.
 - Schema-backed agent nodes MUST default to one initial turn plus two response
-  repair turns. Explicit `retry.max` overrides the number of repair turns, and
-  `retry.max = 0` disables response repair.
+  repair turns. Host environment variable `ACPUS_AGENT_RESPONSE_REPAIR_MAX`
+  MUST override the number of additional repair turns, and value `0` MUST
+  disable response repair. Agent definition and node environments MUST NOT
+  override this runtime host policy.
+- `ACPUS_AGENT_RESPONSE_REPAIR_MAX`, when present for a schema-backed Agent,
+  MUST be a canonical base-10 non-negative safe integer matching
+  `^(0|[1-9]\d*)$`. An invalid value MUST fail the attempt before provider
+  invocation with origin `runtime` and code
+  `invalid_agent_response_repair_max`; its message MUST name the variable,
+  required numeric form, and daemon-start environment boundary. Schema-less
+  Agents MUST ignore the variable and use an effective response-repair max of
+  zero.
+- The daemon MUST read this policy from its own process environment. Changes to
+  a caller shell environment MUST affect later attempts only after the daemon is
+  restarted with that environment.
 - Response repair turns MUST reuse the same acpx session, use the fixed
   continuation prompt plus the schema section, and MUST NOT reapply agent mode.
 - Agent response repair failures MUST remain inside one scheduler-visible leaf
-  attempt. The scheduler MUST NOT create another attempt solely because
-  `retry.max` was declared.
+  attempt. The scheduler MUST NOT create another attempt solely for a response
+  repair turn.
 - Manual control-plane retry of a failed agent node MUST reuse the same acpx
   session identity for the dynamic node key and MUST send the fixed continuation
   prompt without appending the schema section for the retried attempt's initial
@@ -391,6 +415,10 @@
   non-empty `target`; fork additionally MAY carry `target`, replacement
   `prepared` workflow, `input`, `agentOverrides`, and `unsafeReuse`; signal
   additionally MUST carry `nodeId` and `payload`.
+- Scheduler control application MUST return both the resulting durable snapshot
+  and a discriminated effect. A Signal effect MUST preserve its requested alias,
+  resolved dynamic node key, and the validation boundary that consumed the
+  payload; a retry effect MUST preserve only an explicitly requested target.
 - The runtime daemon MUST expose a small local request/response interface:
   `admitRun(prepared, input, agentOverrides?)`, `control(intent)`, `shutdown()`,
   and `status()`.
@@ -399,8 +427,13 @@
   controls directly through SQLite or become scheduler run owners.
 - Daemon responses MUST use exactly one of the closed envelopes
   `{ ok: true, result }` or `{ ok: false, error: { code, message } }`. Admission
-  success MUST return `RunDetails`; control success MUST return
-  `{ run, forkRunId? }`; shutdown success MUST return
+  success MUST return `RunDetails`; control success MUST return a closed result
+  discriminated by `type`: pause/resume/retry/cancel use `state: "applied"`,
+  fork uses `{ type: "fork", state: "applied", sourceRunId, run: child }`, and
+  signal uses `state: "consumed"` with requested target, resolved dynamic
+  target, and schema or raw-string validation evidence. Retry/cancel MAY retain
+  the explicitly requested target, while an omitted run-level retry target MUST
+  remain omitted. Shutdown success MUST return
   `{ status: "shutdown" }`; and status success MUST return daemon pid, lease
   generation, protocol version, and package version.
 - Every daemon request shape and each status, shutdown, and control result shape
@@ -707,7 +740,9 @@
   mapping, absence of provider-command env mapping consultation, durable agent
   output conformance, empty-response repair, scheduler runtime identity
   environment, explicit session identity, schema-backed response repair inside
-  one scheduler-visible attempt, manual control-plane retry continuation,
+  one scheduler-visible attempt, host response-repair defaults and overrides,
+  invalid host configuration before provider invocation, schema-less isolation,
+  manual control-plane retry continuation,
   pause/resume continuation, and separation between scheduler-visible attempts
   and agent response repair turns.
 - Tests MUST cover scheduler-backed agent turn prompt, response, stderr, and
@@ -719,7 +754,7 @@
   default absence of raw ACP debug artifacts.
 - Tests MUST cover raw parsed schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
-- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, fork, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.
+- Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, typed control effects, fork child-centric result identity, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.
 - Tests MUST cover missing-store and missing-run deletion as no-ops and active-run deletion as the only exceptional delete case.
 - Tests MUST cover run-scoped same-control scheduler intent replay,
   cross-control idempotency-key conflicts, and atomic intent recording for

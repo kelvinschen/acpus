@@ -442,6 +442,83 @@ describe("run inspection projection", () => {
     expect(raw.workflow).toEqual(ir);
   });
 
+  it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {
+    const ir: WorkflowIR = {
+      irVersion: 4,
+      name: "signal-timeout",
+      agents: {},
+      root: { nodes: [{
+        id: "approve",
+        kind: "signal",
+        run: { prompt: { kind: "literal", value: "Approve release?" } },
+        outputSchema: { kind: "object", fields: { approved: { kind: "boolean" } }, required: ["approved"], additionalProperties: false },
+      }] },
+      outputs: {},
+      diagnostics: [],
+    };
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+    run.status = "failed";
+    run.execution = { state: "terminal", lastStatus: "failed", reason: "terminal" };
+    run.dynamic = {
+      version: 3,
+      progressVersion: 0,
+      frames: [],
+      nodeInstances: [{
+        nodeKey: "approve~abc",
+        nodeId: "approve",
+        instancePath: [{ kind: "node", nodeId: "approve" }],
+        status: "failed",
+        statusReason: "signal_timeout",
+        error: { reason: "signal_timeout", message: "Approval timed out." },
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:01:01.000Z",
+      }],
+      attempts: [],
+      groups: [],
+      groupMembers: [],
+      signalWaits: [{
+        nodeKey: "approve~abc",
+        nodeId: "approve",
+        status: "timed_out",
+        deadlineAt: "2026-07-01T00:01:00.000Z",
+        timeoutMessage: "Approval timed out.",
+        renderedPrompt: "Approve release?",
+        terminalReason: "signal_timeout",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:01:01.000Z",
+      }],
+      executionMetadata: [],
+      progress: [],
+    };
+
+    const document = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 3, progressVersion: 0 }, query: { runId: run.id, mode: "overview" } });
+    const target = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 3, progressVersion: 0 }, query: { runId: run.id, mode: "target", target: "approve~abc" } });
+    if (document?.kind !== "snapshot" || target?.kind !== "target") throw new Error("expected inspection documents");
+
+    expect(document.items.find(item => item.nodeKey === "approve~abc")).toMatchObject({
+      status: "timed_out",
+      failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
+      signal: { target: "approve~abc", deadlineAt: "2026-07-01T00:01:00.000Z" },
+    });
+    expect(document.actions).toEqual([
+      { kind: "inspect-target", target: "approve~abc" },
+      { kind: "retry", target: "approve~abc" },
+      { kind: "fork" },
+    ]);
+    expect(target.summary).toMatchObject({
+      nodeStatus: "timed_out",
+      failure: { code: "signal_timeout" },
+      signal: { target: "approve~abc", deadlineAt: "2026-07-01T00:01:00.000Z" },
+    });
+
+    run.dynamic.signalWaits[0] = { ...run.dynamic.signalWaits[0]!, status: "cancelled", terminalReason: "manual_cancel" };
+    run.dynamic.nodeInstances[0] = { ...run.dynamic.nodeInstances[0]!, statusReason: "manual_cancel", error: { reason: "manual_cancel", message: "Cancelled." } };
+    const ordinaryFailure = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 4, progressVersion: 0 }, query: { runId: run.id, mode: "overview" } });
+    if (ordinaryFailure?.kind !== "snapshot") throw new Error("expected snapshot");
+    expect(ordinaryFailure.actions).toEqual([{ kind: "inspect-target", target: "approve~abc" }]);
+  });
+
   it("distinguishes scheduler, provider, and task failure origins with stable codes", () => {
     const schedulerRun = repeatedAgentRun(1);
     schedulerRun.dynamic!.nodeInstances[0]!.status = "failed";
@@ -464,6 +541,17 @@ describe("run inspection projection", () => {
       origin: "provider",
       code: "invalid_api_key",
       message: "Provider rejected the API key.",
+    });
+
+    const runtimeRun = repeatedAgentRun(1);
+    runtimeRun.dynamic!.nodeInstances[0]!.status = "failed";
+    runtimeRun.dynamic!.nodeInstances[0]!.error = { origin: "runtime", code: "invalid_agent_response_repair_max", message: "Invalid runtime configuration." };
+    const runtime = projectRunInspection({ ir: compositeWorkflow(), run: runtimeRun, artifacts: [], cursor: { eventSequence: 2, progressVersion: 1 }, query: { runId: runtimeRun.id, mode: "overview" } });
+    if (runtime?.kind !== "snapshot") throw new Error("expected snapshot");
+    expect(runtime.items.find(item => item.nodeKey === "review~0")?.failure).toEqual({
+      origin: "runtime",
+      code: "invalid_agent_response_repair_max",
+      message: "Invalid runtime configuration.",
     });
 
     const taskIr: WorkflowIR = {

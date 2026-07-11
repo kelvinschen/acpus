@@ -123,13 +123,12 @@ describe.concurrent("runtime controls and recovery", () => {
       const first = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
       const second = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
       const third = await forkRun(workspace, source.run.id, { requestId: "fork-request-2" });
-      const forkRunId = first?.forkRunId;
-      if (!forkRunId) throw new Error("Expected fork run id.");
+      const forkId = first.run.id;
 
-      expect(second?.forkRunId).toBe(forkRunId);
-      expect(third?.forkRunId).toBe(forkRunId);
-      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: forkRunId }]);
-      const event = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", forkRunId);
+      expect(second.run.id).toBe(forkId);
+      expect(third.run.id).toBe(forkId);
+      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: forkId }]);
+      const event = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", forkId);
       const payload = JSON.parse(String(event?.payload_json)) as { requestFingerprint: string };
       expect(payload.requestFingerprint).toBe(`${stableJson({ runId: source.run.id })}\n`);
     });
@@ -143,7 +142,7 @@ describe.concurrent("runtime controls and recovery", () => {
       if (firstInput === undefined || secondInput === undefined) throw new Error("expected fork input to normalize");
 
       await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: firstInput })).resolves.toMatchObject({
-        forkRunId: expect.any(String),
+        run: { id: expect.any(String) },
       });
       await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: secondInput })).rejects.toThrow("conflicts with a different fork input");
     });
@@ -476,14 +475,14 @@ async function applyControl(workspace: string, intent: RunControlIntent): Promis
   }
 }
 
-async function forkRun(workspace: string, runId: string, options: ForkOptions = {}): Promise<{ run: RunDetails; forkRunId: string }> {
+async function forkRun(workspace: string, runId: string, options: ForkOptions = {}): Promise<{ run: RunDetails }> {
   const store = await openExistingWritableRuntimeStore(workspace);
   if (!store) throw new Error("Expected runtime store.");
   try {
     const fork = await store.forkRun(runId, options);
     const run = store.getRun(fork.id);
     if (!run) throw new Error(`Fork run '${fork.id}' was not found.`);
-    return { run, forkRunId: fork.id };
+    return { run };
   } finally {
     store.close();
   }

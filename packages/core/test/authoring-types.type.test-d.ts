@@ -50,16 +50,9 @@ test("agent tokens are typed from top-level agent keys", () => {
     const structured = step("structured_agent").agent({
       outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
       agent: agents.reviewer, prompt: "ok",
-      retry: { max: 1 },
     });
     expectTypeOf(structured.output.ok).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(structured.output.summary).toEqualTypeOf<Expr<string>>();
-
-    // @ts-expect-error schema-less agents have no output conformance target to repair.
-    step("bad_agent_retry").agent({
-      agent: agents.reviewer, prompt: "bad",
-      retry: { max: 1 },
-    });
 
     // @ts-expect-error agent reference must come from a declared top-level agent key.
     agents.missing;
@@ -300,7 +293,6 @@ test("runtime configuration fields share the Resolvable seam", () => {
     step("agent").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       timeout: input.timeout,
-      retry: { max: input.count },
       agent: agents.reviewer,
       prompt: input.text,
       sessionKey: input.text,

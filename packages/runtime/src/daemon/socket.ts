@@ -31,10 +31,20 @@ type DaemonRequest = {
   control: DaemonControlIntent;
 } | DaemonAdmitRunRequest;
 
-export type DaemonControlResult = {
-  run: RunDetails;
-  forkRunId?: string;
-};
+export type DaemonControlResult =
+  | { type: "pause"; state: "applied"; run: RunDetails }
+  | { type: "resume"; state: "applied"; run: RunDetails }
+  | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
+  | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
+  | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
+  | {
+    type: "signal";
+    state: "consumed";
+    requestedTarget: string;
+    target: string;
+    validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
+    run: RunDetails;
+  };
 
 export type DaemonControlIntent =
   | { requestId: string; type: "pause" | "resume"; runId: string }
@@ -333,10 +343,34 @@ function isRunDetails(value: unknown): value is RunDetails {
 }
 
 function isDaemonControlResult(value: unknown): value is DaemonControlResult {
-  return isPlainRecord(value)
-    && hasExactKeys(value, ["run"], ["forkRunId"])
-    && isRunDetails(value.run)
-    && (value.forkRunId === undefined || typeof value.forkRunId === "string");
+  if (!isPlainRecord(value) || typeof value.type !== "string" || !isRunDetails(value.run)) return false;
+  if (value.type === "pause" || value.type === "resume") {
+    return hasExactKeys(value, ["type", "state", "run"]) && value.state === "applied";
+  }
+  if (value.type === "retry" || value.type === "cancel") {
+    return hasExactKeys(value, ["type", "state", "run"], ["target"])
+      && value.state === "applied"
+      && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
+  }
+  if (value.type === "fork") {
+    return hasExactKeys(value, ["type", "state", "sourceRunId", "run"])
+      && value.state === "applied"
+      && typeof value.sourceRunId === "string";
+  }
+  return value.type === "signal"
+    && hasExactKeys(value, ["type", "state", "requestedTarget", "target", "validation", "run"])
+    && value.state === "consumed"
+    && typeof value.requestedTarget === "string"
+    && typeof value.target === "string"
+    && isSignalValidation(value.validation);
+}
+
+function isSignalValidation(value: unknown): value is Extract<DaemonControlResult, { type: "signal" }>["validation"] {
+  if (!isPlainRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "raw-string") return hasExactKeys(value, ["kind"]);
+  return value.kind === "schema"
+    && hasExactKeys(value, ["kind", "schemaSummary"])
+    && typeof value.schemaSummary === "string";
 }
 
 function isDaemonResponse(value: unknown): value is DaemonResponse {

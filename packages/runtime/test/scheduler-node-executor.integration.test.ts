@@ -5,7 +5,7 @@ import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { errAsync } from "neverthrow";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceRun } from "../src/scheduler/advance.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
@@ -36,17 +36,22 @@ vi.mock("../src/execution/task-process.js", async importOriginal => ({
 
 declare global {
   var __acpusPromptResolutionCount: number | undefined;
-  var __acpusRepairResolutionCount: number | undefined;
   var __acpusTimeoutResolutionCount: number | undefined;
 }
 
 let taskAttemptHarness = createInlineTaskAttemptHarness();
+const initialResponseRepairMax = process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX;
 
 beforeEach(() => {
+  restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", undefined);
   taskAttemptHarness = createInlineTaskAttemptHarness();
   executorMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
   executorMocks.executeAgentTurn.mockReset();
   vi.useRealTimers();
+});
+
+afterEach(() => {
+  restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
 });
 
 type TestRuntimeNodeExecutorInput = RuntimeNodeExecutorInput & {
@@ -1501,7 +1506,7 @@ describe("runtime scheduler node executor", () => {
 
   it("writes failed terminal agent progress for final output conformance failures", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-conformance-progress", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
@@ -1514,7 +1519,7 @@ describe("runtime scheduler node executor", () => {
           executeAgentTurn: async () => completedAgentTurn("not json"),
         });
 
-        await expect(executor.execute({
+        await expect(withAgentResponseRepairMax("0", () => executor.execute({
           runId: run.id,
           nodeId: "review",
           nodeKey: "review.dynamic",
@@ -1522,7 +1527,7 @@ describe("runtime scheduler node executor", () => {
           attemptNo: attempt.attemptNo,
           ownerEpoch,
           signal: new AbortController().signal,
-        })).resolves.toMatchObject({
+        }))).resolves.toMatchObject({
           status: "failed",
           reason: "output_conformance",
           error: { origin: "provider", code: "output_conformance", message: expect.any(String) },
@@ -1632,7 +1637,7 @@ describe("runtime scheduler node executor", () => {
 
   it("writes raw ACP debug artifacts only when the host debug switch is enabled", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-raw-acp-debug", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       const previous = process.env.ACPUS_AGENT_RAW_ACP_DEBUG;
       const rawStdout = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\"}\n";
@@ -2294,40 +2299,187 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
-  it("honors retry max zero for schema-backed agent response repair", async () => {
+  it("honors host response repair max zero for schema-backed agents", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-retry-zero", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const node = prepared.ir.root.nodes.find(node => node.id === "review");
       if (!node || node.kind !== "agent") throw new Error("expected review agent node");
       const turns: AgentTurnRequest[] = [];
 
-      await expect(executeAgentNode(node, {}, {
+      await expect(withAgentResponseRepairMax("0", () => executeAgentNode(node, {}, {
         cwd: workspace,
         agents: prepared.ir.agents,
         executeTurn: async request => {
           turns.push(request);
           return completedAgentTurn("");
         },
-      })).rejects.toThrow("empty_response");
+      }))).rejects.toThrow("empty_response");
       expect(turns).toHaveLength(1);
     });
   });
 
-  it("resolves agent timeout, prompt, and repair max once per attempt", async () => {
+  it("reads the host response repair budget once per attempt and ignores authored env overrides", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-host-repair-budget", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, hostRepairBudgetAgentWorkflow());
+      const node = prepared.ir.root.nodes.find(node => node.id === "review");
+      if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+      const store = await openRuntimeStore(workspace);
+      const turns: AgentTurnRequest[] = [];
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        await expect(withAgentResponseRepairMax("1", () => withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
+          cwd: workspace,
+          runId: run.id,
+          nodeKey: "review.dynamic",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          store,
+          agents: prepared.ir.agents,
+          executeTurn: async request => {
+            turns.push(request);
+            if (turns.length === 1) process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX = "0";
+            return completedAgentTurn(turns.length === 1 ? "not json" : "{\"ok\":true}");
+          },
+        })))).resolves.toEqual({ ok: true });
+
+        expect(turns).toHaveLength(2);
+        expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
+        expect(turns.map(turn => turn.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX)).toEqual(["0", "0"]);
+        const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+        expect(metadata).toMatchObject({ responseRepairMax: 1, turnCount: 2 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("ignores an invalid host response repair value for schema-less agents", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-schema-less-repair-env", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+        name: "schema_less_repair_env",
+        agents: { reviewer: { use: "mock" } },
+      }).build(({ agents, step }) => {
+        step("review").agent({ agent: agents.reviewer, prompt: "review" });
+        return {};
+      }));
+      const node = prepared.ir.root.nodes.find(node => node.id === "review");
+      if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        await expect(withAgentResponseRepairMax("invalid", () => executeAgentNode(node, {}, {
+          cwd: workspace,
+          runId: run.id,
+          nodeKey: "review.dynamic",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          store,
+          agents: prepared.ir.agents,
+          executeTurn: async () => completedAgentTurn("plain text"),
+        }))).resolves.toBe("plain text");
+
+        const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+        expect(metadata).toMatchObject({ responseRepairMax: 0, turnCount: 1 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it.each(["", " 1", "1 ", "+1", "01", "1.0", "1e1", "-1", "9007199254740992"])(
+    "rejects non-canonical host response repair max %j before calling the provider",
+    async value => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-invalid-repair-env", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+        const node = prepared.ir.root.nodes.find(node => node.id === "review");
+        if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+        const executeTurn = vi.fn(async () => completedAgentTurn("{\"ok\":true}"));
+
+        await expect(withAgentResponseRepairMax(value, () => executeAgentNode(node, {}, {
+          cwd: workspace,
+          agents: prepared.ir.agents,
+          executeTurn,
+        }))).rejects.toMatchObject({
+          failure: {
+            origin: "runtime",
+            code: "invalid_agent_response_repair_max",
+            message: expect.stringContaining("canonical non-negative decimal safe integer"),
+          },
+        });
+        expect(executeTurn).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it("persists invalid host response repair configuration as a runtime attempt failure", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-invalid-repair-metadata", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const executeTurn = vi.fn(async () => completedAgentTurn("{\"ok\":true}"));
+      try {
+        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        await expect(withAgentResponseRepairMax("01", () => advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          executeAgentTurn: executeTurn,
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+        expect(executeTurn).not.toHaveBeenCalled();
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+          status: "failed",
+          terminalReason: "invalid_agent_response_repair_max",
+          error: {
+            origin: "runtime",
+            code: "invalid_agent_response_repair_max",
+            message: expect.stringContaining("before starting the Acpus daemon"),
+          },
+        });
+        const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+        expect(metadata).toMatchObject({ status: "failed", responseRepairMax: null, turnCount: 0, turns: [] });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("does not spend response repair budget on backend failures", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-backend-no-repair", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+      const node = prepared.ir.root.nodes.find(node => node.id === "review");
+      if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+      const executeTurn = vi.fn(async (): Promise<AgentTurnResult> => ({
+        status: "failed",
+        failure: { kind: "provider_exit", message: "backend unavailable" },
+        responseText: "",
+        stderr: "",
+        telemetry: agentTelemetry(0),
+      }));
+
+      await expect(withAgentResponseRepairMax("10", () => executeAgentNode(node, {}, {
+        cwd: workspace,
+        agents: prepared.ir.agents,
+        executeTurn,
+      }))).rejects.toMatchObject({ failure: { origin: "provider", code: "provider_exit" } });
+      expect(executeTurn).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("resolves agent timeout and prompt once per attempt and records the host repair budget", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-dynamic-config", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, dynamicAgentConfigWorkflow());
       const store = await openRuntimeStore(workspace);
       globalThis.__acpusPromptResolutionCount = 0;
-      globalThis.__acpusRepairResolutionCount = 0;
       globalThis.__acpusTimeoutResolutionCount = 0;
       const now = new Date();
       try {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(now);
-        const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review", repairMax: 0 }, cwd: workspace });
+        const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review" }, cwd: workspace });
         const turns: AgentTurnRequest[] = [];
 
-        await expect(advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
@@ -2336,11 +2488,10 @@ describe("runtime scheduler node executor", () => {
             turns.push(request);
             return completedAgentTurn("{\"ok\":true}");
           },
-        })).resolves.toMatchObject({ status: "completed", completed: 1 });
+        }))).resolves.toMatchObject({ status: "completed", completed: 1 });
 
         expect(turns[0]?.prompt).toContain("dynamic review");
         expect(globalThis.__acpusPromptResolutionCount).toBe(1);
-        expect(globalThis.__acpusRepairResolutionCount).toBe(1);
         expect(globalThis.__acpusTimeoutResolutionCount).toBe(1);
         expect(turns[0]?.timeoutMs).toBeGreaterThan(0);
         expect(turns[0]?.timeoutMs).toBeLessThanOrEqual(5_000);
@@ -2349,13 +2500,12 @@ describe("runtime scheduler node executor", () => {
         });
         expect(store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata).toMatchObject({
           renderedPrompt: "dynamic review",
-          repairMax: 0,
+          responseRepairMax: 0,
           deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
         });
       } finally {
         vi.useRealTimers();
         globalThis.__acpusPromptResolutionCount = undefined;
-        globalThis.__acpusRepairResolutionCount = undefined;
         globalThis.__acpusTimeoutResolutionCount = undefined;
         store.close();
       }
@@ -2412,18 +2562,18 @@ describe("runtime scheduler node executor", () => {
 
   it("does not write raw parsed output artifacts when agent JSON recovery fails", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-parsed-output", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
 
-        await expect(advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
           executeAgentTurn: async () => completedAgentTurn("not json"),
-        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
         const artifactRows = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as Array<{ relative_path: string }>;
@@ -2444,18 +2594,18 @@ describe("runtime scheduler node executor", () => {
 
   it("does not write raw parsed output artifacts for empty agent responses", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-empty-no-raw-parsed-output", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
 
-        await expect(advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
           executeAgentTurn: async () => completedAgentTurn(""),
-        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
         const artifactRows = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as Array<{ relative_path: string }>;
@@ -2881,7 +3031,7 @@ describe("runtime scheduler node executor", () => {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
 
-        await expect(withImmediateAgentRepairs(() => advanceFrozenRun({
+        await expect(withAgentResponseRepairMax(undefined, () => withImmediateAgentRepairs(() => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
@@ -2890,7 +3040,7 @@ describe("runtime scheduler node executor", () => {
             turns.push(request);
             return completedAgentTurn("{\"attempt\":1}");
           },
-        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        })))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         expect(turns).toHaveLength(3);
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "failed" });
@@ -2898,6 +3048,7 @@ describe("runtime scheduler node executor", () => {
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata).toMatchObject({
           status: "failed",
+          responseRepairMax: 2,
           turnCount: 3,
           turns: [
             expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } }),
@@ -2921,7 +3072,7 @@ describe("runtime scheduler node executor", () => {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
 
-        await expect(withImmediateAgentRepairs(() => advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("2", () => withImmediateAgentRepairs(() => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
@@ -2930,7 +3081,7 @@ describe("runtime scheduler node executor", () => {
             turns.push(request);
             return completedAgentTurn("{\"ok\":\"not boolean\"}");
           },
-        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        })))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const claim = store.scheduler.claimRun(run.id, "retry-owner", 60_000);
         if (!claim) throw new Error("expected retry claim");
@@ -2942,7 +3093,7 @@ describe("runtime scheduler node executor", () => {
         });
         store.scheduler.releaseRun(claim);
 
-        await expect(advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-b",
@@ -2951,7 +3102,7 @@ describe("runtime scheduler node executor", () => {
             turns.push(request);
             return completedAgentTurn("{\"attempt\":\"4\"}");
           },
-        })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+        }))).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
         expect(turns).toHaveLength(4);
         expect(turns[3]!.sessionName).toBe(turns[0]!.sessionName);
@@ -2960,8 +3111,8 @@ describe("runtime scheduler node executor", () => {
         expect(turns[3]!.prompt).not.toContain("# OUTPUT SCHEMA");
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
         expect(metadata).toEqual([
-          expect.objectContaining({ status: "failed", sessionName: turns[0]!.sessionName, turnCount: 3 }),
-          expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, turnCount: 1 }),
+          expect.objectContaining({ status: "failed", sessionName: turns[0]!.sessionName, responseRepairMax: 2, turnCount: 3 }),
+          expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, responseRepairMax: 0, turnCount: 1 }),
         ]);
       } finally {
         store.close();
@@ -2971,13 +3122,13 @@ describe("runtime scheduler node executor", () => {
 
   it("uses the task prompt again for run-level retry of a failed agent run", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-run-retry-task-prompt", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, retryZeroAgentWorkflow());
+      const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
       const store = await openRuntimeStore(workspace);
       const turns: AgentTurnRequest[] = [];
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
 
-        await expect(advanceFrozenRun({
+        await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
@@ -2986,7 +3137,7 @@ describe("runtime scheduler node executor", () => {
             turns.push(request);
             return completedAgentTurn("{\"ok\":\"not boolean\"}");
           },
-        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const claim = store.scheduler.claimRun(run.id, "retry-run-owner", 60_000);
         if (!claim) throw new Error("expected run retry claim");
@@ -3604,8 +3755,24 @@ function retryingAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ attempt: z.string() }),
-      retry: { max: 2 },
       agent: agents.reviewer, prompt: "review",
+    });
+    return {};
+  });
+}
+
+function hostRepairBudgetAgentWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-agent-host-repair-budget",
+    agents: {
+      reviewer: { use: "codex", env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" } },
+    },
+  }).build(({ agents, step }) => {
+    step("review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      prompt: "review",
+      env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" },
     });
     return {};
   });
@@ -3641,16 +3808,15 @@ function arrayAgentOutputWorkflow() {
   });
 }
 
-function retryZeroAgentWorkflow() {
+function booleanAgentWorkflow() {
   return defineWorkflow({
-    name: "scheduler-node-executor-agent-retry-zero",
+    name: "scheduler-node-executor-agent-boolean-output",
     agents: {
       reviewer: { use: "codex" },
     },
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      retry: { max: 0 },
       agent: agents.reviewer, prompt: "review",
     });
     return {};
@@ -3660,7 +3826,7 @@ function retryZeroAgentWorkflow() {
 function dynamicAgentConfigWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-dynamic-config",
-    inputSchema: z.object({ timeout: z.string(), prompt: z.string(), repairMax: z.number() }),
+    inputSchema: z.object({ timeout: z.string(), prompt: z.string() }),
     agents: {
       reviewer: { use: "codex" },
     },
@@ -3671,10 +3837,6 @@ function dynamicAgentConfigWorkflow() {
         globalThis.__acpusTimeoutResolutionCount = (globalThis.__acpusTimeoutResolutionCount ?? 0) + 1;
         return value;
       }),
-      retry: { max: lift(input.repairMax, value => {
-        globalThis.__acpusRepairResolutionCount = (globalThis.__acpusRepairResolutionCount ?? 0) + 1;
-        return value;
-      }) },
       agent: agents.reviewer, prompt: lift(input.prompt, value => {
              globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
              return value;
@@ -3979,6 +4141,7 @@ type AgentAttemptMetadata = {
   sessionName?: string;
   sessionKey?: string;
   renderedPrompt?: string;
+  responseRepairMax?: number | null;
   turnCount?: number;
   turns?: Array<Record<string, any>>;
   message?: string;
@@ -4009,6 +4172,16 @@ async function withImmediateAgentRepairs<T>(operation: () => Promise<T>): Promis
     return outcome.value;
   } finally {
     vi.useRealTimers();
+  }
+}
+
+async function withAgentResponseRepairMax<T>(value: string | undefined, operation: () => Promise<T>): Promise<T> {
+  const previous = process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX;
+  restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", value);
+  try {
+    return await operation();
+  } finally {
+    restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", previous);
   }
 }
 

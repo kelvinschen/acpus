@@ -1,9 +1,9 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type DaemonControlIntent, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
-import { writeResult, type OutputFormat } from "../output.js";
+import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
@@ -271,12 +271,14 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   } catch (error) {
     throw runControlError(error);
   }
+  if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
-    message: "Signal accepted.",
+    message: "Signal consumed.",
+    control: appliedControl(result),
     run: toRunRecord(result.run),
-    ...(terminalRun(result.run) ? {} : { followRunId: runId }),
+    ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
   }, outputFormat(ctx), ctx, 0));
 }
 
@@ -308,14 +310,47 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   } catch (error) {
     throw runControlError(error);
   }
+  if (result.type !== action) throw new Error(`Daemon returned '${result.type}' for ${action} control.`);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
-    message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
+    message: controlSuccessMessage(action),
+    control: appliedControl(result),
     run: toRunRecord(result.run),
-    ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}),
-    ...(result.forkRunId ? { followRunId: result.forkRunId } : terminalRun(result.run) ? {} : { followRunId: runId }),
+    ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
   }, outputFormat(ctx), ctx, 0));
+}
+
+function controlSuccessMessage(type: Exclude<DaemonControlResult["type"], "signal">): string {
+  switch (type) {
+    case "pause": return "Run paused.";
+    case "resume": return "Run resumed.";
+    case "retry": return "Retry applied.";
+    case "fork": return "Fork run created.";
+    case "cancel": return "Run canceled.";
+  }
+}
+
+function appliedControl(result: DaemonControlResult): CliAppliedControl {
+  switch (result.type) {
+    case "pause":
+    case "resume":
+      return { type: result.type, state: "applied", runId: result.run.id };
+    case "retry":
+    case "cancel":
+      return { type: result.type, state: "applied", runId: result.run.id, ...(result.target === undefined ? {} : { target: result.target }) };
+    case "fork":
+      return { type: "fork", state: "applied", sourceRunId: result.sourceRunId };
+    case "signal":
+      return {
+        type: "signal",
+        state: "consumed",
+        runId: result.run.id,
+        requestedTarget: result.requestedTarget,
+        target: result.target,
+        validation: result.validation,
+      };
+  }
 }
 
 async function maybeNormalizeForkInput(
