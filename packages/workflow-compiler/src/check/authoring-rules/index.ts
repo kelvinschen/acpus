@@ -1,5 +1,5 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
-import { expressionCallbackOperatorNames, expressionOperatorSpec, type ExpressionCallbackOperatorName } from "@acpus/expression/ir";
+import { expressionCallbackLayout, expressionCallbackOperatorNames, type ExpressionCallbackOperatorName } from "@acpus/expression/ir";
 import ts from "typescript";
 import { execFunction } from "../../task-analysis/ast.js";
 import { findTaskCallsites, type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
@@ -36,24 +36,24 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
   const callbackImports = collectExpressionCallbackImports(sourceFile, checker);
   const visit = (node: ts.Node): void => {
     if (isConditionExpression(node) && isExpr(checker, node)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, "Use fmap(value, value => condition), lift2(...), lift3(...), or lift({ deps }, fn)."));
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, "Use lift(value, value => condition) or an expression predicate helper."));
     }
     if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken && isExpr(checker, node.operand)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use fmap(value, value => !value) or lift({ deps }, fn)."));
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use lift(value, value => !value) or the not helper."));
     }
     if (ts.isBinaryExpression(node)) {
       if ((node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
         && (isExpr(checker, node.left) || isExpr(checker, node.right))) {
-        diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, "Use lift2(a, b, (a, b) => a && b) or lift({ deps }, fn)."));
+        diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, "Use lift(a, b, (a, b) => a && b) or the and/or helpers."));
       }
       if (EQUALITY_OPERATORS.has(node.operatorToken.kind)
         && (isExpr(checker, node.left) || isExpr(checker, node.right))
         && typesOverlap(checker, node.left, node.right)) {
-        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, "Use lift2(a, b, (a, b) => a === b) or lift({ deps }, fn)."));
+        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, "Use lift(a, b, (a, b) => a === b) or the eq/ne helpers."));
       }
     }
     if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent) && node.templateSpans.some(span => isExpr(checker, span.expression))) {
-      diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from @acpus/expression."));
+      diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from acpus/expression."));
     }
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "step") {
       const id = node.arguments[0];
@@ -120,20 +120,49 @@ function addSymbol(symbols: Set<ts.Symbol>, checker: ts.TypeChecker, node: ts.Id
 }
 
 function isExpressionFacadeSpecifier(node: ts.Expression): boolean {
-  return ts.isStringLiteral(node) && (node.text === "acpus/expression" || node.text === "@acpus/expression");
+  return ts.isStringLiteral(node) && node.text === "acpus/expression";
 }
 
 function expressionCallbackHelper(call: ts.CallExpression, imports: ExpressionCallbackImports, checker: ts.TypeChecker): ExpressionCallbackHelper | undefined {
-  if (ts.isIdentifier(call.expression)) {
-    const symbol = checker.getSymbolAtLocation(call.expression);
+  const callee = unwrapTransparentExpression(call.expression);
+  if (ts.isIdentifier(callee)) {
+    const symbol = checker.getSymbolAtLocation(callee);
     return symbol ? imports.names.get(symbol) : undefined;
   }
-  if (!ts.isPropertyAccessExpression(call.expression)) return undefined;
-  const name = call.expression.name.text;
+  if (ts.isPropertyAccessExpression(callee)) {
+    return namespaceExpressionCallbackHelper(callee.expression, callee.name.text, imports, checker);
+  }
+  if (!ts.isElementAccessExpression(callee) || !callee.argumentExpression) return undefined;
+  const argument = unwrapTransparentExpression(callee.argumentExpression);
+  return ts.isStringLiteral(argument)
+    ? namespaceExpressionCallbackHelper(callee.expression, argument.text, imports, checker)
+    : undefined;
+}
+
+function namespaceExpressionCallbackHelper(
+  receiver: ts.Expression,
+  name: string,
+  imports: ExpressionCallbackImports,
+  checker: ts.TypeChecker,
+): ExpressionCallbackHelper | undefined {
   if (!EXPRESSION_CALLBACK_HELPERS.has(name as ExpressionCallbackHelper)) return undefined;
-  return ts.isIdentifier(call.expression.expression) && hasSymbol(imports.namespaces, checker, call.expression.expression)
+  const namespace = unwrapTransparentExpression(receiver);
+  return ts.isIdentifier(namespace) && hasSymbol(imports.namespaces, checker, namespace)
     ? name as ExpressionCallbackHelper
     : undefined;
+}
+
+function unwrapTransparentExpression(node: ts.Expression): ts.Expression {
+  while (
+    ts.isParenthesizedExpression(node)
+    || ts.isAsExpression(node)
+    || ts.isTypeAssertionExpression(node)
+    || ts.isNonNullExpression(node)
+    || ts.isSatisfiesExpression(node)
+  ) {
+    node = node.expression;
+  }
+  return node;
 }
 
 function hasSymbol(symbols: ReadonlySet<ts.Symbol>, checker: ts.TypeChecker, node: ts.Identifier): boolean {
@@ -142,44 +171,48 @@ function hasSymbol(symbols: ReadonlySet<ts.Symbol>, checker: ts.TypeChecker, nod
 }
 
 function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCallbackHelper, checker: ts.TypeChecker): ExpressionCallbackIssue | undefined {
-  const rule = expressionOperatorSpec(helper)?.callback;
-  if (!rule) return undefined;
-  const node = call.arguments[rule.callbackSourceArg];
+  const spread = call.arguments.find(ts.isSpreadElement);
+  if (spread) {
+    return callbackIssue(`${helper}(...) dependencies and callback must be passed as direct arguments.`, spread, callbackHint());
+  }
+  const layout = expressionCallbackLayout(helper, call.arguments.length);
+  if (!layout) return undefined;
+  const node = call.arguments[layout.callbackSourceArg];
   if (!node) return undefined;
   if (!ts.isArrowFunction(node)) {
     if (checker.getTypeAtLocation(node).getCallSignatures().length === 0) return undefined;
-    return callbackIssue(`${helper}(...) callback must be an inline arrow function.`, node, callbackHint(helper));
+    return callbackIssue(`${helper}(...) callback must be an inline arrow function.`, node, callbackHint());
   }
-  const parameterIssue = callbackParameterIssue(node, rule.callbackParamCount);
+  const parameterIssue = callbackParameterIssue(node, layout.callbackParamCount);
   if (parameterIssue) {
-    return callbackIssue(`${helper}(...) callback parameters must be simple identifiers or binding patterns.`, parameterIssue, callbackHint(helper));
+    return callbackIssue(`${helper}(...) callback parameters must match its dependencies and use simple identifiers or binding patterns.`, parameterIssue, callbackHint());
   }
-  return callbackBodyIssue(node, checker, helper);
+  return callbackBodyIssue(node, checker);
 }
 
 function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: ExpressionCallbackHelper, visit: (node: ts.Node) => void): void {
-  const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
+  const callbackIndex = expressionCallbackLayout(helper, call.arguments.length)?.callbackSourceArg;
   call.arguments.forEach((arg, index) => {
     if (index !== callbackIndex) visit(arg);
   });
 }
 
-function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker, helper: ExpressionCallbackHelper): ExpressionCallbackIssue | undefined {
+function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker): ExpressionCallbackIssue | undefined {
   let issue: ExpressionCallbackIssue | undefined;
   const visit = (node: ts.Node): void => {
     if (issue || ts.isTypeNode(node)) return;
     if (node.kind === ts.SyntaxKind.ThisKeyword) {
-      issue = callbackIssue(`${helper}(...) callback cannot use this.`, node, "Pass needed values through explicit dependencies.");
+      issue = callbackIssue("lift(...) callback cannot use this.", node, "Pass needed values through explicit lift dependencies.");
       return;
     }
     if (ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node)) {
-      issue = callbackIssue(`${helper}(...) callback can only define nested arrow functions.`, node, "Use an arrow callback or move complex logic into a Task.");
+      issue = callbackIssue("lift(...) callback can only define nested arrow functions.", node, "Use an arrow callback or move complex logic into a Task.");
       return;
     }
     if (ts.isArrowFunction(node)) {
       const parameterIssue = callbackParameterIssue(node, node.parameters.length);
       if (parameterIssue) {
-        issue = callbackIssue(`${helper}(...) nested callback parameters must be simple identifiers or binding patterns.`, parameterIssue, "Use item => expression or item => { return expression; }.");
+        issue = callbackIssue("lift(...) nested callback parameters must be simple identifiers or binding patterns.", parameterIssue, "Use item => expression or item => { return expression; }.");
         return;
       }
     }
@@ -189,7 +222,7 @@ function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker, 
   if (issue) return issue;
   const external = collectFreeIdentifierNodes(callback, checker)[0];
   return external
-    ? callbackIssue(`${helper}(...) callback cannot reference external binding '${external.name}'.`, external.node, dependencyHint(helper))
+    ? callbackIssue(`lift(...) callback cannot reference external binding '${external.name}'.`, external.node, dependencyHint())
     : undefined;
 }
 
@@ -212,16 +245,12 @@ function isSimpleBindingName(name: ts.BindingName): boolean {
   return true;
 }
 
-function callbackHint(helper: ExpressionCallbackHelper): string {
-  if (helper === "fmap") return "Use fmap(value, value => expression).";
-  if (helper === "lift2") return "Use lift2(a, b, (a, b) => expression).";
-  if (helper === "lift3") return "Use lift3(a, b, c, (a, b, c) => expression).";
-  return "Use lift({ namedDeps }, ({ namedDeps }) => expression).";
+function callbackHint(): string {
+  return "Use lift(value, value => expression), lift(a, b, (a, b) => expression), or lift({ namedDeps }, ({ namedDeps }) => expression).";
 }
 
-function dependencyHint(helper: ExpressionCallbackHelper): string {
-  if (helper === "fmap") return "Pass every runtime dependency explicitly; use lift2, lift3, or lift({ deps }, fn) when the expression needs more values.";
-  return "Add the value to the explicit dependency list and read it from the callback parameter.";
+function dependencyHint(): string {
+  return "Add the value to lift's explicit dependency list and read it from the matching callback parameter; use a named object dependency when names matter.";
 }
 
 function callbackIssue(message: string, node: ts.Node, hint: string): ExpressionCallbackIssue {

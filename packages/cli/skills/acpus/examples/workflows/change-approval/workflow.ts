@@ -5,7 +5,7 @@
 import { defineWorkflow, z, /* task */ } from "acpus/core";
 import {
   gte, md, or, template,
-  /* fmap, lift2, lift3, lift, eq, ne, lt, lte, gt, not, and */
+  /* lift, eq, ne, lt, lte, gt, not, and */
 } from "acpus/expression";
 // import { createWorktree } from "acpus/tasks/git";
 

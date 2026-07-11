@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or } from "@acpus/expression";
+import { and, eq, gt, gte, lift, lt, lte, ne, not, or } from "@acpus/expression";
 import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 
@@ -58,7 +58,7 @@ describe("expression lowering", () => {
   });
 
   it("lowers computed access on non-ref expressions to internal access", () => {
-    const firstUser = fmap(refExpr<readonly { name: string }[]>(["input", "users"]), users => users[0]!);
+    const firstUser = lift(refExpr<readonly { name: string }[]>(["input", "users"]), users => users[0]!);
     expect(firstUser.name.__ir).toEqual({
       kind: "call",
       fn: "access",
@@ -69,30 +69,30 @@ describe("expression lowering", () => {
     });
   });
 
-  it("lowers fmap and lift callbacks as source text", () => {
+  it("lowers unary, binary, ternary, and structured lift dependencies as source text", () => {
     const count = refExpr<number>(["input", "count"]);
     const ready = refExpr<boolean>(["input", "ready"]);
     const kind = refExpr<string>(["input", "kind"]);
     const maxItems = refExpr<number>(["input", "maxItems"]);
-    const fmapFn = (value: number) => value + 1;
-    const lift2Fn = (readyValue: boolean, kindValue: string) => readyValue && kindValue === "release";
-    const lift3Fn = (readyValue: boolean, kindValue: string, max: number) => readyValue && kindValue === "release" && max > 0;
+    const unaryFn = (value: number) => value + 1;
+    const binaryFn = (readyValue: boolean, kindValue: string) => readyValue && kindValue === "release";
+    const ternaryFn = (readyValue: boolean, kindValue: string, max: number) => readyValue && kindValue === "release" && max > 0;
     const liftFn = ({ readyValue, kindValue }: { readyValue: boolean; kindValue: string }) => readyValue && kindValue === "release";
 
-    expect(fmap(count, fmapFn).__ir).toEqual({
+    expect(lift(count, unaryFn).__ir).toEqual({
       kind: "call",
-      fn: "fmap",
-      args: [count.__ir, { kind: "literal", value: fmapFn.toString() }],
+      fn: "lift",
+      args: [count.__ir, { kind: "literal", value: unaryFn.toString() }],
     });
-    expect(lift2(ready, kind, lift2Fn).__ir).toEqual({
+    expect(lift(ready, kind, binaryFn).__ir).toEqual({
       kind: "call",
-      fn: "lift2",
-      args: [ready.__ir, kind.__ir, { kind: "literal", value: lift2Fn.toString() }],
+      fn: "lift",
+      args: [ready.__ir, kind.__ir, { kind: "literal", value: binaryFn.toString() }],
     });
-    expect(lift3(ready, kind, maxItems, lift3Fn).__ir).toEqual({
+    expect(lift(ready, kind, maxItems, ternaryFn).__ir).toEqual({
       kind: "call",
-      fn: "lift3",
-      args: [ready.__ir, kind.__ir, maxItems.__ir, { kind: "literal", value: lift3Fn.toString() }],
+      fn: "lift",
+      args: [ready.__ir, kind.__ir, maxItems.__ir, { kind: "literal", value: ternaryFn.toString() }],
     });
     expect(lift({ readyValue: ready, kindValue: kind }, liftFn).__ir).toEqual({
       kind: "call",
@@ -104,49 +104,61 @@ describe("expression lowering", () => {
     });
   });
 
-  it("lowers predicate helpers through fmap and lift2", () => {
+  it("lowers predicate helpers through lift", () => {
     const count = refExpr<number>(["input", "count"]);
     const ready = refExpr<boolean>(["input", "ready"]);
     const kind = refExpr<string>(["input", "kind"]);
 
-    for (const [predicate, operator] of [
-      [eq(kind, "release"), "==="],
-      [ne(kind, "draft"), "!=="],
-      [lt(count, 3), "<"],
-      [lte(count, 2), "<="],
-      [gt(count, 1), ">"],
-      [gte(count, 2), ">="],
+    for (const [predicate, left, right, operator] of [
+      [eq(kind, "release"), kind.__ir, { kind: "literal", value: "release" }, "==="],
+      [ne(kind, "draft"), kind.__ir, { kind: "literal", value: "draft" }, "!=="],
+      [lt(count, 3), count.__ir, { kind: "literal", value: 3 }, "<"],
+      [lte(count, 2), count.__ir, { kind: "literal", value: 2 }, "<="],
+      [gt(count, 1), count.__ir, { kind: "literal", value: 1 }, ">"],
+      [gte(count, 2), count.__ir, { kind: "literal", value: 2 }, ">="],
     ] as const) {
-      expect(predicate.__ir).toMatchObject({
+      expect(predicate.__ir).toEqual({
         kind: "call",
-        fn: "lift2",
-        args: [{}, {}, { kind: "literal", value: expect.stringContaining(operator) }],
+        fn: "lift",
+        args: [left, right, { kind: "literal", value: expect.stringContaining(operator) }],
       });
     }
 
-    expect(not(ready).__ir).toMatchObject({
+    expect(not(ready).__ir).toEqual({
       kind: "call",
-      fn: "fmap",
+      fn: "lift",
       args: [ready.__ir, { kind: "literal", value: expect.stringContaining("!value") }],
     });
-    for (const predicate of [and(ready, true, false), or(ready, false, true)]) {
-      expect(predicate.__ir).toMatchObject({
-        kind: "call",
-        fn: "fmap",
-        args: [
-          { kind: "array", items: [ready.__ir, { kind: "literal", value: expect.any(Boolean) }, { kind: "literal", value: expect.any(Boolean) }] },
-          { kind: "literal", value: expect.any(String) },
-        ],
-      });
-    }
+    expect(and(ready, true, false).__ir).toEqual({
+      kind: "call",
+      fn: "lift",
+      args: [
+        {
+          kind: "array",
+          items: [ready.__ir, { kind: "literal", value: true }, { kind: "literal", value: false }],
+        },
+        { kind: "literal", value: expect.stringContaining(".every") },
+      ],
+    });
+    expect(or(ready, false, true).__ir).toEqual({
+      kind: "call",
+      fn: "lift",
+      args: [
+        {
+          kind: "array",
+          items: [ready.__ir, { kind: "literal", value: false }, { kind: "literal", value: true }],
+        },
+        { kind: "literal", value: expect.stringContaining(".some") },
+      ],
+    });
   });
 
   it("treats IR-shaped user data as workflow data in public helpers", () => {
     const payload = { kind: "literal", value: "payload" };
-    const ir = fmap(payload, value => value).__ir;
+    const ir = lift(payload, value => value).__ir;
     expect(ir).toMatchObject({
       kind: "call",
-      fn: "fmap",
+      fn: "lift",
       args: [
         {
           kind: "object",

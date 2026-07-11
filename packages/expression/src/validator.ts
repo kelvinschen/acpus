@@ -1,4 +1,4 @@
-import { expressionOperatorSpec } from "./internal/operators.js";
+import { expressionCallbackLayout, expressionOperatorSpec } from "./internal/operators.js";
 import { callbackSourceIssue } from "./internal/callback-source.js";
 import type { OperatorSpec } from "./internal/operators.js";
 
@@ -78,13 +78,14 @@ function validateCall(expr: Record<string, unknown>, diagnostics: ExpressionDiag
     return;
   }
   validateArity(fn, expr.args.length, spec.arity, diagnostics, `${path}.args`);
+  const callback = expressionCallbackLayout(fn, expr.args.length);
   forEachDense(expr.args, diagnostics, `${path}.args`, (arg, index) => {
-    if (spec.callback?.callbackSourceArg === index && (!isRecord(arg) || arg.kind !== "literal" || typeof arg.value !== "string")) {
+    if (callback?.callbackSourceArg === index && (!isRecord(arg) || arg.kind !== "literal" || typeof arg.value !== "string")) {
       diagnostics.push(error("EX002", `${fn}(...) expected callback source string.`, `${path}.args[${index}]`));
       return;
     }
-    if (spec.callback?.callbackSourceArg === index && isRecord(arg) && arg.kind === "literal" && typeof arg.value === "string") {
-      const issue = callbackSourceIssue(arg.value, spec.callback.callbackParamCount);
+    if (callback?.callbackSourceArg === index && isRecord(arg) && arg.kind === "literal" && typeof arg.value === "string") {
+      const issue = callbackSourceIssue(arg.value, callback.callbackParamCount);
       if (issue) diagnostics.push(error("EX002", `${fn}(...) ${issue}`, `${path}.args[${index}]`));
     }
     validateExpr(arg, diagnostics, `${path}.args[${index}]`, seen);

@@ -3,7 +3,6 @@ import {
   z,
 } from "acpus/core";
 import {
-  fmap,
   lift,
   template,
 } from "acpus/expression";
@@ -173,7 +172,7 @@ export default defineWorkflow({
     }),
   );
   const reviewSummaries = reviews.map((review) =>
-    fmap(review.output, output => ({
+    lift(review.output, output => ({
       ready: output.ready,
       riskCount: output.riskCount,
       summary: output.summary.trim(),

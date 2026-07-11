@@ -225,6 +225,73 @@ describe("task analysis", () => {
     expectTaskIssue(analysis, { kind: "inline-task-capture" });
   });
 
+  it("rejects an outer capture that shares a name with a nested callback parameter", async () => {
+    const analysis = await analyze(
+      `declare const step: any;
+       const suffix = "!";
+       step("run").task({ input: {}, exec: async ({ input }: any) => {
+         input.labels.map((suffix: string) => suffix.toLowerCase());
+         return { value: input.title + suffix };
+       } });`,
+    );
+
+    const issue = analysis.get("run")?.issue;
+    expect(issue).toMatchObject({ kind: "inline-task-capture" });
+    expect(issue && "names" in issue ? issue.names : []).toContain("suffix");
+  });
+
+  it.each([
+    ["catch parameter", "try {} catch (value) {}"],
+    ["for binding", "for (const value of []) {}"],
+  ])("rejects an outer capture outside a nested %s scope", async (_name, nestedScope) => {
+    const analysis = await analyze(
+      `declare const step: any;
+       const value = "outer";
+       step("run").task({ input: {}, exec: async () => {
+         ${nestedScope}
+         return { value };
+       } });`,
+    );
+
+    const issue = analysis.get("run")?.issue;
+    expect(issue).toMatchObject({ kind: "inline-task-capture" });
+    expect(issue && "names" in issue ? issue.names : []).toContain("value");
+  });
+
+  it("accepts function-scoped var references outside their declaring block", async () => {
+    const analysis = await analyze(
+      `declare const step: any;
+       step("run").task({ input: {}, exec: async () => {
+         if (true) { var value = 1; }
+         return { value };
+       } });`,
+    );
+
+    expectInlineAccepted(analysis);
+  });
+
+  it("accepts self-contained named expressions and static method names", async () => {
+    const analysis = await analyze(
+      `declare const step: any;
+       step("run").task({ input: {}, exec: async function execute() {
+         const recurse = function inner(value: number): number {
+           return value > 0 ? inner(value - 1) : value;
+         };
+         const Factory = class Inner {
+           static make() { return new Inner(); }
+         };
+         const handlers = { normalize(value: number) { return value + 1; } };
+         return {
+           name: execute.name,
+           value: handlers.normalize(recurse(2)),
+           factory: Factory.make.name,
+         };
+       } });`,
+    );
+
+    expectInlineAccepted(analysis);
+  });
+
   it("rejects an inline task that captures an outer value via a destructuring default (TB003)", async () => {
     const analysis = await analyze(
       `import { DEFAULT_RETRIES } from "./config.js";

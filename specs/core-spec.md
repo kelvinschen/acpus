@@ -84,7 +84,7 @@
 - Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
 - Workflow root and composite callback return types MUST use a recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, object-property `undefined`, and unions while rejecting `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`.
 - The recursive output constraint MUST preserve exact inferred output types and MUST allow `any` as the explicit TypeScript escape hatch. It MUST remain an internal type implementation detail rather than a required author import.
-- Array output accessors MAY be combined through `@acpus/expression` callback helpers such as `fmap` and `lift`; no array-specific expression helper is required.
+- Array output accessors MAY be combined through the `@acpus/expression` `lift` callback helper; no array-specific expression helper is required.
 - If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
 - Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
@@ -95,7 +95,7 @@
 - Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
 - Loop `stop` MUST accept a boolean workflow value and lower under `LoopNodeIR.do.outputs.stop`; `loop.output` MUST expose the final transition `state`.
 - Loop transition shape, stop type, and state convergence MUST be enforced by the public TypeScript interface rather than compiler AST rules.
-- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `fmap(value, value => value ?? fallback)`.
+- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `lift(value, value => value ?? fallback)`.
 
 ### Task Authoring And Runtime Context Types
 

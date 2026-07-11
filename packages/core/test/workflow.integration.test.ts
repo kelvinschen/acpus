@@ -7,7 +7,7 @@ import {
   z,
 } from "../src/index.js";
 import { compileWorkflowDefinition } from "../src/workflow.js";
-import { fmap, lift2, template } from "@acpus/expression";
+import { lift, template } from "@acpus/expression";
 
 const NormalizeInput = z.object({ packageName: z.string() });
 const ReviewOutput = z.object({ ready: z.boolean(), summary: z.string() });
@@ -57,7 +57,7 @@ describe("workflow compilation", () => {
       });
 
       step("require_tests").assert({
-        condition: fmap(tests.output, output => output.passed === true),
+        condition: lift(tests.output, output => output.passed === true),
         message: template`Tests failed: ${tests.output.summary}`,
       });
 
@@ -154,7 +154,7 @@ describe("workflow compilation", () => {
       kind: "assert",
       condition: {
         kind: "call",
-        fn: "fmap",
+        fn: "lift",
         args: [
           { kind: "ref", path: ["nodes", "run_tests", "output"] },
           { kind: "literal", value: expect.any(String) },
@@ -328,7 +328,7 @@ describe("workflow compilation", () => {
 
       const perItem = step("per_item").fanout({
         over: input.items,
-        do({ item }) { return { ok: fmap(item, value => /.+/.test(value)) }; },
+        do({ item }) { return { ok: lift(item, value => /.+/.test(value)) }; },
         maxConcurrency: 4,
       });
 
@@ -336,17 +336,17 @@ describe("workflow compilation", () => {
         state: { done: false as boolean, summary: "first" },
         do({ round, state }) { return {
             state: {
-              done: fmap(round, value => value === 3),
+              done: lift(round, value => value === 3),
               summary: state.summary,
             },
-            stop: lift2(round, state.done, (value, done) => value === 3 || done === true),
+            stop: lift(round, state.done, (value, done) => value === 3 || done === true),
           }; },
       });
 
       return {
         status: gate.output.status,
         fastStatus: checks.output.fast.status,
-        firstItemOk: fmap(perItem.output, items => items[0]?.ok ?? false),
+        firstItemOk: lift(perItem.output, items => items[0]?.ok ?? false),
         done: retry.output.done,
       };
     });
@@ -394,7 +394,7 @@ describe("workflow compilation", () => {
         outputs: {
           ok: {
             kind: "call",
-            fn: "fmap",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["fanout", "per_item", "item"] },
               { kind: "literal", value: expect.any(String) },
@@ -412,7 +412,7 @@ describe("workflow compilation", () => {
       },
       firstItemOk: {
         kind: "call",
-        fn: "fmap",
+        fn: "lift",
         args: [
           { kind: "ref", path: ["nodes", "per_item", "output"] },
           { kind: "literal", value: expect.any(String) },
@@ -436,7 +436,7 @@ describe("workflow compilation", () => {
             fields: {
               done: {
                 kind: "call",
-                fn: "fmap",
+                fn: "lift",
                 args: [
                   { kind: "ref", path: ["loop", "retry_until_done", "round"] },
                   { kind: "literal", value: expect.any(String) },
@@ -450,7 +450,7 @@ describe("workflow compilation", () => {
           },
           stop: {
             kind: "call",
-            fn: "lift2",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["loop", "retry_until_done", "round"] },
               { kind: "ref", path: ["loop", "retry_until_done", "state", "done"] },
@@ -482,7 +482,7 @@ describe("workflow compilation", () => {
         },
       });
 
-      return { first: fmap(fanout.output, items => items[0]?.value ?? null) };
+      return { first: lift(fanout.output, items => items[0]?.value ?? null) };
     });
 
     const ir = compileWorkflowDefinition(definition);
@@ -812,7 +812,7 @@ describe("workflow compilation", () => {
     }).build(({ input, step }) => {
       const loop = step("retry").loop({
         state: { ok: false as boolean },
-        do({ round }) { return { state: { ok: true }, stop: lift2(round, input.rounds, (value, limit) => value === limit) }; },
+        do({ round }) { return { state: { ok: true }, stop: lift(round, input.rounds, (value, limit) => value === limit) }; },
       });
       return { ok: loop.output.ok };
     });
@@ -827,7 +827,7 @@ describe("workflow compilation", () => {
         outputs: {
           stop: {
             kind: "call",
-            fn: "lift2",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["loop", "retry", "round"] },
               { kind: "ref", path: ["input", "rounds"] },

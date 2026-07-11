@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmap } from "@acpus/expression";
+import { lift } from "@acpus/expression";
 import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../src/evaluation/evaluator.js";
 import { tryCreateDeadline, tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
@@ -24,7 +24,7 @@ describe("runtime expression evaluator", () => {
       type: "constraint",
       field: "timeout",
     });
-    expect(tryResolveInteger(call("fmap", [literal(1), literal("value => { throw new Error('boom') }")]), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
+    expect(tryResolveInteger(call("lift", [literal(1), literal("value => { throw new Error('boom') }")]), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
       type: "evaluation",
       field: "count",
       message: expect.stringContaining("boom"),
@@ -87,7 +87,7 @@ describe("runtime expression evaluator", () => {
       kind: "object",
       fields: {
         first: ref(["input", "tags", "0"]),
-        fallback: call("fmap", [ref(["input", "tags"]), literal("tags => tags[2] ?? \"default\"")]),
+        fallback: call("lift", [ref(["input", "tags"]), literal("tags => tags[2] ?? \"default\"")]),
       },
     };
 
@@ -99,13 +99,13 @@ describe("runtime expression evaluator", () => {
     });
   });
 
-  it("evaluates real fmap-lowered expression IR", () => {
+  it("evaluates real lift-lowered expression IR", () => {
     const review = refExpr<{
       issues: string[];
       tag: string;
       summary: string;
     }>(["nodes", "review", "output"]);
-    const expr = fmap(review, value => value.issues.length === 0 && /ready/.test(value.summary));
+    const expr = lift(review, value => value.issues.length === 0 && /ready/.test(value.summary));
 
     expect(evaluateExpr(expr.__ir, {
       input: {},

@@ -136,7 +136,7 @@ describe("scheduler materialization", () => {
       condition: { kind: "literal", value: false },
       message: {
         kind: "call",
-        fn: "fmap",
+        fn: "lift",
         args: [
           { kind: "literal", value: "input" },
           { kind: "literal", value: "value => value.length" },

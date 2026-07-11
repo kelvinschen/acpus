@@ -33,23 +33,23 @@ describe("workflow check authoring diagnostics", () => {
     });
   });
 
-  it("reports invalid expression fmap callbacks during check", async () => {
-    await withCheckWorkspace("workflow-fmap-checks", async cwd => {
+  it("reports invalid expression lift callbacks during check", async () => {
+    await withCheckWorkspace("workflow-lift-checks", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow, z } from "acpus/core";
-        import { fmap } from "acpus/expression";
+        import { lift } from "acpus/expression";
 
         const suffix = "!";
 
         export default defineWorkflow({
-          name: "fmap_check",
+          name: "lift_check",
           inputSchema: z.object({
             issue: z.object({
               title: z.string(),
             }),
           }),
         }).build(({ input }) => {
-          const title = fmap(input.issue, issue => {
+          const title = lift(input.issue, issue => {
             return issue.title + suffix;
           });
           return { title };
@@ -74,7 +74,7 @@ describe("workflow check authoring diagnostics", () => {
     await withCheckWorkspace("workflow-loop-shorthand", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow, z } from "acpus/core";
-        import { lift2 } from "acpus/expression";
+        import { lift } from "acpus/expression";
 
         export default defineWorkflow({
           name: "loop_shorthand",
@@ -84,7 +84,7 @@ describe("workflow check authoring diagnostics", () => {
             state: { round: 0, shouldContinue: true },
             do({ round }) {
               const state = { round, shouldContinue: input.shouldContinue };
-              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
+              const stop = lift(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
               return { state, stop };
             },
           });
@@ -92,7 +92,7 @@ describe("workflow check authoring diagnostics", () => {
             state: { round: 0, shouldContinue: true },
             do({ round }) {
               const state = { round, shouldContinue: input.shouldContinue };
-              const stop = lift2(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
+              const stop = lift(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
               return { state: state, stop: stop };
             },
           });

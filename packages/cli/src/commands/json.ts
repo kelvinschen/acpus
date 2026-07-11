@@ -37,7 +37,7 @@ export function parseRequiredPayload(raw: string | undefined): JsonValue {
   return parseJsonOption(raw, "--payload");
 }
 
-export function parseJsonOption(raw: string, name: string): JsonValue {
+function parseJsonOption(raw: string, name: string): JsonValue {
   return tryParseJsonOption(raw, { option: name }).match(
     value => value,
     error => { throw usageError(inputErrorMessage(error)); },

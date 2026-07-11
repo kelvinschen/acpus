@@ -3,102 +3,134 @@ import { accessor, callExpr, valueToExprIR } from "./internal/expr.js";
 import type { Expr, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 import type { TemplatePartIR } from "./ir.js";
 
-type LiftDeps = { readonly [key: string]: Resolvable<any> };
+type LiftDependency = Resolvable<any>;
 type Comparable = string | number | boolean | null;
 type BooleanOperands = [
   Resolvable<boolean>,
   Resolvable<boolean>,
   ...Resolvable<boolean>[],
 ];
-type ResolvedResolvable<T> =
-  T extends undefined
-    ? undefined
-    : T extends Expr<infer Value>
+type IsAny<T> = unknown extends T
+  ? [keyof T] extends [never] ? false : true
+  : false;
+type ResolvedExpressionValue<T> =
+  T extends Expr<infer Value>
     ? Value
-    : T extends readonly (infer Item)[]
-      ? readonly ResolvedResolvable<Item>[]
-      : T extends object
-        ? { readonly [K in keyof T]: ResolvedResolvable<T[K]> }
-        : T;
-type ResolvedLiftDeps<Deps extends LiftDeps> = {
-  readonly [K in keyof Deps]: ResolvedResolvable<Deps[K]>;
-};
+    : never;
+type ResolvedDependency<T> =
+  IsAny<T> extends true
+    ? any
+    : [T] extends [Expr<infer Value>]
+      ? Value
+      : [ResolvedExpressionValue<T>] extends [never]
+        ? T extends Expr<infer Value>
+          ? Value
+          : [T] extends [WorkflowData]
+            ? T
+            : T extends readonly unknown[]
+              ? { readonly [K in keyof T]: ResolvedDependency<T[K]> }
+              : T extends (...args: any[]) => any
+                ? T
+                : T extends object
+                  ? { readonly [K in keyof T]: ResolvedDependency<T[K]> }
+                  : T
+        : ResolvedExpressionValue<T>;
+type NextDepth = [1, 2, 3, 4, 5, 6, 7, 8, 8];
+type InvalidLiftDependency<T, Depth extends number = 0> =
+  Depth extends 8
+    ? never
+    : [T] extends [LiftDependency]
+      ? never
+      : T extends readonly (infer Item)[]
+        ? InvalidLiftDependency<Item, NextDepth[Depth]>
+        : T extends (...args: any[]) => any
+          ? T
+          : T extends object
+            ? { [K in keyof T]-?: InvalidLiftDependency<{} extends Pick<T, K> ? Exclude<T[K], undefined> : T[K], NextDepth[Depth]> }[keyof T]
+            : T;
+type ValidLiftDependency<T> = [T] extends [WorkflowData]
+  ? unknown
+  : [InvalidLiftDependency<T>] extends [never] ? unknown : never;
 
-export function fmap<A, R extends WorkflowData>(
+// Authored-shape signatures preserve structured inference; Resolvable fallbacks keep generic wrappers reducible.
+export function lift<const A, R extends WorkflowData>(
+  value: A & ValidLiftDependency<A>,
+  fn: (value: ResolvedDependency<A>) => R,
+): ExprValue<R>;
+export function lift<A, R extends WorkflowData>(
   value: Resolvable<A>,
   fn: (value: A) => R,
-): ExprValue<R> {
-  return callExpr<R>("fmap", [value, fn.toString()]);
-}
-
-export function lift2<A, B, R extends WorkflowData>(
+): ExprValue<R>;
+export function lift<const A, const B, R extends WorkflowData>(
+  a: A & ValidLiftDependency<A>,
+  b: B & ValidLiftDependency<B>,
+  fn: (a: ResolvedDependency<A>, b: ResolvedDependency<B>) => R,
+): ExprValue<R>;
+export function lift<A, B, R extends WorkflowData>(
   a: Resolvable<A>,
   b: Resolvable<B>,
   fn: (a: A, b: B) => R,
-): ExprValue<R> {
-  return callExpr<R>("lift2", [a, b, fn.toString()]);
-}
-
-export function lift3<A, B, C, R extends WorkflowData>(
+): ExprValue<R>;
+export function lift<const A, const B, const C, R extends WorkflowData>(
+  a: A & ValidLiftDependency<A>,
+  b: B & ValidLiftDependency<B>,
+  c: C & ValidLiftDependency<C>,
+  fn: (a: ResolvedDependency<A>, b: ResolvedDependency<B>, c: ResolvedDependency<C>) => R,
+): ExprValue<R>;
+export function lift<A, B, C, R extends WorkflowData>(
   a: Resolvable<A>,
   b: Resolvable<B>,
   c: Resolvable<C>,
   fn: (a: A, b: B, c: C) => R,
-): ExprValue<R> {
-  return callExpr<R>("lift3", [a, b, c, fn.toString()]);
-}
-
-export function lift<const Deps extends LiftDeps, R extends WorkflowData>(
-  deps: Deps,
-  fn: (deps: ResolvedLiftDeps<Deps>) => R,
-): ExprValue<R> {
-  assertPlainDeps(deps);
-  return callExpr<R>("lift", [deps, fn.toString()]);
+): ExprValue<R>;
+export function lift(...args: [...unknown[], (...dependencies: any[]) => WorkflowData]): ExprValue<WorkflowData> {
+  const fn = args.at(-1) as (...dependencies: any[]) => WorkflowData;
+  return liftExpr(args.slice(0, -1), fn);
 }
 
 /** Compares two scalar workflow values with JavaScript strict equality. */
 export function eq<T extends Comparable>(a: Resolvable<T>, b: Resolvable<T>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left === right);
+  return liftExpr([a, b], (left: T, right: T) => left === right);
 }
 
 /** Compares two scalar workflow values with JavaScript strict inequality. */
 export function ne<T extends Comparable>(a: Resolvable<T>, b: Resolvable<T>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left !== right);
+  return liftExpr([a, b], (left: T, right: T) => left !== right);
 }
 
 /** Checks whether the first workflow number is less than the second. */
 export function lt(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left < right);
+  return liftExpr([a, b], (left: number, right: number) => left < right);
 }
 
 /** Checks whether the first workflow number is less than or equal to the second. */
 export function lte(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left <= right);
+  return liftExpr([a, b], (left: number, right: number) => left <= right);
 }
 
 /** Checks whether the first workflow number is greater than the second. */
 export function gt(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left > right);
+  return liftExpr([a, b], (left: number, right: number) => left > right);
 }
 
 /** Checks whether the first workflow number is greater than or equal to the second. */
 export function gte(a: Resolvable<number>, b: Resolvable<number>): ExprValue<boolean> {
-  return lift2(a, b, (left, right) => left >= right);
+  return liftExpr([a, b], (left: number, right: number) => left >= right);
 }
 
 /** Negates a workflow boolean. */
 export function not(value: Resolvable<boolean>): ExprValue<boolean> {
-  return fmap(value, value => !value);
+  return liftExpr([value], (value: boolean) => !value);
 }
 
 /** Checks whether every workflow boolean is true. Dependencies are evaluated eagerly. */
 export function and(...values: BooleanOperands): ExprValue<boolean> {
-  return fmap<readonly boolean[], boolean>(values, values => values.every(value => value));
+  return liftExpr([values], (values: readonly boolean[]) => values.every(value => value));
 }
 
 /** Checks whether any workflow boolean is true. Dependencies are evaluated eagerly. */
 export function or(...values: BooleanOperands): ExprValue<boolean> {
-  return fmap<readonly boolean[], boolean>(values, values => values.some(value => value));
+  return liftExpr([values], (values: readonly boolean[]) => values.some(value => value));
 }
 
 /**
@@ -117,10 +149,8 @@ export function md(strings: TemplateStringsArray, ...values: Resolvable<any>[]):
   return templateExpr(dedentTemplateParts(templateParts(strings, values)));
 }
 
-function assertPlainDeps(deps: unknown): void {
-  if (!deps || typeof deps !== "object" || Array.isArray(deps)) throw new Error("lift(deps, fn) requires a plain object dependency map.");
-  const prototype = Object.getPrototypeOf(deps);
-  if (prototype !== Object.prototype && prototype !== null) throw new Error("lift(deps, fn) requires a plain object dependency map.");
+function liftExpr<R extends WorkflowData>(dependencies: readonly unknown[], fn: (...dependencies: any[]) => R): ExprValue<R> {
+  return callExpr<R>("lift", [...dependencies, fn.toString()]);
 }
 
 function templateParts(strings: TemplateStringsArray, values: Resolvable<any>[]): TemplatePartIR[] {

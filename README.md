@@ -18,7 +18,7 @@ serializable IR which a runtime consumes.
 
 - TypeScript workflow authoring via `defineWorkflow(...).build(...)`.
 - The native **Zod 4** `z` interface, with supported workflow boundary schemas canonicalized to a durable `SchemaIR`.
-- Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, `fmap`, `lift2`, `lift3`, `lift`, `template`, and `md`.
+- Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, predicate helpers, overloaded `lift`, `template`, and `md`.
 - Flat Agent / Task / Signal authoring specs that lower into explicit frozen-IR execution envelopes, durable workflow input and Agent/Signal output schemas, and config-time reusable Task input inference, plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
 - Compilation to a frozen `WorkflowIR` (`irVersion: 4`) with structural validation

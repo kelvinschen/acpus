@@ -33,7 +33,6 @@
       "project": [
         "src/**/*.ts!",
         "test/**/*.ts",
-        "templates/**/*.ts!",
         "skills/acpus/examples/workflows/**/*.ts!"
       ],
       "vitest": false,

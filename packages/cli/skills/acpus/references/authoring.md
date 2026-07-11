@@ -16,7 +16,7 @@ Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
 import { defineWorkflow, task, z } from "acpus/core";
-import { template, md, eq, lte, gte, and, or, fmap, lift2, lift3, lift } from "acpus/expression";
+import { template, md, eq, lte, gte, and, or, lift } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
 
@@ -27,7 +27,7 @@ Declaration Lookup.
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
-Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, predicate helpers, `template`/`md`, and `fmap`/`lift2`/`lift3`/`lift` for computed operations.
+Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, predicate helpers, `template`/`md`, and `lift` for computed operations.
 
 Use this boundary rule consistently: a plain `T` field is declaration-time structure, while `Resolvable<T>` is evaluated from workflow scope at run time. Authors normally do not need to import `Resolvable`; the public node signatures reveal which fields support both literals and expressions. For example:
 
@@ -72,7 +72,7 @@ Acpus workflows are TypeScript-authored durable graph definitions, not ordinary 
 
 An `Expr<T>` means "a value of type `T` that will exist at run time." You can project through it with field and index syntax, such as `review.output.ready` and `items[0]`, because those are still graph projections. You cannot use JavaScript control flow or operators over it at authoring time, because JavaScript would need the value immediately.
 
-Use graph nodes for control flow, predicate helpers for standard boolean conditions, `template`/`md` for rendered strings, and `fmap`/`lift*` for custom computed values. Inside an `fmap`/`lift*` callback, write normal JavaScript over plain runtime values.
+Use graph nodes for control flow, predicate helpers for standard boolean conditions, `template`/`md` for rendered strings, and `lift` for custom computed values. Inside a `lift` callback, write normal JavaScript over plain runtime values.
 
 ### Expression Functions
 
@@ -87,27 +87,26 @@ const canRelease = and(isRelease, withinLimit);
 
 `eq`/`ne` use JavaScript strict equality over scalar values. `lt`/`lte`/`gt`/`gte` compare numbers. `not` negates one boolean, while `and`/`or` combine two or more booleans. Boolean operands are evaluated eagerly; `and` and `or` do not promise JavaScript short-circuit behavior.
 
-Think of `Expr` as a functor. `fmap` maps one expression value. `lift2`, `lift3`, and `lift` lift a normal JavaScript function over multiple expression dependencies.
+Think of `Expr` as a functor. The overloaded `lift` helper lifts a normal JavaScript function over one to three positional dependencies. A named object is one structured dependency, so use it when names matter or more values must be combined.
 
 ```ts
-// Informal signatures:
-fmap  :: Expr<A> -> (A -> WorkflowData B) -> Expr<B>
-lift2 :: Expr<A> -> Expr<B> -> ((A, B) -> WorkflowData C) -> Expr<C>
-lift3 :: Expr<A> -> Expr<B> -> Expr<C> -> ((A, B, C) -> WorkflowData D) -> Expr<D>
-lift  :: { name: Expr<A>, ... } -> ({ name: A, ... } -> WorkflowData B) -> Expr<B>
+// Informal overloads:
+lift :: Expr<A> -> (A -> B) -> Expr<B>
+lift :: Expr<A> -> Expr<B> -> ((A, B) -> C) -> Expr<C>
+lift :: Expr<A> -> Expr<B> -> Expr<C> -> ((A, B, C) -> D) -> Expr<D>
 ```
 
-Use `fmap` for one dependency:
+Use unary `lift` for one dependency:
 
 ```ts
-const title = fmap(input.issue, issue => issue.title.trim());
-const firstId = fmap(input.items[0], item => item?.id ?? "none");
+const title = lift(input.issue, issue => issue.title.trim());
+const firstId = lift(input.items[0], item => item?.id ?? "none");
 ```
 
-Use `lift2`/`lift3` for concise positional dependencies:
+Use the binary or ternary overload for concise positional dependencies:
 
 ```ts
-const statusLine = lift2(
+const statusLine = lift(
   input.kind,
   input.ready,
   (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`,
@@ -126,8 +125,8 @@ const overLimit = lift(
 Callbacks are intentionally a simplified task-like surface:
 
 - They must be inline synchronous arrows. Prefer an expression body for simple transforms; a block body may use local declarations and control flow.
-- They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `fmap`/`lift*`.
-- They must return `WorkflowData`: JSON primitives.
+- They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `lift`.
+- They must return `WorkflowData`: JSON-compatible primitives, arrays, or plain objects.
 
 ### Templates
 
@@ -136,7 +135,7 @@ Use `template` for compact strings and `md` for multiline prompts/messages. `md`
 Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. For Markdown list rendering, compute explicit lines first:
 
 ```ts
-const lines = fmap(items, items => items.map(item => `- ${item.id}`).join("\n"));
+const lines = lift(items, items => items.map(item => `- ${item.id}`).join("\n"));
 const prompt = md`
   Review these items:
   ${lines}
@@ -332,7 +331,7 @@ const state = {
 - Use graph-level composites instead of JavaScript control flow over expression values.
 - Use field/index projection directly (`review.output.ready`, `items[0]`).
 - Prefer `eq`/`ne`, numeric comparisons, and `not`/`and`/`or` for standard predicates.
-- Use `fmap`/`lift` for small synchronous JSON transforms; prefer expression bodies, and use a short block when named intermediate values improve clarity.
+- Use `lift` for small synchronous JSON transforms; prefer expression bodies, and use a short block when named intermediate values improve clarity.
 - Use `template` for compact strings and `md` for multiline prompts/messages.
 - Use signal nodes only when the workflow needs external control.
 - Keep graph-boundary schema values JSON-compatible and durable.

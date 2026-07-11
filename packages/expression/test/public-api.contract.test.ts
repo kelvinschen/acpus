@@ -9,12 +9,9 @@ describe("@acpus/expression public API", () => {
     expect(Object.keys(expression).sort()).toEqual([
       "and",
       "eq",
-      "fmap",
       "gt",
       "gte",
       "lift",
-      "lift2",
-      "lift3",
       "lt",
       "lte",
       "md",
@@ -29,6 +26,7 @@ describe("@acpus/expression public API", () => {
     expect(Object.keys(ir).sort()).toEqual([
       "EXPRESSION_OPERATORS",
       "expr",
+      "expressionCallbackLayout",
       "expressionCallbackOperatorNames",
       "expressionOperatorSpec",
       "isExpr",
@@ -42,5 +40,10 @@ describe("@acpus/expression public API", () => {
       "evaluateExpr",
       "renderTemplate",
     ]);
+    expect(ir.EXPRESSION_OPERATORS).toEqual({
+      lift: { arity: [2, 3, 4], callback: true },
+      access: { arity: [2] },
+    });
+    expect(ir.expressionCallbackOperatorNames()).toEqual(["lift"]);
   });
 });

@@ -4,8 +4,8 @@
  */
 import { defineWorkflow, z, /* task */ } from "acpus/core";
 import {
-  eq, fmap, md,
-  /* lift2, lift3, lift, ne, lt, lte, gt, gte, not, and, or, template */
+  eq, lift, md,
+  /* ne, lt, lte, gt, gte, not, and, or, template */
 } from "acpus/expression";
 // import { createWorktree } from "acpus/tasks/git";
 import { summarizeIssue } from "./tasks.js";
@@ -64,7 +64,7 @@ export default defineWorkflow({
               `,
               timeout: "20m",
             });
-            const reviewView = fmap(review.output, output => ({
+            const reviewView = lift(review.output, output => ({
               route: output.route,
               priority: output.priority,
               summary: output.summary.trim(),

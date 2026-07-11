@@ -37,7 +37,7 @@ describe("graphFromOverlay", () => {
       ["execution", "branch: agent_preview"],
       ["execution", "branch: race_preview"],
       ["lanes", "do"],
-      ["route", 'case: fmap(fanout.lanes.item.mode, "mode => mode === \\"auto\\"")'],
+      ["route", 'case: lift(fanout.lanes.item.mode, "mode => mode === \\"auto\\"")'],
       ["route", "default"],
       ["repair_loop", "do"],
       ["race", "branch: cache"],
@@ -191,7 +191,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("route", "switch", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route"], {
         parentNodeId: "lanes",
-        detail: { kind: "switch", cases: [call("fmap", ref("fanout", "lanes", "item", "mode"), lit("mode => mode === \"auto\""))], hasDefault: true },
+        detail: { kind: "switch", cases: [call("lift", ref("fanout", "lanes", "item", "mode"), lit("mode => mode === \"auto\""))], hasDefault: true },
         frames: [
           frame("route.alpha", "route", "node", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "route" }]),
           frame("route.alpha.case", "route", "branch", "completed", [...branchFanoutPath(0), { kind: "branch", nodeId: "route", branchId: "case:0" }]),
@@ -221,7 +221,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("score_gate", "assert", ["root", "execution", "branch:lane_matrix", "lanes", "do", "score_gate"], {
         parentNodeId: "lanes",
-        detail: { kind: "assert", condition: call("lift2", ref("fanout", "lanes", "item", "score"), ref("input", "minScore"), lit("(score, minScore) => score >= minScore")) },
+        detail: { kind: "assert", condition: call("lift", ref("fanout", "lanes", "item", "score"), ref("input", "minScore"), lit("(score, minScore) => score >= minScore")) },
         frames: [
           frame("score.alpha", "score_gate", "node", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "score_gate" }]),
           frame("score.beta", "score_gate", "node", "completed", [...branchFanoutPath(1), { kind: "node", nodeId: "score_gate" }]),

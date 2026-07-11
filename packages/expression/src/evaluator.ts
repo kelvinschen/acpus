@@ -1,6 +1,6 @@
 import type { ExprIR, TemplateIR } from "./ir.js";
 import { callbackSourceIssue } from "./internal/callback-source.js";
-import { expressionOperatorSpec } from "./internal/operators.js";
+import { expressionCallbackLayout, expressionOperatorSpec } from "./internal/operators.js";
 
 export type ExpressionEvaluatorAdapter = {
   resolveRef(path: string[]): unknown;
@@ -46,7 +46,8 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
   const spec = expressionOperatorSpec(fn);
   if (!spec) throw new ExpressionEvaluationError(`Unsupported expression operator: ${fn}.`);
   requireArity(fn, args, spec.arity);
-  if (spec.callback) return evaluateCallback(fn, args, adapter, spec.callback.dependencyArgs, spec.callback.callbackSourceArg, spec.callback.callbackParamCount);
+  const callback = expressionCallbackLayout(fn, args.length);
+  if (callback) return evaluateCallback(fn, args, adapter, callback.dependencyArgs, callback.callbackSourceArg, callback.callbackParamCount);
   switch (fn) {
     case "access":
       return getValue(evaluate(args[0]!, adapter), requirePresent(fn, evaluate(args[1]!, adapter)));
@@ -58,7 +59,6 @@ function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAd
 function evaluateCallback(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter, dependencyIndexes: readonly number[], callbackIndex: number, callbackParamCount: number): unknown {
   const callback = loadCallback(callbackSource(fn, args[callbackIndex]!), fn, callbackParamCount);
   const values = dependencyIndexes.map(index => cloneCallbackInput(fn, evaluateCallbackInput(args[index]!, adapter)));
-  if (fn === "lift" && !isRecord(values[0])) throw new ExpressionEvaluationError(`lift(...) expected dependency object, got ${typeOf(values[0])}.`);
   return runCallback(fn, callback, values);
 }
 
@@ -166,10 +166,6 @@ function missingToUndefined(value: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function typeOf(value: unknown): string {
-  return value === MISSING ? "missing" : Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
 }
 
 function assertJsonCompatible(value: unknown, operator: string, seen = new Set<object>()): void {

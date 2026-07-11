@@ -1,6 +1,6 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, z, type ArtifactRef, type JsonValue, type OutputValues } from "../src/index.js";
-import { fmap, template, type Expr } from "@acpus/expression";
+import { lift, template, type Expr } from "@acpus/expression";
 
 test("loop state defines non-optional carried state and output shape", () => {
   defineWorkflow({ name: "typed-loop-output" }).build(({ step }) => {
@@ -25,8 +25,8 @@ test("loop state defines non-optional carried state and output shape", () => {
 
     expectTypeOf(loop.output.done).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(loop.output.summary).toEqualTypeOf<Expr<string>>();
-    expectTypeOf(fmap(loop.output.history, history => history[0]?.summary ?? null)).toEqualTypeOf<Expr<string | null>>();
-    assertType<Expr<string>>(fmap(loop.output.history, history => history.map(item => item.summary).join("\n")));
+    expectTypeOf(lift(loop.output.history, history => history[0]?.summary ?? null)).toEqualTypeOf<Expr<string | null>>();
+    assertType<Expr<string>>(lift(loop.output.history, history => history.map(item => item.summary).join("\n")));
 
     type Phase = "pending" | "done";
     const state = step("state").loop({
@@ -128,7 +128,7 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
     });
 
     expectTypeOf(task.output.nested.title).toEqualTypeOf<Expr<string>>();
-    expectTypeOf(fmap(task.output.items, items => items[0]?.title ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(lift(task.output.items, items => items[0]?.title ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const fanout = step("items").fanout({
       over: ["a"],
@@ -138,7 +138,7 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
       }; },
     });
 
-    assertType<Expr<string | null>>(fmap(fanout.output, items => items[0]?.nested.title ?? null));
+    assertType<Expr<string | null>>(lift(fanout.output, items => items[0]?.nested.title ?? null));
     return { count: fanout.output };
   });
 });
@@ -255,8 +255,8 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
     });
 
     assertType<Expr<Array<{ id: string }>>>(allItems.output);
-    expectTypeOf(fmap(allItems.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
-    expectTypeOf(fmap(allItems.output, items => items[1]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(lift(allItems.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(lift(allItems.output, items => items[1]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const quorum = step("quorum_items").fanout({
       strategy: "quorum",
@@ -265,7 +265,7 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
       do({ item }) { return { id: item.id }; },
     });
 
-    expectTypeOf(fmap(quorum.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(lift(quorum.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
     // @ts-expect-error quorum output is the accepted item array, not an envelope.
     quorum.output.accepted;
 
@@ -289,7 +289,7 @@ test("task outputs may be primitive, array, object, union, or undefined", () => 
     const array = step("array").task({
       input: {}, exec: async () => [{ id: "a" }],
     });
-    expectTypeOf(fmap(array.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(lift(array.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const maybe = step("maybe").task({
       input: {}, exec: async (): Promise<{ ok: true } | undefined> => undefined,

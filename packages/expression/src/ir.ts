@@ -22,5 +22,5 @@ export type TemplatePartIR =
 
 export { expr, isExpr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
 export type { Expr, ExprLoweringError, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
-export { EXPRESSION_OPERATORS, expressionCallbackOperatorNames, expressionOperatorSpec } from "./internal/operators.js";
-export type { ExpressionCallbackOperatorName, ExpressionOperatorName, OperatorSpec } from "./internal/operators.js";
+export { EXPRESSION_OPERATORS, expressionCallbackLayout, expressionCallbackOperatorNames, expressionOperatorSpec } from "./internal/operators.js";
+export type { ExpressionCallbackLayout, ExpressionCallbackOperatorName, ExpressionOperatorName, OperatorSpec } from "./internal/operators.js";

@@ -1,6 +1,6 @@
 import { assertType, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext, type WorkflowDefinition } from "acpus/core";
-import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or, template, type Expr } from "acpus/expression";
+import { and, eq, gt, gte, lift, lt, lte, ne, not, or, template, type Expr } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 
 test("acpus facade subpaths expose separated authoring surfaces", () => {
@@ -8,9 +8,9 @@ test("acpus facade subpaths expose separated authoring surfaces", () => {
   type InputValue = z.infer<typeof Input>;
 
   assertType<InputValue>({ ready: true, repo: "." });
-  assertType<Expr<boolean>>(fmap(true, ready => ready === true));
-  assertType<Expr<boolean>>(lift2(true, false, (left, right) => left || right));
-  assertType<Expr<boolean>>(lift3(true, false, true, (first, second, third) => first || second || third));
+  assertType<Expr<boolean>>(lift(true, ready => ready === true));
+  assertType<Expr<boolean>>(lift(true, false, (left, right) => left || right));
+  assertType<Expr<boolean>>(lift(true, false, true, (first, second, third) => first || second || third));
   assertType<Expr<boolean>>(lift({ ready: true }, ({ ready }) => ready));
   assertType<Expr<boolean>>(eq("release", "release"));
   assertType<Expr<boolean>>(ne("release", "draft"));

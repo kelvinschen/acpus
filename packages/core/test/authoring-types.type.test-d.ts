@@ -12,7 +12,7 @@ import {
   type ReusableTaskToken,
   type StepDeclaration,
 } from "../src/index.js";
-import { fmap, md, template, type Expr } from "@acpus/expression";
+import { lift, md, template, type Expr } from "@acpus/expression";
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration", description: "Type-level workflow metadata." }).build(({ input, step }) => {
@@ -203,8 +203,8 @@ test("task options accept only string cwd and string env values", () => {
   });
 });
 
-test("fmap preserves selected output object types", () => {
-  defineWorkflow({ name: "typed-fmap-selected-object" }).build(({ step }) => {
+test("lift preserves selected output object types", () => {
+  defineWorkflow({ name: "typed-lift-selected-object" }).build(({ step }) => {
     const review = step("review").task({
       input: {},
       exec: async () => ({
@@ -213,13 +213,13 @@ test("fmap preserves selected output object types", () => {
         report_path: "/tmp/report.md",
       }),
     });
-    const selected = fmap(review.output, output => ({
+    const selected = lift(review.output, output => ({
       summary: output.summary,
       report_path: output.report_path,
     }));
     expectTypeOf(selected.summary).toEqualTypeOf<Expr<string>>();
     expectTypeOf(selected.report_path).toEqualTypeOf<Expr<string>>();
-    // @ts-expect-error fmap result exposes only returned keys.
+    // @ts-expect-error lift result exposes only returned keys.
     selected.ready;
     return { selected };
   });

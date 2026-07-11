@@ -42,6 +42,9 @@ describe("workflow authoring rules", () => {
         }),
       ]),
     );
+    for (const diagnostic of diagnostics.filter(({ code }) => ["AL001", "AL002", "AL003"].includes(code))) {
+      expect(diagnostic.hint).toContain("lift(");
+    }
   });
 
   it("leaves expression array properties and methods to TypeScript", () => {
@@ -129,10 +132,10 @@ describe("workflow authoring rules", () => {
       isExpr: node => ts.isIdentifier(node) && node.text === "expr",
     });
     const callbackDiagnostics = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
+      import { lift } from "acpus/expression";
       declare const value: string;
       const suffix = "!";
-      fmap(value, value => {
+      lift(value, value => {
         const value1 = value;
         const value2 = value1;
         const value3 = value2;
@@ -183,27 +186,27 @@ describe("workflow authoring rules", () => {
     expect(hits).toEqual([]);
   });
 
-  it("accepts expression and block fmap and lift callbacks from the expression facade", () => {
+  it("accepts unary, binary, ternary, named, aliased, and namespace lift callbacks from the expression facade", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { fmap, lift2, lift3, lift as namedLift } from "acpus/expression";
+      import { lift, lift as combine } from "acpus/expression";
       import * as expr from "acpus/expression";
 
       declare const issue: { title: string; labels: string[] };
       declare const count: number;
       declare const limit: number;
-      const title = fmap(issue, value => {
+      const title = lift(issue, value => {
         const normalized = value.title.trim();
         return normalized;
       });
-      const overLimit = lift2(count, limit, (value, max) => {
+      const overLimit = combine(count, limit, (value, max) => {
         const exceeded = value > max;
         return exceeded;
       });
-      const routed = lift3(issue.title, count, limit, (title, value, max) => {
+      const routed = expr.lift(issue.title, count, limit, (title, value, max) => {
         const total = title.length + value;
         return total > max;
       });
-      const named = namedLift({ issue, count, limit }, ({ issue, count, limit }) => ({
+      const named = lift({ issue, count, limit }, ({ issue, count, limit }) => ({
         title: issue.title.trim().replace(/\\s+/g, " "),
         urgent: issue.labels.includes("urgent"),
         labels: issue.labels.map(label => label.toLowerCase()),
@@ -212,7 +215,7 @@ describe("workflow authoring rules", () => {
         now: Date.now(),
         random: Math.random(),
       }));
-      const view = expr.fmap(issue, value => {
+      const view = expr.lift(issue, value => {
         const labels = value.labels.map(label => {
           const normalized = label.toLowerCase();
           return normalized;
@@ -230,73 +233,133 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it.each([
-    ["function expression", "fmap(issue, function (value) { return value.title; })", "inline arrow function"],
-    ["wrong fmap arity", "fmap(issue, () => \"title\")", "simple identifiers or binding patterns"],
-    ["wrong lift2 arity", "lift2(issue, issue, value => value.title)", "simple identifiers or binding patterns"],
-    ["wrong lift3 arity", "lift3(issue, issue, issue, (a, b) => a.title + b.title)", "simple identifiers or binding patterns"],
-    ["wrong lift arity", "lift({ issue }, () => \"title\")", "simple identifiers or binding patterns"],
-    ["helper reference", "fmap(issue, helper)", "inline arrow function"],
-    ["capture", "fmap(issue, value => value.title + suffix)", "external binding 'suffix'"],
-    ["block capture", "fmap(issue, value => { const title = value.title; return title + suffix; })", "external binding 'suffix'"],
-    ["this", "fmap(issue, value => this)", "cannot use this"],
-    ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; fmap(issue, value => Math.max(value.count, 1))", "external binding 'Math'"],
-    ["shadowed JSON", "const JSON = { stringify: (_value: unknown) => \"{}\" }; fmap(issue, value => JSON.stringify(value))", "external binding 'JSON'"],
-    ["shadowed Date", "const Date = { now: () => 0 }; fmap(issue, value => Date.now() + value.count)", "external binding 'Date'"],
-    ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "external binding 'suffix'"],
-    ["nested default parameter", "fmap(issue, value => value.labels.map((label = suffix) => label))", "nested callback parameters"],
-    ["nested rest parameter", "fmap(issue, value => value.labels.map((...label) => label[0]))", "nested callback parameters"],
-    ["nested capture", "fmap(issue, value => value.labels.map(label => label + suffix))", "external binding 'suffix'"],
-    ["nested block capture", "fmap(issue, value => value.labels.map(label => { const title = label.trim(); return title + suffix; }))", "external binding 'suffix'"],
-  ])("rejects expression callback %s", (_name, statement, message) => {
-    const diagnostics = checkAuthoringWithProgram(`
-      import { fmap, lift2, lift3, lift, lift2 as combine } from "acpus/expression";
+  it("rejects invalid callback forms in one checked program", () => {
+    const callbackCases = [
+      ["function expression", "lift(issue, function (value) { return value.title; })", "lift(...) callback must be an inline arrow function."],
+      ["missing unary parameter", "lift(issue, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
+      ["missing binary parameter", "lift(issue, issue, value => value.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
+      ["missing ternary parameter", "lift(issue, issue, issue, (a, b) => a.title + b.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
+      ["missing named parameter", "lift({ issue }, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
+      ["spread arguments", "lift(...[issue, (value: any) => value.title] as const)", "lift(...) dependencies and callback must be passed as direct arguments."],
+      ["callable reference", "lift(issue, helper)", "lift(...) callback must be an inline arrow function."],
+      ["capture", "lift(issue, value => value.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["block capture", "lift(issue, value => { const title = value.title; return title + suffix; })", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["this", "lift(issue, value => this)", "lift(...) callback cannot use this."],
+      ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; lift(issue, value => Math.max(value.count, 1))", "lift(...) callback cannot reference external binding 'Math'."],
+      ["shadowed JSON", "const JSON = { stringify: (_value: unknown) => \"{}\" }; lift(issue, value => JSON.stringify(value))", "lift(...) callback cannot reference external binding 'JSON'."],
+      ["shadowed Date", "const Date = { now: () => 0 }; lift(issue, value => Date.now() + value.count)", "lift(...) callback cannot reference external binding 'Date'."],
+      ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["namespace capture", "expr.lift(issue, issue, issue, (a, b, c) => a.title + b.title + c.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["nested default parameter", "lift(issue, value => value.labels.map((label = suffix) => label))", "lift(...) nested callback parameters must be simple identifiers or binding patterns."],
+      ["nested rest parameter", "lift(issue, value => value.labels.map((...label) => label[0]))", "lift(...) nested callback parameters must be simple identifiers or binding patterns."],
+      ["nested capture", "lift(issue, value => value.labels.map(label => label + suffix))", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["nested block capture", "lift(issue, value => value.labels.map(label => { const title = label.trim(); return title + suffix; }))", "lift(...) callback cannot reference external binding 'suffix'."],
+      ["nested shadow before capture", "lift(issue, value => { value.labels.map(suffix => suffix); return value.title + suffix; })", "lift(...) callback cannot reference external binding 'suffix'."],
+    ] as const;
+    const source = `
+      import { lift, lift as combine } from "acpus/expression";
+      import * as expr from "acpus/expression";
 
       declare const issue: any;
       declare const helper: (value: unknown) => unknown;
       const suffix = "!";
-      ${statement};
+      ${callbackCases.map(([name, statement], index) => `function callbackCase${index}() { // ${name}\n  ${statement};\n}`).join("\n")}
+    `;
+    const diagnostics = checkAuthoringWithProgram(source);
+
+    const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
+    expect(callbackDiagnostics).toHaveLength(callbackCases.length);
+    for (const [name, statement, message] of callbackCases) {
+      const line = source.slice(0, source.indexOf(statement)).split("\n").length;
+      const caseDiagnostics = callbackDiagnostics.filter(diagnostic => diagnostic.source?.line === line);
+      expect(caseDiagnostics, name).toHaveLength(1);
+      expect(caseDiagnostics[0], name).toMatchObject({
+        code: "AL006",
+        message,
+        hint: expect.any(String),
+        source: { file: "workflow.ts", line, column: expect.any(Number) },
+      });
+    }
+  });
+
+  it("rejects non-serializable callback bindings in one checked program", () => {
+    const diagnostics = checkAuthoringWithProgram(`
+      import { lift } from "acpus/expression";
+      declare const issue: any;
+      lift(issue, (value = issue) => value.title);
+      lift(issue, (...values) => values[0].title);
+      lift(issue, ({ ["title"]: title }) => title);
     `);
 
     const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
-    expect(callbackDiagnostics).toHaveLength(1);
-    expect(callbackDiagnostics[0]!.message).toContain(message);
-    expect(callbackDiagnostics[0]).toMatchObject({
-      hint: expect.any(String),
-      source: { file: "workflow.ts" },
-    });
+    expect(callbackDiagnostics).toHaveLength(3);
+    expect(callbackDiagnostics.every(diagnostic => diagnostic.message.includes("simple identifiers or binding patterns"))).toBe(true);
+  });
+
+  it("inspects lift calls through every supported transparent callee form", () => {
+    const diagnostics = checkAuthoringWithProgram(`
+      import { lift } from "acpus/expression";
+      import * as expr from "acpus/expression";
+      declare const issue: any;
+      const suffix = "!";
+      (lift)(issue, value => value.title + suffix);
+      (lift as typeof lift)(issue, value => value.title + suffix);
+      (<typeof lift>lift)(issue, value => value.title + suffix);
+      lift!(issue, value => value.title + suffix);
+      (lift satisfies typeof lift)(issue, value => value.title + suffix);
+      (expr.lift)(issue, value => value.title + suffix);
+      (expr as typeof expr).lift(issue, value => value.title + suffix);
+      expr["lift"](issue, value => value.title + suffix);
+    `);
+
+    const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
+    expect(callbackDiagnostics).toHaveLength(8);
+    expect(callbackDiagnostics.every(diagnostic => diagnostic.message.includes("external binding 'suffix'"))).toBe(true);
   });
 
   it("does not report expression callback diagnostics for shadowed facade bindings", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
+      import { lift } from "acpus/expression";
       import * as expr from "acpus/expression";
 
       declare const issue: any;
+      const suffix = "!";
       {
-        const fmap = (_value: unknown, _fn: unknown) => null;
-        fmap(issue, value => { return value.title; });
+        const lift = (_value: unknown, _fn: unknown) => null;
+        lift(issue, value => value.title + suffix);
       }
-      function run(expr: { fmap: (value: unknown, fn: unknown) => unknown }) {
-        expr.fmap(issue, value => { return value.title; });
+      function run(expr: { lift: (value: unknown, fn: unknown) => unknown }) {
+        expr.lift(issue, value => value.title + suffix);
+        expr["lift"](issue, value => value.title + suffix);
       }
-      void [fmap, expr, run];
+      void [lift, expr, run];
     `);
 
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it.each([
-    ["missing callback", "fmap(issue)"],
-    ["non-callable callback", "fmap(issue, 1)"],
-    ["excess parameters", "fmap(issue, (value, extra) => value.title)"],
-    ["async callback", "fmap(issue, async value => value.title)"],
-    ["non-durable output", "fmap(issue, value => new Date(value.title))"],
-  ])("leaves %s constraints to TypeScript", (_name, statement) => {
+  it("does not inspect lift imported from an internal implementation package", () => {
     const diagnostics = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
+      import { lift as internalLift } from "@acpus/expression";
+
+      declare const issue: any;
+      const suffix = "!";
+      internalLift(issue, value => value.title + suffix);
+    `);
+
+    expect(codes(diagnostics)).not.toContain("AL006");
+  });
+
+  it("leaves type-expressible lift constraints to TypeScript", () => {
+    const diagnostics = checkAuthoringWithProgram(`
+      import { lift } from "acpus/expression";
       declare const issue: { title: string };
-      ${statement};
+      lift(issue);
+      lift(issue, 1);
+      lift(issue, (value, extra) => value.title);
+      lift(issue, async value => value.title);
+      lift(issue, value => new Date(value.title));
+      lift(issue, issue, issue, issue, (a, b, c, d) => a.title + b.title + c.title + d.title);
     `);
 
     expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([]);

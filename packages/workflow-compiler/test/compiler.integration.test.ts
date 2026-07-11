@@ -284,7 +284,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         outputs: {
           stop: {
             kind: "call",
-            fn: "lift2",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["nodes", "repair_round", "output", "continue"] },
               { kind: "ref", path: ["loop", "repair_loop", "round"] },
@@ -323,7 +323,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         {
           when: {
             kind: "call",
-            fn: "fmap",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["fanout", "lanes", "item", "mode"] },
               { kind: "literal", value: expect.any(String) },

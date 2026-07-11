@@ -1,6 +1,6 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
-import { fmap, template, type Expr, type Resolvable } from "@acpus/expression";
+import { lift, template, type Expr, type Resolvable } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
 import {
@@ -25,7 +25,7 @@ import { createDollar, type Dollar } from "@acpus/core/runtime";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
-import { fmap as rootFmap } from "@acpus/core";
+import { lift as rootLift } from "@acpus/core";
 // @ts-expect-error workflow meta is exposed through build context, not root package values.
 import { runtime as rootRuntime } from "@acpus/core";
 // @ts-expect-error workflow meta is exposed through build context, not runtime subpath values.
@@ -41,9 +41,9 @@ test("public package subpaths expose the intended type surface", () => {
 
   assertType<InputValue>({ ready: true });
   expectTypeOf(refExpr<InputValue>(["input"])).toEqualTypeOf<Expr<InputValue> & { readonly ready: Expr<boolean>; readonly name: Expr<string | undefined> }>();
-  assertType<Expr<boolean>>(fmap(refExpr<InputValue>(["input"]), input => input.ready === true));
+  assertType<Expr<boolean>>(lift(refExpr<InputValue>(["input"]), input => input.ready === true));
   assertType<Resolvable<string | undefined>>(refExpr<InputValue>(["input"]).name);
-  assertType<Expr<string>>(fmap(refExpr<InputValue>(["input"]).name, name => name ?? ""));
+  assertType<Expr<string>>(lift(refExpr<InputValue>(["input"]).name, name => name ?? ""));
 
   const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);
@@ -82,7 +82,7 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<AbortSignal>(ctx.abortSignal);
   assertType(task);
   assertType(template);
-  void rootFmap;
+  void rootLift;
   void rootRuntime;
   void runtimeRef;
   void (null as unknown as RootExpr);

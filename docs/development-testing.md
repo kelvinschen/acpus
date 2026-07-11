@@ -54,11 +54,11 @@ When a spec says a behavior MUST exist, add or update a test in the same change.
 The initial core test foundation should cover these chains:
 
 - Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path.
-- Expressions: `fmap`, `lift2`, `lift3`, `lift`, templates, ref access, callback-source calls, validation, and evaluation lower to canonical `ExprIR` in `@acpus/expression`.
+- Expressions: predicate helpers, overloaded `lift`, templates, ref access, callback-source calls, validation, and evaluation lower to canonical `ExprIR` in `@acpus/expression`.
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and malformed task execution descriptors produce stable diagnostic codes and paths.
 - Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
-- Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `fmap`/`lift` callback inference, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
+- Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `lift` callback inference, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
 - Module compiler: a checked-in workflow module fixture compiles through the internal preparation compiler with `irVersion: 4`, a separate source digest, expected node ids, task execution descriptors, outputs, and module-import diagnostics.
 
 ## Commands

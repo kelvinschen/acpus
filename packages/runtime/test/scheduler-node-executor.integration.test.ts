@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
-import { fmap, template } from "@acpus/expression";
+import { lift, template } from "@acpus/expression";
 import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceRun } from "../src/scheduler/advance.js";
@@ -115,7 +115,7 @@ describe("runtime scheduler node executor", () => {
           status: "failed",
           error: expect.objectContaining({
             reason: "expression_failed",
-            message: expect.stringContaining("fmap(...) expected JSON-compatible values."),
+            message: expect.stringContaining("lift(...) expected JSON-compatible values."),
           }),
         });
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
@@ -2692,7 +2692,7 @@ describe("runtime scheduler node executor", () => {
           reason: "expression_resolution_failed",
           type: "evaluation",
           field: "Signal node 'approve' prompt",
-          message: "fmap(...) callback threw: signal prompt exploded: approve",
+          message: "lift(...) callback threw: signal prompt exploded: approve",
         });
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(projection.instances)[0]).toMatchObject({
@@ -3085,7 +3085,7 @@ function failingExpressionCallbackWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-failing-expression-callback",
   }).build(({ step }) => {
-    step("fail").assert({ condition: fmap(true, _value => new Date() as any) });
+    step("fail").assert({ condition: lift(true, _value => new Date() as any) });
     return {};
   });
 }
@@ -3191,7 +3191,7 @@ function rootSwitchSequentialTaskWorkflow() {
     const route = step("route").switch({
       cases: [
         {
-          when: fmap(input.mode, mode => mode === "case"),
+          when: lift(input.mode, mode => mode === "case"),
           then() {
             const first = step("case_first").task({
               input: {}, exec: async () => ({ value: "case" }),
@@ -3576,15 +3576,15 @@ function dynamicAgentConfigWorkflow() {
   }).build(({ input, agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      timeout: fmap(input.timeout, value => {
+      timeout: lift(input.timeout, value => {
         globalThis.__acpusTimeoutResolutionCount = (globalThis.__acpusTimeoutResolutionCount ?? 0) + 1;
         return value;
       }),
-      retry: { max: fmap(input.repairMax, value => {
+      retry: { max: lift(input.repairMax, value => {
         globalThis.__acpusRepairResolutionCount = (globalThis.__acpusRepairResolutionCount ?? 0) + 1;
         return value;
       }) },
-      agent: agents.reviewer, prompt: fmap(input.prompt, value => {
+      agent: agents.reviewer, prompt: lift(input.prompt, value => {
              globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
              return value;
            }),
@@ -3702,7 +3702,7 @@ function wrongTypeTaskConfigWorkflow() {
   }).build(({ input, step }) => {
     step("build").task({
       input: {},
-      cwd: fmap(input.cwd, value => value.length) as any,
+      cwd: lift(input.cwd, value => value.length) as any,
       exec: async () => ({ ok: true }),
     });
     return {};
@@ -3715,7 +3715,7 @@ function failingSignalPromptWorkflow() {
     inputSchema: z.object({ prompt: z.string() }),
   }).build(({ input, step }) => {
     step("approve").signal({
-      prompt: fmap(input.prompt, value => { throw new Error(`signal prompt exploded: ${value}`); }),
+      prompt: lift(input.prompt, value => { throw new Error(`signal prompt exploded: ${value}`); }),
     });
     return {};
   });

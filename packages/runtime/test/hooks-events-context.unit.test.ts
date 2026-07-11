@@ -168,7 +168,7 @@ function workflow(): WorkflowIR {
             input: {
               packageName: {
                 kind: "call",
-                fn: "fmap",
+                fn: "lift",
                 args: [
                   { kind: "literal", value: "authored" },
                   { kind: "literal", value: "value => { throw new Error(`task input must not re-evaluate: ${value}`); }" },
@@ -185,7 +185,7 @@ function workflow(): WorkflowIR {
             agent: "reviewer",
             prompt: {
               kind: "call",
-              fn: "fmap",
+              fn: "lift",
               args: [
                 { kind: "literal", value: "authored" },
                 { kind: "literal", value: "value => { throw new Error(`agent prompt must not re-evaluate: ${value}`); }" },

@@ -121,7 +121,7 @@ describe("WorkflowIR diagnostics contract", () => {
         outputs: {
           score: {
             kind: "call",
-            fn: "fmap",
+            fn: "lift",
             args: [
               { kind: "ref", path: ["input", "item"] },
               { kind: "literal", value: "item => item.score" },

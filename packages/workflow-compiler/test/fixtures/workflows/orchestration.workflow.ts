@@ -3,8 +3,7 @@ import {
   z,
 } from "acpus/core";
 import {
-  fmap,
-  lift2,
+  lift,
   template,
 } from "acpus/expression";
 
@@ -84,7 +83,7 @@ export default defineWorkflow({
                     Previous summary: ${state.summary}
                   `,
                 });
-                const stop = lift2(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
+                const stop = lift(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
                 return {
                   state: {
                     branch: repair.output.branch,
@@ -105,7 +104,7 @@ export default defineWorkflow({
             const route = step("route_lane").switch({
               cases: [
                 {
-                  when: fmap(item.mode, mode => mode === "auto"),
+                  when: lift(item.mode, mode => mode === "auto"),
                   then() {
                     const auto = step("auto_route").agent({
                       outputSchema: LaneRoute,
@@ -180,9 +179,9 @@ export default defineWorkflow({
   return {
     approved: approval.output.approved,
     notes: approval.output.notes,
-    first_lane: fmap(lanes.output, lanes => lanes[0]?.lane ?? "(none)"),
-    first_route: fmap(lanes.output, lanes => lanes[0]?.route ?? "(none)"),
-    first_review_ok: fmap(lanes.output, lanes => lanes[0]?.review_ok === true),
+    first_lane: lift(lanes.output, lanes => lanes[0]?.lane ?? "(none)"),
+    first_route: lift(lanes.output, lanes => lanes[0]?.route ?? "(none)"),
+    first_review_ok: lift(lanes.output, lanes => lanes[0]?.review_ok === true),
     run_id: meta.runId,
   };
 });

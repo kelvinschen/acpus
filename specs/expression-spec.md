@@ -9,12 +9,12 @@
 ### Public API
 
 - The root `@acpus/expression` entrypoint authoring value surface MUST be
-  `fmap`, `lift2`, `lift3`, `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`,
+  `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`,
   `and`, `or`, `template`, and `md`.
 - The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`,
   `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
-- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, and shared expression operator metadata.
+- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, and shared expression operator and arity-aware callback-layout metadata.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.
 
@@ -41,14 +41,14 @@
 - Accessors over non-ref expressions MUST lower property access to the internal `access` operator.
 - Object field access and array index access are projection surface. Array index projection MUST be typed as possibly `undefined`.
 - User object fields named `ir` MUST remain reachable as normal output accessors.
-- `fmap(value, fn)` MUST accept `Resolvable` input and lower to a `call` expression with operator id `fmap`, the lowered value as arg 0, and `fn.toString()` as a string literal arg 1.
-- `lift2(a, b, fn)` MUST lower to operator id `lift2`, deps as args 0 and 1, and callback source as arg 2.
-- `lift3(a, b, c, fn)` MUST lower to operator id `lift3`, deps as args 0 through 2, and callback source as arg 3.
-- `lift(deps, fn)` MUST accept a plain named dependency object, lower the dependency object as arg 0, and lower callback source as arg 1.
-- `lift(deps, fn)` MUST reject non-plain dependency containers such as arrays and class instances at authoring time.
-- `eq(a, b)` and `ne(a, b)` MUST accept only string, number, boolean, or null values and MUST lower through `lift2` callbacks using JavaScript strict equality and inequality.
-- `lt(a, b)`, `lte(a, b)`, `gt(a, b)`, and `gte(a, b)` MUST accept only number values and MUST lower through `lift2` callbacks using the corresponding JavaScript numeric comparison.
-- `not(value)` MUST lower through `fmap`. `and(...values)` and `or(...values)` MUST require at least two boolean operands and lower through `fmap` over the operand array using eager `every` and `some` evaluation.
+- `lift(value, fn)`, `lift(a, b, fn)`, and `lift(a, b, c, fn)` MUST accept one, two, or three `Resolvable` dependencies respectively and MUST infer each callback parameter from its corresponding resolved dependency.
+- A resolved dependency type MUST unwrap an `Expr<T>` to `T` and MUST recursively resolve array, tuple, and plain-object members. This type transform MUST remain internal to the package.
+- A named dependency object MUST be treated as one structured dependency. Arrays and tuples MUST likewise be accepted as one structured dependency.
+- More than three positional dependencies MUST be rejected by the public type contract; authors MUST use a named object for larger dependency sets.
+- Every `lift` overload MUST lower to operator id `lift`, explicit dependencies as leading args in authored order, and `fn.toString()` as the final string-literal arg. Canonical `lift` call arity MUST therefore be 2, 3, or 4.
+- `eq(a, b)` and `ne(a, b)` MUST accept only string, number, boolean, or null values and MUST lower through `lift` callbacks using JavaScript strict equality and inequality.
+- `lt(a, b)`, `lte(a, b)`, `gt(a, b)`, and `gte(a, b)` MUST accept only number values and MUST lower through `lift` callbacks using the corresponding JavaScript numeric comparison.
+- `not(value)` MUST lower through unary `lift`. `and(...values)` and `or(...values)` MUST require at least two boolean operands and lower through unary `lift` over the operand array using eager `every` and `some` evaluation.
 - Callback helpers MUST be typed as `ExprValue<R>` where callback return type `R` extends `WorkflowData`.
 - Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
@@ -57,7 +57,8 @@
 
 ### Operators
 
-- The only supported call operators MUST be `fmap`, `lift2`, `lift3`, `lift`, and internal `access`; predicate helpers MUST lower to those existing operators rather than introduce new call operators.
+- The only supported call operators MUST be `lift` and internal `access`; predicate helpers MUST lower to those existing operators rather than introduce new call operators.
+- Shared operator metadata MUST declare `lift` arity as 2, 3, or 4 and MUST provide an arity-aware callback layout whose callback-source index and callback parameter count equal `argCount - 1` and whose dependency indexes cover every preceding arg.
 - `access` MUST project object fields and canonical array indices from evaluated dependency values.
 - Missing object fields and out-of-bounds array indices MUST evaluate as `undefined` when used as projections.
 - Unknown operators MUST fail validation and evaluation.
@@ -67,8 +68,7 @@
 - The generic evaluator MUST evaluate literals, refs through an adapter, arrays, objects, templates, and supported calls.
 - Template rendering MUST render strings directly, scalar non-strings with `String(value)`, and arrays/objects with `JSON.stringify` semantics.
 - Template rendering MUST fail on missing, `undefined`, or non-JSON-compatible values.
-- `fmap` evaluation MUST evaluate arg 0, load arg 1 as a JavaScript function source, invoke it synchronously, and return only JSON-compatible output.
-- `lift2`, `lift3`, and `lift` evaluation MUST evaluate only explicit dependency args, load the callback source, invoke it synchronously, and return only JSON-compatible output.
+- `lift` evaluation MUST evaluate only its one to three explicit dependency args, load the trailing callback source, invoke it synchronously with the dependencies as positional arguments, and return only JSON-compatible output.
 - Callback dependency input MAY contain `undefined` from missing projections, including nested object fields. Callback output MUST NOT contain `undefined`.
 - Callback evaluation MUST fail with `ExpressionEvaluationError` when the callback source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, or returns non-WorkflowData output.
 - Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope.
@@ -80,7 +80,7 @@
 ## Verification
 
 - Tests MUST cover root and subpath public exports.
-- Tests MUST cover authoring type inference and type-level rejection for callback helpers, predicate helpers, and accessors.
-- Tests MUST cover lowering for values, templates, `fmap`, `lift2`, `lift3`, `lift`, predicate helpers, and `access`.
-- Tests MUST cover evaluator semantics for templates, refs, expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, predicate helpers, `access`, runtime globals, thenable rejection, non-WorkflowData rejection, and dependency clone behavior.
+- Tests MUST cover authoring type inference and type-level rejection for every `lift` overload, structured dependencies, predicate helpers, and accessors.
+- Tests MUST cover lowering for values, templates, every `lift` overload, predicate helpers, and `access`.
+- Tests MUST cover evaluator semantics for templates, refs, expression-body and block-body `lift` callbacks at each supported arity, predicate helpers, `access`, runtime globals, thenable rejection, non-WorkflowData rejection, and dependency clone behavior.
 - Tests MUST cover validator diagnostic codes and paths for malformed expression IR.
