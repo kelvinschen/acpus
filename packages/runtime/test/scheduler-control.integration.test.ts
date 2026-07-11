@@ -329,7 +329,7 @@ function rootTaskWorkflow(nodeId = "root_task") {
     name: `scheduler-control-${nodeId}-task`,
   }).build(({ step }) => {
     const task = step(nodeId).task({
-      run: { input: {}, exec: async () => ({ ok: true }) },
+      input: {}, exec: async () => ({ ok: true }),
     });
     return { ok: task.output.ok };
   });

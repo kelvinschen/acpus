@@ -31,11 +31,9 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const initial = step("draft_plan").agent({
     outputSchema: PlanOut,
-    run: {
-      agent: agents.planner,
-      cwd: input.repoPath,
-      prompt: template`Draft an implementation plan for: ${input.request}`,
-    },
+    agent: agents.planner,
+    cwd: input.repoPath,
+    prompt: template`Draft an implementation plan for: ${input.request}`,
     retry: { max: 1 },
     timeout: "20m",
   });
@@ -49,19 +47,17 @@ export default defineWorkflow({
     do({ round, state }) {
       const review = step("refine_round").agent({
         outputSchema: PlanOut,
-        run: {
-          agent: agents.planner,
-          cwd: input.repoPath,
-          prompt: md`
-            Refine implementation plan round ${round}.
+        agent: agents.planner,
+        cwd: input.repoPath,
+        prompt: md`
+          Refine implementation plan round ${round}.
 
-            Original request: ${input.request}
-            Previous draft: ${state.draft}
-            Previous summary: ${state.summary}
+          Original request: ${input.request}
+          Previous draft: ${state.draft}
+          Previous summary: ${state.summary}
 
-            Return a ready flag, concise summary, and next draft.
-          `,
-        },
+          Return a ready flag, concise summary, and next draft.
+        `,
         retry: { max: 1 },
         timeout: "20m",
       });
@@ -84,14 +80,12 @@ export default defineWorkflow({
           approved: z.boolean(),
           notes: z.string().default(""),
         }),
-        run: {
-          prompt: md`
-            Approve the implementation plan for run ${meta.runId}.
+        prompt: md`
+          Approve the implementation plan for run ${meta.runId}.
 
-            Request: ${input.request}
-            Plan: ${refined.output.draft}
-          `,
-        },
+          Request: ${input.request}
+          Plan: ${refined.output.draft}
+        `,
         timeout: "24h",
         onTimeout: { message: "approval timed out" },
       });
@@ -99,13 +93,11 @@ export default defineWorkflow({
     },
     else() {
       const automatic = step("auto_approval").task({
-        run: {
-          input: { ready: refined.output.ready },
-          exec: async ({ input }) => ({
-            approved: input.ready,
-            notes: input.ready ? "auto-approved ready plan" : "plan not ready",
-          }),
-        },
+        input: { ready: refined.output.ready },
+        exec: async ({ input }) => ({
+          approved: input.ready,
+          notes: input.ready ? "auto-approved ready plan" : "plan not ready",
+        }),
       });
       return { approved: automatic.output.approved, notes: automatic.output.notes };
     },

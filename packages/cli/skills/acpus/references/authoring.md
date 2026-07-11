@@ -41,7 +41,7 @@ onTimeout: {
 },
 ```
 
-Node ids, strategies, schemas, task targets, agent selectors/model/modes, and permission modes stay static. Top-level Agent `cwd`/`env` are also static; only node `run.cwd`/`run.env` are runtime-resolvable.
+Node ids, strategies, schemas, task targets, agent selectors/model/modes, and permission modes stay static. Workflow-level Agent definition `cwd`/`env` fields are also static; Agent/Task step `cwd`/`env` fields are runtime-resolvable.
 
 ### Minimal Workflow Skeleton
 
@@ -57,7 +57,8 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const result = step("work").agent({
     outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
-    run: { agent: agents.worker, prompt: template`Analyze ${input.topic} in ${input.repoPath}.` },
+    agent: agents.worker,
+    prompt: template`Analyze ${input.topic} in ${input.repoPath}.`,
   });
   return { runId: meta.runId, ok: result.output.ok, summary: result.output.summary };
 });
@@ -158,7 +159,8 @@ Agent nodes run an ACP agent. Without `outputSchema`, `output` is text:
 
 ```ts
 const review = step("review").agent({
-  run: { agent: agents.reviewer, prompt: template`Review ${input.topic}` },
+  agent: agents.reviewer,
+  prompt: template`Review ${input.topic}`,
 });
 ```
 
@@ -167,14 +169,12 @@ commands. Both accept a static optional `model`, validated by acpx; omit it for
 the agent default, and define separate Agent keys for different models. See
 `references/acpx-agents.md` for built-in agents and local discovery rules.
 
-Task nodes run local TypeScript glue. Pass workflow values through `run.input`; inside `exec`, use only task context:
+Task nodes run local TypeScript glue. Bind workflow values through the step's top-level `input`; inside `exec`, use only task context:
 
 ```ts
 const status = step("status").task({
-  run: {
-    input: { repoPath: input.repoPath },
-    exec: async ({ input }) => ({ repoPath: input.repoPath, ok: true }),
-  },
+  input: { repoPath: input.repoPath },
+  exec: async ({ input }) => ({ repoPath: input.repoPath, ok: true }),
 });
 ```
 
@@ -190,12 +190,13 @@ export const normalizeName = task.define({
 });
 ```
 
-The `inputSchema` types `exec` and call-site `run.input`; the runtime does not
+The `inputSchema` types `exec` and the call-site `input`; the runtime does not
 retain or parse it.
 
 ```ts
 const normalized = step("normalize").task({
-  run: { task: normalizeName, input: { name: input.name } },
+  task: normalizeName,
+  input: { name: input.name },
 });
 ```
 
@@ -204,7 +205,7 @@ Signal nodes wait for operator input:
 ```ts
 const approval = step("approval").signal({
   outputSchema: z.object({ approved: z.boolean() }),
-  run: { prompt: template`Approve ${review.output}?` },
+  prompt: template`Approve ${review.output}?`,
 });
 ```
 
@@ -262,10 +263,8 @@ const items = step("items").fanout({
   over: input.items,
   do({ item }) {
     const normalized = step("normalize_item").task({
-      run: {
-        input: { id: item.id },
-        exec: async ({ input }) => ({ id: input.id }),
-      },
+      input: { id: item.id },
+      exec: async ({ input }) => ({ id: input.id }),
     });
     return { id: normalized.output.id };
   },
@@ -323,8 +322,8 @@ const state = {
 - Put reusable tasks in separate task modules when they need shared code or third-party packages installed with the workflow package.
 - Keep inline tasks self-contained: no third-party imports, module-scope environment reads, or module-scope captures.
 - Each Task attempt runs in a fresh Node process. Task module globals and module caches do not carry across tasks or retries.
-- `run.cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, `artifact.fromFile(...)`, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
-- `run.env` overlays the host environment. `process.env`, task context `env`, module top-level code, and default `$` commands see the same effective values.
+- The Task step's `cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, `artifact.fromFile(...)`, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
+- The Task step's `env` overlays the host environment. `process.env`, task context `env`, module top-level code, and default `$` commands see the same effective values.
 - A Task may call `process.chdir(...)` or update `process.env`; later relative Node operations and default `$` commands follow the changed process state.
 
 ### Expression And Schema Hygiene

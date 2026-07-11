@@ -120,13 +120,11 @@ test("control-only and output-producing if/switch require fallbacks", () => {
 test("nested objects and arrays are inferred from task and fanout callbacks", () => {
   defineWorkflow({ name: "typed-nested-output" }).build(({ step }) => {
     const task = step("task").task({
-      run: {
-        input: {},
-        exec: async () => ({
-          nested: { title: "ok" },
-          items: [{ title: "ok" }],
-        }),
-      },
+      input: {},
+      exec: async () => ({
+        nested: { title: "ok" },
+        items: [{ title: "ok" }],
+      }),
     });
 
     expectTypeOf(task.output.nested.title).toEqualTypeOf<Expr<string>>();
@@ -284,17 +282,17 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
 test("task outputs may be primitive, array, object, union, or undefined", () => {
   defineWorkflow({ name: "typed-task-leaf-outputs" }).build(({ step }) => {
     const primitive = step("primitive").task({
-      run: { input: {}, exec: async () => "ok" },
+      input: {}, exec: async () => "ok",
     });
     expectTypeOf(primitive.output).toEqualTypeOf<Expr<string>>();
 
     const array = step("array").task({
-      run: { input: {}, exec: async () => [{ id: "a" }] },
+      input: {}, exec: async () => [{ id: "a" }],
     });
     expectTypeOf(fmap(array.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const maybe = step("maybe").task({
-      run: { input: {}, exec: async (): Promise<{ ok: true } | undefined> => undefined },
+      input: {}, exec: async (): Promise<{ ok: true } | undefined> => undefined,
     });
     expectTypeOf(maybe.output.ok).toEqualTypeOf<Expr<true | undefined>>();
 
@@ -310,76 +308,56 @@ test("workflow output types enforce durable data and preserve explicit escapes",
 
   defineWorkflow({ name: "typed-durable-outputs" }).build(({ step }) => {
     step("valid_task").task({
-      run: {
-        input: {},
-        exec: async () => ({ artifactRef, jsonValue, optional: undefined }),
-      },
+      input: {},
+      exec: async () => ({ artifactRef, jsonValue, optional: undefined }),
     });
     step("escaped_task").task({
-      run: { input: {}, exec: async () => escape },
+      input: {}, exec: async () => escape,
     });
     step("invalid_unknown_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error unknown is not a durable Task output.
-        exec: async () => opaque,
-      },
+      input: {},
+      // @ts-expect-error unknown is not a durable Task output.
+      exec: async () => opaque,
     });
     step("invalid_date_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error Date is not a durable Task output.
-        exec: async () => new Date(),
-      },
+      input: {},
+      // @ts-expect-error Date is not a durable Task output.
+      exec: async () => new Date(),
     });
     step("invalid_function_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error functions are not durable Task outputs.
-        exec: async () => () => true,
-      },
+      input: {},
+      // @ts-expect-error functions are not durable Task outputs.
+      exec: async () => () => true,
     });
     step("invalid_promise_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error nested promises are not durable Task outputs.
-        exec: async () => ({ pending: Promise.resolve("later") }),
-      },
+      input: {},
+      // @ts-expect-error nested promises are not durable Task outputs.
+      exec: async () => ({ pending: Promise.resolve("later") }),
     });
     step("invalid_map_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error Map is not a durable Task output.
-        exec: async () => new Map([["key", "value"]]),
-      },
+      input: {},
+      // @ts-expect-error Map is not a durable Task output.
+      exec: async () => new Map([["key", "value"]]),
     });
     step("invalid_set_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error Set is not a durable Task output.
-        exec: async () => new Set(["value"]),
-      },
+      input: {},
+      // @ts-expect-error Set is not a durable Task output.
+      exec: async () => new Set(["value"]),
     });
     step("invalid_symbol_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error symbols are not durable Task outputs.
-        exec: async () => Symbol("value"),
-      },
+      input: {},
+      // @ts-expect-error symbols are not durable Task outputs.
+      exec: async () => Symbol("value"),
     });
     step("invalid_bigint_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error bigint is not a durable Task output.
-        exec: async () => 1n,
-      },
+      input: {},
+      // @ts-expect-error bigint is not a durable Task output.
+      exec: async () => 1n,
     });
     step("invalid_array_undefined_task").task({
-      run: {
-        input: {},
-        // @ts-expect-error undefined array entries are not durable.
-        exec: async () => ["ok", undefined],
-      },
+      input: {},
+      // @ts-expect-error undefined array entries are not durable.
+      exec: async () => ["ok", undefined],
     });
 
     return { artifactRef, jsonValue, escaped: escape };

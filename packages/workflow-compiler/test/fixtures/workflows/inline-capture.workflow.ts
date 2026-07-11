@@ -6,12 +6,10 @@ export default defineWorkflow({
   name: "inline-capture-fixture",
 }).build(({ step }) => {
   const result = step("capture").task({
-    run: {
-      input: {},
-      // References `PREFIX` from the workflow module scope, so the inline task
-      // is not self-contained and must be rejected with TB003.
-      exec: async () => ({ slug: `${PREFIX}value` }),
-    },
+    input: {},
+    // References `PREFIX` from the workflow module scope, so the inline task
+    // is not self-contained and must be rejected with TB003.
+    exec: async () => ({ slug: `${PREFIX}value` }),
   });
 
   return { slug: result.output.slug };

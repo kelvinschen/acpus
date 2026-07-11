@@ -60,26 +60,22 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, step }) => {
   const diff = step("diff").task({
-    run: {
-      input: {},
-      cwd: input.repoPath,
-      exec: async ({ $, artifact }) => {
-        const result = await $`git diff`;
-        return {
-          patch: await artifact.writeText("diff.patch", result.stdout, {
-            mediaType: "text/x-patch",
-          }),
-        };
-      },
+    input: {},
+    cwd: input.repoPath,
+    exec: async ({ $, artifact }) => {
+      const result = await $`git diff`;
+      return {
+        patch: await artifact.writeText("diff.patch", result.stdout, {
+          mediaType: "text/x-patch",
+        }),
+      };
     },
   });
 
   const review = step("review").agent({
     outputSchema: ReviewOut,
-    run: {
-      agent: agents.reviewer,
-      prompt: template`Review this diff:\n\n${diff.output.patch}`,
-    },
+    agent: agents.reviewer,
+    prompt: template`Review this diff:\n\n${diff.output.patch}`,
   });
 
   step("require_ready").assert({

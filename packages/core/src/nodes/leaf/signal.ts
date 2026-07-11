@@ -2,9 +2,9 @@ import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { Resolvable } from "@acpus/expression";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
-import type { DiagnosticIR, SignalNodeIR, SignalRunIR } from "../../ir/types.js";
+import type { DiagnosticIR, SignalNodeIR } from "../../ir/types.js";
 
-export type SignalRunSpec = {
+type SignalStepBase = {
   prompt: Resolvable<string>;
 };
 
@@ -14,19 +14,13 @@ type SignalTimeoutSpec =
 
 /** Authoring spec for a Signal node that waits for operator input. */
 export type SignalStepSpec<OutSchema extends Schema<any> | undefined = Schema<any> | undefined> =
-  (OutSchema extends Schema<any>
+  SignalStepBase & (OutSchema extends Schema<any>
     ? {
         outputSchema: OutSchema;
-        run: SignalRunSpec;
       }
     : {
         outputSchema?: undefined;
-        run: SignalRunSpec;
       }) & SignalTimeoutSpec;
-
-function signalRunToIR(spec: SignalRunSpec): SignalRunIR {
-  return { prompt: valueToExprIR(spec.prompt) };
-}
 
 export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
   id: string,
@@ -38,7 +32,7 @@ export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
     id,
     kind: "signal",
     outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
-    run: signalRunToIR(spec.run),
+    run: { prompt: valueToExprIR(spec.prompt) },
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
     onTimeout: spec.onTimeout === undefined ? undefined : {
       message: spec.onTimeout.message === undefined ? undefined : valueToExprIR(spec.onTimeout.message),

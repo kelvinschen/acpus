@@ -2170,7 +2170,7 @@ describe("runtime scheduler node executor", () => {
         name: "raw_agent",
         agents: { reviewer: { use: "mock" } },
       }).build(({ agents, step }) => {
-        step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
+        step("review").agent({ agent: agents.reviewer, prompt: "review" });
         return {};
       }));
       const node = prepared.ir.root.nodes.find(node => node.id === "review");
@@ -3096,7 +3096,7 @@ function rootSignalWorkflow() {
   }).build(({ step }) => {
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { prompt: "approve" },
+      prompt: "approve",
     });
     return { ok: approval.output.ok };
   });
@@ -3111,7 +3111,7 @@ function rootTimedSignalWorkflow() {
       outputSchema: z.object({ ok: z.boolean() }),
       timeout: input.timeout,
       onTimeout: { message: input.timeoutMessage },
-      run: { prompt: input.prompt },
+      prompt: input.prompt,
     });
     return { ok: approval.output.ok };
   });
@@ -3122,13 +3122,11 @@ function sequentialRootTaskWorkflow() {
     name: "scheduler-node-executor-root-sequence",
   }).build(({ step }) => {
     const first = step("first_task").task({
-      run: { input: {}, exec: async () => ({ value: "first" }) },
+      input: {}, exec: async () => ({ value: "first" }),
     });
     const second = step("second_task").task({
-      run: {
-        input: { value: first.output.value },
-        exec: async ({ input }) => ({ value: `${input.value}-second` }),
-      },
+      input: { value: first.output.value },
+      exec: async ({ input }) => ({ value: `${input.value}-second` }),
     });
     return { final: second.output.value };
   });
@@ -3144,17 +3142,15 @@ function rootIfTaskWorkflow() {
       condition: input.shouldRun,
       then() {
         const task = step("then_task").task({
-          run: { input: {}, exec: async () => ({ value: "then" }) },
+          input: {}, exec: async () => ({ value: "then" }),
         });
         return { value: task.output.value };
       },
       else() { return { value: template`else` }; },
     });
     const final = step("final_task").task({
-      run: {
-        input: { value: gate.output.value },
-        exec: async ({ input }) => ({ final: `${input.value}-final` }),
-      },
+      input: { value: gate.output.value },
+      exec: async ({ input }) => ({ final: `${input.value}-final` }),
     });
     return { final: final.output.final };
   });
@@ -3169,23 +3165,19 @@ function rootIfSequentialTaskWorkflow() {
       condition: input.shouldRun,
       then() {
         const first = step("then_first").task({
-          run: { input: {}, exec: async () => ({ value: "first" }) },
+          input: {}, exec: async () => ({ value: "first" }),
         });
         const second = step("then_second").task({
-          run: {
-            input: { value: first.output.value },
-            exec: async ({ input }) => ({ value: `${input.value}-second` }),
-          },
+          input: { value: first.output.value },
+          exec: async ({ input }) => ({ value: `${input.value}-second` }),
         });
         return { value: second.output.value };
       },
       else() { return { value: template`else` }; },
     });
     const final = step("final_task").task({
-      run: {
-        input: { value: gate.output.value },
-        exec: async ({ input }) => ({ final: `${input.value}-final` }),
-      },
+      input: { value: gate.output.value },
+      exec: async ({ input }) => ({ final: `${input.value}-final` }),
     });
     return { final: final.output.final };
   });
@@ -3202,13 +3194,11 @@ function rootSwitchSequentialTaskWorkflow() {
           when: fmap(input.mode, mode => mode === "case"),
           then() {
             const first = step("case_first").task({
-              run: { input: {}, exec: async () => ({ value: "case" }) },
+              input: {}, exec: async () => ({ value: "case" }),
             });
             const second = step("case_second").task({
-              run: {
-                input: { value: first.output.value },
-                exec: async ({ input }) => ({ value: `${input.value}-second` }),
-              },
+              input: { value: first.output.value },
+              exec: async ({ input }) => ({ value: `${input.value}-second` }),
             });
             return { value: second.output.value };
           },
@@ -3230,13 +3220,13 @@ function rootParallelTaskWorkflow(options: { maxConcurrency?: number; dynamicMax
       branches: {
         left() {
           const task = step("left_task").task({
-            run: { input: {}, exec: async () => ({ value: "left" }) },
+            input: {}, exec: async () => ({ value: "left" }),
           });
           return { value: task.output.value, rootPrefix: "root" };
         },
         right() {
           const task = step("right_task").task({
-            run: { input: {}, exec: async () => ({ value: "right" }) },
+            input: {}, exec: async () => ({ value: "right" }),
           });
           return { value: task.output.value };
         },
@@ -3251,25 +3241,21 @@ function sequentialRootParallelWorkflow() {
     name: "scheduler-node-executor-root-sequence-parallel",
   }).build(({ step }) => {
     const prepare = step("prepare_task").task({
-      run: { input: {}, exec: async () => ({ prefix: "root" }) },
+      input: {}, exec: async () => ({ prefix: "root" }),
     });
     const combined = step("combine").parallel({
       branches: {
         left() {
           const task = step("left_task").task({
-            run: {
-              input: { prefix: prepare.output.prefix },
-              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-left` }),
-            },
+            input: { prefix: prepare.output.prefix },
+            exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-left` }),
           });
           return { value: task.output.value, rootPrefix: prepare.output.prefix };
         },
         right() {
           const task = step("right_task").task({
-            run: {
-              input: { prefix: prepare.output.prefix },
-              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-right` }),
-            },
+            input: { prefix: prepare.output.prefix },
+            exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-right` }),
           });
           return { value: task.output.value, rootPrefix: prepare.output.prefix };
         },
@@ -3287,10 +3273,10 @@ function multiNodeRootParallelWorkflow() {
       branches: {
         mixed() {
           step("first_task").task({
-            run: { input: {}, exec: async () => ({ value: "first" }) },
+            input: {}, exec: async () => ({ value: "first" }),
           });
           const second = step("second_task").task({
-            run: { input: {}, exec: async () => ({ value: "second" }) },
+            input: {}, exec: async () => ({ value: "second" }),
           });
           return { value: second.output.value };
         },
@@ -3309,16 +3295,12 @@ function multiNodeRootFanoutWorkflow() {
       over: input.items,
       do({ item }) {
         const first = step("first_task").task({
-          run: {
-            input: { item },
-            exec: async ({ input }) => ({ value: `${input.item}-first` }),
-          },
+          input: { item },
+          exec: async ({ input }) => ({ value: `${input.item}-first` }),
         });
         const second = step("second_task").task({
-          run: {
-            input: { item, first: first.output.value },
-            exec: async ({ input }) => ({ item: input.item, value: input.first.replace("first", "second") }),
-          },
+          input: { item, first: first.output.value },
+          exec: async ({ input }) => ({ item: input.item, value: input.first.replace("first", "second") }),
         });
         return { item: second.output.item, value: second.output.value };
       },
@@ -3333,7 +3315,7 @@ function nestedFanoutInParallelWorkflow() {
     inputSchema: z.object({ items: z.array(z.string()), parallelism: z.number() }),
   }).build(({ input, step }) => {
     const prepare = step("prepare").task({
-      run: { input: {}, exec: async () => ({ prefix: "root" }) },
+      input: {}, exec: async () => ({ prefix: "root" }),
     });
     const combined = step("combine").parallel({
       maxConcurrency: input.parallelism,
@@ -3344,10 +3326,8 @@ function nestedFanoutInParallelWorkflow() {
             maxConcurrency: input.parallelism,
             do({ item, itemIndex }) {
               const task = step("inner_task").task({
-                run: {
-                  input: { prefix: prepare.output.prefix, item, itemIndex },
-                  exec: async ({ input }: { input: { prefix: string; item: string; itemIndex: number } }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
-                },
+                input: { prefix: prepare.output.prefix, item, itemIndex },
+                exec: async ({ input }: { input: { prefix: string; item: string; itemIndex: number } }) => ({ value: `${input.prefix}-${input.item}-${input.itemIndex}` }),
               });
               return { value: task.output.value };
             },
@@ -3356,10 +3336,8 @@ function nestedFanoutInParallelWorkflow() {
         },
         sibling() {
           const task = step("sibling_task").task({
-            run: {
-              input: { prefix: prepare.output.prefix },
-              exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-sibling` }),
-            },
+            input: { prefix: prepare.output.prefix },
+            exec: async ({ input }: { input: { prefix: string } }) => ({ value: `${input.prefix}-sibling` }),
           });
           return { value: task.output.value };
         },
@@ -3379,14 +3357,14 @@ function parallelSignalConcurrencyWorkflow() {
         left() {
           const approval = step("left_signal").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "left" },
+            prompt: "left",
           });
           return { ok: approval.output.ok };
         },
         right() {
           const approval = step("right_signal").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "right" },
+            prompt: "right",
           });
           return { ok: approval.output.ok };
         },
@@ -3413,18 +3391,16 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
         ...(options.dynamicLimits ? { maxConcurrency: input.parallelism } : options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do({ item, itemIndex }) {
           const task = step("item_task").task({
-            run: {
-              input: { item, itemIndex, abortItem: options.abortItem ?? null },
-              exec: async ({ input, abortSignal }) => {
-                if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
-                return await new Promise<{ item: string; index: number }>(resolve => {
-                  const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
-                  abortSignal.addEventListener("abort", () => {
-                    clearTimeout(timer);
-                    resolve({ item: input.item, index: input.itemIndex });
-                  }, { once: true });
-                });
-              },
+            input: { item, itemIndex, abortItem: options.abortItem ?? null },
+            exec: async ({ input, abortSignal }) => {
+              if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
+              return await new Promise<{ item: string; index: number }>(resolve => {
+                const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
+                abortSignal.addEventListener("abort", () => {
+                  clearTimeout(timer);
+                  resolve({ item: input.item, index: input.itemIndex });
+                }, { once: true });
+              });
             },
           });
           return { item: task.output.item, index: task.output.index };
@@ -3436,18 +3412,16 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
         ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do({ item, itemIndex }) {
           const task = step("item_task").task({
-            run: {
-              input: { item, itemIndex, abortItem: options.abortItem ?? null },
-              exec: async ({ input, abortSignal }) => {
-                if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
-                return await new Promise<{ item: string; index: number }>(resolve => {
-                  const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
-                  abortSignal.addEventListener("abort", () => {
-                    clearTimeout(timer);
-                    resolve({ item: input.item, index: input.itemIndex });
-                  }, { once: true });
-                });
-              },
+            input: { item, itemIndex, abortItem: options.abortItem ?? null },
+            exec: async ({ input, abortSignal }) => {
+              if (input.item !== input.abortItem) return { item: input.item, index: input.itemIndex };
+              return await new Promise<{ item: string; index: number }>(resolve => {
+                const timer = setTimeout(() => resolve({ item: "not-aborted", index: input.itemIndex }), 1_000);
+                abortSignal.addEventListener("abort", () => {
+                  clearTimeout(timer);
+                  resolve({ item: input.item, index: input.itemIndex });
+                }, { once: true });
+              });
             },
           });
           return { item: task.output.item, index: task.output.index };
@@ -3466,10 +3440,8 @@ function rootLoopTaskWorkflow() {
       state: { done: false as boolean, iter: -1 },
       do({ index }) {
         const task = step("loop_task").task({
-          run: {
-            input: { iter: index },
-            exec: async ({ input }) => ({ done: input.iter >= 1, rawIter: input.iter }),
-          },
+          input: { iter: index },
+          exec: async ({ input }) => ({ done: input.iter >= 1, rawIter: input.iter }),
         });
         return {
           state: { done: task.output.done, iter: task.output.rawIter },
@@ -3489,16 +3461,12 @@ function multiNodeRootLoopWorkflow() {
       state: { done: false as boolean, value: "" },
       do({ index }) {
         const first = step("first_task").task({
-          run: {
-            input: { iter: index },
-            exec: async ({ input }) => ({ value: `first-${input.iter}` }),
-          },
+          input: { iter: index },
+          exec: async ({ input }) => ({ value: `first-${input.iter}` }),
         });
         const second = step("second_task").task({
-          run: {
-            input: { iter: index, first: first.output.value },
-            exec: async ({ input }) => ({ done: true, value: `${input.first}-second-${input.iter}` }),
-          },
+          input: { iter: index, first: first.output.value },
+          exec: async ({ input }) => ({ done: true, value: `${input.first}-second-${input.iter}` }),
         });
         return {
           state: { done: second.output.done, value: second.output.value },
@@ -3515,10 +3483,8 @@ function abortStatusTaskWorkflow() {
     name: "scheduler-node-executor-abort",
   }).build(({ step }) => {
     step("abort_task").task({
-      run: {
-        input: {},
-        exec: async ({ abortSignal }) => ({ aborted: abortSignal.aborted }),
-      },
+      input: {},
+      exec: async ({ abortSignal }) => ({ aborted: abortSignal.aborted }),
     });
     return {};
   });
@@ -3529,11 +3495,9 @@ function failingInvocationTaskWorkflow() {
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
-      run: {
-        input: {},
-        exec: async () => {
-          throw new Error("first invocation fails");
-        },
+      input: {},
+      exec: async () => {
+        throw new Error("first invocation fails");
       },
     });
     return {};
@@ -3550,7 +3514,7 @@ function retryingAgentWorkflow() {
     step("review").agent({
       outputSchema: z.object({ attempt: z.string() }),
       retry: { max: 2 },
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3565,7 +3529,7 @@ function largeAgentOutputWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ text: z.string() }),
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3580,7 +3544,7 @@ function arrayAgentOutputWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.array(z.string()),
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3596,7 +3560,7 @@ function retryZeroAgentWorkflow() {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       retry: { max: 0 },
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3620,10 +3584,10 @@ function dynamicAgentConfigWorkflow() {
         globalThis.__acpusRepairResolutionCount = (globalThis.__acpusRepairResolutionCount ?? 0) + 1;
         return value;
       }) },
-      run: { agent: agents.reviewer, prompt: fmap(input.prompt, value => {
-        globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
-        return value;
-      }) },
+      agent: agents.reviewer, prompt: fmap(input.prompt, value => {
+             globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
+             return value;
+           }),
     });
     return {};
   });
@@ -3644,7 +3608,7 @@ function overrideAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3664,7 +3628,7 @@ function agentRuntimeContextWorkflow() {
         nodeKey: z.string().nullable(),
         schedulerAttempt: z.string().nullable(),
       }),
-      run: { agent: agents.inspector, prompt: "inspect" },
+      agent: agents.inspector, prompt: "inspect",
     });
     return {};
   });
@@ -3679,7 +3643,7 @@ function nestedAgentOutputWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ items: z.array(z.object({ id: z.string() })) }),
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3695,7 +3659,7 @@ function timeoutAgentWorkflow() {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       timeout: "5ms",
-      run: { agent: agents.reviewer, prompt: "review" },
+      agent: agents.reviewer, prompt: "review",
     });
     return {};
   });
@@ -3710,7 +3674,7 @@ function explicitSessionAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { agent: agents.reviewer, prompt: "review", sessionKey: "shared-session" },
+      agent: agents.reviewer, prompt: "review", sessionKey: "shared-session",
     });
     return {};
   });
@@ -3725,7 +3689,7 @@ function blankSessionAgentWorkflow() {
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { agent: agents.reviewer, prompt: "review", sessionKey: "" },
+      agent: agents.reviewer, prompt: "review", sessionKey: "",
     });
     return {};
   });
@@ -3737,11 +3701,9 @@ function wrongTypeTaskConfigWorkflow() {
     inputSchema: z.object({ cwd: z.string() }),
   }).build(({ input, step }) => {
     step("build").task({
-      run: {
-        input: {},
-        cwd: fmap(input.cwd, value => value.length) as any,
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      cwd: fmap(input.cwd, value => value.length) as any,
+      exec: async () => ({ ok: true }),
     });
     return {};
   });
@@ -3753,7 +3715,7 @@ function failingSignalPromptWorkflow() {
     inputSchema: z.object({ prompt: z.string() }),
   }).build(({ input, step }) => {
     step("approve").signal({
-      run: { prompt: fmap(input.prompt, value => { throw new Error(`signal prompt exploded: ${value}`); }) },
+      prompt: fmap(input.prompt, value => { throw new Error(`signal prompt exploded: ${value}`); }),
     });
     return {};
   });
@@ -3809,21 +3771,17 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
       state: { done: false as boolean, last: "initial" },
       do({ index }) {
         const prepare = step("prepare").task({
-          run: {
-            input: { iter: index },
-            exec: async ({ input }) => ({ marker: `prepare-${input.iter}` }),
-          },
+          input: { iter: index },
+          exec: async ({ input }) => ({ marker: `prepare-${input.iter}` }),
         });
         const maybe = step("maybe_fail").task({
-          run: {
-            input: { iter: index, marker: prepare.output.marker },
-            exec: fixed
-              ? async ({ input }) => ({ done: input.iter >= 2, last: input.iter >= 2 ? "fixed-2" : `source-${input.iter}`, marker: input.marker })
-              : async ({ input }) => {
-                  if (input.iter === 2) throw new Error("source failure at iter 2");
-                  return { done: false, last: `source-${input.iter}`, marker: input.marker };
-                },
-          },
+          input: { iter: index, marker: prepare.output.marker },
+          exec: fixed
+            ? async ({ input }) => ({ done: input.iter >= 2, last: input.iter >= 2 ? "fixed-2" : `source-${input.iter}`, marker: input.marker })
+            : async ({ input }) => {
+                if (input.iter === 2) throw new Error("source failure at iter 2");
+                return { done: false, last: `source-${input.iter}`, marker: input.marker };
+              },
         });
         return {
           state: { done: maybe.output.done, last: maybe.output.last },
@@ -3840,17 +3798,13 @@ function targetedForkFailedSourceWorkflow() {
     name: "scheduler-node-executor-targeted-fork-source",
   }).build(({ step }) => {
     const first = step("first").task({
-      run: {
-        input: {},
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      exec: async () => ({ ok: true }),
     });
     step("boom").task({
-      run: {
-        input: { ok: first.output.ok },
-        exec: async () => {
-          throw new Error("boom");
-        },
+      input: { ok: first.output.ok },
+      exec: async () => {
+        throw new Error("boom");
       },
     });
     return {};
@@ -3862,16 +3816,12 @@ function targetedForkReplacementWorkflow() {
     name: "scheduler-node-executor-targeted-fork-replacement",
   }).build(({ step }) => {
     const first = step("first").task({
-      run: {
-        input: {},
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      exec: async () => ({ ok: true }),
     });
     const fixed = step("fixed").task({
-      run: {
-        input: { ok: first.output.ok },
-        exec: async ({ input }) => ({ ok: input.ok }),
-      },
+      input: { ok: first.output.ok },
+      exec: async ({ input }) => ({ ok: input.ok }),
     });
     return { ok: fixed.output.ok };
   });
@@ -3882,16 +3832,12 @@ function targetedForkCompletedSourceWorkflow() {
     name: "scheduler-node-executor-targeted-fork-completed",
   }).build(({ step }) => {
     const first = step("first").task({
-      run: {
-        input: {},
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      exec: async () => ({ ok: true }),
     });
     const second = step("second").task({
-      run: {
-        input: { ok: first.output.ok },
-        exec: async ({ input }) => ({ ok: input.ok }),
-      },
+      input: { ok: first.output.ok },
+      exec: async ({ input }) => ({ ok: input.ok }),
     });
     return { ok: second.output.ok };
   });
@@ -4025,10 +3971,8 @@ function timeoutTaskWorkflow() {
   }).build(({ input, step }) => {
     const task = step("timeout_task").task({
       timeout: input.timeout,
-      run: {
-        input: {},
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      exec: async () => ({ ok: true }),
     });
     return { ok: task.output.ok };
   });

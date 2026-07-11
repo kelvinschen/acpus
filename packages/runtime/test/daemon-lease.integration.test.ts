@@ -534,27 +534,25 @@ function activeTaskWorkflow() {
     inputSchema: z.object({ markerPath: z.string().optional() }),
   }).build(({ input, step }) => {
     const task = step("slow_task").task({
-      run: {
-        input: { markerPath: input.markerPath, fallbackMs: ACTIVE_TASK_FALLBACK_MS },
-        exec: async ({ input, abortSignal }) => await new Promise<{ ok: boolean }>(resolve => {
-          let settled = false;
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const finish = (marker: string) => {
-            if (settled) return;
-            settled = true;
-            if (timer) clearTimeout(timer);
-            if (input.markerPath) process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, marker);
-            resolve({ ok: false });
-          };
-          timer = setTimeout(() => {
-            finish("fallback");
-          }, input.fallbackMs);
-          abortSignal.addEventListener("abort", () => {
-            finish("aborted");
-          }, { once: true });
-          if (abortSignal.aborted) finish("aborted");
-        }),
-      },
+      input: { markerPath: input.markerPath, fallbackMs: ACTIVE_TASK_FALLBACK_MS },
+      exec: async ({ input, abortSignal }) => await new Promise<{ ok: boolean }>(resolve => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (marker: string) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (input.markerPath) process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, marker);
+          resolve({ ok: false });
+        };
+        timer = setTimeout(() => {
+          finish("fallback");
+        }, input.fallbackMs);
+        abortSignal.addEventListener("abort", () => {
+          finish("aborted");
+        }, { once: true });
+        if (abortSignal.aborted) finish("aborted");
+      }),
     });
     return { ok: task.output.ok };
   });
@@ -570,13 +568,13 @@ function targetedParallelTaskWorkflow() {
       branches: {
         left() {
           const task = step("left_task").task({
-            run: { input: { markerPath: input.leftMarker, value: "left", delayMs: 5_000 }, exec: cancellableMarkerTask },
+            input: { markerPath: input.leftMarker, value: "left", delayMs: 5_000 }, exec: cancellableMarkerTask,
           });
           return { value: task.output.value };
         },
         right() {
           const task = step("right_task").task({
-            run: { input: { markerPath: input.rightMarker, value: "right", delayMs: 500 }, exec: cancellableMarkerTask },
+            input: { markerPath: input.rightMarker, value: "right", delayMs: 500 }, exec: cancellableMarkerTask,
           });
           return { value: task.output.value };
         },

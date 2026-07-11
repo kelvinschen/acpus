@@ -60,8 +60,7 @@ export function resolveTaskReferenceMetadata(analysis: WorkflowTaskAnalysis): Ma
 }
 
 function analyzeCallsite(callsite: TaskCallsite, ctx: AnalyzeContext): AnalyzedTask {
-  const run = objectProperty(callsite.options, "run");
-  const taskValue = run && ts.isObjectLiteralExpression(run) ? objectProperty(run, "task") : undefined;
+  const taskValue = objectProperty(callsite.options, "task");
   if (taskValue) return withIssueSource(analyzeReusable(taskValue, ctx), callsite);
   const exec = execFunction(callsite.options);
   if (exec) return withIssueSource(analyzeInline(exec), callsite);

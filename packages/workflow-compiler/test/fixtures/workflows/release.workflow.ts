@@ -40,100 +40,92 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, step, meta }) => {
   const packageInfo = step("normalize_package").task({
-    run: {
-      task: localDependencyTask,
-      input: {
-        packageName: input.packageName,
-      },
+    task: localDependencyTask,
+    input: {
+      packageName: input.packageName,
     },
   });
 
   const normalizedRepo = step("normalize_path").task({
-    run: {
-      task: nodeModuleDependencyTask,
-      input: {
-        path: input.repoPath,
-      },
+    task: nodeModuleDependencyTask,
+    input: {
+      path: input.repoPath,
     },
   });
 
   const prepare = step("prepare_release").task({
-    run: {
-      input: {
-        repoPath: input.repoPath,
-        version: input.version,
-        baseRef: input.baseRef,
-        headRef: input.headRef,
-        packageSlug: packageInfo.output.slug,
-        normalizedRepoPath: normalizedRepo.output.normalized,
-      },
-      cwd: input.repoPath,
-      exec: async ({ input, $, artifact }) => {
-        const changed = await $`
-        git diff --name-only ${input.baseRef} ${input.headRef}
-      `;
+    input: {
+      repoPath: input.repoPath,
+      version: input.version,
+      baseRef: input.baseRef,
+      headRef: input.headRef,
+      packageSlug: packageInfo.output.slug,
+      normalizedRepoPath: normalizedRepo.output.normalized,
+    },
+    cwd: input.repoPath,
+    exec: async ({ input, $, artifact }) => {
+      const changed = await $`
+      git diff --name-only ${input.baseRef} ${input.headRef}
+    `;
 
-        const changedFiles = changed.stdout.trim().split("\n").filter(Boolean);
+      const changedFiles = changed.stdout.trim().split("\n").filter(Boolean);
 
-        const diff = await $`
-        git diff ${input.baseRef} ${input.headRef}
-      `;
+      const diff = await $`
+      git diff ${input.baseRef} ${input.headRef}
+    `;
 
-        const changelog = [
-          `# Release ${input.version}`,
-          "",
-          `Package: ${input.packageSlug}`,
-          `Repository: ${input.normalizedRepoPath}`,
-          "",
-          "## Changed files",
-          ...changedFiles.map((file: string) => `- ${file}`),
-          "",
-        ].join("\n");
+      const changelog = [
+        `# Release ${input.version}`,
+        "",
+        `Package: ${input.packageSlug}`,
+        `Repository: ${input.normalizedRepoPath}`,
+        "",
+        "## Changed files",
+        ...changedFiles.map((file: string) => `- ${file}`),
+        "",
+      ].join("\n");
 
-        return {
-          changedFiles,
-          diff: await artifact.writeText("diff.patch", diff.stdout, {
-            mediaType: "text/x-patch",
-          }),
-          changelogDraft: await artifact.writeText(
-            "CHANGELOG_DRAFT.md",
-            changelog,
-            { mediaType: "text/markdown" },
-          ),
-        };
-      },
+      return {
+        changedFiles,
+        diff: await artifact.writeText("diff.patch", diff.stdout, {
+          mediaType: "text/x-patch",
+        }),
+        changelogDraft: await artifact.writeText(
+          "CHANGELOG_DRAFT.md",
+          changelog,
+          { mediaType: "text/markdown" },
+        ),
+      };
     },
 
     timeout: "5m",
   });
 
   const tests = step("run_tests").task({
-    run: {
-      input: {
-        repoPath: input.repoPath,
-      },
-      cwd: input.repoPath,
-      env: {
-        CI: "true",
-      },
-      exec: async ({ $, artifact }) => {
-        const result = await $`
-        pnpm test
-      `.allowExitCode([0, 1]);
+    input: {
+      repoPath: input.repoPath,
+    },
+    cwd: input.repoPath,
+    env: {
+      CI: "true",
+    },
+    exec: async ({ $, artifact }) => {
+      const result = await $`
+      pnpm test
+    `.allowExitCode([0, 1]);
 
-        return {
-          passed: result.exitCode === 0,
-          summary:
-            result.exitCode === 0
-              ? "Tests passed."
-              : "Tests failed. See attached log.",
-          log: await artifact.writeText(
-            "test.log",
-            result.stdout + result.stderr,
-            { mediaType: "text/plain" },
-          ),
-        };
-      },
+      return {
+        passed: result.exitCode === 0,
+        summary:
+          result.exitCode === 0
+            ? "Tests passed."
+            : "Tests failed. See attached log.",
+        log: await artifact.writeText(
+          "test.log",
+          result.stdout + result.stderr,
+          { mediaType: "text/plain" },
+        ),
+      };
     },
 
     timeout: "15m",
@@ -161,23 +153,21 @@ export default defineWorkflow({
   const reviews = reviewFocuses.map(([id, focus]) =>
     step(`review_${id}`).agent({
       outputSchema: ReviewOut,
-      run: {
-        agent: agents.reviewer,
-        prompt: template`
-          Review package ${packageInfo.output.normalized} for ${focus}.
+      agent: agents.reviewer,
+      prompt: template`
+        Review package ${packageInfo.output.normalized} for ${focus}.
 
-          Diff:
-          ${prepare.output.diff}
+        Diff:
+        ${prepare.output.diff}
 
-          Changelog draft:
-          ${prepare.output.changelogDraft}
+        Changelog draft:
+        ${prepare.output.changelogDraft}
 
-          Test summary:
-          ${tests.output.summary}
+        Test summary:
+        ${tests.output.summary}
 
-          Return JSON matching the declared schema.
-        `,
-      },
+        Return JSON matching the declared schema.
+      `,
 
       timeout: "30m",
     }),
@@ -204,24 +194,22 @@ export default defineWorkflow({
     outputSchema: z.object({
       summary: z.string(),
     }),
-    run: {
-      agent: agents.summarizer,
-      prompt: template`
-        Write a concise release readiness summary.
+    agent: agents.summarizer,
+    prompt: template`
+      Write a concise release readiness summary.
 
-        Package:
-        ${packageInfo.output.normalized}
+      Package:
+      ${packageInfo.output.normalized}
 
-        Version:
-        ${input.version}
+      Version:
+      ${input.version}
 
-        Changelog draft:
-        ${prepare.output.changelogDraft}
+      Changelog draft:
+      ${prepare.output.changelogDraft}
 
-        Reviews:
-        ${reviewSummaries}
-      `,
-    },
+      Reviews:
+      ${reviewSummaries}
+    `,
   });
 
   return {

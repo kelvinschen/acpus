@@ -43,13 +43,14 @@ export function agentToken<Key extends string>(key: Key): AgentToken<Key> {
   return { [AGENT_TOKEN]: true as const, key };
 }
 
-export type AgentRunSpec = {
+type AgentStepBase = {
   agent: AgentToken;
   prompt: Resolvable<string>;
   permissionMode?: AgentPermissionMode;
   sessionKey?: Resolvable<string>;
   cwd?: Resolvable<string>;
   env?: EnvInput;
+  timeout?: Resolvable<string>;
 };
 
 export type AgentRetrySpec = {
@@ -59,15 +60,11 @@ export type AgentRetrySpec = {
 /** Authoring spec for an Agent node. Schema-backed agents return parsed JSON; schema-less agents return text. */
 export type AgentStepSpec<
   OutSchema extends Schema<any> | undefined = Schema<any> | undefined,
-> = (OutSchema extends Schema<any> ? {
+> = AgentStepBase & (OutSchema extends Schema<any> ? {
   outputSchema: OutSchema;
-  run: AgentRunSpec;
-  timeout?: Resolvable<string>;
   retry?: AgentRetrySpec;
 } : {
   outputSchema?: undefined;
-  run: AgentRunSpec;
-  timeout?: Resolvable<string>;
   retry?: never;
 });
 
@@ -94,7 +91,7 @@ export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionI
   }) as AgentDefinitionIR;
 }
 
-function agentRunToIR(spec: AgentRunSpec): AgentRunIR {
+function agentSpecToRunIR(spec: AgentStepBase): AgentRunIR {
   return stripUndefined({
     agent: spec.agent.key,
     prompt: valueToExprIR(spec.prompt),
@@ -115,7 +112,7 @@ export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
     id,
     kind: "agent",
     outputSchema: spec.outputSchema ? toSchemaIR(spec.outputSchema) : undefined,
-    run: agentRunToIR(spec.run),
+    run: agentSpecToRunIR(spec),
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
     retry: spec.retry === undefined ? undefined : {
       max: spec.retry.max === undefined ? undefined : valueToExprIR(spec.retry.max),

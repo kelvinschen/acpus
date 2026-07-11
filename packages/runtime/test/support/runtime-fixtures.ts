@@ -142,13 +142,11 @@ export function taskArtifactWorkflow() {
     name: "cli-task",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      run: {
-        input: {},
-        exec: async ({ artifact }) => ({
-          ok: true,
-          artifact: await artifact.writeText("result.txt", "artifact-ok\n"),
-        }),
-      },
+      input: {},
+      exec: async ({ artifact }) => ({
+        ok: true,
+        artifact: await artifact.writeText("result.txt", "artifact-ok\n"),
+      }),
     });
     return { ok: result.output.ok, artifact: result.output.artifact };
   });
@@ -160,24 +158,22 @@ export function taskInvocationOptionsWorkflow() {
     inputSchema: z.object({ workDir: z.string(), commandTimeout: z.string(), runSlowCommand: z.boolean() }),
   }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
-      run: {
-        input: { name: "runtime", mode: "strict", runSlowCommand: input.runSlowCommand },
-        cwd: input.workDir,
-        env: { RUNTIME_TASK_ENV: "from-run-env" },
-        execution: { defaultCommandTimeout: input.commandTimeout },
-        exec: async ({ input, $, env }) => {
-          if (input.runSlowCommand) await $`${process.execPath} -e ${"setTimeout(() => {}, 10_000)"}`;
-          const command = await $`${process.execPath} -e ${"process.stdout.write(process.cwd())"}`;
-          return {
-            inputName: input.name,
-            cwd: command.stdout.trim(),
-            processCwd: process.cwd(),
-            envValue: env.RUNTIME_TASK_ENV ?? "",
-            processEnvValue: process.env.RUNTIME_TASK_ENV ?? "",
-            sameEnvObject: env === process.env,
-            inputMode: input.mode,
-          };
-        },
+      input: { name: "runtime", mode: "strict", runSlowCommand: input.runSlowCommand },
+      cwd: input.workDir,
+      env: { RUNTIME_TASK_ENV: "from-run-env" },
+      execution: { defaultCommandTimeout: input.commandTimeout },
+      exec: async ({ input, $, env }) => {
+        if (input.runSlowCommand) await $`${process.execPath} -e ${"setTimeout(() => {}, 10_000)"}`;
+        const command = await $`${process.execPath} -e ${"process.stdout.write(process.cwd())"}`;
+        return {
+          inputName: input.name,
+          cwd: command.stdout.trim(),
+          processCwd: process.cwd(),
+          envValue: env.RUNTIME_TASK_ENV ?? "",
+          processEnvValue: process.env.RUNTIME_TASK_ENV ?? "",
+          sameEnvObject: env === process.env,
+          inputMode: input.mode,
+        };
       },
     });
     return {
@@ -197,19 +193,15 @@ export function replacementTaskWorkflow() {
     name: "cli-task-replacement",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      run: {
-        input: {},
-        exec: async ({ artifact }) => ({
-          ok: true,
-          artifact: await artifact.writeText("result.txt", "replacement\n"),
-        }),
-      },
+      input: {},
+      exec: async ({ artifact }) => ({
+        ok: true,
+        artifact: await artifact.writeText("result.txt", "replacement\n"),
+      }),
     });
     const extra = step("extra").task({
-      run: {
-        input: {},
-        exec: async () => ({ extra: true }),
-      },
+      input: {},
+      exec: async () => ({ extra: true }),
     });
     return { ok: result.output.ok, artifact: result.output.artifact, extra: extra.output.extra };
   });
@@ -220,11 +212,9 @@ export function failingTaskWorkflow() {
     name: "cli-failing-task",
   }).build(({ step }) => {
     step("boom").task({
-      run: {
-        input: {},
-        exec: async () => {
-          throw new Error("task exploded");
-        },
+      input: {},
+      exec: async () => {
+        throw new Error("task exploded");
       },
     });
     return {};
@@ -237,13 +227,11 @@ export function failOnceTaskWorkflow() {
     inputSchema: z.object({ workDir: z.string() }),
   }).build(({ input, step }) => {
     const result = step("eventual").task({
-      run: {
-        input: {},
-        cwd: input.workDir,
-        exec: async ({ $ }) => {
-          await $`sh -c "if [ -f .retry-marker ]; then exit 0; fi; touch .retry-marker; exit 1"`;
-          return { ok: true };
-        },
+      input: {},
+      cwd: input.workDir,
+      exec: async ({ $ }) => {
+        await $`sh -c "if [ -f .retry-marker ]; then exit 0; fi; touch .retry-marker; exit 1"`;
+        return { ok: true };
       },
     });
     return { ok: result.output.ok };
@@ -264,7 +252,7 @@ export function missingProviderWorkflow() {
     name: "cli-agent",
     agents: { reviewer: { use: "missing-provider" } },
   }).build(({ agents, step }) => {
-    step("review").agent({ run: { agent: agents.reviewer, prompt: "review" } });
+    step("review").agent({ agent: agents.reviewer, prompt: "review" });
     return {};
   });
 }
@@ -286,7 +274,7 @@ export function signalWorkflow() {
     step("before").assert({ condition: true });
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
-      run: { prompt: "approve" },
+      prompt: "approve",
     });
     step("after").assert({ condition: approval.output.ok });
     return { ok: approval.output.ok };
@@ -301,7 +289,7 @@ export function timedSignalWorkflow(timeout: "100ms" | "1ms" = "100ms") {
       outputSchema: z.object({ ok: z.boolean() }),
       timeout,
       onTimeout: { message: "Approval timed out" },
-      run: { prompt: "approve" },
+      prompt: "approve",
     });
     return { ok: approval.output.ok };
   });
@@ -317,7 +305,7 @@ export function fanoutSignalWorkflow() {
       do() {
         const approval = step("approve").signal({
           outputSchema: z.object({ ok: z.boolean() }),
-          run: { prompt: "approve" },
+          prompt: "approve",
         });
         return { ok: approval.output.ok };
       },
@@ -336,14 +324,14 @@ export function parallelSignalAllWorkflow() {
         left() {
           const approval = step("left_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "left" },
+            prompt: "left",
           });
           return { ok: approval.output.ok };
         },
         right() {
           const approval = step("right_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "right" },
+            prompt: "right",
           });
           return { ok: approval.output.ok };
         },
@@ -363,14 +351,14 @@ export function parallelSignalRaceWorkflow() {
         left() {
           const approval = step("left_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "left" },
+            prompt: "left",
           });
           return { ok: approval.output.ok };
         },
         right() {
           const approval = step("right_approve").signal({
             outputSchema: z.object({ ok: z.boolean() }),
-            run: { prompt: "right" },
+            prompt: "right",
           });
           return { ok: approval.output.ok };
         },

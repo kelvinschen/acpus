@@ -63,9 +63,7 @@ describe("workflow authoring rules", () => {
       const Math = { max: (..._values: number[]) => 1 };
       declare const step: any;
       step("inline").task({
-        run: {
-          exec: async () => ({ value: Math.max(1, 2) }),
-        },
+        exec: async () => ({ value: Math.max(1, 2) }),
       });
     `);
 
@@ -112,8 +110,8 @@ describe("workflow authoring rules", () => {
 
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "TB001", path: "tasks.local.reference", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB002", path: "tasks.invalid_export.reference", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB003", path: "tasks.inline_capture.source", hint: expect.any(String) }),
+      expect.objectContaining({ code: "TB002", path: "tasks.invalid_export.reference", hint: expect.stringContaining("top-level task") }),
+      expect.objectContaining({ code: "TB003", path: "tasks.inline_capture.source", hint: expect.stringContaining("top-level input") }),
       expect.objectContaining({ code: "TB004", path: "tasks.duplicate.reference", hint: expect.stringContaining("unique task step ids") }),
     ]));
   });

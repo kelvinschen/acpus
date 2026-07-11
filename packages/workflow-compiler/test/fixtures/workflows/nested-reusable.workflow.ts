@@ -7,13 +7,13 @@ export default defineWorkflow({ name: "nested-reusable" }).build(({ step }) => {
     condition: true,
     then() {
       step("nested_local").task({
-        run: { task: localDependencyTask, input: { packageName: "acpus" } },
+        task: localDependencyTask, input: { packageName: "acpus" },
       });
       return {};
     },
     else() {
       step("nested_node_module").task({
-        run: { task: nodeModuleDependencyTask, input: { path: "." } },
+        task: nodeModuleDependencyTask, input: { path: "." },
       });
       return {};
     },

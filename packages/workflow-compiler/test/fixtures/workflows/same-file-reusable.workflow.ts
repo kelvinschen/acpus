@@ -11,10 +11,8 @@ export default defineWorkflow({
   inputSchema: z.object({ path: z.string() }),
 }).build(({ input, step }) => {
   const normalized = step("normalize_path").task({
-    run: {
-      task: normalizePath,
-      input: { path: input.path },
-    },
+    task: normalizePath,
+    input: { path: input.path },
   });
 
   return { normalized: normalized.output.normalized };

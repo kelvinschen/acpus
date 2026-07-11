@@ -99,28 +99,24 @@ describe("workflow check pipeline", () => {
         }).build(({ agents, step }) => {
           const reviews = focuses.map(id => step(\`review_\${id}\`).agent({
             outputSchema: ReviewOut,
-            run: {
-              agent: agents.reviewer,
-              prompt: "review",
-            },
+            agent: agents.reviewer,
+            prompt: "review",
           }));
           const client = {
             task: (_spec: object) => ({ ok: true }),
             loop: (_spec: object) => ({ ok: true }),
           };
-          client.task({ run: { exec: async () => ({ when: new Date() }) } });
+          client.task({ exec: async () => ({ when: new Date() }) });
           client.loop({ do() { return { ok: true }; } });
           const thirdPartyTask = {
             define: (_spec: object) => ({ ok: true }),
           };
           thirdPartyTask.define({ exec: async () => ({ when: new Date() }) });
           step("inline_hidden").task({
-            run: {
-              input: {},
-              exec: async (): Promise<Output> => helper(),
-            },
+            input: {},
+            exec: async (): Promise<Output> => helper(),
           });
-          step("same_file_hidden").task({ run: { input: {}, task: inlineHidden } });
+          step("same_file_hidden").task({ input: {}, task: inlineHidden });
           step("loop").loop({
             state: { ok: true, count: 0, summary: "" },
             do({ round, state }) {
@@ -153,7 +149,7 @@ describe("workflow check pipeline", () => {
         import { defineWorkflow } from "acpus/core";
 
         export default defineWorkflow({ name: "output_types" }).build(({ step }) => {
-          step("date").task({ run: { input: {}, exec: async () => ({ when: new Date() }) } });
+          step("date").task({ input: {}, exec: async () => ({ when: new Date() }) });
           step("if_date").if({
             condition: true,
             then() { return { when: new Date() }; },

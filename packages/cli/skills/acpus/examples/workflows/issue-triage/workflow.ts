@@ -34,11 +34,9 @@ export default defineWorkflow({
         branches: {
           metadata() {
             const metadata = step("summarize_issue").task({
-              run: {
-                task: summarizeIssue,
-                input: { id: item.id, title: item.title, labels: item.labels },
-                cwd: input.repoPath,
-              },
+              task: summarizeIssue,
+              input: { id: item.id, title: item.title, labels: item.labels },
+              cwd: input.repoPath,
             });
             return {
               labelCount: metadata.output.labelCount,
@@ -52,20 +50,18 @@ export default defineWorkflow({
                 priority: z.number(),
                 summary: z.string(),
               }),
-              run: {
-                agent: agents.triager,
-                cwd: input.repoPath,
-                prompt: md`
-                  Triage this issue for the current repository.
+              agent: agents.triager,
+              cwd: input.repoPath,
+              prompt: md`
+                Triage this issue for the current repository.
 
-                  ID: ${item.id}
-                  Title: ${item.title}
-                  Body: ${item.body}
-                  Labels: ${item.labels}
+                ID: ${item.id}
+                Title: ${item.title}
+                Body: ${item.body}
+                Labels: ${item.labels}
 
-                  Choose route "now", "later", or "escalate".
-                `,
-              },
+                Choose route "now", "later", or "escalate".
+              `,
               timeout: "20m",
             });
             const reviewView = fmap(review.output, output => ({
@@ -88,17 +84,15 @@ export default defineWorkflow({
             when: eq(lane.output.review.route, "escalate"),
             then() {
               const escalation = step("prepare_escalation").task({
-                run: {
-                  input: {
-                    id: item.id,
-                    priority: lane.output.review.priority,
-                    summary: lane.output.review.summary,
-                  },
-                  exec: async ({ input }) => ({
-                    owner: "maintainer",
-                    action: `Escalate ${input.id} with priority ${input.priority}: ${input.summary}`,
-                  }),
+                input: {
+                  id: item.id,
+                  priority: lane.output.review.priority,
+                  summary: lane.output.review.summary,
                 },
+                exec: async ({ input }) => ({
+                  owner: "maintainer",
+                  action: `Escalate ${input.id} with priority ${input.priority}: ${input.summary}`,
+                }),
               });
               return {
                 owner: escalation.output.owner,
@@ -110,13 +104,11 @@ export default defineWorkflow({
             when: eq(lane.output.review.route, "now"),
             then() {
               const queue = step("queue_now").task({
-                run: {
-                  input: { id: item.id, title: lane.output.metadata.titleLine },
-                  exec: async ({ input }) => ({
-                    owner: "oncall",
-                    action: `Queue ${input.title} for this sprint`,
-                  }),
-                },
+                input: { id: item.id, title: lane.output.metadata.titleLine },
+                exec: async ({ input }) => ({
+                  owner: "oncall",
+                  action: `Queue ${input.title} for this sprint`,
+                }),
               });
               return { owner: queue.output.owner, action: queue.output.action };
             },
@@ -124,13 +116,11 @@ export default defineWorkflow({
         ],
         default() {
           const backlog = step("backlog_later").task({
-            run: {
-              input: { id: item.id, labelCount: lane.output.metadata.labelCount },
-              exec: async ({ input }) => ({
-                owner: "backlog",
-                action: `Backlog ${input.id} with ${input.labelCount} labels`,
-              }),
-            },
+            input: { id: item.id, labelCount: lane.output.metadata.labelCount },
+            exec: async ({ input }) => ({
+              owner: "backlog",
+              action: `Backlog ${input.id} with ${input.labelCount} labels`,
+            }),
           });
           return { owner: backlog.output.owner, action: backlog.output.action };
         },

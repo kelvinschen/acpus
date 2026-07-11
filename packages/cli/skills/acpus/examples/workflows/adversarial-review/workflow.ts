@@ -52,38 +52,36 @@ export default defineWorkflow({
                 prompt: z.string(),
             })),
         }),
-        run: {
-            agent: agents.planner,
-            cwd: meta.workspaceDir,
-            prompt: md`
-                You are planning a dynamic adversarial review.
+        agent: agents.planner,
+        cwd: meta.workspaceDir,
+        prompt: md`
+            You are planning a dynamic adversarial review.
 
-                Subject:
-                ${input.subject}
+            Subject:
+            ${input.subject}
 
-                Context:
-                ${input.context}
+            Context:
+            ${input.context}
 
-                Rubric:
-                ${input.rubric}
+            Rubric:
+            ${input.rubric}
 
-                Criteria:
-                ${input.criteria}
+            Criteria:
+            ${input.criteria}
 
-                Maximum lenses:
-                ${input.maxLenses}
+            Maximum lenses:
+            ${input.maxLenses}
 
-                Create the smallest useful set of review lenses.
+            Create the smallest useful set of review lenses.
 
-                Rules:
-                - Use only the subject, context, rubric, criteria, and readable local workspace context.
-                - Prefer 3-5 lenses, but never exceed the maximum.
-                - Avoid duplicate lenses.
-                - Each lens must represent a distinct way the subject could fail.
-                - Each lens id must be short, lowercase, and stable within the review output.
-                - Each lens prompt must be a complete natural-language reviewer role, including focus and attack style.
-                - Good lenses include correctness, feasibility, risk, edge cases, rubric compliance, maintainability, authoring fit, runtime contract, testing, migration risk, and DX.`,
-        },
+            Rules:
+            - Use only the subject, context, rubric, criteria, and readable local workspace context.
+            - Prefer 3-5 lenses, but never exceed the maximum.
+            - Avoid duplicate lenses.
+            - Each lens must represent a distinct way the subject could fail.
+            - Each lens id must be short, lowercase, and stable within the review output.
+            - Each lens prompt must be a complete natural-language reviewer role, including focus and attack style.
+            - Good lenses include correctness, feasibility, risk, edge cases, rubric compliance, maintainability, authoring fit, runtime contract, testing, migration risk, and DX.`,
         timeout: "15m",
     });
 
@@ -92,44 +90,42 @@ export default defineWorkflow({
         maxConcurrency: 4,
         do({ item }) {
             const review = step("blind_review").agent({
-                run: {
-                    agent: agents.reviewer,
-                    cwd: meta.workspaceDir,
-                    prompt: md`
-                        You are a blind reviewer.
+                agent: agents.reviewer,
+                cwd: meta.workspaceDir,
+                prompt: md`
+                    You are a blind reviewer.
 
-                        Your lens:
-                        ${item.prompt}
+                    Your lens:
+                    ${item.prompt}
 
-                        Subject:
-                        ${input.subject}
+                    Subject:
+                    ${input.subject}
 
-                        Context:
-                        ${input.context}
+                    Context:
+                    ${input.context}
 
-                        Rubric:
-                        ${input.rubric}
+                    Rubric:
+                    ${input.rubric}
 
-                        Criteria:
-                        ${input.criteria}
+                    Criteria:
+                    ${input.criteria}
 
-                        Rules:
-                        - Work independently.
-                        - Do not assume what other reviewers will say.
-                        - Judge only from the given subject, context, rubric, criteria, and readable local workspace context.
-                        - Be adversarial but fair.
-                        - Prefer concrete issues over broad complaints.
-                        - Mark uncertainty explicitly.
-                        - Do not block on nits.
-                        - Do not try to match a JSON schema.
+                    Rules:
+                    - Work independently.
+                    - Do not assume what other reviewers will say.
+                    - Judge only from the given subject, context, rubric, criteria, and readable local workspace context.
+                    - Be adversarial but fair.
+                    - Prefer concrete issues over broad complaints.
+                    - Mark uncertainty explicitly.
+                    - Do not block on nits.
+                    - Do not try to match a JSON schema.
 
-                        Return Markdown with these sections:
-                        - Summary
-                        - Strengths
-                        - Issues
-                        - Hidden assumptions
-                        - Verdict`,
-                },
+                    Return Markdown with these sections:
+                    - Summary
+                    - Strengths
+                    - Issues
+                    - Hidden assumptions
+                    - Verdict`,
                 timeout: "30m",
             });
 
@@ -144,50 +140,48 @@ export default defineWorkflow({
         maxConcurrency: 4,
         do({ item }) {
             const critique = step("critique_reviews").agent({
-                run: {
-                    agent: agents.critic,
-                    cwd: meta.workspaceDir,
-                    prompt: md`
-                        You are now a red-team critic.
+                agent: agents.critic,
+                cwd: meta.workspaceDir,
+                prompt: md`
+                    You are now a red-team critic.
 
-                        Your lens:
-                        ${item.prompt}
+                    Your lens:
+                    ${item.prompt}
 
-                        Subject:
-                        ${input.subject}
+                    Subject:
+                    ${input.subject}
 
-                        Rubric:
-                        ${input.rubric}
+                    Rubric:
+                    ${input.rubric}
 
-                        Criteria:
-                        ${input.criteria}
+                    Criteria:
+                    ${input.criteria}
 
-                        Blind reviews:
-                        ${reviews.output}
+                    Blind reviews:
+                    ${reviews.output}
 
-                        Attack the reviews, not the author.
+                    Attack the reviews, not the author.
 
-                        Look for:
-                        - Unsupported claims.
-                        - Missed risks.
-                        - Overconfidence.
-                        - Contradictions.
-                        - Rubric gaps.
-                        - Recommendations that do not follow from the issue.
-                        - Issues that are mislabeled as blocking or under-labeled as minor.
+                    Look for:
+                    - Unsupported claims.
+                    - Missed risks.
+                    - Overconfidence.
+                    - Contradictions.
+                    - Rubric gaps.
+                    - Recommendations that do not follow from the issue.
+                    - Issues that are mislabeled as blocking or under-labeled as minor.
 
-                        Rules:
-                        - Do not merely summarize.
-                        - Concede points that are already strong.
-                        - Return only substantial objections.
-                        - Do not try to match a JSON schema.
+                    Rules:
+                    - Do not merely summarize.
+                    - Concede points that are already strong.
+                    - Return only substantial objections.
+                    - Do not try to match a JSON schema.
 
-                        Return Markdown with these sections:
-                        - Objections
-                        - Contradictions
-                        - Concessions
-                        - Stronger alternatives`,
-                },
+                    Return Markdown with these sections:
+                    - Objections
+                    - Contradictions
+                    - Concessions
+                    - Stronger alternatives`,
                 timeout: "30m",
             });
 
@@ -202,46 +196,44 @@ export default defineWorkflow({
             verdict: Verdict,
             report: z.string(),
         }),
-        run: {
-            agent: agents.synthesizer,
-            cwd: meta.workspaceDir,
-            prompt: md`
-                You are the judge for a dynamic adversarial review.
+        agent: agents.synthesizer,
+        cwd: meta.workspaceDir,
+        prompt: md`
+            You are the judge for a dynamic adversarial review.
 
-                Subject:
-                ${input.subject}
+            Subject:
+            ${input.subject}
 
-                Context:
-                ${input.context}
+            Context:
+            ${input.context}
 
-                Rubric:
-                ${input.rubric}
+            Rubric:
+            ${input.rubric}
 
-                Criteria:
-                ${input.criteria}
+            Criteria:
+            ${input.criteria}
 
-                Lens plan:
-                ${plan.output}
+            Lens plan:
+            ${plan.output}
 
-                Blind reviews:
-                ${reviews.output}
+            Blind reviews:
+            ${reviews.output}
 
-                Cross critiques:
-                ${critiques.output}
+            Cross critiques:
+            ${critiques.output}
 
-                Rules:
-                - Do not average opinions mechanically.
-                - Weigh concrete basis over reviewer confidence.
-                - In the report, separate consensus from unresolved disagreement.
-                - Blocking issues must be explicit.
-                - Nits must not block approval.
-                - Required actions must be concrete and actionable.
-                - Nice-to-have items must not be mixed into required actions.
-                - If the context is insufficient, say so directly instead of inventing evidence.
-                - Do not search the internet.
-                - The report should be natural-language Markdown containing: assessment, consensus, blocking issues, non-blocking issues, unresolved disagreements, required actions, and nice-to-have items.
-                - Return JSON matching the schema.`,
-        },
+            Rules:
+            - Do not average opinions mechanically.
+            - Weigh concrete basis over reviewer confidence.
+            - In the report, separate consensus from unresolved disagreement.
+            - Blocking issues must be explicit.
+            - Nits must not block approval.
+            - Required actions must be concrete and actionable.
+            - Nice-to-have items must not be mixed into required actions.
+            - If the context is insufficient, say so directly instead of inventing evidence.
+            - Do not search the internet.
+            - The report should be natural-language Markdown containing: assessment, consensus, blocking issues, non-blocking issues, unresolved disagreements, required actions, and nice-to-have items.
+            - Return JSON matching the schema.`,
         timeout: "30m",
     });
 

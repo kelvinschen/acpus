@@ -12,10 +12,8 @@ export function objectProperty(object: ts.ObjectLiteralExpression, name: string)
   return undefined;
 }
 
-export function execFunction(options: ts.ObjectLiteralExpression): ts.FunctionLikeDeclarationBase | undefined {
-  const run = objectProperty(options, "run");
-  if (!run || !ts.isObjectLiteralExpression(run)) return undefined;
-  const exec = objectProperty(run, "exec");
+export function execFunction(spec: ts.ObjectLiteralExpression): ts.FunctionLikeDeclarationBase | undefined {
+  const exec = objectProperty(spec, "exec");
   if (exec && (ts.isArrowFunction(exec) || ts.isFunctionExpression(exec))) return exec;
   return undefined;
 }

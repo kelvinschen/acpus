@@ -312,21 +312,21 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
         message: issue.name
           ? `Reusable task '${issue.name}' must reference a task.define(...) export.`
           : "Reusable task must reference a task.define(...) export.",
-        hint: "Pass an imported or same-file exported task.define(...) token as run.task.",
+        hint: "Pass an imported or same-file exported task.define(...) token through the top-level task field.",
       };
     case "invalid-reusable-task-export":
       return {
         ...base,
         code: "TB002",
         message: `Reusable task export '${issue.importedName}' must be initialized with task.define(...).`,
-        hint: "Export a task.define(...) token from the task module.",
+        hint: "Export a task.define(...) token from the task module and pass it through the top-level task field.",
       };
     case "inline-task-capture":
       return {
         ...base,
         code: "TB003",
         message: `Inline task is not self-contained; it references ${issue.names.map(name => `'${name}'`).join(", ")}.`,
-        hint: "Move captured logic into a reusable task.define(...) module or pass data through run.input.",
+        hint: "Move captured logic into a reusable task.define(...) module or pass data through the top-level input field.",
       };
     case "ambiguous-task-callsite":
       return {

@@ -37,7 +37,7 @@ describe("task analysis", () => {
       `import t from "./normalize.task.js";
        export default {} as any;
        declare const step: any;
-       step("run").task({ run: { task: t, input: {} } });`,
+       step("run").task({ task: t, input: {} });`,
       { "normalize.task.ts": taskModule },
     );
 
@@ -48,7 +48,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import { normalize } from "./tasks.js";
        declare const step: any;
-       step("run").task({ run: { task: normalize, input: {} } });`,
+       step("run").task({ task: normalize, input: {} });`,
       { "tasks.ts": `import { task, z } from "acpus/core";\nexport const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });\n` },
     );
 
@@ -60,7 +60,7 @@ describe("task analysis", () => {
       `import { task, z } from "acpus/core";
        export const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
-       step("run").task({ run: { task: local, input: {} } });`,
+       step("run").task({ task: local, input: {} });`,
     );
 
     expectWorkflowLocalReusableAccepted(analysis, "local");
@@ -72,7 +72,7 @@ describe("task analysis", () => {
        const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        export { local };
        declare const step: any;
-       step("run").task({ run: { task: local, input: {} } });`,
+       step("run").task({ task: local, input: {} });`,
     );
 
     expectWorkflowLocalReusableAccepted(analysis, "local");
@@ -83,7 +83,7 @@ describe("task analysis", () => {
       `import { task, z } from "acpus/core";
        const local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
-       step("run").task({ run: { task: local, input: {} } });`,
+       step("run").task({ task: local, input: {} });`,
     );
 
     expectTaskIssue(analysis, { kind: "workflow-local-reusable-task" });
@@ -94,7 +94,7 @@ describe("task analysis", () => {
       `import { defineWorkflow, task, z } from "acpus/core";
        export default defineWorkflow({ name: "nested_task" }).build(({ step }) => {
          const nested = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
-         step("run").task({ run: { task: nested, input: {} } });
+         step("run").task({ task: nested, input: {} });
          return { ok: true };
        });`,
     );
@@ -108,7 +108,7 @@ describe("task analysis", () => {
        export const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        export default defineWorkflow({ name: "shadow_task" }).build(({ step }) => {
          const normalize = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: false }) });
-         step("run").task({ run: { task: normalize, input: {} } });
+         step("run").task({ task: normalize, input: {} });
          return { ok: true };
        });`,
     );
@@ -123,7 +123,7 @@ describe("task analysis", () => {
        import { defineWorkflow, task, z } from "acpus/core";
        export default defineWorkflow({ name: "shadow_import_task" }).build(({ step }) => {
          const imported = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: false }) });
-         step("run").task({ run: { task: imported, input: {} } });
+         step("run").task({ task: imported, input: {} });
          return { ok: true };
        });`,
       { "normalize.task.ts": taskModule },
@@ -138,7 +138,7 @@ describe("task analysis", () => {
       `const local = { fn: async () => ({ ok: true }) };
        export { local };
        declare const step: any;
-       step("run").task({ run: { task: local, input: {} } });`,
+       step("run").task({ task: local, input: {} });`,
     );
 
     expectTaskIssue(analysis, { kind: "invalid-reusable-task-export" });
@@ -149,7 +149,7 @@ describe("task analysis", () => {
       `import { task, z } from "acpus/core";
        export let local = task.define({ inputSchema: z.object({}), exec: async () => ({ ok: true }) });
        declare const step: any;
-       step("run").task({ run: { task: local, input: {} } });`,
+       step("run").task({ task: local, input: {} });`,
     );
 
     expectTaskIssue(analysis, { kind: "workflow-local-reusable-task" });
@@ -160,7 +160,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import t from "./not-a-task.js";
        declare const step: any;
-       step("run").task({ run: { task: t, input: {} } });`,
+       step("run").task({ task: t, input: {} });`,
       { "not-a-task.ts": `export default { fn: async () => ({}) };\n` },
     );
 
@@ -171,7 +171,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import t from "some-pkg";
        declare const step: any;
-       step("run").task({ run: { task: t, input: {} } });`,
+       step("run").task({ task: t, input: {} });`,
     );
 
     expectReusableAccepted(analysis, "some-pkg", "default");
@@ -181,7 +181,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import t from "./index.js";
        declare const step: any;
-       step("run").task({ run: { task: t, input: {} } });`,
+       step("run").task({ task: t, input: {} });`,
       {
         "index.ts": `export { default } from "./normalize.task.js";\n`,
         "normalize.task.ts": taskModule,
@@ -194,10 +194,10 @@ describe("task analysis", () => {
   it("accepts a self-contained inline task", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       step("run").task({ run: { input: {}, exec: async ({ input, $, artifact }: any) => {
+       step("run").task({ input: {}, exec: async ({ input, $, artifact }: any) => {
          const items = [1, 2, 3].map((n: number) => n * 2);
          return { total: items.length };
-       } } });`,
+       } });`,
     );
 
     expectInlineAccepted(analysis);
@@ -207,7 +207,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import semver from "semver";
        declare const step: any;
-       step("run").task({ run: { input: {}, exec: async () => ({ ok: semver.gt("1.0.0", "0.9.0") }) } });`,
+       step("run").task({ input: {}, exec: async () => ({ ok: semver.gt("1.0.0", "0.9.0") }) });`,
     );
 
     const verdict = analysis.get("run");
@@ -219,7 +219,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `declare const step: any;
        declare const helper: any;
-       step("run").task({ run: { input: {}, exec: async ({ input }: any) => helper(input) } });`,
+       step("run").task({ input: {}, exec: async ({ input }: any) => helper(input) });`,
     );
 
     expectTaskIssue(analysis, { kind: "inline-task-capture" });
@@ -229,7 +229,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `import { DEFAULT_RETRIES } from "./config.js";
        declare const step: any;
-       step("run").task({ run: { input: {}, exec: async ({ retries = DEFAULT_RETRIES }: any) => ({ retries }) } });`,
+       step("run").task({ input: {}, exec: async ({ retries = DEFAULT_RETRIES }: any) => ({ retries }) });`,
     );
 
     const verdict = analysis.get("run");
@@ -240,7 +240,7 @@ describe("task analysis", () => {
   it("does not flag globals, destructured context fields, or nested locals in inline tasks", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       step("run").task({ run: { input: {}, exec: async ({ input, abortSignal }: any) => {
+       step("run").task({ input: {}, exec: async ({ input, abortSignal }: any) => {
          const out: Record<string, number> = {};
          for (const key of Object.keys(input)) {
            const value = JSON.parse(String(input[key]));
@@ -248,7 +248,7 @@ describe("task analysis", () => {
          }
          if (abortSignal.aborted) return {};
          return out;
-       } } });`,
+       } });`,
     );
 
     expectInlineAccepted(analysis);
@@ -257,11 +257,11 @@ describe("task analysis", () => {
   it("does not flag a destructuring default that resolves to a local declaration", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       step("run").task({ run: { input: {}, exec: async ({ limit }: any) => {
+       step("run").task({ input: {}, exec: async ({ limit }: any) => {
          const fallbackLimit = 10;
          const { size = fallbackLimit } = { size: limit };
          return { size };
-       } } });`,
+       } });`,
     );
 
     expect(analysis.get("run")?.issue).toBeUndefined();
@@ -270,7 +270,7 @@ describe("task analysis", () => {
   it("does not produce metadata for task specs that cannot be joined from parser-only analysis", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       const spec = { run: { input: {}, exec: async () => ({ ok: true }) } };
+       const spec = { input: {}, exec: async () => ({ ok: true }) };
        step("run").task(spec);`,
     );
 
@@ -281,7 +281,7 @@ describe("task analysis", () => {
     const analysis = await analyze(
       `declare const step: any;
        const taskStep = step("run");
-       taskStep.task({ run: { input: {}, exec: async () => ({ ok: true }) } });`,
+       taskStep.task({ input: {}, exec: async () => ({ ok: true }) });`,
     );
 
     expect(analysis.has("run")).toBe(false);
@@ -290,8 +290,8 @@ describe("task analysis", () => {
   it("fails closed when multiple task callsites use the same step id", async () => {
     const analysis = await analyze(
       `declare const step: any;
-       step("run").task({ run: { input: {}, exec: async () => ({ ok: true }) } });
-       step("run").task({ run: { input: {}, exec: async () => ({ ok: false }) } });`,
+       step("run").task({ input: {}, exec: async () => ({ ok: true }) });
+       step("run").task({ input: {}, exec: async () => ({ ok: false }) });`,
     );
 
     expectTaskIssue(analysis, { kind: "ambiguous-task-callsite" });

@@ -9,12 +9,10 @@ export default defineWorkflow({
   }),
 }).build(({ input, step }) => {
   const result = step("create_worktree").task({
-    run: {
-      task: createWorktree,
-      input: {
-        repo: input.repo,
-        path: input.path,
-      },
+    task: createWorktree,
+    input: {
+      repo: input.repo,
+      path: input.path,
     },
   });
 

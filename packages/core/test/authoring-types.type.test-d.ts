@@ -5,7 +5,7 @@ import {
   z,
   type AgentDefinitionSpec,
   type AgentMap,
-  type AgentRunSpec,
+  type AgentStepSpec,
   type AgentToken,
   type JsonObject,
   type JsonValue,
@@ -43,13 +43,13 @@ test("agent tokens are typed from top-level agent keys", () => {
   defineWorkflow({ name: "typed-agent-keys", agents: extractedAgents }).build(({ agents, step }) => {
     assertType<AgentToken<"reviewer">>(agents.reviewer);
     const raw = step("raw_agent").agent({
-      run: { agent: agents.reviewer, prompt: "ok" },
+      agent: agents.reviewer, prompt: "ok",
     });
     expectTypeOf(raw.output).toEqualTypeOf<Expr<string>>();
 
     const structured = step("structured_agent").agent({
       outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
-      run: { agent: agents.reviewer, prompt: "ok" },
+      agent: agents.reviewer, prompt: "ok",
       retry: { max: 1 },
     });
     expectTypeOf(structured.output.ok).toEqualTypeOf<Expr<boolean>>();
@@ -57,7 +57,7 @@ test("agent tokens are typed from top-level agent keys", () => {
 
     // @ts-expect-error schema-less agents have no output conformance target to repair.
     step("bad_agent_retry").agent({
-      run: { agent: agents.reviewer, prompt: "bad" },
+      agent: agents.reviewer, prompt: "bad",
       retry: { max: 1 },
     });
 
@@ -67,20 +67,20 @@ test("agent tokens are typed from top-level agent keys", () => {
   });
 });
 
-test("agent run specs require agent tokens", () => {
+test("agent step specs require agent tokens", () => {
   const reviewer = null as unknown as AgentToken<"reviewer">;
   const declaration = {} as StepDeclaration;
-  declaration.agent({ run: { agent: reviewer, prompt: "ok" } });
+  declaration.agent({ agent: reviewer, prompt: "ok" });
 
-  const runSpec: AgentRunSpec = { agent: reviewer, prompt: "ok" };
-  const badRunSpec: AgentRunSpec = {
-    // @ts-expect-error agent runs accept tokens, not string keys.
+  const stepSpec: AgentStepSpec<undefined> = { agent: reviewer, prompt: "ok" };
+  const badStepSpec: AgentStepSpec<undefined> = {
+    // @ts-expect-error agent steps accept tokens, not string keys.
     agent: "reviewer",
     prompt: "bad",
   };
 
-  void runSpec;
-  void badRunSpec;
+  void stepSpec;
+  void badStepSpec;
 });
 
 test("task outputs are inferred from inline and reusable exec", () => {
@@ -98,27 +98,30 @@ test("task outputs are inferred from inline and reusable exec", () => {
   });
   defineWorkflow({ name: "typed-task-output", inputSchema: PackageInput }).build(({ input, step }) => {
     const inline = step("inline").task({
-      run: {
-        input: { packageName: input.packageName, version: input.version },
-        exec: async ({ input }) => {
-          assertType<string>(input.version);
-          // @ts-expect-error runtime input is unwrapped as string, not number.
-          assertType<number>(input.version);
-          return { version: input.version, ok: true };
-        },
+      input: { packageName: input.packageName, version: input.version },
+      exec: async ({ input }) => {
+        assertType<string>(input.version);
+        // @ts-expect-error runtime input is unwrapped as string, not number.
+        assertType<number>(input.version);
+        return { version: input.version, ok: true };
       },
     });
     expectTypeOf(inline.output.version).toEqualTypeOf<Expr<string>>();
     expectTypeOf(inline.output.ok).toEqualTypeOf<Expr<boolean>>();
 
     const reusable = step("reusable").task({
-      run: {
-        input: { packageName: input.packageName, version: input.version },
-        task: reusablePackageTask,
-      },
+      input: { packageName: input.packageName, version: input.version },
+      task: reusablePackageTask,
     });
     expectTypeOf(reusable.output.version).toEqualTypeOf<Expr<string>>();
     expectTypeOf(reusable.output.ok).toEqualTypeOf<Expr<boolean>>();
+
+    // @ts-expect-error a Task step must choose exactly one execution target.
+    step("ambiguous_target").task({
+      input: { packageName: input.packageName, version: input.version },
+      exec: async () => ({ ok: true }),
+      task: reusablePackageTask,
+    });
 
     return { ok: inline.output.ok, version: reusable.output.version };
   });
@@ -126,25 +129,25 @@ test("task outputs are inferred from inline and reusable exec", () => {
 
 test("signal nodes support raw string and schema-backed output", () => {
   defineWorkflow({ name: "typed-signal-output" }).build(({ step }) => {
-    const raw = step("raw_signal").signal({ run: { prompt: "Approve?" } });
+    const raw = step("raw_signal").signal({ prompt: "Approve?" });
     expectTypeOf(raw.output).toEqualTypeOf<Expr<string>>();
 
     const structured = step("structured_signal").signal({
       outputSchema: z.object({ approved: z.boolean() }),
-      run: { prompt: "Approve?" },
+      prompt: "Approve?",
     });
     expectTypeOf(structured.output.approved).toEqualTypeOf<Expr<boolean>>();
 
     step("signal_timeout_message").signal({
       timeout: "1m",
       onTimeout: { message: "Approval timed out" },
-      run: { prompt: "Approve?" },
+      prompt: "Approve?",
     });
 
     // @ts-expect-error onTimeout has no effect without timeout.
     step("typed_bad_signal_timeout_without_duration").signal({
       onTimeout: { message: "Approval timed out" },
-      run: { prompt: "bad" },
+      prompt: "bad",
     });
 
     return { approved: structured.output.approved, raw: raw.output };
@@ -159,7 +162,7 @@ test("nested composite callbacks close over root agents", () => {
     step("nested").if({
       condition: true,
       then() {
-        step("nested_agent").agent({ run: { agent: agents.worker, prompt: "ok" } });
+        step("nested_agent").agent({ agent: agents.worker, prompt: "ok" });
         return {};
       },
       else() { return {}; },
@@ -171,35 +174,29 @@ test("nested composite callbacks close over root agents", () => {
 test("task options accept only string cwd and string env values", () => {
   defineWorkflow({ name: "typed-task-options", inputSchema: z.object({ cwd: z.string(), token: z.string() }) }).build(({ input, step }) => {
     step("options_ok").task({
-      run: {
-        input: {},
-        cwd: input.cwd,
-        env: {
-          TOKEN: input.token,
-          VALUE: input.token,
-        },
-        exec: async () => ({ ok: true }),
+      input: {},
+      cwd: input.cwd,
+      env: {
+        TOKEN: input.token,
+        VALUE: input.token,
       },
+      exec: async () => ({ ok: true }),
     });
 
     step("bad_cwd").task({
-      run: {
-        input: {},
-        // @ts-expect-error cwd must be a string workflow value.
-        cwd: 1,
-        exec: async () => ({ ok: true }),
-      },
+      input: {},
+      // @ts-expect-error cwd must be a string workflow value.
+      cwd: 1,
+      exec: async () => ({ ok: true }),
     });
 
     step("bad_env").task({
-      run: {
-        input: {},
-        env: {
-          // @ts-expect-error env values must be string workflow values.
-          VALUE: 1,
-        },
-        exec: async () => ({ ok: true }),
+      input: {},
+      env: {
+        // @ts-expect-error env values must be string workflow values.
+        VALUE: 1,
       },
+      exec: async () => ({ ok: true }),
     });
 
     return {};
@@ -209,14 +206,12 @@ test("task options accept only string cwd and string env values", () => {
 test("fmap preserves selected output object types", () => {
   defineWorkflow({ name: "typed-fmap-selected-object" }).build(({ step }) => {
     const review = step("review").task({
-      run: {
-        input: {},
-        exec: async () => ({
-          ready: true,
-          summary: "ok",
-          report_path: "/tmp/report.md",
-        }),
-      },
+      input: {},
+      exec: async () => ({
+        ready: true,
+        summary: "ok",
+        report_path: "/tmp/report.md",
+      }),
     });
     const selected = fmap(review.output, output => ({
       summary: output.summary,
@@ -233,10 +228,8 @@ test("fmap preserves selected output object types", () => {
 test("boolean node conditions require boolean workflow values", () => {
   defineWorkflow({ name: "typed-conditions" }).build(({ step }) => {
     const review = step("review").task({
-      run: {
-        input: {},
-        exec: async () => ({ ok: true, summary: "done" }),
-      },
+      input: {},
+      exec: async () => ({ ok: true, summary: "done" }),
     });
     step("ok_if").if({ condition: review.output.ok, then() { return {}; }, else() { return {}; } });
     step("bad_if").if({
@@ -272,27 +265,21 @@ test("plain prompts and templates are accepted", () => {
     agents: { reviewer: { use: "codex" } },
   }).build(({ input, agents, step }) => {
     step("agent").agent({
-      run: {
-        agent: agents.reviewer,
-        prompt: template`Review ${input.title}`,
-        sessionKey: "plain-session",
-      },
+      agent: agents.reviewer,
+      prompt: template`Review ${input.title}`,
+      sessionKey: "plain-session",
     });
     step("agent_template_session").agent({
-      run: {
-        agent: agents.reviewer,
-        prompt: "Review",
-        sessionKey: template`release:${input.title}`,
-      },
+      agent: agents.reviewer,
+      prompt: "Review",
+      sessionKey: template`release:${input.title}`,
     });
     step("agent_md_session").agent({
-      run: {
-        agent: agents.reviewer,
-        prompt: "Review",
-        sessionKey: md`
-          release:${input.title}
-        `,
-      },
+      agent: agents.reviewer,
+      prompt: "Review",
+      sessionKey: md`
+        release:${input.title}
+      `,
     });
     return {};
   });
@@ -314,28 +301,24 @@ test("runtime configuration fields share the Resolvable seam", () => {
       outputSchema: z.object({ ok: z.boolean() }),
       timeout: input.timeout,
       retry: { max: input.count },
-      run: {
-        agent: agents.reviewer,
-        prompt: input.text,
-        sessionKey: input.text,
-        cwd: input.text,
-        env: { VALUE: input.text },
-      },
+      agent: agents.reviewer,
+      prompt: input.text,
+      sessionKey: input.text,
+      cwd: input.text,
+      env: { VALUE: input.text },
     });
     step("task").task({
       timeout: input.timeout,
-      run: {
-        input: { text: input.text },
-        cwd: input.text,
-        env: { VALUE: input.text },
-        execution: { defaultCommandTimeout: input.timeout },
-        exec: async ({ input }) => ({ text: input.text }),
-      },
+      input: { text: input.text },
+      cwd: input.text,
+      env: { VALUE: input.text },
+      execution: { defaultCommandTimeout: input.timeout },
+      exec: async ({ input }) => ({ text: input.text }),
     });
     step("signal").signal({
       timeout: input.timeout,
       onTimeout: { message: input.text },
-      run: { prompt: input.text },
+      prompt: input.text,
     });
     step("assert").assert({ condition: input.ready, message: input.text });
     step("parallel").parallel({
@@ -388,17 +371,15 @@ test("declaration-time structure stays plain", () => {
       do() { return {}; },
     });
     // @ts-expect-error output schemas are declaration-time structure.
-    step("schema").agent({ outputSchema: input.strategy, run: { agent: agents.reviewer, prompt: "review" } });
+    step("schema").agent({ outputSchema: input.strategy, agent: agents.reviewer, prompt: "review" });
     // @ts-expect-error reusable task targets are declaration-time structure.
-    step("target").task({ run: { task: input.strategy, input: {} } });
+    step("target").task({ task: input.strategy, input: {} });
     step("invalid_input").task({
-      run: {
-        input: {
-          // @ts-expect-error Task input cannot contain raw undefined.
-          omitted: undefined,
-        },
-        exec: async () => ({}),
+      input: {
+        // @ts-expect-error Task input cannot contain raw undefined.
+        omitted: undefined,
       },
+      exec: async () => ({}),
     });
     return {};
   });

@@ -278,7 +278,7 @@ async function admittedAgentStore(workspace: string): Promise<RuntimeStore> {
     name: "inspection-agent",
     agents: { observer: { use: "claude" } },
   }).build(({ agents, step }) => {
-    const observed = step("observe").agent({ run: { agent: agents.observer, prompt: "Inspect" } });
+    const observed = step("observe").agent({ agent: agents.observer, prompt: "Inspect" });
     return { observed: observed.output };
   }));
   const store = await openRuntimeStore(workspace);

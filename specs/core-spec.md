@@ -28,7 +28,7 @@
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
 - Named and custom command agent definitions MAY declare `model`.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
-- Agent node `run.agent` MUST use an agent token from the `build` context `agents` member.
+- Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
 - When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`.
 
 ### Schema Layer
@@ -58,20 +58,20 @@
 
 - Schema-valued authoring fields MUST use the `Schema` suffix. Workflow `inputSchema` and Agent/Signal `outputSchema` are runtime schema boundaries; reusable Task `inputSchema` is a config-time TypeScript type witness.
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
-- Executable nodes MUST use `run` as the execution boundary. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
+- Agent, Task, and Signal authoring specs MUST use flat kind-specific objects. Lowering MUST group their execution fields under the frozen node's `run` field. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env? }, timeout?, retry? })`.
+- Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout?, retry? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
-- Signal nodes MUST use `step("id").signal({ outputSchema?, run: { prompt }, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
+- Signal nodes MUST use `step("id").signal({ prompt, outputSchema?, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ message? }`.
 - Signal `onTimeout` MUST NOT be present unless `timeout` is present.
-- Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
-- Inline Task nodes MUST use `step("id").task({ run: { input, exec, cwd?, env?, execution? }, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
-- Reusable Task nodes MUST use `step("id").task({ run: { task, input, cwd?, env?, execution? }, timeout? })`; output is inferred from the reusable Task token's `exec`.
-- Agent node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.sessionKey`.
-- Signal node graph dependencies MUST be expressed by refs inside `run.prompt`.
-- Agent and Task node `run.cwd` MUST be `Resolvable<string>`.
-- Agent and Task node `run.env` values MUST be `Resolvable<string>`.
+- Task nodes MUST use the top-level authoring field `input` as the explicit expression-to-runtime-value boundary.
+- Inline Task nodes MUST use `step("id").task({ input, exec, cwd?, env?, execution?, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
+- Reusable Task nodes MUST use `step("id").task({ task, input, cwd?, env?, execution?, timeout? })`; output is inferred from the reusable Task token's `exec`.
+- Agent node graph dependencies MUST be expressed by refs inside the authored `prompt`, `cwd`, `env`, and `sessionKey` fields.
+- Signal node graph dependencies MUST be expressed by refs inside the authored `prompt` field.
+- Agent and Task node authoring field `cwd` MUST be `Resolvable<string>`.
+- Agent and Task node authoring field `env` values MUST be `Resolvable<string>`.
 - Top-level Agent definition `cwd` and `env` MUST remain declaration-time plain strings and MUST remain plain values in `WorkflowIR`.
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
@@ -102,12 +102,12 @@
 - A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
 - A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST infer the TypeScript input type of its `exec` function and call sites. It MUST NOT be retained on the executable Task token or promise runtime parsing, defaults, or transforms.
-- A reusable Task node call site's `run.input` MUST be the graph expression binding checked against that inferred input type.
+- A reusable Task node call site's top-level `input` MUST be the graph expression binding checked against that inferred input type.
 - Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
 - Agent node `retry`, when present, MUST contain only `max?: Resolvable<number>` and MUST
   require `outputSchema`.
-- Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution.defaultCommandTimeout`.
+- Task invocation options MAY support top-level `cwd`, `env`, and `execution.defaultCommandTimeout`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 - Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
@@ -144,7 +144,7 @@
 - Reusable task `exportName` MUST be `"default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Reusable task target referrers MUST use the closed shape `{ path: string }`.
 - Reusable task target referrer paths MUST be workspace-relative workflow paths, not absolute filesystem paths or paths that escape the workspace.
-- Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
+- Serialized Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the serialized task node top level.
 - Parallel node branch values MUST be child `ScopeIR` objects directly, without a single-field branch wrapper.
 
 ## Verification

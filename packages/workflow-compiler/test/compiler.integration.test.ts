@@ -150,7 +150,7 @@ export default defineWorkflow({
   name: "direct-import",
   inputSchema: z.object({}),
 }).build(({ step }) => {
-  const result = step("run").task({ run: { task: noop, input: {} } });
+  const result = step("run").task({ task: noop, input: {} });
   return { ok: result.output.ok };
 });
 `);

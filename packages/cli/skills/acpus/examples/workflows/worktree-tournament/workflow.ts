@@ -27,47 +27,41 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, meta, step }) => {
   const paths = step("plan_worktrees").task({
-    run: {
-      input: { root: input.worktreeRoot, runId: meta.runId },
-      exec: async ({ input }) => ({
-        alpha: `${input.root}/${input.runId}-alpha`,
-        beta: `${input.root}/${input.runId}-beta`,
-        gamma: `${input.root}/${input.runId}-gamma`,
-      }),
-    },
+    input: { root: input.worktreeRoot, runId: meta.runId },
+    exec: async ({ input }) => ({
+      alpha: `${input.root}/${input.runId}-alpha`,
+      beta: `${input.root}/${input.runId}-beta`,
+      gamma: `${input.root}/${input.runId}-gamma`,
+    }),
   });
 
   const candidates = step("candidate_worktrees").parallel({
     branches: {
       alpha() {
         const worktree = step("create_alpha_worktree").task({
-          run: {
-            task: createWorktree,
-            input: {
-              repo: input.repoPath,
-              path: paths.output.alpha,
-              ref: input.baseRef,
-              forceRemove: input.forceRemove,
-            },
+          task: createWorktree,
+          input: {
+            repo: input.repoPath,
+            path: paths.output.alpha,
+            ref: input.baseRef,
+            forceRemove: input.forceRemove,
           },
           timeout: "2m",
         });
 
         const implementation = step("implement_alpha").agent({
-          run: {
-            agent: agents.implementer,
-            cwd: worktree.output.worktreePath,
-            prompt: md`
-              Implement this task in the alpha worktree.
+          agent: agents.implementer,
+          cwd: worktree.output.worktreePath,
+          prompt: md`
+            Implement this task in the alpha worktree.
 
-              Task: ${input.task}
+            Task: ${input.task}
 
-              Return a Markdown implementation report with:
-              - Changed files
-              - Implementation summary
-              - Test command run, or "not run" with the reason
-            `,
-          },
+            Return a Markdown implementation report with:
+            - Changed files
+            - Implementation summary
+            - Test command run, or "not run" with the reason
+          `,
           timeout: "45m",
         });
 
@@ -79,33 +73,29 @@ export default defineWorkflow({
       },
       beta() {
         const worktree = step("create_beta_worktree").task({
-          run: {
-            task: createWorktree,
-            input: {
-              repo: input.repoPath,
-              path: paths.output.beta,
-              ref: input.baseRef,
-              forceRemove: input.forceRemove,
-            },
+          task: createWorktree,
+          input: {
+            repo: input.repoPath,
+            path: paths.output.beta,
+            ref: input.baseRef,
+            forceRemove: input.forceRemove,
           },
           timeout: "2m",
         });
 
         const implementation = step("implement_beta").agent({
-          run: {
-            agent: agents.implementer,
-            cwd: worktree.output.worktreePath,
-            prompt: md`
-              Implement this task in the beta worktree.
+          agent: agents.implementer,
+          cwd: worktree.output.worktreePath,
+          prompt: md`
+            Implement this task in the beta worktree.
 
-              Task: ${input.task}
+            Task: ${input.task}
 
-              Return a Markdown implementation report with:
-              - Changed files
-              - Implementation summary
-              - Test command run, or "not run" with the reason
-            `,
-          },
+            Return a Markdown implementation report with:
+            - Changed files
+            - Implementation summary
+            - Test command run, or "not run" with the reason
+          `,
           timeout: "45m",
         });
 
@@ -117,33 +107,29 @@ export default defineWorkflow({
       },
       gamma() {
         const worktree = step("create_gamma_worktree").task({
-          run: {
-            task: createWorktree,
-            input: {
-              repo: input.repoPath,
-              path: paths.output.gamma,
-              ref: input.baseRef,
-              forceRemove: input.forceRemove,
-            },
+          task: createWorktree,
+          input: {
+            repo: input.repoPath,
+            path: paths.output.gamma,
+            ref: input.baseRef,
+            forceRemove: input.forceRemove,
           },
           timeout: "2m",
         });
 
         const implementation = step("implement_gamma").agent({
-          run: {
-            agent: agents.implementer,
-            cwd: worktree.output.worktreePath,
-            prompt: md`
-              Implement this task in the gamma worktree.
+          agent: agents.implementer,
+          cwd: worktree.output.worktreePath,
+          prompt: md`
+            Implement this task in the gamma worktree.
 
-              Task: ${input.task}
+            Task: ${input.task}
 
-              Return a Markdown implementation report with:
-              - Changed files
-              - Implementation summary
-              - Test command run, or "not run" with the reason
-            `,
-          },
+            Return a Markdown implementation report with:
+            - Changed files
+            - Implementation summary
+            - Test command run, or "not run" with the reason
+          `,
           timeout: "45m",
         });
 
@@ -161,23 +147,21 @@ export default defineWorkflow({
       winner: z.enum(["alpha", "beta", "gamma"]),
       rationale: z.string(),
     }),
-    run: {
-      agent: agents.judge,
-      cwd: input.repoPath,
-      prompt: md`
-        Judge the best implementation for this task.
+    agent: agents.judge,
+    cwd: input.repoPath,
+    prompt: md`
+      Judge the best implementation for this task.
 
-        Task: ${input.task}
+      Task: ${input.task}
 
-        Each candidate includes its lane, worktree path, and Markdown implementation report.
+      Each candidate includes its lane, worktree path, and Markdown implementation report.
 
-        Alpha: ${candidates.output.alpha}
-        Beta: ${candidates.output.beta}
-        Gamma: ${candidates.output.gamma}
+      Alpha: ${candidates.output.alpha}
+      Beta: ${candidates.output.beta}
+      Gamma: ${candidates.output.gamma}
 
-        Return the winning lane and a concise rationale.
-      `,
-    },
+      Return the winning lane and a concise rationale.
+    `,
     retry: { max: 1 },
     timeout: "30m",
   });

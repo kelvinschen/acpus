@@ -93,7 +93,7 @@
 - Task analysis MUST produce diagnostic-free facts and reusable module reference metadata only.
 - Acpus authoring rules MUST own task authoring diagnostic codes, messages, and hints.
 - Internal module compilation MUST consume task metadata; authoring diagnostics remain owned by the check rules.
-- The analyzer MUST match direct `step("id").task(...)` call sites.
+- The analyzer MUST match direct flat inline `step("id").task({ input, exec, ... })` and reusable `step("id").task({ task, input, ... })` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
 - Reusable tasks MAY be imported from the supported official `acpus/tasks/git`
   facade subpath without a workflow-local Acpus installation.
@@ -107,7 +107,7 @@
 - Unsupported source forms such as namespace/property access MUST produce check diagnostics when statically recognizable.
 - Task callsites that cannot be joined to lowered task nodes by step id MUST produce check diagnostics rather than module descriptors.
 - Inline task source MUST be preserved as a self-contained function source in the serialized IR.
-- Inline task source analysis MUST treat task output as TypeScript-inferred from `exec`, not as schema-declared metadata.
+- Inline task source analysis MUST read the Task step's top-level `exec` and treat its output as TypeScript-inferred, not as schema-declared metadata.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics during preparation.
 - Internal module compilation MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
 - The task authoring diagnostic set MUST use `TB001` through `TB004` exactly as defined by the current authoring diagnostic table.

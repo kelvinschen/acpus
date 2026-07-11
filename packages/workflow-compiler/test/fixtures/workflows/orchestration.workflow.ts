@@ -58,10 +58,8 @@ export default defineWorkflow({
           review() {
             const review = step("review_lane").agent({
               outputSchema: LaneReview,
-              run: {
-                agent: agents.reviewer,
-                prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
-              },
+              agent: agents.reviewer,
+              prompt: template`Review lane ${item.id} in ${item.mode} mode.`,
             });
             return {
               branch: review.output.branch,
@@ -79,14 +77,12 @@ export default defineWorkflow({
               do({ state, round }) {
                 const repair = step("repair_round").agent({
                   outputSchema: LaneRepair,
-                  run: {
-                    agent: agents.worker,
-                    prompt: template`
-                      Repair lane ${item.id}.
-                      Round: ${round}
-                      Previous summary: ${state.summary}
-                    `,
-                  },
+                  agent: agents.worker,
+                  prompt: template`
+                    Repair lane ${item.id}.
+                    Round: ${round}
+                    Previous summary: ${state.summary}
+                  `,
                 });
                 const stop = lift2(repair.output.continue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);
                 return {
@@ -113,10 +109,8 @@ export default defineWorkflow({
                   then() {
                     const auto = step("auto_route").agent({
                       outputSchema: LaneRoute,
-                      run: {
-                        agent: agents.worker,
-                        prompt: template`Choose automatic route for ${item.id}.`,
-                      },
+                      agent: agents.worker,
+                      prompt: template`Choose automatic route for ${item.id}.`,
                     });
                     return {
                       branch: auto.output.branch,
@@ -129,10 +123,8 @@ export default defineWorkflow({
               default() {
                 const manual = step("manual_route").agent({
                   outputSchema: LaneRoute,
-                  run: {
-                    agent: agents.worker,
-                    prompt: template`Choose manual route for ${item.id}.`,
-                  },
+                  agent: agents.worker,
+                  prompt: template`Choose manual route for ${item.id}.`,
                 });
                 return {
                   branch: manual.output.branch,
@@ -164,21 +156,17 @@ export default defineWorkflow({
     then() {
       const human = step("human_approval").signal({
         outputSchema: Approval,
-        run: {
-          prompt: template`Approve orchestration result: ${lanes.output}`,
-        },
+        prompt: template`Approve orchestration result: ${lanes.output}`,
       });
       return { approved: human.output.approved, notes: human.output.notes };
     },
     else() {
       const automatic = step("automatic_approval").task({
-        run: {
-          input: {},
-          exec: async () => ({
-            approved: true,
-            notes: "auto-approved",
-          }),
-        },
+        input: {},
+        exec: async () => ({
+          approved: true,
+          notes: "auto-approved",
+        }),
       });
       return { approved: automatic.output.approved, notes: automatic.output.notes };
     },

@@ -93,10 +93,8 @@ function hookTaskWorkflow() {
     inputSchema: z.object({ packageName: z.string() }),
   }).build(({ input, step }) => {
     const build = step("build").task({
-      run: {
-        input: { packageName: input.packageName },
-        exec: async ({ input }) => ({ packageName: input.packageName }),
-      },
+      input: { packageName: input.packageName },
+      exec: async ({ input }) => ({ packageName: input.packageName }),
     });
     return { packageName: build.output.packageName };
   });

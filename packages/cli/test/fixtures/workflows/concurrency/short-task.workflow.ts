@@ -4,12 +4,10 @@ export default defineWorkflow({
   name: "cli-concurrency-short-task",
 }).build(({ step }) => {
   const result = step("short_task").task({
-    run: {
-      input: {},
-      exec: async () => {
-        await new Promise(resolve => setTimeout(resolve, 25));
-        return { ok: true };
-      },
+    input: {},
+    exec: async () => {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      return { ok: true };
     },
   });
 

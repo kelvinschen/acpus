@@ -18,24 +18,20 @@ export default defineWorkflow({
     condition: eq(input.usePrimary, true),
     then() {
       const selected = step("primary_route").task({
-        run: {
-          input: { mode: "primary" },
-          exec: async ({ input }) => {
-            await new Promise(resolve => setTimeout(resolve, 300));
-            return { mode: input.mode };
-          },
+        input: { mode: "primary" },
+        exec: async ({ input }) => {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          return { mode: input.mode };
         },
       });
       return { mode: selected.output.mode };
     },
     else() {
       const skipped = step("fallback_route").task({
-        run: {
-          input: { mode: "fallback" },
-          exec: async ({ input }) => {
-            await new Promise(resolve => setTimeout(resolve, 300));
-            return { mode: input.mode };
-          },
+        input: { mode: "fallback" },
+        exec: async ({ input }) => {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          return { mode: input.mode };
         },
       });
       return { mode: skipped.output.mode };
@@ -54,16 +50,14 @@ export default defineWorkflow({
               state: { value: item, completedRounds: 0 },
               do({ round, state }) {
                 const iteration = step("refine_round").task({
-                  run: {
-                    input: { value: state.value, round, itemIndex },
-                    exec: async ({ input }) => {
-                      await new Promise(resolve => setTimeout(resolve, 350));
-                      return {
-                        value: `${input.value}:round-${input.round}`,
-                        completedRounds: input.round,
-                        itemIndex: input.itemIndex,
-                      };
-                    },
+                  input: { value: state.value, round, itemIndex },
+                  exec: async ({ input }) => {
+                    await new Promise(resolve => setTimeout(resolve, 350));
+                    return {
+                      value: `${input.value}:round-${input.round}`,
+                      completedRounds: input.round,
+                      itemIndex: input.itemIndex,
+                    };
                   },
                 });
                 return {
@@ -86,12 +80,10 @@ export default defineWorkflow({
       },
       audit() {
         const audit = step("audit_route").task({
-          run: {
-            input: { mode: route.output.mode },
-            exec: async ({ input }) => {
-              await new Promise(resolve => setTimeout(resolve, 650));
-              return { summary: `audited:${input.mode}` };
-            },
+          input: { mode: route.output.mode },
+          exec: async ({ input }) => {
+            await new Promise(resolve => setTimeout(resolve, 650));
+            return { summary: `audited:${input.mode}` };
           },
         });
         return { summary: audit.output.summary };
@@ -101,7 +93,7 @@ export default defineWorkflow({
 
   const approval = step("approval").signal({
     outputSchema: z.object({ approved: z.boolean(), note: z.string().default("") }),
-    run: { prompt: template`Approve composite smoke run ${meta.runId} after ${work.output.audit.summary}?` },
+    prompt: template`Approve composite smoke run ${meta.runId} after ${work.output.audit.summary}?`,
     timeout: "10m",
     onTimeout: { message: "composite smoke approval timed out" },
   });

@@ -29,7 +29,7 @@ type CreateWorktreeError =
 /**
  * Reusable Task token that creates a detached Git worktree from a clean source repository.
  *
- * Use it from a workflow Task node with `run: { task: createWorktree, input: ... }`.
+ * Use it from a workflow Task node with `{ task: createWorktree, input: ... }`.
  */
 export const createWorktree = task.define({
   inputSchema: createWorktreeInputSchema,

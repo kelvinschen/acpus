@@ -198,12 +198,10 @@ function taskRuntimeContextWorkflow() {
     name: "scheduler-node-executor-task",
   }).build(({ step }) => {
     step("context_task").task({
-      run: {
-        input: {},
-        exec: async ({ artifact }) => ({
-          artifact: await artifact.writeText("result.txt", "dynamic artifact\n"),
-        }),
-      },
+      input: {},
+      exec: async ({ artifact }) => ({
+        artifact: await artifact.writeText("result.txt", "dynamic artifact\n"),
+      }),
     });
     return {};
   });
@@ -214,10 +212,8 @@ function nonAdmissibleTaskWorkflow() {
     name: "scheduler-node-executor-non-admissible-output",
   }).build(({ step }) => {
     step("bad_output").task({
-      run: {
-        input: {},
-        exec: (async () => ({ when: new Date() })) as any,
-      },
+      input: {},
+      exec: (async () => ({ when: new Date() })) as any,
     });
     return {};
   });
@@ -228,16 +224,14 @@ function retryingTaskWorkflow() {
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
-      run: {
-        input: {},
-        exec: async ({ artifact }) => {
-          const globalKey = "__acpus_scheduler_node_executor_retry_count";
-          const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;
-          (globalThis as Record<string, unknown>)[globalKey] = current;
-          await artifact.writeText(`attempt-${current}.txt`, `attempt ${current}\n`);
-          if (current === 1) throw new Error("first invocation fails");
-          return { ok: true };
-        },
+      input: {},
+      exec: async ({ artifact }) => {
+        const globalKey = "__acpus_scheduler_node_executor_retry_count";
+        const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;
+        (globalThis as Record<string, unknown>)[globalKey] = current;
+        await artifact.writeText(`attempt-${current}.txt`, `attempt ${current}\n`);
+        if (current === 1) throw new Error("first invocation fails");
+        return { ok: true };
       },
     });
     return {};

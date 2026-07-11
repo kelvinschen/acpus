@@ -13,7 +13,7 @@ export default defineWorkflow({
   }
 
   const result = step("stable_task").task({
-    run: { task: stableTask, input: {} },
+    task: stableTask, input: {},
   });
   return { ok: result.output.ok };
 });

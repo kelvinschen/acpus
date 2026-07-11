@@ -40,24 +40,20 @@ describe("workflow compilation", () => {
       },
     }).build(({ input, agents, meta, step }) => {
       const normalized = step("normalize_package").task({
-        run: {
-          task: normalizePackage,
-          input: { packageName: input.packageName },
-        },
+        task: normalizePackage,
+        input: { packageName: input.packageName },
       });
 
       const tests = step("run_tests").task({
-        run: {
-          input: { slug: normalized.output.slug },
-          cwd: input.repoPath,
-          env: {
-            CI: "true",
-          },
-          exec: async ({ input }) => ({
-            passed: true,
-            summary: `ok:${input.slug}`,
-          }),
+        input: { slug: normalized.output.slug },
+        cwd: input.repoPath,
+        env: {
+          CI: "true",
         },
+        exec: async ({ input }) => ({
+          passed: true,
+          summary: `ok:${input.slug}`,
+        }),
       });
 
       step("require_tests").assert({
@@ -67,15 +63,13 @@ describe("workflow compilation", () => {
 
       const review = step("review").agent({
         outputSchema: ReviewOutput,
-        run: {
-          agent: agents.reviewer,
-          prompt: template`Review ${tests.output.summary}`,
-          sessionKey: template`release:${tests.output.summary}`,
-          cwd: input.repoPath,
-          env: {
-            REVIEW_MODE: "strict",
-            PACKAGE_NAME: input.packageName,
-          },
+        agent: agents.reviewer,
+        prompt: template`Review ${tests.output.summary}`,
+        sessionKey: template`release:${tests.output.summary}`,
+        cwd: input.repoPath,
+        env: {
+          REVIEW_MODE: "strict",
+          PACKAGE_NAME: input.packageName,
         },
       });
 
@@ -83,9 +77,7 @@ describe("workflow compilation", () => {
         outputSchema: HumanDecisionOutput,
         timeout: "5m",
         onTimeout: { message: "Human approval timed out" },
-        run: {
-          prompt: template`Approve ${review.output.summary} for ${input.packageName}`,
-        },
+        prompt: template`Approve ${review.output.summary} for ${input.packageName}`,
       });
 
       return {
@@ -278,10 +270,8 @@ describe("workflow compilation", () => {
   it("lowers the same definition to identical WorkflowIR", () => {
     const definition = defineWorkflow({ name: "deterministic_lowering" }).build(({ step }) => {
       const result = step("run").task({
-        run: {
-          input: { value: "stable" },
-          exec: async ({ input }) => ({ value: input.value }),
-        },
+        input: { value: "stable" },
+        exec: async ({ input }) => ({ value: input.value }),
       });
       return { value: result.output.value };
     });
@@ -301,7 +291,7 @@ describe("workflow compilation", () => {
 
     expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_undefined_task_input" }).build(({ step }) => {
       step("task").task({
-        run: { input: { omitted: undefined as any }, exec: async () => ({}) },
+        input: { omitted: undefined as any }, exec: async () => ({}),
       });
       return {};
     }))).toThrow("Unsupported expression value: undefined.");
@@ -485,10 +475,8 @@ describe("workflow compilation", () => {
         over: input.items,
         do({ item }) {
           const echoed = step("fanout_echo").task({
-            run: {
-              input: { value: item },
-              exec: async ({ input }) => ({ value: input.value }),
-            },
+            input: { value: item },
+            exec: async ({ input }) => ({ value: input.value }),
           });
           return { value: echoed.output.value };
         },
@@ -518,10 +506,8 @@ describe("workflow compilation", () => {
         branches: {
           left() {
             const echoed = step("parallel_left_echo").task({
-              run: {
-                input: { value: "left" },
-                exec: async ({ input }) => ({ value: input.value }),
-              },
+              input: { value: "left" },
+              exec: async ({ input }) => ({ value: input.value }),
             });
             return { value: echoed.output.value };
           },
@@ -558,10 +544,8 @@ describe("workflow compilation", () => {
         condition: input.enabled,
         then() {
           const echoed = step("if_then_echo").task({
-            run: {
-              input: { value: "then" },
-              exec: async ({ input }) => ({ value: input.value }),
-            },
+            input: { value: "then" },
+            exec: async ({ input }) => ({ value: input.value }),
           });
           return { value: echoed.output.value };
         },
@@ -593,10 +577,8 @@ describe("workflow compilation", () => {
         condition: true,
         then() {
           const echoed = cached.task({
-            run: {
-              input: { value: "then" },
-              exec: async ({ input }) => ({ value: input.value }),
-            },
+            input: { value: "then" },
+            exec: async ({ input }) => ({ value: input.value }),
           });
           return { value: echoed.output.value };
         },
@@ -632,10 +614,8 @@ describe("workflow compilation", () => {
             when: input.enabled,
             then() {
               const echoed = step("switch_case_echo").task({
-                run: {
-                  input: { value: "case" },
-                  exec: async ({ input }) => ({ value: input.value }),
-                },
+                input: { value: "case" },
+                exec: async ({ input }) => ({ value: input.value }),
               });
               return { value: echoed.output.value };
             },
@@ -670,10 +650,8 @@ describe("workflow compilation", () => {
         state: { value: "initial" as string },
         do({ state }) {
           const echoed = step("loop_echo").task({
-            run: {
-              input: { value: state.value },
-              exec: async ({ input }) => ({ value: input.value }),
-            },
+            input: { value: state.value },
+            exec: async ({ input }) => ({ value: input.value }),
           });
           return { state: { value: echoed.output.value }, stop: true };
         },
@@ -731,26 +709,20 @@ describe("workflow compilation", () => {
     compileWorkflowDefinition(definition);
 
     expect(() => savedStep?.("late").task({
-      run: {
-        input: {},
-        exec: async () => ({}),
-      },
+      input: {},
+      exec: async () => ({}),
     })).toThrow("step() can only be called during workflow graph declaration.");
     expect(() => savedDeclaration?.task({
-      run: {
-        input: {},
-        exec: async () => ({}),
-      },
+      input: {},
+      exec: async () => ({}),
     })).toThrow("step() can only be called during workflow graph declaration.");
   });
 
   it("allows node output fields named ir to be wired as normal user fields", () => {
     const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
       const inspect = step("inspect").task({
-        run: {
-          input: {},
-          exec: async () => ({ ir: "ok" }),
-        },
+        input: {},
+        exec: async () => ({ ir: "ok" }),
       });
 
       return { ir: inspect.output.ir };
@@ -799,7 +771,7 @@ describe("workflow compilation", () => {
       const signal = step("approval").signal({
         outputSchema: Output,
         timeout: "1m",
-        run: { prompt: "Approve?" },
+        prompt: "Approve?",
       });
       const loop = step("retry").loop({
         state: { ok: false as boolean },
@@ -907,10 +879,8 @@ describe("workflow compilation", () => {
       },
     }).build(({ agents, step }) => {
       step("run_worker").agent({
-        run: {
-          agent: agents.worker,
-          prompt: "Run worker",
-        },
+        agent: agents.worker,
+        prompt: "Run worker",
       });
       return {};
     });
