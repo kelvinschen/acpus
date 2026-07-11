@@ -96,7 +96,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .exitOverride()
     .description("Typecheck, compile, and validate a workflow without mutating runtime state.")
     .argument("<workflow-module>", "workflow module path or catalog name")
-    .option("--input <json>", "validate this JSON value as the workflow input")
+    .option("--input <json|file.json>", "validate inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "validate submit-time agent overrides")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
@@ -108,7 +108,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .exitOverride()
     .description("Prepare and run a TypeScript workflow module.")
     .argument("<workflow-module>", "workflow module path or catalog name")
-    .option("--input <json>", "freeze this JSON value as the workflow input")
+    .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
     .option("--background", "admit the run and execute it in the background")
     .option("--interval <duration>", "refresh foreground run status (default: 1s, minimum: 250ms)")
@@ -165,7 +165,7 @@ async function showCatalog(ctx: WorkflowCommandContext, name: string, options: W
 }
 
 async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
-  const input = options.input === undefined ? undefined : parseInput(options.input);
+  const input = options.input === undefined ? undefined : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
@@ -189,7 +189,7 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   if (options.background && options.interval !== undefined) throw usageError("--interval cannot be used with --background.");
   const intervalMs = parseFollowInterval(options.interval);
-  const input = parseInput(options.input);
+  const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);

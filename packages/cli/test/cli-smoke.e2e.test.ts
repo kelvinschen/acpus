@@ -1,4 +1,4 @@
-import { cp } from "node:fs/promises";
+import { cp, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getRunInspection } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
@@ -32,8 +32,10 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
   it("runs a workflow path in foreground JSON mode", async () => {
     await withTestWorkspace("e2e-run-path", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const input = "sample input.JSON";
+      await writeFile(join(workspace, input), "{\"ready\":true}\n");
 
-      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", "{\"ready\":true}", "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", input, "--json"]);
 
       expect(result.exitCode, result.stdout || result.stderr).toBe(0);
       expect(result.stderr).toBe("");

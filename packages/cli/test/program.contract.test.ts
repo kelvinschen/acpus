@@ -124,8 +124,61 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: runStdout, stderr: runStderr,
     })).toBe(0);
     expect(runStdout.text).toContain("--interval");
+    expect(runStdout.text).toContain("--input <json|file.json>");
+
+    const checkStdout = new CaptureStream();
+    const checkStderr = new CaptureStream();
+    expect(await runCli(["workflow", "check", "--help"], {
+      cwd: process.cwd(), stdout: checkStdout, stderr: checkStderr,
+    })).toBe(0);
+    expect(checkStdout.text).toContain("--input <json|file.json>");
+
+    const forkStdout = new CaptureStream();
+    const forkStderr = new CaptureStream();
+    expect(await runCli(["runs", "fork", "--help"], {
+      cwd: process.cwd(), stdout: forkStdout, stderr: forkStderr,
+    })).toBe(0);
+    expect(forkStdout.text).toContain("--input <json|file.json>");
     expect(inspectStderr.text).toBe("");
     expect(runStderr.text).toBe("");
+    expect(checkStderr.text).toBe("");
+    expect(forkStderr.text).toBe("");
+  });
+
+  it("resolves .json input files before workflow preparation or runtime mutation", async () => {
+    await withTestWorkspace("input-files", async workspace => {
+      await writeFile(join(workspace, "empty.json"), "  \n");
+      await writeFile(join(workspace, "invalid.json"), "{\"ready\":}");
+      await writeFile(join(workspace, "input.txt"), "{\"ready\":true}\n");
+
+      const cases = [
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["workflow", "run", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["runs", "fork", "run_1", "--workflow", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "empty.json", "--json"], message: `--input file '${join(workspace, "empty.json")}' is empty` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "invalid.json", "--json"], message: `--input file '${join(workspace, "invalid.json")}' must be valid JSON` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "input.txt", "--json"], message: "--input must be valid JSON" },
+      ];
+
+      for (const testCase of cases) {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(testCase.argv, { cwd: workspace, stdout, stderr });
+        expect(exitCode).toBe(2);
+        expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+        expect(stdout.text).toContain(testCase.message);
+        expect(stderr.text).toBe("");
+      }
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli([
+        "workflow", "check", "missing.workflow.ts", "--input", "\"sample.json\"", "--json",
+      ], { cwd: workspace, stdout, stderr });
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).not.toMatchObject({ phase: "usage" });
+      expect(stderr.text).toBe("");
+    });
   });
 
   it("rejects incompatible inspection modes before reading runtime state", async () => {

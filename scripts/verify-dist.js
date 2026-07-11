@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,9 +30,10 @@ try {
   await symlink(join(root, "node_modules"), join(workspace, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const workflow = join(workspace, "workflow.ts");
   await cp(join(root, "packages/cli/test/fixtures/workflows/concurrency/short-task.workflow.ts"), workflow);
+  await writeFile(join(workspace, "input.json"), "{}\n");
 
   const { stdout, stderr } = await execFileAsync(process.execPath, [
-    join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--json",
+    join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--input", "input.json", "--json",
   ], {
     cwd: workspace,
     env: { ...process.env, FORCE_COLOR: "0", NODE_NO_WARNINGS: "1", NODE_OPTIONS: "" },

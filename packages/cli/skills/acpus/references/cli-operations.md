@@ -42,6 +42,16 @@ Use `--json` when the exact phase matters. It is a discoverable global option
 and may appear before or after command names. For example, invalid `--agents`
 overrides are reported in the JSON `phase` field before any runtime admission.
 
+`--input` accepts either inline strict JSON or a `.json` file path. The suffix
+is case-insensitive, and relative paths resolve from the CLI working directory:
+
+```sh
+acpus workflow check workflow.ts --input '{"topic":"release"}'
+acpus workflow check workflow.ts --input sample-input.json
+```
+
+Use a file for realistic payloads instead of shell command substitution.
+
 ## Workflow init
 
 Use `acpus workflow init file <file.ts>` to create a single-agent workflow starter that should pass `workflow check` immediately. The workflow name is derived from the file name and the generated worker uses `codex` until edited.
@@ -66,7 +76,7 @@ option because they do not attach an observer.
 For workflows that must receive a Signal, `--background` plus a follow view is
 usually the cleanest operator loop:
 
-1. Run once with `acpus workflow run <workflow.ts> --background --input '<json>'`.
+1. Run once with `acpus workflow run <workflow.ts> --background --input sample-input.json`.
 2. Attach with `acpus runs inspect <run-id> --follow`; it remains attached while awaiting.
 3. Send a schema-valid payload to the dynamic signal target, for example `acpus runs signal <run-id> --target approval~abc123 --payload '{"approved":true,"notes":"ok"}'`.
 4. Let the follow view reach terminal state. A denial payload is still valid signal handling and may intentionally drive a downstream assert failure.

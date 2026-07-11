@@ -2,12 +2,6 @@
 
 ## Quick Start
 
-For a new workflow, prefer generating a checkable scaffold first:
-
-```sh
-acpus workflow init file workflow.ts
-acpus workflow check workflow.ts
-```
 
 ### Imports
 

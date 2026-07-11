@@ -33,8 +33,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflow init catalog <name>`.
 - The CLI MUST support `acpus workflow viz <workflow-module> --out <file.html>`.
 - The CLI MUST support `--force` on `workflow viz` to overwrite an existing output file.
-- The CLI MUST support `--input <json>` and `--agents <json>` on workflow
-  check and run commands.
+- The CLI MUST support `--input <json|file.json>` and `--agents <json>` on
+  workflow check and run commands.
 - The CLI MUST support `acpus workflow list [--project | --global]`.
 - The CLI MUST support `acpus workflow show <name> [--project | --global]`.
 - The CLI MUST support `--project` and `--global` on workflow check and run
@@ -50,7 +50,7 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus runs signal <run-id> --target <run-target> --payload <json>`.
 - The CLI MUST support `acpus runs fork <run-id> --workflow <workflow-module>`
   as a replacement workflow module for the fork.
-- The CLI MUST support `acpus runs fork <run-id> --input <json>` and
+- The CLI MUST support `acpus runs fork <run-id> --input <json|file.json>` and
   `--agents <json>`.
 - The CLI MUST support `acpus runs fork <run-id> --target <run-target>` and
   MUST reject an empty fork target before runtime mutation.
@@ -110,7 +110,18 @@ failures to stable CLI phases and exit codes.
 - `workflow run --background` MUST start or wake the workspace daemon, admit
   the run through it, and return only after the daemon accepts responsibility
   for executing or queueing the durable run.
-- Invalid JSON input MUST fail as a usage error before workflow preparation.
+- An `--input` argument whose raw value ends with `.json`, case-insensitively,
+  MUST be read as a UTF-8 JSON file. Relative input paths MUST resolve from the
+  CLI working directory; absolute paths MUST remain absolute. Every other
+  `--input` argument MUST be parsed as inline JSON without probing the
+  filesystem or falling back between input modes.
+- Input files MUST contain strict JSON. Missing or unreadable files,
+  whitespace-only files, invalid JSON, and non-JSON values MUST fail as usage
+  errors that identify the resolved absolute file path. The CLI MUST NOT repair
+  JSON, strip a byte-order mark, accept JSONC, or read `--input` from stdin.
+- Invalid inline JSON and input-file failures MUST fail before workflow
+  preparation or runtime mutation. `runs fork` MUST parse replacement input
+  before preparing a replacement workflow.
 - Invalid `--agents` JSON, or a non-object `--agents` value, MUST fail as a
   usage error before workflow preparation or runtime mutation.
 - Workflow preparation failures MUST be mapped to `check`, `compile`, or
@@ -459,6 +470,10 @@ failures to stable CLI phases and exit codes.
   exactly one daemon admission or control dispatch after readiness.
 - Tests MUST cover check failure, compile/validation failure, invalid JSON
   input, and input-schema validation failure phase mapping.
+- Tests MUST cover inline and file-backed input for workflow check, workflow
+  run, and runs fork; case-insensitive `.json` detection; cwd-relative paths;
+  JSON strings ending in `.json`; and file read, empty-file, and parse failures
+  before workflow preparation or runtime mutation.
 - Tests MUST cover diagnostic hint rendering in text output and hint
   preservation in JSON output.
 - Tests MUST cover read-only run inspect status surface output.

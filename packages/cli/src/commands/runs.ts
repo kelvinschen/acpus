@@ -7,7 +7,7 @@ import { writeResult, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
-import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
+import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
 import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { DaemonControlFailure, daemonControlRequestId, sendDaemonControl } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
@@ -88,7 +88,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .exitOverride()
     .argument("<run-id>", "run id")
     .option("--workflow <workflow-module>", "use a replacement workflow module for the fork")
-    .option("--input <json>", "override workflow input for the fork")
+    .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
     .option("--agents <json>", "override inherited agents for the fork")
     .option("--target <run-target>", "target a replacement workflow recovery point")
     .option("--unsafe-reuse", "dangerously reuse completed fork prerequisites despite workflow, input, or signature changes")
@@ -282,9 +282,12 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: ControlAction): Promise<void> {
   if (action === "fork" && options.target === "") throw usageError("--target must be a non-empty string.");
+  const replacementInput = action === "fork" && options.input !== undefined
+    ? await parseInput(options.input, ctx.cwd)
+    : undefined;
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
-  const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
+  const forkInput = await maybeNormalizeForkInput(ctx, runId, action, replacementInput, prepared);
   let result: Awaited<ReturnType<typeof sendDaemonControl>>;
   try {
     const base = { requestId: daemonControlRequestId(), runId };
@@ -319,14 +322,13 @@ async function maybeNormalizeForkInput(
   ctx: RunsCommandContext,
   runId: string,
   action: ControlAction,
-  options: RunsCommandOptions,
+  replacementInput: JsonValue | undefined,
   prepared: PreparedRunWorkflow | undefined,
 ): Promise<JsonValue | undefined> {
   if (action !== "fork") return undefined;
-  if (options.input === undefined && !prepared) return undefined;
-  const rawInput = options.input === undefined ? undefined : parseJsonOption(options.input, "--input");
+  if (replacementInput === undefined && !prepared) return undefined;
   try {
-    return await normalizeForkInput(ctx.cwd, runId, rawInput, prepared);
+    return await normalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
   } catch (error) {
     throw validationError(error instanceof Error ? error.message : String(error));
   }
