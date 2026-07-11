@@ -56,7 +56,7 @@ export default defineWorkflow({
   }),
 
   agents: {
-    reviewer: { use: "codex", permissionMode: "approve-reads" },
+    reviewer: { use: "codex", model: "gpt-5.5", permissionMode: "approve-reads" },
   },
 }).build(({ input, agents, step }) => {
   const diff = step("diff").task({
@@ -97,6 +97,8 @@ export default defineWorkflow({
   };
 });
 ```
+
+`model` is optional and validated by acpx; omit it for the agent default.
 
 ## Core boundaries
 

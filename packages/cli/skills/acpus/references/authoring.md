@@ -53,7 +53,7 @@ export default defineWorkflow({
   name: "my-workflow",
   description: "Analyze a topic in a repository.",
   inputSchema: z.object({ repoPath: z.string(), topic: z.string() }),
-  agents: { worker: { use: "codex" } },
+  agents: { worker: { use: "codex", model: "gpt-5.5" } },
 }).build(({ input, agents, meta, step }) => {
   const result = step("work").agent({
     outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
@@ -162,7 +162,10 @@ const review = step("review").agent({
 });
 ```
 
-Top-level agents use either `{ use: "codex" }` for named acpx agents or `{ command: "my-acp-server --stdio" }` for raw ACP commands. Common built-ins include `codex`, `claude`, `gemini`, `cursor`, `copilot`, `qwen`, `trae`, and `opencode`; see `references/acpx-agents.md` for the full built-in list and local discovery rules.
+Top-level agents use `use` for named acpx agents or `command` for raw ACP
+commands. Both accept a static optional `model`, validated by acpx; omit it for
+the agent default, and define separate Agent keys for different models. See
+`references/acpx-agents.md` for built-in agents and local discovery rules.
 
 Task nodes run local TypeScript glue. Pass workflow values through `run.input`; inside `exec`, use only task context:
 
