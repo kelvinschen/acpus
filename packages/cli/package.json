@@ -30,7 +30,6 @@
   "files": [
     "dist",
     "skills",
-    "templates",
     "README.md"
   ],
   "publishConfig": {

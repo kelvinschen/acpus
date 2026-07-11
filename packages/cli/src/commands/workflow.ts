@@ -10,7 +10,6 @@ import { followRun, parseFollowInterval } from "../run-follow.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
-import { writeWorkflowInit } from "../workflow-init/write.js";
 import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonAdmitRun } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
@@ -64,34 +63,6 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
       await showCatalog(ctx, name, options);
     }));
 
-  const init = new Command("init")
-    .exitOverride()
-    .description("Create a TypeScript workflow module scaffold.");
-
-  init.addCommand(new Command("file")
-    .exitOverride()
-    .description("Create a workflow module at a file path.")
-    .argument("<file.ts>", "workflow module path")
-    .action(async (file: string) => {
-      await initWorkflow(ctx, {
-        target: "file",
-        destination: file,
-      });
-    }));
-
-  init.addCommand(new Command("catalog")
-    .exitOverride()
-    .description("Create a project workflow catalog entry.")
-    .argument("<name>", "workflow catalog name")
-    .action(async (name: string) => {
-      await initWorkflow(ctx, {
-        target: "catalog",
-        destination: name,
-      });
-    }));
-
-  command.addCommand(init);
-
   command.addCommand(new Command("check")
     .exitOverride()
     .description("Typecheck, compile, and validate a workflow without mutating runtime state.")
@@ -131,17 +102,6 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     }));
 
   return command;
-}
-
-async function initWorkflow(ctx: WorkflowCommandContext, options: Parameters<typeof writeWorkflowInit>[1]): Promise<void> {
-  const result = await writeWorkflowInit(ctx.cwd, options);
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "init",
-    message: "Workflow initialized.",
-    target: result.target,
-    path: result.path,
-  }, outputFormat(ctx), ctx, 0));
 }
 
 async function listCatalog(ctx: WorkflowCommandContext, options: WorkflowOptions): Promise<void> {

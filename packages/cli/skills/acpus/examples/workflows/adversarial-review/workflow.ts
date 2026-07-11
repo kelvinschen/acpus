@@ -2,8 +2,12 @@
  * Pattern: Plan adversarial lenses, fan out reviews, cross-critique, and synthesize.
  * Nodes: agent, fanout
  */
-import { defineWorkflow, z } from "acpus/core";
-import { md } from "acpus/expression";
+import { defineWorkflow, z, /* task */ } from "acpus/core";
+import {
+    md,
+    /* fmap, lift2, lift3, lift, eq, ne, lt, lte, gt, gte, not, and, or, template */
+} from "acpus/expression";
+// import { createWorktree } from "acpus/tasks/git";
 
 const Verdict = z.enum(["pass", "pass-with-nits", "needs-work", "block"]);
 

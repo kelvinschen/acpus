@@ -2,8 +2,12 @@
  * Pattern: Fan out issue triage, run branch work in parallel, and route by switch.
  * Nodes: agent, task, switch, parallel, fanout
  */
-import { defineWorkflow, z } from "acpus/core";
-import { eq, fmap, md } from "acpus/expression";
+import { defineWorkflow, z, /* task */ } from "acpus/core";
+import {
+  eq, fmap, md,
+  /* lift2, lift3, lift, ne, lt, lte, gt, gte, not, and, or, template */
+} from "acpus/expression";
+// import { createWorktree } from "acpus/tasks/git";
 import { summarizeIssue } from "./tasks.js";
 
 export default defineWorkflow({

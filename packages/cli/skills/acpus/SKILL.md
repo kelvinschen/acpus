@@ -9,8 +9,8 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 
 ## Route the request
 
-- **Author or adapt:** Read `references/authoring.md` completely before editing. For new workflows, initialize a scaffold, then choose the closest file under `examples/workflows/` by its `Pattern` and `Nodes` header.
-- **Check, run, init, list, or show:** Read `references/cli-operations.md` and use `acpus <cmd> --help` for exact syntax.
+- **Author or adapt:** Read `references/authoring.md` completely before editing. For new workflows, choose the closest file under `examples/workflows/` by its `Pattern` and `Nodes` header, then write the target workflow module directly.
+- **Check, run, list, or show:** Read `references/cli-operations.md` and use `acpus <cmd> --help` for exact syntax.
 - **Inspect or control a run:** Read `references/runtime-recovery.md`; inspect before retry, fork, signal, cancel, pause, resume, or delete.
 - **Configure hooks:** Read `references/hooks-json.md`.
 - **Choose an agent:** Read `references/acpx-agents.md` when built-in or local agent availability matters.

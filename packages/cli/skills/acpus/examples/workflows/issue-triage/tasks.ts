@@ -1,4 +1,4 @@
-import { task, z } from "acpus/core";
+import { task, z, /* defineWorkflow */ } from "acpus/core";
 
 export const summarizeIssue = task.define({
   // Reusable task modules may import third-party dependencies installed with the workflow package.

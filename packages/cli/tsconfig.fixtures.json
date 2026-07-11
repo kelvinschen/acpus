@@ -8,7 +8,6 @@
   "include": [
     "src/**/*.ts",
     "test/fixtures/**/*.ts",
-    "templates/**/*.ts",
     "skills/acpus/examples/workflows/**/*.ts"
   ],
   "exclude": ["test/fixtures/workflows/invalid/**/*.ts"]

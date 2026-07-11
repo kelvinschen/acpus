@@ -2,6 +2,13 @@
 
 ## Quick Start
 
+Choose the closest file under `examples/workflows/` by its `Pattern` and
+`Nodes` header, then write the target workflow module directly. Validate it
+before running:
+
+```sh
+acpus workflow check <workflow.ts-or-catalog>
+```
 
 ### Imports
 
@@ -13,10 +20,10 @@ import { template, md, eq, lte, gte, and, or, fmap, lift2, lift3, lift } from "a
 import { createWorktree } from "acpus/tasks/git";
 ```
 
-The generated starter imports only the helpers it uses. Its authoring comments
-name common predicate, template, and lift helpers; add those imports when the
-workflow needs them. For the complete surface, inspect the declarations listed
-under Declaration Lookup.
+Import only the helpers the workflow uses. Official examples name the remaining
+public runtime helpers in import comments so each example exposes the complete
+authoring surface. For exact signatures, inspect the declarations listed under
+Declaration Lookup.
 
 Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
 
