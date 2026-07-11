@@ -29,7 +29,10 @@
 - `prepareWorkflow(options)` MUST run `check`, then `compile`, then `validate`.
 - The check phase MUST aggregate stable TypeScript compiler diagnostics and Acpus authoring-rule diagnostics as `DiagnosticIR`.
 - TypeScript diagnostics MUST use existing `DiagnosticIR` fields with `code: "TS####"`, flattened `message`, and `source` file, line, and column when available.
-- The TypeScript check MUST use stable `typescript`, not `@typescript/native-preview`.
+- The TypeScript check MUST use the repository-pinned TypeScript 7 native compiler and MUST NOT retain a TypeScript 6, `@typescript/native-preview`, or fallback backend.
+- TypeScript 7 programmatic access MUST be isolated behind the package-internal workflow-analysis implementation boundary. Native API, project, snapshot, program, checker, AST, symbol, type, and node-handle values MAY be shared only among that boundary's check and task-analysis implementation files and MUST NOT appear in the package entrypoint, public types, domain results, IR, events, or worker JSON.
+- The TypeScript 7 native API version MUST be pinned exactly. Every snapshot MUST be disposed and every short-lived API instance MUST be closed on both success and failure.
+- Normal TypeScript 7 native shutdown MUST close the service input and await clean process exit before releasing the API; successful workflow checks MUST NOT emit native shutdown noise on process stderr.
 - The TypeScript check MUST use a scratch tsconfig with NodeNext module resolution and no emit.
 - The TypeScript check MUST keep the scratch tsconfig self-contained to the
   workflow entry and its import graph; it MUST NOT inherit host `tsconfig.json`
@@ -79,6 +82,8 @@
   loader only to execute the compiler's own `.ts` worker file; it MUST NOT
   encode workflow module or reusable task module loading policy.
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
+- Native TypeScript service, protocol, project, or source-invariant failures during check MUST produce a `WF002` check diagnostic and MUST NOT silently fall back to another compiler backend.
+- Workflow check infrastructure diagnostics MUST use `WF001` for an unreadable workflow source and `WF002` for an unavailable or failed TypeScript 7 native analysis service.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.
 - `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, and validate failures.
@@ -91,6 +96,7 @@
 ### Task Analysis And Reusable References
 
 - Task analysis MUST use parser-only static source analysis of the workflow source where source-level task callsite metadata is required.
+- Parser-only task analysis MUST use an isolated TypeScript 7 project with dependency and library resolution disabled; it MUST NOT retain or expose native AST state after analysis completes.
 - Task analysis MUST produce diagnostic-free facts and reusable module reference metadata only.
 - Acpus authoring rules MUST own task authoring diagnostic codes, messages, and hints.
 - Internal module compilation MUST consume task metadata; authoring diagnostics remain owned by the check rules.
@@ -129,6 +135,7 @@
 - Public API contract and type tests MUST cover exported preparation functions, error class, and public types.
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
+- Tests MUST cover TypeScript 7 native lifecycle cleanup, diagnostic-chain flattening, source locations, default-library globals, source overlays, repeated and concurrent checks, and `WF002` infrastructure failures.
 - Tests MUST cover accepted unary, binary, ternary, and named-object `lift` callbacks with expression and block bodies, aliases, namespaces, globals, and ordinary methods, plus rejected captures, spread arguments, callable references, insufficient callback parameters, invalid bindings, and function expressions.
 - Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, `unknown` rejection, and the explicit `any` escape hatch.
 - Authoring-rule tests MUST cover only source-level invariants, MUST assert the

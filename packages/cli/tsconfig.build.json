@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "customConditions": [],
+    "tsBuildInfoFile": "./tsconfig.build.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../expression/tsconfig.build.json" },
+    { "path": "../runtime/tsconfig.build.json" },
+    { "path": "../tasks/tsconfig.build.json" },
+    { "path": "../web/tsconfig.build.json" },
+    { "path": "../workflow-compiler/tsconfig.build.json" }
+  ]
+}

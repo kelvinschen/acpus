@@ -12,7 +12,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "exports": {
     ".": {
@@ -51,9 +51,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "dependencies": {
     "@acpus/expression": "workspace:*",
@@ -62,7 +62,7 @@
     "zx": "^8.8.5"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30"
+    "@types/node": "^22.20.1"
   },
   "repository": {
     "type": "git",

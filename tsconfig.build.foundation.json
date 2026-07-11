@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/agent-executor/tsconfig.build.json" },
+    { "path": "./packages/expression/tsconfig.build.json" },
+    { "path": "./packages/core/tsconfig.build.json" },
+    { "path": "./packages/tasks/tsconfig.build.json" },
+    { "path": "./packages/loader/tsconfig.build.json" },
+    { "path": "./packages/workflow-compiler/tsconfig.build.json" },
+    { "path": "./packages/runtime/tsconfig.build.json" }
+  ]
+}

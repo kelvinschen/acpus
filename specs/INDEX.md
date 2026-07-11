@@ -28,6 +28,7 @@ One short paragraph describing the current feature boundary.
 
 | Spec | Owner | Verification |
 | --- | --- | --- |
+| [Build Toolchain Spec](build-toolchain-spec.md) | workspace | `pnpm check:build-toolchain`, `pnpm build:clean`, `pnpm test:dist` |
 | [Loader Spec](loader-spec.md) | `@acpus/loader` | `pnpm --filter @acpus/loader typecheck`, `pnpm test:integration -- packages/loader` |
 | [Core Spec](core-spec.md) | `@acpus/core` | `pnpm --filter @acpus/core typecheck`, `pnpm test:unit -- packages/core`, `pnpm test:contract -- packages/core`, `pnpm test:type -- packages/core` |
 | [Expression Spec](expression-spec.md) | `@acpus/expression` | `pnpm --filter @acpus/expression typecheck`, `pnpm test:unit -- packages/expression`, `pnpm test:contract -- packages/expression`, `pnpm test:type -- packages/expression` |

@@ -1,5 +1,11 @@
-import ts from "typescript";
-import { execFunction, isTaskDefineCall, objectProperty, parseSourceFile, taskFactoryLocalName } from "./ast.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { err, type Result } from "neverthrow";
+import * as ts from "typescript/unstable/ast";
+import type { SourceFile } from "typescript/unstable/ast";
+import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "../typescript/native.js";
+import { execFunction, isTaskDefineCall, objectProperty, taskFactoryLocalName } from "./ast.js";
 import { findTaskCallsites } from "./callsites.js";
 import { collectFreeIdentifiers } from "./inline-capture.js";
 import type { ImportBinding, TaskAuthoringIssue, TaskReferenceMetadata, TaskCallsite, WorkflowTaskExport } from "./types.js";
@@ -26,12 +32,47 @@ type AnalyzeContext = {
   localExports: Map<string, WorkflowTaskExport>;
 };
 
-export async function analyzeWorkflowTasks(workflowFile: string, source: string): Promise<WorkflowTaskAnalysis> {
-  return analyzeWorkflowTasksSync(workflowFile, source);
+export async function analyzeWorkflowTasks(
+  workflowFile: string,
+  source: string,
+): Promise<Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>> {
+  let scratchDir: string;
+  try {
+    scratchDir = await mkdtemp(join(tmpdir(), "acpus-task-analysis-"));
+  } catch (cause) {
+    return err(nativeFailure(cause));
+  }
+  const configPath = join(scratchDir, "tsconfig.json");
+  let result: Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>;
+  try {
+    await writeFile(configPath, `${JSON.stringify({
+      compilerOptions: {
+        target: "ESNext",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        noEmit: true,
+        noLib: true,
+        noResolve: true,
+        skipLibCheck: true,
+      },
+      files: [workflowFile],
+    }, null, 2)}\n`);
+    result = await withNativeProject(
+      { configPath, cwd: dirname(workflowFile), sourcePath: workflowFile, source },
+      ({ sourceFile }) => analyzeWorkflowTasksFromSourceFile(workflowFile, sourceFile),
+    );
+  } catch (cause) {
+    result = err(nativeFailure(cause));
+  }
+  try {
+    await rm(scratchDir, { recursive: true, force: true });
+  } catch (cause) {
+    if (result.isOk()) return err(nativeFailure(cause));
+  }
+  return result;
 }
 
-function analyzeWorkflowTasksSync(workflowFile: string, source: string): WorkflowTaskAnalysis {
-  const sourceFile = parseSourceFile(workflowFile, source);
+export function analyzeWorkflowTasksFromSourceFile(workflowFile: string, sourceFile: SourceFile): WorkflowTaskAnalysis {
   const imports = collectImportBindings(sourceFile);
   const locals = collectLocalValueNames(sourceFile);
   const localExports = collectWorkflowTaskExports(sourceFile);
@@ -116,7 +157,7 @@ function reusableMetadata(specifier: string, exportName: string): AnalyzedTask {
   };
 }
 
-function analyzeInline(exec: ts.FunctionLikeDeclarationBase): AnalyzedTask {
+function analyzeInline(exec: ts.FunctionLikeDeclaration): AnalyzedTask {
   const free = collectFreeIdentifiers(exec);
   if (free.length > 0) {
     return {

@@ -1,19 +1,23 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import { officialAuthoringTypeScriptPaths } from "@acpus/loader";
 import { describe, expect, it } from "vitest";
 import { checkWorkflowAuthoring } from "../src/check/authoring-rules/index.js";
 import type { TaskAuthoringIssue, WorkflowTaskAnalysis } from "../src/task-analysis/index.js";
+import { withNativeProject } from "../src/typescript/native.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 
 describe("workflow authoring rules", () => {
-  it("reports Expr authoring diagnostics without running the full check pipeline", () => {
-    const diagnostics = checkAuthoring(`
-      declare const expr: unknown;
-      declare const items: unknown[];
+  it("reports Expr authoring diagnostics without running the full check pipeline", async () => {
+    const diagnostics = await checkAuthoring(`
+      import type { Expr } from "acpus/expression";
+      declare const expr: Expr<boolean>;
+      declare const items: Expr<string[]>;
       declare const step: any;
       if (expr) {}
       const negated = !expr;
@@ -23,9 +27,7 @@ describe("workflow authoring rules", () => {
       const mapped = items.map((item) => item);
       step(String(expr)).assert({ condition: true });
       void [negated, logical, compared, prompt, mapped];
-    `, {
-      isExpr: node => ts.isIdentifier(node) && (node.text === "expr" || node.text === "items"),
-    });
+    `);
 
     expect(codes(diagnostics)).toEqual(expect.arrayContaining([
       "AL001",
@@ -37,7 +39,7 @@ describe("workflow authoring rules", () => {
     expect(diagnostics.filter(diagnostic => diagnostic.code.startsWith("AL"))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          source: expect.objectContaining({ file: "workflow.ts" }),
+          source: expect.objectContaining({ file: expect.stringContaining("workflow.ts") }),
           hint: expect.any(String),
         }),
       ]),
@@ -47,21 +49,20 @@ describe("workflow authoring rules", () => {
     }
   });
 
-  it("leaves expression array properties and methods to TypeScript", () => {
-    const diagnostics = checkAuthoring(`
-      declare const items: unknown[];
+  it("leaves expression array properties and methods to TypeScript", async () => {
+    const diagnostics = await checkAuthoring(`
+      import type { Expr } from "acpus/expression";
+      declare const items: Expr<string[]>;
       const first = items[0];
       const mapped = items.map(item => item);
       void [first, mapped];
-    `, {
-      isExpr: node => ts.isIdentifier(node) && node.text === "items",
-    });
+    `);
 
     expect(diagnostics).toEqual([]);
   });
 
-  it("reports shadowed runtime globals captured by inline tasks", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("reports shadowed runtime globals captured by inline tasks", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       export {};
       const Math = { max: (..._values: number[]) => 1 };
       declare const step: any;
@@ -77,22 +78,19 @@ describe("workflow authoring rules", () => {
     }));
   });
 
-  it("reports reason-specific TB004 diagnostics for unjoinable task callsites", () => {
-    const diagnostics = checkAuthoring(`
+  it("reports reason-specific TB004 diagnostics for unjoinable task callsites", async () => {
+    const diagnostics = await checkAuthoring(`
       declare const step: any;
       declare const dynamic: string;
       declare const spec: object;
-      declare const s: any;
+      import type { StepDeclaration } from "acpus/core";
+      declare const s: (id: string) => StepDeclaration;
       step(dynamic).task({});
       step("non_object").task(spec);
-      const saved = step("saved");
+      declare const saved: StepDeclaration;
       saved.task({});
       s("aliased").task({});
-    `, {
-      isStepDeclaration: node =>
-        (ts.isIdentifier(node) && node.text === "saved")
-        || (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "s"),
-    });
+    `);
 
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "TB004", hint: expect.stringContaining("literal task step id") }),
@@ -101,8 +99,8 @@ describe("workflow authoring rules", () => {
     ]));
   });
 
-  it("maps task-analysis issues to task-authoring diagnostics", () => {
-    const diagnostics = checkAuthoring("", {
+  it("maps task-analysis issues to task-authoring diagnostics", async () => {
+    const diagnostics = await checkAuthoring("", {
       taskAnalysis: new Map([
         ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
         ["invalid_export", analyzedIssue({ kind: "invalid-reusable-task-export", importedName: "default", reason: "not-task-define" })],
@@ -119,19 +117,18 @@ describe("workflow authoring rules", () => {
     ]));
   });
 
-  it("uses contiguous AL and TB diagnostic families", () => {
-    const exprDiagnostics = checkAuthoring(`
-      declare const expr: unknown;
+  it("uses contiguous AL and TB diagnostic families", async () => {
+    const exprDiagnostics = await checkAuthoring(`
+      import type { Expr } from "acpus/expression";
+      declare const expr: Expr<boolean>;
       declare const step: any;
       if (expr) {}
       void (expr && true);
       void (expr === expr);
       void \`value: \${expr}\`;
       step(String(expr)).assert({ condition: true });
-    `, {
-      isExpr: node => ts.isIdentifier(node) && node.text === "expr",
-    });
-    const callbackDiagnostics = checkAuthoringWithProgram(`
+    `);
+    const callbackDiagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       declare const value: string;
       const suffix = "!";
@@ -147,7 +144,7 @@ describe("workflow authoring rules", () => {
         return value8 + suffix;
       });
     `);
-    const taskDiagnostics = checkAuthoring("", {
+    const taskDiagnostics = await checkAuthoring("", {
       taskAnalysis: new Map([
         ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
         ["invalid", analyzedIssue({ kind: "invalid-reusable-task-reference" })],
@@ -186,8 +183,21 @@ describe("workflow authoring rules", () => {
     expect(hits).toEqual([]);
   });
 
-  it("accepts unary, binary, ternary, named, aliased, and namespace lift callbacks from the expression facade", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("keeps TypeScript 7 native APIs behind the package-internal analysis boundary", async () => {
+    const sourceRoot = join(repoRoot, "packages", "workflow-compiler", "src");
+    const files = await filesUnder(sourceRoot);
+    const bareImports: string[] = [];
+    for (const file of files.filter(file => file.endsWith(".ts"))) {
+      const source = await readFile(file, "utf8");
+      if (/from\s+["']typescript["']/u.test(source)) bareImports.push(file);
+    }
+
+    expect(bareImports).toEqual([]);
+    await expect(readFile(join(sourceRoot, "index.ts"), "utf8")).resolves.not.toContain("typescript/unstable");
+  });
+
+  it("accepts unary, binary, ternary, named, aliased, and namespace lift callbacks from the expression facade", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift, lift as combine } from "acpus/expression";
       import * as expr from "acpus/expression";
 
@@ -233,7 +243,7 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it("rejects invalid callback forms in one checked program", () => {
+  it("rejects invalid callback forms in one checked program", async () => {
     const callbackCases = [
       ["function expression", "lift(issue, function (value) { return value.title; })", "lift(...) callback must be an inline arrow function."],
       ["missing unary parameter", "lift(issue, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
@@ -265,7 +275,7 @@ describe("workflow authoring rules", () => {
       const suffix = "!";
       ${callbackCases.map(([name, statement], index) => `function callbackCase${index}() { // ${name}\n  ${statement};\n}`).join("\n")}
     `;
-    const diagnostics = checkAuthoringWithProgram(source);
+    const diagnostics = await checkAuthoringWithProgram(source);
 
     const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
     expect(callbackDiagnostics).toHaveLength(callbackCases.length);
@@ -277,13 +287,13 @@ describe("workflow authoring rules", () => {
         code: "AL006",
         message,
         hint: expect.any(String),
-        source: { file: "workflow.ts", line, column: expect.any(Number) },
+        source: { file: expect.stringContaining("workflow.ts"), line, column: expect.any(Number) },
       });
     }
   });
 
-  it("rejects non-serializable callback bindings in one checked program", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("rejects non-serializable callback bindings in one checked program", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       declare const issue: any;
       lift(issue, (value = issue) => value.title);
@@ -296,8 +306,8 @@ describe("workflow authoring rules", () => {
     expect(callbackDiagnostics.every(diagnostic => diagnostic.message.includes("simple identifiers or binding patterns"))).toBe(true);
   });
 
-  it("inspects lift calls through every supported transparent callee form", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("inspects lift calls through every supported transparent callee form", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       import * as expr from "acpus/expression";
       declare const issue: any;
@@ -317,8 +327,8 @@ describe("workflow authoring rules", () => {
     expect(callbackDiagnostics.every(diagnostic => diagnostic.message.includes("external binding 'suffix'"))).toBe(true);
   });
 
-  it("does not report expression callback diagnostics for shadowed facade bindings", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("does not report expression callback diagnostics for shadowed facade bindings", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       import * as expr from "acpus/expression";
 
@@ -338,8 +348,8 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it("does not inspect lift imported from an internal implementation package", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("does not inspect lift imported from an internal implementation package", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift as internalLift } from "@acpus/expression";
 
       declare const issue: any;
@@ -350,8 +360,8 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it("leaves type-expressible lift constraints to TypeScript", () => {
-    const diagnostics = checkAuthoringWithProgram(`
+  it("leaves type-expressible lift constraints to TypeScript", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       declare const issue: { title: string };
       lift(issue);
@@ -366,68 +376,44 @@ describe("workflow authoring rules", () => {
   });
 });
 
-function checkAuthoring(source: string, options: {
-  isExpr?: (node: ts.Node) => boolean;
-  isStepDeclaration?: (node: ts.Node) => boolean;
-  taskAnalysis?: WorkflowTaskAnalysis;
-} = {}): DiagnosticIR[] {
-  const sourceFile = ts.createSourceFile("workflow.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  return checkWorkflowAuthoring({
-    program: fakeProgram(options),
-    sourceFile,
-    taskAnalysis: options.taskAnalysis ?? new Map(),
-  });
-}
-
-function checkAuthoringWithProgram(source: string): DiagnosticIR[] {
-  const fileName = "workflow.ts";
-  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const options: ts.CompilerOptions = {
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    target: ts.ScriptTarget.ES2022,
-    strict: true,
-    noEmit: true,
-    skipLibCheck: true,
-  };
-  const host = ts.createCompilerHost(options);
-  const originalGetSourceFile = host.getSourceFile.bind(host);
-  host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
-    name === fileName ? sourceFile : originalGetSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
-  host.fileExists = name => name === fileName || ts.sys.fileExists(name);
-  host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
-  const program = ts.createProgram([fileName], options, host);
-  return checkWorkflowAuthoring({
-    program,
-    sourceFile: program.getSourceFile(fileName) ?? sourceFile,
-    taskAnalysis: new Map(),
-  });
-}
-
-function fakeProgram(options: {
-  isExpr?: (node: ts.Node) => boolean;
-  isStepDeclaration?: (node: ts.Node) => boolean;
-}): ts.Program {
-  const checker = {
-    getTypeAtLocation(node: ts.Node) {
-      return fakeType({
-        expr: options.isExpr?.(node) ?? false,
-        stepDeclaration: options.isStepDeclaration?.(node) ?? false,
-      });
+async function checkAuthoring(source: string, options: { taskAnalysis?: WorkflowTaskAnalysis } = {}): Promise<DiagnosticIR[]> {
+  const scratchDir = mkdtempSync(join(tmpdir(), "acpus-authoring-rules-"));
+  const workflow = join(scratchDir, "workflow.ts");
+  const configPath = join(scratchDir, "tsconfig.json");
+  const officialImports = officialAuthoringTypeScriptPaths(scratchDir);
+  writeFileSync(workflow, source);
+  writeFileSync(configPath, `${JSON.stringify({
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      paths: officialImports.paths,
+      ...(officialImports.usesSource ? { customConditions: ["development"] } : {}),
+      typeRoots: [join(repoRoot, "node_modules", "@types")],
     },
-    getStringType: () => fakeType({ expr: false, stepDeclaration: false }),
-    isTypeAssignableTo: () => true,
-    getSymbolAtLocation: () => undefined,
-  };
-  return { getTypeChecker: () => checker } as unknown as ts.Program;
+    files: [workflow],
+  }, null, 2)}\n`);
+  try {
+    const result = await withNativeProject(
+      { configPath, cwd: repoRoot, sourcePath: workflow, source },
+      ({ project, sourceFile }) => checkWorkflowAuthoring({
+        project,
+        sourceFile,
+        taskAnalysis: options.taskAnalysis ?? new Map(),
+      }),
+    );
+    if (result.isErr()) throw new Error(result.error.message);
+    return result.value;
+  } finally {
+    rmSync(scratchDir, { recursive: true, force: true });
+  }
 }
 
-function fakeType(flags: { expr: boolean; stepDeclaration: boolean }): ts.Type {
-  return {
-    isUnionOrIntersection: () => false,
-    getProperty: (name: string) => flags.expr && name === "__ir" ? {} : undefined,
-    ...(flags.stepDeclaration ? { aliasSymbol: { name: "StepDeclaration" } } : {}),
-  } as unknown as ts.Type;
+function checkAuthoringWithProgram(source: string): Promise<DiagnosticIR[]> {
+  return checkAuthoring(source);
 }
 
 function analyzedIssue(issue: TaskAuthoringIssue): WorkflowTaskAnalysis extends Map<string, infer Value> ? Value : never {

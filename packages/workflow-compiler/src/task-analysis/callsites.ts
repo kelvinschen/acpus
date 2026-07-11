@@ -1,4 +1,5 @@
-import ts from "typescript";
+import * as ts from "typescript/unstable/ast";
+import type { Checker } from "typescript/unstable/sync";
 import type { TaskCallsite, TaskSourceLocation } from "./types.js";
 
 export type TaskCallsiteIssueReason =
@@ -16,18 +17,18 @@ export function findTaskCallsites(sourceFile: ts.SourceFile): TaskCallsite[] {
   const visit = (node: ts.Node): void => {
     const callsite = classifyTaskCallsite(node);
     if (callsite.kind === "joinable") callsites.push(callsite.callsite);
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
   visit(sourceFile);
   return callsites;
 }
 
-export function unjoinableTaskCallsiteReason(node: ts.Node, checker: ts.TypeChecker): TaskCallsiteIssueReason | undefined {
+export function unjoinableTaskCallsiteReason(node: ts.Node, checker: Checker): TaskCallsiteIssueReason | undefined {
   const callsite = classifyTaskCallsite(node, checker);
   return callsite.kind === "unjoinable" ? callsite.reason : undefined;
 }
 
-function classifyTaskCallsite(node: ts.Node, checker?: ts.TypeChecker): TaskCallsiteClassification {
+function classifyTaskCallsite(node: ts.Node, checker?: Checker): TaskCallsiteClassification {
   if (!ts.isCallExpression(node)) return { kind: "none" };
   const callee = node.expression;
   if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "task") return { kind: "none" };
@@ -65,9 +66,9 @@ function directStepCallIssueReason(node: ts.CallExpression): TaskCallsiteIssueRe
   return undefined;
 }
 
-function isAcpusStepDeclaration(node: ts.Expression, checker: ts.TypeChecker): boolean {
+function isAcpusStepDeclaration(node: ts.Expression, checker: Checker): boolean {
   const type = checker.getTypeAtLocation(node);
-  return type.aliasSymbol?.name === "StepDeclaration";
+  return type?.getAliasSymbol()?.name === "StepDeclaration";
 }
 
 function sourceLocation(node: ts.Node): TaskSourceLocation {

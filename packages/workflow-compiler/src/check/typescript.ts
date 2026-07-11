@@ -3,52 +3,82 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { officialAuthoringTypeScriptPaths } from "@acpus/loader";
 import type { DiagnosticIR } from "@acpus/core/ir";
-import ts from "typescript";
+import { err, type Result } from "neverthrow";
+import type { SourceFile } from "typescript/unstable/ast";
+import { DiagnosticCategory, type Diagnostic, type Program } from "typescript/unstable/sync";
+import { analyzeWorkflowTasksFromSourceFile } from "../task-analysis/index.js";
+import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "../typescript/native.js";
+import { checkWorkflowAuthoring } from "./authoring-rules/index.js";
 
 export type TypeScriptCheck = {
   diagnostics: DiagnosticIR[];
-  program?: ts.Program;
-  sourceFile?: ts.SourceFile;
 };
 
-export async function checkTypeScript(entry: string, cwd: string, scratchDir: string): Promise<TypeScriptCheck> {
-  const tsconfig = await writeTypecheckConfig(entry, cwd, scratchDir);
-  const config = ts.readConfigFile(tsconfig, ts.sys.readFile);
-  if (config.error) return { diagnostics: [toDiagnosticIR(config.error)] };
-
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(tsconfig), undefined, tsconfig);
-  const programOptions: ts.CreateProgramOptions = {
-    rootNames: parsed.fileNames,
-    options: parsed.options,
-  };
-  if (parsed.projectReferences) programOptions.projectReferences = parsed.projectReferences;
-  const program = ts.createProgram(programOptions);
-  const diagnostics = [
-    ...parsed.errors,
-    ...program.getConfigFileParsingDiagnostics(),
-    ...program.getOptionsDiagnostics(),
-    ...program.getGlobalDiagnostics(),
-    ...program.getSyntacticDiagnostics(),
-    ...program.getSemanticDiagnostics(),
-  ].map(toDiagnosticIR);
-
-  const result: TypeScriptCheck = { diagnostics, program };
-  const sourceFile = program.getSourceFile(entry);
-  if (sourceFile) result.sourceFile = sourceFile;
-  return result;
+export async function checkTypeScript(
+  entry: string,
+  cwd: string,
+  scratchDir: string,
+  source: string,
+): Promise<Result<TypeScriptCheck, TypeScriptNativeFailure>> {
+  let tsconfig: string;
+  try {
+    tsconfig = await writeTypecheckConfig(entry, cwd, scratchDir);
+  } catch (cause) {
+    return err(nativeFailure(cause));
+  }
+  return withNativeProject({ configPath: tsconfig, cwd, sourcePath: entry, source }, ({ project, sourceFile }) => {
+    const program = project.program;
+    const diagnostics = deduplicateDiagnostics([
+      ...program.getConfigFileParsingDiagnostics(),
+      ...program.getProgramDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ]).map(diagnostic => toDiagnosticIR(diagnostic, program));
+    const taskAnalysis = analyzeWorkflowTasksFromSourceFile(entry, sourceFile);
+    diagnostics.push(...checkWorkflowAuthoring({ project, sourceFile, taskAnalysis }));
+    return { diagnostics };
+  });
 }
 
-function toDiagnosticIR(diagnostic: ts.Diagnostic): DiagnosticIR {
+export function deduplicateDiagnostics(diagnostics: readonly Diagnostic[]): Diagnostic[] {
+  const seen = new Set<string>();
+  return diagnostics.filter(diagnostic => {
+    const key = JSON.stringify([
+      diagnostic.category,
+      diagnostic.code,
+      diagnostic.fileName ?? "",
+      diagnostic.pos,
+      diagnostic.end,
+      flattenDiagnosticMessage(diagnostic),
+    ]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function toDiagnosticIR(diagnostic: Diagnostic, program: Program): DiagnosticIR {
   const result: DiagnosticIR = {
     code: `TS${diagnostic.code}`,
-    severity: diagnostic.category === ts.DiagnosticCategory.Warning ? "warning" : "error",
-    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    severity: diagnostic.category === DiagnosticCategory.Warning ? "warning" : "error",
+    message: flattenDiagnosticMessage(diagnostic),
   };
-  if (diagnostic.file && diagnostic.start !== undefined) result.source = sourceLocation(diagnostic.file, diagnostic.start);
+  if (diagnostic.fileName && diagnostic.pos >= 0) {
+    const file = program.getSourceFile(diagnostic.fileName);
+    if (file) result.source = sourceLocation(file, diagnostic.pos);
+  }
   return result;
 }
 
-function sourceLocation(file: ts.SourceFile, start: number): NonNullable<DiagnosticIR["source"]> {
+function flattenDiagnosticMessage(diagnostic: Diagnostic): string {
+  return [
+    diagnostic.text,
+    ...(diagnostic.messageChain ?? []).map(flattenDiagnosticMessage),
+  ].filter(Boolean).join("\n");
+}
+
+function sourceLocation(file: SourceFile, start: number): NonNullable<DiagnosticIR["source"]> {
   const position = file.getLineAndCharacterOfPosition(start);
   return {
     file: file.fileName,

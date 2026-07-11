@@ -1,9 +1,14 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { expressionCallbackLayout, expressionCallbackOperatorNames, type ExpressionCallbackOperatorName } from "@acpus/expression/ir";
-import ts from "typescript";
+import * as ts from "typescript/unstable/ast";
+import { SignatureKind, type Checker, type Project, type Symbol, type Type } from "typescript/unstable/sync";
 import { execFunction } from "../../task-analysis/ast.js";
 import { findTaskCallsites, type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
-import { collectFreeIdentifierNodes, isRuntimeGlobalName } from "../../task-analysis/capture-analysis.js";
+import {
+  collectFreeIdentifierNodes,
+  isRuntimeGlobalName,
+  type SemanticCaptureContext,
+} from "../../task-analysis/capture-analysis.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
 
 // Acpus authoring rules are the product check rules used by
@@ -11,17 +16,21 @@ import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysi
 // ESLint or read user/editor ESLint configuration.
 
 export type AuthoringRulesInput = {
-  program: ts.Program;
+  project: Project;
   sourceFile: ts.SourceFile;
   taskAnalysis: WorkflowTaskAnalysis;
 };
 
 export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR[] {
   const diagnostics: DiagnosticIR[] = [];
-  const checker = input.program.getTypeChecker();
-  checkExprAuthoring(input.sourceFile, checker, diagnostics);
+  const semantic = {
+    checker: input.project.checker,
+    program: input.project.program,
+    project: input.project,
+  };
+  checkExprAuthoring(input.sourceFile, semantic, diagnostics);
   checkTaskAuthoring(input.taskAnalysis, diagnostics);
-  checkInlineTaskShadowedGlobalCapture(input.sourceFile, checker, diagnostics);
+  checkInlineTaskShadowedGlobalCapture(input.sourceFile, semantic, diagnostics);
   return diagnostics;
 }
 
@@ -32,7 +41,8 @@ const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.ExclamationEqualsEqualsToken,
 ]);
 
-function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, diagnostics: DiagnosticIR[]): void {
+function checkExprAuthoring(sourceFile: ts.SourceFile, semantic: SemanticCaptureContext, diagnostics: DiagnosticIR[]): void {
+  const checker = semantic.checker;
   const callbackImports = collectExpressionCallbackImports(sourceFile, checker);
   const visit = (node: ts.Node): void => {
     if (isConditionExpression(node) && isExpr(checker, node)) {
@@ -68,13 +78,13 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
     if (ts.isCallExpression(node)) {
       const helper = expressionCallbackHelper(node, callbackImports, checker);
       if (helper) {
-        const issue = expressionCallbackIssue(node, helper, checker);
+        const issue = expressionCallbackIssue(node, helper, semantic);
         if (issue) diagnostics.push(diagnostic("AL006", issue.message, issue.node, issue.hint));
         visitExpressionCallbackDependencies(node, helper, visit);
         return;
       }
     }
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
   visit(sourceFile);
 }
@@ -82,8 +92,8 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
 type ExpressionCallbackHelper = ExpressionCallbackOperatorName;
 
 type ExpressionCallbackImports = {
-  names: Map<ts.Symbol, ExpressionCallbackHelper>;
-  namespaces: Set<ts.Symbol>;
+  names: Map<Symbol, ExpressionCallbackHelper>;
+  namespaces: Set<Symbol>;
 };
 
 type ExpressionCallbackIssue = {
@@ -94,7 +104,7 @@ type ExpressionCallbackIssue = {
 
 const EXPRESSION_CALLBACK_HELPERS = new Set<ExpressionCallbackHelper>(expressionCallbackOperatorNames());
 
-function collectExpressionCallbackImports(sourceFile: ts.SourceFile, checker: ts.TypeChecker): ExpressionCallbackImports {
+function collectExpressionCallbackImports(sourceFile: ts.SourceFile, checker: Checker): ExpressionCallbackImports {
   const imports: ExpressionCallbackImports = { names: new Map(), namespaces: new Set() };
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !statement.importClause || !isExpressionFacadeSpecifier(statement.moduleSpecifier)) continue;
@@ -114,7 +124,7 @@ function collectExpressionCallbackImports(sourceFile: ts.SourceFile, checker: ts
   return imports;
 }
 
-function addSymbol(symbols: Set<ts.Symbol>, checker: ts.TypeChecker, node: ts.Identifier): void {
+function addSymbol(symbols: Set<Symbol>, checker: Checker, node: ts.Identifier): void {
   const symbol = checker.getSymbolAtLocation(node);
   if (symbol) symbols.add(symbol);
 }
@@ -123,7 +133,7 @@ function isExpressionFacadeSpecifier(node: ts.Expression): boolean {
   return ts.isStringLiteral(node) && node.text === "acpus/expression";
 }
 
-function expressionCallbackHelper(call: ts.CallExpression, imports: ExpressionCallbackImports, checker: ts.TypeChecker): ExpressionCallbackHelper | undefined {
+function expressionCallbackHelper(call: ts.CallExpression, imports: ExpressionCallbackImports, checker: Checker): ExpressionCallbackHelper | undefined {
   const callee = unwrapTransparentExpression(call.expression);
   if (ts.isIdentifier(callee)) {
     const symbol = checker.getSymbolAtLocation(callee);
@@ -143,7 +153,7 @@ function namespaceExpressionCallbackHelper(
   receiver: ts.Expression,
   name: string,
   imports: ExpressionCallbackImports,
-  checker: ts.TypeChecker,
+  checker: Checker,
 ): ExpressionCallbackHelper | undefined {
   if (!EXPRESSION_CALLBACK_HELPERS.has(name as ExpressionCallbackHelper)) return undefined;
   const namespace = unwrapTransparentExpression(receiver);
@@ -155,8 +165,7 @@ function namespaceExpressionCallbackHelper(
 function unwrapTransparentExpression(node: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(node)
-    || ts.isAsExpression(node)
-    || ts.isTypeAssertionExpression(node)
+    || ts.isAssertionExpression(node)
     || ts.isNonNullExpression(node)
     || ts.isSatisfiesExpression(node)
   ) {
@@ -165,12 +174,13 @@ function unwrapTransparentExpression(node: ts.Expression): ts.Expression {
   return node;
 }
 
-function hasSymbol(symbols: ReadonlySet<ts.Symbol>, checker: ts.TypeChecker, node: ts.Identifier): boolean {
+function hasSymbol(symbols: ReadonlySet<Symbol>, checker: Checker, node: ts.Identifier): boolean {
   const symbol = checker.getSymbolAtLocation(node);
   return Boolean(symbol && symbols.has(symbol));
 }
 
-function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCallbackHelper, checker: ts.TypeChecker): ExpressionCallbackIssue | undefined {
+function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCallbackHelper, semantic: SemanticCaptureContext): ExpressionCallbackIssue | undefined {
+  const checker = semantic.checker;
   const spread = call.arguments.find(ts.isSpreadElement);
   if (spread) {
     return callbackIssue(`${helper}(...) dependencies and callback must be passed as direct arguments.`, spread, callbackHint());
@@ -180,14 +190,15 @@ function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCall
   const node = call.arguments[layout.callbackSourceArg];
   if (!node) return undefined;
   if (!ts.isArrowFunction(node)) {
-    if (checker.getTypeAtLocation(node).getCallSignatures().length === 0) return undefined;
+    const type = checker.getTypeAtLocation(node);
+    if (!type || checker.getSignaturesOfType(type, SignatureKind.Call).length === 0) return undefined;
     return callbackIssue(`${helper}(...) callback must be an inline arrow function.`, node, callbackHint());
   }
   const parameterIssue = callbackParameterIssue(node, layout.callbackParamCount);
   if (parameterIssue) {
     return callbackIssue(`${helper}(...) callback parameters must match its dependencies and use simple identifiers or binding patterns.`, parameterIssue, callbackHint());
   }
-  return callbackBodyIssue(node, checker);
+  return callbackBodyIssue(node, semantic);
 }
 
 function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: ExpressionCallbackHelper, visit: (node: ts.Node) => void): void {
@@ -197,7 +208,7 @@ function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: Ex
   });
 }
 
-function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker): ExpressionCallbackIssue | undefined {
+function callbackBodyIssue(callback: ts.ArrowFunction, semantic: SemanticCaptureContext): ExpressionCallbackIssue | undefined {
   let issue: ExpressionCallbackIssue | undefined;
   const visit = (node: ts.Node): void => {
     if (issue || ts.isTypeNode(node)) return;
@@ -216,11 +227,11 @@ function callbackBodyIssue(callback: ts.ArrowFunction, checker: ts.TypeChecker):
         return;
       }
     }
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
   visit(callback.body);
   if (issue) return issue;
-  const external = collectFreeIdentifierNodes(callback, checker)[0];
+  const external = collectFreeIdentifierNodes(callback, semantic)[0];
   return external
     ? callbackIssue(`lift(...) callback cannot reference external binding '${external.name}'.`, external.node, dependencyHint())
     : undefined;
@@ -238,7 +249,7 @@ function callbackParameterIssue(node: ts.ArrowFunction, expectedCount: number): 
 function isSimpleBindingName(name: ts.BindingName): boolean {
   if (ts.isIdentifier(name)) return true;
   for (const element of name.elements) {
-    if (ts.isOmittedExpression(element) || element.dotDotDotToken || element.initializer) return false;
+    if (ts.isOmittedExpression(element) || !element.name || element.dotDotDotToken || element.initializer) return false;
     if (element.propertyName && ts.isComputedPropertyName(element.propertyName)) return false;
     if (!isSimpleBindingName(element.name)) return false;
   }
@@ -267,7 +278,7 @@ function isConditionExpression(node: ts.Node): node is ts.Expression {
     || (ts.isConditionalExpression(parent) && parent.condition === node);
 }
 
-function isExprDerived(checker: ts.TypeChecker, node: ts.Node): boolean {
+function isExprDerived(checker: Checker, node: ts.Node): boolean {
   if (isExpr(checker, node)) return true;
   let found = false;
   const visit = (child: ts.Node): void => {
@@ -276,36 +287,41 @@ function isExprDerived(checker: ts.TypeChecker, node: ts.Node): boolean {
       found = true;
       return;
     }
-    ts.forEachChild(child, visit);
+    child.forEachChild(visit);
   };
-  ts.forEachChild(node, visit);
+  node.forEachChild(visit);
   return found;
 }
 
-function isExpr(checker: ts.TypeChecker, node: ts.Node): boolean {
-  return hasExprMarker(checker.getTypeAtLocation(node));
+function isExpr(checker: Checker, node: ts.Node): boolean {
+  const type = checker.getTypeAtLocation(node);
+  return type ? hasExprMarker(checker, type) : false;
 }
 
-function hasExprMarker(type: ts.Type): boolean {
-  if (type.isUnionOrIntersection()) return type.types.some(hasExprMarker);
-  return Boolean(type.getProperty("__ir"));
+function hasExprMarker(checker: Checker, type: Type): boolean {
+  if (type.isUnionType() || type.isIntersectionType()) {
+    return type.getTypes()?.some(member => hasExprMarker(checker, member)) ?? false;
+  }
+  return Boolean(checker.getPropertyOfType(type, "__ir"));
 }
 
-function typesOverlap(checker: ts.TypeChecker, left: ts.Expression, right: ts.Expression): boolean {
+function typesOverlap(checker: Checker, left: ts.Expression, right: ts.Expression): boolean {
   const leftType = checker.getTypeAtLocation(left);
   const rightType = checker.getTypeAtLocation(right);
+  if (!leftType || !rightType || leftType.isErrorType() || rightType.isErrorType()) return false;
   return checker.isTypeAssignableTo(leftType, rightType) || checker.isTypeAssignableTo(rightType, leftType);
 }
 
-function isStringAssignable(checker: ts.TypeChecker, node: ts.Expression): boolean {
-  return checker.isTypeAssignableTo(checker.getTypeAtLocation(node), checker.getStringType());
+function isStringAssignable(checker: Checker, node: ts.Expression): boolean {
+  const type = checker.getTypeAtLocation(node);
+  return Boolean(type && !type.isErrorType() && checker.isTypeAssignableTo(type, checker.getStringType()));
 }
 
-function checkInlineTaskShadowedGlobalCapture(sourceFile: ts.SourceFile, checker: ts.TypeChecker, diagnostics: DiagnosticIR[]): void {
+function checkInlineTaskShadowedGlobalCapture(sourceFile: ts.SourceFile, semantic: SemanticCaptureContext, diagnostics: DiagnosticIR[]): void {
   for (const callsite of findTaskCallsites(sourceFile)) {
     const exec = execFunction(callsite.options);
     if (!exec) continue;
-    const shadowedGlobals = collectFreeIdentifierNodes(exec, checker)
+    const shadowedGlobals = collectFreeIdentifierNodes(exec, semantic)
       .map(identifier => identifier.name)
       .filter(isRuntimeGlobalName);
     if (shadowedGlobals.length === 0) continue;

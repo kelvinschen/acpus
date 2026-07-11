@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "customConditions": [],
+    "tsBuildInfoFile": "./tsconfig.build.tsbuildinfo"
+  },
+  "include": ["src/index.ts", "src/server/**/*.ts"],
+  "references": [
+    { "path": "../core/tsconfig.build.json" },
+    { "path": "../expression/tsconfig.build.json" },
+    { "path": "../runtime/tsconfig.build.json" },
+    { "path": "../workflow-compiler/tsconfig.build.json" }
+  ]
+}

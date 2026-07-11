@@ -47,6 +47,8 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: pnpm check:build-toolchain
+
       - run: pnpm check:dead-code
 
       - run: pnpm check:dependencies

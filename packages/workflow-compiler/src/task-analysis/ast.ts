@@ -1,9 +1,4 @@
-import ts from "typescript";
-
-export function parseSourceFile(file: string, source: string): ts.SourceFile {
-  const scriptKind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind);
-}
+import * as ts from "typescript/unstable/ast";
 
 export function objectProperty(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
   for (const member of object.properties) {
@@ -12,7 +7,7 @@ export function objectProperty(object: ts.ObjectLiteralExpression, name: string)
   return undefined;
 }
 
-export function execFunction(spec: ts.ObjectLiteralExpression): ts.FunctionLikeDeclarationBase | undefined {
+export function execFunction(spec: ts.ObjectLiteralExpression): ts.FunctionLikeDeclaration | undefined {
   const exec = objectProperty(spec, "exec");
   if (exec && (ts.isArrowFunction(exec) || ts.isFunctionExpression(exec))) return exec;
   return undefined;

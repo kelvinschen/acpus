@@ -23,9 +23,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "dependencies": {
     "@acpus/agent-executor": "workspace:*",
@@ -37,8 +37,8 @@
   },
   "devDependencies": {
     "@acpus/workflow-compiler": "workspace:*",
-    "@types/node": "^22.15.30",
-    "tsx": "^4.22.4"
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.0"
   },
   "repository": {
     "type": "git",

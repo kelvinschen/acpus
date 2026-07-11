@@ -5,6 +5,7 @@
     "outDir": "dist",
     "types": ["node"],
     "lib": ["ES2022"],
+    "customConditions": ["development"],
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "verbatimModuleSyntax": true

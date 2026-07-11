@@ -269,9 +269,10 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
     // @ts-expect-error quorum output is the accepted item array, not an envelope.
     quorum.output.accepted;
 
-    // @ts-expect-error fanout over must be an array, not a string.
     step("bad_string_over").fanout({
+      // @ts-expect-error fanout over must be an array, not a string.
       over: input.title,
+      // @ts-expect-error the invalid source makes the fanout callback output impossible.
       do({ item }) { return { id: item }; },
     });
 

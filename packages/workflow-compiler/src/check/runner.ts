@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { DiagnosticIR } from "@acpus/core/ir";
-import { analyzeWorkflowTasks } from "../task-analysis/index.js";
-import { checkWorkflowAuthoring } from "./authoring-rules/index.js";
 import { checkTypeScript } from "./typescript.js";
+import type { TypeScriptNativeFailure } from "../typescript/native.js";
 
 export type WorkflowCheckResult = {
   diagnostics: DiagnosticIR[];
@@ -16,14 +15,11 @@ export async function checkWorkflow(entry: string, cwd: string, scratchDir: stri
     return { diagnostics: [workflowReadDiagnostic(entry, error)] };
   }
 
-  const tsCheck = await checkTypeScript(entry, cwd, scratchDir);
-  const taskAnalysis = await analyzeWorkflowTasks(entry, source);
-  // The check phase aggregates TypeScript compiler diagnostics with Acpus
-  // authoring-rule diagnostics.
-  const authoringDiagnostics = tsCheck.program && tsCheck.sourceFile
-    ? checkWorkflowAuthoring({ program: tsCheck.program, sourceFile: tsCheck.sourceFile, taskAnalysis })
-    : [];
-  return { diagnostics: [...tsCheck.diagnostics, ...authoringDiagnostics] };
+  const result = await checkTypeScript(entry, cwd, scratchDir, source);
+  return result.match(
+    value => value,
+    failure => ({ diagnostics: [typescriptNativeDiagnostic(entry, failure)] }),
+  );
 }
 
 function workflowReadDiagnostic(entry: string, error: unknown): DiagnosticIR {
@@ -31,6 +27,20 @@ function workflowReadDiagnostic(entry: string, error: unknown): DiagnosticIR {
     code: "WF001",
     severity: "error",
     message: `Workflow source could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    path: "workflow",
+    source: {
+      file: entry,
+      line: 1,
+      column: 1,
+    },
+  };
+}
+
+export function typescriptNativeDiagnostic(entry: string, error: TypeScriptNativeFailure): DiagnosticIR {
+  return {
+    code: "WF002",
+    severity: "error",
+    message: error.message,
     path: "workflow",
     source: {
       file: entry,

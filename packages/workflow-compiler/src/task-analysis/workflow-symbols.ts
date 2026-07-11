@@ -1,4 +1,4 @@
-import ts from "typescript";
+import * as ts from "typescript/unstable/ast";
 import { isConstVariableStatement, isExported } from "./ast.js";
 import type { ImportBinding, WorkflowTaskExport } from "./types.js";
 
@@ -26,14 +26,14 @@ export function collectLocalValueNames(sourceFile: ts.SourceFile): Set<string> {
 }
 
 export function collectDeclaredNames(node: ts.Node, out: Set<string>): void {
-  if (ts.isParameter(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)) {
-    addBindingName(node.name, out);
+  if (ts.isParameterDeclaration(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)) {
+    if (node.name) addBindingName(node.name, out);
   } else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
     out.add(node.name.text);
   } else if (ts.isCatchClause(node) && node.variableDeclaration) {
     addBindingName(node.variableDeclaration.name, out);
   }
-  ts.forEachChild(node, child => collectDeclaredNames(child, out));
+  node.forEachChild(child => collectDeclaredNames(child, out));
 }
 
 export function hasInnerBinding(identifier: ts.Identifier): boolean {
@@ -51,7 +51,7 @@ export function hasInnerBinding(identifier: ts.Identifier): boolean {
         return;
       }
     }
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
   visit(sourceFile);
   return found;
@@ -104,7 +104,9 @@ function collectLocalNamedExports(sourceFile: ts.SourceFile): Map<string, string
 }
 
 function bindingNames(node: ts.Node): ts.Identifier[] {
-  if (ts.isParameter(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)) return identifiersFromBindingName(node.name);
+  if (ts.isParameterDeclaration(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)) {
+    return node.name ? identifiersFromBindingName(node.name) : [];
+  }
   if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) return [node.name];
   if (ts.isCatchClause(node) && node.variableDeclaration) return identifiersFromBindingName(node.variableDeclaration.name);
   return [];
@@ -112,7 +114,7 @@ function bindingNames(node: ts.Node): ts.Identifier[] {
 
 function identifiersFromBindingName(name: ts.BindingName): ts.Identifier[] {
   if (ts.isIdentifier(name)) return [name];
-  return name.elements.flatMap(element => ts.isBindingElement(element) ? identifiersFromBindingName(element.name) : []);
+  return name.elements.flatMap(element => ts.isBindingElement(element) && element.name ? identifiersFromBindingName(element.name) : []);
 }
 
 function addBindingName(name: ts.BindingName, out: Set<string>): void {
@@ -121,7 +123,7 @@ function addBindingName(name: ts.BindingName, out: Set<string>): void {
     return;
   }
   for (const element of name.elements) {
-    if (ts.isBindingElement(element)) addBindingName(element.name, out);
+    if (ts.isBindingElement(element) && element.name) addBindingName(element.name, out);
   }
 }
 
@@ -140,7 +142,7 @@ function isTopLevelBinding(identifier: ts.Identifier, sourceFile: ts.SourceFile)
 function declarationNode(identifier: ts.Identifier): ts.Node | undefined {
   let current: ts.Node | undefined = identifier.parent;
   while (current) {
-    if (ts.isParameter(current) || ts.isVariableDeclaration(current) || ts.isBindingElement(current) || ts.isFunctionDeclaration(current) || ts.isClassDeclaration(current) || ts.isCatchClause(current)) return current;
+    if (ts.isParameterDeclaration(current) || ts.isVariableDeclaration(current) || ts.isBindingElement(current) || ts.isFunctionDeclaration(current) || ts.isClassDeclaration(current) || ts.isCatchClause(current)) return current;
     current = current.parent;
   }
   return undefined;
@@ -149,7 +151,7 @@ function declarationNode(identifier: ts.Identifier): ts.Node | undefined {
 function bindingScope(identifier: ts.Identifier, sourceFile: ts.SourceFile): ts.Node {
   let current: ts.Node | undefined = declarationNode(identifier)?.parent;
   while (current) {
-    if (ts.isBlock(current) || ts.isSourceFile(current) || ts.isFunctionLike(current)) return current;
+    if (ts.isBlock(current) || ts.isSourceFile(current) || ts.isFunctionLikeDeclaration(current)) return current;
     current = current.parent;
   }
   return sourceFile;

@@ -2,9 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-function packageChunk(id: string): string | undefined {
+function packageChunk(id: string): string | null {
   const path = id.replaceAll("\\", "/");
-  if (!path.includes("/node_modules/")) return undefined;
+  if (!path.includes("/node_modules/")) return null;
 
   if (matchesPackage(path, ["react", "react-dom", "scheduler"])) return "vendor-react";
   if (path.includes("/@radix-ui/")) return "vendor-radix";
@@ -28,9 +28,11 @@ export default defineConfig({
     outDir: "../../dist/client",
     emptyOutDir: true,
     reportCompressedSize: false,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks: packageChunk,
+        codeSplitting: {
+          groups: [{ name: packageChunk }],
+        },
       },
     },
   },

@@ -5,11 +5,13 @@ import { spawn } from "node:child_process";
 const root = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(root, "..");
 
-await Promise.all([
-  run(process.execPath, ["scripts/build-static-viz.mjs"]),
-  run(bin("vite"), ["build", "--config", "vite.config.ts"]),
-]);
-await run(bin("tsc"), ["-p", "tsconfig.json", "--noCheck"]);
+const clientBuild = run(bin("vite"), ["build", "--config", "vite.config.ts"]);
+const serverBuild = run(process.execPath, ["scripts/build-static-viz.mjs"])
+  .then(() => run(bin("tsc"), ["-b", "tsconfig.build.json"]));
+const [clientResult, serverResult] = await Promise.allSettled([clientBuild, serverBuild]);
+
+if (clientResult.status === "rejected") throw clientResult.reason;
+if (serverResult.status === "rejected") throw serverResult.reason;
 
 function bin(name) {
   return process.platform === "win32" ? `${name}.cmd` : name;

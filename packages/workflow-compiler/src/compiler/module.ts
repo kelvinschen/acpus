@@ -63,7 +63,11 @@ export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsyn
           entry,
           message: `Workflow task analysis failed for '${entry}': ${causeMessage(cause)}`,
         } satisfies CompileWorkflowModuleError),
-      ).andThen(analysis => {
+      ).andThen(result => result.mapErr(failure => ({
+        type: "task-analysis-failed",
+        entry,
+        message: `Workflow task analysis failed for '${entry}': ${failure.message}`,
+      } satisfies CompileWorkflowModuleError))).andThen(analysis => {
         const referrerPath = toContainedWorkspacePath(cwd, absolute);
         if (referrerPath.isErr()) return err(referrerPath.error);
         applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), referrerPath.value);

@@ -5,7 +5,7 @@
   "description": "Acpus acpx-backed ACP agent turn execution.",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "exports": {
     ".": {
@@ -23,12 +23,12 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30"
+    "@types/node": "^22.20.1"
   },
   "dependencies": {
     "acpx": "0.12.0"

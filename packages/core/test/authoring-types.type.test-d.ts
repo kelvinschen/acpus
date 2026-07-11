@@ -109,9 +109,9 @@ test("task outputs are inferred from inline and reusable exec", () => {
     expectTypeOf(reusable.output.version).toEqualTypeOf<Expr<string>>();
     expectTypeOf(reusable.output.ok).toEqualTypeOf<Expr<boolean>>();
 
-    // @ts-expect-error a Task step must choose exactly one execution target.
     step("ambiguous_target").task({
       input: { packageName: input.packageName, version: input.version },
+      // @ts-expect-error a Task step must choose exactly one execution target.
       exec: async () => ({ ok: true }),
       task: reusablePackageTask,
     });
@@ -180,6 +180,7 @@ test("task options accept only string cwd and string env values", () => {
       input: {},
       // @ts-expect-error cwd must be a string workflow value.
       cwd: 1,
+      // @ts-expect-error the invalid cwd makes every Task execution overload inapplicable.
       exec: async () => ({ ok: true }),
     });
 
@@ -189,6 +190,7 @@ test("task options accept only string cwd and string env values", () => {
         // @ts-expect-error env values must be string workflow values.
         VALUE: 1,
       },
+      // @ts-expect-error the invalid env makes every Task execution overload inapplicable.
       exec: async () => ({ ok: true }),
     });
 
@@ -356,10 +358,11 @@ test("declaration-time structure stays plain", () => {
       strategy: input.strategy,
       branches: { only() { return {}; } },
     });
-    // @ts-expect-error fanout strategy is declaration-time structure.
     step("fanout").fanout({
       over: ["item"],
+      // @ts-expect-error fanout strategy is declaration-time structure.
       strategy: input.strategy,
+      // @ts-expect-error the invalid strategy makes the fanout callback output impossible.
       do() { return {}; },
     });
     // @ts-expect-error output schemas are declaration-time structure.
@@ -371,6 +374,7 @@ test("declaration-time structure stays plain", () => {
         // @ts-expect-error Task input cannot contain raw undefined.
         omitted: undefined,
       },
+      // @ts-expect-error the invalid input makes every Task execution overload inapplicable.
       exec: async () => ({}),
     });
     return {};

@@ -23,7 +23,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist .static-viz-build tsconfig.build.tsbuildinfo",
     "dev": "vite --config vite.config.ts"
   },
   "dependencies": {
@@ -50,14 +50,14 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.0",
-    "@types/node": "^22.15.30",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@vitejs/plugin-react": "^6.0.3",
     "jsdom": "^28.1.0",
-    "tailwindcss": "^4.1.0",
-    "vite": "^6.3.0"
+    "tailwindcss": "^4.3.2",
+    "vite": "^8.1.4"
   },
   "repository": {
     "type": "git",

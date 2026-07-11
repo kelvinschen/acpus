@@ -1,4 +1,4 @@
-import type ts from "typescript";
+import type * as ts from "typescript/unstable/ast";
 
 export type AnalyzedTask = {
   inline: boolean;

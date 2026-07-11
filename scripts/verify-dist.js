@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, matchesGlob } from "node:path";
+import { join, matchesGlob, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { requestDaemonShutdown } from "@acpus/runtime";
@@ -22,7 +22,8 @@ const publishedPackageNames = [
   "acpus",
 ];
 
-await verifyPackages();
+const packages = await verifyPackages();
+await verifyPackedWorkflowCompiler(packages);
 
 const workspace = await mkdtemp(join(tmpdir(), "acpus-dist-smoke-"));
 
@@ -87,6 +88,161 @@ async function verifyPackages() {
   }
   assert.deepEqual(packages.map(({ manifest }) => manifest.name).sort(), publishedPackageNames, "published package inventory changed");
   for (const { packageDirectory, manifest } of packages) await verifyPackage(packageDirectory, manifest);
+  return packages;
+}
+
+async function verifyPackedWorkflowCompiler(packages) {
+  const workspace = await mkdtemp(join(tmpdir(), "acpus-packed-consumer-"));
+  try {
+    const tarballsDirectory = join(workspace, "tarballs");
+    const consumerDirectory = join(workspace, "consumer");
+    await mkdir(tarballsDirectory);
+    await mkdir(consumerDirectory);
+
+    const packagesByName = new Map(packages.map(pkg => [pkg.manifest.name, pkg]));
+    const packageNames = localDependencyClosure("@acpus/workflow-compiler", packagesByName);
+    const tarballs = new Map();
+    for (const name of packageNames) {
+      const pkg = packagesByName.get(name);
+      assert.ok(pkg, `packed smoke dependency is not publishable: ${name}`);
+      tarballs.set(name, await pnpmPack(pkg.packageDirectory, tarballsDirectory));
+    }
+
+    const fileSpecs = Object.fromEntries([...tarballs].map(([name, tarball]) => [
+      name,
+      localFileSpec(consumerDirectory, tarball),
+    ]));
+    await writeFile(join(consumerDirectory, "package.json"), `${JSON.stringify({
+      name: "acpus-packed-consumer-smoke",
+      private: true,
+      type: "module",
+      dependencies: {
+        "@acpus/workflow-compiler": fileSpecs["@acpus/workflow-compiler"],
+      },
+      pnpm: {
+        overrides: fileSpecs,
+      },
+    }, null, 2)}\n`);
+    await writeFile(join(consumerDirectory, "valid.workflow.ts"), `import { defineWorkflow, z } from "acpus/core";
+
+export default defineWorkflow({
+  name: "packed-consumer",
+  inputSchema: z.object({ value: z.string() }),
+}).build(({ input }) => ({ value: input.value }));
+`);
+    await writeFile(join(consumerDirectory, "invalid.workflow.ts"), `import { defineWorkflow, z } from "acpus/core";
+
+const incompatible: number = "not-a-number";
+
+export default defineWorkflow({
+  name: "packed-consumer-invalid",
+  inputSchema: z.object({ value: z.string() }),
+}).build(({ input }) => ({ value: input.value, incompatible }));
+`);
+    await writeFile(join(consumerDirectory, "smoke.mjs"), `import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+import { prepareWorkflow, tryPrepareWorkflow } from "@acpus/workflow-compiler";
+
+const consumerNodeModules = resolve("node_modules");
+const require = createRequire(import.meta.url);
+const compilerEntry = require.resolve("@acpus/workflow-compiler");
+assert.ok(compilerEntry.startsWith(consumerNodeModules), "workflow compiler resolved outside the packed consumer");
+
+const compilerRequire = createRequire(compilerEntry);
+const typescriptEntry = compilerRequire.resolve("typescript");
+const typescriptRequire = createRequire(typescriptEntry);
+const typescript = typescriptRequire("typescript");
+const typescriptManifest = typescriptRequire("typescript/package.json");
+assert.equal(typescript.version, "7.0.2");
+assert.ok(typescriptEntry.startsWith(consumerNodeModules), "TypeScript resolved outside the packed consumer");
+
+const installedPlatformPackages = Object.keys(typescriptManifest.optionalDependencies ?? {}).filter(name => {
+  try {
+    typescriptRequire.resolve(name + "/package.json");
+    return true;
+  } catch {
+    return false;
+  }
+});
+assert.equal(installedPlatformPackages.length, 1, "expected exactly one TypeScript platform binary");
+const platformManifestPath = typescriptRequire.resolve(installedPlatformPackages[0] + "/package.json");
+assert.ok(platformManifestPath.startsWith(consumerNodeModules), "TypeScript platform binary resolved outside the packed consumer");
+assert.equal(typescriptRequire(installedPlatformPackages[0] + "/package.json").version, "7.0.2");
+
+const prepared = await prepareWorkflow({ workflow: "valid.workflow.ts", cwd: process.cwd() });
+assert.equal(prepared.ir.name, "packed-consumer");
+assert.deepEqual(prepared.ir.diagnostics, []);
+
+const checked = await tryPrepareWorkflow({ workflow: "invalid.workflow.ts", cwd: process.cwd() });
+assert.equal(checked.isErr(), true, "invalid workflow unexpectedly prepared");
+if (checked.isOk()) throw new Error("invalid workflow unexpectedly prepared");
+assert.equal(checked.error.type, "check-failed");
+assert.ok(checked.error.diagnostics.some(diagnostic => diagnostic.code === "TS2322"), "TS7 check did not report TS2322");
+`);
+
+    await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
+    const lockfile = await readFile(join(consumerDirectory, "pnpm-lock.yaml"), "utf8");
+    for (const tarball of tarballs.values()) {
+      assert.ok(lockfile.includes(tarball.split(/[\\/]/).at(-1)), `consumer lockfile did not use local tarball: ${tarball}`);
+    }
+    await execFileAsync(process.execPath, [join(consumerDirectory, "smoke.mjs")], {
+      cwd: consumerDirectory,
+      env: smokeEnvironment(),
+    });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+function localDependencyClosure(rootName, packagesByName) {
+  const names = new Set();
+  const pending = [rootName];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (names.has(name)) continue;
+    const pkg = packagesByName.get(name);
+    assert.ok(pkg, `packed smoke root is not publishable: ${name}`);
+    names.add(name);
+    for (const dependency of Object.keys(pkg.manifest.dependencies ?? {})) {
+      if (packagesByName.has(dependency)) pending.push(dependency);
+    }
+  }
+  return [...names].sort();
+}
+
+async function pnpmPack(packageDirectory, destination) {
+  const before = new Set(await readdir(destination));
+  await runPnpm(["pack", "--pack-destination", destination], packageDirectory);
+  const added = (await readdir(destination)).filter(file => file.endsWith(".tgz") && !before.has(file));
+  assert.equal(added.length, 1, `${packageDirectory}: pnpm pack produced ${added.length} tarballs`);
+  return join(destination, added[0]);
+}
+
+function runPnpm(args, cwd) {
+  const options = { cwd, env: smokeEnvironment() };
+  if (process.env.npm_execpath && existsSync(process.env.npm_execpath)) {
+    return execFileAsync(process.execPath, [process.env.npm_execpath, ...args], options);
+  }
+  return process.platform === "win32"
+    ? execFileAsync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm", ...args], options)
+    : execFileAsync("pnpm", args, options);
+}
+
+function smokeEnvironment() {
+  return {
+    ...process.env,
+    CI: "1",
+    FORCE_COLOR: "0",
+    NODE_NO_WARNINGS: "1",
+    NODE_OPTIONS: "",
+    NODE_PATH: "",
+  };
+}
+
+function localFileSpec(fromDirectory, target) {
+  const path = relative(fromDirectory, target).replaceAll("\\", "/");
+  return `file:${path.startsWith(".") ? path : `./${path}`}`;
 }
 
 async function verifyPackage(packageDirectory, manifest) {

@@ -2,13 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { analyzeWorkflowTasks } from "../src/task-analysis/index.js";
+import { analyzeWorkflowTasks, type WorkflowTaskAnalysis } from "../src/task-analysis/index.js";
 
 // Static task analysis produces facts for lint and reusable task references. Rule
 // codes and messages belong to the check layer, not to this analyzer.
 
 let dir: string;
-type TaskAnalysis = Awaited<ReturnType<typeof analyzeWorkflowTasks>>;
+type TaskAnalysis = WorkflowTaskAnalysis;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "acpus-provenance-"));
@@ -24,7 +24,9 @@ async function analyze(workflowSource: string, files: Record<string, string> = {
   }
   const workflowFile = join(dir, "workflow.ts");
   await writeFile(workflowFile, workflowSource);
-  return analyzeWorkflowTasks(workflowFile, workflowSource);
+  const result = await analyzeWorkflowTasks(workflowFile, workflowSource);
+  if (result.isErr()) throw new Error(result.error.message);
+  return result.value;
 }
 
 const taskModule = `import { task, z } from "acpus/core";

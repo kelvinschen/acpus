@@ -24,6 +24,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
       - run: pnpm typecheck
+      - run: pnpm check:build-toolchain
       - run: pnpm check:dead-code
       - run: pnpm check:dependencies
       - run: pnpm check:dependencies:strict
