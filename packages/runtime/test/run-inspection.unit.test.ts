@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { progressChanges, projectRunInspection, semanticChanges } from "../src/inspection/projection.js";
@@ -169,7 +170,7 @@ describe("run inspection projection", () => {
       mediaType: "application/json",
       digest: "sha256:abc",
       size: 42,
-      relativePath: "nodes/review~0/attempt-1/telemetry.json",
+      path: "/workspace/.acpus/.local/runs/run_1/nodes/review~0/attempt-1/telemetry.json",
     };
     const overview = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
     const target = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "target", target: "review" } });
@@ -180,6 +181,8 @@ describe("run inspection projection", () => {
     expect(target.instances).toHaveLength(25);
     expect(target.attempts).toHaveLength(25);
     expect(target.artifacts).toEqual([artifact]);
+    expect(isAbsolute(target.artifacts[0]!.path)).toBe(true);
+    expect(JSON.stringify(target.artifacts)).not.toContain("relativePath");
     expect(raw.run.dynamic?.nodeInstances).toHaveLength(25);
     expect(JSON.stringify(overview)).not.toContain('"dynamic"');
     expect(JSON.stringify(overview).length).toBeLessThan(JSON.stringify(raw).length * 0.25);

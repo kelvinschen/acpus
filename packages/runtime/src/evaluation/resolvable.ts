@@ -2,7 +2,7 @@ import { tryParseDurationMs } from "@acpus/core/ir";
 import type { ExprIR, JsonObject } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import { tryCreateDeadline as tryCreatePersistedDeadline } from "../deadline.js";
-import { evaluateExpr, type EvaluationScope } from "./evaluator.js";
+import { evaluateExpr, type EvaluationOptions, type EvaluationScope } from "./evaluator.js";
 
 export type ResolutionError =
   | { type: "evaluation"; field: string; message: string }
@@ -25,8 +25,8 @@ export function resolveOrThrow<T>(result: Result<T, ResolutionError>): T {
   return result.value;
 }
 
-export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: string): Result<string, ResolutionError> {
-  const resolved = tryEvaluate(expr, scope, field);
+export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<string, ResolutionError> {
+  const resolved = tryEvaluate(expr, scope, field, options);
   if (resolved.isErr()) return err(resolved.error);
   return typeof resolved.value === "string"
     ? ok(resolved.value)
@@ -80,9 +80,9 @@ export function resolutionErrorPayload(error: ResolutionError): JsonObject {
   return { reason: "expression_resolution_failed", ...error };
 }
 
-function tryEvaluate(expr: ExprIR, scope: EvaluationScope, field: string): Result<unknown, ResolutionError> {
+function tryEvaluate(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<unknown, ResolutionError> {
   try {
-    return ok(evaluateExpr(expr, scope));
+    return ok(evaluateExpr(expr, scope, options));
   } catch (cause) {
     return err({
       type: "evaluation",

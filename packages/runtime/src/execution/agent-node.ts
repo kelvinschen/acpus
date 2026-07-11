@@ -6,6 +6,7 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
+import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { ResolutionException, resolveOrThrow, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
@@ -73,7 +74,6 @@ type AgentTurnTelemetrySummary = Pick<AgentTurnTelemetry, "eventCount" | "stopRe
 
 type AgentArtifactRef = {
   artifactId: string;
-  relativePath: string;
   mediaType: string;
 };
 
@@ -128,7 +128,15 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     const plainContinuation = options.initialPromptKind === "plain_continuation";
     renderedPromptForMetadata = plainContinuation
       ? CONTINUATION_PROMPT
-      : resolveOrThrow(tryResolveString(node.run.prompt, scope, `Agent node '${node.id}' prompt`));
+      : resolveOrThrow(tryResolveString(node.run.prompt, scope, `Agent node '${node.id}' prompt`, {
+          formatTemplateValue: value => {
+            if (!isArtifactRefCandidate(value)) return undefined;
+            if (!options.store || !options.runId) throw new Error("Agent ArtifactRef interpolation requires runtime store and run id.");
+            const resolved = tryResolveArtifactPath(value, { cwd: options.cwd, runId: options.runId, store: options.store });
+            if (resolved.isErr()) throw new Error(resolved.error.message);
+            return resolved.value;
+          },
+        }));
     let prompt = plainContinuation
       ? renderedPromptForMetadata
       : buildAgentPrompt(renderedPromptForMetadata, node.outputSchema);
@@ -532,7 +540,7 @@ async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, n
     size: bytes.byteLength,
     relativePath,
   });
-  return { artifactId: id, relativePath, mediaType };
+  return { artifactId: id, mediaType };
 }
 
 async function writeAgentRawParsedOutputArtifact(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, rawParsedOutput: JsonValue): Promise<AgentArtifactRef | undefined> {

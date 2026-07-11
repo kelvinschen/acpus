@@ -1201,11 +1201,11 @@ function ArtifactList({ runId, artifacts }: { runId: string | undefined; artifac
             variant="ghost"
             key={artifact.id}
             className={`artifact-row ${artifact.id === selectedArtifactId ? "selected" : ""}`}
-            title={artifact.relativePath}
-            aria-label={`Artifact ${artifact.relativePath}`}
+            title={artifact.path}
+            aria-label={`Artifact ${artifact.path}`}
             onClick={() => setSelectedArtifactId(current => current === artifact.id ? undefined : artifact.id)}
           >
-            <span className="artifact-title mono" title={artifact.relativePath}>{artifact.relativePath}</span>
+            <span className="artifact-title mono" title={artifact.path}>{artifact.path}</span>
             <span>{artifact.mediaType ?? "unknown"}</span>
             <span>{formatSize(artifact.size)}</span>
           </Button>

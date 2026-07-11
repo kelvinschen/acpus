@@ -54,7 +54,7 @@ describe("node execution inspection", () => {
           turnCount: 1,
           turns: [{
             turn: 1,
-            telemetryArtifact: { relativePath: "nodes/review/attempt-1/telemetry.json" },
+            telemetryArtifact: { artifactId: "telemetry-1" },
             telemetry: {
               context: { used: 4_000, size: 8_000 },
               tokenUsage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
@@ -84,6 +84,7 @@ describe("node execution inspection", () => {
     const withArtifact = await inspectNodeExecution(inspection, loadTelemetry);
 
     expect(loadTelemetry).toHaveBeenCalledOnce();
+    expect(loadTelemetry).toHaveBeenCalledWith({ artifactId: "telemetry-1" });
     expect(withoutArtifact.lastToolCalls).toEqual([]);
     expect(withArtifact).toMatchObject({
       available: true,

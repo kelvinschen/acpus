@@ -1,5 +1,5 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
@@ -2184,6 +2184,97 @@ describe("runtime scheduler node executor", () => {
     });
   });
 
+  it("renders direct ArtifactRefs as absolute paths without rewriting nested refs", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-agent-artifact-prompt", async workspace => {
+      const worktree = join(workspace, "agent-worktree");
+      await mkdir(worktree);
+      const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+        name: "agent_artifact_prompt",
+        inputSchema: z.object({ agentCwd: z.string() }),
+        agents: { reviewer: { use: "mock" } },
+      }).build(({ input, agents, step }) => {
+        const produced = step("produce").task({
+          input: {},
+          exec: async ({ artifact }) => ({ patch: await artifact.write("patch.diff", "diff\n") }),
+        });
+        step("review").agent({
+          agent: agents.reviewer,
+          cwd: input.agentCwd,
+          prompt: template`direct=${produced.output.patch}|uri=${produced.output.patch.uri}|nested=${produced.output}`,
+        });
+        return {};
+      }));
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { agentCwd: worktree }, cwd: workspace });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected run directory");
+        const artifactId = "artifact_prompt_input";
+        const relativePath = join("artifacts", "produce", "attempt-1", "patch.diff");
+        const artifactPath = join(workspace, runDir, relativePath);
+        await mkdir(dirname(artifactPath), { recursive: true });
+        await writeFile(artifactPath, "diff\n");
+        store.registerArtifact({
+          id: artifactId,
+          runId: run.id,
+          nodeKey: "produce",
+          attempt: 1,
+          mediaType: "text/plain",
+          digest: "sha256:test",
+          size: 5,
+          relativePath,
+        });
+        const ref = { kind: "artifact", uri: `artifact://${run.id}/${artifactId}`, mediaType: "text/plain" } as const;
+        const node = prepared.ir.root.nodes.find(item => item.id === "review");
+        if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+        const turns: AgentTurnRequest[] = [];
+
+        await expect(executeAgentNode(node, {
+          input: { agentCwd: worktree },
+          nodes: { produce: { status: "completed", output: { patch: ref } } },
+        }, {
+          cwd: workspace,
+          runId: run.id,
+          nodeKey: "review",
+          attemptId: "attempt_review",
+          attemptNo: 1,
+          agents: prepared.ir.agents,
+          store,
+          executeTurn: async request => {
+            turns.push(request);
+            return completedAgentTurn("done");
+          },
+        })).resolves.toBe("done");
+
+        expect(turns).toHaveLength(1);
+        expect(turns[0]!.cwd).toBe(worktree);
+        expect(turns[0]!.prompt).toBe(`direct=${artifactPath}|uri=${ref.uri}|nested=${JSON.stringify({ patch: ref })}`);
+        const metadata = store.getExecutionMetadata(run.id).find(item => item.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+        expect(metadata?.turns?.[0]?.promptArtifact).toEqual({ artifactId: expect.any(String), mediaType: "text/markdown" });
+        expect(store.listArtifacts(run.id)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: artifactId, path: artifactPath }),
+        ]));
+        expect(store.listArtifacts(run.id).every(item => isAbsolute(item.path) && !("relativePath" in item))).toBe(true);
+
+        await expect(executeAgentNode(node, {
+          input: { agentCwd: worktree },
+          nodes: { produce: { status: "completed", output: { patch: { ...ref, uri: `artifact://run_other/${artifactId}` } } } },
+        }, {
+          cwd: workspace,
+          runId: run.id,
+          nodeKey: "review.foreign",
+          attemptId: "attempt_review_foreign",
+          attemptNo: 1,
+          agents: prepared.ir.agents,
+          store,
+        })).rejects.toMatchObject({ resolution: { type: "evaluation", field: "Agent node 'review' prompt" } });
+        expect(executorMocks.executeAgentTurn).toHaveBeenCalledOnce();
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("repairs empty schema-backed agent responses without parsing them", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-agent-empty-repair", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
@@ -3898,7 +3989,6 @@ function expectAgentArtifactRef(ref: unknown, relativePath: string, mediaType: s
   expect(row).toBeDefined();
   expect(ref).toEqual({
     artifactId: row?.id,
-    relativePath,
     mediaType,
   });
 }

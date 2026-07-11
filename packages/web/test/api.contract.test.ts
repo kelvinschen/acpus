@@ -248,13 +248,12 @@ describe("web API contract", () => {
   describe("GET /api/runs/:id/artifacts/:artifactId/preview", () => {
     it("returns at most 128 KiB with the artifact media type", async () => {
       const cwd = await mkdtemp(join(tmpdir(), "acpus-web-artifact-preview-"));
-      const relativePath = "artifacts/output.txt";
       const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
       const path = join(artifactDir, "output.txt");
       const bytes = Buffer.alloc(128 * 1024 + 7, "a");
       await mkdir(artifactDir, { recursive: true });
       await writeFile(path, bytes);
-      mockGetArtifact.mockResolvedValue({ relativePath });
+      mockGetArtifact.mockResolvedValue({ path });
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request("/api/runs/run_1/artifacts/artifact_1/preview");

@@ -24,6 +24,7 @@ export type TaskProcessRequest = {
     nodeKey: string;
     attempt: number;
     runDir: string;
+    paths: Record<string, string>;
   };
 };
 

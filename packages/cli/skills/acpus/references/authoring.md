@@ -142,6 +142,8 @@ const prompt = md`
 `;
 ```
 
+Agent prompts give a directly interpolated `ArtifactRef` to the Agent as its absolute local path. Explicit `${ref.uri}` interpolation keeps the logical URI, while a ref nested inside an interpolated object or array remains ordinary compact JSON.
+
 ### Boundary Schemas
 
 Boundary schemas use the native Zod 4 `z` re-exported from `acpus/core`. Filesystem paths are ordinary `z.string()` fields; use field names and descriptions to explain their meaning. Infer schema values with `z.infer<typeof Schema>`.
@@ -321,7 +323,9 @@ const state = {
 - Put reusable tasks in separate task modules when they need shared code or third-party packages installed with the workflow package.
 - Keep inline tasks self-contained: no third-party imports, module-scope environment reads, or module-scope captures.
 - Each Task attempt runs in a fresh Node process. Task module globals and module caches do not carry across tasks or retries.
-- The Task step's `cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, `artifact.fromFile(...)`, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
+- Task artifacts use `artifact.write(name, string | Uint8Array, options?)`. Read files with Node `readFile` and serialize JSON with `JSON.stringify` before writing; there are no format-specific or file-copy helpers.
+- Use synchronous `artifact.path(ref)` for an absolute local path. The ref must arrive through Task input or come from that Task's own successful `artifact.write(...)`; arbitrary and cross-run refs are rejected.
+- The Task step's `cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
 - The Task step's `env` overlays the host environment. `process.env`, task context `env`, module top-level code, and default `$` commands see the same effective values.
 - A Task may call `process.chdir(...)` or update `process.env`; later relative Node operations and default `$` commands follow the changed process state.
 

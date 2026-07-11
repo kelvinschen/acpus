@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { extname, resolve } from "node:path";
+import { extname } from "node:path";
 import {
   DaemonRequestError,
   getArtifact,
@@ -109,7 +109,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       ok: true,
       execution: await inspectNodeExecution(
         inspection,
-        artifactRef => readRunJsonArtifact(options.cwd, runId, artifactRef),
+        artifactRef => readRunJsonArtifact(inspection.artifacts, artifactRef),
       ),
     });
   });
@@ -137,11 +137,8 @@ export function createWebApp(options: WebAppOptions): Hono {
     const artifactId = context.req.param("artifactId");
     const artifact = await getArtifact(options.cwd, runId, artifactId);
     if (!artifact) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
-    const runDir = resolve(options.cwd, ".acpus", ".local", "runs", runId);
-    const filePath = resolve(runDir, artifact.relativePath);
-    if (!filePath.startsWith(runDir + "/")) apiError(403, "path_escape", "Artifact path escapes run directory.");
-    const bytes = await readFile(filePath).catch(() => apiError(404, "artifact_read_failed", "Artifact file could not be read."));
-    context.header("content-type", mediaType(artifact.relativePath));
+    const bytes = await readFile(artifact.path).catch(() => apiError(404, "artifact_read_failed", "Artifact file could not be read."));
+    context.header("content-type", mediaType(artifact.path));
     return context.newResponse(bytes.subarray(0, 128 * 1024));
   });
 
@@ -272,14 +269,13 @@ function mediaType(path: string): string {
   }
 }
 
-async function readRunJsonArtifact(cwd: string, runId: string, artifactRef: unknown): Promise<unknown | undefined> {
+async function readRunJsonArtifact(artifacts: RunInspectionTargetDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
   if (!artifactRef || typeof artifactRef !== "object" || Array.isArray(artifactRef)) return undefined;
-  const relativePath = (artifactRef as Record<string, unknown>).relativePath;
-  if (typeof relativePath !== "string" || relativePath.length === 0) return undefined;
-  const runDir = resolve(cwd, ".acpus", ".local", "runs", runId);
-  const filePath = resolve(runDir, relativePath);
-  if (!filePath.startsWith(runDir + "/")) return undefined;
-  const bytes = await readFile(filePath).catch(() => undefined);
+  const artifactId = (artifactRef as Record<string, unknown>).artifactId;
+  if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
+  const artifact = artifacts.find(item => item.id === artifactId);
+  if (!artifact) return undefined;
+  const bytes = await readFile(artifact.path).catch(() => undefined);
   if (!bytes) return undefined;
   try {
     return JSON.parse(bytes.toString("utf8")) as unknown;

@@ -7,7 +7,7 @@ export default defineWorkflow({
     input: {},
     exec: async ({ artifact }) => ({
       ok: true,
-      artifact: await artifact.writeText("result.txt", "artifact-ok\n"),
+      artifact: await artifact.write("result.txt", "artifact-ok\n"),
     }),
   });
   return { ok: result.output.ok, artifact: result.output.artifact };

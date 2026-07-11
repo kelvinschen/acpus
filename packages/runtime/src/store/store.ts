@@ -436,7 +436,7 @@ export type ArtifactRecord = {
   mediaType?: string;
   digest: string;
   size: number;
-  relativePath: string;
+  path: string;
 };
 type WriteExecutionMetadataInput = {
   runId: string;
@@ -1193,32 +1193,43 @@ class SqliteRuntimeStore implements RuntimeStore {
       "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? AND id = ?"
     ).get(runId, artifactId) as ArtifactRow | undefined;
     if (!row) return undefined;
-    return {
-      id: String(row.id),
-      runId: String(row.run_id),
-      nodeKey: String(row.node_key),
-      attempt: Number(row.attempt),
-      ...(row.media_type === null ? {} : { mediaType: String(row.media_type) }),
-      digest: String(row.digest),
-      size: Number(row.size),
-      relativePath: String(row.relative_path),
-    };
+    return this.artifactRecord(row, this.artifactRoot(runId));
   }
 
   listArtifacts(runId: string): ArtifactRecord[] {
     const rows = this.db.prepare(
       "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY created_at ASC, id ASC"
     ).all(runId) as ArtifactRow[];
-    return rows.map(row => ({
+    if (rows.length === 0) return [];
+    const root = this.artifactRoot(runId);
+    return rows.map(row => this.artifactRecord(row, root));
+  }
+
+  private artifactRoot(runId: string): string {
+    const runDir = this.getRunDir(runId);
+    if (!runDir) throw new Error(`Run '${runId}' has no run directory.`);
+    const root = resolve(this.cwd, runDir);
+    if (dirname(root) !== resolve(this.cwd, localStateRoot, "runs") || basename(root) !== runId || !runIdPattern.test(runId)) {
+      throw new Error(`Run directory '${runDir}' is outside ${localStateRoot}/runs.`);
+    }
+    return root;
+  }
+
+  private artifactRecord(row: ArtifactRow, root: string): ArtifactRecord {
+    const runId = String(row.run_id);
+    const relativePath = String(row.relative_path);
+    const path = resolve(root, relativePath);
+    if (!isContainedPath(root, path)) throw new Error(`Artifact '${String(row.id)}' path escapes run directory.`);
+    return {
       id: String(row.id),
-      runId: String(row.run_id),
+      runId,
       nodeKey: String(row.node_key),
       attempt: Number(row.attempt),
       ...(row.media_type === null ? {} : { mediaType: String(row.media_type) }),
       digest: String(row.digest),
       size: Number(row.size),
-      relativePath: String(row.relative_path),
-    }));
+      path,
+    };
   }
 
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void {

@@ -86,10 +86,10 @@ export default defineWorkflow({
 
       return {
         changedFiles,
-        diff: await artifact.writeText("diff.patch", diff.stdout, {
+        diff: await artifact.write("diff.patch", diff.stdout, {
           mediaType: "text/x-patch",
         }),
-        changelogDraft: await artifact.writeText(
+        changelogDraft: await artifact.write(
           "CHANGELOG_DRAFT.md",
           changelog,
           { mediaType: "text/markdown" },
@@ -119,7 +119,7 @@ export default defineWorkflow({
           result.exitCode === 0
             ? "Tests passed."
             : "Tests failed. See attached log.",
-        log: await artifact.writeText(
+        log: await artifact.write(
           "test.log",
           result.stdout + result.stderr,
           { mediaType: "text/plain" },

@@ -117,6 +117,7 @@
   provider error text, and MUST NOT expose generic raw `Instances`, `Frames`,
   `Signals`, or `Metadata` tabs.
 - Artifact content MUST be shown in a conditional `Artifacts` tab for leaf nodes with artifacts, and artifact preview requests MUST be lazy-loaded from that tab. Artifact rows MUST truncate long artifact titles while exposing the full title on hover or keyboard focus, and artifact previews MUST stay inside the Inspector width without page-level horizontal overflow.
+- Artifact rows and runtime inspection responses MUST expose the absolute `path`; they MUST NOT expose the runtime store's internal relative path.
 - Artifact preview responses MUST cap the body at 128 KiB and MUST expose the preview media type through `Content-Type`.
 - Agent execution telemetry MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
 - Artifact bodies and full Agent telemetry artifacts MUST NOT be embedded in the

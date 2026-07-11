@@ -237,7 +237,7 @@ export type RunInspectionTargetSummary = {
     kind: "signal" | "artifact" | "authored";
     text?: string;
     artifactId?: string;
-    relativePath?: string;
+    path?: string;
     mediaType?: string;
   };
   latestAttempt?: {

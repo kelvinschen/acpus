@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
+import { tryResolveArtifactPath } from "../src/artifacts/path.js";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
@@ -162,6 +163,15 @@ describe("runtime scheduler task process", () => {
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[nodeKey]?.output).toMatchObject({
           artifact: { kind: "artifact", uri: `artifact://${fork.id}/${String(forkArtifact?.id)}` },
         });
+        const resolved = tryResolveArtifactPath({
+          kind: "artifact",
+          uri: `artifact://${fork.id}/${String(forkArtifact?.id)}`,
+        }, { cwd: workspace, runId: fork.id, store });
+        expect(resolved.isOk()).toBe(true);
+        if (resolved.isErr()) throw new Error(resolved.error.message);
+        expect(isAbsolute(resolved.value)).toBe(true);
+        expect(resolved.value).toContain(fork.id);
+        await expect(readFile(resolved.value, "utf8")).resolves.toBe("artifact-ok\n");
       } finally {
         store.close();
       }
@@ -200,7 +210,7 @@ function taskRuntimeContextWorkflow() {
     step("context_task").task({
       input: {},
       exec: async ({ artifact }) => ({
-        artifact: await artifact.writeText("result.txt", "dynamic artifact\n"),
+        artifact: await artifact.write("result.txt", "dynamic artifact\n"),
       }),
     });
     return {};
@@ -229,7 +239,7 @@ function retryingTaskWorkflow() {
         const globalKey = "__acpus_scheduler_node_executor_retry_count";
         const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;
         (globalThis as Record<string, unknown>)[globalKey] = current;
-        await artifact.writeText(`attempt-${current}.txt`, `attempt ${current}\n`);
+        await artifact.write(`attempt-${current}.txt`, `attempt ${current}\n`);
         if (current === 1) throw new Error("first invocation fails");
         return { ok: true };
       },

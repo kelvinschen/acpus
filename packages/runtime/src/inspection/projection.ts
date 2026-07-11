@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type SchemaIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonPrimitive, JsonValue, TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
@@ -546,7 +547,7 @@ function projectTarget(
   const node = resolvedStatic ? nodeById(ir, resolvedStatic.nodeId) : undefined;
   const metadata = latest(executionMetadata, item => item.createdAt);
   const currentProgress = latest(progress, item => item.updatedAt);
-  const promptArtifact = targetArtifacts.find(item => item.relativePath.endsWith("prompt.md")) ?? targetArtifacts.find(item => item.relativePath.includes("/prompt."));
+  const promptArtifact = targetArtifacts.find(item => item.path.endsWith("prompt.md")) ?? targetArtifacts.find(item => basename(item.path).startsWith("prompt."));
   const authoredInput = node?.kind === "task" ? Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, renderExpr(expr)])) : undefined;
   const runtimeInput = record(metadata?.metadata)?.input;
   const loopProgress = summarizeLoopProgress(frames);
@@ -585,7 +586,7 @@ function projectTarget(
       ...(latestInstance?.output !== undefined ? { output: latestInstance.output } : latestAttempt?.result !== undefined ? { output: latestAttempt.result } : latestFrame?.result !== undefined ? { output: latestFrame.result } : {}),
       ...(targetFailure ? { failure: targetFailure } : {}),
       ...(latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
-        : promptArtifact ? { prompt: { kind: "artifact", artifactId: promptArtifact.id, relativePath: promptArtifact.relativePath, ...(promptArtifact.mediaType ? { mediaType: promptArtifact.mediaType } : {}) } }
+        : promptArtifact ? { prompt: { kind: "artifact", artifactId: promptArtifact.id, path: promptArtifact.path, ...(promptArtifact.mediaType ? { mediaType: promptArtifact.mediaType } : {}) } }
           : node?.kind === "agent" || node?.kind === "signal" ? { prompt: { kind: node.kind === "signal" ? "signal" : "authored", text: renderPromptExpr(node.run.prompt) } } : {}),
       ...(latestAttempt ? { latestAttempt: { attemptId: latestAttempt.attemptId, attemptNo: latestAttempt.attemptNo, status: latestAttempt.status, startedAt: latestAttempt.startedAt, ...(latestAttempt.finishedAt ? { finishedAt: latestAttempt.finishedAt } : {}), ...(latestAttempt.error !== undefined ? { error: latestAttempt.error } : {}), ...(latestAttempt.result !== undefined ? { result: latestAttempt.result } : {}) } } : {}),
       ...(loopProgress ? { loopProgress } : {}),

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import type { TaskAttemptRunner } from "../src/execution/task-process.js";
-import type { RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
+import type { ArtifactRecord, RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
 
 const taskProcessMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
@@ -81,7 +81,7 @@ describe("task executor", () => {
     await mkdir(join(workDir, "nested"), { recursive: true });
     await writeFile(join(workDir, "marker.txt"), "root-marker\n");
     await writeFile(join(workDir, "nested", "marker.txt"), "nested-marker\n");
-    const artifacts: Array<{ relativePath: string }> = [];
+    const artifacts: RegisterArtifactInput[] = [];
     const node = inlineTask("context", [
       "async ({ $, env, artifact }) => {",
       "  const fs = await import('node:fs/promises');",
@@ -93,15 +93,16 @@ describe("task executor", () => {
       "  env.RUNTIME_MUTATED = 'yes';",
       "  const shellCwd = (await $`pwd`).stdout.trim();",
       "  const shellEnv = (await $`node -e ${\"process.stdout.write(process.env.RUNTIME_MUTATED ?? '')\"}`).stdout.trim();",
-      "  const artifactRef = await artifact.fromFile('marker.txt');",
-      "  return { initialCwd, initialMarker, sameEnvObject, shellCwd, shellEnv, resolved: path.resolve('marker.txt'), artifactRef, runEnv: process.env.RUNTIME_TASK_ENV, inheritedPath: Boolean(process.env.PATH) };",
+      "  const artifactRef = await artifact.write('marker.txt', await fs.readFile('marker.txt'));",
+      "  return { initialCwd, initialMarker, sameEnvObject, shellCwd, shellEnv, resolved: path.resolve('marker.txt'), artifactRef, artifactPath: artifact.path(artifactRef), runEnv: process.env.RUNTIME_TASK_ENV, inheritedPath: Boolean(process.env.PATH) };",
       "}",
     ].join("\n"), {
       cwd: { kind: "literal", value: workDir },
       env: { RUNTIME_TASK_ENV: { kind: "literal", value: "from-run-env" } },
     });
 
-    await expect(executeTaskNode(node, {}, taskOptions("run_context", artifact => artifacts.push(artifact)))).resolves.toEqual({
+    const output = await executeTaskNode(node, {}, taskOptions("run_context", artifact => artifacts.push(artifact))) as Record<string, unknown>;
+    expect(output).toEqual({
       initialCwd: workDir,
       initialMarker: "root-marker\n",
       sameEnvObject: true,
@@ -109,11 +110,87 @@ describe("task executor", () => {
       shellEnv: "yes",
       resolved: join(workDir, "nested", "marker.txt"),
       artifactRef: expect.objectContaining({ kind: "artifact" }),
+      artifactPath: expect.any(String),
       runEnv: "from-run-env",
       inheritedPath: true,
     });
     expect(artifacts).toHaveLength(1);
     await expect(readFile(join(workspace, ".acpus/.local/runs/run_context", artifacts[0]!.relativePath), "utf8")).resolves.toBe("nested-marker\n");
+    expect(output.artifactPath).toBe(join(workspace, ".acpus/.local/runs/run_context", artifacts[0]!.relativePath));
+    expect(artifacts[0]!.mediaType).toBeUndefined();
+  });
+
+  it("resolves bound input artifacts to an absolute path that survives process.chdir", async () => {
+    const runId = "run_input_path";
+    const artifactId = "artifact_input";
+    const runDir = `.acpus/.local/runs/${runId}`;
+    const path = join(workspace, runDir, "artifacts", "input.txt");
+    await mkdir(join(workspace, runDir, "artifacts"), { recursive: true });
+    await writeFile(path, "input\n");
+    const ref = { kind: "artifact", uri: `artifact://${runId}/${artifactId}`, mediaType: "text/plain" } as const;
+    const artifact: ArtifactRecord = {
+      id: artifactId,
+      runId,
+      nodeKey: "produce",
+      attempt: 1,
+      mediaType: "text/plain",
+      digest: "sha256:test",
+      size: 6,
+      path,
+    };
+    const node = inlineTask("consume", [
+      "async ({ input, artifact }) => {",
+      "  const before = artifact.path(input.file);",
+      "  process.chdir('/');",
+      "  return { before, after: artifact.path(input.file) };",
+      "}",
+    ].join("\n"), {
+      input: {
+        file: {
+          kind: "object",
+          fields: {
+            kind: { kind: "literal", value: ref.kind },
+            uri: { kind: "literal", value: ref.uri },
+            mediaType: { kind: "literal", value: ref.mediaType },
+          },
+        },
+      },
+    });
+
+    await expect(executeTaskNode(node, {}, {
+      cwd: workspace,
+      runId,
+      store: {
+        getRunDir: () => runDir,
+        getArtifact: (_runId: string, id: string) => id === artifactId ? artifact : undefined,
+        registerArtifact: () => {},
+        writeExecutionMetadata: () => {},
+      } as unknown as RuntimeStore,
+    })).resolves.toEqual({ before: path, after: path });
+  });
+
+  it("rejects unbound and cross-run ArtifactRefs", async () => {
+    const unbound = inlineTask("unbound", "async ({ artifact }) => artifact.path({ kind: 'artifact', uri: 'artifact://run_unbound/artifact_1' })");
+    await expect(executeTaskNode(unbound, {}, taskOptions("run_unbound"))).rejects.toMatchObject({
+      failure: { type: "task", message: expect.stringContaining("is not available to this Task") },
+    });
+
+    taskProcessMocks.runTaskAttempt.mockClear();
+    const foreign = inlineTask("foreign", "async () => ({ ok: true })", {
+      input: {
+        file: {
+          kind: "object",
+          fields: {
+            kind: { kind: "literal", value: "artifact" },
+            uri: { kind: "literal", value: "artifact://run_other/artifact_1" },
+          },
+        },
+      },
+    });
+    await expect(executeTaskNode(foreign, {}, taskOptions("run_current"))).rejects.toMatchObject({
+      resolution: { type: "evaluation", field: "Task node 'foreign' input" },
+    });
+    expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
   });
 
   it("isolates concurrent task cwd and env values", async () => {
@@ -244,10 +321,10 @@ describe("task executor", () => {
     const artifacts: RegisterArtifactInput[] = [];
     const node = inlineTask("cancel_artifact", [
       "async ({ artifact, abortSignal }) => {",
-      "  await artifact.writeText('before.txt', 'before');",
+      "  await artifact.write('before.txt', 'before');",
       "  if (!abortSignal.aborted) await new Promise(resolve => abortSignal.addEventListener('abort', resolve, { once: true }));",
       "  try {",
-      "    await artifact.writeText('after.txt', 'after');",
+      "    await artifact.write('after.txt', 'after');",
       "  } catch {",
       "    return { lateWriteRejected: true };",
       "  }",
@@ -265,10 +342,11 @@ describe("task executor", () => {
     await expect(running).rejects.toMatchObject({ failure: { type: "cancelled" } });
     expect(artifacts).toHaveLength(1);
     expect(artifacts[0]!.relativePath).toContain("before.txt");
+    expect(artifacts[0]!.mediaType).toBe("text/plain");
   });
 });
 
-function inlineTask(id: string, source: string, invocation: Pick<TaskNodeIR["run"], "cwd" | "env" | "execution"> = {}): TaskNodeIR {
+function inlineTask(id: string, source: string, invocation: Partial<Pick<TaskNodeIR["run"], "input" | "cwd" | "env" | "execution">> = {}): TaskNodeIR {
   return {
     id,
     kind: "task",

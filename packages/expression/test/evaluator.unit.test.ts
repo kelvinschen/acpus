@@ -32,6 +32,23 @@ describe("expression evaluator", () => {
     }, { resolveRef: () => undefined })).toBe("value={\"ok\":true}");
   });
 
+  it("lets an adapter format direct interpolation values without rewriting nested values", () => {
+    const artifact = { kind: "artifact", uri: "artifact://run/artifact_1", mediaType: "text/plain" };
+    expect(renderTemplate({
+      kind: "template",
+      parts: [
+        { kind: "expr", expr: refExpr(["input", "artifact"]).__ir },
+        { kind: "text", value: "|" },
+        { kind: "expr", expr: refExpr(["input", "artifact", "uri"]).__ir },
+        { kind: "text", value: "|" },
+        { kind: "expr", expr: { kind: "object", fields: { artifact: refExpr(["input", "artifact"]).__ir } } },
+      ],
+    }, {
+      resolveRef: path => path.at(-1) === "uri" ? artifact.uri : artifact,
+      formatTemplateValue: value => value === artifact ? "/workspace/artifact.txt" : undefined,
+    })).toBe(`/workspace/artifact.txt|${artifact.uri}|{\"artifact\":${JSON.stringify(artifact)}}`);
+  });
+
   it("evaluates unary lift over JSON values", () => {
     expect(evaluateExpr(lift(refExpr<number>(["input", "count"]), value => value + 1).__ir, adapter)).toBe(3);
     expect(evaluateExpr(lift(refExpr<number>(["input", "count"]), value => {

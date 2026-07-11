@@ -136,6 +136,7 @@
 - Raw inspection MUST expose the unbounded run details, complete frozen
   `WorkflowIR`, and artifact registry records without replacing the frozen IR
   with a lossy static-node summary.
+- Public artifact registry records and inspection prompt artifact references MUST expose only `path`, and that path MUST be absolute. SQLite rows and process registration messages MAY retain run-relative paths as an internal storage coordinate.
 - Inspection MUST expose Agent identity by the authored key stored in
   `node.run.agent`, regardless of an effective run override. Compact Agent
   state MUST describe an effective `use` backend by name or a `command`
@@ -208,7 +209,7 @@
 - TypeScript reusable task loading MUST be provided by the internal loader boundary and MUST NOT rely on workspace root development dependencies being ambiently available.
 - Every Task attempt MUST execute in a fresh Node process. Normal Node module caching MUST apply within one attempt only; separate tasks and retried attempts MUST reload reusable task modules and MUST NOT share module globals.
 - `TaskNodeIR.run.cwd` MUST define the Task process's initial working directory. An omitted cwd MUST use the workspace directory, an absolute cwd MUST be used as-is, and a relative cwd MUST resolve against the workspace directory. The directory MUST exist when the attempt starts.
-- `TaskNodeIR.run.cwd` MUST be observed consistently by `process.cwd()`, relative Node filesystem access, `artifact.fromFile(...)`, module top-level code, and the default `$` command wrapper. It MUST NOT change the module resolution base for reusable task imports.
+- `TaskNodeIR.run.cwd` MUST be observed consistently by `process.cwd()`, relative Node filesystem access, module top-level code, and the default `$` command wrapper. It MUST NOT change the module resolution base for reusable task imports.
 - A Task process environment MUST start from the runtime host environment with evaluated `TaskNodeIR.run.env` values overriding matching keys. `process.env`, task context `env`, module top-level code, and the default `$` command wrapper MUST observe that effective environment.
 - The default Task `$` wrapper MUST inherit the live process cwd and environment at each command invocation so task-local `process.chdir(...)` and `process.env` mutations remain consistent with later commands.
 - Task execution MUST evaluate `TaskNodeIR.run.input`, `TaskNodeIR.run.cwd`, and `TaskNodeIR.run.env` expressions before invoking the task.
@@ -241,6 +242,8 @@
 - A Task executor that observes an already-expired persisted attempt deadline MUST commit `attempt.timed_out`, not a generic failed attempt.
 - In-flight task and agent timeout enforcement MAY occur inside the executor attempt, while stale or recovered attempts MUST be derivable from scheduler deadlines.
 - Task artifact APIs MUST write run-local artifact files from the Task process while the runtime parent remains the sole owner of SQLite artifact registration.
+- Before Task process startup, the runtime MUST resolve ArtifactRefs present in evaluated Task input to verified absolute paths and pass only those bindings into the Task process. `artifact.path(ref)` MUST also resolve refs returned by successful writes in that Task, MUST remain stable after `process.chdir(...)`, and MUST reject unbound refs.
+- Artifact path resolution MUST accept only canonical refs registered to the current run. Malformed, missing, cross-run, escaping, symlink, and non-file artifacts MUST fail before consumer execution where resolution occurs in the runtime parent.
 - Attempt-local output directories, work directories, and task artifacts MUST use dynamic `nodeKey` and attempt-specific subpaths for scheduler-backed task execution.
 - Task artifact writes after task timeout MUST be rejected and MUST NOT create artifact registry rows.
 - Signal execution that cannot complete immediately MUST leave the durable run in a resumable awaiting state.
@@ -259,6 +262,8 @@
 
 - The runtime MUST render agent prompts, cwd, env, permission mode, session
   identity, model, and agent mode from frozen IR and durable execution scope.
+- When an individual Agent prompt interpolation resolves directly to an ArtifactRef, the runtime MUST render only its verified absolute path. Explicit `.uri` interpolation MUST remain the URI, and ArtifactRefs nested inside an interpolated object or array MUST retain normal compact JSON rendering.
+- Agent ArtifactRef prompt resolution MUST remain synchronous and MUST fail the attempt as `expression_resolution_failed` before provider invocation when the ref cannot be resolved.
 - The runtime MUST execute real agent definitions through the acpx-backed
   `executeAgentTurn(...)` API from `@acpus/agent-executor`.
 - Scheduler-backed agent execution MUST subscribe to the executor's normalized
@@ -345,6 +350,7 @@
   by `@acpus/agent-executor` without embedding full prompt or response text.
   Turn metadata MUST retain references to the independent prompt and response
   artifacts when those artifacts are present.
+- Agent turn artifact references MUST retain the artifact id and media type when present, and MUST NOT duplicate an artifact filesystem path.
 - Runtime MUST NOT parse raw ACP JSON to derive telemetry. ACP wire-shape
   interpretation belongs to `@acpus/agent-executor`.
 - When host environment variable `ACPUS_AGENT_RAW_ACP_DEBUG` is exactly `1`,

@@ -401,6 +401,7 @@ failures to stable CLI phases and exit codes.
   attempt history, status/progress, signal details, and artifact references
   without inlining artifact contents. `runs inspect --raw --json` MUST emit the
   unbounded run, complete frozen `WorkflowIR`, and artifact records.
+- Text and JSON inspection artifact records MUST expose the artifact's absolute `path` and MUST NOT expose an internal `relativePath` field.
 - Interactive run picker output MUST render on stderr and MUST leave stdout for
   the selected command output.
 - Text diagnostic output MUST render `source` and `hint` when present.

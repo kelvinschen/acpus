@@ -145,7 +145,7 @@ export function taskArtifactWorkflow() {
       input: {},
       exec: async ({ artifact }) => ({
         ok: true,
-        artifact: await artifact.writeText("result.txt", "artifact-ok\n"),
+        artifact: await artifact.write("result.txt", "artifact-ok\n"),
       }),
     });
     return { ok: result.output.ok, artifact: result.output.artifact };
@@ -196,7 +196,7 @@ export function replacementTaskWorkflow() {
       input: {},
       exec: async ({ artifact }) => ({
         ok: true,
-        artifact: await artifact.writeText("result.txt", "replacement\n"),
+        artifact: await artifact.write("result.txt", "replacement\n"),
       }),
     });
     const extra = step("extra").task({

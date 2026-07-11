@@ -109,6 +109,9 @@
   require `outputSchema`.
 - Task invocation options MAY support top-level `cwd`, `env`, and `execution.defaultCommandTimeout`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
+- Task context `artifact` MUST expose only `write(name, content, options?)` and synchronous `path(ref)` operations. It MUST NOT expose format-specific write helpers or file-read helpers.
+- `artifact.write(...)` MUST accept `string | Uint8Array`, return `Promise<ArtifactRef>`, encode strings as UTF-8 with default media type `text/plain`, and write byte arrays verbatim without inferring a media type.
+- `artifact.path(ref)` MUST return an absolute filesystem path synchronously.
 - Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
 - Without an explicit per-call cwd or env override, the `$` wrapper MUST read the live process cwd and environment when each command starts rather than capturing them when the wrapper is created.

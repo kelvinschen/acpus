@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunInspectionSnapshot } from "@acpus/runtime";
+import type { RunInspectionSnapshot, RunInspectionTargetDocument } from "@acpus/runtime";
 import { applyRunInspectionUpdate, formatRunInspectionChanges, formatRunInspectionCheckpoint, formatRunInspectionDocument, formatTerminalOutput } from "../src/run-inspection-surface.js";
 
 describe("compact run inspection surface", () => {
@@ -20,6 +20,44 @@ describe("compact run inspection surface", () => {
     expect(output).toContain('"field_29": 29');
     expect(output).not.toContain("prompt text must stay out of overview");
     expect(output).not.toContain("artifacts/review/prompt.md");
+  });
+
+  it("renders only the public absolute artifact path", () => {
+    const path = "/workspace/.acpus/.local/runs/run_1/artifacts/output.txt";
+    const document = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: { eventSequence: 1, progressVersion: 0 },
+      run: snapshot().run,
+      target: { kind: "static-node", id: "task" },
+      summary: {
+        targetKind: "static-node",
+        targetId: "task",
+        runStatus: "completed",
+        runStartedAt: "2026-07-11T00:00:00.000Z",
+        artifacts: [],
+      },
+      items: [],
+      instances: [],
+      frames: [],
+      attempts: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [{
+        id: "artifact_1",
+        runId: "run_1",
+        nodeKey: "task",
+        attempt: 1,
+        digest: "sha256:test",
+        size: 4,
+        path,
+      }],
+    } as RunInspectionTargetDocument;
+
+    const output = formatRunInspectionDocument(document);
+    expect(output).toContain(`artifact_1  ${path}`);
+    expect(output).not.toContain("relativePath");
   });
 
   it("applies semantic item updates without exposing raw runtime tables", () => {

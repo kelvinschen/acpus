@@ -41,7 +41,7 @@ export type ArtifactReference = {
   mediaType?: string;
   digest: string;
   size: number;
-  relativePath: string;
+  path: string;
   createdAt?: string;
 };
 

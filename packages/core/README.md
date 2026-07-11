@@ -65,7 +65,7 @@ export default defineWorkflow({
     exec: async ({ $, artifact }) => {
       const result = await $`git diff`;
       return {
-        patch: await artifact.writeText("diff.patch", result.stdout, {
+        patch: await artifact.write("diff.patch", result.stdout, {
           mediaType: "text/x-patch",
         }),
       };
@@ -113,6 +113,8 @@ Core no longer has per-task `permissions`. A Task is trusted code selected by th
 ### `$` is still Acpus-owned
 
 Task code receives `ctx.$`; it should not import raw `zx` directly in normal use. The wrapper is not a permission gate. It provides command timeouts, abort handling, stdout/stderr capture, and output helpers. Explicit artifact writes use `ctx.artifact`.
+
+`ctx.artifact` deliberately has only two operations. `write(name, string | Uint8Array, options?)` persists a run-local file and returns its logical `ArtifactRef`; callers use Node `readFile` or `JSON.stringify` before writing files or JSON. `path(ref)` synchronously returns the absolute local path for an ArtifactRef bound through Task input or returned by that Task's own `write`. Direct ArtifactRef interpolation in an Agent prompt renders that absolute path.
 
 ## Package boundary
 

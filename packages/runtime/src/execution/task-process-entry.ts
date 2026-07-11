@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
@@ -69,6 +69,8 @@ function createTaskDollar(execution: TaskProcessRequest["execution"], signal: Ab
 }
 
 function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSignal) {
+  const paths = new Map(Object.entries(args.paths));
+
   async function writeArtifact(name: string, bytes: Uint8Array, mediaType?: string): Promise<ArtifactRef> {
     if (signal.aborted) throw new Error(`Task node '${args.nodeKey}' attempt ${args.attempt} is aborted.`);
     const id = `artifact_${randomUUID()}`;
@@ -95,23 +97,30 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
       await rm(absolutePath, { force: true });
       throw error;
     }
-    return mediaType === undefined
+    const ref: ArtifactRef = mediaType === undefined
       ? { kind: "artifact", uri: `artifact://${args.runId}/${id}` }
       : { kind: "artifact", uri: `artifact://${args.runId}/${id}`, mediaType };
+    paths.set(ref.uri, absolutePath);
+    return ref;
   }
 
   return {
-    writeText(name: string, content: string, options?: { mediaType?: string }) {
-      return writeArtifact(name, Buffer.from(content, "utf8"), options?.mediaType ?? "text/plain");
+    async write(name: string, content: string | Uint8Array, options?: { mediaType?: string }) {
+      if (typeof content === "string") {
+        return writeArtifact(name, Buffer.from(content, "utf8"), options?.mediaType ?? "text/plain");
+      }
+      if (content instanceof Uint8Array) return writeArtifact(name, content, options?.mediaType);
+      throw new TypeError("artifact.write(...) content must be a string or Uint8Array.");
     },
-    writeJson(name: string, value: unknown) {
-      return writeArtifact(name, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"), "application/json");
-    },
-    writeBytes(name: string, value: Uint8Array, options?: { mediaType?: string }) {
-      return writeArtifact(name, value, options?.mediaType);
-    },
-    async fromFile(path: string, options?: { name?: string; mediaType?: string }) {
-      return writeArtifact(options?.name ?? basename(path), await readFile(path), options?.mediaType);
+    path(ref: ArtifactRef) {
+      if (!ref || ref.kind !== "artifact" || typeof ref.uri !== "string") {
+        throw new TypeError("artifact.path(...) requires an ArtifactRef.");
+      }
+      const path = paths.get(ref.uri);
+      if (!path) {
+        throw new Error(`Artifact '${ref.uri}' is not available to this Task; bind it through Task input or use a ref returned by artifact.write(...).`);
+      }
+      return path;
     },
   };
 }

@@ -4,6 +4,7 @@ import { expressionCallbackLayout, expressionOperatorSpec } from "./internal/ope
 
 export type ExpressionEvaluatorAdapter = {
   resolveRef(path: string[]): unknown;
+  formatTemplateValue?(value: unknown): string | undefined;
 };
 
 export class ExpressionEvaluationError extends Error {
@@ -39,7 +40,11 @@ function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
 }
 
 export function renderTemplate(template: TemplateIR, adapter: ExpressionEvaluatorAdapter): string {
-  return template.parts.map(part => part.kind === "text" ? part.value : formatTemplateValue(evaluate(part.expr, adapter))).join("");
+  return template.parts.map(part => {
+    if (part.kind === "text") return part.value;
+    const value = evaluate(part.expr, adapter);
+    return adapter.formatTemplateValue?.(value) ?? formatTemplateValue(value);
+  }).join("");
 }
 
 function evaluateCall(fn: string, args: ExprIR[], adapter: ExpressionEvaluatorAdapter): unknown {

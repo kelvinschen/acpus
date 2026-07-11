@@ -176,7 +176,7 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
   }
   if (document.artifacts.length > 0) {
     lines.push("Artifacts:");
-    for (const artifact of document.artifacts) lines.push(`  ${artifact.id}${artifact.mediaType ? `  ${artifact.mediaType}` : ""}  ${artifact.relativePath}`);
+    for (const artifact of document.artifacts) lines.push(`  ${artifact.id}${artifact.mediaType ? `  ${artifact.mediaType}` : ""}  ${artifact.path}`);
   }
   return `${lines.join("\n")}\n`;
 }

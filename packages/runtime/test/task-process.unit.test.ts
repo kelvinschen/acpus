@@ -186,7 +186,7 @@ function taskInput(
       target: { kind: "inline", source: "async () => undefined" },
       input: {},
       workspaceDir: "/repo",
-      artifact: { runId: "run_1", nodeKey: nodeId, attempt: 1, runDir: "/repo/.acpus/run_1" },
+      artifact: { runId: "run_1", nodeKey: nodeId, attempt: 1, runDir: "/repo/.acpus/run_1", paths: {} },
     },
     timeoutMs: 10,
     registerArtifact: vi.fn(),

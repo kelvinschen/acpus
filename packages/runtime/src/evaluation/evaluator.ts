@@ -1,6 +1,10 @@
 import { evaluateExpr as evaluateExpression } from "@acpus/expression/evaluator";
 import type { ExprIR } from "@acpus/expression/ir";
 
+export type EvaluationOptions = {
+  formatTemplateValue?(value: unknown): string | undefined;
+};
+
 export type EvaluationScope = {
   input?: unknown;
   nodes?: Record<string, { status?: string; output?: unknown }>;
@@ -9,8 +13,11 @@ export type EvaluationScope = {
   loop?: Record<string, unknown>;
 };
 
-export function evaluateExpr(expr: ExprIR, scope: EvaluationScope): unknown {
-  return evaluateExpression(expr, { resolveRef: path => resolvePath(scope, path) });
+export function evaluateExpr(expr: ExprIR, scope: EvaluationScope, options?: EvaluationOptions): unknown {
+  return evaluateExpression(expr, {
+    resolveRef: path => resolvePath(scope, path),
+    ...(options?.formatTemplateValue ? { formatTemplateValue: options.formatTemplateValue } : {}),
+  });
 }
 
 function resolvePath(scope: EvaluationScope, path: string[]): unknown {

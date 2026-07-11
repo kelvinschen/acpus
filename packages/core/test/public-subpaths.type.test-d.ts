@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import { defineWorkflow, task, z, type TaskContext } from "@acpus/core";
+import { defineWorkflow, task, z, type ArtifactRef, type TaskContext } from "@acpus/core";
 import { lift, template, type Expr, type Resolvable } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
@@ -80,6 +80,20 @@ test("public package subpaths expose the intended type surface", () => {
   expectTypeOf(ctx.env).toEqualTypeOf<Record<string, string | undefined>>();
   assertType<Dollar>(ctx.$);
   assertType<AbortSignal>(ctx.abortSignal);
+  if (false) {
+    const ref = null as unknown as ArtifactRef;
+    assertType<Promise<ArtifactRef>>(ctx.artifact.write("output.txt", "text"));
+    assertType<Promise<ArtifactRef>>(ctx.artifact.write("output.bin", new Uint8Array()));
+    assertType<string>(ctx.artifact.path(ref));
+    // @ts-expect-error ArtifactApi exposes one write method.
+    ctx.artifact.writeText("output.txt", "text");
+    // @ts-expect-error JSON serialization belongs to the caller.
+    ctx.artifact.writeJson("output.json", {});
+    // @ts-expect-error Byte writes use artifact.write(...).
+    ctx.artifact.writeBytes("output.bin", new Uint8Array());
+    // @ts-expect-error File reads belong to the caller.
+    ctx.artifact.fromFile("output.txt");
+  }
   assertType(task);
   assertType(template);
   void rootLift;

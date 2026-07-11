@@ -7,10 +7,8 @@ export type ArtifactRef = {
 };
 
 type ArtifactApi = {
-  writeText(name: string, content: string, options?: { mediaType?: string }): Promise<ArtifactRef>;
-  writeJson(name: string, value: unknown): Promise<ArtifactRef>;
-  writeBytes(name: string, value: Uint8Array, options?: { mediaType?: string }): Promise<ArtifactRef>;
-  fromFile(path: string, options?: { name?: string; mediaType?: string }): Promise<ArtifactRef>;
+  write(name: string, content: string | Uint8Array, options?: { mediaType?: string }): Promise<ArtifactRef>;
+  path(ref: ArtifactRef): string;
 };
 
 export type TaskContext<Input> = {
