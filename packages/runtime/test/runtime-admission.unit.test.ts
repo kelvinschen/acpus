@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
-import { normalizeSignalPayload, normalizeWorkflowInput } from "@acpus/runtime";
+import { normalizeWorkflowInput } from "@acpus/runtime";
+import { normalizeSignalPayload } from "../src/admission/input.js";
 
 describe("runtime admission normalization", () => {
   it("applies input defaults and rejects invalid artifact ref objects", () => {
@@ -46,7 +47,7 @@ describe("runtime admission normalization", () => {
         {
           id: "raw",
           kind: "signal",
-          run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+          run: { prompt: { kind: "literal", value: "" } },
         },
         {
           id: "structured",
@@ -57,7 +58,7 @@ describe("runtime admission normalization", () => {
             required: ["ok"],
             additionalProperties: false,
           },
-          run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+          run: { prompt: { kind: "literal", value: "" } },
         },
       ],
     });
@@ -76,12 +77,11 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflow(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, root, ...rest } = partial;
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "normalization",
     agents: {},
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
     diagnostics: [],
     ...rest,
     root: root ?? { nodes: nodes ?? [] },

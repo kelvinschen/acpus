@@ -1,17 +1,13 @@
-import { access, mkdir, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { extname, join, relative, resolve } from "node:path";
 import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow, WorkflowPreparationError, type PreparedWorkflow } from "@acpus/workflow-compiler";
 import { workflowIrToWebGraph, type WebGraph } from "./graph.js";
 import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
 
 export type ProjectWorkflowCatalogEntry = {
-  scope: "project";
   name: string;
-  packagePath: string;
   entryPath: string;
-  status: "available";
-  requiresScope: boolean;
 };
 
 export type WorkflowFileEntry = {
@@ -30,14 +26,12 @@ export type WorkflowVisualizationResult =
     graph: WebGraph;
     workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
     contract: { inputSchema?: WorkflowIR["inputSchema"]; outputs: WorkflowIR["outputs"] };
-    diagnostics: WorkflowIR["diagnostics"];
     sourceGraphDigest: string;
   }
   | {
     status: "failed";
     phase: "check" | "compile" | "validate";
     message: string;
-    diagnostics?: WorkflowIR["diagnostics"];
   };
 
 export async function listProjectWorkflowCatalog(cwd: string): Promise<ProjectWorkflowCatalogEntry[]> {
@@ -55,19 +49,12 @@ export async function listProjectWorkflowCatalog(cwd: string): Promise<ProjectWo
     const packagePath = join(root, name);
     const entryPath = join(packagePath, "workflow.ts");
     if (!await isFile(entryPath)) return undefined;
-    return {
-      scope: "project" as const,
-      name,
-      packagePath,
-      entryPath,
-      status: "available" as const,
-      requiresScope: false,
-    };
+    return { name, entryPath };
   }));
   return catalog.flatMap(entry => entry ? [entry] : []).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export async function listWorkflowFiles(cwd: string, dir = ""): Promise<{ cwd: string; dir: string; entries: WorkflowFileEntry[] }> {
+export async function listWorkflowFiles(cwd: string, dir = ""): Promise<{ dir: string; entries: WorkflowFileEntry[] }> {
   const base = resolve(cwd);
   const current = resolveWorkspacePath(base, dir);
   if (!current) throw new Error("Path escapes workspace.");
@@ -83,7 +70,6 @@ export async function listWorkflowFiles(cwd: string, dir = ""): Promise<{ cwd: s
       return isWorkflowFile(entry.name) ? { name: entry.name, path: rel, kind: "workflow" as const } : undefined;
     }));
   return {
-    cwd: base,
     dir: relative(base, current),
     entries: entries.flatMap(entry => entry ? [entry] : []).sort((left, right) =>
       left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name),
@@ -108,7 +94,6 @@ export async function visualizeWorkflowSource(cwd: string, source: WorkflowVisua
         status: "failed",
         phase: error.failure.phase,
         message: error.failure.message,
-        ...("diagnostics" in error.failure ? { diagnostics: error.failure.diagnostics } : {}),
       };
     }
     return { status: "failed", phase: "compile", message: error instanceof Error ? error.message : String(error) };
@@ -129,29 +114,23 @@ export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): E
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
       outputs: prepared.ir.outputs,
     },
-    diagnostics: prepared.ir.diagnostics,
     sourceGraphDigest: prepared.sourceGraphDigest,
   };
 }
 
 export type WorkflowVizHtmlOptions = {
   graph: WebGraph;
-  title?: string;
-  workflow?: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
-  contract?: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
-  diagnostics?: Extract<WorkflowVisualizationResult, { status: "ready" }>["diagnostics"];
-  sourceGraphDigest?: string;
+  workflow: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
+  contract: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
+  sourceGraphDigest: string;
 };
 
 export function renderWorkflowVizHtml(options: WorkflowVizHtmlOptions): string {
-  const title = options.title ?? options.graph.workflow.name;
   const bundle = {
-    title,
     graph: options.graph,
-    ...(options.workflow ? { workflow: options.workflow } : {}),
-    ...(options.contract ? { contract: options.contract } : {}),
-    ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
-    ...(options.sourceGraphDigest ? { sourceGraphDigest: options.sourceGraphDigest } : {}),
+    workflow: options.workflow,
+    contract: options.contract,
+    sourceGraphDigest: options.sourceGraphDigest,
   };
   const bundleJson = JSON.stringify(bundle).replaceAll("</", "<\\/");
   return `<!doctype html>
@@ -159,7 +138,7 @@ export function renderWorkflowVizHtml(options: WorkflowVizHtmlOptions): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)}</title>
+<title>${escapeHtml(options.workflow.name)}</title>
 <style>
 ${staticVizCss}
 </style>
@@ -175,12 +154,6 @@ ${staticVizJs}
 </body>
 </html>
 `;
-}
-
-export async function writeWorkflowVizHtml(path: string, html: string, options: { force?: boolean } = {}): Promise<void> {
-  if (!options.force && await exists(path)) throw new Error(`Output file already exists: ${path}`);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, html);
 }
 
 async function catalogWorkflowPath(cwd: string, name: string): Promise<string | undefined> {
@@ -216,15 +189,6 @@ function skipEntry(name: string): boolean {
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
   } catch {
     return false;
   }

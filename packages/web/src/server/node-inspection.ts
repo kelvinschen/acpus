@@ -1,10 +1,6 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
 
 export type NodeExecutionInspection = {
-  target: RunInspectionTargetDocument["target"];
-  nodeId?: string;
-  nodeKey?: string;
-  attemptId?: string;
   available: boolean;
   reason?: string;
   summary: {
@@ -24,9 +20,6 @@ export type NodeExecutionInspection = {
     source?: string;
     inputTokens?: number;
     outputTokens?: number;
-    cachedReadTokens?: number;
-    cachedWriteTokens?: number;
-    thoughtTokens?: number;
     totalTokens?: number;
   };
   output?: {
@@ -40,9 +33,6 @@ export type NodeExecutionInspection = {
     toolCallId?: string;
     toolName?: string;
     status?: string;
-    startedAt?: string;
-    updatedAt?: string;
-    completedAt?: string;
     durationMs?: number;
     inputPreview?: string;
     outputPreview?: string;
@@ -51,7 +41,7 @@ export type NodeExecutionInspection = {
 
 export async function inspectNodeExecution(
   inspection: RunInspectionTargetDocument,
-  loadTelemetryArtifact?: (artifactRef: unknown) => Promise<unknown | undefined>,
+  loadTelemetryArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
 ): Promise<NodeExecutionInspection> {
   const progress = latestAgentProgress(inspection);
   const compact = inspection.summary.agent;
@@ -63,20 +53,15 @@ export async function inspectNodeExecution(
   const metadata = agentEntry?.metadata;
   const turns = agentTurns(metadata);
   const progressToolCalls = toolCallsFromProgress(progress);
-  const metadataToolCalls = loadTelemetryArtifact && turns.length > 0
+  const metadataToolCalls = turns.length > 0
     ? (await Promise.all(turns.map(turn => toolCallsForTurn(turn, loadTelemetryArtifact)))).flat().slice(-3)
     : undefined;
   const lastToolCalls = metadataToolCalls ?? progressToolCalls ?? toolCallsFromCompact(compact);
   const contextWindow = contextWindowFromProgress(progress) ?? latestContextWindow(turns) ?? contextWindowFromCompact(compact);
-  const tokenUsage = aggregateTokenUsage(turns) ?? tokenUsageFromProgress(progress) ?? compact?.tokenUsage;
+  const tokenUsage = aggregateTokenUsage(turns) ?? tokenUsageFromProgress(progress) ?? tokenUsageFromRecord(metadataRecord(compact?.tokenUsage) ?? {});
   const toolCallCount = totalToolCallCount(turns) ?? toolCallCountFromProgress(progress) ?? compact?.tools?.totalCallCount;
   const available = compact !== undefined || progress !== undefined || agentEntry !== undefined;
-  const attemptId = progress?.attemptId ?? agentEntry?.attemptId;
   return {
-    target: inspection.target,
-    ...(inspection.summary.nodeId ? { nodeId: inspection.summary.nodeId } : {}),
-    ...(inspection.summary.nodeKey ? { nodeKey: inspection.summary.nodeKey } : {}),
-    ...(attemptId ? { attemptId } : {}),
     available,
     ...(available ? {} : { reason: "No agent execution metadata exists for the selected scope." }),
     summary: {
@@ -184,9 +169,6 @@ function aggregateTokenUsage(turns: Record<string, unknown>[]): NodeExecutionIns
   let source: string | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
-  let cachedReadTokens = 0;
-  let cachedWriteTokens = 0;
-  let thoughtTokens = 0;
   let totalTokens = 0;
   let hasUsage = false;
   for (const turn of turns) {
@@ -196,18 +178,12 @@ function aggregateTokenUsage(turns: Record<string, unknown>[]): NodeExecutionIns
     if (typeof usage.source === "string") source = usage.source;
     inputTokens += numberField(usage.inputTokens) ?? 0;
     outputTokens += numberField(usage.outputTokens) ?? 0;
-    cachedReadTokens += numberField(usage.cachedReadTokens) ?? 0;
-    cachedWriteTokens += numberField(usage.cachedWriteTokens) ?? 0;
-    thoughtTokens += numberField(usage.thoughtTokens) ?? 0;
     totalTokens += numberField(usage.totalTokens) ?? 0;
   }
   return hasUsage ? {
     ...(source ? { source } : {}),
     inputTokens,
     outputTokens,
-    cachedReadTokens,
-    cachedWriteTokens,
-    thoughtTokens,
     totalTokens,
   } : undefined;
 }
@@ -216,20 +192,12 @@ function tokenUsageFromRecord(usage: Record<string, unknown>): NodeExecutionInsp
   const source = stringField(usage.source);
   const inputTokens = numberField(usage.inputTokens);
   const outputTokens = numberField(usage.outputTokens);
-  const cachedReadTokens = numberField(usage.cachedReadTokens);
-  const cachedWriteTokens = numberField(usage.cachedWriteTokens);
-  const thoughtTokens = numberField(usage.thoughtTokens);
   const totalTokens = numberField(usage.totalTokens);
-  if (source === undefined && inputTokens === undefined && outputTokens === undefined
-    && cachedReadTokens === undefined && cachedWriteTokens === undefined
-    && thoughtTokens === undefined && totalTokens === undefined) return undefined;
+  if (source === undefined && inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined;
   return {
     ...(source ? { source } : {}),
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
-    ...(cachedReadTokens === undefined ? {} : { cachedReadTokens }),
-    ...(cachedWriteTokens === undefined ? {} : { cachedWriteTokens }),
-    ...(thoughtTokens === undefined ? {} : { thoughtTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
   };
 }
@@ -290,7 +258,6 @@ async function toolCallsForTurn(
 
 function toolCallFromRecord(record: Record<string, unknown>, turn: number, previewMode: "progress" | "artifact"): NodeExecutionInspection["lastToolCalls"][number] {
   const startedAt = stringField(record.startedAt);
-  const updatedAt = stringField(record.updatedAt);
   const completedAt = stringField(record.completedAt);
   const toolCallId = stringField(record.toolCallId);
   const toolName = stringField(record.toolName);
@@ -303,9 +270,6 @@ function toolCallFromRecord(record: Record<string, unknown>, turn: number, previ
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolName ? { toolName } : {}),
     ...(status ? { status } : {}),
-    ...(startedAt ? { startedAt } : {}),
-    ...(updatedAt ? { updatedAt } : {}),
-    ...(completedAt ? { completedAt } : {}),
     ...(duration === undefined ? {} : { durationMs: duration }),
     ...(inputPreview ? { inputPreview } : {}),
     ...(outputPreview ? { outputPreview } : {}),

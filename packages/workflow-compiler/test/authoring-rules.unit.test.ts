@@ -162,7 +162,6 @@ describe("workflow authoring rules", () => {
       "AL004",
       "AL005",
       "AL006",
-      "AL007",
       "TB001",
       "TB002",
       "TB003",
@@ -231,7 +230,6 @@ describe("workflow authoring rules", () => {
     `);
 
     expect(codes(diagnostics)).not.toContain("AL006");
-    expect(codes(diagnostics)).not.toContain("AL007");
   });
 
   it.each([
@@ -271,90 +269,6 @@ describe("workflow authoring rules", () => {
     });
   });
 
-  it.each([
-    ["fmap", (callback: string) => `fmap(issue, ${callback})`, "value", "value"],
-    ["lift2", (callback: string) => `lift2(issue, issue, ${callback})`, "left, right", "left"],
-    ["lift3", (callback: string) => `lift3(issue, issue, issue, ${callback})`, "first, second, third", "first"],
-    ["lift", (callback: string) => `lift({ issue }, ${callback})`, "{ issue }", "issue"],
-  ])("enforces the recursive statement budget for %s", (helper, call, params, initial) => {
-    const accepted = checkAuthoringWithProgram(`
-      import { fmap, lift2, lift3, lift } from "acpus/expression";
-      declare const issue: any;
-      ${call(blockCallback(params, initial, 8))};
-    `);
-    expect(accepted.filter(diagnostic => diagnostic.code === "AL007")).toEqual([]);
-
-    const rejected = checkAuthoringWithProgram(`
-      import { fmap, lift2, lift3, lift } from "acpus/expression";
-      declare const issue: any;
-      ${call(blockCallback(params, initial, 9))};
-    `);
-    expect(rejected.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
-      expect.objectContaining({
-        severity: "error",
-        message: `${helper}(...) callback contains 9 executable statements; the maximum is 8.`,
-        hint: expect.stringContaining("Task"),
-        source: expect.objectContaining({ file: "workflow.ts" }),
-      }),
-    ]);
-  });
-
-  it("counts nested runtime statements but ignores formatting and type-only declarations", () => {
-    const nested = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
-      declare const issue: { labels: string[] };
-      fmap(issue, value => {
-        const labels = value.labels.map(label => {
-          const one = label;
-          const two = one;
-          const three = two;
-          const four = three;
-          const five = four;
-          const six = five;
-          return six;
-        });
-        return labels;
-      });
-    `);
-    expect(nested.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
-      expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
-    ]);
-
-    const typeOnly = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
-      declare const issue: { title: string };
-      fmap(issue, value => {
-        // Comments, blank lines, and TypeScript-only declarations do not consume the budget.
-        type Title = string;
-        interface View { title: Title }
-
-        const title: Title = value.title;
-        return { title } satisfies View;
-      });
-    `);
-    expect(typeOnly.filter(diagnostic => diagnostic.code === "AL007")).toEqual([]);
-
-    const controlFlow = checkAuthoringWithProgram(`
-      import { fmap } from "acpus/expression";
-      declare const issue: { title: string };
-      fmap(issue, value => {
-        if (value.title) {
-          const one = value.title;
-          const two = one;
-          const three = two;
-          const four = three;
-          const five = four;
-          const six = five;
-          return six;
-        }
-        return "";
-      });
-    `);
-    expect(controlFlow.filter(diagnostic => diagnostic.code === "AL007")).toEqual([
-      expect.objectContaining({ message: expect.stringContaining("9 executable statements") }),
-    ]);
-  });
-
   it("does not report expression callback diagnostics for shadowed facade bindings", () => {
     const diagnostics = checkAuthoringWithProgram(`
       import { fmap } from "acpus/expression";
@@ -390,15 +304,6 @@ describe("workflow authoring rules", () => {
     expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([]);
   });
 });
-
-function blockCallback(params: string, initial: string, statementCount: number): string {
-  const declarations = Array.from({ length: statementCount - 1 }, (_, index) => {
-    const value = `value${index + 1}`;
-    const previous = index === 0 ? initial : `value${index}`;
-    return `const ${value} = ${previous};`;
-  });
-  return `(${params}) => { ${declarations.join(" ")} return value${statementCount - 1}; }`;
-}
 
 function checkAuthoring(source: string, options: {
   isExpr?: (node: ts.Node) => boolean;

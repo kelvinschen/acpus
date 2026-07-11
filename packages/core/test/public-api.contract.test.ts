@@ -10,7 +10,6 @@ describe("@acpus/core public API", () => {
   it("keeps the root entrypoint focused on minimal workflow authoring", () => {
     expect(Object.keys(core).sort()).toEqual([
       "defineWorkflow",
-      "secret",
       "task",
       "z",
     ]);
@@ -19,15 +18,9 @@ describe("@acpus/core public API", () => {
 
   it("exports schema helpers from the schema entrypoint", () => {
     expect(Object.keys(schema).sort()).toEqual([
-      "assertBoundarySchema",
-      "isSchema",
-      "parseSchema",
-      "safeParseSchema",
       "schemaToJsonSchema",
-      "toJSONSchema",
       "toSchemaIR",
       "tryToSchemaIR",
-      "validateValue",
       "z",
     ]);
     expect(schema.z).toBe(nativeZ);
@@ -44,7 +37,6 @@ describe("@acpus/core public API", () => {
   it("exports runtime helpers from the runtime entrypoint", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "createDollar",
-      "secret",
     ]);
   });
 

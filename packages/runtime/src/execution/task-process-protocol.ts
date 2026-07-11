@@ -17,9 +17,7 @@ export type TaskProcessRequest = {
   input: Record<string, JsonValue>;
   workspaceDir: string;
   execution?: {
-    shell?: "bash" | "powershell" | "pwsh";
     defaultCommandTimeout?: string;
-    commandRunner?: "acpus-zx-core" | "custom";
   };
   artifact: {
     runId: string;

@@ -19,7 +19,7 @@ export async function checkWorkflow(entry: string, cwd: string, scratchDir: stri
   const tsCheck = await checkTypeScript(entry, cwd, scratchDir);
   const taskAnalysis = await analyzeWorkflowTasks(entry, source);
   // The check phase aggregates TypeScript compiler diagnostics with Acpus
-  // authoring-rule diagnostics. ESLint is not part of this runtime path.
+  // authoring-rule diagnostics.
   const authoringDiagnostics = tsCheck.program && tsCheck.sourceFile
     ? checkWorkflowAuthoring({ program: tsCheck.program, sourceFile: tsCheck.sourceFile, taskAnalysis })
     : [];

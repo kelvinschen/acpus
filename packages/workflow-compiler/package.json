@@ -12,11 +12,6 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./internal/eslint-plugin": {
-      "development": "./src/internal/eslint-plugin/index.ts",
-      "types": "./dist/internal/eslint-plugin/index.d.ts",
-      "default": "./dist/internal/eslint-plugin/index.js"
     }
   },
   "main": "./dist/index.js",
@@ -42,8 +37,6 @@
     "typescript": "6.0.3"
   },
   "devDependencies": {
-    "@typescript-eslint/parser": "^8.62.1",
-    "eslint": "^10.6.0",
     "slash": "^3.0.0",
     "tsx": "^4.22.4"
   },

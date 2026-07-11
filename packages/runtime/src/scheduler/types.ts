@@ -23,8 +23,6 @@ export type CancellationReason =
   | "superseded"
   | "operator_cancelled";
 
-export type FailureClass = "retryable" | "terminal";
-
 export type SchedulerFrame = {
   runId: string;
   frameKey: string;
@@ -121,7 +119,6 @@ type SignalWait = {
   nodeId: string;
   status: SignalWaitStatus;
   payload?: JsonValue;
-  payloadDigest?: string;
   commandIdempotencyKey?: string;
   deadlineAt?: string;
   timeoutMessage?: string;
@@ -146,5 +143,3 @@ export type SchedulerProjection = {
   signalWaits: Record<string, SignalWait>;
   branchDecisions: Record<string, string>;
 };
-
-export type RetryTargetStatus = NodeInstanceStatus | SchedulerRunProjection["status"];

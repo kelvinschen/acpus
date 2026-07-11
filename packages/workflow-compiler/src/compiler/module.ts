@@ -8,9 +8,9 @@ import { validateWorkflowIR, walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
 import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
-export type CompileOptions = {
-  sourcePath?: string;
-  cwd?: string;
+export type CompiledWorkflowModule = {
+  ir: WorkflowIR;
+  sourceDigest: string;
 };
 
 export type CompileWorkflowModuleError =
@@ -21,17 +21,7 @@ export type CompileWorkflowModuleError =
   | { type: "task-analysis-failed"; entry: string; message: string }
   | { type: "workflow-outside-workspace"; workflowFile: string; cwd: string; message: string };
 
-export async function compileWorkflowModule(entry: string, options: CompileOptions = {}): Promise<WorkflowIR> {
-  const result = await tryCompileWorkflowModule(entry, options);
-  return result.match(
-    ir => ir,
-    error => {
-      throw new Error(error.message);
-    },
-  );
-}
-
-export function tryCompileWorkflowModule(entry: string, options: CompileOptions = {}): ResultAsync<WorkflowIR, CompileWorkflowModuleError> {
+export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsync<CompiledWorkflowModule, CompileWorkflowModuleError> {
   const absolute = resolve(entry);
   return ResultAsync.fromPromise(
     readFile(absolute, "utf8"),
@@ -58,9 +48,7 @@ export function tryCompileWorkflowModule(entry: string, options: CompileOptions 
         } satisfies CompileWorkflowModuleError);
       }
       const built = Result.fromThrowable(() => {
-        const ir = compileWorkflowDefinition(def, { source: options.sourcePath ?? entry, validate: false });
-        ir.lock.workflowSourceDigest = `sha256:${createHash("sha256").update(source).digest("hex")}`;
-        return ir;
+        return compileWorkflowDefinition(def, { validate: false });
       }, cause => ({
         type: "workflow-build-failed",
         entry,
@@ -76,11 +64,14 @@ export function tryCompileWorkflowModule(entry: string, options: CompileOptions 
           message: `Workflow task analysis failed for '${entry}': ${causeMessage(cause)}`,
         } satisfies CompileWorkflowModuleError),
       ).andThen(analysis => {
-        const referrerPath = toContainedWorkspacePath(options.cwd ?? process.cwd(), absolute);
+        const referrerPath = toContainedWorkspacePath(cwd, absolute);
         if (referrerPath.isErr()) return err(referrerPath.error);
         applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), referrerPath.value);
         ir.diagnostics.push(...validateWorkflowIR(ir));
-        return ok(ir);
+        return ok({
+          ir,
+          sourceDigest: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+        });
       });
     }),
   );
@@ -98,10 +89,9 @@ function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskRe
     if (!task?.specifier || !task.exportName) continue;
     node.run.target = {
       kind: "module",
-      runtime: "node",
       specifier: task.specifier,
       exportName: task.exportName,
-      referrer: { kind: "workflow", path: referrerPath },
+      referrer: { path: referrerPath },
     };
   }
 }

@@ -1,9 +1,8 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { ok, ResultAsync, type Result } from "neverthrow";
-import { createConcurrencyLimiter, type ConcurrencyLimiter } from "./limiter.js";
+import { ok, type Result } from "neverthrow";
 import type { SchedulerEvent } from "./events.js";
 import { ancestorGroupMembersForNode } from "./membership.js";
-import { schedulerStoreError, throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
+import { throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
 import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
 import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
@@ -33,10 +32,7 @@ export type AdvanceRunInput = {
   executor: NodeExecutor;
   leaseMs?: number;
   maxLeafConcurrency?: number;
-  limiter?: ConcurrencyLimiter;
-  memberForInstance?: (instance: NodeInstance, projection: SchedulerProjection) => GroupMember | undefined;
   localConcurrencyLimitFor?: (groupKey: string, projection: SchedulerProjection) => number | undefined;
-  maxAttemptsFor?: (instance: NodeInstance, projection: SchedulerProjection) => number | undefined;
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
@@ -68,21 +64,8 @@ export type AdvanceRunSummary = {
   active: number;
 };
 
-export type AdvanceRunError = SchedulerStoreError;
-
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAX_LEAF_CONCURRENCY = 32;
-
-export function tryAdvanceRun(input: AdvanceRunInput): ResultAsync<AdvanceRunSummary, AdvanceRunError> {
-  return ResultAsync.fromPromise(
-    advanceRun(input),
-    error => {
-      const storeError = schedulerStoreError(error);
-      if (storeError) return storeError;
-      throw error;
-    },
-  );
-}
 
 export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSummary> {
   const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
@@ -95,19 +78,19 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     if (alreadyTerminal) return alreadyTerminal;
 
     appendBootstrapEvents(input, claim);
-    const deadlineRecovered = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+    const deadlineRecovered = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize);
     const recovered = unwrapStoreResult(input.store.tryLoadRunSnapshot(deadlineRecovered.runId));
     const expiredOwnerEpochs = [...new Set(Object.values(recovered.projection.attempts)
       .filter(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)
       .map(attempt => attempt.ownerEpoch))];
     for (const ownerEpoch of expiredOwnerEpochs) unwrapStoreResult(input.store.tryMarkExpiredOwnerAttemptsSuperseded(input.runId, ownerEpoch));
 
-    const initial = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+    const initial = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize);
     const terminal = terminalSummary(initial.projection, claim);
     if (terminal) return terminal;
 
     const maxLeafConcurrency = input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY;
-    const ready = selectReadyInstances(initial.projection, maxLeafConcurrency, input.memberForInstance, input.localConcurrencyLimitFor);
+    const ready = selectReadyInstances(initial.projection, maxLeafConcurrency, input.localConcurrencyLimitFor);
     if (ready.length === 0) return idleSummary(initial.projection, claim);
 
     const waitNow = now();
@@ -124,35 +107,31 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     const executable = waitEvents.length === 0
       ? ready
       : selectReadyInstances(
-        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor).projection,
+        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize).projection,
         maxLeafConcurrency,
-        input.memberForInstance,
         input.localConcurrencyLimitFor,
       );
     if (executable.length === 0) {
-      const latest = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+      const latest = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize);
       return terminalSummary(latest.projection, claim) ?? idleSummary(latest.projection, claim);
     }
 
-    const limiter = input.limiter ?? createConcurrencyLimiter(maxLeafConcurrency);
     const counters = { started: 0, completed: 0, failed: 0, cancelled: 0, leaseLost: false };
     const active = new Map<string, AbortController>();
     const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, counters, active);
     try {
-      await Promise.all(executable.map(instance => limiter.add(async () => {
+      await Promise.all(executable.map(async instance => {
         if (counters.leaseLost) return;
         await runInstance(input, claim, now, instance, counters, active);
         if (counters.leaseLost) return;
-        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+        drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize);
         abortInterruptedActiveAttempts(input.store, input.runId, active);
-      })));
-      await limiter.onIdle();
+      }));
     } finally {
       stopHeartbeat();
     }
 
     if (counters.leaseLost) {
-      limiter.clear();
       return {
         status: "lease_lost",
         runId: input.runId,
@@ -165,7 +144,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       };
     }
 
-    const latest = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize, input.maxAttemptsFor);
+    const latest = drainDerivedTransitions(input.store, input.runId, claim, now, input.materialize);
     const terminalAfterWork = terminalSummary(latest.projection, claim);
     if (terminalAfterWork) {
       return { ...terminalAfterWork, started: counters.started, completed: counters.completed, failed: counters.failed, cancelled: counters.cancelled };
@@ -202,10 +181,9 @@ function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): vo
   }
 }
 
-export function selectReadyInstances(
+function selectReadyInstances(
   projection: SchedulerProjection,
   maxLeafConcurrency: number,
-  memberForInstance: AdvanceRunInput["memberForInstance"],
   localConcurrencyLimitFor: AdvanceRunInput["localConcurrencyLimitFor"],
 ): NodeInstance[] {
   const active = Object.values(projection.attempts).filter(attempt => attempt.status === "started").length;
@@ -222,7 +200,7 @@ export function selectReadyInstances(
   const selected: NodeInstance[] = [];
   for (const instance of Object.values(projection.instances).filter(instance => instance.status === "ready").sort(byReadiness)) {
     if (selected.length >= available) break;
-    const members = membersForReadyInstance(instance, projection, memberForInstance);
+    const members = ancestorGroupMembersForNode(projection, instance.nodeKey);
     if (members.some(member => member.status !== "ready" && member.status !== "running")) continue;
     if (!reserveGroupCapacity(members, projection, localActive, localConcurrencyLimitFor)) continue;
     selected.push(instance);
@@ -255,13 +233,10 @@ export function drainDerivedTransitions(
   claim: Pick<RunOwnerClaim, "runId" | "ownerEpoch">,
   now: () => Date,
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[],
-  maxAttemptsFor?: AdvanceRunInput["maxAttemptsFor"],
 ): SchedulerSnapshot {
   let snapshot = unwrapStoreResult(store.tryLoadRunSnapshot(runId));
   for (;;) {
-    const events =
-      retryFailedInstanceEvents(snapshot.projection, maxAttemptsFor);
-    if (events.length === 0) events.push(...Object.keys(snapshot.projection.groups).flatMap(groupKey => groupCompletionEvents(snapshot.projection, groupKey)));
+    const events = Object.keys(snapshot.projection.groups).flatMap(groupKey => groupCompletionEvents(snapshot.projection, groupKey));
     if (events.length === 0) events.push(...(materialize?.(snapshot) ?? []));
     if (events.length === 0) events.push(...attemptTimeoutEvents(snapshot.projection, now()));
     if (events.length === 0) events.push(...signalTimeoutEvents(snapshot.projection, now()));
@@ -274,44 +249,6 @@ export function drainDerivedTransitions(
       events,
     }));
   }
-}
-
-function membersForReadyInstance(instance: NodeInstance, projection: SchedulerProjection, override: AdvanceRunInput["memberForInstance"]): GroupMember[] {
-  const overridden = override?.(instance, projection);
-  return overridden ? [overridden] : ancestorGroupMembersForNode(projection, instance.nodeKey);
-}
-
-function retryFailedInstanceEvents(projection: SchedulerProjection, maxAttemptsFor: AdvanceRunInput["maxAttemptsFor"]): SchedulerEvent[] {
-  if (!maxAttemptsFor) return [];
-  for (const instance of Object.values(projection.instances).filter(instance => instance.status === "failed").sort(byReadiness)) {
-    const maxAttempts = maxAttemptsFor(instance, projection);
-    if (maxAttempts === undefined) continue;
-    const failedAttempts = Object.values(projection.attempts)
-      .filter(attempt => attempt.nodeKey === instance.nodeKey && (attempt.status === "failed" || attempt.status === "timed_out"));
-    if (failedAttempts.length >= maxAttempts) continue;
-    const events: SchedulerEvent[] = [
-      {
-        type: "instance.retry_requested",
-        payload: {
-          nodeKey: instance.nodeKey,
-          ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
-          source: "scheduler",
-        },
-      },
-    ];
-    for (const member of ancestorGroupMembersForNode(projection, instance.nodeKey).filter(member => member.status === "failed")) {
-      events.push({
-        type: "group.member_retry_requested",
-        payload: {
-          memberKey: member.memberKey,
-          readinessSequence: member.readinessSequence,
-          source: "scheduler",
-        },
-      });
-    }
-    return events;
-  }
-  return [];
 }
 
 async function runInstance(
@@ -530,8 +467,4 @@ function staleTerminalStatus(error: SchedulerStoreError): "cancelled" | "failed"
   if (error.status === "cancelled" || error.status === "superseded") return "cancelled";
   if (error.status === "timed_out" || error.status === "failed") return "failed";
   return undefined;
-}
-
-export function completed(output?: JsonValue): AttemptCommitInput["result"] {
-  return output === undefined ? { status: "completed" } : { status: "completed", output };
 }

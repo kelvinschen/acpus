@@ -23,9 +23,8 @@
 - `ExprIR` MUST be JSON-serializable and MUST NOT contain functions, Zod objects, processes, symbols, or runtime-only handles.
 - `ExprIR` MUST support `literal`, `ref`, `call`, `array`, `object`, and `template` nodes.
 - `ExprIR` MUST NOT support `lambda` or `var` nodes.
-- `TypeIR` MUST model expression-level values with `unknown`, `string`, `number`, `boolean`, `null`, `array`, `object`, `record`, and `union`.
-- `TypeIR` MUST NOT include `integer`; numeric values MUST use `kind: "number"` and follow JavaScript number semantics.
-- `TemplateIR` MUST contain text parts and expression parts only.
+- Literal expression nodes MUST contain a `JsonPrimitive`; arrays and objects MUST use structural `array` and `object` nodes.
+- `TemplateIR` MUST use the canonical `{ kind: "template", parts: TemplatePartIR[] }` shape and MUST contain text parts and expression parts only.
 - `WorkflowData` MUST be JSON-compatible data: string, finite number, boolean, null, arrays, and plain objects with WorkflowData values.
 - `WorkflowData` MUST NOT include `undefined`, functions, promises, dates, maps, sets, class instances, symbols, bigint, sparse arrays, cycles, or non-finite numbers.
 
@@ -53,7 +52,7 @@
 - Callback helpers MUST be typed as `ExprValue<R>` where callback return type `R` extends `WorkflowData`.
 - Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
-- `template` MUST accept `Resolvable` interpolations and lower tagged template strings to an `ExprIR.kind: "template"` node containing internal `TemplateIR` while preserving authored whitespace exactly.
+- `template` MUST accept `Resolvable` interpolations and lower tagged template strings to a flat `ExprIR.kind: "template"` node with `parts` while preserving authored whitespace exactly.
 - `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
 
 ### Operators
@@ -74,7 +73,7 @@
 - Callback evaluation MUST fail with `ExpressionEvaluationError` when the callback source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, or returns non-WorkflowData output.
 - Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope.
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
-- The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, invalid type metadata, and literal type metadata mismatches.
+- The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, and non-primitive literal values.
 - The validator MUST reject malformed callback helper calls whose callback source argument is not a string literal expression.
 - The validator/evaluator callback-source checks are IR backstops for synchronous arrow source shape and arity. Source-level callback complexity and lexical capture diagnostics belong to the workflow compiler authoring rules.
 

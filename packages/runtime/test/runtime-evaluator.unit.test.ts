@@ -128,7 +128,7 @@ describe("runtime expression evaluator", () => {
       ],
     };
 
-    expect(evaluateExpr({ kind: "template", template }, {
+    expect(evaluateExpr(template, {
       input: {
         payload: { ok: true, count: 2 },
         tags: ["ready", "green"],
@@ -137,21 +137,8 @@ describe("runtime expression evaluator", () => {
 
     expect(() => evaluateExpr({
       kind: "template",
-      template: {
-        kind: "template",
-        parts: [
-          { kind: "expr", expr: literal(undefined) },
-          { kind: "text", value: "|" },
-          { kind: "expr", expr: literal(null) },
-          { kind: "text", value: "|" },
-          { kind: "expr", expr: literal(3) },
-          { kind: "text", value: "|" },
-          { kind: "expr", expr: literal(false) },
-          { kind: "text", value: "|" },
-          { kind: "expr", expr: literal("ok") },
-        ],
-      },
-    }, {})).toThrow("template(...) expected JSON-compatible values.");
+      parts: [{ kind: "expr", expr: ref(["input", "invalid"]) }],
+    }, { input: { invalid: () => undefined } })).toThrow("template(...) expected JSON-compatible values.");
   });
 
   it("fails loudly for unsupported calls and invalid operand types", () => {

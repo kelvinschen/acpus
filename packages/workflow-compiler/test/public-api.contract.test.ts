@@ -5,9 +5,7 @@ describe("@acpus/workflow-compiler public API", () => {
   it("exports only the workflow compiler boundary", () => {
     expect(Object.keys(compiler).sort()).toEqual([
       "WorkflowPreparationError",
-      "compileWorkflowModule",
       "prepareWorkflow",
-      "tryCompileWorkflowModule",
       "tryPrepareWorkflow",
     ]);
   });

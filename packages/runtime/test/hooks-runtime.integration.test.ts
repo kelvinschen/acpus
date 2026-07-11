@@ -18,12 +18,12 @@ describe("runtime hook integration", () => {
       try {
         const run = await store.admitRun({ prepared, input: { packageName: "runtime" }, cwd: workspace });
 
-        await advanceRuntimeRun(workspace, store, run.id, "owner-a", undefined, { hookRunner: hooks });
+        await advanceRuntimeRun(workspace, store, run.id, "owner-a", { hookRunner: hooks });
         expect(hooks.events).toEqual(expect.arrayContaining(["run.started", "run.completed"]));
         expect(hooks.contexts.map(context => context.eventSequence)).toEqual([...hooks.contexts.map(context => context.eventSequence)].sort((left, right) => left - right));
         const triggered = hooks.events.length;
 
-        await advanceRuntimeRun(workspace, store, run.id, "owner-b", undefined, { hookRunner: hooks });
+        await advanceRuntimeRun(workspace, store, run.id, "owner-b", { hookRunner: hooks });
         store.getRun(run.id);
 
         expect(hooks.events).toHaveLength(triggered);
@@ -58,7 +58,7 @@ describe("runtime hook integration", () => {
           store,
           runId: run.id,
           hookRunner: hooks,
-          afterSequence: Number(row.sequence) - 1,
+          hookCursor: { sequence: Number(row.sequence) - 1 },
         })).not.toThrow();
         expect(hooks.events).toEqual([]);
       } finally {
@@ -74,7 +74,7 @@ describe("runtime hook integration", () => {
       const hooks = recordingHookRunner();
       try {
         const run = await store.admitRun({ prepared, input: { packageName: "runtime" }, cwd: workspace });
-        await advanceRuntimeRun(workspace, store, run.id, "owner-a", undefined, { hookRunner: hooks });
+        await advanceRuntimeRun(workspace, store, run.id, "owner-a", { hookRunner: hooks });
 
         expect(hooks.contexts.find(context => context.event === "node.started")?.node).toMatchObject({
           id: "build",

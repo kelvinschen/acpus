@@ -5,12 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunInspection, listArtifacts, listRuns, normalizeWorkflowInput } from "@acpus/runtime";
-import { admitWorkflowRun } from "../src/runs/use-cases.js";
+import { getRun, getRunInspection, listRuns, normalizeWorkflowInput } from "@acpus/runtime";
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
   admitFixture,
+  admitPreparedWorkflowForTest,
   admitSyntheticWorkflow,
   failingPureWorkflow,
   failingTaskWorkflow,
@@ -34,7 +34,7 @@ describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection", async () => {
     await withRuntimeWorkspace("runtime-admit-pure", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const admitted = await admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, { ready: true }));
+      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, { ready: true }));
 
       expect(admitted.status).toBe("completed");
       expect(admitted.run.id).toMatch(runIdPattern);
@@ -82,7 +82,7 @@ describe.concurrent("runtime admission use cases", () => {
   it("inspects frozen static metadata without reading live workflow source", async () => {
     await withRuntimeWorkspace("runtime-inspect-frozen-static", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
-      const admitted = await admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, {}));
+      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, {}));
       await writeFile(prepared.workflowPath, "throw new Error('live source should not be read');\n");
 
       await expect(rawInspection(workspace, admitted.run.id)).resolves.toMatchObject({
@@ -203,33 +203,16 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("lists artifacts in stable creation order", async () => {
-    await withRuntimeWorkspace("runtime-artifact-list-order", async workspace => {
-      const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
-      try {
-        const insert = db.prepare(`
-          INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        insert.run("artifact-b", admitted.run.id, "manual", 1, null, "sha256:b", 1, "artifacts/manual/b.txt", "2026-01-01T00:00:00.000Z");
-        insert.run("artifact-a", admitted.run.id, "manual", 1, null, "sha256:a", 1, "artifacts/manual/a.txt", "2026-01-01T00:00:00.000Z");
-      } finally {
-        db.close();
-      }
-
-      const artifacts = await listArtifacts(workspace, admitted.run.id);
-
-      expect(artifacts.slice(0, 2).map(artifact => artifact.id)).toEqual(["artifact-a", "artifact-b"]);
-    });
-  });
-
-  it("passes task run invocation input, cwd, env, and execution options to runtime tasks", async () => {
+  it("passes task run invocation input, cwd, env, and default command timeout to runtime tasks", async () => {
     await withRuntimeWorkspace("runtime-task-run-options", async workspace => {
       const workDir = join(workspace, "task-workdir");
       await mkdir(workDir);
 
-      const admitted = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), { workDir, commandTimeout: "5s" });
+      const admitted = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), {
+        workDir,
+        commandTimeout: "5s",
+        runSlowCommand: false,
+      });
 
       expect(admitted.status).toBe("completed");
       const run = await getRun(workspace, admitted.run.id);
@@ -247,6 +230,19 @@ describe.concurrent("runtime admission use cases", () => {
       });
       expect(run?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata).toMatchObject({
         defaultCommandTimeout: "5s",
+      });
+
+      const timedOut = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), {
+        workDir,
+        commandTimeout: "100ms",
+        runSlowCommand: true,
+      });
+      expect(timedOut.status).toBe("failed");
+      const timedOutRun = await getRun(workspace, timedOut.run.id);
+      expect(timedOutRun?.dynamic?.nodeInstances.find(instance => instance.nodeId === "inspect_invocation")?.status).toBe("failed");
+      expect(timedOutRun?.dynamic?.attempts.find(attempt => attempt.nodeId === "inspect_invocation")?.status).toBe("failed");
+      expect(timedOutRun?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata).toMatchObject({
+        defaultCommandTimeout: "100ms",
       });
     });
   });
@@ -295,7 +291,7 @@ describe.concurrent("runtime admission use cases", () => {
       await mkdir(otherCwd);
       setSingleTaskCwd(prepared.ir, otherCwd);
       const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
-      const admitted = await admitWorkflowRun(workspace, frozen, normalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" }));
+      const admitted = await admitPreparedWorkflowForTest(workspace, frozen, normalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" }));
 
       expect(admitted).toMatchObject({
         status: "completed",
@@ -322,13 +318,12 @@ describe.concurrent("runtime admission use cases", () => {
         if (item.moduleSource !== undefined) await writeFile(join(workspace, item.specifier.slice(2)), item.moduleSource);
         setSingleTaskTarget(prepared.ir, {
           kind: "module",
-          runtime: "node",
           specifier: item.specifier,
           exportName: item.exportName,
-          referrer: { kind: "workflow", path: `${item.name}.workflow.ts` },
+          referrer: { path: `${item.name}.workflow.ts` },
         });
         const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
-        const admitted = await admitWorkflowRun(workspace, frozen, normalizeWorkflowInput(frozen.ir, {}));
+        const admitted = await admitPreparedWorkflowForTest(workspace, frozen, normalizeWorkflowInput(frozen.ir, {}));
 
         expect(admitted.status).toBe("failed");
         if (admitted.status !== "failed") throw new Error("expected failed reusable module load run");
@@ -352,7 +347,6 @@ describe.concurrent("runtime admission use cases", () => {
       expect(admitted.status).toBe("completed");
       await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
         output: {
-          ok: true,
           worktreePath: worktree,
           baseSha: head,
         },
@@ -405,16 +399,14 @@ describe.concurrent("runtime admission use cases", () => {
           id: "fallback",
           kind: "task",
           run: {
-            kind: "task_run",
             input: {
               value: { kind: "literal", value: "loaded" },
             },
             target: {
               kind: "module",
-              runtime: "node",
               specifier: "fallback-task-package/task",
               exportName: "fallbackTask",
-              referrer: { kind: "workflow", path: "workflow.ts" },
+              referrer: { path: "workflow.ts" },
             },
           },
         }, {}, {
@@ -429,16 +421,14 @@ describe.concurrent("runtime admission use cases", () => {
             id: "throwing",
             kind: "task",
             run: {
-              kind: "task_run",
               input: {
                 value: { kind: "literal", value: "loaded" },
               },
               target: {
                 kind: "module",
-                runtime: "node",
                 specifier: "fallback-task-package/throwing",
                 exportName: "fallbackTask",
-                referrer: { kind: "workflow", path: "workflow.ts" },
+                referrer: { path: "workflow.ts" },
               },
             },
           }, {}, {

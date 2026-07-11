@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { safeParseSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
+import { toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
 import { err } from "neverthrow";
 
 describe("schema boundary lowering", () => {
@@ -77,19 +77,5 @@ describe("schema boundary lowering", () => {
       valueType: "number",
       message: "$schema: default value is not JSON-serializable",
     }));
-  });
-
-  it("normalizes validation issues to Acpus paths", () => {
-    const result = safeParseSchema(z.object({ ready: z.boolean() }), { ready: "yes" });
-
-    expect(result).toEqual({
-      success: false,
-      issues: [
-        expect.objectContaining({
-          path: "$.ready",
-          expected: "invalid_type",
-        }),
-      ],
-    });
   });
 });

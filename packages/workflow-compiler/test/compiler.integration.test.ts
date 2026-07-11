@@ -6,29 +6,31 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  compileWorkflowModule,
   tryCompileWorkflowModule,
-} from "../src/index.js";
+  type CompiledWorkflowModule,
+} from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
-const compilerEntry = new URL("../src/index.ts", import.meta.url).href;
+const compilerEntry = new URL("../src/compiler/module.ts", import.meta.url).href;
 
 describe.concurrent("workflow module compiler", () => {
   it("compiles a TypeScript workflow module with reusable module references and inline task source", async () => {
-    const ir = await compileFixture("release.workflow.ts");
+    const compiled = await compileFixtureResult("release.workflow.ts");
+    const { ir } = compiled;
 
-    expect(ir.irVersion).toBe(3);
+    expect(ir.irVersion).toBe(4);
     expect(ir.name).toBe("release-readiness");
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.lock.workflowSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(compiled.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(ir).not.toHaveProperty("lock");
     expect(taskTarget(ir.root, "normalize_package")).toMatchObject({
       kind: "module",
       specifier: "./tasks/local-dependency.task.js",
       exportName: "default",
-      referrer: { kind: "workflow", path: expect.stringContaining("release.workflow.ts") },
+      referrer: { path: expect.stringContaining("release.workflow.ts") },
     });
     expect(taskTarget(ir.root, "normalize_path")).toMatchObject({
       kind: "module",
@@ -76,7 +78,7 @@ describe.concurrent("workflow module compiler", () => {
     ]);
   });
 
-  it("keeps compileWorkflowModule as the lower-level no-check API", async () => {
+  it("keeps the internal module compiler free of the authoring check phase", async () => {
     const ir = await compileFixture("inline-capture.workflow.ts");
 
     expect(ir.diagnostics).not.toContainEqual(expect.objectContaining({ code: "TB003" }));
@@ -91,7 +93,7 @@ describe.concurrent("workflow module compiler", () => {
       kind: "module",
       specifier: "./same-file-reusable.workflow.ts",
       exportName: "normalizePath",
-      referrer: { kind: "workflow", path: expect.stringContaining("same-file-reusable.workflow.ts") },
+      referrer: { path: expect.stringContaining("same-file-reusable.workflow.ts") },
     });
     expect(ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
   });
@@ -107,8 +109,8 @@ describe.concurrent("workflow module compiler", () => {
 
   it("derives reusable task references from source, stable across compiles", async () => {
     const entry = fixture("release.workflow.ts");
-    const first = await compileWorkflowModule(entry, { sourcePath: "x" });
-    const second = await compileWorkflowModule(entry, { sourcePath: "x" });
+    const first = await compileModule(entry);
+    const second = await compileModule(entry);
 
     expect(taskTarget(first.root, "normalize_path")).toEqual(taskTarget(second.root, "normalize_path"));
   });
@@ -119,7 +121,7 @@ describe.concurrent("workflow module compiler", () => {
       const workflow = join(cwd, "invalid.workflow.ts");
       await writeFile(workflow, "export default {};\n");
 
-      const result = await tryCompileWorkflowModule(workflow);
+      const result = await tryCompileWorkflowModule(workflow, cwd);
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected invalid default export");
@@ -156,10 +158,10 @@ export default defineWorkflow({
       const stdout = await runCompilerScript(`
 import { tryCompileWorkflowModule } from ${JSON.stringify(compilerEntry)};
 
-const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, { cwd: ${JSON.stringify(cwd)} });
+const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, ${JSON.stringify(cwd)});
 if (result.isErr()) throw new Error(result.error.message);
-const node = result.value.root.nodes.find(item => item.id === "run");
-console.log(JSON.stringify({ name: result.value.name, target: node.run.target }));
+const node = result.value.ir.root.nodes.find(item => item.id === "run");
+console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target }));
 `);
 
       const result = JSON.parse(stdout) as { name: string; target: unknown };
@@ -178,7 +180,7 @@ console.log(JSON.stringify({ name: result.value.name, target: node.run.target })
     const cwd = await mkdtemp(join(tmpdir(), "compiler-outside-workspace-"));
     try {
       const workflow = fixture("release.workflow.ts");
-      const result = await tryCompileWorkflowModule(workflow, { cwd });
+      const result = await tryCompileWorkflowModule(workflow, cwd);
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected outside workspace failure");
@@ -204,7 +206,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 });
 `);
 
-      const result = await tryCompileWorkflowModule(workflow);
+      const result = await tryCompileWorkflowModule(workflow, cwd);
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected workflow build failure");
@@ -249,19 +251,15 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       kind: "parallel",
       branches: {
         review: {
-          scope: {
-            outputs: {
-              ok: { kind: "ref", path: ["nodes", "review_lane", "output", "ok"] },
-            },
+          outputs: {
+            ok: { kind: "ref", path: ["nodes", "review_lane", "output", "ok"] },
           },
         },
         route: {
-          scope: {
-            outputs: {
-              route: {
-                kind: "ref",
-                path: ["nodes", "route_lane", "output", "route"],
-              },
+          outputs: {
+            route: {
+              kind: "ref",
+              path: ["nodes", "route_lane", "output", "route"],
             },
           },
         },
@@ -271,7 +269,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 
     const repairBranch = parallel.branches.repair;
     if (!repairBranch) throw new Error("expected repair branch fixture node");
-    const loop = getNode(repairBranch.scope, "repair_loop");
+    const loop = getNode(repairBranch, "repair_loop");
     expect(loop).toMatchObject({
       kind: "loop",
       state: {
@@ -303,24 +301,22 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       run: {
         prompt: {
           kind: "template",
-          template: {
-            parts: expect.arrayContaining([
-              {
-                kind: "expr",
-                expr: {
-                  kind: "ref",
-                  path: ["loop", "repair_loop", "state", "summary"],
-                },
+          parts: expect.arrayContaining([
+            {
+              kind: "expr",
+              expr: {
+                kind: "ref",
+                path: ["loop", "repair_loop", "state", "summary"],
               },
-            ]),
-          },
+            },
+          ]),
         },
       },
     });
 
     const routeBranch = parallel.branches.route;
     if (!routeBranch) throw new Error("expected route branch fixture node");
-    const routeSwitch = getNode(routeBranch.scope, "route_lane");
+    const routeSwitch = getNode(routeBranch, "route_lane");
     expect(routeSwitch).toMatchObject({
       kind: "switch",
       cases: [
@@ -378,9 +374,21 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 });
 
 async function compileFixture(relativePath: string): Promise<WorkflowIR> {
-  return compileWorkflowModule(fixture(relativePath), {
-    sourcePath: `packages/workflow-compiler/test/fixtures/workflows/${relativePath}`,
-  });
+  return (await compileFixtureResult(relativePath)).ir;
+}
+
+async function compileFixtureResult(relativePath: string): Promise<CompiledWorkflowModule> {
+  return compileModuleResult(fixture(relativePath));
+}
+
+async function compileModule(entry: string, cwd = repoRoot): Promise<WorkflowIR> {
+  return (await compileModuleResult(entry, cwd)).ir;
+}
+
+async function compileModuleResult(entry: string, cwd = repoRoot): Promise<CompiledWorkflowModule> {
+  const result = await tryCompileWorkflowModule(entry, cwd);
+  if (result.isErr()) throw new Error(result.error.message);
+  return result.value;
 }
 
 function fixture(relativePath: string): string {

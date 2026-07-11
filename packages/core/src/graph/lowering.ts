@@ -1,6 +1,5 @@
 import { isExpr, valueToExprIR } from "@acpus/expression/ir";
-import { isSecret, secretOrExprToIR } from "../runtime/secret.js";
-import type { DiagnosticIR, ExprIR, SecretRefIR } from "../ir/types.js";
+import type { DiagnosticIR, ExprIR } from "../ir/types.js";
 import type { EnvInput, StaticEnvInput } from "../nodes/leaf/shared.js";
 
 export function bindingsToIR(bindings?: Record<string, unknown>): Record<string, ExprIR> {
@@ -11,18 +10,18 @@ export function bindingsToIR(bindings?: Record<string, unknown>): Record<string,
   return result;
 }
 
-export function envToIR(env: EnvInput): Record<string, ExprIR | SecretRefIR>;
-export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | undefined;
-export function envToIR(env?: EnvInput): Record<string, ExprIR | SecretRefIR> | undefined {
+export function envToIR(env: EnvInput): Record<string, ExprIR>;
+export function envToIR(env?: EnvInput): Record<string, ExprIR> | undefined;
+export function envToIR(env?: EnvInput): Record<string, ExprIR> | undefined {
   if (!env) return undefined;
-  const out: Record<string, ExprIR | SecretRefIR> = {};
-  for (const [key, value] of Object.entries(env)) out[key] = secretOrExprToIR(value);
+  const out: Record<string, ExprIR> = {};
+  for (const [key, value] of Object.entries(env)) out[key] = valueToExprIR(value);
   return out;
 }
 
-export function staticEnvToIR(env?: StaticEnvInput): Record<string, string | SecretRefIR> | undefined {
+export function staticEnvToIR(env?: StaticEnvInput): Record<string, string> | undefined {
   if (!env) return undefined;
-  return Object.fromEntries(Object.entries(env).map(([key, value]) => [key, isSecret(value) ? value.ir : value]));
+  return { ...env };
 }
 
 export function stripUndefined<T>(value: T): T {

@@ -15,7 +15,7 @@ import { applySchedulerEvents, applyTimestampedSchedulerEvents, cancellationEven
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerControlInputError, SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame } from "../scheduler/types.js";
 import { drainDerivedTransitions } from "../scheduler/advance.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
@@ -23,6 +23,9 @@ import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
+
+export class ForkRequestConflictError extends Error {}
+export class PreparedRunWorkflowValidationError extends Error {}
 
 const RUNNABLE_RUNS_WHERE = "status = 'pending'";
 
@@ -78,7 +81,6 @@ export type RuntimeStore = {
   heartbeatDaemon(input: HeartbeatDaemonInput): boolean;
   setDaemonIdleState(input: DaemonIdleStateInput): boolean;
   releaseDaemon(input: HeartbeatDaemonInput): boolean;
-  listRunnableRuns(): RunRecord[];
   listDaemonWork(now?: Date): DaemonWork;
   forkRun(runId: string, options?: ControlOptions): Promise<ForkRunRecord>;
   cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
@@ -112,7 +114,7 @@ export type RunInspectionStoreRead = {
   events: CommittedRuntimeEventRow[];
 };
 
-export type DaemonWork = {
+type DaemonWork = {
   startableRuns: RunRecord[];
   idleBlockers: number;
 };
@@ -141,7 +143,7 @@ export type RunWorkflowLockArtifact = {
   version: 1;
   workflow: {
     entry: string;
-    sourceDigest?: string;
+    sourceDigest: string;
   };
   ir: {
     path: "workflow.ir.json";
@@ -149,7 +151,6 @@ export type RunWorkflowLockArtifact = {
   };
   packageLockDigest?: string;
   sourceGraphDigest: string;
-  generatedAt: string;
 };
 
 export type PreparedRunWorkflow = {
@@ -398,19 +399,11 @@ type DaemonLease = {
 
 type ControlOptions = {
   requestId?: string;
-  prepared?: ForkPreparedWorkflow;
+  prepared?: PreparedRunWorkflow;
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
   target?: string;
   unsafeReuse?: boolean;
-};
-
-export type ForkPreparedWorkflow = {
-  workflowPath: string;
-  irJson: string;
-  sourceGraphDigest: string;
-  packageLockDigest?: string;
-  lock: RunWorkflowLockArtifact;
 };
 
 type CleanupRunDirectoriesOptions = {
@@ -586,25 +579,26 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   async admitRun(input: AdmitRunInput): Promise<RunRecord> {
+    const prepared = canonicalPreparedRunWorkflow(this.cwd, input.prepared);
     const runId = newRunId();
     const now = new Date().toISOString();
-    const workflowEntry = relative(input.cwd, input.prepared.workflowPath);
+    const workflowEntry = relative(input.cwd, prepared.workflowPath);
     const runDir = join(input.cwd, localStateRoot, "runs", runId);
     const stagedRunDir = join(input.cwd, localStateRoot, "runs", `.staging-${runId}`);
-    const lockJson = stableJsonLine(input.prepared.lock);
+    const lockJson = stableJsonLine(prepared.lock);
     try {
       await mkdir(dirname(stagedRunDir), { recursive: true });
       containedRunsRoot(input.cwd);
       await rm(stagedRunDir, { recursive: true, force: true });
       await mkdir(stagedRunDir, { recursive: true });
-      await writeFile(join(stagedRunDir, "workflow.ir.json"), input.prepared.irJson);
+      await writeFile(join(stagedRunDir, "workflow.ir.json"), prepared.irJson);
       await writeFile(join(stagedRunDir, "lock.json"), lockJson);
       await rm(runDir, { recursive: true, force: true });
       await rename(stagedRunDir, runDir);
-      const agentOverrides = normalizeAgentOverrides(input.prepared.ir, input.agentOverrides);
+      const agentOverrides = normalizeAgentOverrides(prepared.ir, input.agentOverrides);
 
       const eventPayload = {
-        workflow: summarizeWorkflowForEvent(input.prepared.ir),
+        workflow: summarizeWorkflowForEvent(prepared.ir),
         input: input.input,
         ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       };
@@ -613,33 +607,32 @@ class SqliteRuntimeStore implements RuntimeStore {
         this.db.prepare(`
           INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
           VALUES (?, ?, 'pending', ?, ?, ?, ?)
-        `).run(runId, input.prepared.ir.name, workflowEntry, input.prepared.sourceGraphDigest, now, now);
+        `).run(runId, prepared.ir.name, workflowEntry, prepared.sourceGraphDigest, now, now);
         this.db.prepare(`
           INSERT INTO run_inputs (
-            run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
+            run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, run_dir
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           runId,
           "workflow.ir.json",
-          digest(Buffer.from(input.prepared.irJson)),
+          digest(Buffer.from(prepared.irJson)),
           stableJsonLine(input.input),
           stableJsonLine(agentOverrides),
           "lock.json",
           digest(Buffer.from(lockJson)),
-          input.prepared.packageLockDigest ?? null,
+          prepared.packageLockDigest ?? null,
           relative(input.cwd, runDir),
-          now,
         );
         this.db.prepare(`
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
           VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
         `).run(runId, stableJsonLine(eventPayload), now, `admit:${runId}`);
-        for (const nodeId of collectNodeIds(input.prepared.ir.root)) {
+        for (const nodeId of collectNodeIds(prepared.ir.root)) {
           this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'pending', ?, ?)
-          `).run(runId, nodeId, nodeId, now, now);
+            INSERT INTO node_states (run_id, node_key, node_id, status)
+            VALUES (?, ?, ?, 'pending')
+          `).run(runId, nodeId, nodeId);
         }
         this.db.exec("COMMIT");
       } catch (error) {
@@ -749,16 +742,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     return result.changes === 1;
   }
 
-  listRunnableRuns(): RunRecord[] {
-    const nowIso = new Date().toISOString();
-    return this.db.prepare(`
-      SELECT ${this.runRecordColumns()}
-      FROM runs
-      WHERE (${RUNNABLE_RUNS_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
-      ORDER BY created_at ASC
-    `).all(nowIso).map(toRunRecord);
-  }
-
   listDaemonWork(now: Date = new Date()): DaemonWork {
     const nowIso = now.toISOString();
     const timedWaits = this.db.prepare("SELECT run_id, node_key, deadline_at FROM signal_waits WHERE status = 'awaiting' AND deadline_at IS NOT NULL")
@@ -789,6 +772,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   async forkRun(runId: string, options: ControlOptions = {}): Promise<ForkRunRecord> {
+    if (options.prepared) options = { ...options, prepared: canonicalPreparedRunWorkflow(this.cwd, options.prepared) };
     const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
     const requestFingerprint = forkRequestFingerprint(runId, options);
     if (forkRequestKey) {
@@ -800,7 +784,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (existing) {
         const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
         if (payload.requestFingerprint !== requestFingerprint) {
-          throw new Error(`Fork request '${options.requestId}' conflicts with a different fork input.`);
+          throw new ForkRequestConflictError(`Fork request '${options.requestId}' conflicts with a different fork input.`);
         }
         return { ...this.requireRun(existing.run_id), forkCreated: false };
       }
@@ -823,8 +807,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceWorkflowIrJson = frozenWorkflowIrJson(this.cwd, input);
     const sourceLockJson = frozenLockJson(this.cwd, input);
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
-    if (options.prepared && digest(Buffer.from(forkIrJson)) !== options.prepared.lock.ir.digest) throw new Error("Fork prepared workflow IR file digest does not match payload.");
-    const forkIr = JSON.parse(forkIrJson) as WorkflowIR;
+    const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
     const sourceIr = JSON.parse(sourceWorkflowIrJson) as WorkflowIR;
@@ -878,7 +861,7 @@ class SqliteRuntimeStore implements RuntimeStore {
             fanout: {},
             loop: {},
           },
-          sourceProjection: this.scheduler.loadRunSnapshot(runId).projection,
+          sourceProjection: throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(runId)).projection,
           inputChanged: options.input !== undefined,
           unsafeReuse: options.unsafeReuse === true,
           ...(options.target === undefined ? {} : { target: options.target }),
@@ -892,7 +875,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const inheritableNodeKeys = seedPlan?.inheritedNodeKeys ?? (options.input !== undefined ? new Set<string>() : source.status === "completed"
       ? knownCompletedNodeKeys
       : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys));
-    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json, error_json, attempt FROM node_states WHERE run_id = ?").all(runId) as Array<Record<string, unknown>>;
+    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json FROM node_states WHERE run_id = ?").all(runId) as Array<Record<string, unknown>>;
     const reachableArtifactIds = reachableInheritedArtifactIds({
       runId,
       outputJson: input.output_json,
@@ -952,9 +935,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkSourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_path, lock_digest, package_lock_digest, run_dir, created_at
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_path, lock_digest, package_lock_digest, run_dir
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         forkId,
         "workflow.ir.json",
@@ -966,7 +949,6 @@ class SqliteRuntimeStore implements RuntimeStore {
         digest(Buffer.from(forkLockJson)),
         forkPackageLockDigest,
         forkRunDir,
-        now,
       );
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
@@ -993,26 +975,22 @@ class SqliteRuntimeStore implements RuntimeStore {
           if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
           insertedNodeKeys.add(nodeKey);
           this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, attempt, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO node_states (run_id, node_key, node_id, status, output_json)
+            VALUES (?, ?, ?, ?, ?)
           `).run(
             forkId,
             nodeKey,
             String(row.node_id),
             inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
             inheritableNodeKeys.has(nodeKey) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
-            null,
-            Number(row.attempt ?? 0),
-            now,
-            now,
           );
         }
         for (const nodeKey of irNodeKeys) {
           if (insertedNodeKeys.has(nodeKey)) continue;
           this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'pending', ?, ?)
-          `).run(forkId, nodeKey, nodeKey, now, now);
+            INSERT INTO node_states (run_id, node_key, node_id, status)
+            VALUES (?, ?, ?, 'pending')
+          `).run(forkId, nodeKey, nodeKey);
         }
       }
       for (const artifact of artifacts) {
@@ -1395,7 +1373,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const frames = readRunDynamicFrames(this.db, runId);
     const nodeInstances = readRunDynamicNodeInstances(this.db, runId);
     const attempts = readRunDynamicAttempts(this.db, runId);
-    const groups = Object.values(this.schedulerStore().loadRunSnapshot(runId).projection.groups).map(runDynamicGroup);
+    const groups = Object.values(throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(runId)).projection.groups).map(runDynamicGroup);
     const groupMembers = readRunDynamicGroupMembers(this.db, runId);
     const signalWaits = readRunDynamicSignalWaits(this.db, runId);
     const executionMetadata = this.getExecutionMetadata(runId);
@@ -1538,17 +1516,15 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       }
       const ownerEpoch = (current?.owner_epoch ?? 0) + 1;
       this.db.prepare(`
-        INSERT INTO run_leases (run_id, owner_id, owner_epoch, lease_expires_at, heartbeat_at, claimed_at, released_at, reason)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 'advance')
+        INSERT INTO run_leases (run_id, owner_id, owner_epoch, lease_expires_at, claimed_at, released_at)
+        VALUES (?, ?, ?, ?, ?, NULL)
         ON CONFLICT(run_id) DO UPDATE SET
           owner_id = excluded.owner_id,
           owner_epoch = excluded.owner_epoch,
           lease_expires_at = excluded.lease_expires_at,
-          heartbeat_at = excluded.heartbeat_at,
           claimed_at = excluded.claimed_at,
-          released_at = NULL,
-          reason = excluded.reason
-      `).run(runId, ownerId, ownerEpoch, leaseExpiresAt, now, now);
+          released_at = NULL
+      `).run(runId, ownerId, ownerEpoch, leaseExpiresAt, now);
       this.db.exec("COMMIT");
       return { runId, ownerId, ownerEpoch, leaseExpiresAt };
     } catch (error) {
@@ -1562,9 +1538,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
     const result = this.db.prepare(`
       UPDATE run_leases
-      SET lease_expires_at = ?, heartbeat_at = ?
+      SET lease_expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL AND lease_expires_at > ?
-    `).run(leaseExpiresAt, now, claim.runId, claim.ownerId, claim.ownerEpoch, now);
+    `).run(leaseExpiresAt, claim.runId, claim.ownerId, claim.ownerEpoch, now);
     return result.changes === 1;
   }
 
@@ -1572,9 +1548,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const now = new Date().toISOString();
     const result = this.db.prepare(`
       UPDATE run_leases
-      SET released_at = ?, heartbeat_at = ?
+      SET released_at = ?
       WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL
-    `).run(now, now, claim.runId, claim.ownerId, claim.ownerEpoch);
+    `).run(now, claim.runId, claim.ownerId, claim.ownerEpoch);
     return result.changes === 1;
   }
 
@@ -1582,7 +1558,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.loadRunSnapshot(runId));
   }
 
-  loadRunSnapshot(runId: string): SchedulerSnapshot {
+  private loadRunSnapshot(runId: string): SchedulerSnapshot {
     const row = this.db.prepare("SELECT id FROM runs WHERE id = ?").get(runId);
     if (!row) throwSchedulerStoreError({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
     const events = this.schedulerEvents(runId);
@@ -1597,7 +1573,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
   }
 
-  appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+  private appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
     const hasEvents = commit.events.length > 0;
     if (!hasEvents && commit.intentDigest === undefined) return this.loadRunSnapshot(commit.runId);
     const duplicate = this.duplicateAppendIdempotency(commit);
@@ -1619,9 +1595,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.requireOwnerEpoch(commit.runId, commit.ownerEpoch);
       if (hasEvents) applySchedulerEvents(createSchedulerProjection(commit.runId), [...this.schedulerEvents(commit.runId), ...commit.events]);
       this.db.prepare(`
-        INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, intent_digest, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(commit.runId, commit.idempotencyKey, commit.events.length, eventDigest, commit.intentDigest ?? null, now);
+        INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, intent_digest)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(commit.runId, commit.idempotencyKey, commit.events.length, eventDigest, commit.intentDigest ?? null);
       let sequence = currentVersion + 1;
       for (const [index, event] of commit.events.entries()) {
         this.db.prepare(`
@@ -1658,9 +1634,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const currentVersion = this.currentVersion(input.runId);
     const commitKey = `fork-seed:${input.runId}`;
     this.db.prepare(`
-      INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(input.runId, commitKey, events.length, schedulerEventDigest(events), input.now);
+      INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest)
+      VALUES (?, ?, ?, ?)
+    `).run(input.runId, commitKey, events.length, schedulerEventDigest(events));
     let sequence = currentVersion + 1;
     for (const [index, event] of events.entries()) {
       this.db.prepare(`
@@ -1677,7 +1653,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.startAttempt(input));
   }
 
-  startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
+  private startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
     const existing = this.eventByIdempotencyKey(input.idempotencyKey);
     if (existing && existing.type === "attempt.started") {
       const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
@@ -1750,7 +1726,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.commitAttemptResult(input));
   }
 
-  commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+  private commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
     const existing = this.eventByIdempotencyKey(input.idempotencyKey);
     if (existing) {
       if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.` });
@@ -1807,7 +1783,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.consumeSignal(input));
   }
 
-  consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
+  private consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
     const now = input.now ?? new Date();
     let snapshot = this.loadRunSnapshot(input.runId);
     let wait = snapshot.projection.signalWaits[input.nodeKey];
@@ -1828,14 +1804,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' is already ${wait.status}.` });
     }
     if (snapshot.projection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
-    const payloadDigest = createHash("sha256").update(stableJsonLine(input.payload)).digest("hex");
     const events: SchedulerEvent[] = [
       {
         type: "signal.consumed",
         payload: {
           nodeKey: input.nodeKey,
           payload: input.payload,
-          payloadDigest,
           commandIdempotencyKey: input.commandIdempotencyKey,
         },
       },
@@ -1871,8 +1845,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.pauseRun(input));
   }
 
-  pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
-    const intentDigest = schedulerIntentDigest({ type: "pause", reason: input.reason ?? null });
+  private pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
+    const intentDigest = schedulerIntentDigest({ type: "pause" });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
     const now = input.now ?? new Date();
@@ -1888,7 +1862,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       });
     }
     const events: SchedulerEvent[] = [
-      { type: "control.paused", payload: input.reason === undefined ? {} : { reason: input.reason } },
+      { type: "control.paused", payload: {} },
     ];
     for (const wait of Object.values(snapshot.projection.signalWaits)) {
       const deadlineAt = wait.deadlineAt;
@@ -1942,7 +1916,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.resumeRun(input));
   }
 
-  resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
+  private resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
     const intentDigest = schedulerIntentDigest({ type: "resume" });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
@@ -1993,7 +1967,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.retryRun(input));
   }
 
-  retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
+  private retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
     const intentDigest = schedulerIntentDigest({ type: "run_retry" });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
@@ -2015,7 +1989,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.retry(input));
   }
 
-  retry(input: SchedulerRetryInput): SchedulerSnapshot {
+  private retry(input: SchedulerRetryInput): SchedulerSnapshot {
     const idempotencyKey = input.idempotencyKey;
     const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
     const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey, intentDigest);
@@ -2032,7 +2006,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       if (frame.frameKind !== "node" && frame.frameKind !== "loop") {
         throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: frame.status, message: `Frame '${targetKey}' is not a retryable public node frame.` });
       }
-      const events: SchedulerEvent[] = [{ type: "frame.retry_requested", payload: { frameKey: targetKey, source: "control" } }];
+      const events: SchedulerEvent[] = [{ type: "frame.retry_requested", payload: { frameKey: targetKey } }];
       for (const member of ancestorGroupMembersForFrame(snapshot.projection, frame.parentFrameKey)) {
         if (member.status !== "failed") {
           throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
@@ -2042,7 +2016,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           payload: {
             memberKey: member.memberKey,
             readinessSequence: member.readinessSequence,
-            source: "control",
           },
         });
       }
@@ -2065,7 +2038,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         payload: {
           nodeKey: targetKey,
           ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
-          source: "control",
         },
       },
     ];
@@ -2079,7 +2051,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         payload: {
           memberKey: member.memberKey,
           readinessSequence: member.readinessSequence,
-          source: "control",
         },
       });
     }
@@ -2097,7 +2068,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.cancel(input));
   }
 
-  cancel(input: SchedulerCancelInput): SchedulerSnapshot {
+  private cancel(input: SchedulerCancelInput): SchedulerSnapshot {
     const intentDigest = schedulerIntentDigest({ type: "cancel", target: input.target ?? null });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
@@ -2142,7 +2113,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(runId, ownerEpoch));
   }
 
-  markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot {
+  private markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot {
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -2211,7 +2182,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       { runId, ownerEpoch },
       () => now,
       snapshot => continueRootEvents(frozen.ir, snapshot.projection, rootScope(frozen)),
-      () => undefined,
     );
   }
 
@@ -2304,7 +2274,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   private syncSchedulerProjectionTables(runId: string, now: string): void {
     const { projection, timings } = applyTimestampedSchedulerEvents(runId, this.timestampedSchedulerEvents(runId));
-    const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, timed_out_at, created_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; timed_out_at: string | null; created_at: string }>)
+    const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, created_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; created_at: string }>)
       .map(row => [row.node_key, row]));
     this.db.prepare("DELETE FROM scheduler_frames WHERE run_id = ?").run(runId);
     this.db.prepare("DELETE FROM node_instances WHERE run_id = ?").run(runId);
@@ -2428,24 +2398,21 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       const timing = timings.signal.get(wait.nodeKey);
       this.db.prepare(`
         INSERT INTO signal_waits (
-          run_id, node_key, node_id, status, payload_json, payload_digest, command_idempotency_key,
-          deadline_at, timeout_message, timeout_remaining_ms, rendered_prompt, consumed_at, timed_out_at, terminal_reason, created_at, updated_at
+          run_id, node_key, node_id, status, payload_json,
+          deadline_at, timeout_message, timeout_remaining_ms, rendered_prompt, consumed_at, terminal_reason, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         wait.runId,
         wait.nodeKey,
         wait.nodeId,
         wait.status,
         wait.payload === undefined ? null : stableJsonLine(wait.payload),
-        wait.payloadDigest ?? null,
-        wait.commandIdempotencyKey ?? null,
         wait.deadlineAt ?? null,
         wait.timeoutMessage ?? null,
         wait.timeoutRemainingMs ?? null,
         wait.renderedPrompt ?? null,
         wait.status === "consumed" ? timing?.updatedAt ?? existing?.consumed_at ?? now : null,
-        wait.status === "timed_out" ? timing?.updatedAt ?? existing?.timed_out_at ?? now : null,
         wait.terminalReason ?? null,
         timing?.createdAt ?? existing?.created_at ?? now,
         timing?.updatedAt ?? now,
@@ -2465,7 +2432,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       return;
     }
     if (!current || current.status === "completed" || current.status === "canceled" || (current.status === "failed" && !hasTargetedRetry)) return;
-    this.syncPublicNodeStates(projection, now);
+    this.syncPublicNodeStates(projection);
     const root = projection.frames.root;
     if (projection.run.status === "completed") {
       const output = root?.result ?? {};
@@ -2500,7 +2467,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(status, now, runId);
   }
 
-  private syncPublicNodeStates(projection: ReturnType<typeof createSchedulerProjection>, now: string): void {
+  private syncPublicNodeStates(projection: ReturnType<typeof createSchedulerProjection>): void {
     const nodeKeys = Object.keys(projection.instances);
     const dynamicNodeIds = [...new Set(Object.values(projection.instances)
       .filter(instance => instance.nodeKey !== instance.nodeId)
@@ -2519,23 +2486,18 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
     for (const instance of Object.values(projection.instances)) {
       this.db.prepare(`
-        INSERT INTO node_states (run_id, node_key, node_id, status, output_json, error_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO node_states (run_id, node_key, node_id, status, output_json)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(run_id, node_key) DO UPDATE SET
           node_id = excluded.node_id,
           status = excluded.status,
-          output_json = excluded.output_json,
-          error_json = excluded.error_json,
-          updated_at = excluded.updated_at
+          output_json = excluded.output_json
       `).run(
         instance.runId,
         instance.nodeKey,
         instance.nodeId,
         instance.status,
         instance.output === undefined ? null : stableJsonLine(instance.output),
-        instance.error === undefined ? null : stableJsonLine(instance.error),
-        now,
-        now,
       );
     }
   }
@@ -2943,7 +2905,7 @@ function retryTargetKey(target: string, idempotencyKey: string, snapshot: Schedu
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort();
   if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler retry intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
+  if (matches.length > 1) throw new SchedulerControlInputError(`Scheduler retry intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
   if (target === "root" && snapshot.projection.frames.root) return "root";
   return target;
 }
@@ -2958,7 +2920,7 @@ function cancelTargetKey(target: string, idempotencyKey: string, snapshot: Sched
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort();
   if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new Error(`Scheduler cancel intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
+  if (matches.length > 1) throw new SchedulerControlInputError(`Scheduler cancel intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
   if (target === "root" && snapshot.projection.frames.root) return "root";
   return target;
 }
@@ -3029,8 +2991,7 @@ function initializeSchema(db: DatabaseSync): void {
       lock_path TEXT NOT NULL,
       lock_digest TEXT NOT NULL,
       package_lock_digest TEXT,
-      run_dir TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      run_dir TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS run_events (
@@ -3051,7 +3012,6 @@ function initializeSchema(db: DatabaseSync): void {
       event_count INTEGER NOT NULL,
       event_digest TEXT NOT NULL,
       intent_digest TEXT,
-      created_at TEXT NOT NULL,
       PRIMARY KEY (run_id, idempotency_key)
     );
 
@@ -3061,10 +3021,6 @@ function initializeSchema(db: DatabaseSync): void {
       node_id TEXT NOT NULL,
       status TEXT NOT NULL,
       output_json TEXT,
-      error_json TEXT,
-      attempt INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
       PRIMARY KEY (run_id, node_key)
     );
 
@@ -3073,10 +3029,8 @@ function initializeSchema(db: DatabaseSync): void {
       owner_id TEXT NOT NULL,
       owner_epoch INTEGER NOT NULL,
       lease_expires_at TEXT NOT NULL,
-      heartbeat_at TEXT NOT NULL,
       claimed_at TEXT NOT NULL,
-      released_at TEXT,
-      reason TEXT
+      released_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS scheduler_frames (
@@ -3122,7 +3076,6 @@ function initializeSchema(db: DatabaseSync): void {
       node_key TEXT NOT NULL,
       node_id TEXT NOT NULL,
       attempt_no INTEGER NOT NULL,
-      owner_id TEXT,
       owner_epoch INTEGER NOT NULL,
       status TEXT NOT NULL,
       deadline_at TEXT,
@@ -3162,14 +3115,11 @@ function initializeSchema(db: DatabaseSync): void {
       node_id TEXT NOT NULL,
       status TEXT NOT NULL,
       payload_json TEXT,
-      payload_digest TEXT,
-      command_idempotency_key TEXT,
       deadline_at TEXT,
       timeout_message TEXT,
       timeout_remaining_ms INTEGER,
       rendered_prompt TEXT,
       consumed_at TEXT,
-      timed_out_at TEXT,
       terminal_reason TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -3367,6 +3317,38 @@ function nodeAncestors(scope: ScopeIR): Map<string, string[]> {
 
 function nodeSignatures(scope: ScopeIR): Map<string, string> {
   return new Map(Array.from(walkNodes(scope), ({ node }) => [node.id, stableJsonLine(node)] as const));
+}
+
+function canonicalPreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): PreparedRunWorkflow {
+  let ir: unknown;
+  try {
+    ir = JSON.parse(prepared.irJson);
+  } catch {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow IR JSON is invalid.");
+  }
+  if (stableJsonLine(ir) !== stableJsonLine(prepared.ir)) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow IR JSON does not match prepared IR.");
+  }
+  if (digest(Buffer.from(prepared.irJson)) !== prepared.lock.ir.digest) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow lock IR digest does not match IR JSON.");
+  }
+  if (prepared.lock.sourceGraphDigest !== prepared.sourceGraphDigest) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow lock source graph digest does not match prepared source graph digest.");
+  }
+  const hasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared, "packageLockDigest");
+  const lockHasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared.lock, "packageLockDigest");
+  if (hasPackageLockDigest !== lockHasPackageLockDigest || prepared.packageLockDigest !== prepared.lock.packageLockDigest) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow lock package lock digest does not match prepared package lock digest.");
+  }
+  const sourceGraphDigest = digest(Buffer.from([prepared.lock.workflow.sourceDigest, prepared.packageLockDigest ?? ""].join("\n")));
+  if (prepared.sourceGraphDigest !== sourceGraphDigest) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow source graph digest does not match workflow and package lock digests.");
+  }
+  const workflowEntry = relative(resolve(cwd), resolve(cwd, prepared.workflowPath));
+  if (prepared.lock.workflow.entry !== workflowEntry) {
+    throw new PreparedRunWorkflowValidationError("Prepared workflow lock entry does not match prepared workflow path.");
+  }
+  return { ...prepared, ir: ir as WorkflowIR };
 }
 
 function stableJsonLine(value: unknown): string {

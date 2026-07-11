@@ -56,13 +56,12 @@ export type AgentBackendFailure = {
   };
 };
 
-export type AgentIoPreview = {
+export type AgentToolInputPreview = {
   preview: string;
   truncated: boolean;
   originalBytes: number;
   headBytes: number;
   tailBytes?: number;
-  artifactRef?: string;
 };
 
 export type AgentContextTelemetry = {
@@ -87,7 +86,7 @@ export type AgentToolCallTelemetry = {
   kind?: string;
   toolName?: string;
   status?: string;
-  input?: AgentIoPreview;
+  input?: AgentToolInputPreview;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -104,8 +103,6 @@ export type AgentTurnTelemetry = {
   context?: AgentContextTelemetry;
   tokenUsage?: AgentTokenUsageTelemetry;
   tools: AgentToolsTelemetry;
-  input?: AgentIoPreview;
-  output?: AgentIoPreview;
   cwd?: string;
   acpxRecordId?: string;
 };
@@ -182,7 +179,6 @@ type JsonRpcFailure = {
 };
 
 type PromptSummaryOptions = {
-  prompt: string;
   cwd: string;
   acpxRecordId?: string;
 };
@@ -256,7 +252,6 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
   if (promptBudget.type === "expired") return timeoutResult(request.timeoutMs);
   const acpxRecordId = extractAcpxRecordId(ensure.stdout);
   const accumulator = createPromptAccumulator({
-    prompt: request.prompt,
     cwd: request.cwd,
     ...(acpxRecordId ? { acpxRecordId } : {}),
   });
@@ -530,8 +525,6 @@ function telemetryFromAccumulator(accumulator: PromptAccumulator): AgentTurnTele
     ...(accumulator.tokenUsage ? { tokenUsage: accumulator.tokenUsage } : {}),
     tools: { totalToolCallCount: accumulator.tools.size, calls: [...accumulator.tools.values()] },
     ...(accumulator.options ? {
-      input: fullPreview(accumulator.options.prompt),
-      output: fullPreview(accumulator.responseText),
       cwd: accumulator.options.cwd,
       ...(accumulator.options.acpxRecordId ? { acpxRecordId: accumulator.options.acpxRecordId } : {}),
     } : {}),
@@ -632,7 +625,7 @@ function toolNameFromUpdate(update: Record<string, any>): string | undefined {
   return stringField(claudeCode, "toolName");
 }
 
-function rawInputPreview(update: Record<string, any>): AgentIoPreview | undefined {
+function rawInputPreview(update: Record<string, any>): AgentToolInputPreview | undefined {
   if (!Object.prototype.hasOwnProperty.call(update, "rawInput")) return undefined;
   return truncatedJsonPreview(update.rawInput);
 }
@@ -646,16 +639,11 @@ function extractAcpxRecordId(stdout: string): string | undefined {
   return undefined;
 }
 
-function fullPreview(value: string): AgentIoPreview {
-  const originalBytes = Buffer.byteLength(value, "utf8");
-  return { preview: value, truncated: false, originalBytes, headBytes: originalBytes };
-}
-
-function truncatedJsonPreview(value: unknown): AgentIoPreview {
+function truncatedJsonPreview(value: unknown): AgentToolInputPreview {
   return truncatedPreview(JSON.stringify(value), TOOL_INPUT_PREVIEW_EDGE_BYTES);
 }
 
-function truncatedPreview(value: string, edgeBytes: number): AgentIoPreview {
+function truncatedPreview(value: string, edgeBytes: number): AgentToolInputPreview {
   const buffer = Buffer.from(value, "utf8");
   if (buffer.byteLength <= edgeBytes * 2) {
     return { preview: value, truncated: false, originalBytes: buffer.byteLength, headBytes: buffer.byteLength };

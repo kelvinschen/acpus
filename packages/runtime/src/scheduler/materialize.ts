@@ -305,7 +305,7 @@ function materializeParallelEvents(input: { runId: string; node: ParallelNodeIR;
           parentFrameKey: nodeKey,
           nodeId: input.node.id,
           strategy: input.node.strategy,
-          scope: scopeMapForScope(branchPath, branch.scope),
+          scope: scopeMapForScope(branchPath, branch),
         },
       },
       {
@@ -320,7 +320,7 @@ function materializeParallelEvents(input: { runId: string; node: ParallelNodeIR;
           readinessSequence,
         },
       },
-      ...materializeScopeStart(input.runId, branchFrameKey, branch.scope, branchPath, input.scope, readinessSequence, branchFrameKey),
+      ...materializeScopeStart(input.runId, branchFrameKey, branch, branchPath, input.scope, readinessSequence, branchFrameKey),
     );
     readinessSequence += 1;
   }
@@ -577,7 +577,7 @@ function scopeForPath(root: ScopeIR, path: InstancePath): ScopeIR | undefined {
     const found: NodeIR | undefined = scope.nodes.find(candidate => candidate.id === segment.nodeId);
     if (!found) return undefined;
     if (segment.kind === "branch") {
-      if (found.kind === "parallel") scope = found.branches[segment.branchId]?.scope;
+      if (found.kind === "parallel") scope = found.branches[segment.branchId];
       else if (found.kind === "if" || found.kind === "switch") scope = conditionalBranchById(found, segment.branchId)?.scope;
       else return undefined;
     } else if (segment.kind === "fanout") {

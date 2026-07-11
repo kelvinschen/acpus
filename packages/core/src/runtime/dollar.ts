@@ -1,6 +1,5 @@
 import { $ as zxDollar, quote as zxQuote } from "zx/core";
 import type { Options as ZxOptions, ProcessPromise } from "zx/core";
-import type { ArtifactRef } from "./task-context.js";
 
 export type CommandResult = {
   stdout: string;
@@ -9,8 +8,6 @@ export type CommandResult = {
   signal?: string;
   durationMs: number;
   command: string;
-  stdoutArtifact?: ArtifactRef;
-  stderrArtifact?: ArtifactRef;
 };
 
 type ZxReaders = Pick<ProcessPromise, "text" | "json" | "lines">;
@@ -32,35 +29,22 @@ export type Dollar = {
   (config: DollarConfig): Dollar;
 };
 
-export type CommandSpan = {
-  command: string;
-  startedAt: string;
-  endedAt?: string;
-  exitCode?: number;
-  durationMs?: number;
-};
-
 export type DollarOptions = {
   cwd?: string;
   env?: Record<string, string | undefined>;
   signal?: AbortSignal;
-  onSpan?: (span: CommandSpan) => void;
-  redact?: (text: string) => string;
 };
 
 export function createDollar(options: DollarOptions = {}, config: DollarConfig = {}): Dollar {
   const dollar = ((arg: TemplateStringsArray | DollarConfig, ...values: unknown[]): CommandBuilder | Dollar => {
     if (!Array.isArray(arg)) return createDollar(options, { ...config, ...(arg as DollarConfig) });
     const strings = arg as TemplateStringsArray;
-    const startedAt = new Date().toISOString();
-    const command = renderCommand(strings, values, options.redact);
-    const span: CommandSpan = { command, startedAt };
-    options.onSpan?.(span);
+    const command = renderCommand(strings, values);
     const cwd = config.cwd ?? options.cwd ?? process.cwd();
     const env = config.env ?? options.env ?? process.env;
     const shell = zxDollar({ cwd, env: env as Record<string, string>, ...(options.signal ? { signal: options.signal } : {}) });
     const proc = shell(strings, ...values as any[]);
-    const builder = wrapProcess(proc, command, span);
+    const builder = wrapProcess(proc, command);
     if (config.timeout !== undefined) builder.timeout(config.timeout);
     if (config.nothrow) builder.nothrow();
     if (config.allowExitCode) builder.allowExitCode(config.allowExitCode);
@@ -69,7 +53,7 @@ export function createDollar(options: DollarOptions = {}, config: DollarConfig =
   return dollar;
 }
 
-function wrapProcess(proc: any, command: string, span: CommandSpan): CommandBuilder {
+function wrapProcess(proc: any, command: string): CommandBuilder {
   let allowCodes: number[] | undefined;
   let nothrow = false;
   let promise: Promise<CommandResult> | undefined;
@@ -82,9 +66,6 @@ function wrapProcess(proc: any, command: string, span: CommandSpan): CommandBuil
       const out = await p;
       const exitCode = Number(out.exitCode ?? 0);
       const durationMs = Date.now() - started;
-      span.endedAt = new Date().toISOString();
-      span.exitCode = exitCode;
-      span.durationMs = durationMs;
       if (allowCodes && !allowCodes.includes(exitCode)) {
         throw new Error(`Command exited with ${exitCode}; expected one of ${allowCodes.join(", ")}: ${command}`);
       }
@@ -116,11 +97,11 @@ function wrapProcess(proc: any, command: string, span: CommandSpan): CommandBuil
   return builder as CommandBuilder;
 }
 
-function renderCommand(strings: TemplateStringsArray, values: unknown[], redact?: (text: string) => string): string {
+function renderCommand(strings: TemplateStringsArray, values: unknown[]): string {
   let out = "";
   for (let i = 0; i < strings.length; i += 1) {
     out += strings[i] ?? "";
     if (i < values.length) out += zxQuote(String(values[i]));
   }
-  return redact ? redact(out) : out;
+  return out;
 }

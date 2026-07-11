@@ -3,24 +3,13 @@ export type JsonValue = JsonPrimitive | JsonArray | JsonObject;
 export type JsonArray = JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
-export type TypeIR =
-  | { kind: "unknown" }
-  | { kind: "string" }
-  | { kind: "number" }
-  | { kind: "boolean" }
-  | { kind: "null" }
-  | { kind: "array"; item: TypeIR }
-  | { kind: "object"; fields: Record<string, TypeIR>; required: string[]; additionalProperties: boolean }
-  | { kind: "record"; value: TypeIR }
-  | { kind: "union"; variants: TypeIR[] };
-
 export type ExprIR =
-  | { kind: "literal"; value: JsonValue; type?: TypeIR }
-  | { kind: "ref"; path: string[]; type?: TypeIR }
-  | { kind: "call"; fn: string; args: ExprIR[]; type?: TypeIR }
-  | { kind: "array"; items: ExprIR[]; type?: TypeIR }
-  | { kind: "object"; fields: Record<string, ExprIR>; type?: TypeIR }
-  | { kind: "template"; template: TemplateIR; type?: TypeIR };
+  | { kind: "literal"; value: JsonPrimitive }
+  | { kind: "ref"; path: string[] }
+  | { kind: "call"; fn: string; args: ExprIR[] }
+  | { kind: "array"; items: ExprIR[] }
+  | { kind: "object"; fields: Record<string, ExprIR> }
+  | TemplateIR;
 
 export type TemplateIR = {
   kind: "template";

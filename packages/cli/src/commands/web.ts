@@ -8,22 +8,7 @@ export type WebCommandContext = {
   stdout: Writable;
   stderr: Writable;
   wantsJson: boolean;
-  startWebServer?: WebServerStarter;
-  waitForSignals?: boolean;
-  exitProcess?: (code: number) => never | void;
 };
-
-type WebServerStarter = (options: {
-  cwd: string;
-  host?: string;
-  port?: number;
-  token?: boolean;
-  ensureDaemonRunning?: (cwd: string) => void;
-}) => Promise<{
-  url: string;
-  token?: string;
-  close(): Promise<void>;
-}>;
 
 export function createWebCommand(ctx: WebCommandContext): Command {
   return new Command("web")
@@ -35,7 +20,7 @@ export function createWebCommand(ctx: WebCommandContext): Command {
     .action(async (options: { host?: string; port?: string; token?: boolean }) => {
       const host = options.host ?? "localhost";
       const port = parsePort(options.port);
-      const startWebServer = ctx.startWebServer ?? (await import("@acpus/web")).startWebServer;
+      const { startWebServer } = await import("@acpus/web");
 
       const server = await startWebServer({
         cwd: ctx.cwd,
@@ -55,16 +40,11 @@ export function createWebCommand(ctx: WebCommandContext): Command {
         ctx.stderr.write("Press Ctrl+C to stop.\n");
       }
 
-      if (ctx.waitForSignals === false) return;
-
-      await waitForShutdownSignal(server, ctx.exitProcess ?? process.exit);
+      await waitForShutdownSignal(server);
     });
 }
 
-async function waitForShutdownSignal(
-  server: Awaited<ReturnType<WebServerStarter>>,
-  exitProcess: (code: number) => never | void,
-): Promise<void> {
+async function waitForShutdownSignal(server: { close(): Promise<void> }): Promise<void> {
   let closing: Promise<void> | undefined;
 
   await new Promise<void>((resolve, reject) => {
@@ -77,7 +57,6 @@ async function waitForShutdownSignal(
       closing = server.close();
       void closing.then(() => {
         cleanup();
-        exitProcess(0);
         resolve();
       }, error => {
         cleanup();

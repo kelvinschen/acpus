@@ -939,12 +939,11 @@ function rootScope() {
 
 function workflow(nodes: NodeIR[], agents: WorkflowIR["agents"] = {}): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "fork-seed-test",
     agents,
     root: { nodes },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-07-03T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }
@@ -958,7 +957,6 @@ function agentNode(id: string, agent: string): NodeIR {
     id,
     kind: "agent",
     run: {
-      kind: "agent_run",
       agent,
       prompt: { kind: "literal", value: "review" },
     },
@@ -970,9 +968,8 @@ function taskNode(id: string, source = "async function task() { return {}; }"): 
     id,
     kind: "task",
     run: {
-      kind: "task_run",
       input: {},
-      target: { kind: "inline", runtime: "node", source },
+      target: { kind: "inline", source },
     },
   };
 }
@@ -983,8 +980,8 @@ function parallelNode(): NodeIR {
     kind: "parallel",
     strategy: "all",
     branches: {
-      left: { scope: { nodes: [taskNode("left_first"), taskNode("left_target")] } },
-      right: { scope: { nodes: [taskNode("right_task")] } },
+      left: { nodes: [taskNode("left_first"), taskNode("left_target")] },
+      right: { nodes: [taskNode("right_task")] },
     },
   };
 }
@@ -995,8 +992,8 @@ function raceParallelNode(): NodeIR {
     kind: "parallel",
     strategy: "race",
     branches: {
-      winner: { scope: { nodes: [taskNode("winner_task")] } },
-      loser: { scope: { nodes: [taskNode("loser_task")] } },
+      winner: { nodes: [taskNode("winner_task")] },
+      loser: { nodes: [taskNode("loser_task")] },
     },
   };
 }

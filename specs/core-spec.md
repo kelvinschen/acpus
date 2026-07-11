@@ -8,10 +8,10 @@
 
 ### Public API
 
-- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, `task`, and `secret`.
+- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, and `task`.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
-- `@acpus/core/schema` MUST expose schema authoring, parsing, validation, and lowering helpers, including `z`, `isSchema`, `parseSchema`, `safeParseSchema`, `validateValue`, `toSchemaIR`, `tryToSchemaIR`, `toJSONSchema`, `schemaToJsonSchema`, and `assertBoundarySchema`.
-- `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar`, secret tokens, and related task runtime types.
+- `@acpus/core/schema` MUST expose the native `z` authoring object, `toSchemaIR`, `tryToSchemaIR`, and `schemaToJsonSchema`.
+- `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar` and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR`, `tryParseDurationMs`, `childScopes`, `walkNodes`, `DurationParseError`, and public IR and traversal types.
 - The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
 
@@ -43,7 +43,7 @@
 - The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, and default schemas.
 - The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
-- `SchemaIR` MUST be a core-owned recursive schema union. It MUST NOT reuse expression `TypeIR` for core-only variants such as `literal`, `enum`, or schema metadata.
+- `SchemaIR` MUST be a core-owned recursive schema union rather than duplicating or overloading the expression value model.
 - `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
 
 ### Resolvable Values, Templates, And Helpers
@@ -56,15 +56,14 @@
 
 ### Nodes
 
-- Schema contract fields MUST use the `Schema` suffix only at actual schema boundaries: `inputSchema` and schema-backed agent/signal `outputSchema`.
+- Schema-valued authoring fields MUST use the `Schema` suffix. Workflow `inputSchema` and Agent/Signal `outputSchema` are runtime schema boundaries; reusable Task `inputSchema` is a config-time TypeScript type witness.
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
 - Executable nodes MUST use `run` as the execution boundary. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ outputSchema?, run: { agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env? }, timeout?, retry? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
-- Agent definitions MUST NOT accept broad `options` fields.
 - Signal nodes MUST use `step("id").signal({ outputSchema?, run: { prompt }, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
-- Signal `onTimeout`, when present, MUST use `{ action: "fail", message? }`.
+- Signal `onTimeout`, when present, MUST use `{ message? }`.
 - Signal `onTimeout` MUST NOT be present unless `timeout` is present.
 - Task nodes MUST use `run.input` as the explicit expression-to-runtime-value boundary.
 - Inline Task nodes MUST use `step("id").task({ run: { input, exec, cwd?, env?, execution? }, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
@@ -72,8 +71,8 @@
 - Agent node graph dependencies MUST be expressed by refs inside `run.prompt`, `run.cwd`, `run.env`, and `run.sessionKey`.
 - Signal node graph dependencies MUST be expressed by refs inside `run.prompt`.
 - Agent and Task node `run.cwd` MUST be `Resolvable<string>`.
-- Agent and Task node `run.env` values MUST be `Resolvable<string>` or `secret(...)` tokens.
-- Top-level Agent definition `cwd` and `env` MUST remain declaration-time plain strings or secret refs and MUST remain plain values in `WorkflowIR`.
+- Agent and Task node `run.env` values MUST be `Resolvable<string>`.
+- Top-level Agent definition `cwd` and `env` MUST remain declaration-time plain strings and MUST remain plain values in `WorkflowIR`.
 - Assert nodes MUST use `step("id").assert({ condition, message? })`.
 - Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
 - Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
@@ -102,13 +101,13 @@
 
 - A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
 - A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
-- A reusable Task definition's `inputSchema` MUST be the runtime input schema for its `exec` function; a reusable Task node call site's `run.input` MUST be the graph expression binding for that schema.
+- A reusable Task definition's `inputSchema` MUST infer the TypeScript input type of its `exec` function and call sites. It MUST NOT be retained on the executable Task token or promise runtime parsing, defaults, or transforms.
+- A reusable Task node call site's `run.input` MUST be the graph expression binding checked against that inferred input type.
 - Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
-- Task node lifecycle options MUST NOT support workflow-level automatic `retry`.
 - Agent node `retry`, when present, MUST contain only `max?: Resolvable<number>` and MUST
   require `outputSchema`.
-- Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution`.
+- Task invocation options MAY support `run.cwd`, `run.env`, and `run.execution.defaultCommandTimeout`.
 - Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 - Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
@@ -118,7 +117,9 @@
 
 ### IR And Validation
 
-- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 3`.
+- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 4`.
+- Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
+- `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, `outputs`, and `diagnostics`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
 - `childScopes(node)` MUST return every direct child scope of a composite node and no child scopes for leaf nodes. If branches MUST be ordered `then` before `else`; switch cases MUST retain their authored index order before `default`; parallel branches MUST retain their authored key order; fanout and loop bodies MUST each expose their body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
@@ -135,14 +136,16 @@
 - `DurationParseError` MUST be `{ type: "invalid-duration-syntax"; value: string } | { type: "duration-out-of-range"; value: string }`; both variants MUST preserve the original input in `value`.
 - `tryParseDurationMs(value)` MUST return the resolved integer milliseconds in a `Result`; invalid syntax MUST return `invalid-duration-syntax`, and any non-finite or non-safe-integer resolved value MUST return `duration-out-of-range`.
 - Literal quorum/concurrency values MUST be positive integers, and literal retry max values MUST be non-negative integers.
+- Agent, Task, and Signal runs MUST serialize only their meaningful execution fields and MUST NOT contain singleton run-kind tags.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
-- Inline task targets MUST contain `{ kind: "inline", runtime: "node", source }`, where `source` is the self-contained `exec` function source.
-- Reusable task targets MUST contain `{ kind: "module", runtime: "node", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.
+- Inline task targets MUST contain `{ kind: "inline", source }`, where `source` is the self-contained `exec` function source.
+- Reusable task targets MUST contain `{ kind: "module", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.
 - Runtime-admissible reusable task targets MUST be completed by `@acpus/workflow-compiler`; incomplete in-memory core reusable descriptors MUST fail `validateWorkflowIR(...)`.
 - Reusable task `exportName` MUST be `"default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
-- Reusable task target referrers MUST use the closed shape `{ kind: "workflow", path: string }`.
+- Reusable task target referrers MUST use the closed shape `{ path: string }`.
 - Reusable task target referrer paths MUST be workspace-relative workflow paths, not absolute filesystem paths or paths that escape the workspace.
 - Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the task node top level.
+- Parallel node branch values MUST be child `ScopeIR` objects directly, without a single-field branch wrapper.
 
 ## Verification
 

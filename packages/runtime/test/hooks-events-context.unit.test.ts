@@ -1,7 +1,7 @@
 import type { WorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { buildHookContext } from "../src/hooks/context.js";
-import { decodeRuntimeEventPayload, mapRuntimeEventToHookEvent, type CommittedRuntimeEventRow } from "../src/hooks/events.js";
+import { decodeCommittedRuntimeEventRow, mapRuntimeEventToHookEvent, type CommittedRuntimeEventRow } from "../src/hooks/events.js";
 import type { SchedulerProjection } from "../src/scheduler/types.js";
 
 describe("hooks events and context", () => {
@@ -22,8 +22,17 @@ describe("hooks events and context", () => {
   });
 
   it("decodes scheduler envelopes and public run event payloads", () => {
-    expect(decodeRuntimeEventPayload(JSON.stringify({ schedulerEventVersion: 1, payload: { nodeKey: "build" } }), "instance.started")).toEqual({ nodeKey: "build" });
-    expect(decodeRuntimeEventPayload(JSON.stringify({ output: { ok: true } }), "run.completed")).toEqual({ output: { ok: true } });
+    const decode = (type: string, payload: unknown) => decodeCommittedRuntimeEventRow({
+      run_id: "run_1",
+      sequence: 1,
+      type,
+      node_key: null,
+      payload_json: JSON.stringify(payload),
+      created_at: "2026-07-04T00:00:00.000Z",
+      idempotency_key: "event:1",
+    }).payload;
+    expect(decode("instance.started", { schedulerEventVersion: 1, payload: { nodeKey: "build" } })).toEqual({ nodeKey: "build" });
+    expect(decode("run.completed", { output: { ok: true } })).toEqual({ output: { ok: true } });
   });
 
   it("builds run, task, agent, and signal hook context fields", () => {
@@ -147,7 +156,7 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "release",
     agents: {},
     root: {
@@ -156,7 +165,6 @@ function workflow(): WorkflowIR {
           id: "build",
           kind: "task",
           run: {
-            kind: "task_run",
             input: {
               packageName: {
                 kind: "call",
@@ -167,14 +175,13 @@ function workflow(): WorkflowIR {
                 ],
               },
             },
-            target: { kind: "inline", runtime: "node", source: "export default async () => ({ ok: true })" },
+            target: { kind: "inline", source: "export default async () => ({ ok: true })" },
           },
         },
         {
           id: "review",
           kind: "agent",
           run: {
-            kind: "agent_run",
             agent: "reviewer",
             prompt: {
               kind: "call",
@@ -190,14 +197,12 @@ function workflow(): WorkflowIR {
           id: "approve",
           kind: "signal",
           run: {
-            kind: "signal_run",
             prompt: { kind: "literal", value: "Approve release?" },
           },
         },
       ],
     },
     outputs: {},
-    lock: { acpusCoreVersion: "0.0.0", generatedAt: "2026-07-04T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }

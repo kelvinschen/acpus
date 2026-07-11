@@ -1,7 +1,7 @@
 import { assertType, test } from "vitest";
 import { defineWorkflow, task, z, type TaskContext, type WorkflowDefinition } from "acpus/core";
 import { and, eq, fmap, gt, gte, lift, lift2, lift3, lt, lte, ne, not, or, template, type Expr } from "acpus/expression";
-import { createWorktree, type CreateWorktreeInput } from "acpus/tasks/git";
+import { createWorktree } from "acpus/tasks/git";
 
 test("acpus facade subpaths expose separated authoring surfaces", () => {
   const Input = z.object({ ready: z.boolean(), repo: z.string() });
@@ -24,8 +24,7 @@ test("acpus facade subpaths expose separated authoring surfaces", () => {
   assertType<Expr<string>>(template`repo ${"."}`);
   assertType<TaskContext<{}>>(null as unknown as TaskContext<{}>);
   assertType(task);
-  assertType<CreateWorktreeInput>({ repo: ".", path: ".tmp-worktree" });
-  assertType(createWorktree);
+  assertType<"external">(createWorktree.kind);
 
   const definition = defineWorkflow({ name: "facade-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);

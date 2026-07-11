@@ -61,29 +61,77 @@ describe("scheduler store schema", () => {
         "scope_json",
         "loop_json",
       ]));
-      expect(columns(db, "node_attempts")).toEqual(expect.arrayContaining([
+      expect(columns(db, "node_attempts")).toEqual([
+        "run_id",
         "attempt_id",
         "node_key",
+        "node_id",
         "attempt_no",
         "owner_epoch",
+        "status",
         "deadline_at",
+        "started_at",
+        "finished_at",
+        "result_json",
+        "error_json",
         "terminal_reason",
-      ]));
+        "cancel_reason",
+      ]);
       expect(columns(db, "group_members")).toEqual(expect.arrayContaining([
         "member_key",
         "item_index",
         "item_json",
         "child_frame_key",
       ]));
-      expect(columns(db, "signal_waits")).toEqual(expect.arrayContaining([
+      expect(columns(db, "signal_waits")).toEqual([
+        "run_id",
+        "node_key",
+        "node_id",
+        "status",
+        "payload_json",
         "deadline_at",
         "timeout_message",
         "timeout_remaining_ms",
-      ]));
-      expect(columns(db, "scheduler_commits")).toEqual(expect.arrayContaining([
+        "rendered_prompt",
+        "consumed_at",
+        "terminal_reason",
+        "created_at",
+        "updated_at",
+      ]);
+      expect(columns(db, "run_inputs")).toEqual([
+        "run_id",
+        "workflow_ir_path",
+        "workflow_ir_digest",
+        "input_json",
+        "agent_overrides_json",
+        "output_json",
+        "lock_path",
+        "lock_digest",
+        "package_lock_digest",
+        "run_dir",
+      ]);
+      expect(columns(db, "scheduler_commits")).toEqual([
+        "run_id",
+        "idempotency_key",
+        "event_count",
         "event_digest",
         "intent_digest",
-      ]));
+      ]);
+      expect(columns(db, "node_states")).toEqual([
+        "run_id",
+        "node_key",
+        "node_id",
+        "status",
+        "output_json",
+      ]);
+      expect(columns(db, "run_leases")).toEqual([
+        "run_id",
+        "owner_id",
+        "owner_epoch",
+        "lease_expires_at",
+        "claimed_at",
+        "released_at",
+      ]);
       expect(columnConstraints(db, "scheduler_commits", ["event_digest", "intent_digest"])).toEqual([
         { name: "event_digest", notnull: 1 },
         { name: "intent_digest", notnull: 0 },

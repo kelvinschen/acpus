@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ExprIR, JsonValue } from "@acpus/expression/ir";
+import type { ExprIR, JsonPrimitive } from "@acpus/expression/ir";
 import type { WorkflowVisualizationOverlay } from "@acpus/runtime";
 import { graphFromOverlay, type WebGraph } from "../src/server/graph.js";
 
 const timing = { createdAt: "2026-07-04T11:40:57.000Z", updatedAt: "2026-07-04T11:40:58.000Z" };
 const ref = (...path: string[]): ExprIR => ({ kind: "ref", path });
-const lit = (value: JsonValue): ExprIR => ({ kind: "literal", value });
+const lit = (value: JsonPrimitive): ExprIR => ({ kind: "literal", value });
 const call = (fn: string, ...args: ExprIR[]): ExprIR => ({ kind: "call", fn, args });
 
 type OverlayNode = WorkflowVisualizationOverlay["nodes"][number];
@@ -14,19 +14,17 @@ type OverlayInstance = OverlayNode["instances"][number];
 type InstancePath = NonNullable<OverlayFrame["instancePath"]>;
 
 describe("graphFromOverlay", () => {
-  it("produces browser-ready static graph shape without runtime cardinality", () => {
+  it("produces browser-ready static graph structure", () => {
     const graph = graphFromOverlay(compositeRunOverlay(), "static");
 
     expect(graph.mode).toBe("static");
-    expect(graph.version).toBeUndefined();
+    expect(graph.workflow).toEqual({ name: "web-composite-agent" });
     expect(graph.nodes).toHaveLength(17);
     expect(graph.nodes.map(node => [node.id, node.kind])).toContainEqual(["execution", "parallel"]);
     expect(graph.nodes.map(node => [node.id, node.kind])).toContainEqual(["repair_loop", "loop"]);
     expect(graph.selectors).toEqual([]);
     expect(graph.runtimeStates).toEqual([]);
-    expect(graph.groups).toEqual([]);
     expect(graph.nodes.every(node => node.status === "not_started")).toBe(true);
-    expect(graph.nodes.every(node => Object.values(node.dynamic).every(value => value === 0))).toBe(true);
   });
 
   it("models the composite run with containers and valid semantic edge endpoints", () => {
@@ -64,18 +62,16 @@ describe("graphFromOverlay", () => {
 
     expect(fanout).toMatchObject({ kind: "fanout" });
     expect(fanout?.options.map(option => ({
-      label: option.label,
+      label: "label" in option ? option.label : undefined,
       itemIndex: "itemIndex" in option ? option.itemIndex : undefined,
-      status: option.status,
     }))).toEqual([
-      { label: "item[0]", itemIndex: 0, status: "completed" },
-      { label: "item[1]", itemIndex: 1, status: "completed" },
+      { label: "item[0]", itemIndex: 0 },
+      { label: "item[1]", itemIndex: 1 },
     ]);
     expect(fanout?.defaultOptionId).toBe("lanes.beta");
 
     expect(loop).toMatchObject({ kind: "loop" });
     expect(loop?.targetId).toBe("repair_loop::do");
-    expect(loop?.options.every(option => option.scopePath.join("/") === "root/execution/branch:lane_matrix/lanes/do/repair_loop/do")).toBe(true);
     expect(loop?.options).toHaveLength(2);
     expect(loop?.options.map(option => option.parentSelections[0])).toEqual([
       { nodeId: "lanes", kind: "fanout", itemIndex: 0 },
@@ -96,7 +92,6 @@ describe("graphFromOverlay", () => {
     expect(defaultContainer).toBeDefined();
     expect(graph.runtimeStates).toContainEqual(expect.objectContaining({
       targetId: defaultContainer!.id,
-      nodeId: "route",
       status: "completed",
       selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
     }));
@@ -216,7 +211,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("repair_loop", "loop", ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], {
         parentNodeId: "lanes",
-        detail: { kind: "loop", state: lit({}) },
+        detail: { kind: "loop", state: { kind: "object", fields: {} } },
         frames: [
           frame("repair.alpha", "repair_loop", "loop", "completed", [...branchFanoutPath(0), { kind: "node", nodeId: "repair_loop" }]),
           frame("repair.alpha.0", "repair_loop", "loop_iteration", "completed", [...branchFanoutPath(0), { kind: "loop", nodeId: "repair_loop", iter: 0 }]),

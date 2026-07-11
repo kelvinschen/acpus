@@ -10,7 +10,9 @@ import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
-import { admitWorkflowRun } from "../../src/runs/use-cases.js";
+import { advanceRuntimeRun } from "../../src/runs/advance-runtime.js";
+import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
+import { throwingSchedulerStore } from "./scheduler-store.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const runtimeFixtureRoot = join(repoRoot, "packages", "runtime", "test", "fixtures");
@@ -65,19 +67,49 @@ export async function prepareFixture(workspace: string, relativePath: string): P
 
 export async function admitFixture(workspace: string, relativePath: string, input: JsonValue = {}) {
   const prepared = await prepareFixture(workspace, relativePath);
-  return admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
+  return admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
 }
 
 export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {
   const workflowPath = join(workspace, filename);
   await writeFile(workflowPath, "");
-  const ir = compileWorkflowDefinition(definition, { source: filename });
+  const ir = compileWorkflowDefinition(definition);
   return preparedWorkflow(ir, workflowPath, workspace);
 }
 
 export async function admitSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, input: JsonValue = {}) {
   const prepared = await prepareSyntheticWorkflow(workspace, definition);
-  return admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
+  return admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
+}
+
+export async function admitPreparedWorkflowForTest(workspace: string, prepared: PreparedRunWorkflow, input: JsonValue) {
+  const store = await openRuntimeStore(workspace);
+  try {
+    const admitted = await store.admitRun({ prepared, cwd: workspace, input });
+    const summary = await advanceRuntimeRun(workspace, store, admitted.id, `test:${admitted.id}`);
+    const run = store.getRun(admitted.id);
+    if (!run) throw new Error(`Admitted run '${admitted.id}' was not found.`);
+    if (summary.status === "failed") return { status: summary.status, run, summary, message: rootFailureMessage(store, admitted.id) };
+    if (summary.status === "awaiting") return { status: summary.status, run, summary, nodeKey: firstAwaitingNodeKey(store, admitted.id) };
+    return { status: summary.status, run, summary };
+  } finally {
+    store.close();
+  }
+}
+
+function firstAwaitingNodeKey(store: RuntimeStore, runId: string): string {
+  const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
+  return Object.values(projection.instances).find(instance => instance.status === "awaiting")?.nodeKey
+    ?? Object.values(projection.signalWaits).find(wait => wait.status === "awaiting")?.nodeKey
+    ?? "";
+}
+
+function rootFailureMessage(store: RuntimeStore, runId: string): string {
+  const root = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection.frames.root;
+  const error = root?.error;
+  if (error && typeof error.message === "string") return error.message;
+  if (error && typeof error.reason === "string") return error.reason;
+  return root?.terminalReason ?? "scheduler_failed";
 }
 
 export function validWorkflow() {
@@ -125,16 +157,17 @@ export function taskArtifactWorkflow() {
 export function taskInvocationOptionsWorkflow() {
   return defineWorkflow({
     name: "runtime-task-invocation-options",
-    inputSchema: z.object({ workDir: z.string(), commandTimeout: z.string() }),
+    inputSchema: z.object({ workDir: z.string(), commandTimeout: z.string(), runSlowCommand: z.boolean() }),
   }).build(({ input, step }) => {
     const result = step("inspect_invocation").task({
       run: {
-        input: { name: "runtime", mode: "strict" },
+        input: { name: "runtime", mode: "strict", runSlowCommand: input.runSlowCommand },
         cwd: input.workDir,
         env: { RUNTIME_TASK_ENV: "from-run-env" },
         execution: { defaultCommandTimeout: input.commandTimeout },
         exec: async ({ input, $, env }) => {
-          const command = await $`pwd`;
+          if (input.runSlowCommand) await $`${process.execPath} -e ${"setTimeout(() => {}, 10_000)"}`;
+          const command = await $`${process.execPath} -e ${"process.stdout.write(process.cwd())"}`;
           return {
             inputName: input.name,
             cwd: command.stdout.trim(),
@@ -267,7 +300,7 @@ export function timedSignalWorkflow(timeout: "100ms" | "1ms" = "100ms") {
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
       timeout,
-      onTimeout: { action: "fail", message: "Approval timed out" },
+      onTimeout: { message: "Approval timed out" },
       run: { prompt: "approve" },
     });
     return { ok: approval.output.ok };
@@ -350,20 +383,20 @@ export function parallelSignalRaceWorkflow() {
 export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: string): PreparedRunWorkflow {
   const irJson = `${JSON.stringify(ir, null, 2)}\n`;
   const irFileDigest = digest(irJson);
-  const sourceGraphDigest = digest(`${ir.lock.workflowSourceDigest ?? ""}\n`);
+  const sourceDigest = digest(irJson);
+  const sourceGraphDigest = digest(`${sourceDigest}\n`);
   const lock: RunWorkflowLockArtifact = {
     kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
       entry: workflowPath.slice(cwd.length + 1),
-      ...(ir.lock.workflowSourceDigest ? { sourceDigest: ir.lock.workflowSourceDigest } : {}),
+      sourceDigest,
     },
     ir: {
       path: "workflow.ir.json",
       digest: irFileDigest,
     },
     sourceGraphDigest,
-    generatedAt: "2026-06-29T00:00:00.000Z",
   };
   return {
     workflowPath,

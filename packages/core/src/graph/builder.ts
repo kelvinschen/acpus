@@ -381,8 +381,6 @@ function normalizeAgentDefinition(name: string, value: unknown, diagnostics: Dia
     invalid = true;
     invalidAgentDefinition(diagnostics, fieldPath, message);
   };
-  if (value.policy !== undefined) reject(`${path}.policy`, `Agent '${name}' definition must use permissionMode, not policy.`);
-  if (value.options !== undefined) reject(`${path}.options`, `Agent '${name}' definition must not set options.`);
   if (value.agentMode !== undefined && (typeof value.agentMode !== "string" || value.agentMode.length === 0)) {
     reject(`${path}.agentMode`, `Agent '${name}' agentMode must be a non-empty string.`);
   }
@@ -414,7 +412,7 @@ function invalidAgentDefinition(diagnostics: DiagnosticIR[], path: string, messa
   diagnostics.push({ code: "A002", severity: "error", message, path });
 }
 
-export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { source?: string; validate?: boolean }): WorkflowIR {
+export function compileWorkflowDefinition(definition: WorkflowDefinition<any, any>, options?: { validate?: boolean }): WorkflowIR {
   const diagnostics: DiagnosticIR[] = [];
   const context = new GraphBuildContext(diagnostics);
   const builder = new GraphBuildState(context);
@@ -445,22 +443,13 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   }
 
   const ir = stripUndefined({
-    irVersion: 3,
+    irVersion: 4,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,
     agents: normalizeAgents(definition.config.agents, diagnostics),
     root: { nodes: builder.nodes },
     outputs: loweredOutputs,
-    lock: {
-      acpusCoreVersion: "0.3.0-core-alpha",
-      workflowSource: options?.source,
-      generatedAt: new Date().toISOString(),
-      notes: [
-        "Workflow definition was lowered into Acpus IR.",
-        "Production module compilation attaches reusable task module references before workflow admission.",
-      ],
-    },
     diagnostics,
   }) as WorkflowIR;
 

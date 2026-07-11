@@ -43,9 +43,6 @@ describe("runtime run controls", () => {
     const targets = retryTargetsForRun({
       dynamic: {
         version: 1,
-        attempts: [],
-        signalWaits: [],
-        executionMetadata: [],
         frames: [
           { frameKey: "z_frame", nodeId: "route", frameKind: "node", status: "failed" },
           { frameKey: "ignored_scope", nodeId: "scope", frameKind: "scope", status: "failed" },
@@ -55,8 +52,8 @@ describe("runtime run controls", () => {
           { nodeKey: "done_node", nodeId: "done", status: "completed" },
         ],
         groupMembers: [
-          { groupKey: "group", memberKey: "m_member", memberKind: "branch", branchId: "cache", status: "failed" },
-          { groupKey: "group", memberKey: "a_node", memberKind: "branch", branchId: "duplicate", status: "failed" },
+          { memberKey: "m_member", memberKind: "branch", branchId: "cache", status: "failed" },
+          { memberKey: "a_node", memberKind: "branch", branchId: "duplicate", status: "failed" },
         ],
       },
     } satisfies Pick<RunDetails, "dynamic">);

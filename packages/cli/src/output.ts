@@ -1,7 +1,6 @@
 import type { Writable } from "node:stream";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
-import type { HookConfigScope, LoadedHookConfig, RunDetails, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
-import { formatAgentProgressLines } from "./agent-progress-format.js";
+import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 import type { InitTarget } from "./workflow-init/types.js";
 
@@ -28,11 +27,9 @@ export type CliResult = {
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
   sourceGraphDigest?: string;
-  run?: RunRecord | RunDetails;
-  runs?: RunRecord[];
+  run?: RunRecord;
   deletedRuns?: RunRecord[];
   skippedRuns?: RunRecord[];
-  list?: { total: number; limit?: number; truncated: boolean; order: "updatedAt DESC" };
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
   forkRunId?: string;
@@ -111,12 +108,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     stream.write(`Run: ${result.run.id}\n`);
     stream.write(`Status: ${result.run.status}\n`);
     stream.write(`Workflow entry: ${result.run.workflowEntry}\n`);
-    if ("eventCount" in result.run) {
-      stream.write(`Events: ${result.run.eventCount}\n`);
-      stream.write(`Nodes: ${result.run.nodeCount}\n`);
-      if (result.run.output !== undefined) stream.write(`Output: ${previewJson(result.run.output)}\n`);
-      if (result.run.dynamic) writeCompactDynamicSummary(stream, result.run);
-    }
   }
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
   if (result.control) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
@@ -124,16 +115,6 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.phase === "init" && result.path) {
     stream.write(`Path: ${result.path}\n`);
     stream.write(`Next: acpus workflow check ${result.path}\n`);
-  }
-  if (result.runs) {
-    if (result.runs.length === 0) {
-      stream.write("No runs.\n");
-    } else {
-      for (const run of result.runs) {
-        stream.write(`${run.id}\t${run.status}\t${run.updatedAt}\t${run.name}\t${run.workflowEntry}\n`);
-      }
-      if (result.list?.truncated) stream.write(`showing ${result.runs.length} of ${result.list.total}\n`);
-    }
   }
   if (result.deletedRuns) {
     for (const run of result.deletedRuns) stream.write(`Deleted: ${run.id}\t${run.status}\t${run.name}\n`);
@@ -207,34 +188,6 @@ function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void 
 
 export function writeJsonLine(stream: Writable, value: unknown): void {
   stream.write(`${JSON.stringify(value)}\n`);
-}
-
-function previewJson(value: unknown): string {
-  const raw = JSON.stringify(value);
-  if (raw.length <= 500) return raw;
-  return `${raw.slice(0, 500)}... (${raw.length - 500} bytes omitted)`;
-}
-
-function writeCompactDynamicSummary(stream: Writable, run: RunDetails): void {
-  const dynamic = run.dynamic;
-  if (!dynamic) return;
-  for (const wait of dynamic.signalWaits.filter(wait => wait.status === "awaiting").slice(0, 20)) {
-    stream.write(`Awaiting signal: ${wait.nodeKey}\n`);
-    stream.write(`Use: acpus runs signal ${run.id} --target ${wait.nodeKey} --payload '<json>'\n`);
-  }
-  const actionable = dynamic.nodeInstances.filter(node => node.status !== "completed")
-    .map(node => `${node.nodeKey} ${node.status}`)
-    .slice(0, 20);
-  if (actionable.length > 0) stream.write(`Actionable nodes: ${actionable.join(", ")}\n`);
-  const omitted = dynamic.nodeInstances.length - actionable.length;
-  if (omitted > 0) stream.write(`Node details omitted: ${omitted}\n`);
-  const signalWaitsOmitted = Math.max(0, dynamic.signalWaits.length - 20);
-  if (signalWaitsOmitted > 0) stream.write(`Signal waits omitted: ${signalWaitsOmitted}\n`);
-  for (const progress of dynamic.progress.filter(progress => progress.kind === "agent").slice(-5)) {
-    for (const line of formatAgentProgressLines(progress)) stream.write(`${line}\n`);
-  }
-  const agentAttempts = dynamic.executionMetadata.filter(entry => entry.kind === "agent_attempt").length;
-  if (agentAttempts > 0) stream.write(`Agent attempt details omitted: ${agentAttempts}. Use --json for full metadata.\n`);
 }
 
 export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {

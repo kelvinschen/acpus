@@ -105,8 +105,8 @@ state.
 - The executor MUST NOT expose raw ACP JSON lines as runtime decision input.
   It MUST derive normalized per-turn telemetry from the ACP JSON stream.
 - Normalized turn telemetry MUST include event count, optional stop reason,
-  optional context window, optional token usage, tool-call telemetry, prompt
-  input preview, response output preview, cwd, and optional acpx record id.
+  optional context window, optional token usage, tool-call telemetry, cwd, and
+  optional acpx record id.
 - The progress callback MUST fire for valid prompt stream activity even when
   that activity is not visible response text, including `agent_thought_chunk`
   events.
@@ -129,7 +129,9 @@ state.
   payloads, or tool response bodies.
 - Tool telemetry MUST preserve the complete per-turn call list. The reported
   total tool call count MUST equal the call list length.
-- Prompt and response IO previews in executor telemetry MUST be untruncated.
+- Normalized telemetry MUST NOT duplicate the request prompt or collected
+  response text. The prompt MUST remain available on the request, and response
+  text MUST remain available on results and progress snapshots.
 - When raw debug capture is requested, results MAY include raw acpx prompt
   stdout as opaque debug material. Runtime consumers MUST NOT need that field
   for execution decisions.

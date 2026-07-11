@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type DaemonControlIntent, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -10,6 +10,7 @@ import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
 import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { DaemonControlFailure, daemonControlRequestId, sendDaemonControl } from "./daemon.js";
+import { toRunRecord } from "../run-record.js";
 
 export type RunsCommandContext = {
   cwd: string;
@@ -234,7 +235,7 @@ async function deleteManyRuns(ctx: RunsCommandContext, runIds: string[], initial
       if (error instanceof RuntimeUseCaseException && error.failure.type === "run-delete-active") {
         const run = await getRun(ctx.cwd, id);
         if (run && !skippedIds.has(run.id)) {
-          skippedRuns.push(runSummary(run));
+          skippedRuns.push(toRunRecord(run));
           skippedIds.add(run.id);
         }
         continue;
@@ -255,7 +256,7 @@ async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<Run
       const run = await getRun(ctx.cwd, runId);
       throw deleteError(error.message, {
         errorCode: "RUN_ACTIVE",
-        ...(run ? { run: runSummary(run) } : {}),
+        ...(run ? { run: toRunRecord(run) } : {}),
       });
     }
     throw error;
@@ -274,7 +275,7 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
     ok: true,
     phase: "control",
     message: "Signal accepted.",
-    run: runSummary(result.run),
+    run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: runId }),
   }, outputFormat(ctx), ctx, 0));
 }
@@ -286,18 +287,21 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   const forkInput = await maybeNormalizeForkInput(ctx, runId, action, options, prepared);
   let result: Awaited<ReturnType<typeof sendDaemonControl>>;
   try {
-    result = await sendDaemonControl(ctx.cwd, {
-      requestId: daemonControlRequestId(),
-      type: action,
-      runId,
-      input: {
-      ...(options.target ? { target: options.target } : {}),
-      ...(prepared ? { prepared } : {}),
-      ...(forkInput !== undefined ? { input: forkInput } : {}),
-      ...(agentOverrides !== undefined ? { agentOverrides } : {}),
-      ...(action === "fork" && options.unsafeReuse === true ? { unsafeReuse: true } : {}),
-      },
-    });
+    const base = { requestId: daemonControlRequestId(), runId };
+    const intent: DaemonControlIntent = action === "pause" || action === "resume"
+      ? { ...base, type: action }
+      : action === "retry" || action === "cancel"
+        ? { ...base, type: action, ...(options.target ? { target: options.target } : {}) }
+        : {
+            ...base,
+            type: "fork",
+            ...(options.target ? { target: options.target } : {}),
+            ...(prepared ? { prepared } : {}),
+            ...(forkInput !== undefined ? { input: forkInput } : {}),
+            ...(agentOverrides !== undefined ? { agentOverrides } : {}),
+            ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
+          };
+    result = await sendDaemonControl(ctx.cwd, intent);
   } catch (error) {
     throw runControlError(error);
   }
@@ -305,7 +309,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
     ok: true,
     phase: "control",
     message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
-    run: runSummary(result.run),
+    run: toRunRecord(result.run),
     ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}),
     ...(result.forkRunId ? { followRunId: result.forkRunId } : terminalRun(result.run) ? {} : { followRunId: runId }),
   }, outputFormat(ctx), ctx, 0));
@@ -337,23 +341,10 @@ function runControlError(error: unknown): ReturnType<typeof controlError> {
     return controlError(error.message, {
       errorCode: error.code,
       control: { type: error.controlType, runId: error.runId },
-      ...(error.run ? { run: runSummary(error.run) } : {}),
+      ...(error.run ? { run: toRunRecord(error.run) } : {}),
     });
   }
   return controlError(error instanceof Error ? error.message : String(error));
-}
-
-function runSummary(run: RunDetails): RunRecord {
-  return {
-    id: run.id,
-    name: run.name,
-    status: run.status,
-    workflowEntry: run.workflowEntry,
-    sourceGraphDigest: run.sourceGraphDigest,
-    createdAt: run.createdAt,
-    updatedAt: run.updatedAt,
-    progressVersion: run.progressVersion,
-  };
 }
 
 function terminalRun(run: RunDetails): boolean {

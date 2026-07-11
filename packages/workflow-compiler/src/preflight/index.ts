@@ -17,7 +17,7 @@ export type WorkflowPreparationLock = {
   version: 1;
   workflow: {
     entry: string;
-    sourceDigest?: string;
+    sourceDigest: string;
   };
   ir: {
     path: "workflow.ir.json";
@@ -25,7 +25,6 @@ export type WorkflowPreparationLock = {
   };
   packageLockDigest?: string;
   sourceGraphDigest: string;
-  generatedAt: string;
 };
 
 export type PreparedWorkflow = {
@@ -106,7 +105,7 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
     const irFileDigest = digest(irJson);
     const packageLock = await packageLockDigest(options.cwd);
     const sourceGraphDigest = digest([
-      compiled.ir.lock.workflowSourceDigest ?? "",
+      compiled.sourceDigest,
       packageLock ?? "",
     ].join("\n"));
 
@@ -116,20 +115,20 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
       irJson,
       sourceGraphDigest,
       ...(packageLock ? { packageLockDigest: packageLock } : {}),
-      lock: buildLock(compiled.ir, workflowPath, options.cwd, irFileDigest, sourceGraphDigest, packageLock),
+      lock: buildLock(workflowPath, options.cwd, compiled.sourceDigest, irFileDigest, sourceGraphDigest, packageLock),
     });
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irFileDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
+function buildLock(workflowPath: string, cwd: string, sourceDigest: string, irFileDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
   return {
     kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
       entry: relative(cwd, workflowPath),
-      ...(ir.lock.workflowSourceDigest ? { sourceDigest: ir.lock.workflowSourceDigest } : {}),
+      sourceDigest,
     },
     ir: {
       path: "workflow.ir.json",
@@ -137,7 +136,6 @@ function buildLock(ir: WorkflowIR, workflowPath: string, cwd: string, irFileDige
     },
     ...(packageLock ? { packageLockDigest: packageLock } : {}),
     sourceGraphDigest,
-    generatedAt: new Date().toISOString(),
   };
 }
 

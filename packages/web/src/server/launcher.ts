@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWebApp } from "./app.js";
+import { mountStaticAssets } from "./assets.js";
 import { createAccessPolicy } from "./security.js";
 
 export type WebServerOptions = {
@@ -9,8 +10,7 @@ export type WebServerOptions = {
   host?: string;
   port?: number;
   token?: boolean;
-  staticDir?: string;
-  ensureDaemonRunning?: (cwd: string) => void;
+  ensureDaemonRunning(cwd: string): void | Promise<void>;
 };
 
 export type WebServerHandle = {
@@ -25,10 +25,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
   const app = createWebApp({
     cwd: options.cwd,
     access,
-    staticDir: options.staticDir ?? defaultStaticDir(),
-    port: options.port ?? 0,
-    ...(options.ensureDaemonRunning === undefined ? {} : { ensureDaemonRunning: options.ensureDaemonRunning }),
+    ensureDaemonRunning: options.ensureDaemonRunning,
   });
+  mountStaticAssets(app, defaultStaticDir());
 
   const server = await new Promise<ReturnType<typeof serve>>(resolve => {
     const running = serve(

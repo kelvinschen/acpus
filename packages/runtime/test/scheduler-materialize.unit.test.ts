@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { NodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, NodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
@@ -11,7 +11,7 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
-      branches: { only: { scope: { nodes: [] } } },
+      branches: { only: { nodes: [] } },
     });
     const parallelProjection = applySchedulerEvents(
       createSchedulerProjection("run_parallel"),
@@ -41,7 +41,7 @@ describe("scheduler materialization", () => {
       id: "items",
       kind: "fanout",
       strategy: "quorum",
-      over: { kind: "literal", value: ["a"] },
+      over: stringArray("a"),
       count: { kind: "ref", path: ["input", "quorum"] },
       do: { nodes: [] },
     }), { input: { quorum: 0 } });
@@ -60,7 +60,7 @@ describe("scheduler materialization", () => {
     const taskEvents = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "task",
       kind: "task",
-      run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
+      run: { input: {}, target: inlineTaskTarget() },
     }));
     const nodeKey = deriveInstanceKey(appendNode([], "task"));
 
@@ -73,7 +73,7 @@ describe("scheduler materialization", () => {
     const events = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "approve",
       kind: "signal",
-      run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+      run: { prompt: { kind: "literal", value: "" } },
       timeout: { kind: "literal", value: "1m" },
     }));
 
@@ -110,13 +110,10 @@ describe("scheduler materialization", () => {
         condition: { kind: "literal", value: false },
         message: {
           kind: "template",
-          template: {
-            kind: "template",
-            parts: [
-              { kind: "text", value: "bad " },
-              { kind: "expr", expr: { kind: "ref", path: ["input", "name"] } },
-            ],
-          },
+          parts: [
+            { kind: "text", value: "bad " },
+            { kind: "expr", expr: { kind: "ref", path: ["input", "name"] } },
+          ],
         },
       }),
       inputSchema: {
@@ -144,7 +141,6 @@ describe("scheduler materialization", () => {
           { kind: "literal", value: "input" },
           { kind: "literal", value: "value => value.length" },
         ],
-        type: { kind: "string" },
       },
     }));
     expect(invalid.at(-1)).toEqual({
@@ -360,12 +356,8 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "race",
       branches: {
-        left: {
-          scope: { nodes: [taskNode("left_task")], outputs: {} },
-        },
-        right: {
-          scope: { nodes: [taskNode("right_task")], outputs: {} },
-        },
+        left: { nodes: [taskNode("left_task")], outputs: {} },
+        right: { nodes: [taskNode("right_task")], outputs: {} },
       },
     }));
 
@@ -394,12 +386,8 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        pure: {
-          scope: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }], outputs: {} },
-        },
-        leaf: {
-          scope: { nodes: [taskNode("leaf_task")], outputs: {} },
-        },
+        pure: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }], outputs: {} },
+        leaf: { nodes: [taskNode("leaf_task")], outputs: {} },
       },
     }));
 
@@ -427,10 +415,8 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         branch: {
-          scope: {
-            nodes: [taskNode("first_task"), taskNode("second_task")],
-            outputs: { value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] } },
-          },
+          nodes: [taskNode("first_task"), taskNode("second_task")],
+          outputs: { value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] } },
         },
       },
     };
@@ -474,9 +460,7 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        empty: {
-          scope: { nodes: [], outputs: { value: { kind: "literal", value: "done" } } },
-        },
+        empty: { nodes: [], outputs: { value: { kind: "literal", value: "done" } } },
       },
     });
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflow));
@@ -495,12 +479,10 @@ describe("scheduler materialization", () => {
       strategy: "all",
       branches: {
         branch: {
-          scope: {
-            nodes: [taskNode("first_task"), taskNode("second_task")],
-            outputs: {
-              value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] },
-              rootPrefix: { kind: "ref", path: ["nodes", "prepare", "output", "prefix"] },
-            },
+          nodes: [taskNode("first_task"), taskNode("second_task")],
+          outputs: {
+            value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] },
+            rootPrefix: { kind: "ref", path: ["nodes", "prepare", "output", "prefix"] },
           },
         },
       },
@@ -535,9 +517,7 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        branch: {
-          scope: { nodes: [taskNode("first_task"), taskNode("second_task")], outputs: {} },
-        },
+        branch: { nodes: [taskNode("first_task"), taskNode("second_task")], outputs: {} },
       },
     };
     const workflow = workflowWithRootNode(parallelNode);
@@ -573,7 +553,7 @@ describe("scheduler materialization", () => {
       id: "items",
       kind: "fanout",
       strategy: "all",
-      over: { kind: "literal", value: ["a", "b"] },
+      over: stringArray("a", "b"),
       do: { nodes: [taskNode("item_task")], outputs: {} },
     }), {});
 
@@ -620,7 +600,7 @@ describe("scheduler materialization", () => {
     const fanoutKey = deriveInstanceKey(appendNode([], "items"));
     const itemFrameKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
-      over: { kind: "literal", value: ["a"] },
+      over: stringArray("a"),
       doNodes: [],
       doOutputs: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
     })), {}));
@@ -633,7 +613,7 @@ describe("scheduler materialization", () => {
   });
 
   it("completes empty fanout inputs with an empty aggregate", () => {
-    const workflow = workflowWithRootNode(fanoutNode({ over: { kind: "literal", value: [] } }));
+    const workflow = workflowWithRootNode(fanoutNode({ over: stringArray() }));
     const fanoutKey = deriveInstanceKey(appendNode([], "items"));
     const bootstrapped = applySchedulerEvents(
       createSchedulerProjection("run_1"),
@@ -731,7 +711,7 @@ describe("scheduler materialization", () => {
 
   it("materializes duplicate fanout values as distinct indexed occurrences", () => {
     const events = bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
-      over: { kind: "literal", value: ["same", "same"] },
+      over: stringArray("same", "same"),
     })), {});
     const members = events.filter(event => event.type === "group.member_ready");
 
@@ -918,12 +898,12 @@ function taskNode(id: string): NodeIR {
   return {
     id,
     kind: "task",
-    run: { kind: "task_run", input: {}, target: inlineTaskTarget() },
+    run: { input: {}, target: inlineTaskTarget() },
   };
 }
 
 function inlineTaskTarget(): Extract<Extract<NodeIR, { kind: "task" }>["run"]["target"], { kind: "inline" }> {
-  return { kind: "inline", runtime: "node", source: "async function task() {}" };
+  return { kind: "inline", source: "async function task() {}" };
 }
 
 function fanoutNode(options: {
@@ -935,7 +915,7 @@ function fanoutNode(options: {
     id: "items",
     kind: "fanout",
     strategy: "all",
-    over: options.over ?? { kind: "literal", value: ["a", "b"] },
+    over: options.over ?? stringArray("a", "b"),
     do: { nodes: options.doNodes ?? [taskNode("item_task")], outputs: options.doOutputs ?? {} },
   };
 }
@@ -961,19 +941,22 @@ function objectSchema(): SchemaIR {
   return { kind: "object", fields: {}, required: [], additionalProperties: false };
 }
 
+function stringArray(...values: string[]): ExprIR {
+  return { kind: "array", items: values.map(value => ({ kind: "literal", value })) };
+}
+
 function workflowWithRootNode(node: NodeIR): WorkflowIR {
   return workflowWithRootNodes([node]);
 }
 
 function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "test",
     inputSchema: objectSchema(),
     root: { nodes, outputs: {} },
     outputs: {},
     agents: {},
-    lock: { acpusCoreVersion: "0.0.0", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }

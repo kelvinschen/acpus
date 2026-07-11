@@ -7,11 +7,9 @@ import { useInspectorPresence } from "./useInspectorPresence.js";
 
 export type StaticGraphData = {
   graph: WebGraph;
-  title?: string;
-  workflow?: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
-  contract?: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
-  diagnostics?: Extract<WorkflowVisualizationResult, { status: "ready" }>["diagnostics"];
-  sourceGraphDigest?: string;
+  workflow: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
+  contract: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
+  sourceGraphDigest: string;
 };
 
 type GraphInspectionTarget =
@@ -49,12 +47,7 @@ export function StaticGraphApp({ data }: { data: StaticGraphData }) {
 }
 
 function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
-  const workflow = data.workflow ?? {
-    name: data.graph.workflow.name,
-    ...(data.graph.workflow.description === undefined ? {} : { description: data.graph.workflow.description }),
-    irVersion: data.graph.version ?? 0,
-    nodeCount: data.graph.nodes.length,
-  };
+  const workflow = data.workflow;
   return (
     <div className="inspector-stack">
       <InspectorSection title="Workflow">
@@ -62,16 +55,16 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
         {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="IR version" value={String(workflow.irVersion)} />
         <KeyValue label="Node count" value={String(workflow.nodeCount)} />
-        {data.sourceGraphDigest && <KeyValue label="Source digest" value={data.sourceGraphDigest} />}
+        <KeyValue label="Source digest" value={data.sourceGraphDigest} />
       </InspectorSection>
-      {data.contract?.inputSchema ? (
+      {data.contract.inputSchema ? (
         <JsonSection title="Input Contract" value={data.contract.inputSchema} />
       ) : (
         <InspectorSection title="Input Contract">
           <StateBlock title="No input schema" detail="This workflow does not declare an input schema." />
         </InspectorSection>
       )}
-      <JsonSection title="Output Mapping" value={data.contract?.outputs ?? {}} />
+      <JsonSection title="Output Mapping" value={data.contract.outputs} />
     </div>
   );
 }

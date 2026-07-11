@@ -213,7 +213,6 @@ function node(partial: Partial<WebGraphNode> & { id: string; kind?: string; path
     label: partial.label ?? id,
     path: partial.path ?? ["root", id],
     status: partial.status ?? "completed",
-    dynamic: { instances: 0, frames: 0, attempts: 0, signalWaits: 0 },
   };
 }
 
@@ -223,8 +222,8 @@ function longBranchLabelGraph(): WebGraph {
     mode: "runtime",
     nodes: [
       node({ id: "route", kind: "switch", detail: { kind: "switch", cases: ['fanout.lanes.item.mode == "auto" && input.reallyLongDecisionExpression'], hasDefault: true } }),
-      node({ id: "auto_route", parentId: "route::case%3A0", parentNodeId: "route", path: ["root", "route", "case:0", "auto_route"] }),
-      node({ id: "manual_route", parentId: "route::default", parentNodeId: "route", path: ["root", "route", "default", "manual_route"] }),
+      node({ id: "auto_route", parentId: "route::case%3A0", path: ["root", "route", "case:0", "auto_route"] }),
+      node({ id: "manual_route", parentId: "route::default", path: ["root", "route", "default", "manual_route"] }),
     ],
     containers: [
       { id: "route::case%3A0", nodeId: "route", kind: "branch", label: 'case: fanout.lanes.item.mode == "auto" && input.reallyLongDecisionExpression', path: ["root", "route", "case:0"], parentId: "route", status: "completed" },
@@ -233,7 +232,6 @@ function longBranchLabelGraph(): WebGraph {
     edges: [],
     selectors: [],
     runtimeStates: [],
-    groups: [],
   };
 }
 
@@ -243,15 +241,15 @@ function wideFanoutSwitchGraph(): WebGraph {
     mode: "runtime",
     nodes: [
       node({ id: "candidate_matrix", kind: "fanout", detail: { kind: "fanout", over: "input.candidates", strategy: "all" } }),
-      node({ id: "route_candidate", kind: "switch", parentId: "candidate_matrix::do", parentNodeId: "candidate_matrix", path: ["root", "candidate_matrix", "do", "route_candidate"], detail: { kind: "switch", cases: ["candidate.kind == research", "candidate.ready && candidate.score >= minScore"], hasDefault: true } }),
-      node({ id: "research_lane", kind: "parallel", parentId: "route_candidate::case%3A0", parentNodeId: "route_candidate", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane"], detail: { kind: "parallel", branches: ["scorecard", "convergence"], strategy: "all" } }),
-      node({ id: "research_scorecard", parentId: "research_lane::branch%3Ascorecard", parentNodeId: "research_lane", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:scorecard", "research_scorecard"] }),
-      node({ id: "research_convergence", kind: "loop", parentId: "research_lane::branch%3Aconvergence", parentNodeId: "research_lane", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:convergence", "research_convergence"], detail: { kind: "loop", state: "state" } }),
-      node({ id: "research_pass", parentId: "research_convergence::do", parentNodeId: "research_convergence", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:convergence", "research_convergence", "do", "research_pass"] }),
-      node({ id: "standard_lane", kind: "if", parentId: "route_candidate::case%3A1", parentNodeId: "route_candidate", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane"], detail: { kind: "if", condition: "candidate.priority > 1" } }),
-      node({ id: "urgent_score", parentId: "standard_lane::then", parentNodeId: "standard_lane", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane", "then", "urgent_score"] }),
-      node({ id: "normal_score", parentId: "standard_lane::else", parentNodeId: "standard_lane", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane", "else", "normal_score"] }),
-      node({ id: "skip_candidate", parentId: "route_candidate::default", parentNodeId: "route_candidate", path: ["root", "candidate_matrix", "do", "route_candidate", "default", "skip_candidate"] }),
+      node({ id: "route_candidate", kind: "switch", parentId: "candidate_matrix::do", path: ["root", "candidate_matrix", "do", "route_candidate"], detail: { kind: "switch", cases: ["candidate.kind == research", "candidate.ready && candidate.score >= minScore"], hasDefault: true } }),
+      node({ id: "research_lane", kind: "parallel", parentId: "route_candidate::case%3A0", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane"], detail: { kind: "parallel", branches: ["scorecard", "convergence"], strategy: "all" } }),
+      node({ id: "research_scorecard", parentId: "research_lane::branch%3Ascorecard", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:scorecard", "research_scorecard"] }),
+      node({ id: "research_convergence", kind: "loop", parentId: "research_lane::branch%3Aconvergence", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:convergence", "research_convergence"], detail: { kind: "loop", state: "state" } }),
+      node({ id: "research_pass", parentId: "research_convergence::do", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:convergence", "research_convergence", "do", "research_pass"] }),
+      node({ id: "standard_lane", kind: "if", parentId: "route_candidate::case%3A1", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane"], detail: { kind: "if", condition: "candidate.priority > 1" } }),
+      node({ id: "urgent_score", parentId: "standard_lane::then", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane", "then", "urgent_score"] }),
+      node({ id: "normal_score", parentId: "standard_lane::else", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane", "else", "normal_score"] }),
+      node({ id: "skip_candidate", parentId: "route_candidate::default", path: ["root", "candidate_matrix", "do", "route_candidate", "default", "skip_candidate"] }),
     ],
     containers: [
       { id: "candidate_matrix::do", nodeId: "candidate_matrix", kind: "scope", label: "do", path: ["root", "candidate_matrix", "do"], parentId: "candidate_matrix", status: "completed" },
@@ -267,7 +265,6 @@ function wideFanoutSwitchGraph(): WebGraph {
     edges: [],
     selectors: [],
     runtimeStates: [],
-    groups: [],
   };
 }
 
@@ -277,21 +274,21 @@ function compositeGraph(): WebGraph {
     mode: "runtime",
     nodes: [
       node({ id: "execution", kind: "parallel", detail: { kind: "parallel", branches: ["lane_matrix", "agent_preview", "race_preview"], strategy: "all" } }),
-      node({ id: "lanes", kind: "fanout", parentId: "execution::branch%3Alane_matrix", parentNodeId: "execution", path: ["root", "execution", "branch:lane_matrix", "lanes"], detail: { kind: "fanout", over: "input.lanes", strategy: "all" } }),
-      node({ id: "route", kind: "switch", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route"], detail: { kind: "switch", cases: ["item.mode == auto"], hasDefault: true } }),
-      node({ id: "auto_route", parentId: "route::case%3A0", parentNodeId: "route", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0", "auto_route"] }),
-      node({ id: "manual_route", parentId: "route::default", parentNodeId: "route", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "default", "manual_route"] }),
-      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], detail: { kind: "loop", state: "state" } }),
-      node({ id: "score_gate", kind: "assert", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "score_gate"], detail: { kind: "assert", condition: "score >= min" } }),
-      node({ id: "agent_gate", kind: "if", parentId: "execution::branch%3Aagent_preview", parentNodeId: "execution", path: ["root", "execution", "branch:agent_preview", "agent_gate"], detail: { kind: "if", condition: "input.runAgents" } }),
-      node({ id: "reviewer_agent", kind: "agent", parentId: "agent_gate::then", parentNodeId: "agent_gate", path: ["root", "execution", "branch:agent_preview", "agent_gate", "then", "reviewer_agent"], detail: { kind: "agent", agent: "reviewer", use: "codex" } }),
-      node({ id: "skip_agent", parentId: "agent_gate::else", parentNodeId: "agent_gate", path: ["root", "execution", "branch:agent_preview", "agent_gate", "else", "skip_agent"] }),
-      node({ id: "race", kind: "parallel", parentId: "execution::branch%3Arace_preview", parentNodeId: "execution", path: ["root", "execution", "branch:race_preview", "race"], detail: { kind: "parallel", branches: ["cache", "compute"], strategy: "race" } }),
-      node({ id: "cache_hit", parentId: "race::branch%3Acache", parentNodeId: "race", path: ["root", "execution", "branch:race_preview", "race", "branch:cache", "cache_hit"] }),
-      node({ id: "compute_value", parentId: "race::branch%3Acompute", parentNodeId: "race", path: ["root", "execution", "branch:race_preview", "race", "branch:compute", "compute_value"] }),
+      node({ id: "lanes", kind: "fanout", parentId: "execution::branch%3Alane_matrix", path: ["root", "execution", "branch:lane_matrix", "lanes"], detail: { kind: "fanout", over: "input.lanes", strategy: "all" } }),
+      node({ id: "route", kind: "switch", parentId: "lanes::do", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route"], detail: { kind: "switch", cases: ["item.mode == auto"], hasDefault: true } }),
+      node({ id: "auto_route", parentId: "route::case%3A0", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0", "auto_route"] }),
+      node({ id: "manual_route", parentId: "route::default", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "default", "manual_route"] }),
+      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], detail: { kind: "loop", state: "state" } }),
+      node({ id: "score_gate", kind: "assert", parentId: "lanes::do", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "score_gate"], detail: { kind: "assert", condition: "score >= min" } }),
+      node({ id: "agent_gate", kind: "if", parentId: "execution::branch%3Aagent_preview", path: ["root", "execution", "branch:agent_preview", "agent_gate"], detail: { kind: "if", condition: "input.runAgents" } }),
+      node({ id: "reviewer_agent", kind: "agent", parentId: "agent_gate::then", path: ["root", "execution", "branch:agent_preview", "agent_gate", "then", "reviewer_agent"], detail: { kind: "agent", agent: "reviewer", use: "codex" } }),
+      node({ id: "skip_agent", parentId: "agent_gate::else", path: ["root", "execution", "branch:agent_preview", "agent_gate", "else", "skip_agent"] }),
+      node({ id: "race", kind: "parallel", parentId: "execution::branch%3Arace_preview", path: ["root", "execution", "branch:race_preview", "race"], detail: { kind: "parallel", branches: ["cache", "compute"], strategy: "race" } }),
+      node({ id: "cache_hit", parentId: "race::branch%3Acache", path: ["root", "execution", "branch:race_preview", "race", "branch:cache", "cache_hit"] }),
+      node({ id: "compute_value", parentId: "race::branch%3Acompute", path: ["root", "execution", "branch:race_preview", "race", "branch:compute", "compute_value"] }),
       node({ id: "operator_gate", kind: "if", detail: { kind: "if", condition: "input.requireSignal" } }),
-      node({ id: "operator_signal", kind: "signal", parentId: "operator_gate::then", parentNodeId: "operator_gate", path: ["root", "operator_gate", "then", "operator_signal"], detail: { kind: "signal", outputSchema: "{ ok }" } }),
-      node({ id: "auto_operator_gate", parentId: "operator_gate::else", parentNodeId: "operator_gate", path: ["root", "operator_gate", "else", "auto_operator_gate"] }),
+      node({ id: "operator_signal", kind: "signal", parentId: "operator_gate::then", path: ["root", "operator_gate", "then", "operator_signal"], detail: { kind: "signal", outputSchema: "{ ok }" } }),
+      node({ id: "auto_operator_gate", parentId: "operator_gate::else", path: ["root", "operator_gate", "else", "auto_operator_gate"] }),
       node({ id: "final_gate", kind: "assert", detail: { kind: "assert", condition: "nodes.operator_gate.output.ok" } }),
     ],
     containers: [
@@ -319,6 +316,5 @@ function compositeGraph(): WebGraph {
     ],
     selectors: [],
     runtimeStates: [],
-    groups: [],
   };
 }

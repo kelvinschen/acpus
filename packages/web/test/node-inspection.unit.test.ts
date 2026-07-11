@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
 import { inspectNodeExecution } from "../src/server/node-inspection.js";
 
+const noTelemetry = async () => undefined;
+
 describe("node execution inspection", () => {
   it("derives live execution summary from target-scoped progress", async () => {
     const inspection = targetInspection({
@@ -25,13 +27,10 @@ describe("node execution inspection", () => {
       }],
     });
 
-    const result = await inspectNodeExecution(inspection);
+    const result = await inspectNodeExecution(inspection, noTelemetry);
 
     expect(result).toMatchObject({
       available: true,
-      nodeId: "review",
-      nodeKey: "review~abc",
-      attemptId: "attempt_1",
       lastActiveAt: "2026-07-01T00:00:02.000Z",
       summary: { status: "running", message: "working" },
       contextWindow: { used: 2_500, size: 10_000, percent: 25 },
@@ -42,7 +41,7 @@ describe("node execution inspection", () => {
     });
   });
 
-  it("loads full tool telemetry only when a loader is supplied", async () => {
+  it("loads full tool telemetry through the artifact loader", async () => {
     const inspection = targetInspection({
       executionMetadata: [{
         id: 1,
@@ -81,7 +80,7 @@ describe("node execution inspection", () => {
       },
     }));
 
-    const withoutArtifact = await inspectNodeExecution(inspection);
+    const withoutArtifact = await inspectNodeExecution(inspection, noTelemetry);
     const withArtifact = await inspectNodeExecution(inspection, loadTelemetry);
 
     expect(loadTelemetry).toHaveBeenCalledOnce();
@@ -103,7 +102,7 @@ describe("node execution inspection", () => {
   });
 
   it("reports unavailable when the target projection has no agent telemetry", async () => {
-    const result = await inspectNodeExecution(targetInspection());
+    const result = await inspectNodeExecution(targetInspection(), noTelemetry);
 
     expect(result).toMatchObject({
       available: false,
@@ -139,7 +138,7 @@ describe("node execution inspection", () => {
       summary: { status: "running", turnCount: 2 },
       lastActiveAt: "2026-07-01T00:00:04.000Z",
       contextWindow: { used: 3_000, size: 12_000, percent: 25 },
-      tokenUsage: { inputTokens: 90, outputTokens: 10, cachedReadTokens: 20, totalTokens: 120 },
+      tokenUsage: { inputTokens: 90, outputTokens: 10, totalTokens: 120 },
       toolCallCount: 5,
       lastToolCalls: [
         { turn: 2, toolName: "Read", status: "completed" },

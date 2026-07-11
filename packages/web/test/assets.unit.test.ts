@@ -91,13 +91,6 @@ describe("mountStaticAssets", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 404 when staticDir is not provided", async () => {
-    const app = new Hono();
-    mountStaticAssets(app, undefined);
-    const res = await app.request("/");
-    expect(res.status).toBe(404);
-  });
-
   it("api routes are not shadowed by catch-all", async () => {
     await setupRoot({ "index.html": "ok" });
     const app = new Hono();

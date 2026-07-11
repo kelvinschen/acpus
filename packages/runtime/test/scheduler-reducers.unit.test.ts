@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, canonicalPath, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, evaluateGroupCompletion, groupCompletionEvents, nextLoopStep, resolveScopedNodeKey, retryTargetClass, signalTimeoutEvents } from "../src/scheduler/transitions.js";
-import type { GroupMember, GroupProjection } from "../src/scheduler/types.js";
+import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, groupCompletionEvents, nextLoopStep, signalTimeoutEvents } from "../src/scheduler/transitions.js";
 
 describe("scheduler identity and reducers", () => {
   it("derives stable readable keys from structured instance paths", () => {
@@ -15,13 +14,12 @@ describe("scheduler identity and reducers", () => {
     );
 
     expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{12}$/);
-    expect(deriveInstanceKey(path)).toBe(deriveInstanceKey(JSON.parse(canonicalPath(path))));
     expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{12}$/);
   });
 
   it("rebuilds frame, instance, attempt, group, branch, and signal projections from events", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "control.paused", payload: { reason: "user" } },
+      { type: "control.paused", payload: {} },
       { type: "control.resumed", payload: {} },
       { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { prepare: "prepare~1" } } },
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "prepare~1", nodeId: "prepare", instancePath: appendNode([], "prepare"), parentFrameKey: "root", readinessSequence: 1 } },
@@ -43,7 +41,7 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: false, iter: 1 } } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop~1", iter: 2, state: { done: true }, transition: { state: { done: true }, stop: true } } },
       { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve~1", nodeId: "approve", deadlineAt: "2026-06-30T01:00:00.000Z" } },
-      { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: true }, payloadDigest: "sha256:1", commandIdempotencyKey: "signal-1" } },
+      { type: "signal.consumed", payload: { nodeKey: "approve~1", payload: { ok: true }, commandIdempotencyKey: "signal-1" } },
     ]);
 
     expect(projection.run).toEqual({ runId: "run_1", status: "pending", paused: false });
@@ -118,7 +116,7 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.failed", payload: { frameKey: branchKey, error: { reason: "boom" } } },
       { type: "frame.failed", payload: { frameKey, error: { reason: "boom" } } },
       { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
-      { type: "frame.retry_requested", payload: { frameKey, source: "control" } },
+      { type: "frame.retry_requested", payload: { frameKey } },
     ]);
 
     expect(retried.run).toMatchObject({ status: "pending" });
@@ -163,7 +161,7 @@ describe("scheduler identity and reducers", () => {
     const terminalRun = createSchedulerProjection("run_1");
     terminalRun.run = { ...terminalRun.run, status: "completed" };
     expect(() => applySchedulerEvents(terminalRun, [
-      { type: "control.paused", payload: { reason: "late" } },
+      { type: "control.paused", payload: {} },
     ])).toThrow("Cannot pause completed run.");
     expect(() => applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "control.resumed", payload: {} },
@@ -454,48 +452,6 @@ describe("scheduler identity and reducers", () => {
     ])).toThrow("Parallel group 'parallel~1' requires branch members.");
   });
 
-  it("computes all, race, and quorum group terminal behavior", () => {
-    expect(evaluateGroupCompletion(group("all"), [
-      member("left", "completed", 1),
-      member("right", "ready", 2),
-    ])).toEqual({ status: "running" });
-    expect(evaluateGroupCompletion(group("all"), [
-      member("left", "failed", 1),
-      member("right", "running", 2),
-    ])).toEqual({ status: "failed", reason: "member_failed", cancelRemaining: true });
-
-    expect(evaluateGroupCompletion(group("race"), [
-      member("left", "failed", 1),
-      member("right", "completed", 2, undefined, 1),
-    ])).toEqual({ status: "completed", acceptedMemberKeys: ["right"], cancelRemaining: true });
-    expect(evaluateGroupCompletion(group("race"), [
-      member("left", "failed", 1),
-      member("right", "cancelled", 2),
-    ])).toEqual({ status: "failed", reason: "race_no_success", cancelRemaining: false });
-
-    expect(evaluateGroupCompletion(group("quorum", 2), [
-      member("a", "completed", 1, undefined, 20, "fanout_item"),
-      member("b", "running", 2, undefined, undefined, "fanout_item"),
-      member("c", "completed", 3, undefined, 10, "fanout_item"),
-    ])).toEqual({ status: "completed", acceptedMemberKeys: ["c", "a"], cancelRemaining: true });
-    expect(evaluateGroupCompletion(group("quorum", 2), [
-      member("a", "completed", 1, undefined, 1, "fanout_item"),
-      member("b", "failed", 2, undefined, undefined, "fanout_item"),
-      member("c", "cancelled", 3, undefined, undefined, "fanout_item"),
-    ])).toEqual({ status: "failed", reason: "quorum_impossible", cancelRemaining: true });
-    const invalidQuorum = {
-      runId: "run_1",
-      groupKey: "fanout~1",
-      nodeKey: "fanout~1",
-      nodeId: "fanout",
-      kind: "fanout",
-      strategy: "quorum",
-      quorumCount: 0,
-      status: "running",
-    } satisfies Extract<GroupProjection, { kind: "fanout" }>;
-    expect(() => evaluateGroupCompletion({ ...invalidQuorum, quorumCount: 0 }, [])).toThrow("requires a positive quorum count");
-  });
-
   it("derives composite terminal and cancellation events from group state", () => {
     const all = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
@@ -546,16 +502,7 @@ describe("scheduler identity and reducers", () => {
     ]);
   });
 
-  it("resolves lexical node scope from the innermost dynamic mapping", () => {
-    expect(resolveScopedNodeKey([
-      { prepare: "prepare~root", shared: "shared~outer" },
-      { shared: "shared~inner" },
-    ], "shared")).toBe("shared~inner");
-
-    expect(() => resolveScopedNodeKey([{ prepare: "prepare~root" }], "missing")).toThrow("Node 'missing' is not visible");
-  });
-
-  it("classifies loop transitions and command retry targets", () => {
+  it("classifies loop transitions", () => {
     expect(nextLoopStep({ iter: 0, transition: { state: { iter: 0 }, stop: false } })).toEqual({
       action: "start_iteration",
       iter: 1,
@@ -571,47 +518,5 @@ describe("scheduler identity and reducers", () => {
       error: { reason: "invalid_loop_transition", message: "Loop body transition 'stop' must be boolean." },
       terminalReason: "invalid_loop_transition",
     });
-    expect(retryTargetClass("failed", "terminal")).toBe("retryable");
-    expect(retryTargetClass("failed", "retryable")).toBe("not_retryable");
-    expect(retryTargetClass("completed")).toBe("not_retryable");
   });
 });
-
-function group(strategy: "all" | "race" | "quorum", quorumCount?: number): GroupProjection {
-  if (strategy === "quorum") {
-    return {
-      runId: "run_1",
-      groupKey: "fanout~1",
-      nodeKey: "fanout~1",
-      nodeId: "fanout",
-      kind: "fanout",
-      strategy: "quorum",
-      quorumCount: quorumCount ?? 1,
-      status: "running",
-    };
-  }
-  return {
-    runId: "run_1",
-    groupKey: `${strategy}~1`,
-    nodeKey: `${strategy}~1`,
-    nodeId: strategy,
-    kind: "parallel",
-    strategy,
-    status: "running",
-  };
-}
-
-function member(memberKey: string, status: GroupMember["status"], readinessSequence: number, acceptedRank?: number, completionSequence?: number, memberKind: GroupMember["memberKind"] = "branch"): GroupMember {
-  const value = {
-    runId: "run_1",
-    groupKey: "group~1",
-    memberKey,
-    status,
-    readinessSequence,
-    ...(acceptedRank === undefined ? {} : { acceptedRank }),
-    ...(completionSequence === undefined ? {} : { completionSequence }),
-  };
-  return memberKind === "branch"
-    ? { ...value, memberKind: "branch", branchId: memberKey }
-    : { ...value, memberKind: "fanout_item", itemIndex: readinessSequence - 1, item: memberKey };
-}

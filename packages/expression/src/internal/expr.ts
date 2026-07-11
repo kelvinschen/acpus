@@ -1,6 +1,6 @@
 import { EXPR } from "./symbols.js";
 import { err, ok, type Result } from "neverthrow";
-import type { ExprIR, TypeIR } from "../ir.js";
+import type { ExprIR } from "../ir.js";
 
 export interface Expr<T> {
   readonly [EXPR]: true;
@@ -135,12 +135,10 @@ export function accessor<T>(ir: ExprIR): ExprValue<T> {
   }) as ExprValue<T>;
 }
 
-export function refExpr<T>(path: string[], type?: TypeIR): ExprValue<T> {
-  return accessor<T>(type === undefined ? { kind: "ref", path } : { kind: "ref", path, type });
+export function refExpr<T>(path: string[]): ExprValue<T> {
+  return accessor<T>({ kind: "ref", path });
 }
 
-export function callExpr<T>(fn: string, args: unknown[], type?: TypeIR): ExprValue<T> {
-  const irArgs = args.map(valueToExprIR);
-  const ir = type === undefined ? { kind: "call" as const, fn, args: irArgs } : { kind: "call" as const, fn, args: irArgs, type };
-  return accessor<T>(ir);
+export function callExpr<T>(fn: string, args: unknown[]): ExprValue<T> {
+  return accessor<T>({ kind: "call", fn, args: args.map(valueToExprIR) });
 }

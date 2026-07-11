@@ -50,7 +50,7 @@ export function officialAuthoringTypeScriptPaths(fromDir: string): OfficialTypeS
   return { paths, usesSource };
 }
 
-export function registerAuthoringModuleLoader(): void {
+function registerAuthoringModuleLoader(): void {
   if (registered) return;
   registered = true;
   const entries = Object.keys(officialTargets).map(specifier => [specifier, resolveOfficialImport(specifier).url] as const);

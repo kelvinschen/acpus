@@ -9,7 +9,7 @@ export type SignalRunSpec = {
 };
 
 type SignalTimeoutSpec =
-  | { timeout: Resolvable<string>; onTimeout?: { action: "fail"; message?: Resolvable<string> } }
+  | { timeout: Resolvable<string>; onTimeout?: { message?: Resolvable<string> } }
   | { timeout?: undefined; onTimeout?: never };
 
 /** Authoring spec for a Signal node that waits for operator input. */
@@ -25,7 +25,7 @@ export type SignalStepSpec<OutSchema extends Schema<any> | undefined = Schema<an
       }) & SignalTimeoutSpec;
 
 function signalRunToIR(spec: SignalRunSpec): SignalRunIR {
-  return { kind: "signal_run", prompt: valueToExprIR(spec.prompt) };
+  return { prompt: valueToExprIR(spec.prompt) };
 }
 
 export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
@@ -41,7 +41,6 @@ export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
     run: signalRunToIR(spec.run),
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
     onTimeout: spec.onTimeout === undefined ? undefined : {
-      action: spec.onTimeout.action,
       message: spec.onTimeout.message === undefined ? undefined : valueToExprIR(spec.onTimeout.message),
     },
   }) as SignalNodeIR;

@@ -41,7 +41,7 @@ describe("hook journal store", () => {
 
         expect(store.getRun(run.id)?.hooks).toEqual([]);
 
-        await expect(advanceRuntimeRun(workspace, store, run.id)).resolves.toMatchObject({ status: "completed" });
+        await expect(advanceRuntimeRun(workspace, store, run.id, "owner-a")).resolves.toMatchObject({ status: "completed" });
 
         expect(store.getRun(run.id)?.hooks).toMatchObject([{ handlerId: "notify", event: "run.completed" }]);
       } finally {

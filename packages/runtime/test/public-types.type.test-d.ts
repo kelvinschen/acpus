@@ -2,8 +2,6 @@ import { expectTypeOf, test } from "vitest";
 import type {
   AgentInspectionState,
   AgentOverrideMap,
-  ForkSeedFailure,
-  ForkPreparedWorkflow,
   PreparedRunWorkflow,
   RunDynamicAttempt,
   RunDynamicDetails,
@@ -23,57 +21,56 @@ import type {
   RunWorkflowLockArtifact,
   RuntimeHealthCheck,
   RuntimeHealthReport,
-  RuntimeMutationAction,
-  RuntimeMutationInput,
-  RuntimeMutationResult,
-  RuntimeUseCaseError,
-  SchedulerStoreError,
-  SchedulerStoreResult,
   DaemonControlIntent,
+  DaemonControlResult,
   DaemonErrorCode,
   DaemonLoopHandle,
   DaemonLoopOptions,
-  DaemonWork,
   DaemonShutdownResult,
   DaemonAdmitRunInput,
   DaemonStatus,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
-  RunVisualizationSnapshot,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import type { Result } from "neverthrow";
 
-test("@acpus/runtime public types describe use-case level runtime APIs", () => {
-  expectTypeOf(admitPreparedWorkflowRun).toEqualTypeOf<(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap) => Promise<RunDetails>>();
+test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
-  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunVisualizationSnapshot | undefined>>();
+  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<{ run: RunDetails; overlay: WorkflowVisualizationOverlay } | undefined>>();
   expectTypeOf(normalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Promise<JsonValue | undefined>>();
   expectTypeOf(normalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => JsonValue>();
-  expectTypeOf(normalizeSignalPayload).toEqualTypeOf<(ir: WorkflowIR, nodeId: string, payload: JsonValue) => JsonValue>();
   expectTypeOf(validateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => AgentOverrideMap>();
+  expectTypeOf<DaemonLoopOptions>().toEqualTypeOf<{
+    heartbeatMs?: number;
+    packageVersion: string;
+    idleStopMs?: number;
+    onShutdown?: () => void;
+  }>();
   expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Promise<DaemonStatus>>();
-  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: Omit<DaemonAdmitRunInput, "method">) => Promise<RunDetails>>();
-  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<RuntimeMutationResult>>();
-  expectTypeOf(requestDaemonStartRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails>>();
+  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: DaemonAdmitRunInput) => Promise<RunDetails>>();
+  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<DaemonControlResult>>();
   expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => Promise<DaemonShutdownResult>>();
   expectTypeOf(new DaemonRequestError("RUN_NOT_CONTROLLABLE", "failed").code).toEqualTypeOf<DaemonErrorCode>();
-  expectTypeOf(new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "missing" }).failure).toEqualTypeOf<RuntimeUseCaseError>();
+  expectTypeOf(new RuntimeUseCaseException({ type: "run-delete-active", runId: "run_1", message: "active" }).failure).toEqualTypeOf<{ type: "run-delete-active"; runId: string; message: string }>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<ForkPreparedWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
+  expectTypeOf<DaemonStatus>().toMatchTypeOf<{ status: "ok"; pid: number; generation: number; protocolVersion: number; packageVersion: string }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{ requestId: string; type: "pause" | "resume"; runId: string }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{ requestId: string; type: "retry" | "cancel"; runId: string; target?: string }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "fork" }>>().toMatchTypeOf<{ requestId: string; type: "fork"; runId: string; target?: string; input?: JsonValue; unsafeReuse?: boolean }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{ requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue }>();
+  expectTypeOf<DaemonControlResult>().toEqualTypeOf<{ run: RunDetails; forkRunId?: string }>();
   expectTypeOf<NonNullable<RunDetails["dynamic"]>>().toEqualTypeOf<RunDynamicDetails>();
   expectTypeOf<RunDynamicDetails["frames"][number]>().toEqualTypeOf<RunDynamicFrame>();
-  expectTypeOf<Extract<RuntimeUseCaseError, { type: "fork-seed-failed" }>["cause"]>().toEqualTypeOf<ForkSeedFailure>();
   expectTypeOf<RunDynamicDetails["nodeInstances"][number]>().toEqualTypeOf<RunDynamicNodeInstance>();
   expectTypeOf<RunDynamicDetails["attempts"][number]>().toEqualTypeOf<RunDynamicAttempt>();
   expectTypeOf<RunDynamicDetails["groupMembers"][number]>().toEqualTypeOf<RunDynamicGroupMember>();
@@ -124,9 +121,5 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf<WorkflowVisualizationOverlay["nodes"][number]>().toEqualTypeOf<WorkflowVisualizationNode>();
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
-  expectTypeOf<RuntimeMutationAction>().toEqualTypeOf<"pause" | "resume" | "retry" | "fork" | "cancel">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
-  expectTypeOf<RuntimeMutationInput>().toMatchTypeOf<{ target?: string; unsafeReuse?: boolean }>();
-  expectTypeOf<SchedulerStoreResult<unknown>>().toEqualTypeOf<Result<unknown, SchedulerStoreError>>();
-  expectTypeOf<DaemonWork>().toEqualTypeOf<{ startableRuns: RunRecord[]; idleBlockers: number }>();
 });

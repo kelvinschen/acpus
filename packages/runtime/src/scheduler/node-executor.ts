@@ -1,9 +1,7 @@
 import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import type { JsonObject } from "@acpus/expression/ir";
 import { AgentNodeCancelledError, AgentNodeExecutionError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-executor.js";
-import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { ResolutionException, resolutionErrorPayload } from "../evaluation/resolvable.js";
@@ -11,8 +9,7 @@ import type { RuntimeStore } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
 import { scopeForNodeAttempt } from "./scope.js";
-import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerStoreResult } from "./store-port.js";
-import type { SchedulerProjection } from "./types.js";
+import { throwSchedulerStoreResult, type AttemptCommitInput } from "./store-port.js";
 import { indexNodes } from "./ir-walk.js";
 
 export type RuntimeNodeExecutorInput = {
@@ -21,9 +18,6 @@ export type RuntimeNodeExecutorInput = {
   scope: EvaluationScope;
   store: RuntimeStore;
   progressWriter?: NodeProgressWriter;
-  executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
-  agentRepairDelayMs?: number;
-  taskAttemptRunner?: TaskAttemptRunner;
 };
 
 export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): NodeExecutor {
@@ -32,7 +26,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
     async execute(context: NodeAttemptContext): Promise<AttemptCommitInput["result"]> {
       const node = nodes.get(context.nodeId);
       if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
-      const scope = scopeForAttempt(input.scope, unwrapStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
+      const scope = scopeForNodeAttempt(input.scope, throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
       if (node.kind === "task") {
         try {
           return completedResult(await executeTask(node, scope, context, input), true);
@@ -70,10 +64,6 @@ function resolutionFailure(error: ResolutionException): AttemptCommitInput["resu
   };
 }
 
-function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
-  return throwSchedulerStoreResult(result);
-}
-
 async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput): Promise<unknown> {
   return executeTaskNode(node, scope, {
     cwd: input.cwd,
@@ -84,7 +74,6 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
     attemptNo: context.attemptNo,
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     signal: context.signal,
-    ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
   });
 }
 
@@ -101,13 +90,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
     initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",
     signal: context.signal,
-    ...(input.executeAgentTurn ? { executeTurn: input.executeAgentTurn } : {}),
-    ...(input.agentRepairDelayMs === undefined ? {} : { repairDelayMs: input.agentRepairDelayMs }),
   });
-}
-
-function scopeForAttempt(base: EvaluationScope, projection: SchedulerProjection, nodeKey: string): EvaluationScope {
-  return scopeForNodeAttempt(base, projection, nodeKey);
 }
 
 function completedResult(output: unknown, allowTopLevelUndefined: boolean): AttemptCommitInput["result"] {

@@ -183,7 +183,7 @@ function taskInput(
     cwd: "/repo",
     env: {},
     request: {
-      target: { kind: "inline", runtime: "node", source: "async () => undefined" },
+      target: { kind: "inline", source: "async () => undefined" },
       input: {},
       workspaceDir: "/repo",
       artifact: { runId: "run_1", nodeKey: nodeId, attempt: 1, runDir: "/repo/.acpus/run_1" },

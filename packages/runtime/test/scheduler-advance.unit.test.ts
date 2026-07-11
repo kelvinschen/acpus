@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok } from "neverthrow";
-import { advanceRun, completed, selectReadyInstances, tryAdvanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
+import { advanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath } from "../src/scheduler/types.js";
+import { completed } from "./support/scheduler.js";
 
 describe("scheduler advance loop", () => {
   it("applies bootstrap events once before scheduling", async () => {
@@ -68,7 +69,6 @@ describe("scheduler advance loop", () => {
         calls.push(context.nodeKey);
         return completed({ node: context.nodeKey });
       }),
-      limiter: new TrackingLimiter(),
       maxLeafConcurrency: 2,
     });
 
@@ -94,8 +94,8 @@ describe("scheduler advance loop", () => {
     });
   });
 
-  it("respects direct-member local concurrency caps before enqueueing work", () => {
-    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+  it("respects direct-member local concurrency caps before enqueueing work", async () => {
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-0", memberKind: "fanout_item", readinessSequence: 1, itemIndex: 0, item: 0 } },
       { type: "group.member_started", payload: { memberKey: "item-0" } },
@@ -104,17 +104,25 @@ describe("scheduler advance loop", () => {
       ready("item-1", 1),
       ready("item-2", 2),
     ]);
+    const calls: string[] = [];
 
-    expect(selectReadyInstances(
-      projection,
-      3,
-      instance => projection.groupMembers[instance.nodeKey],
-      () => 2,
-    ).map(instance => instance.nodeKey)).toEqual(["item-1"]);
+    await advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      maxLeafConcurrency: 3,
+      localConcurrencyLimitFor: () => 2,
+      executor: executor(context => {
+        calls.push(context.nodeKey);
+        return completed();
+      }),
+    });
+
+    expect(calls).toEqual(["item-1"]);
   });
 
-  it("does not leak local capacity reservations from rejected ancestor members", () => {
-    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+  it("does not leak local capacity reservations from rejected ancestor members", async () => {
+    const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "child", nodeKey: "child", nodeId: "child", kind: "parallel", strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "parent", nodeKey: "parent", nodeId: "parent", kind: "parallel", strategy: "all" } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: "parent-running", frameKind: "branch" } },
@@ -129,17 +137,25 @@ describe("scheduler advance loop", () => {
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "child", memberKey: "child-open", memberKind: "branch", childFrameKey: "child-open", branchId: "open", readinessSequence: 3 } },
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "open", nodeId: "open", parentFrameKey: "child-open", instancePath: [{ kind: "node", nodeId: "open" }], readinessSequence: 2 } },
     ]);
+    const calls: string[] = [];
 
-    expect(selectReadyInstances(
-      projection,
-      2,
-      undefined,
-      groupKey => groupKey === "child" || groupKey === "parent" ? 1 : undefined,
-    ).map(instance => instance.nodeKey)).toEqual(["open"]);
+    await advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      maxLeafConcurrency: 2,
+      localConcurrencyLimitFor: groupKey => groupKey === "child" || groupKey === "parent" ? 1 : undefined,
+      executor: executor(context => {
+        calls.push(context.nodeKey);
+        return completed();
+      }),
+    });
+
+    expect(calls).toEqual(["open"]);
   });
 
   it("returns paused, awaiting, and lease-lost summaries without starting work", async () => {
-    const paused = new MemorySchedulerStore([{ type: "control.paused", payload: { reason: "test" } }, ready("blocked", 1)]);
+    const paused = new MemorySchedulerStore([{ type: "control.paused", payload: {} }, ready("blocked", 1)]);
     const awaiting = new MemorySchedulerStore([{ type: "signal.awaiting", payload: { runId: "awaiting", nodeKey: "approve", nodeId: "approve" } }]);
     const leaseLost = new MemorySchedulerStore([ready("work", 1)]);
     leaseLost.claimable = false;
@@ -153,45 +169,6 @@ describe("scheduler advance loop", () => {
     await expect(advanceRun({ runId: "awaiting", ownerId: "owner-a", store: awaiting, executor: nodeExecutor })).resolves.toMatchObject({ status: "awaiting", started: 0 });
     await expect(advanceRun({ runId: "lost", ownerId: "owner-a", store: leaseLost, executor: nodeExecutor })).resolves.toMatchObject({ status: "lease_lost", started: 0 });
     expect(calls).toEqual([]);
-  });
-
-  it("returns tagged Err values from tryAdvanceRun for recoverable store failures", async () => {
-    const store = new MemorySchedulerStore([]);
-    store.tryLoadRunSnapshot = runId => err({ type: "run-not-found", runId, message: "arbitrary store text" });
-
-    const result = await tryAdvanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      executor: executor(() => completed()),
-    });
-
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected run-not-found");
-    expect(result.error).toEqual({ type: "run-not-found", runId: "run_1", message: "arbitrary store text" });
-  });
-
-  it("does not start selected work after a pause commits before attempt start", async () => {
-    const store = new MemorySchedulerStore([
-      ready("first", 1),
-      ready("second", 2),
-    ]);
-    const calls: string[] = [];
-
-    const result = await advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      executor: executor(context => {
-        calls.push(context.nodeKey);
-        return completed({ node: context.nodeKey });
-      }),
-      limiter: new PausingSerialLimiter(() => store.pauseRun({ runId: "run_1", ownerEpoch: 1, idempotencyKey: "pause-between-starts" })),
-      maxLeafConcurrency: 2,
-    });
-
-    expect(result).toMatchObject({ status: "paused", started: 1 });
-    expect(calls).toEqual(["first"]);
   });
 
   it("aborts active work when pause requeues the running instance", async () => {
@@ -437,7 +414,6 @@ describe("scheduler advance loop", () => {
         calls.push(context.nodeKey);
         return completed();
       }),
-      memberForInstance: (instance, projection) => projection.groupMembers[instance.nodeKey],
     });
 
     const projection = store.loadRunSnapshot("run_1").projection;
@@ -483,7 +459,7 @@ describe("scheduler advance loop", () => {
     expect(projection.groupMembers.loser).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
   });
 
-  it("requeues failed retryable instances before terminal group derivation", async () => {
+  it("leaves a failed leaf and its group failed without an explicit retry", async () => {
     const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "work", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
@@ -494,78 +470,24 @@ describe("scheduler advance loop", () => {
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      maxAttemptsFor: () => 2,
       executor: executor(() => {
         calls += 1;
-        return calls === 1 ? { status: "failed", reason: "transient" } : completed({ ok: true });
+        return { status: "failed" as const, reason: "transient" };
       }),
     };
 
     await expect(advanceRun(input)).resolves.toMatchObject({ status: "idle", started: 1, failed: 1 });
-    let projection = store.loadRunSnapshot("run_1").projection;
-    expect(projection.instances.work).toMatchObject({ status: "ready", statusReason: "scheduler_retry" });
-    expect(projection.groupMembers.work).toMatchObject({ status: "ready" });
-    expect(projection.groups.all).toMatchObject({ status: "running" });
-
-    await expect(advanceRun(input)).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-    projection = store.loadRunSnapshot("run_1").projection;
-    expect(projection.instances.work).toMatchObject({ status: "completed", output: { ok: true } });
-    expect(projection.groupMembers.work).toMatchObject({ status: "completed" });
-  });
-
-  it("requeues ancestor group members for failed retryable child instances", async () => {
-    const store = new MemorySchedulerStore([
-      { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "branch", frameKind: "branch", parentFrameKey: "all", instancePath: [{ kind: "branch", nodeId: "all", branchId: "left" }] } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "branch", memberKind: "branch", branchId: "left", childFrameKey: "branch", readinessSequence: 1 } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "branch/work", nodeId: "work", parentFrameKey: "branch", instancePath: [{ kind: "branch", nodeId: "all", branchId: "left" }, { kind: "node", nodeId: "work" }], readinessSequence: 1 } },
-      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_1", nodeKey: "branch/work", nodeId: "work", attemptNo: 1, ownerEpoch: 1 } },
-      { type: "attempt.failed", payload: { attemptId: "attempt_1", error: { reason: "transient" } } },
-      { type: "instance.failed", payload: { nodeKey: "branch/work", error: { reason: "transient" }, statusReason: "retryable" } },
-      { type: "frame.failed", payload: { frameKey: "branch", error: { reason: "transient" }, terminalReason: "retryable" } },
-      { type: "group.member_failed", payload: { memberKey: "branch", error: { reason: "transient" }, terminalReason: "retryable" } },
-    ]);
-
-    await expect(advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      maxLeafConcurrency: 0,
-      maxAttemptsFor: () => 2,
-      executor: executor(() => completed({ ok: true })),
-    })).resolves.toMatchObject({ status: "idle", started: 0 });
-
-    const projection = store.loadRunSnapshot("run_1").projection;
-    expect(projection.instances["branch/work"]).toMatchObject({ status: "ready", statusReason: "scheduler_retry", readinessSequence: 1 });
-    const branch = projection.groupMembers.branch;
-    expect(branch).toMatchObject({ status: "ready", readinessSequence: 1 });
-    expect(branch?.error).toBeUndefined();
-  });
-
-  it("does not requeue exhausted retryable instances", async () => {
-    const store = new MemorySchedulerStore([
-      { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "work", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
-      ready("work", 1),
-    ]);
-
-    await expect(advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      maxAttemptsFor: () => 1,
-      executor: executor(() => ({ status: "failed", reason: "terminal" })),
-    })).resolves.toMatchObject({ status: "idle", started: 1, failed: 1 });
-
     const projection = store.loadRunSnapshot("run_1").projection;
     expect(projection.instances.work).toMatchObject({ status: "failed" });
     expect(projection.groupMembers.work).toMatchObject({ status: "failed" });
     expect(projection.groups.all).toMatchObject({ status: "failed" });
+    await expect(advanceRun(input)).resolves.toMatchObject({ status: "idle", started: 0 });
+    expect(calls).toBe(1);
   });
 
   it("does not start recovered work while paused", async () => {
     const store = new MemorySchedulerStore([
-      { type: "control.paused", payload: { reason: "operator" } },
+      { type: "control.paused", payload: {} },
       ready("old", 1),
       { type: "instance.started", payload: { nodeKey: "old" } },
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "old_attempt", nodeKey: "old", nodeId: "old", attemptNo: 1, ownerEpoch: 9 } },
@@ -587,32 +509,6 @@ describe("scheduler advance loop", () => {
     expect(calls).toEqual([]);
     expect(projection.attempts.old_attempt).toMatchObject({ status: "started" });
     expect(projection.instances.new).toMatchObject({ status: "ready" });
-  });
-
-  it("does not spend failure retry budget on superseded attempts", async () => {
-    const store = new MemorySchedulerStore([
-      ready("work", 1),
-      { type: "instance.started", payload: { nodeKey: "work" } },
-      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_superseded", nodeKey: "work", nodeId: "work", attemptNo: 1, ownerEpoch: 1 } },
-      { type: "attempt.superseded", payload: { attemptId: "attempt_superseded", cancelReason: "superseded" } },
-      { type: "instance.requeued", payload: { nodeKey: "work", reason: "superseded", readinessSequence: 1 } },
-      { type: "instance.started", payload: { nodeKey: "work" } },
-      { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_failed", nodeKey: "work", nodeId: "work", attemptNo: 2, ownerEpoch: 2 } },
-      { type: "attempt.failed", payload: { attemptId: "attempt_failed", error: { reason: "transient" } } },
-      { type: "instance.failed", payload: { nodeKey: "work", error: { reason: "transient" } } },
-    ]);
-
-    await expect(advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      maxAttemptsFor: () => 2,
-      executor: executor(() => completed({ ok: true })),
-    })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-
-    const projection = store.loadRunSnapshot("run_1").projection;
-    expect(projection.instances.work).toMatchObject({ status: "completed", output: { ok: true } });
-    expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === "work").map(attempt => attempt.status).sort()).toEqual(["completed", "failed", "superseded"]);
   });
 
   it("stores derived attempt deadlines before executor work starts", async () => {
@@ -655,49 +551,6 @@ describe("scheduler advance loop", () => {
     expect(attempt).toMatchObject({ status: "failed", error });
   });
 });
-
-class TrackingLimiter {
-  active = 0;
-  maxActive = 0;
-
-  async add<T>(task: () => Promise<T>): Promise<T> {
-    this.active += 1;
-    this.maxActive = Math.max(this.maxActive, this.active);
-    try {
-      return await task();
-    } finally {
-      this.active -= 1;
-    }
-  }
-
-  async onIdle(): Promise<void> {}
-
-  clear(): void {}
-}
-
-class PausingSerialLimiter {
-  private chain = Promise.resolve();
-  private completed = 0;
-
-  constructor(private readonly pauseBeforeSecondTask: () => void) {}
-
-  add<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.chain.then(async () => {
-      if (this.completed === 1) this.pauseBeforeSecondTask();
-      const result = await task();
-      this.completed += 1;
-      return result;
-    });
-    this.chain = run.then(() => undefined, () => undefined);
-    return run;
-  }
-
-  async onIdle(): Promise<void> {
-    await this.chain;
-  }
-
-  clear(): void {}
-}
 
 class MemorySchedulerStore implements SchedulerStorePort {
   claimable = true;
@@ -796,15 +649,15 @@ class MemorySchedulerStore implements SchedulerStorePort {
     throw new Error("not implemented");
   }
 
-  tryPauseRun(input: { runId: string; ownerEpoch: number; reason?: string; idempotencyKey: string }): SchedulerStoreResult<SchedulerSnapshot> {
+  tryPauseRun(input: { runId: string; ownerEpoch: number; idempotencyKey: string }): SchedulerStoreResult<SchedulerSnapshot> {
     return schedulerStoreResult(() => this.pauseRun(input));
   }
 
-  pauseRun(input: { runId: string; ownerEpoch: number; reason?: string; idempotencyKey: string }): SchedulerSnapshot {
+  pauseRun(input: { runId: string; ownerEpoch: number; idempotencyKey: string }): SchedulerSnapshot {
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status === "paused") return snapshot;
     const events: SchedulerEvent[] = [
-      { type: "control.paused", payload: input.reason === undefined ? {} : { reason: input.reason } },
+      { type: "control.paused", payload: {} },
     ];
     for (const attempt of Object.values(snapshot.projection.attempts).filter(attempt => attempt.status === "started")) {
       const instance = snapshot.projection.instances[attempt.nodeKey];

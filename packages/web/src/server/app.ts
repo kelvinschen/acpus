@@ -1,20 +1,19 @@
 import { Hono } from "hono";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import {
-  applyRunControl,
-  applySignalRunControl,
+  DaemonRequestError,
   getArtifact,
-  getRun,
   getRunInspection,
   getRunVisualizationSnapshot,
   getRuntimeHealth,
   listRuns,
-  RuntimeUseCaseException,
+  requestDaemonControl,
+  type DaemonControlIntent,
   type RunInspectionContext,
   type RunInspectionError,
   type RunInspectionTargetDocument,
-  type RuntimeMutationAction,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AccessPolicy } from "./security.js";
@@ -23,16 +22,18 @@ import { graphFromOverlay } from "./graph.js";
 import { inspectNodeExecution } from "./node-inspection.js";
 import { listProjectWorkflowCatalog, listWorkflowFiles, visualizeWorkflowSource, type WorkflowVisualizationSource } from "./workflows.js";
 import { ApiError, apiError } from "./errors.js";
-import { mountStaticAssets } from "./assets.js";
 
-type WebRuntimeControlAction = Exclude<RuntimeMutationAction, "fork">;
+type WebControlCommand =
+  | { type: "pause" }
+  | { type: "resume" }
+  | { type: "retry"; target: string }
+  | { type: "cancel"; target?: string }
+  | { type: "signal"; target: string; payload: unknown };
 
 export type WebAppOptions = {
   cwd: string;
   access?: AccessPolicy;
-  staticDir?: string;
-  port?: number;
-  ensureDaemonRunning?: (cwd: string) => void;
+  ensureDaemonRunning(cwd: string): void | Promise<void>;
 };
 
 export function createWebApp(options: WebAppOptions): Hono {
@@ -41,24 +42,59 @@ export function createWebApp(options: WebAppOptions): Hono {
   app.use("*", requireToken(options.access ?? {}));
 
   app.get("/api/health", async (context) => {
-    return context.json({ ok: true, health: await getRuntimeHealth(options.cwd) });
+    const health = await getRuntimeHealth(options.cwd);
+    return context.json({
+      ok: true,
+      health: {
+        checks: health.checks.map(({ area, status, message }) => ({ area, status, message })),
+      },
+    });
   });
 
   app.get("/api/runs", async (context) => {
     const runs = await listRuns(options.cwd);
-    return context.json({ ok: true, runs, total: runs.length, order: "updatedAt DESC" });
-  });
-
-  app.get("/api/runs/:id", async (context) => {
-    const run = await getRun(options.cwd, context.req.param("id"));
-    if (!run) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
-    return context.json({ ok: true, run });
+    return context.json({
+      ok: true,
+      runs: runs.map(({ id, name, status }) => ({ id, name, status })),
+    });
   });
 
   app.get("/api/runs/:id/runtime-snapshot", async (context) => {
     const snapshot = await getRunVisualizationSnapshot(options.cwd, context.req.param("id"));
     if (!snapshot) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
-    return context.json({ ok: true, run: snapshot.run, graph: graphFromOverlay(snapshot.overlay, "runtime") });
+    const dynamic = snapshot.run.dynamic;
+    return context.json({
+      ok: true,
+      run: {
+        id: snapshot.run.id,
+        name: snapshot.run.name,
+        status: snapshot.run.status,
+        input: snapshot.run.input,
+        ...(snapshot.run.output === undefined ? {} : { output: snapshot.run.output }),
+        createdAt: snapshot.run.createdAt,
+        updatedAt: snapshot.run.updatedAt,
+        ...(dynamic === undefined ? {} : {
+          dynamic: {
+            version: dynamic.version,
+            frames: dynamic.frames.filter(frame => frame.status === "failed").map(({ frameKey, nodeId, frameKind, status }) => ({
+              frameKey,
+              ...(nodeId === undefined ? {} : { nodeId }),
+              ...(frameKind === undefined ? {} : { frameKind }),
+              status,
+            })),
+            nodeInstances: dynamic.nodeInstances.filter(instance => instance.status === "failed").map(({ nodeKey, nodeId, status }) => ({ nodeKey, nodeId, status })),
+            groupMembers: dynamic.groupMembers.filter(member => member.status === "failed").map(member => ({
+              memberKey: member.memberKey,
+              status: member.status,
+              ...(member.memberKind === "branch"
+                ? { memberKind: "branch" as const, branchId: member.branchId }
+                : { memberKind: "fanout_item" as const, itemIndex: member.itemIndex }),
+            })),
+          },
+        }),
+      },
+      graph: graphFromOverlay(snapshot.overlay, "runtime"),
+    });
   });
 
   app.get("/api/runs/:id/nodes/:target/execution", async (context) => {
@@ -92,11 +128,8 @@ export function createWebApp(options: WebAppOptions): Hono {
     const body = await context.req.json().catch(() =>
       apiError(400, "invalid_json", "Control body must be JSON."),
     );
-    const result = await submitControl(options, context.req.param("id"), body);
-    if (!result) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
-    if (result.run.status === "pending" || result.run.status === "running")
-      options.ensureDaemonRunning?.(options.cwd);
-    return context.json({ ok: true, result });
+    await submitControl(options, context.req.param("id"), body);
+    return context.json({ ok: true });
   });
 
   app.get("/api/runs/:id/artifacts/:artifactId/preview", async (context) => {
@@ -108,13 +141,8 @@ export function createWebApp(options: WebAppOptions): Hono {
     const filePath = resolve(runDir, artifact.relativePath);
     if (!filePath.startsWith(runDir + "/")) apiError(403, "path_escape", "Artifact path escapes run directory.");
     const bytes = await readFile(filePath).catch(() => apiError(404, "artifact_read_failed", "Artifact file could not be read."));
-    const maxPreview = 128 * 1024;
-    const truncated = bytes.length > maxPreview;
-    const body = truncated ? bytes.slice(0, maxPreview) : bytes;
     context.header("content-type", mediaType(artifact.relativePath));
-    context.header("x-artifact-size", String(bytes.length));
-    if (truncated) context.header("x-artifact-truncated", "true");
-    return context.newResponse(body);
+    return context.newResponse(bytes.subarray(0, 128 * 1024));
   });
 
   app.get("/api/workflows/catalog", async (context) => {
@@ -144,12 +172,9 @@ export function createWebApp(options: WebAppOptions): Hono {
       config: {
         cwd: options.cwd,
         access: options.access?.tokenHash !== undefined ? "token" : "open",
-        port: options.port ?? null,
       },
     });
   });
-
-  mountStaticAssets(app, options.staticDir);
 
   app.notFound(context => {
     context.status(404);
@@ -178,38 +203,59 @@ async function submitControl(
 ) {
   const command = parseControlBody(body);
   try {
-    if (command.type === "signal")
-      return await applySignalRunControl(options.cwd, runId, command.target, command.payload as JsonValue);
-    return await applyRunControl(options.cwd, runId, command.type, command.input);
+    await options.ensureDaemonRunning(options.cwd);
+    const base = { requestId: `web:${randomUUID()}`, runId };
+    const intent: DaemonControlIntent = command.type === "signal"
+      ? { ...base, type: "signal", nodeId: command.target, payload: command.payload as JsonValue }
+      : command.type === "pause" || command.type === "resume"
+        ? { ...base, type: command.type }
+        : command.type === "retry"
+          ? { ...base, type: "retry", target: command.target }
+          : { ...base, type: "cancel", ...(command.target === undefined ? {} : { target: command.target }) };
+    await requestDaemonControl(options.cwd, intent);
   } catch (error) {
-    if (error instanceof RuntimeUseCaseException) {
-      apiError(400, error.failure.type, error.failure.message);
+    if (error instanceof DaemonRequestError) {
+      apiError(error.code === "RUN_NOT_FOUND" ? 404 : 400, error.code.toLowerCase(), error.message);
     }
     throw error;
   }
 }
 
-function parseControlBody(body: unknown):
-  | { type: WebRuntimeControlAction; input: { target?: string } }
-  | { type: "signal"; target: string; payload: unknown }
-{
-  if (!body || typeof body !== "object") apiError(400, "invalid_command", "Control body must be an object.");
+function parseControlBody(body: unknown): WebControlCommand {
+  if (!body || typeof body !== "object" || Array.isArray(body)) apiError(400, "invalid_command", "Control body must be an object.");
   const record = body as Record<string, unknown>;
 
-  if (record.type === "pause" || record.type === "resume" || record.type === "retry" || record.type === "cancel") {
-    return {
-      type: record.type,
-      input: typeof record.target === "string" && record.target.length > 0 ? { target: record.target } : {},
-    };
+  if (record.type === "pause" || record.type === "resume") {
+    requireControlKeys(record, ["type"]);
+    return { type: record.type };
+  }
+  if (record.type === "retry") {
+    requireControlKeys(record, ["type", "target"]);
+    if (typeof record.target !== "string" || record.target.length === 0)
+      apiError(400, "invalid_command", "Retry control requires a non-empty target.");
+    return { type: "retry", target: record.target };
+  }
+  if (record.type === "cancel") {
+    requireControlKeys(record, ["type", "target"]);
+    if (record.target === undefined) return { type: "cancel" };
+    if (typeof record.target !== "string" || record.target.length === 0)
+      apiError(400, "invalid_command", "Cancel target must be a non-empty string.");
+    return { type: "cancel", target: record.target };
   }
   if (record.type === "signal") {
+    requireControlKeys(record, ["type", "target", "payload"]);
     if (typeof record.target !== "string" || record.target.length === 0)
       apiError(400, "invalid_command", "Signal control requires a non-empty target.");
-    if (record.payload === undefined)
+    if (!("payload" in record))
       apiError(400, "invalid_command", "Signal control requires a payload.");
     return { type: "signal", target: record.target, payload: record.payload };
   }
   apiError(400, "invalid_command", "Unsupported control type.");
+}
+
+function requireControlKeys(record: Record<string, unknown>, allowed: string[]): void {
+  if (Object.keys(record).some(key => !allowed.includes(key)))
+    apiError(400, "invalid_command", "Control body contains unsupported fields.");
 }
 
 function mediaType(path: string): string {

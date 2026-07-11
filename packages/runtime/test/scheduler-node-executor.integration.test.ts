@@ -6,14 +6,33 @@ import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { fmap, template } from "@acpus/expression";
 import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { advanceRun } from "../src/scheduler/advance.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { createRuntimeNodeExecutor as createRuntimeNodeExecutorWithRunner, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
-import { advanceFrozenRun as advanceFrozenRunWithRunner, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
-import { applySchedulerControlIntent as applySchedulerControlIntentWithRunner, type ApplySchedulerControlIntentOptions, type RunControlIntent } from "../src/scheduler/control.js";
-import { executeAgentNode } from "../src/execution/agent-node.js";
+import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
+import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
+import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
+import { executeAgentNode as executeAgentNodeProduction } from "../src/execution/agent-node.js";
+import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { applySchedulerControlIntent } from "./support/scheduler.js";
+
+const executorMocks = vi.hoisted(() => ({
+  executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
+  runTaskAttempt: vi.fn<TaskAttemptRunner>(),
+}));
+
+vi.mock("@acpus/agent-executor", async importOriginal => ({
+  ...await importOriginal<typeof import("@acpus/agent-executor")>(),
+  executeAgentTurn: executorMocks.executeAgentTurn,
+}));
+
+vi.mock("../src/execution/task-process.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/execution/task-process.js")>(),
+  runTaskAttempt: executorMocks.runTaskAttempt,
+}));
 
 declare global {
   var __acpusPromptResolutionCount: number | undefined;
@@ -25,23 +44,41 @@ let taskAttemptHarness = createInlineTaskAttemptHarness();
 
 beforeEach(() => {
   taskAttemptHarness = createInlineTaskAttemptHarness();
+  executorMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
+  executorMocks.executeAgentTurn.mockReset();
+  vi.useRealTimers();
 });
 
-function advanceFrozenRun(input: AdvanceFrozenRunInput) {
-  return advanceFrozenRunWithRunner({ ...input, taskAttemptRunner: taskAttemptHarness.runAttempt });
+type TestRuntimeNodeExecutorInput = RuntimeNodeExecutorInput & {
+  executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+  taskAttemptRunner?: TaskAttemptRunner;
+};
+
+function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> }) {
+  const { executeAgentTurn, ...productionInput } = input;
+  if (executeAgentTurn) executorMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
+  return advanceFrozenRunProduction(productionInput);
 }
 
-function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput) {
-  return createRuntimeNodeExecutorWithRunner({ ...input, taskAttemptRunner: taskAttemptHarness.runAttempt });
+function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
+  const { executeAgentTurn, taskAttemptRunner, ...productionInput } = input;
+  if (executeAgentTurn) executorMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
+  if (taskAttemptRunner) executorMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);
+  return createRuntimeNodeExecutorProduction(productionInput);
 }
 
-function applySchedulerControlIntent(
-  cwd: string,
-  store: RuntimeStore,
-  intent: RunControlIntent,
-  options: ApplySchedulerControlIntentOptions = {},
+type TestAgentExecutorOptions = Parameters<typeof executeAgentNodeProduction>[2] & {
+  executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+};
+
+function executeAgentNode(
+  node: Parameters<typeof executeAgentNodeProduction>[0],
+  scope: Parameters<typeof executeAgentNodeProduction>[1],
+  options: TestAgentExecutorOptions,
 ) {
-  return applySchedulerControlIntentWithRunner(cwd, store, intent, { ...options, taskAttemptRunner: taskAttemptHarness.runAttempt });
+  const { executeTurn, ...productionOptions } = options;
+  if (executeTurn) executorMocks.executeAgentTurn.mockImplementation(executeTurn);
+  return executeAgentNodeProduction(node, scope, productionOptions);
 }
 
 describe("runtime scheduler node executor", () => {
@@ -54,7 +91,7 @@ describe("runtime scheduler node executor", () => {
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
 
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.frames.root).toMatchObject({ status: "failed" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.frames.root).toMatchObject({ status: "failed" });
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         expect(store.getRun(run.id)?.output).toBeUndefined();
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", run.id)).toMatchObject({ count: 1 });
@@ -73,7 +110,7 @@ describe("runtime scheduler node executor", () => {
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames.root).toMatchObject({
           status: "failed",
           error: expect.objectContaining({
@@ -110,7 +147,7 @@ describe("runtime scheduler node executor", () => {
         }, { ownerId: "owner-b" });
 
         expect(applied.advanced).toMatchObject({ status: "completed" });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
         expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: { ok: true } });
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", run.id)).toMatchObject({ count: 1 });
       } finally {
@@ -126,16 +163,17 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "Approve release?", timeoutMessage: "Approval timed out" }, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
 
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => new Date("2026-07-01T00:00:00.000Z"),
         })).resolves.toMatchObject({ status: "awaiting" });
 
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({
           status: "awaiting",
           deadlineAt: "2026-07-01T00:00:05.000Z",
           renderedPrompt: "Approve release?",
@@ -146,6 +184,7 @@ describe("runtime scheduler node executor", () => {
           timeout_message: "Approval timed out",
         });
       } finally {
+        vi.useRealTimers();
         store.close();
       }
     });
@@ -161,16 +200,17 @@ describe("runtime scheduler node executor", () => {
           input: { timeout: String(Number.MAX_SAFE_INTEGER), prompt: "Approve release?", timeoutMessage: "Approval timed out" },
           cwd: workspace,
         });
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
 
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => new Date("2026-07-01T00:00:00.000Z"),
         })).resolves.toMatchObject({ status: "failed", started: 0 });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(projection.instances)[0]).toMatchObject({
           status: "failed",
           statusReason: "expression_resolution_failed",
@@ -184,6 +224,7 @@ describe("runtime scheduler node executor", () => {
         expect(Object.values(projection.attempts)).toHaveLength(0);
         expect(Object.values(projection.signalWaits)).toHaveLength(0);
       } finally {
+        vi.useRealTimers();
         store.close();
       }
     });
@@ -199,14 +240,14 @@ describe("runtime scheduler node executor", () => {
         const secondKey = deriveInstanceKey(appendNode([], "second_task"));
 
         const first = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirst = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(afterFirst.instances[firstKey]).toMatchObject({ status: "completed", output: { value: "first" } });
         expect(afterFirst.instances[secondKey]).toMatchObject({ status: "ready", readinessSequence: 2 });
         expect(afterFirst.frames.root).toMatchObject({ status: "running" });
 
         const second = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store });
-        const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterSecond = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(afterSecond.instances[secondKey]).toMatchObject({ status: "completed", output: { value: "first-second" } });
         expect(afterSecond.frames.root).toMatchObject({ status: "completed", result: { final: "first-second" } });
@@ -229,7 +270,7 @@ describe("runtime scheduler node executor", () => {
         const finalKey = deriveInstanceKey(appendNode([], "final_task"));
 
         const first = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirst = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(afterFirst.frames[assertKey]).toMatchObject({ status: "completed", result: {} });
         expect(afterFirst.branchDecisions[ifKey]).toBe("then");
@@ -239,7 +280,7 @@ describe("runtime scheduler node executor", () => {
         expect(afterFirst.instances[finalKey]).toMatchObject({ status: "ready" });
 
         const second = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store });
-        const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterSecond = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(afterSecond.instances[finalKey]).toMatchObject({ status: "completed", output: { final: "then-final" } });
         expect(afterSecond.frames.root).toMatchObject({ status: "completed", result: { final: "then-final" } });
@@ -261,9 +302,9 @@ describe("runtime scheduler node executor", () => {
         const branchTaskKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "then"), "then_task"));
         const finalKey = deriveInstanceKey(appendNode([], "final_task"));
         const claim = store.scheduler.claimRun(run.id, "bootstrap", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "frame-retry-bootstrap",
           events: [
@@ -288,7 +329,7 @@ describe("runtime scheduler node executor", () => {
         }, { ownerId: "owner-a" });
 
         expect(applied.advanced).toMatchObject({ status: "idle", started: 1, completed: 1 });
-        const afterRetryAdvance = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterRetryAdvance = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(afterRetryAdvance.branchDecisions[ifKey]).toBe("then");
         expect(afterRetryAdvance.frames[ifKey]).toMatchObject({ status: "completed", result: { value: "then" } });
         expect(afterRetryAdvance.instances[branchTaskKey]).toMatchObject({ status: "completed", output: { value: "then" } });
@@ -316,7 +357,7 @@ describe("runtime scheduler node executor", () => {
         const finalKey = deriveInstanceKey(appendNode([], "final_task"));
 
         const first = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirst = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(afterFirst.instances[firstKey]).toMatchObject({ status: "completed", output: { value: "first" } });
         expect(afterFirst.instances[secondKey]).toMatchObject({ status: "ready" });
@@ -324,7 +365,7 @@ describe("runtime scheduler node executor", () => {
         expect(afterFirst.frames[ifKey]).toMatchObject({ status: "running" });
 
         const second = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store });
-        const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterSecond = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(second).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(afterSecond.instances[secondKey]).toMatchObject({ status: "completed", output: { value: "first-second" } });
         expect(afterSecond.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "first-second" } });
@@ -332,7 +373,7 @@ describe("runtime scheduler node executor", () => {
         expect(afterSecond.instances[finalKey]).toMatchObject({ status: "ready" });
 
         const final = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-c", store });
-        const afterFinal = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFinal = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(final).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(afterFinal.instances[finalKey]).toMatchObject({ status: "completed", output: { final: "first-second-final" } });
         expect(afterFinal.frames.root).toMatchObject({ status: "completed", result: { final: "first-second-final" } });
@@ -354,14 +395,14 @@ describe("runtime scheduler node executor", () => {
         const secondKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case:0"), "case_second"));
 
         await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirst = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(afterFirst.branchDecisions[switchKey]).toBe("case:0");
         expect(afterFirst.instances[firstKey]).toMatchObject({ status: "completed", output: { value: "case" } });
         expect(afterFirst.instances[secondKey]).toMatchObject({ status: "ready" });
         expect(afterFirst.frames[branchKey]).toMatchObject({ status: "running" });
 
         await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store });
-        const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterSecond = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(afterSecond.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "case-second" } });
         expect(afterSecond.frames[switchKey]).toMatchObject({ status: "completed", result: { value: "case-second" } });
         expect(afterSecond.frames.root).toMatchObject({ status: "completed", result: { value: "case-second" } });
@@ -383,19 +424,26 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await firstStore.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
         runId = run.id;
+        const frozen = firstStore.getFrozenRun(runId);
+        if (!frozen) throw new Error("expected frozen workflow");
+        const scope = { input: frozen.input, nodes: {}, meta: frozen.meta, fanout: {}, loop: {} };
 
-        await expect(advanceFrozenRun({
-          cwd: workspace,
+        await expect(advanceRun({
           runId,
           ownerId: "owner-a",
-          store: firstStore,
+          store: firstStore.scheduler,
           maxLeafConcurrency: 0,
+          executor: { async execute() { throw new Error("checkpoint setup must not execute leaves"); } },
+          bootstrap: snapshot => snapshot.projection.frames.root ? [] : bootstrapRootEvents(runId, frozen.ir, scope),
+          materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
         })).resolves.toMatchObject({ status: "idle", started: 0, completed: 0 });
 
-        const projection = firstStore.scheduler.loadRunSnapshot(runId).projection;
+        const projection = throwingSchedulerStore(firstStore.scheduler).loadRunSnapshot(runId).projection;
         expect(projection.branchDecisions[ifKey]).toBe("then");
         expect(projection.frames[branchKey]).toMatchObject({ status: "running" });
+        expect(projection.frames[ifKey]).toMatchObject({ status: "running" });
         expect(projection.instances[branchTaskKey]).toMatchObject({ status: "ready" });
+        expect(projection.instances[finalKey]).toBeUndefined();
         expect(JSON.parse(String(runtimeRow(workspace, "SELECT instance_path_json FROM scheduler_frames WHERE run_id = ? AND frame_key = ?", runId, ifKey)?.instance_path_json))).toEqual([{ kind: "node", nodeId: "gate" }]);
         expect(JSON.parse(String(runtimeRow(workspace, "SELECT instance_path_json FROM scheduler_frames WHERE run_id = ? AND frame_key = ?", runId, branchKey)?.instance_path_json))).toEqual([{ kind: "branch", nodeId: "gate", branchId: "then" }]);
       } finally {
@@ -405,7 +453,7 @@ describe("runtime scheduler node executor", () => {
       const resumedStore = await openRuntimeStore(workspace);
       try {
         await expect(advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumedStore })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        const afterBranch = resumedStore.scheduler.loadRunSnapshot(runId).projection;
+        const afterBranch = throwingSchedulerStore(resumedStore.scheduler).loadRunSnapshot(runId).projection;
         expect(afterBranch.branchDecisions[ifKey]).toBe("then");
         expect(afterBranch.instances[branchTaskKey]).toMatchObject({ status: "completed", output: { value: "then" } });
         expect(afterBranch.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "then" } });
@@ -413,7 +461,7 @@ describe("runtime scheduler node executor", () => {
         expect(afterBranch.instances[finalKey]).toMatchObject({ status: "ready" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-c", store: resumedStore })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-        expect(resumedStore.scheduler.loadRunSnapshot(runId).projection.frames.root).toMatchObject({ status: "completed", result: { final: "then-final" } });
+        expect(throwingSchedulerStore(resumedStore.scheduler).loadRunSnapshot(runId).projection.frames.root).toMatchObject({ status: "completed", result: { final: "then-final" } });
       } finally {
         resumedStore.close();
       }
@@ -429,7 +477,7 @@ describe("runtime scheduler node executor", () => {
         const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
 
         const groupKey = deriveInstanceKey(appendNode([], "race"));
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
         expect(projection.run).toMatchObject({ status: "completed" });
         expect(projection.frames[groupKey]).toMatchObject({ status: "completed", result: { left: { value: "left" }, right: { value: "right" } } });
@@ -455,10 +503,10 @@ describe("runtime scheduler node executor", () => {
         const parallelKey = deriveInstanceKey(appendNode([], "combine"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[prepareKey]).toMatchObject({ status: "completed", output: { prefix: "root" } });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[prepareKey]).toMatchObject({ status: "completed", output: { prefix: "root" } });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames[parallelKey]).toMatchObject({
           status: "completed",
           result: {
@@ -480,12 +528,12 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { maxConcurrency: 1 }, cwd: workspace });
         const first = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const afterFirst = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirst = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
         expect(Object.values(afterFirst.instances).filter(instance => instance.status === "completed")).toHaveLength(1);
 
         const second = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store });
-        const afterSecond = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterSecond = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(Object.values(afterSecond.instances).filter(instance => instance.status === "completed")).toHaveLength(2);
         expect(Object.values(afterSecond.groups)[0]).toMatchObject({ status: "completed", maxConcurrency: 1 });
@@ -502,7 +550,7 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
         const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
         expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
         expect(projection.frames[deriveInstanceKey(appendNode([], "items"))]).toMatchObject({
@@ -537,7 +585,7 @@ describe("runtime scheduler node executor", () => {
         runId = run.id;
         const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store: firstStore });
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(Object.values(firstStore.scheduler.loadRunSnapshot(runId).projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 1 });
+        expect(Object.values(throwingSchedulerStore(firstStore.scheduler).loadRunSnapshot(runId).projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 1 });
       } finally {
         firstStore.close();
       }
@@ -545,7 +593,7 @@ describe("runtime scheduler node executor", () => {
       const resumedStore = await openRuntimeStore(workspace);
       try {
         const second = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumedStore });
-        const projection = resumedStore.scheduler.loadRunSnapshot(runId).projection;
+        const projection = throwingSchedulerStore(resumedStore.scheduler).loadRunSnapshot(runId).projection;
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(projection.run).toMatchObject({ status: "completed" });
         expect(Object.values(projection.groups)[0]).toMatchObject({ status: "completed", quorumCount: 2, maxConcurrency: 1 });
@@ -568,7 +616,7 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 2 }, cwd: workspace });
         const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
         expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
         const fanoutFrame = projection.frames[deriveInstanceKey(appendNode([], "items"))];
@@ -596,7 +644,7 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { items: ["slow", "fast"] }, cwd: workspace });
         const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
         expect(summary).toMatchObject({ status: "completed", started: 2, completed: 1, cancelled: 1 });
         expect(projection.run).toMatchObject({ status: "completed" });
@@ -620,10 +668,10 @@ describe("runtime scheduler node executor", () => {
         const branchKey = deriveInstanceKey(appendBranch([], "parallel", "mixed"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.groupMembers[branchKey]).toMatchObject({ status: "running" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groupMembers[branchKey]).toMatchObject({ status: "running" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "second" } });
         expect(projection.groupMembers[branchKey]).toMatchObject({ status: "completed", output: { value: "second" } });
         expect(projection.frames[parallelKey]).toMatchObject({ status: "completed", result: { mixed: { value: "second" } } });
@@ -643,10 +691,10 @@ describe("runtime scheduler node executor", () => {
         const fanoutKey = deriveInstanceKey(appendNode([], "items"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 2, completed: 2 });
-        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.groupMembers).every(member => member.status === "running")).toBe(true);
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groupMembers).every(member => member.status === "running")).toBe(true);
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames[fanoutKey]).toMatchObject({
           status: "completed",
           result: [
@@ -674,18 +722,18 @@ describe("runtime scheduler node executor", () => {
         const secondItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1), "inner_task"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[firstItemNodeKey]).toMatchObject({ status: "ready" });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[secondItemNodeKey]).toMatchObject({ status: "ready" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[firstItemNodeKey]).toMatchObject({ status: "ready" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[secondItemNodeKey]).toMatchObject({ status: "ready" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-        const afterFirstItem = store.scheduler.loadRunSnapshot(run.id).projection;
+        const afterFirstItem = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(afterFirstItem.instances).filter(instance => instance.nodeId === "inner_task" && instance.status === "completed")).toHaveLength(1);
         expect(Object.values(afterFirstItem.instances).filter(instance => instance.nodeId === "inner_task" && instance.status === "ready")).toHaveLength(1);
         expect(afterFirstItem.instances[deriveInstanceKey(appendNode(appendBranch([], "combine", "sibling"), "sibling_task"))]).toMatchObject({ status: "ready" });
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-c", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-d", store })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames.root).toMatchObject({
           status: "completed",
           result: {
@@ -728,7 +776,7 @@ describe("runtime scheduler node executor", () => {
         const rightSignalKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "right"), "right_signal"));
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting", started: 0 });
-        const awaiting = store.scheduler.loadRunSnapshot(run.id).projection;
+        const awaiting = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(awaiting.instances[leftSignalKey]).toMatchObject({ status: "awaiting" });
         expect(awaiting.instances[rightSignalKey]).toMatchObject({ status: "ready" });
         expect(awaiting.groupMembers[leftBranchKey]).toMatchObject({ status: "running" });
@@ -745,7 +793,7 @@ describe("runtime scheduler node executor", () => {
         }, { ownerId: "owner-b" })).resolves.toMatchObject({
           advanced: { status: "awaiting", started: 0 },
         });
-        const rightAwaiting = store.scheduler.loadRunSnapshot(run.id).projection;
+        const rightAwaiting = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(rightAwaiting.instances[rightSignalKey]).toMatchObject({ status: "awaiting" });
         expect(rightAwaiting.groupMembers[rightBranchKey]).toMatchObject({ status: "running" });
 
@@ -759,7 +807,7 @@ describe("runtime scheduler node executor", () => {
         }, { ownerId: "owner-c" })).resolves.toMatchObject({
           advanced: { status: "completed", started: 0 },
         });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.frames[gateKey]).toMatchObject({ status: "completed" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.frames[gateKey]).toMatchObject({ status: "completed" });
       } finally {
         store.close();
       }
@@ -776,7 +824,7 @@ describe("runtime scheduler node executor", () => {
         runId = run.id;
         const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store });
         expect(first).toMatchObject({ status: "idle", started: 1, completed: 1 });
-        expect(Object.values(store.scheduler.loadRunSnapshot(runId).projection.instances).filter(instance => instance.status === "ready")).toHaveLength(1);
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection.instances).filter(instance => instance.status === "ready")).toHaveLength(1);
       } finally {
         store.close();
       }
@@ -784,7 +832,7 @@ describe("runtime scheduler node executor", () => {
       const resumed = await openRuntimeStore(workspace);
       try {
         const second = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumed });
-        const projection = resumed.scheduler.loadRunSnapshot(runId).projection;
+        const projection = throwingSchedulerStore(resumed.scheduler).loadRunSnapshot(runId).projection;
         const loopFrame = Object.values(projection.frames).find(frame => frame.frameKind === "loop");
         expect(second).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(projection.frames.root).toMatchObject({ status: "completed" });
@@ -827,7 +875,7 @@ describe("runtime scheduler node executor", () => {
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-b", store })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames[loopKey]).toMatchObject({
           status: "completed",
           result: { done: true, value: "first-0-second-0" },
@@ -890,7 +938,6 @@ describe("runtime scheduler node executor", () => {
           ir: prepared.ir,
           scope: {},
           store,
-          agentRepairDelayMs: 0,
           executeAgentTurn: async request => {
             turns.push(request);
             return completedAgentTurn(
@@ -913,8 +960,6 @@ describe("runtime scheduler node executor", () => {
                     completedAt: "2026-07-01T00:00:01.000Z",
                   }],
                 },
-                input: { preview: request.prompt, truncated: false, originalBytes: Buffer.byteLength(request.prompt), headBytes: Buffer.byteLength(request.prompt) },
-                output: { preview: "{\"attempt\":1,\"extra\":\"drop\"}", truncated: false, originalBytes: 28, headBytes: 28 },
                 cwd: workspace,
                 acpxRecordId: "record-1",
               } : undefined,
@@ -922,7 +967,7 @@ describe("runtime scheduler node executor", () => {
           },
         });
 
-        await expect(executor.execute({
+        await expect(withImmediateAgentRepairs(() => executor.execute({
           runId: run.id,
           nodeId: "review",
           nodeKey: "review.dynamic",
@@ -930,7 +975,7 @@ describe("runtime scheduler node executor", () => {
           attemptNo: 1,
           ownerEpoch: 1,
           signal: new AbortController().signal,
-        })).resolves.toEqual({
+        }))).resolves.toEqual({
           status: "completed",
           output: { attempt: "2" },
         });
@@ -992,7 +1037,10 @@ describe("runtime scheduler node executor", () => {
         await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json"))).resolves.toMatchObject({
           rawParsedOutput: { attempt: 1, extra: "drop" },
         });
-        await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json"))).resolves.toMatchObject({
+        await expect(readFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md"), "utf8")).resolves.toBe(turns[0]!.prompt);
+        await expect(readFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md"), "utf8")).resolves.toBe("{\"attempt\":1,\"extra\":\"drop\"}");
+        const telemetryArtifact = await readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json"));
+        expect(telemetryArtifact).toMatchObject({
           telemetry: {
             eventCount: 5,
             context: { used: 120, size: 240 },
@@ -1009,18 +1057,14 @@ describe("runtime scheduler node executor", () => {
                 completedAt: "2026-07-01T00:00:01.000Z",
               })],
             },
-            input: {
-              preview: turns[0]!.prompt,
-              artifactRef: "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md",
-            },
-            output: {
-              preview: "{\"attempt\":1,\"extra\":\"drop\"}",
-              artifactRef: "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md",
-            },
             cwd: workspace,
             acpxRecordId: "record-1",
           },
         });
+        expect(telemetryArtifact).not.toHaveProperty("telemetry.input");
+        expect(telemetryArtifact).not.toHaveProperty("telemetry.output");
+        expect(JSON.stringify(telemetryArtifact)).not.toContain(turns[0]!.prompt);
+        expect(JSON.stringify(telemetryArtifact)).not.toContain("{\"attempt\":1,\"extra\":\"drop\"}");
         await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json"))).resolves.toMatchObject({
           rawParsedOutput: { attempt: "2", extra: "drop" },
         });
@@ -1467,7 +1511,6 @@ describe("runtime scheduler node executor", () => {
           ir: prepared.ir,
           scope: {},
           store,
-          agentRepairDelayMs: 0,
           executeAgentTurn: async () => completedAgentTurn("not json"),
         });
 
@@ -1812,13 +1855,13 @@ describe("runtime scheduler node executor", () => {
         })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const firstKey = deriveInstanceKey(appendNode([], "first"));
-        expect(store.scheduler.loadRunSnapshot(source.id).projection.instances[firstKey]).toMatchObject({
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(source.id).projection.instances[firstKey]).toMatchObject({
           status: "completed",
           output: { ok: true },
         });
 
         const fork = await store.forkRun(source.id, { prepared: replacementPrepared });
-        const seeded = store.scheduler.loadRunSnapshot(fork.id).projection;
+        const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
         expect(seeded.instances[firstKey]).toMatchObject({
           status: "completed",
           output: { ok: true },
@@ -1832,7 +1875,7 @@ describe("runtime scheduler node executor", () => {
           store,
         })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
-        const completed = store.scheduler.loadRunSnapshot(fork.id).projection;
+        const completed = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
         const fixedKey = deriveInstanceKey(appendNode([], "fixed"));
         expect(Object.values(completed.attempts).filter(attempt => attempt.nodeKey === firstKey)).toHaveLength(0);
         expect(Object.values(completed.attempts).filter(attempt => attempt.nodeKey === fixedKey)).toHaveLength(1);
@@ -1859,7 +1902,7 @@ describe("runtime scheduler node executor", () => {
         const iter2Prepare = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 2), "prepare"));
         const failedTarget = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 2), "maybe_fail"));
         const inherited = [iter0Prepare, iter0Maybe, iter1Prepare, iter1Maybe, iter2Prepare];
-        const sourceProjection = store.scheduler.loadRunSnapshot(source.id).projection;
+        const sourceProjection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(source.id).projection;
         for (const nodeKey of inherited) expect(sourceProjection.instances[nodeKey]).toMatchObject({ status: "completed" });
         expect(sourceProjection.instances[failedTarget]).toMatchObject({ status: "failed" });
 
@@ -1900,7 +1943,7 @@ describe("runtime scheduler node executor", () => {
         const fork = await store.forkRun(source.id, { target: "second" });
         const firstKey = deriveInstanceKey(appendNode([], "first"));
         const secondKey = deriveInstanceKey(appendNode([], "second"));
-        const seeded = store.scheduler.loadRunSnapshot(fork.id).projection;
+        const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
         expect(seeded.instances[firstKey]).toMatchObject({ status: "completed" });
         expect(seeded.instances[secondKey]).toMatchObject({ status: "ready" });
 
@@ -1911,7 +1954,7 @@ describe("runtime scheduler node executor", () => {
           store,
         })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
-        const completed = store.scheduler.loadRunSnapshot(fork.id).projection;
+        const completed = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
         expect(Object.values(completed.attempts).filter(attempt => attempt.nodeKey === firstKey)).toHaveLength(0);
         expect(Object.values(completed.attempts).filter(attempt => attempt.nodeKey === secondKey)).toHaveLength(1);
       } finally {
@@ -1942,7 +1985,7 @@ describe("runtime scheduler node executor", () => {
         const fork = await store.forkRun(source.id, { agentOverrides: {} });
 
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", fork.id, `fork-seed:${fork.id}`)).toMatchObject({ count: 1 });
-        expect(store.scheduler.loadRunSnapshot(fork.id).projection.instances[deriveInstanceKey(appendNode([], "first"))]).toMatchObject({ status: "completed" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[deriveInstanceKey(appendNode([], "first"))]).toMatchObject({ status: "completed" });
       } finally {
         store.close();
       }
@@ -2148,15 +2191,14 @@ describe("runtime scheduler node executor", () => {
       if (!node || node.kind !== "agent") throw new Error("expected review agent node");
       const turns: AgentTurnRequest[] = [];
 
-      await expect(executeAgentNode(node, {}, {
+      await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
         cwd: workspace,
         agents: prepared.ir.agents,
-        repairDelayMs: 0,
         executeTurn: async request => {
           turns.push(request);
           return completedAgentTurn(turns.length === 1 ? "" : "{\"attempt\":\"2\"}");
         },
-      })).resolves.toEqual({ attempt: "2" });
+      }))).resolves.toEqual({ attempt: "2" });
       expect(turns).toHaveLength(2);
     });
   });
@@ -2171,7 +2213,6 @@ describe("runtime scheduler node executor", () => {
       await expect(executeAgentNode(node, {}, {
         cwd: workspace,
         agents: prepared.ir.agents,
-        repairDelayMs: 0,
         executeTurn: async request => {
           turns.push(request);
           return completedAgentTurn("");
@@ -2190,6 +2231,8 @@ describe("runtime scheduler node executor", () => {
       globalThis.__acpusTimeoutResolutionCount = 0;
       const now = new Date();
       try {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(now);
         const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review", repairMax: 0 }, cwd: workspace });
         const turns: AgentTurnRequest[] = [];
 
@@ -2198,7 +2241,6 @@ describe("runtime scheduler node executor", () => {
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => now,
           executeAgentTurn: async request => {
             turns.push(request);
             return completedAgentTurn("{\"ok\":true}");
@@ -2220,6 +2262,7 @@ describe("runtime scheduler node executor", () => {
           deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
         });
       } finally {
+        vi.useRealTimers();
         globalThis.__acpusPromptResolutionCount = undefined;
         globalThis.__acpusRepairResolutionCount = undefined;
         globalThis.__acpusTimeoutResolutionCount = undefined;
@@ -2419,7 +2462,6 @@ describe("runtime scheduler node executor", () => {
           ir: prepared.ir,
           scope: {},
           store,
-          agentRepairDelayMs: 100,
           executeAgentTurn: async request => {
             turns.push(request);
             queueMicrotask(() => controller.abort());
@@ -2471,7 +2513,7 @@ describe("runtime scheduler node executor", () => {
           executeAgentTurn: async request => {
             turns.push(request);
             setTimeout(() => {
-              store.scheduler.pauseRun({
+              throwingSchedulerStore(store.scheduler).pauseRun({
                 runId: run.id,
                 ownerEpoch: 1,
                 idempotencyKey: "pause-active-agent",
@@ -2494,7 +2536,7 @@ describe("runtime scheduler node executor", () => {
 
         expect(cooperativeAbort).toBe(true);
         expect(turns).toHaveLength(1);
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "paused" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "paused" });
 
         const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as RuntimeArtifactRow[];
         const promptPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.prompt.md`;
@@ -2531,7 +2573,7 @@ describe("runtime scheduler node executor", () => {
 
         const claim = store.scheduler.claimRun(run.id, "resume-owner", 60_000);
         if (!claim) throw new Error("expected resume claim");
-        store.scheduler.resumeRun({
+        throwingSchedulerStore(store.scheduler).resumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "resume-active-agent",
@@ -2581,7 +2623,7 @@ describe("runtime scheduler node executor", () => {
           },
         })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(projection.attempts)[0]).toMatchObject({
           status: "failed",
           terminalReason: "expression_resolution_failed",
@@ -2626,7 +2668,7 @@ describe("runtime scheduler node executor", () => {
           expected: "string",
           actual: "number",
         });
-        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
           status: "failed",
           terminalReason: "expression_resolution_failed",
           error: expectedError,
@@ -2652,7 +2694,7 @@ describe("runtime scheduler node executor", () => {
           field: "Signal node 'approve' prompt",
           message: "fmap(...) callback threw: signal prompt exploded: approve",
         });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(projection.instances)[0]).toMatchObject({
           status: "failed",
           statusReason: "expression_resolution_failed",
@@ -2748,21 +2790,20 @@ describe("runtime scheduler node executor", () => {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
 
-        await expect(advanceFrozenRun({
+        await expect(withImmediateAgentRepairs(() => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          agentRepairDelayMs: 0,
           executeAgentTurn: async request => {
             turns.push(request);
             return completedAgentTurn("{\"attempt\":1}");
           },
-        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         expect(turns).toHaveLength(3);
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "failed" });
-        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.attempts).filter(attempt => attempt.nodeKey === nodeKey).map(attempt => attempt.status)).toEqual(["failed"]);
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "failed" });
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts).filter(attempt => attempt.nodeKey === nodeKey).map(attempt => attempt.status)).toEqual(["failed"]);
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata).toMatchObject({
           status: "failed",
@@ -2789,21 +2830,20 @@ describe("runtime scheduler node executor", () => {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "review"));
 
-        await expect(advanceFrozenRun({
+        await expect(withImmediateAgentRepairs(() => advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          agentRepairDelayMs: 0,
           executeAgentTurn: async request => {
             turns.push(request);
             return completedAgentTurn("{\"ok\":\"not boolean\"}");
           },
-        })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+        }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         const claim = store.scheduler.claimRun(run.id, "retry-owner", 60_000);
         if (!claim) throw new Error("expected retry claim");
-        store.scheduler.retry({
+        throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: nodeKey,
           ownerEpoch: claim.ownerEpoch,
@@ -2816,7 +2856,6 @@ describe("runtime scheduler node executor", () => {
           runId: run.id,
           ownerId: "owner-b",
           store,
-          agentRepairDelayMs: 0,
           executeAgentTurn: async request => {
             turns.push(request);
             return completedAgentTurn("{\"attempt\":\"4\"}");
@@ -2860,7 +2899,7 @@ describe("runtime scheduler node executor", () => {
 
         const claim = store.scheduler.claimRun(run.id, "retry-run-owner", 60_000);
         if (!claim) throw new Error("expected run retry claim");
-        store.scheduler.retryRun({
+        throwingSchedulerStore(store.scheduler).retryRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "manual-run-retry",
@@ -2895,18 +2934,20 @@ describe("runtime scheduler node executor", () => {
       try {
         const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
         const now = new Date();
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(now);
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => now,
         })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
         expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
           deadline_at: new Date(now.getTime() + 5_000).toISOString(),
         });
       } finally {
+        vi.useRealTimers();
         store.close();
       }
     });
@@ -2918,17 +2959,18 @@ describe("runtime scheduler node executor", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { timeout: String(Number.MAX_SAFE_INTEGER) }, cwd: workspace });
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
 
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: run.id,
           ownerId: "owner-a",
           store,
-          now: () => new Date("2026-07-01T00:00:00.000Z"),
         })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
         expect(taskAttemptHarness.calls).toHaveLength(0);
-        expect(Object.values(store.scheduler.loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+        expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
           status: "failed",
           terminalReason: "expression_resolution_failed",
           error: {
@@ -2939,6 +2981,7 @@ describe("runtime scheduler node executor", () => {
           },
         });
       } finally {
+        vi.useRealTimers();
         store.close();
       }
     });
@@ -2956,7 +2999,7 @@ describe("runtime scheduler node executor", () => {
           failed: 1,
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(Object.values(projection.attempts)[0]).toMatchObject({ status: "timed_out", terminalReason: "timed_out" });
         expect(Object.values(projection.instances)[0]).toMatchObject({ status: "failed", statusReason: "timed_out" });
       } finally {
@@ -2971,7 +3014,7 @@ describe("runtime scheduler node executor", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
-        const executor = createRuntimeNodeExecutorWithRunner({
+        const executor = createRuntimeNodeExecutor({
           cwd: workspace,
           ir: prepared.ir,
           scope: {},
@@ -3067,7 +3110,7 @@ function rootTimedSignalWorkflow() {
     const approval = step("approve").signal({
       outputSchema: z.object({ ok: z.boolean() }),
       timeout: input.timeout,
-      onTimeout: { action: "fail", message: input.timeoutMessage },
+      onTimeout: { message: input.timeoutMessage },
       run: { prompt: input.prompt },
     });
     return { ok: approval.output.ok };
@@ -3735,7 +3778,7 @@ function assertUnsafeLoopForkSeed(
   inherited: string[],
   target: string,
 ): void {
-  const projection = store.scheduler.loadRunSnapshot(runId).projection;
+  const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
   for (const nodeKey of inherited) {
     expect(projection.instances[nodeKey]).toMatchObject({ status: "completed" });
     expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey)).toHaveLength(0);
@@ -3750,7 +3793,7 @@ function assertUnsafeLoopForkCompleted(
   inherited: string[],
   target: string,
 ): void {
-  const projection = store.scheduler.loadRunSnapshot(runId).projection;
+  const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
   for (const nodeKey of inherited) {
     expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey)).toHaveLength(0);
   }
@@ -3914,6 +3957,25 @@ function expectAgentArtifactRef(ref: unknown, relativePath: string, mediaType: s
   });
 }
 
+async function withImmediateAgentRepairs<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let outcome: { ok: true; value: T } | { ok: false; error: unknown } | undefined;
+    void operation().then(
+      value => { outcome = { ok: true, value }; },
+      error => { outcome = { ok: false, error }; },
+    );
+    while (!outcome) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (vi.getTimerCount() > 0) await vi.runOnlyPendingTimersAsync();
+    }
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function completedAgentTurn(responseText: string, stderr = "", telemetry = agentTelemetry(1)): AgentTurnResult {
   return { status: "completed", responseText, stderr, telemetry };
 }
@@ -3921,8 +3983,8 @@ function completedAgentTurn(responseText: string, stderr = "", telemetry = agent
 function startReviewAttempt(store: RuntimeStore, runId: string, idempotencyPrefix: string) {
   const claim = store.scheduler.claimRun(runId, `${idempotencyPrefix}-owner`, 60_000);
   if (!claim) throw new Error("expected run claim");
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -3938,7 +4000,7 @@ function startReviewAttempt(store: RuntimeStore, runId: string, idempotencyPrefi
       },
     }],
   });
-  const attempt = store.scheduler.startAttempt({
+  const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
     runId,
     nodeKey: "review.dynamic",
     nodeId: "review",

@@ -114,7 +114,7 @@ Core no longer has per-task `permissions`. A Task is trusted code selected by th
 
 ### `$` is still Acpus-owned
 
-Task code receives `ctx.$`; it should not import raw `zx` directly in normal use. The wrapper is not a permission gate. It exists so Acpus can attach command spans, timeouts, abort handling, stdout/stderr capture, redaction, and artifact writes.
+Task code receives `ctx.$`; it should not import raw `zx` directly in normal use. The wrapper is not a permission gate. It provides command timeouts, abort handling, stdout/stderr capture, and output helpers. Explicit artifact writes use `ctx.artifact`.
 
 ## Package boundary
 

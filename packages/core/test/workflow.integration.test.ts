@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   defineWorkflow,
-  secret,
   task,
   type StepDeclaration,
   type StepFactory,
@@ -23,7 +22,7 @@ const normalizePackage = task.define({
 });
 
 describe("workflow compilation", () => {
-  it("compiles leaf nodes, asserts, secrets, task descriptors, and outputs into WorkflowIR", () => {
+  it("compiles leaf nodes, asserts, task descriptors, and outputs into WorkflowIR", () => {
     const definition = defineWorkflow({
       name: "release_review",
       description: "Review a package release for readiness.",
@@ -36,7 +35,7 @@ describe("workflow compilation", () => {
           use: "codex",
           permissionMode: "approve-reads",
           agentMode: "agent",
-          env: { REVIEW_TOKEN: secret("REVIEW_TOKEN") },
+          env: { REVIEW_PROFILE: "strict" },
         },
       },
     }).build(({ input, agents, meta, step }) => {
@@ -53,7 +52,6 @@ describe("workflow compilation", () => {
           cwd: input.repoPath,
           env: {
             CI: "true",
-            PACKAGE_TOKEN: secret("PACKAGE_TOKEN"),
           },
           exec: async ({ input }) => ({
             passed: true,
@@ -76,7 +74,7 @@ describe("workflow compilation", () => {
           cwd: input.repoPath,
           env: {
             REVIEW_MODE: "strict",
-            REVIEW_TOKEN: secret("REVIEW_TOKEN"),
+            PACKAGE_NAME: input.packageName,
           },
         },
       });
@@ -84,7 +82,7 @@ describe("workflow compilation", () => {
       const humanGate = step("human_gate").signal({
         outputSchema: HumanDecisionOutput,
         timeout: "5m",
-        onTimeout: { action: "fail", message: "Human approval timed out" },
+        onTimeout: { message: "Human approval timed out" },
         run: {
           prompt: template`Approve ${review.output.summary} for ${input.packageName}`,
         },
@@ -99,12 +97,11 @@ describe("workflow compilation", () => {
       };
     });
 
-    const ir = compileWorkflowDefinition(definition, {
-      source: "packages/core/test/workflow.integration.test.ts",
-      validate: false,
-    });
+    const ir = compileWorkflowDefinition(definition, { validate: false });
 
     expect(ir.diagnostics).toEqual([]);
+    expect(ir.irVersion).toBe(4);
+    expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
       "task",
@@ -127,14 +124,19 @@ describe("workflow compilation", () => {
         permissionMode: "approve-reads",
         agentMode: "agent",
         env: {
-          REVIEW_TOKEN: { kind: "secret", name: "REVIEW_TOKEN" },
+          REVIEW_PROFILE: "strict",
         },
       },
     });
     expect(ir.root.nodes[0]).toMatchObject({
       kind: "task",
       run: {
-        target: { kind: "module" },
+        target: {
+          kind: "module",
+          specifier: "",
+          exportName: "",
+          referrer: { path: "" },
+        },
         input: {
           packageName: { kind: "ref", path: ["input", "packageName"] },
         },
@@ -153,7 +155,6 @@ describe("workflow compilation", () => {
         cwd: { kind: "ref", path: ["input", "repoPath"] },
         env: {
           CI: { kind: "literal", value: "true" },
-          PACKAGE_TOKEN: { kind: "secret", name: "PACKAGE_TOKEN" },
         },
       },
     });
@@ -175,40 +176,36 @@ describe("workflow compilation", () => {
         agent: "reviewer",
         prompt: {
           kind: "template",
-          template: {
-            parts: [
-              { kind: "text", value: "Review " },
-              {
-                kind: "expr",
-                expr: {
-                  kind: "ref",
-                  path: ["nodes", "run_tests", "output", "summary"],
-                },
+          parts: [
+            { kind: "text", value: "Review " },
+            {
+              kind: "expr",
+              expr: {
+                kind: "ref",
+                path: ["nodes", "run_tests", "output", "summary"],
               },
-              { kind: "text", value: "" },
-            ],
-          },
+            },
+            { kind: "text", value: "" },
+          ],
         },
         sessionKey: {
           kind: "template",
-          template: {
-            parts: [
-              { kind: "text", value: "release:" },
-              {
-                kind: "expr",
-                expr: {
-                  kind: "ref",
-                  path: ["nodes", "run_tests", "output", "summary"],
-                },
+          parts: [
+            { kind: "text", value: "release:" },
+            {
+              kind: "expr",
+              expr: {
+                kind: "ref",
+                path: ["nodes", "run_tests", "output", "summary"],
               },
-              { kind: "text", value: "" },
-            ],
-          },
+            },
+            { kind: "text", value: "" },
+          ],
         },
         cwd: { kind: "ref", path: ["input", "repoPath"] },
         env: {
           REVIEW_MODE: { kind: "literal", value: "strict" },
-          REVIEW_TOKEN: { kind: "secret", name: "REVIEW_TOKEN" },
+          PACKAGE_NAME: { kind: "ref", path: ["input", "packageName"] },
         },
       },
     });
@@ -217,28 +214,26 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[4]).toMatchObject({
       kind: "signal",
       timeout: { kind: "literal", value: "5m" },
-      onTimeout: { action: "fail", message: { kind: "literal", value: "Human approval timed out" } },
+      onTimeout: { message: { kind: "literal", value: "Human approval timed out" } },
       run: {
         prompt: {
           kind: "template",
-          template: {
-            parts: [
-              { kind: "text", value: "Approve " },
-              {
-                kind: "expr",
-                expr: {
-                  kind: "ref",
-                  path: ["nodes", "review", "output", "summary"],
-                },
+          parts: [
+            { kind: "text", value: "Approve " },
+            {
+              kind: "expr",
+              expr: {
+                kind: "ref",
+                path: ["nodes", "review", "output", "summary"],
               },
-              { kind: "text", value: " for " },
-              {
-                kind: "expr",
-                expr: { kind: "ref", path: ["input", "packageName"] },
-              },
-              { kind: "text", value: "" },
-            ],
-          },
+            },
+            { kind: "text", value: " for " },
+            {
+              kind: "expr",
+              expr: { kind: "ref", path: ["input", "packageName"] },
+            },
+            { kind: "text", value: "" },
+          ],
         },
       },
     });
@@ -262,14 +257,36 @@ describe("workflow compilation", () => {
         target: { kind: "module" },
       },
     });
+    expect(ir.root.nodes.every(node => !("source" in node))).toBe(true);
+    expect((ir.root.nodes[0] as any).run).not.toHaveProperty("kind");
+    expect((ir.root.nodes[0] as any).run.target).not.toHaveProperty("runtime");
+    expect((ir.root.nodes[0] as any).run.target.referrer).not.toHaveProperty("kind");
     expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
     expect(ir.root.nodes[1]).toMatchObject({
       kind: "task",
       run: {
-        target: { kind: "inline", runtime: "node", source: expect.any(String) },
+        target: { kind: "inline", source: expect.any(String) },
       },
     });
+    expect((ir.root.nodes[1] as any).run).not.toHaveProperty("kind");
+    expect((ir.root.nodes[1] as any).run.target).not.toHaveProperty("runtime");
+    expect((ir.root.nodes[3] as any).run).not.toHaveProperty("kind");
+    expect((ir.root.nodes[4] as any).run).not.toHaveProperty("kind");
     expect(ir.root.nodes[1]).not.toHaveProperty("outputSchema");
+  });
+
+  it("lowers the same definition to identical WorkflowIR", () => {
+    const definition = defineWorkflow({ name: "deterministic_lowering" }).build(({ step }) => {
+      const result = step("run").task({
+        run: {
+          input: { value: "stable" },
+          exec: async ({ input }) => ({ value: input.value }),
+        },
+      });
+      return { value: result.output.value };
+    });
+
+    expect(compileWorkflowDefinition(definition)).toEqual(compileWorkflowDefinition(definition));
   });
 
   it("rejects literal undefined graph binding fields during lowering", () => {
@@ -368,12 +385,10 @@ describe("workflow compilation", () => {
       maxConcurrency: { kind: "literal", value: 2 },
       branches: {
         fast: {
-          scope: {
-            outputs: {
-              status: {
-                kind: "ref",
-                path: ["nodes", "gate", "output", "status"],
-              },
+          outputs: {
+            status: {
+              kind: "ref",
+              path: ["nodes", "gate", "output", "status"],
             },
           },
         },
@@ -527,7 +542,7 @@ describe("workflow compilation", () => {
     expect(parallel).toMatchObject({
       kind: "parallel",
       branches: {
-        left: { scope: { nodes: [expect.objectContaining({ id: "parallel_left_echo", kind: "task" })] } },
+        left: { nodes: [expect.objectContaining({ id: "parallel_left_echo", kind: "task" })] },
       },
     });
   });
@@ -773,7 +788,7 @@ describe("workflow compilation", () => {
       kind: "task",
       run: {
         input: {},
-        target: { kind: "inline", runtime: "node", source: "" },
+        target: { kind: "inline", source: "" },
       },
     });
   });
@@ -887,7 +902,6 @@ describe("workflow compilation", () => {
           cwd: "/tmp/work",
           env: {
             STATIC: "1",
-            TOKEN: secret("WORKER_TOKEN"),
           },
         },
       },
@@ -914,7 +928,6 @@ describe("workflow compilation", () => {
         cwd: "/tmp/work",
         env: {
           STATIC: "1",
-          TOKEN: { kind: "secret", name: "WORKER_TOKEN" },
         },
       },
     });
@@ -990,8 +1003,8 @@ describe("workflow compilation", () => {
       kind: "parallel",
       strategy: "race",
       branches: {
-        fast: { scope: { outputs: { id: { kind: "literal", value: "fast" } } } },
-        slow: { scope: { outputs: { id: { kind: "literal", value: "slow" } } } },
+        fast: { outputs: { id: { kind: "literal", value: "fast" } } },
+        slow: { outputs: { id: { kind: "literal", value: "slow" } } },
       },
     });
     expect((race as any).branches.fast).not.toHaveProperty("outputSchema");

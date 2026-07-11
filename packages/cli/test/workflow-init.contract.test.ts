@@ -114,7 +114,7 @@ describe("workflow init source contracts", () => {
     const source = await readFile(starter, "utf8");
 
     expect(source).toContain('import { defineWorkflow, z } from "acpus/core";');
-    expect(source).toContain('import { fmap, lift2, template } from "acpus/expression";');
+    expect(source).toMatch(/import \{ fmap, lift2, template(?:,| \})/);
     expect(source).toContain('// import { createWorktree } from "acpus/tasks/git";');
     expect(source).toContain("input, meta, and node.output values are Expr tokens");
     expect(source).toContain("Use step().if/switch/parallel/fanout/loop for graph control flow");
@@ -124,6 +124,12 @@ describe("workflow init source contracts", () => {
     expect(source).toContain("const summary = lift2(");
     expect(source).toContain("review.output.ready,");
     expect(source).toContain("review.output.summary,");
+    expect(source).toContain('const writeSummary = step("write_summary").task({');
+    expect(source).toContain("input: { summary },");
+    expect(source).toContain('summaryArtifact: await artifact.writeText(');
+    expect(source).toContain('"summary.md",');
+    expect(source).toContain('{ mediaType: "text/markdown" },');
+    expect(source).toContain("summaryArtifact: writeSummary.output.summaryArtifact,");
     expect(source).toContain("summary,");
     expect(source).toContain('name: "acpus-workflow-starter"');
   });

@@ -16,8 +16,6 @@ export type AgentUseSpec = {
   model?: string;
   permissionMode?: AgentPermissionMode;
   agentMode?: string;
-  policy?: never;
-  options?: never;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -29,8 +27,6 @@ export type AgentCommandSpec = {
   model?: string;
   permissionMode?: AgentPermissionMode;
   agentMode?: string;
-  policy?: never;
-  options?: never;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -51,7 +47,6 @@ export type AgentRunSpec = {
   agent: AgentToken;
   prompt: Resolvable<string>;
   permissionMode?: AgentPermissionMode;
-  policy?: never;
   sessionKey?: Resolvable<string>;
   cwd?: Resolvable<string>;
   env?: EnvInput;
@@ -101,7 +96,6 @@ export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionI
 
 function agentRunToIR(spec: AgentRunSpec): AgentRunIR {
   return stripUndefined({
-    kind: "agent_run",
     agent: spec.agent.key,
     prompt: valueToExprIR(spec.prompt),
     permissionMode: spec.permissionMode,
@@ -117,9 +111,6 @@ export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
   diagnostics: DiagnosticIR[],
 ): AgentNodeIR {
   assertStableId(id, diagnostics);
-  if ((spec.run as { policy?: unknown }).policy !== undefined) {
-    diagnostics.push({ code: "A003", severity: "error", message: `Agent node '${id}' run must use permissionMode, not policy.`, path: `root.nodes.${id}.run.policy` });
-  }
   return stripUndefined({
     id,
     kind: "agent",

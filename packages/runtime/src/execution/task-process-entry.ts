@@ -34,7 +34,6 @@ process.on("message", (message: TaskProcessParentMessage) => {
 
 async function execute(request: TaskProcessRequest): Promise<void> {
   try {
-    validateExecutionOptions(request.execution);
     const fn = await loadTaskFunction(request.target, request.workspaceDir);
     const output = await fn({
       input: request.input,
@@ -67,11 +66,6 @@ function createTaskDollar(execution: TaskProcessRequest["execution"], signal: Ab
   return timeout
     ? createDollar({ signal }, { timeout: timeout as NonNullable<Parameters<CommandBuilder["timeout"]>[0]> })
     : createDollar({ signal });
-}
-
-function validateExecutionOptions(execution: TaskProcessRequest["execution"]): void {
-  if (execution?.shell && execution.shell !== "bash") throw new Error(`Task execution shell '${execution.shell}' is not supported yet.`);
-  if (execution?.commandRunner && execution.commandRunner !== "acpus-zx-core") throw new Error(`Task execution commandRunner '${execution.commandRunner}' is not supported yet.`);
 }
 
 function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSignal) {

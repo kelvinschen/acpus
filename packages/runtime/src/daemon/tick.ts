@@ -7,12 +7,12 @@ export type DaemonTickResult = {
   idleBlockers: number;
 };
 
-export async function runDaemonTick(store: RuntimeStore, options: { startRun: (runId: string) => void }): Promise<DaemonTickResult> {
+export async function runDaemonTick(store: RuntimeStore, options: { startSession: (runId: string) => void }): Promise<DaemonTickResult> {
   await store.cleanupRunDirectories();
   let runs = 0;
   const work = store.listDaemonWork();
   for (const run of work.startableRuns) {
-    options.startRun(run.id);
+    options.startSession(run.id);
     runs += 1;
   }
   try {

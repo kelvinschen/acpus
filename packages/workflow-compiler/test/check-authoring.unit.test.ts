@@ -70,40 +70,6 @@ describe("workflow check authoring diagnostics", () => {
     });
   });
 
-  it("reports oversized expression callbacks during check", async () => {
-    await withCheckWorkspace("workflow-expression-budget", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-        import { fmap } from "acpus/expression";
-
-        export default defineWorkflow({
-          name: "expression_budget",
-          inputSchema: z.object({ value: z.number() }),
-        }).build(({ input }) => {
-          const value = fmap(input.value, value => {
-            const value1 = value;
-            const value2 = value1;
-            const value3 = value2;
-            const value4 = value3;
-            const value5 = value4;
-            const value6 = value5;
-            const value7 = value6;
-            const value8 = value7;
-            return value8;
-          });
-          return { value };
-        });
-      `);
-
-      expect(result.diagnostics).toContainEqual(expect.objectContaining({
-        code: "AL007",
-        severity: "error",
-        message: expect.stringContaining("9 executable statements"),
-        hint: expect.stringContaining("Task"),
-      }));
-    });
-  });
-
   it("accepts loop transition shorthand properties and still checks their types and keys", async () => {
     await withCheckWorkspace("workflow-loop-shorthand", async cwd => {
       const result = await runCheck(cwd, `

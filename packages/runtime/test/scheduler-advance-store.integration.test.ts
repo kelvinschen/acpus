@@ -1,9 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { advanceRun, completed, type NodeExecutor } from "../src/scheduler/advance.js";
+import { advanceRun, type NodeExecutor } from "../src/scheduler/advance.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { completed } from "./support/scheduler.js";
 
 describe("durable scheduler advance with store", () => {
   it("resumes an interrupted race by committing winner and loser cancellation from projection", async () => {
@@ -20,9 +22,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-race",
           events: [
@@ -41,10 +43,9 @@ describe("durable scheduler advance with store", () => {
           ownerId: "owner-b",
           store: store.scheduler,
           executor,
-          memberForInstance: (instance, projection) => projection.groupMembers[instance.nodeKey],
         })).resolves.toMatchObject({ started: 0 });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(calls).toEqual([]);
         expect(projection.groups.race).toMatchObject({ status: "completed" });
         expect(projection.groupMembers.loser).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
@@ -62,9 +63,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-quorum",
           events: [
@@ -86,10 +87,9 @@ describe("durable scheduler advance with store", () => {
           ownerId: "owner-b",
           store: store.scheduler,
           executor: { execute: () => Promise.resolve(completed()) },
-          memberForInstance: (instance, projection) => projection.groupMembers[instance.nodeKey],
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.groups.items).toMatchObject({
           status: "completed",
           result: { acceptedMemberKeys: ["items[1]", "items[0]"] },
@@ -110,9 +110,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-member-lifecycle",
           events: [
@@ -135,7 +135,7 @@ describe("durable scheduler advance with store", () => {
           },
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(calls).toEqual(["leaf"]);
         expect(projection.groupMembers.leaf).toMatchObject({ status: "completed", output: { ok: true } });
         expect(projection.groups.all).toMatchObject({ status: "completed", result: { acceptedMemberKeys: ["leaf"] } });
@@ -153,9 +153,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: oldOwner.ownerEpoch,
           idempotencyKey: "setup-recovery-ready",
           events: [
@@ -163,7 +163,7 @@ describe("durable scheduler advance with store", () => {
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "new", nodeId: "new", instancePath: [{ kind: "node", nodeId: "new" }], readinessSequence: 2 } },
           ],
         });
-        const oldAttempt = store.scheduler.startAttempt({
+        const oldAttempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "old",
           nodeId: "old",
@@ -184,11 +184,11 @@ describe("durable scheduler advance with store", () => {
           },
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.attempts[oldAttempt.attemptId]).toMatchObject({ status: "superseded" });
         expect(calls).toEqual(["old", "new"]);
         expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === "old").map(attempt => attempt.attemptNo).sort()).toEqual([1, 2]);
-        expect(() => store.scheduler.commitAttemptResult({
+        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: oldAttempt.attemptId,
           ownerEpoch: oldOwner.ownerEpoch,
@@ -209,9 +209,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: oldOwner.ownerEpoch,
           idempotencyKey: "setup-recovery-timeout-ready",
           events: [
@@ -219,7 +219,7 @@ describe("durable scheduler advance with store", () => {
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "new", nodeId: "new", instancePath: [{ kind: "node", nodeId: "new" }], readinessSequence: 2 } },
           ],
         });
-        const oldAttempt = store.scheduler.startAttempt({
+        const oldAttempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "old",
           nodeId: "old",
@@ -242,7 +242,7 @@ describe("durable scheduler advance with store", () => {
           now: () => new Date("2026-06-30T00:00:01.000Z"),
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.attempts[oldAttempt.attemptId]).toMatchObject({ status: "timed_out" });
         expect(projection.instances.old).toMatchObject({ status: "failed", statusReason: "timed_out" });
         expect(calls).toEqual(["new"]);
@@ -259,9 +259,9 @@ describe("durable scheduler advance with store", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const owner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: owner.ownerEpoch,
           idempotencyKey: "setup-signal-timeout",
           events: [
@@ -280,7 +280,7 @@ describe("durable scheduler advance with store", () => {
           now: () => new Date("2026-06-30T00:00:01.000Z"),
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.signalWaits.approve).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
         expect(projection.instances.approve).toMatchObject({ status: "failed", statusReason: "signal_timeout" });
       } finally {

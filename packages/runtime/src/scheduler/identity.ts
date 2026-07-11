@@ -24,7 +24,7 @@ export function appendLoopIteration(path: InstancePath, nodeId: string, iter: nu
   return [...path, { kind: "loop", nodeId, iter }];
 }
 
-export function canonicalPath(path: InstancePath): string {
+function canonicalPath(path: InstancePath): string {
   return JSON.stringify(path.map(canonicalSegment));
 }
 

@@ -9,6 +9,7 @@ import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { stableJson } from "../src/stable-json.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("scheduler store port", () => {
   it("reads inspection events, projection, and cursors from one store snapshot", async () => {
@@ -23,7 +24,7 @@ describe("scheduler store port", () => {
         expect(admitted.run?.eventCount).toBe(1);
 
         const claim = store.scheduler.claimRun(run.id, "inspection-reader", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -130,7 +131,7 @@ describe("scheduler store port", () => {
         expect(claim).toMatchObject({ runId: run.id, ownerId: "owner-a", ownerEpoch: 1 });
         expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toBeUndefined();
 
-        const snapshot = store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim!.ownerEpoch,
@@ -148,7 +149,7 @@ describe("scheduler store port", () => {
         expect(dbRow(workspace, "SELECT event_count, intent_digest FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", run.id, "scheduler:event"))
           .toEqual({ event_count: 2, intent_digest: null });
 
-        const duplicate = store.scheduler.appendSchedulerEvents({
+        const duplicate = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim!.ownerEpoch,
@@ -159,16 +160,16 @@ describe("scheduler store port", () => {
           ],
         });
         expect(duplicate.version).toBe(snapshot.version);
-        expect(() => store.scheduler.appendSchedulerEvents({
+        expect(() => throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim!.ownerEpoch,
           idempotencyKey: "scheduler:event",
-          events: [{ type: "control.paused", payload: { reason: "conflict" } }],
+          events: [{ type: "control.paused", payload: {} }],
         })).toThrow("conflicts");
 
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
-        expect(() => store.scheduler.appendSchedulerEvents({
+        expect(() => throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim!.ownerEpoch,
@@ -177,16 +178,16 @@ describe("scheduler store port", () => {
         })).toThrow("Unknown frame");
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
 
-        expect(() => store.scheduler.appendSchedulerEvents({
+        expect(() => throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim!.ownerEpoch,
           idempotencyKey: "scheduler:stale-version",
-          events: [{ type: "control.paused", payload: { reason: "test" } }],
+          events: [{ type: "control.paused", payload: {} }],
         })).toThrow("version mismatch");
 
         const commitCount = dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_commits WHERE run_id = ?", run.id);
-        expect(store.scheduler.appendSchedulerEvents({
+        expect(throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim!.ownerEpoch,
@@ -212,14 +213,14 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "node-progress:ready");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "node-progress:attempt",
         });
-        const schedulerVersion = store.scheduler.loadRunSnapshot(run.id).version;
+        const schedulerVersion = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
 
         store.writeNodeProgress({
@@ -251,7 +252,7 @@ describe("scheduler store port", () => {
         });
 
         const details = store.getRun(run.id);
-        expect(store.scheduler.loadRunSnapshot(run.id).version).toBe(schedulerVersion);
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version).toBe(schedulerVersion);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
         expect(details?.progressVersion).toBe(2);
         expect(details?.progressUpdatedAt).toEqual(expect.any(String));
@@ -314,7 +315,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "late-progress:ready");
-        const first = store.scheduler.startAttempt({
+        const first = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -331,20 +332,20 @@ describe("scheduler store port", () => {
           status: "running",
           message: "first",
         });
-        store.scheduler.commitAttemptResult({
+        throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: first.attemptId,
           ownerEpoch: claim.ownerEpoch,
           result: { status: "failed", reason: "retryable" },
           idempotencyKey: "late-progress:first-failed",
         });
-        store.scheduler.retry({
+        throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "late-progress:retry",
         });
-        const second = store.scheduler.startAttempt({
+        const second = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -399,7 +400,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "terminal-progress:ready");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -459,7 +460,7 @@ describe("scheduler store port", () => {
           expectedVersion: 99,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:mismatch",
-          events: [{ type: "control.paused", payload: { reason: "test" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
 
         expect(mismatch.isErr()).toBe(true);
@@ -484,10 +485,10 @@ describe("scheduler store port", () => {
         readyNode(store, run.id, claim, "typed:ready");
         const appendConflict = store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "typed:ready",
-          events: [{ type: "control.paused", payload: { reason: "conflict" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
         expect(appendConflict.isErr()).toBe(true);
         if (appendConflict.isOk()) throw new Error("expected append idempotency conflict");
@@ -515,7 +516,7 @@ describe("scheduler store port", () => {
         if (signalMissing.isOk()) throw new Error("expected missing signal wait");
         expect(signalMissing.error).toMatchObject({ type: "signal-wait-not-found", runId: run.id, nodeKey: "approve~1" });
 
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -533,7 +534,7 @@ describe("scheduler store port", () => {
         if (startConflict.isOk()) throw new Error("expected attempt start idempotency conflict");
         expect(startConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:attempt:start", runId: run.id });
 
-        store.scheduler.pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
+        throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
         const pausedStart = store.scheduler.tryStartAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
@@ -637,7 +638,7 @@ describe("scheduler store port", () => {
         expect(fresh).not.toHaveProperty("dynamic");
         writeMalformedSchedulerEvent(workspace, run.id, "signal.awaiting", "require_ready~1");
 
-        const snapshotError = captureError(() => store.scheduler.loadRunSnapshot(run.id));
+        const snapshotError = captureError(() => throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id));
         const runError = captureError(() => store.getRun(run.id));
         expect(snapshotError.message).toBe("Scheduler event 'signal.awaiting' has an invalid scheduler envelope.");
         expect(runError.constructor).toBe(snapshotError.constructor);
@@ -656,7 +657,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         writeSchedulerEventPayload(workspace, run.id, eventType, "require_ready~1", { deadlineAt: "not-a-deadline" });
 
-        expect(() => store.scheduler.loadRunSnapshot(run.id))
+        expect(() => throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id))
           .toThrow(`Scheduler event '${eventType}' has an invalid persisted deadline.`);
       } finally {
         store.close();
@@ -672,7 +673,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "corrupted-deadline:ready");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -701,19 +702,19 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        const first = store.scheduler.appendSchedulerEvents({
+        const first = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:event:child",
           events: [{ type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } }],
         });
-        const second = store.scheduler.appendSchedulerEvents({
+        const second = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: first.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:event",
-          events: [{ type: "control.paused", payload: { reason: "test" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
 
         expect(second.version).toBe(first.version + 1);
@@ -731,25 +732,17 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const paused = store.scheduler.pauseRun({
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
-          reason: "operator",
           idempotencyKey: "control:same-key",
         });
 
-        expect(store.scheduler.pauseRun({
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
-          reason: "operator",
           idempotencyKey: "control:same-key",
         }).version).toBe(paused.version);
-        expect(store.scheduler.tryPauseRun({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          reason: "different",
-          idempotencyKey: "control:same-key",
-        })._unsafeUnwrapErr()).toMatchObject({ type: "idempotency-conflict" });
         expect(store.scheduler.tryResumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
@@ -759,7 +752,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "control:same-key",
           runId: run.id,
         });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.run.status).toBe("paused");
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.run.status).toBe("paused");
       } finally {
         store.close();
       }
@@ -777,31 +770,27 @@ describe("scheduler store port", () => {
         const secondClaim = store.scheduler.claimRun(secondRun.id, "owner-b", 60_000)!;
         const idempotencyKey = "control:shared-across-runs";
 
-        const firstPaused = store.scheduler.pauseRun({
+        const firstPaused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: firstRun.id,
           ownerEpoch: firstClaim.ownerEpoch,
-          reason: "first run",
           idempotencyKey,
         });
-        const secondPaused = store.scheduler.pauseRun({
+        const secondPaused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: secondRun.id,
           ownerEpoch: secondClaim.ownerEpoch,
-          reason: "second run",
           idempotencyKey,
         });
 
         expect(firstPaused.projection.run.status).toBe("paused");
         expect(secondPaused.projection.run.status).toBe("paused");
-        expect(store.scheduler.pauseRun({
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: firstRun.id,
           ownerEpoch: firstClaim.ownerEpoch,
-          reason: "first run",
           idempotencyKey,
         }).version).toBe(firstPaused.version);
-        expect(store.scheduler.pauseRun({
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: secondRun.id,
           ownerEpoch: secondClaim.ownerEpoch,
-          reason: "second run",
           idempotencyKey,
         }).version).toBe(secondPaused.version);
         expect(dbRows(workspace, `
@@ -832,13 +821,13 @@ describe("scheduler store port", () => {
         const cancelClaim = store.scheduler.claimRun(cancelRun.id, "cancel-owner", 60_000)!;
 
         const resumeEventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", resumeRun.id);
-        const resumed = store.scheduler.resumeRun({
+        const resumed = throwingSchedulerStore(store.scheduler).resumeRun({
           runId: resumeRun.id,
           ownerEpoch: resumeClaim.ownerEpoch,
           idempotencyKey: "control:no-op:resume",
         });
         expect(resumed).toMatchObject({ version: 1, projection: { run: { status: "pending" } } });
-        expect(store.scheduler.resumeRun({
+        expect(throwingSchedulerStore(store.scheduler).resumeRun({
           runId: resumeRun.id,
           ownerEpoch: resumeClaim.ownerEpoch,
           idempotencyKey: "control:no-op:resume",
@@ -850,49 +839,45 @@ describe("scheduler store port", () => {
         })._unsafeUnwrapErr()).toMatchObject({ type: "idempotency-conflict", runId: resumeRun.id });
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", resumeRun.id)).toBe(resumeEventCount);
 
-        const paused = store.scheduler.pauseRun({
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: pauseRun.id,
           ownerEpoch: pauseClaim.ownerEpoch,
-          reason: "initial",
           idempotencyKey: "control:pause:initial",
         });
         const pauseEventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", pauseRun.id);
-        const pausedAgain = store.scheduler.pauseRun({
+        const pausedAgain = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: pauseRun.id,
           ownerEpoch: pauseClaim.ownerEpoch,
-          reason: "steady",
           idempotencyKey: "control:no-op:pause",
         });
         expect(pausedAgain.version).toBe(paused.version);
         expect(pausedAgain.projection.run.status).toBe("paused");
-        expect(store.scheduler.pauseRun({
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: pauseRun.id,
           ownerEpoch: pauseClaim.ownerEpoch,
-          reason: "steady",
           idempotencyKey: "control:no-op:pause",
         }).version).toBe(pausedAgain.version);
-        expect(store.scheduler.tryPauseRun({
+        expect(store.scheduler.tryResumeRun({
           runId: pauseRun.id,
           ownerEpoch: pauseClaim.ownerEpoch,
-          reason: "different",
           idempotencyKey: "control:no-op:pause",
         })._unsafeUnwrapErr()).toMatchObject({ type: "idempotency-conflict", runId: pauseRun.id });
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", pauseRun.id)).toBe(pauseEventCount);
 
-        const canceled = store.scheduler.cancel({
+        const canceled = throwingSchedulerStore(store.scheduler).cancel({
           runId: cancelRun.id,
           ownerEpoch: cancelClaim.ownerEpoch,
           idempotencyKey: "control:cancel:initial",
         });
         const cancelEventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", cancelRun.id);
-        const canceledAgain = store.scheduler.cancel({
+        const canceledAgain = throwingSchedulerStore(store.scheduler).cancel({
           runId: cancelRun.id,
           ownerEpoch: cancelClaim.ownerEpoch,
           idempotencyKey: "control:no-op:cancel",
         });
         expect(canceledAgain.version).toBe(canceled.version);
         expect(canceledAgain.projection.run.status).toBe("canceled");
-        expect(store.scheduler.cancel({
+        expect(throwingSchedulerStore(store.scheduler).cancel({
           runId: cancelRun.id,
           ownerEpoch: cancelClaim.ownerEpoch,
           idempotencyKey: "control:no-op:cancel",
@@ -935,7 +920,7 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const version = store.scheduler.loadRunSnapshot(run.id).version;
+        const version = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
         expect(store.scheduler.releaseRun(claim)).toBe(true);
 
@@ -948,7 +933,7 @@ describe("scheduler store port", () => {
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
         });
-        expect(store.scheduler.loadRunSnapshot(run.id).version).toBe(version);
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version).toBe(version);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
         expect(dbRow(workspace, "SELECT event_count FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", run.id, "control:no-op:inactive-owner")).toBeUndefined();
       } finally {
@@ -965,10 +950,10 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        expect(store.scheduler.pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:pause" }).projection.run.status).toBe("paused");
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:pause" }).projection.run.status).toBe("paused");
         expect(store.getRun(run.id)).toMatchObject({ status: "paused" });
 
-        expect(store.scheduler.resumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:resume" }).projection.run.status).toBe("pending");
+        expect(throwingSchedulerStore(store.scheduler).resumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:resume" }).projection.run.status).toBe("pending");
         expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
       } finally {
         store.close();
@@ -984,18 +969,18 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:running-root",
           events: [{ type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } }],
         });
         expect(store.getRun(run.id)).toMatchObject({ status: "running" });
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:running-ready-instance",
           events: [{ type: "instance.ready", payload: { runId: run.id, nodeKey: "left~1", nodeId: "left", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "left" }], readinessSequence: 1 } }],
@@ -1015,7 +1000,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        const canceled = store.scheduler.cancel({
+        const canceled = throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:before-root",
@@ -1038,7 +1023,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        const completed = store.scheduler.appendSchedulerEvents({
+        const completed = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -1058,7 +1043,7 @@ describe("scheduler store port", () => {
           { sequence: 4, type: "run.completed" },
         ]);
 
-        expect(store.scheduler.appendSchedulerEvents({
+        expect(throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -1084,9 +1069,9 @@ describe("scheduler store port", () => {
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ? AND node_key = 'require_ready'", run.id)).toBe(1);
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:dynamic-node-bridge",
           events: [
@@ -1112,7 +1097,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -1128,7 +1113,7 @@ describe("scheduler store port", () => {
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ?", run.id)).toBeGreaterThan(0);
 
-        const retried = store.scheduler.retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry" });
+        const retried = throwingSchedulerStore(store.scheduler).retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry" });
 
         expect(retried.projection).toMatchObject({ run: { status: "pending", paused: false }, frames: {}, instances: {} });
         expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
@@ -1136,7 +1121,7 @@ describe("scheduler store port", () => {
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_frames WHERE run_id = ?", run.id)).toBe(0);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_instances WHERE run_id = ?", run.id)).toBe(0);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ?", run.id)).toBe(0);
-        expect(() => store.scheduler.retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry-again" })).toThrow("Cannot retry run from pending.");
+        expect(() => throwingSchedulerStore(store.scheduler).retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry-again" })).toThrow("Cannot retry run from pending.");
       } finally {
         store.close();
       }
@@ -1151,7 +1136,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -1167,7 +1152,7 @@ describe("scheduler store port", () => {
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
         setSchedulerEventTypesCreatedAt(workspace, run.id, ["frame.started", "instance.ready", "instance.failed", "frame.failed"], "2026-01-01T00:00:00.000Z");
 
-        const retried = store.scheduler.retry({
+        const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1181,7 +1166,7 @@ describe("scheduler store port", () => {
         const retryCreatedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'instance.retry_requested'", run.id);
         expect(dbRow(workspace, "SELECT created_at FROM node_instances WHERE run_id = ? AND node_key = 'require_ready~1'", run.id)).toEqual({ created_at: retryCreatedAt });
 
-        const completed = store.scheduler.appendSchedulerEvents({
+        const completed = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: retried.version,
           ownerEpoch: claim.ownerEpoch,
@@ -1217,7 +1202,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -1240,7 +1225,7 @@ describe("scheduler store port", () => {
 
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
 
-        const retried = store.scheduler.retry({
+        const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "leaf~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1269,7 +1254,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const first = store.scheduler.claimRun(run.id, "owner-a", 60_000);
         readyNode(store, run.id, first!, "attempt-ready-node");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -1277,14 +1262,14 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:start",
         });
         expect(attempt).toMatchObject({ attemptNo: 1 });
-        expect(store.scheduler.startAttempt({
+        expect(throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: first!.ownerEpoch,
           idempotencyKey: "attempt:start",
         })).toEqual(attempt);
-        expect(() => store.scheduler.startAttempt({
+        expect(() => throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "other~1",
           nodeId: "other",
@@ -1292,7 +1277,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:start",
         })).toThrow("conflicts");
         expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("started");
-        expect(() => store.scheduler.markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch)).toThrow("still active");
+        expect(() => throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch)).toThrow("still active");
 
         const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
         try {
@@ -1303,7 +1288,7 @@ describe("scheduler store port", () => {
 
         const second = store.scheduler.claimRun(run.id, "owner-b", 60_000);
         expect(second).toMatchObject({ ownerEpoch: 2 });
-        expect(() => store.scheduler.commitAttemptResult({
+        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: first!.ownerEpoch,
@@ -1311,7 +1296,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:late",
         })).toThrow("owner epoch is not active");
 
-        const superseded = store.scheduler.markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch);
+        const superseded = throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch);
         expect(superseded.projection.attempts[attempt.attemptId]).toMatchObject({ status: "superseded" });
         expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("superseded");
       } finally {
@@ -1328,14 +1313,14 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-timing-ready");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "attempt:timing:start",
         });
-        store.scheduler.commitAttemptResult({
+        throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1347,13 +1332,13 @@ describe("scheduler store port", () => {
         const finishedAt = "2026-07-03T01:02:07.000Z";
         setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.started"], startedAt);
         setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.completed"], finishedAt);
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:after-attempt-timing",
-          events: [{ type: "control.paused", payload: { reason: "test" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
 
         expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual({
@@ -1398,7 +1383,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyGroupNode(store, run.id, claim, "pause-ready-group-node");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -1406,10 +1391,9 @@ describe("scheduler store port", () => {
           idempotencyKey: "pause:attempt:start",
         });
 
-        const paused = store.scheduler.pauseRun({
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
-          reason: "user",
           idempotencyKey: "pause:run",
         });
 
@@ -1417,13 +1401,12 @@ describe("scheduler store port", () => {
         expect(paused.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "paused" });
         expect(paused.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", readinessSequence: 1, statusReason: "paused" });
         expect(paused.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "ready", readinessSequence: 1 });
-        expect(store.scheduler.pauseRun({
+        expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
-          reason: "user",
           idempotencyKey: "pause:run",
         }).version).toBe(paused.version);
-        expect(() => store.scheduler.startAttempt({
+        expect(() => throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -1432,7 +1415,7 @@ describe("scheduler store port", () => {
         })).toThrow("is paused");
 
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
-        expect(() => store.scheduler.commitAttemptResult({
+        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1441,18 +1424,18 @@ describe("scheduler store port", () => {
         })).toThrow("already cancelled");
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
 
-        const resumed = store.scheduler.resumeRun({
+        const resumed = throwingSchedulerStore(store.scheduler).resumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "pause:resume",
         });
         expect(resumed.projection.run).toMatchObject({ status: "pending", paused: false });
-        expect(store.scheduler.resumeRun({
+        expect(throwingSchedulerStore(store.scheduler).resumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "pause:resume",
         }).version).toBe(resumed.version);
-        const restarted = store.scheduler.startAttempt({
+        const restarted = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -1460,7 +1443,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "pause:attempt:restart",
         });
         expect(restarted).toMatchObject({ attemptNo: 2 });
-        const restartedSnapshot = store.scheduler.loadRunSnapshot(run.id);
+        const restartedSnapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
         expect(restartedSnapshot.projection.instances["require_ready~1"]).toMatchObject({ status: "running" });
         expect(restartedSnapshot.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "running" });
       } finally {
@@ -1476,8 +1459,8 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
@@ -1496,7 +1479,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const retried = store.scheduler.retry({
+        const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready",
           ownerEpoch: claim.ownerEpoch,
@@ -1508,13 +1491,13 @@ describe("scheduler store port", () => {
           error_json: null,
         });
         expect(retried.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "ready" });
-        expect(store.scheduler.retry({
+        expect(throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node",
         }).version).toBe(retried.version);
-        expect(() => store.scheduler.retry({
+        expect(() => throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1530,7 +1513,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "retry:node",
           runId: run.id,
         });
-        expect(() => store.scheduler.retry({
+        expect(() => throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "other~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1549,8 +1532,8 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
@@ -1570,7 +1553,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const retried = store.scheduler.retry({
+        const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "choose~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1600,9 +1583,9 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:run-state",
           events: [
@@ -1611,7 +1594,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const canceled = store.scheduler.cancel({
+        const canceled = throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:run",
@@ -1622,7 +1605,7 @@ describe("scheduler store port", () => {
         expect(canceled.projection.instances["require_ready~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
         expect(store.getRun(run.id)).toMatchObject({ status: "canceled" });
         expect(dbScalar(workspace, "SELECT type FROM run_events WHERE run_id = ? AND type = 'run.canceled'", run.id)).toBe("run.canceled");
-        expect(store.scheduler.cancel({
+        expect(throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:run",
@@ -1640,9 +1623,9 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:target-state",
           events: [
@@ -1653,7 +1636,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const canceled = store.scheduler.cancel({
+        const canceled = throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           target: "left",
           ownerEpoch: claim.ownerEpoch,
@@ -1665,7 +1648,7 @@ describe("scheduler store port", () => {
         expect(canceled.projection.instances["right~1"]).toMatchObject({ status: "ready" });
         expect(store.getRun(run.id)).toMatchObject({ status: "running" });
 
-        const withNewCandidates = store.scheduler.appendSchedulerEvents({
+        const withNewCandidates = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: canceled.version,
           ownerEpoch: claim.ownerEpoch,
@@ -1675,7 +1658,7 @@ describe("scheduler store port", () => {
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "left~3", nodeId: "left", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 3 }, { kind: "node", nodeId: "left" }], parentFrameKey: "root", readinessSequence: 5 } },
           ],
         });
-        expect(store.scheduler.cancel({
+        expect(throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           target: "left",
           ownerEpoch: claim.ownerEpoch,
@@ -1705,9 +1688,9 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "cancel:grouped-leaf-state",
           events: [
@@ -1720,7 +1703,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const canceled = store.scheduler.cancel({
+        const canceled = throwingSchedulerStore(store.scheduler).cancel({
           runId: run.id,
           target: "leaf~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1744,9 +1727,9 @@ describe("scheduler store port", () => {
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "public:group-member-order",
           events: [
@@ -1774,7 +1757,7 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-cancel-ready-node");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
@@ -1782,7 +1765,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:cancel:start",
         });
 
-        const snapshot = store.scheduler.commitAttemptResult({
+        const snapshot = throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1792,7 +1775,7 @@ describe("scheduler store port", () => {
         expect(snapshot.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "race_lost" });
         expect(dbScalar(workspace, "SELECT cancel_reason FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("race_lost");
 
-        const duplicate = store.scheduler.commitAttemptResult({
+        const duplicate = throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1802,16 +1785,16 @@ describe("scheduler store port", () => {
         expect(duplicate.version).toBe(snapshot.version);
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE idempotency_key = ?", "attempt:cancel:commit")).toBe(1);
         const firstTimestamps = dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId);
-        const advanced = store.scheduler.appendSchedulerEvents({
+        const advanced = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:after-attempt",
-          events: [{ type: "control.paused", payload: { reason: "test" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
         expect(advanced.version).toBe(snapshot.version + 1);
         expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual(firstTimestamps);
-        expect(() => store.scheduler.commitAttemptResult({
+        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1832,15 +1815,15 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-cancelled-ready-node");
-        const attempt = store.scheduler.startAttempt({
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "attempt:stale:start",
         });
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
@@ -1852,7 +1835,7 @@ describe("scheduler store port", () => {
         });
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
 
-        expect(() => store.scheduler.commitAttemptResult({
+        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -1875,7 +1858,7 @@ describe("scheduler store port", () => {
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-awaiting");
 
-        const consumed = store.scheduler.consumeSignal({
+        const consumed = throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1893,17 +1876,15 @@ describe("scheduler store port", () => {
           status: "completed",
           output: { ok: true },
         });
-        const signalRow = dbRow(workspace, "SELECT status, payload_json, payload_digest, command_idempotency_key FROM signal_waits WHERE run_id = ? AND node_key = ?", run.id, "approve~1");
+        const signalRow = dbRow(workspace, "SELECT status, payload_json FROM signal_waits WHERE run_id = ? AND node_key = ?", run.id, "approve~1");
         const payloadJson = `${stableJson({ ok: true })}\n`;
-        expect(signalRow).toMatchObject({
+        expect(signalRow).toEqual({
           status: "consumed",
           payload_json: payloadJson,
-          payload_digest: createHash("sha256").update(payloadJson).digest("hex"),
-          command_idempotency_key: "signal-command",
         });
         expect(JSON.parse(String(signalRow?.payload_json))).toEqual({ ok: true });
 
-        const duplicate = store.scheduler.consumeSignal({
+        const duplicate = throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1912,7 +1893,7 @@ describe("scheduler store port", () => {
           idempotencyKey: "signal:consume",
         });
         expect(duplicate.version).toBe(consumed.version);
-        const duplicateWithFreshCommand = store.scheduler.consumeSignal({
+        const duplicateWithFreshCommand = throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1922,7 +1903,7 @@ describe("scheduler store port", () => {
         });
         expect(duplicateWithFreshCommand.version).toBe(consumed.version);
 
-        expect(() => store.scheduler.consumeSignal({
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1930,7 +1911,7 @@ describe("scheduler store port", () => {
           commandIdempotencyKey: "signal-command",
           idempotencyKey: "signal:consume",
         })).toThrow("already consumed a different payload");
-        expect(() => store.scheduler.consumeSignal({
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1938,14 +1919,14 @@ describe("scheduler store port", () => {
           commandIdempotencyKey: "other-command",
           idempotencyKey: "signal:consume:other",
         })).toThrow("already consumed a different payload");
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: duplicate.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal:pause-after-consume",
-          events: [{ type: "control.paused", payload: { reason: "user" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
-        expect(store.scheduler.consumeSignal({
+        expect(throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1968,7 +1949,7 @@ describe("scheduler store port", () => {
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingGroupSignal(store, run.id, claim, "signal-group-awaiting");
 
-        const consumed = store.scheduler.consumeSignal({
+        const consumed = throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1982,7 +1963,7 @@ describe("scheduler store port", () => {
           completionSequence: consumed.version,
           output: { ok: true },
         });
-        expect(store.scheduler.consumeSignal({
+        expect(throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -1990,7 +1971,7 @@ describe("scheduler store port", () => {
           commandIdempotencyKey: "signal-command",
           idempotencyKey: "signal:group:consume",
         }).version).toBe(consumed.version);
-        expect(store.scheduler.consumeSignal({
+        expect(throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -2012,8 +1993,8 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-timeout-awaiting");
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
@@ -2025,7 +2006,7 @@ describe("scheduler store port", () => {
         });
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
 
-        expect(() => store.scheduler.consumeSignal({
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -2048,9 +2029,9 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-retry-awaiting");
-        store.scheduler.appendSchedulerEvents({
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
-          expectedVersion: store.scheduler.loadRunSnapshot(run.id).version,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-retry:timeout",
           events: [
@@ -2059,7 +2040,7 @@ describe("scheduler store port", () => {
           ],
         });
 
-        const retried = store.scheduler.retry({
+        const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -2083,17 +2064,17 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-paused-awaiting");
-        const snapshot = store.scheduler.loadRunSnapshot(run.id);
-        store.scheduler.appendSchedulerEvents({
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: snapshot.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-paused:pause",
-          events: [{ type: "control.paused", payload: { reason: "user" } }],
+          events: [{ type: "control.paused", payload: {} }],
         });
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
 
-        expect(() => store.scheduler.consumeSignal({
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
@@ -2120,7 +2101,7 @@ describe("scheduler store port", () => {
           timeoutMessage: "Approval timed out",
         });
 
-        const paused = store.scheduler.pauseRun({
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-timeout:pause",
@@ -2133,7 +2114,7 @@ describe("scheduler store port", () => {
         });
         expect(paused.projection.signalWaits["approve~1"]?.deadlineAt).toBeUndefined();
 
-        const resumed = store.scheduler.resumeRun({
+        const resumed = throwingSchedulerStore(store.scheduler).resumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-timeout:resume",
@@ -2162,7 +2143,7 @@ describe("scheduler store port", () => {
           deadlineAt: "9999-12-31T23:59:59.999Z",
         });
 
-        const paused = store.scheduler.pauseRun({
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-timeout-range:pause",
@@ -2184,7 +2165,7 @@ describe("scheduler store port", () => {
           message: "Signal wait 'approve~1' remaining timeout cannot be represented as a persisted deadline.",
         });
 
-        const after = store.scheduler.loadRunSnapshot(run.id);
+        const after = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
         expect(after.version).toBe(paused.version);
         expect(after.projection.run.status).toBe("paused");
         expect(after.projection.signalWaits["approve~1"]?.timeoutRemainingMs).toBe(remainingMs);
@@ -2206,7 +2187,7 @@ describe("scheduler store port", () => {
           deadlineAt: "2026-07-01T00:00:00.000Z",
         });
 
-        expect(() => store.scheduler.consumeSignal({
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey,
           ownerEpoch: claim.ownerEpoch,
@@ -2216,7 +2197,7 @@ describe("scheduler store port", () => {
           now: new Date("2026-07-01T00:00:01.000Z"),
         })).toThrow("already timed_out");
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.signalWaits[nodeKey]).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
         expect(projection.instances[nodeKey]).toMatchObject({ status: "failed", statusReason: "signal_timeout" });
         expect(projection.frames.root).toMatchObject({ status: "failed", terminalReason: "signal_timeout" });
@@ -2238,14 +2219,14 @@ describe("scheduler store port", () => {
           deadlineAt: "2026-07-01T00:00:00.000Z",
         });
 
-        expect(() => store.scheduler.pauseRun({
+        expect(() => throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-timeout:late-pause",
           now: new Date("2026-07-01T00:00:01.000Z"),
         })).toThrow("Cannot pause failed run.");
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.signalWaits[nodeKey]).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
         expect(projection.frames.root).toMatchObject({ status: "failed", terminalReason: "signal_timeout" });
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
@@ -2257,8 +2238,8 @@ describe("scheduler store port", () => {
 });
 
 function readyNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -2270,8 +2251,8 @@ function readyNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, ide
 }
 
 function readyGroupNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -2285,8 +2266,8 @@ function readyGroupNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim
 }
 
 function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): void {
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -2300,9 +2281,9 @@ function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim
 }
 
 function awaitingRootSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): string {
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   const nodeKey = deriveInstanceKey([{ kind: "node", nodeId: "approve" }]);
-  store.scheduler.appendSchedulerEvents({
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -2318,8 +2299,8 @@ function awaitingRootSignal(store: RuntimeStore, runId: string, claim: RunOwnerC
 }
 
 function awaitingGroupSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,

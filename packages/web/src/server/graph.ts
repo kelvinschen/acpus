@@ -15,34 +15,28 @@ type NodeDetail =
   | { kind: "loop"; state: string };
 
 export type WebGraph = {
-  workflow: WorkflowVisualizationOverlay["workflow"];
+  workflow: {
+    name: string;
+    runId?: string;
+    status?: string;
+  };
   mode: "static" | "runtime";
-  version?: number;
   nodes: WebGraphNode[];
   containers: WebGraphContainer[];
   edges: WebGraphEdge[];
   selectors: WebGraphSelector[];
   runtimeStates: WebGraphRuntimeState[];
-  groups: WebGraphGroup[];
-  overlay: WorkflowVisualizationOverlay;
 };
 
-export type WebGraphNode = {
+type WebGraphNode = {
   id: string;
   nodeId: string;
   kind: string;
   label: string;
   path: string[];
   parentId?: string;
-  parentNodeId?: string;
   detail?: NodeDetail;
   status: string;
-  dynamic: {
-    instances: number;
-    frames: number;
-    attempts: number;
-    signalWaits: number;
-  };
 };
 
 type WebGraphContainer = {
@@ -55,25 +49,7 @@ type WebGraphContainer = {
   status: string;
 };
 
-type WebGraphGroup = {
-  nodeId: string;
-  groupKey: string;
-  kind: "parallel" | "fanout";
-  status: string;
-  strategy?: string;
-  quorumCount?: number;
-  maxConcurrency?: number;
-  members: Array<({
-    memberKey: string;
-    status: string;
-    childFrameKey?: string;
-  } & (
-    | { memberKind: "branch"; branchId: string; itemIndex?: never }
-    | { memberKind: "fanout_item"; itemIndex: number; branchId?: never }
-  ))>;
-};
-
-export type WebGraphEdge = {
+type WebGraphEdge = {
   id: string;
   source: string;
   target: string;
@@ -90,23 +66,16 @@ type WebGraphSelector = {
 
 type WebGraphSelectorOptionBase = {
   id: string;
-  label: string;
-  status: string;
-  frameKey?: string;
-  scopePath: string[];
   parentSelections: WebGraphSelection[];
 };
 
-type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { itemIndex: number };
+type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { label: string; itemIndex: number };
 type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
 type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
 
 type WebGraphRuntimeState = {
   targetId: string;
-  nodeId: string;
   status: string;
-  frameKey?: string;
-  nodeKey?: string;
   selectors: WebGraphSelection[];
 };
 
@@ -128,24 +97,27 @@ export function graphFromOverlay(
   const source = mode === "static" ? staticOverlay(overlay) : overlay;
   const nodes = source.nodes.map(staticGraphNode);
   const detailById = new Map(nodes.map(node => [node.id, node.detail]));
-  const containers = graphContainers(nodes, detailById, mode);
-  const parentByNodeId = graphNodeParents(nodes, containers);
+  const authoredParentByNodeId = new Map(source.nodes.flatMap(node =>
+    node.parentNodeId === undefined ? [] : [[node.nodeId, node.parentNodeId] as const],
+  ));
+  const containers = graphContainers(nodes, detailById, authoredParentByNodeId);
+  const parentByNodeId = graphNodeParents(nodes, containers, authoredParentByNodeId);
   const edges = graphEdges(nodes, containers, parentByNodeId);
-  const groups = graphGroups(source);
   const selectors = mode === "runtime" ? graphSelectors(source, containers) : [];
   const runtimeStates = mode === "runtime" ? graphRuntimeStates(source, containers, detailById) : [];
 
   return {
-    workflow: source.workflow,
+    workflow: {
+      name: source.workflow.name,
+      ...(source.workflow.runId === undefined ? {} : { runId: source.workflow.runId }),
+      ...(source.workflow.status === undefined ? {} : { status: source.workflow.status }),
+    },
     mode,
-    ...(source.workflow.dynamicVersion === undefined ? {} : { version: source.workflow.dynamicVersion }),
     nodes: nodes.map(node => graphNodeWithParent(node, parentByNodeId)),
     containers,
     edges,
     selectors,
     runtimeStates,
-    groups,
-    overlay: source,
   };
 }
 
@@ -165,44 +137,15 @@ function staticGraphNode(node: OverlayNode): WebGraphNode {
     kind: node.kind,
     label: node.nodeId,
     path: node.path,
-    ...(node.parentNodeId === undefined ? {} : { parentNodeId: node.parentNodeId }),
     ...(node.detail === undefined ? {} : { detail: formatNodeDetail(node.detail) }),
     status: node.status,
-    dynamic: {
-      instances: node.instances.length,
-      frames: node.frames.length,
-      attempts: node.attempts.length,
-      signalWaits: node.signalWaits.length,
-    },
   };
-}
-
-function graphGroups(source: WorkflowVisualizationOverlay): WebGraphGroup[] {
-  return source.groups.map(group => ({
-    nodeId: group.nodeId,
-    groupKey: group.groupKey,
-    kind: group.kind,
-    status: group.status,
-    ...(group.strategy === undefined ? {} : { strategy: group.strategy }),
-    ...(group.quorumCount === undefined ? {} : { quorumCount: group.quorumCount }),
-    ...(group.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
-    members: group.members.map(member => {
-      const value = {
-        memberKey: member.memberKey,
-        status: member.status,
-        ...(member.childFrameKey === undefined ? {} : { childFrameKey: member.childFrameKey }),
-      };
-      return member.memberKind === "branch"
-        ? { ...value, memberKind: "branch" as const, branchId: member.branchId }
-        : { ...value, memberKind: "fanout_item" as const, itemIndex: member.itemIndex };
-    }),
-  }));
 }
 
 function graphContainers(
   nodes: WebGraphNode[],
   detailById: ReadonlyMap<string, NodeDetail | undefined>,
-  mode: "static" | "runtime",
+  authoredParentByNodeId: ReadonlyMap<string, string>,
 ): WebGraphContainer[] {
   const nodeById = new Map(nodes.map(node => [node.id, node]));
   const containers = new Map<string, WebGraphContainer>();
@@ -225,8 +168,9 @@ function graphContainers(
   }
 
   for (const node of nodes) {
-    if (!node.parentNodeId) continue;
-    const parent = nodeById.get(node.parentNodeId);
+    const parentNodeId = authoredParentByNodeId.get(node.id);
+    if (!parentNodeId) continue;
+    const parent = nodeById.get(parentNodeId);
     if (!parent) continue;
     const segment = scopeSegment(parent.path, node.path);
     if (!segment) continue;
@@ -240,7 +184,7 @@ function graphContainers(
       label: containerLabel(detail, segment),
       path: [...parent.path, segment],
       parentId: parent.id,
-      status: mode === "static" ? "not_started" : "not_started",
+      status: "not_started",
     });
   }
 
@@ -267,18 +211,23 @@ function authoredContainerSegments(detail: NodeDetail | undefined): string[] {
   }
 }
 
-function graphNodeParents(nodes: WebGraphNode[], containers: WebGraphContainer[]): Map<string, string> {
+function graphNodeParents(
+  nodes: WebGraphNode[],
+  containers: WebGraphContainer[],
+  authoredParentByNodeId: ReadonlyMap<string, string>,
+): Map<string, string> {
   const containerByPath = new Map(containers.map(container => [container.path.join("\0"), container.id]));
   const nodeById = new Map(nodes.map(node => [node.id, node]));
   const parents = new Map<string, string>();
 
   for (const node of nodes) {
-    if (!node.parentNodeId) continue;
-    const parent = nodeById.get(node.parentNodeId);
+    const parentNodeId = authoredParentByNodeId.get(node.id);
+    if (!parentNodeId) continue;
+    const parent = nodeById.get(parentNodeId);
     if (!parent) continue;
     const segment = scopeSegment(parent.path, node.path);
     const container = segment ? containerByPath.get([...parent.path, segment].join("\0")) : undefined;
-    parents.set(node.id, container ?? node.parentNodeId);
+    parents.set(node.id, container ?? parentNodeId);
   }
 
   return parents;
@@ -344,27 +293,31 @@ function graphSelectors(
   const selectors: WebGraphSelector[] = [];
   const containerByOwnerAndSegment = containerLookup(containers);
   const fanoutOptionsByNode = new Map<string, WebGraphFanoutSelectorOption[]>();
+  const fanoutStatusByOptionId = new Map<string, string>();
 
   for (const group of source.groups) {
     if (group.kind !== "fanout") continue;
     const parentSelections = runtimeSelections(group.instancePath).filter(selection => selection.nodeId !== group.nodeId);
-    const options = group.members
+    const members = group.members
       .filter(member => member.memberKind === "fanout_item")
-      .sort((a, b) => a.itemIndex - b.itemIndex)
+      .sort((a, b) => a.itemIndex - b.itemIndex);
+    const options = members
       .map(member => ({
         id: member.memberKey,
         label: `item[${member.itemIndex}]`,
-        status: member.status,
-        ...(member.childFrameKey === undefined ? {} : { frameKey: member.childFrameKey }),
         itemIndex: member.itemIndex,
-        scopePath: containerByOwnerAndSegment.get(containerKey(group.nodeId, "do"))?.path ?? [],
         parentSelections,
       }));
-    fanoutOptionsByNode.set(group.nodeId, [...(fanoutOptionsByNode.get(group.nodeId) ?? []), ...options]);
+    for (const member of members) fanoutStatusByOptionId.set(member.memberKey, member.status);
+    const current = fanoutOptionsByNode.get(group.nodeId) ?? [];
+    fanoutOptionsByNode.set(group.nodeId, [...current, ...options]);
   }
 
   for (const [nodeId, options] of fanoutOptionsByNode) {
-    const defaultOptionId = defaultOption(options)?.id;
+    const defaultOptionId = options.find(option => {
+      const status = fanoutStatusByOptionId.get(option.id);
+      return status === "running" || status === "awaiting";
+    })?.id ?? options.at(-1)?.id;
     selectors.push({
       nodeId,
       kind: "fanout",
@@ -376,24 +329,22 @@ function graphSelectors(
 
   for (const node of source.nodes) {
     if (node.detail?.kind !== "loop") continue;
-    const options = node.frames
+    const frames = node.frames
       .filter(frame => frame.frameKind === "loop_iteration")
-      .sort((a, b) => (loopIteration(a) ?? 0) - (loopIteration(b) ?? 0))
+      .sort((a, b) => (loopIteration(a) ?? 0) - (loopIteration(b) ?? 0));
+    const options = frames
       .flatMap(frame => {
         const iteration = loopIteration(frame);
         if (iteration === undefined) return [];
         return [{
           id: frame.frameKey,
-          label: `iteration ${iteration}`,
-          status: frame.status,
-          frameKey: frame.frameKey,
           iteration,
-          scopePath: containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"))?.path ?? [],
           parentSelections: runtimeSelections(frame.instancePath).filter(selection => selection.nodeId !== node.nodeId),
         }];
       });
     if (options.length > 0) {
-      const defaultOptionId = defaultOption(options)?.id;
+      const defaultOptionId = frames.find(frame => frame.status === "running" || frame.status === "awaiting")?.frameKey
+        ?? frames.at(-1)?.frameKey;
       selectors.push({
         nodeId: node.nodeId,
         kind: "loop",
@@ -418,58 +369,51 @@ function graphRuntimeStates(
   for (const node of source.nodes) {
     for (const frame of node.frames) {
       if (frame.frameKind === "node" || frame.frameKind === "loop") {
-        states.push(stateForFrame(node.nodeId, node.nodeId, frame));
+        states.push(stateForFrame(node.nodeId, frame));
       } else if (frame.frameKind === "branch") {
         const branch = branchEntry(frame.instancePath, frame.nodeId);
         const segment = branch ? normalizeBranchSegment(detailById.get(frame.nodeId ?? ""), branch.branchId) : undefined;
         const target = segment ? containerByOwnerAndSegment.get(containerKey(frame.nodeId ?? "", segment)) : undefined;
-        if (target) states.push(stateForFrame(target.id, target.nodeId, frame));
+        if (target) states.push(stateForFrame(target.id, frame));
       } else if (frame.frameKind === "fanout_item") {
         const target = containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"));
-        if (target) states.push(stateForFrame(target.id, target.nodeId, frame));
+        if (target) states.push(stateForFrame(target.id, frame));
       } else if (frame.frameKind === "loop_iteration") {
         const target = containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"));
-        if (target) states.push(stateForFrame(target.id, target.nodeId, frame));
+        if (target) states.push(stateForFrame(target.id, frame));
       }
     }
     for (const instance of node.instances) {
-      states.push(stateForInstance(node.nodeId, node.nodeId, instance));
+      states.push(stateForInstance(node.nodeId, instance));
     }
     for (const wait of node.signalWaits) {
-      states.push(stateForSignalWait(node.nodeId, node.nodeId, wait));
+      states.push(stateForSignalWait(node.nodeId, wait));
     }
   }
 
   return states;
 }
 
-function stateForFrame(targetId: string, nodeId: string, frame: OverlayFrame): WebGraphRuntimeState {
+function stateForFrame(targetId: string, frame: OverlayFrame): WebGraphRuntimeState {
   return {
     targetId,
-    nodeId,
     status: frame.status,
-    frameKey: frame.frameKey,
-    ...(frame.nodeKey === undefined ? {} : { nodeKey: frame.nodeKey }),
     selectors: runtimeSelections(frame.instancePath),
   };
 }
 
-function stateForInstance(targetId: string, nodeId: string, instance: OverlayInstance): WebGraphRuntimeState {
+function stateForInstance(targetId: string, instance: OverlayInstance): WebGraphRuntimeState {
   return {
     targetId,
-    nodeId,
     status: instance.status,
-    nodeKey: instance.nodeKey,
     selectors: runtimeSelections(instance.instancePath),
   };
 }
 
-function stateForSignalWait(targetId: string, nodeId: string, wait: OverlaySignalWait): WebGraphRuntimeState {
+function stateForSignalWait(targetId: string, wait: OverlaySignalWait): WebGraphRuntimeState {
   return {
     targetId,
-    nodeId,
     status: wait.status,
-    nodeKey: wait.nodeKey,
     selectors: [],
   };
 }
@@ -515,11 +459,6 @@ function loopIteration(frame: OverlayFrame): number | undefined {
   return undefined;
 }
 
-function defaultOption(options: WebGraphSelectorOption[]): WebGraphSelectorOption | undefined {
-  return options.find(option => option.status === "running" || option.status === "awaiting")
-    ?? options.at(-1);
-}
-
 function scopeSegment(parentPath: string[], childPath: string[]): string | undefined {
   return childPath.length > parentPath.length ? childPath[parentPath.length] : undefined;
 }
@@ -563,9 +502,6 @@ function staticOverlay(overlay: WorkflowVisualizationOverlay): WorkflowVisualiza
   return {
     workflow: {
       name: overlay.workflow.name,
-      ...(overlay.workflow.description === undefined ? {} : { description: overlay.workflow.description }),
-      ...(overlay.workflow.runId === undefined ? {} : { runId: overlay.workflow.runId }),
-      ...(overlay.workflow.status === undefined ? {} : { status: overlay.workflow.status }),
     },
     nodes: overlay.nodes.map(node => ({
       nodeId: node.nodeId,

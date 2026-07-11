@@ -1,7 +1,6 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import {
   defineWorkflow,
-  secret,
   task,
   z,
   type AgentDefinitionSpec,
@@ -12,7 +11,6 @@ import {
   type JsonValue,
   type ReusableTaskToken,
   type StepDeclaration,
-  type TaskStepSpec,
 } from "../src/index.js";
 import { fmap, md, template, type Expr } from "@acpus/expression";
 
@@ -39,8 +37,6 @@ test("agent tokens are typed from top-level agent keys", () => {
 
   assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", agentMode: "agent" });
   assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", agentMode: "bypassPermissions" });
-  // @ts-expect-error agent definitions use permissionMode, not policy.
-  assertType<AgentDefinitionSpec>({ use: "codex", policy: "read" });
   // @ts-expect-error agent definitions must use either use or command, not both.
   assertType<AgentDefinitionSpec>({ use: "codex", command: "acpx worker" });
 
@@ -100,7 +96,6 @@ test("task outputs are inferred from inline and reusable exec", () => {
       return { packageName: input.packageName, version: input.version, ok: true };
     },
   });
-
   defineWorkflow({ name: "typed-task-output", inputSchema: PackageInput }).build(({ input, step }) => {
     const inline = step("inline").task({
       run: {
@@ -129,17 +124,6 @@ test("task outputs are inferred from inline and reusable exec", () => {
   });
 });
 
-test("task nodes do not accept workflow-level retry", () => {
-  assertType<TaskStepSpec<{}>>({
-    run: {
-      input: {},
-      exec: async () => ({ ok: true }),
-    },
-    // @ts-expect-error task nodes do not support workflow-level automatic retry.
-    retry: { max: 1 },
-  });
-});
-
 test("signal nodes support raw string and schema-backed output", () => {
   defineWorkflow({ name: "typed-signal-output" }).build(({ step }) => {
     const raw = step("raw_signal").signal({ run: { prompt: "Approve?" } });
@@ -151,16 +135,15 @@ test("signal nodes support raw string and schema-backed output", () => {
     });
     expectTypeOf(structured.output.approved).toEqualTypeOf<Expr<boolean>>();
 
-    step("typed_bad_signal_timeout_action").signal({
+    step("signal_timeout_message").signal({
       timeout: "1m",
-      // @ts-expect-error signal timeout only supports fail.
-      onTimeout: { action: "resume" },
-      run: { prompt: "bad" },
+      onTimeout: { message: "Approval timed out" },
+      run: { prompt: "Approve?" },
     });
 
+    // @ts-expect-error onTimeout has no effect without timeout.
     step("typed_bad_signal_timeout_without_duration").signal({
-      // @ts-expect-error onTimeout has no effect without timeout.
-      onTimeout: { action: "fail" },
+      onTimeout: { message: "Approval timed out" },
       run: { prompt: "bad" },
     });
 
@@ -185,14 +168,14 @@ test("nested composite callbacks close over root agents", () => {
   });
 });
 
-test("task options accept only string cwd and string or secret env values", () => {
+test("task options accept only string cwd and string env values", () => {
   defineWorkflow({ name: "typed-task-options", inputSchema: z.object({ cwd: z.string(), token: z.string() }) }).build(({ input, step }) => {
     step("options_ok").task({
       run: {
         input: {},
         cwd: input.cwd,
         env: {
-          TOKEN: secret("TOKEN"),
+          TOKEN: input.token,
           VALUE: input.token,
         },
         exec: async () => ({ ok: true }),
@@ -212,7 +195,7 @@ test("task options accept only string cwd and string or secret env values", () =
       run: {
         input: {},
         env: {
-          // @ts-expect-error env values must be strings or secret tokens.
+          // @ts-expect-error env values must be string workflow values.
           VALUE: 1,
         },
         exec: async () => ({ ok: true }),
@@ -351,7 +334,7 @@ test("runtime configuration fields share the Resolvable seam", () => {
     });
     step("signal").signal({
       timeout: input.timeout,
-      onTimeout: { action: "fail", message: input.text },
+      onTimeout: { message: input.text },
       run: { prompt: input.text },
     });
     step("assert").assert({ condition: input.ready, message: input.text });
@@ -408,17 +391,6 @@ test("declaration-time structure stays plain", () => {
     step("schema").agent({ outputSchema: input.strategy, run: { agent: agents.reviewer, prompt: "review" } });
     // @ts-expect-error reusable task targets are declaration-time structure.
     step("target").task({ run: { task: input.strategy, input: {} } });
-    // @ts-expect-error shell and command runner are declaration-time structure.
-    step("runner").task({
-      run: {
-        input: {},
-        execution: {
-          shell: input.strategy,
-          commandRunner: input.strategy,
-        },
-        exec: async () => ({}),
-      },
-    });
     step("invalid_input").task({
       run: {
         input: {

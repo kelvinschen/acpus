@@ -44,7 +44,7 @@ export function decodeCommittedRuntimeEventRow(row: {
   };
 }
 
-export function decodeRuntimeEventPayload(payloadJson: string, eventType: string): Record<string, unknown> {
+function decodeRuntimeEventPayload(payloadJson: string, eventType: string): Record<string, unknown> {
   const parsed = JSON.parse(payloadJson) as JsonValue;
   if (isSchedulerEventType(eventType)) {
     return decodeSchedulerPayload(payloadJson, eventType);

@@ -1,5 +1,5 @@
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type SchemaIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import type { JsonValue, TemplateIR } from "@acpus/expression/ir";
+import type { JsonPrimitive, JsonValue, TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
 import type {
   ArtifactRecord,
@@ -146,7 +146,7 @@ export function inspectionItems(document: RunInspectionDocument): RunInspectionI
   return document.kind === "snapshot" || document.kind === "target" ? document.items : [];
 }
 
-export function meaningfulAgentProgressChanged(
+function meaningfulAgentProgressChanged(
   previous: RunInspectionItem["agent"] | undefined,
   current: NonNullable<RunInspectionItem["agent"]>,
 ): boolean {
@@ -1237,13 +1237,13 @@ function renderExpr(expr: ExprIR): string {
   if (expr.kind === "ref") return expr.path.join(".");
   if (expr.kind === "array") return `[${expr.items.map(renderExpr).join(", ")}]`;
   if (expr.kind === "object") return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
-  if (expr.kind === "template") return `\`${renderTemplate(expr.template)}\``;
+  if (expr.kind === "template") return `\`${renderTemplate(expr)}\``;
   return `${expr.fn}(${expr.args.map(renderExpr).join(", ")})`;
 }
 
 function renderPromptExpr(expr: ExprIR): string {
   if (expr.kind === "literal" && typeof expr.value === "string") return expr.value;
-  if (expr.kind === "template") return renderTemplate(expr.template);
+  if (expr.kind === "template") return renderTemplate(expr);
   return renderExpr(expr);
 }
 
@@ -1251,11 +1251,9 @@ function renderTemplate(template: TemplateIR): string {
   return template.parts.map(part => part.kind === "text" ? part.value : `\${${renderExpr(part.expr)}}`).join("").replace(/\s+/g, " ").trim();
 }
 
-function renderLiteral(value: JsonValue): string {
+function renderLiteral(value: JsonPrimitive): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(renderLiteral).join(", ")}]`;
-  if (typeof value === "object") return `{ ${Object.entries(value).map(([key, item]) => `${key}: ${renderLiteral(item)}`).join(", ")} }`;
   return String(value);
 }
 

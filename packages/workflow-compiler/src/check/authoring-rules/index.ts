@@ -8,9 +8,7 @@ import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysi
 
 // Acpus authoring rules are the product check rules used by
 // checkWorkflow(...) and prepareWorkflow(...). They intentionally do not invoke
-// ESLint or read user/editor ESLint configuration. The internal ESLint plugin
-// is only an adapter for fixture review: @typescript-eslint/parser supplies a
-// TypeScript Program, then the plugin delegates back to this module.
+// ESLint or read user/editor ESLint configuration.
 
 export type AuthoringRulesInput = {
   program: ts.Program;
@@ -27,7 +25,6 @@ export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR
   return diagnostics;
 }
 
-const MAX_EXPRESSION_CALLBACK_STATEMENTS = 8;
 const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsToken,
@@ -73,8 +70,6 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, checker: ts.TypeChecker, 
       if (helper) {
         const issue = expressionCallbackIssue(node, helper, checker);
         if (issue) diagnostics.push(diagnostic("AL006", issue.message, issue.node, issue.hint));
-        const complexityDiagnostic = expressionCallbackComplexityDiagnostic(node, helper);
-        if (complexityDiagnostic) diagnostics.push(complexityDiagnostic);
         visitExpressionCallbackDependencies(node, helper, visit);
         return;
       }
@@ -162,20 +157,6 @@ function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCall
   return callbackBodyIssue(node, checker, helper);
 }
 
-function expressionCallbackComplexityDiagnostic(call: ts.CallExpression, helper: ExpressionCallbackHelper): DiagnosticIR | undefined {
-  const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
-  const callback = callbackIndex === undefined ? undefined : call.arguments[callbackIndex];
-  if (!callback || !ts.isArrowFunction(callback) || !ts.isBlock(callback.body)) return undefined;
-  const count = executableStatementCount(callback.body);
-  if (count <= MAX_EXPRESSION_CALLBACK_STATEMENTS) return undefined;
-  return diagnostic(
-    "AL007",
-    `${helper}(...) callback contains ${count} executable statements; the maximum is ${MAX_EXPRESSION_CALLBACK_STATEMENTS}.`,
-    callback.body,
-    "Keep expression callbacks focused on small synchronous JSON transforms. Move multi-step logic into a Task and pass dependencies through run.input.",
-  );
-}
-
 function visitExpressionCallbackDependencies(call: ts.CallExpression, helper: ExpressionCallbackHelper, visit: (node: ts.Node) => void): void {
   const callbackIndex = expressionOperatorSpec(helper)?.callback?.callbackSourceArg;
   call.arguments.forEach((arg, index) => {
@@ -229,17 +210,6 @@ function isSimpleBindingName(name: ts.BindingName): boolean {
     if (!isSimpleBindingName(element.name)) return false;
   }
   return true;
-}
-
-function executableStatementCount(root: ts.Block): number {
-  let count = 0;
-  const visit = (node: ts.Node): void => {
-    if (ts.isTypeNode(node) || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return;
-    if (ts.isStatement(node) && !ts.isBlock(node) && !ts.isEmptyStatement(node)) count++;
-    ts.forEachChild(node, visit);
-  };
-  visit(root);
-  return count;
 }
 
 function callbackHint(helper: ExpressionCallbackHelper): string {

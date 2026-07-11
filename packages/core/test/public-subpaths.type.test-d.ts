@@ -22,7 +22,6 @@ import {
   type WorkflowIR,
 } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
-import { isSchema, validateValue } from "@acpus/core/schema";
 import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
@@ -83,9 +82,6 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<AbortSignal>(ctx.abortSignal);
   assertType(task);
   assertType(template);
-  assertType<boolean>(isSchema(Input));
-  assertType(validateValue(Input, { ready: true }));
-
   void rootFmap;
   void rootRuntime;
   void runtimeRef;

@@ -7,7 +7,7 @@ describe.concurrent("runtime mutation queue", () => {
     const order: string[] = [];
     let releaseFirst!: () => void;
 
-    const first = queue.enqueue("first", async () => {
+    const first = queue.enqueue(async () => {
       order.push("first:start");
       await new Promise<void>(resolve => {
         releaseFirst = resolve;
@@ -15,7 +15,7 @@ describe.concurrent("runtime mutation queue", () => {
       order.push("first:end");
       return "first";
     });
-    const second = queue.enqueue("second", () => {
+    const second = queue.enqueue(() => {
       order.push("second");
       return "second";
     });
@@ -33,10 +33,10 @@ describe.concurrent("runtime mutation queue", () => {
 
   it("continues after a failed mutation", async () => {
     const queue = new RuntimeMutationQueue();
-    const failed = queue.enqueue("failed", () => {
+    const failed = queue.enqueue(() => {
       throw new Error("boom");
     });
-    const recovered = queue.enqueue("recovered", () => "ok");
+    const recovered = queue.enqueue(() => "ok");
 
     await expect(failed).rejects.toThrow("boom");
     await expect(recovered).resolves.toBe("ok");

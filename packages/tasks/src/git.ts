@@ -4,30 +4,23 @@ import { task, z } from "@acpus/core";
 import type { Dollar } from "@acpus/core/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
-/** Input accepted by the Git worktree reusable task. */
-export type CreateWorktreeInput = {
-  repo: string;
-  path: string;
-  ref?: string | undefined;
-  detach?: boolean | undefined;
-  forceRemove?: boolean | undefined;
-};
+const createWorktreeInputSchema = z.object({
+  repo: z.string(),
+  path: z.string(),
+  ref: z.string().optional(),
+  forceRemove: z.boolean().optional(),
+});
 
-/** Output returned after a Git worktree is created. */
-export type CreateWorktreeOutput = {
-  ok: boolean;
+type CreateWorktreeInput = z.infer<typeof createWorktreeInputSchema>;
+
+type CreateWorktreeOutput = {
   repoPath: string;
   worktreePath: string;
   ref: string;
   baseSha: string;
-  detached: boolean;
-  created: boolean;
-  dirtyStatus: string;
 };
 
-/** Recoverable errors returned by the low-level Git worktree helper. */
-export type CreateWorktreeError =
-  | { type: "non-detached-worktree"; message: string }
+type CreateWorktreeError =
   | { type: "dirty-repository"; repoPath: string; dirtyStatus: string; message: string }
   | { type: "source-repository-worktree-path"; repoPath: string; worktreePath: string; message: string }
   | { type: "unregistered-worktree-removal"; repoPath: string; worktreePath: string; message: string }
@@ -39,13 +32,7 @@ export type CreateWorktreeError =
  * Use it from a workflow Task node with `run: { task: createWorktree, input: ... }`.
  */
 export const createWorktree = task.define({
-  inputSchema: z.object({
-    repo: z.string(),
-    path: z.string(),
-    ref: z.string().optional(),
-    detach: z.boolean().optional(),
-    forceRemove: z.boolean().optional(),
-  }),
+  inputSchema: createWorktreeInputSchema,
   exec: async ({ input, $ }): Promise<CreateWorktreeOutput> => {
     const result = await tryCreateWorktree(input, $);
     return result.match(
@@ -57,8 +44,7 @@ export const createWorktree = task.define({
   },
 });
 
-/** Low-level ResultAsync helper used by `createWorktree`. */
-export function tryCreateWorktree(input: CreateWorktreeInput, $: Dollar): ResultAsync<CreateWorktreeOutput, CreateWorktreeError> {
+function tryCreateWorktree(input: CreateWorktreeInput, $: Dollar): ResultAsync<CreateWorktreeOutput, CreateWorktreeError> {
   return ResultAsync.fromPromise(
     createWorktreeResult(input, $),
     cause => ({ type: "git-command-failed", message: causeMessage(cause) } satisfies CreateWorktreeError),
@@ -69,8 +55,6 @@ async function createWorktreeResult(input: CreateWorktreeInput, $: Dollar): Prom
   const repoPath = resolve(input.repo);
   const worktreePath = resolve(input.path);
   const ref = input.ref ?? "HEAD";
-  const detached = input.detach ?? true;
-  if (!detached) return err({ type: "non-detached-worktree", message: "createWorktree only supports detached worktrees in this version." });
 
   const topLevel = (await $`git -C ${repoPath} rev-parse --show-toplevel`.text()).trim();
   const baseSha = (await $`git -C ${repoPath} rev-parse --verify ${`${ref}^{commit}`}`.text()).trim();
@@ -86,14 +70,10 @@ async function createWorktreeResult(input: CreateWorktreeInput, $: Dollar): Prom
   await $`git -C ${topLevel} worktree add --detach ${worktreePath} ${baseSha}`;
 
   return ok({
-    ok: true,
     repoPath: topLevel,
     worktreePath,
     ref,
     baseSha,
-    detached,
-    created: true,
-    dirtyStatus,
   });
 }
 

@@ -1,11 +1,12 @@
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, signalWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { applySchedulerControlIntent } from "./support/scheduler.js";
 
 describe("scheduler control intents", () => {
   it("pauses, resumes, and advances an admitted run", async () => {
@@ -19,7 +20,6 @@ describe("scheduler control intents", () => {
           requestId: `pause:${run.id}`,
           runId: run.id,
           type: "pause",
-          reason: "test",
         }, { ownerId: "owner-a" })).resolves.toMatchObject({
           snapshot: { projection: { run: { status: "paused" } } },
         });
@@ -32,7 +32,7 @@ describe("scheduler control intents", () => {
 
         const nodeKey = deriveInstanceKey(appendNode([], "root_task"));
         expect(resumed.advanced).toMatchObject({ status: "completed", started: 1, completed: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
       } finally {
         store.close();
       }
@@ -57,7 +57,7 @@ describe("scheduler control intents", () => {
           commandIdempotencyKey: `signal:${run.id}:invalid`,
         }, { ownerId: "owner-b" })).rejects.toThrow("Signal payload does not match schema");
 
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({ status: "awaiting" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.signalWaits[nodeKey]).toMatchObject({ status: "awaiting" });
 
         await expect(applySchedulerControlIntent(workspace, store, {
           requestId: `signal:${run.id}:valid`,
@@ -286,9 +286,9 @@ function seedControlTarget(store: RuntimeStore, runId: string, nodeId: string, s
     { type: "instance.ready", payload: { runId, nodeKey, nodeId, instancePath, parentFrameKey: "root", readinessSequence: 1 } },
   ];
   if (status === "failed") events.push({ type: "instance.failed", payload: { nodeKey, error: { reason: "test" }, statusReason: "terminal" } });
-  store.scheduler.appendSchedulerEvents({
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
-    expectedVersion: store.scheduler.loadRunSnapshot(runId).version,
+    expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).version,
     ownerEpoch: claim.ownerEpoch,
     idempotencyKey: `seed-${status}:${runId}`,
     events,
@@ -308,9 +308,9 @@ function appendControlCandidates(store: RuntimeStore, runId: string, nodeId: str
       events.push({ type: "instance.ready", payload: { runId, nodeKey, nodeId, instancePath, parentFrameKey: "root", readinessSequence: index + 10 } });
       if (status === "failed") events.push({ type: "instance.failed", payload: { nodeKey, error: { reason: "test" }, statusReason: "terminal" } });
     }
-    store.scheduler.appendSchedulerEvents({
+    throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
       runId,
-      expectedVersion: store.scheduler.loadRunSnapshot(runId).version,
+      expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).version,
       ownerEpoch: claim.ownerEpoch,
       idempotencyKey: `seed-candidates:${id}:${runId}`,
       events,

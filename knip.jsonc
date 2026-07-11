@@ -101,23 +101,16 @@
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",
         "src/compiler/compile-worker.ts!",
-        "test/fixtures/**/*.ts",
-        "test/eslint.config.mjs"
+        "test/fixtures/**/*.ts"
       ],
       "project": ["src/**/*.ts!", "test/**/*.{ts,mjs}"],
       "vitest": false,
       "ignoreIssues": {
         // tsx is used by the source-mode compiler worker branch.
         "src/compiler/worker.ts": ["unlisted"],
-        // This ambient module is consumed only by compiler fixtures.
-        "test/fixtures/workflows/external-task.d.ts": ["unlisted"],
-        // The corresponding bare import intentionally exercises ambient
-        // third-party task analysis without installing a real package.
-        "test/fixtures/workflows/eslint-task-authoring.workflow.ts": ["unlisted"],
-        // These modules and the ESLint config are loaded from fixture paths;
-        // their exports are inputs to the compiler rather than static callers.
-        "test/fixtures/**/*.workflow.ts": ["exports"],
-        "test/eslint.config.mjs": ["exports"]
+        // These modules are loaded from fixture paths; their exports are inputs
+        // to the compiler rather than static callers.
+        "test/fixtures/**/*.workflow.ts": ["exports"]
       }
     }
   }

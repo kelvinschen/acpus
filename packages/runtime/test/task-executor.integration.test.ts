@@ -1,17 +1,29 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { okAsync } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import type { RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
 
+const taskProcessMocks = vi.hoisted(() => ({
+  runTaskAttempt: vi.fn<TaskAttemptRunner>(),
+  actualRunTaskAttempt: undefined as TaskAttemptRunner | undefined,
+}));
+
+vi.mock("../src/execution/task-process.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/execution/task-process.js")>();
+  taskProcessMocks.actualRunTaskAttempt = actual.runTaskAttempt;
+  return { ...actual, runTaskAttempt: taskProcessMocks.runTaskAttempt };
+});
+
 let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "acpus-task-executor-"));
+  if (!taskProcessMocks.actualRunTaskAttempt) throw new Error("Expected the production Task attempt runner.");
+  taskProcessMocks.runTaskAttempt.mockReset().mockImplementation(taskProcessMocks.actualRunTaskAttempt);
 });
 
 afterEach(async () => {
@@ -26,13 +38,11 @@ describe("task executor", () => {
       id: "inline",
       kind: "task",
       run: {
-        kind: "task_run",
         input: {
           value: { kind: "literal", value: "ok" },
         },
         target: {
           kind: "inline",
-          runtime: "node",
           source: `async ({ input }) => {
             const finish = __name((value) => ({ value }), "finish");
             return finish(input.value);
@@ -151,9 +161,8 @@ describe("task executor", () => {
       id: "counter",
       kind: "task",
       run: {
-        kind: "task_run",
         input: {},
-        target: { kind: "module", runtime: "node", specifier: "./counter.mjs", exportName: "counter", referrer: { kind: "workflow", path: "workflow.ts" } },
+        target: { kind: "module", specifier: "./counter.mjs", exportName: "counter", referrer: { path: "workflow.ts" } },
         cwd: { kind: "literal", value: moduleCwd },
         env: { MODULE_ENV: { kind: "literal", value: "module-env" } },
       },
@@ -206,27 +215,21 @@ describe("task executor", () => {
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const options = taskOptions("run_setup_timeout");
     options.store.writeExecutionMetadata = () => { now += 100; };
-    const taskAttemptRunner = vi.fn<TaskAttemptRunner>(() => okAsync({ ok: true }));
-
     await expect(executeTaskNode(inlineTask("setup_timeout", "async () => ({ ok: true })"), {}, {
       ...options,
       deadlineAt: new Date(startedAt + 50).toISOString(),
-      taskAttemptRunner,
     })).rejects.toMatchObject({ failure: { type: "timed_out" } });
 
-    expect(taskAttemptRunner).not.toHaveBeenCalled();
+    expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
   });
 
   it("rejects malformed persisted deadlines before starting the task runner", async () => {
-    const taskAttemptRunner = vi.fn<TaskAttemptRunner>(() => okAsync({ ok: true }));
-
     await expect(executeTaskNode(inlineTask("bad_deadline", "async () => ({ ok: true })"), {}, {
       ...taskOptions("run_bad_deadline"),
       deadlineAt: "not-a-deadline",
-      taskAttemptRunner,
     })).rejects.toThrow("Task node 'bad_deadline' has invalid persisted deadline \"not-a-deadline\".");
 
-    expect(taskAttemptRunner).not.toHaveBeenCalled();
+    expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
   });
 
   it("hard-stops a task that ignores timeout cancellation", async () => {
@@ -270,9 +273,8 @@ function inlineTask(id: string, source: string, invocation: Pick<TaskNodeIR["run
     id,
     kind: "task",
     run: {
-      kind: "task_run",
       input: {},
-      target: { kind: "inline", runtime: "node", source },
+      target: { kind: "inline", source },
       ...invocation,
     },
   };

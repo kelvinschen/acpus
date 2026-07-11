@@ -103,7 +103,7 @@ export default defineWorkflow({
     outputSchema: z.object({ approved: z.boolean(), note: z.string().default("") }),
     run: { prompt: template`Approve composite smoke run ${meta.runId} after ${work.output.audit.summary}?` },
     timeout: "10m",
-    onTimeout: { action: "fail", message: "composite smoke approval timed out" },
+    onTimeout: { message: "composite smoke approval timed out" },
   });
 
   step("require_approval").assert({

@@ -30,7 +30,7 @@ export async function analyzeWorkflowTasks(workflowFile: string, source: string)
   return analyzeWorkflowTasksSync(workflowFile, source);
 }
 
-export function analyzeWorkflowTasksSync(workflowFile: string, source: string): WorkflowTaskAnalysis {
+function analyzeWorkflowTasksSync(workflowFile: string, source: string): WorkflowTaskAnalysis {
   const sourceFile = parseSourceFile(workflowFile, source);
   const imports = collectImportBindings(sourceFile);
   const locals = collectLocalValueNames(sourceFile);

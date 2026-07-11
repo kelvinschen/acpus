@@ -1,9 +1,8 @@
 export type { Expr, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 import { accessor, callExpr, valueToExprIR } from "./internal/expr.js";
 import type { Expr, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
-import type { ExprIR } from "./ir.js";
+import type { TemplatePartIR } from "./ir.js";
 
-type TemplatePart = { kind: "text"; value: string } | { kind: "expr"; expr: ExprIR };
 type LiftDeps = { readonly [key: string]: Resolvable<any> };
 type Comparable = string | number | boolean | null;
 type BooleanOperands = [
@@ -124,8 +123,8 @@ function assertPlainDeps(deps: unknown): void {
   if (prototype !== Object.prototype && prototype !== null) throw new Error("lift(deps, fn) requires a plain object dependency map.");
 }
 
-function templateParts(strings: TemplateStringsArray, values: Resolvable<any>[]): TemplatePart[] {
-  const parts: TemplatePart[] = [];
+function templateParts(strings: TemplateStringsArray, values: Resolvable<any>[]): TemplatePartIR[] {
+  const parts: TemplatePartIR[] = [];
   strings.forEach((text, index) => {
     parts.push({ kind: "text", value: text });
     if (index < values.length) parts.push({ kind: "expr", expr: valueToExprIR(values[index]) });
@@ -133,11 +132,11 @@ function templateParts(strings: TemplateStringsArray, values: Resolvable<any>[])
   return parts;
 }
 
-function templateExpr(parts: TemplatePart[]): ExprValue<string> {
-  return accessor<string>({ kind: "template", template: { kind: "template", parts } });
+function templateExpr(parts: TemplatePartIR[]): ExprValue<string> {
+  return accessor<string>({ kind: "template", parts });
 }
 
-function dedentTemplateParts(parts: TemplatePart[]): TemplatePart[] {
+function dedentTemplateParts(parts: TemplatePartIR[]): TemplatePartIR[] {
   const trimmed = trimBoundaryBlankLines(parts);
   const commonIndent = findCommonIndent(trimmed);
   if (commonIndent === 0) return trimmed;
@@ -167,7 +166,7 @@ function dedentTemplateParts(parts: TemplatePart[]): TemplatePart[] {
   });
 }
 
-function trimBoundaryBlankLines(parts: TemplatePart[]): TemplatePart[] {
+function trimBoundaryBlankLines(parts: TemplatePartIR[]): TemplatePartIR[] {
   const trimmed = parts.map(part => part.kind === "text" ? { ...part } : part);
   const firstText = trimmed.find(part => part.kind === "text");
   if (firstText?.kind === "text") firstText.value = firstText.value.replace(/^(?:[ \t]*\r?\n)+/, "");
@@ -181,7 +180,7 @@ function trimBoundaryBlankLines(parts: TemplatePart[]): TemplatePart[] {
   return trimmed;
 }
 
-function findCommonIndent(parts: TemplatePart[]): number {
+function findCommonIndent(parts: TemplatePartIR[]): number {
   const indents: number[] = [];
   let atLineStart = true;
   let indent = 0;

@@ -1,4 +1,4 @@
-import type { ExprIR, JsonValue, TemplateIR } from "@acpus/expression/ir";
+import type { ExprIR, JsonPrimitive, TemplateIR } from "@acpus/expression/ir";
 
 export function renderExpr(expr: ExprIR): string {
   switch (expr.kind) {
@@ -11,7 +11,7 @@ export function renderExpr(expr: ExprIR): string {
     case "object":
       return `{ ${Object.entries(expr.fields).map(([key, value]) => `${key}: ${renderExpr(value)}`).join(", ")} }`;
     case "template":
-      return `\`${renderTemplate(expr.template)}\``;
+      return `\`${renderTemplate(expr)}\``;
     case "call":
       return `${expr.fn}(${expr.args.map(renderExpr).join(", ")})`;
   }
@@ -25,10 +25,8 @@ function renderTemplate(template: TemplateIR): string {
     .trim();
 }
 
-function renderLiteral(value: JsonValue): string {
+function renderLiteral(value: JsonPrimitive): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (value === null) return "null";
-  if (Array.isArray(value)) return `[${value.map(renderLiteral).join(", ")}]`;
-  if (typeof value === "object") return `{ ${Object.entries(value).map(([key, item]) => `${key}: ${renderLiteral(item)}`).join(", ")} }`;
   return String(value);
 }

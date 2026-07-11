@@ -32,7 +32,7 @@ function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
     case "object":
       return Object.fromEntries(Object.entries(expr.fields).map(([key, value]) => [key, requirePresent("object", evaluate(value, adapter))]));
     case "template":
-      return renderTemplate(expr.template, adapter);
+      return renderTemplate(expr, adapter);
     case "call":
       return evaluateCall(expr.fn, expr.args, adapter);
   }

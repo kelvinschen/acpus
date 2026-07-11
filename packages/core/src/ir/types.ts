@@ -1,5 +1,5 @@
 import type { ExprIR, JsonPrimitive, JsonValue } from "@acpus/expression/ir";
-export type { ExprIR, JsonArray, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TemplatePartIR, TypeIR } from "@acpus/expression/ir";
+export type { ExprIR, JsonArray, JsonObject, JsonPrimitive, JsonValue, TemplateIR, TemplatePartIR } from "@acpus/expression/ir";
 
 export type SchemaTypeIR =
   | { kind: "unknown" }
@@ -25,11 +25,6 @@ export type AgentRetryIR = {
   max?: ExprIR;
 };
 
-export type SecretRefIR = {
-  kind: "secret";
-  name: string;
-};
-
 export type AgentDefinitionIR =
   | {
       kind: "agent_definition";
@@ -38,7 +33,7 @@ export type AgentDefinitionIR =
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       agentMode?: string;
       cwd?: string;
-      env?: Record<string, string | SecretRefIR>;
+      env?: Record<string, string>;
     }
   | {
       kind: "agent_command";
@@ -47,7 +42,7 @@ export type AgentDefinitionIR =
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       agentMode?: string;
       cwd?: string;
-      env?: Record<string, string | SecretRefIR>;
+      env?: Record<string, string>;
     };
 
 export type NodeIR =
@@ -63,7 +58,6 @@ export type NodeIR =
 
 export type BaseNodeIR = {
   id: string;
-  source?: SourceLocationIR;
 };
 
 export type AgentNodeIR = BaseNodeIR & {
@@ -75,13 +69,12 @@ export type AgentNodeIR = BaseNodeIR & {
 };
 
 export type AgentRunIR = {
-  kind: "agent_run";
   agent: string;
   prompt: ExprIR;
   permissionMode?: "approve-reads" | "approve-all" | "deny-all";
   sessionKey?: ExprIR;
   cwd?: ExprIR;
-  env?: Record<string, ExprIR | SecretRefIR>;
+  env?: Record<string, ExprIR>;
 };
 
 export type TaskNodeIR = BaseNodeIR & {
@@ -91,31 +84,25 @@ export type TaskNodeIR = BaseNodeIR & {
 };
 
 export type TaskRunIR = {
-  kind: "task_run";
   input: Record<string, ExprIR>;
   target: TaskExecutionTargetIR;
   cwd?: ExprIR;
-  env?: Record<string, ExprIR | SecretRefIR>;
+  env?: Record<string, ExprIR>;
   execution?: {
-    shell?: "bash" | "powershell" | "pwsh";
     defaultCommandTimeout?: ExprIR;
-    commandRunner?: "acpus-zx-core" | "custom";
   };
 };
 
 export type TaskExecutionTargetIR =
   | {
       kind: "inline";
-      runtime: "node";
       source: string;
     }
   | {
       kind: "module";
-      runtime: "node";
       specifier: string;
       exportName: string;
       referrer: {
-        kind: "workflow";
         path: string;
       };
     };
@@ -125,11 +112,10 @@ export type SignalNodeIR = BaseNodeIR & {
   outputSchema?: SchemaIR;
   run: SignalRunIR;
   timeout?: ExprIR;
-  onTimeout?: { action: "fail"; message?: ExprIR };
+  onTimeout?: { message?: ExprIR };
 };
 
 export type SignalRunIR = {
-  kind: "signal_run";
   prompt: ExprIR;
 };
 
@@ -164,13 +150,9 @@ export type SwitchNodeIR = BaseNodeIR & {
   default: ScopeIR;
 };
 
-export type ParallelBranchIR = {
-  scope: ScopeIR;
-};
-
 export type ParallelNodeIR = BaseNodeIR & {
   kind: "parallel";
-  branches: Record<string, ParallelBranchIR>;
+  branches: Record<string, ScopeIR>;
   strategy: "all" | "race";
   maxConcurrency?: ExprIR;
 };
@@ -198,23 +180,14 @@ export type SourceLocationIR = {
   column?: number;
 };
 
-export type WorkflowLockIR = {
-  acpusCoreVersion: string;
-  workflowSource?: string;
-  workflowSourceDigest?: string;
-  generatedAt: string;
-  notes: string[];
-};
-
 export type WorkflowIR = {
-  irVersion: 3;
+  irVersion: 4;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;
   agents: Record<string, AgentDefinitionIR>;
   root: ScopeIR;
   outputs: Record<string, ExprIR>;
-  lock: WorkflowLockIR;
   diagnostics: DiagnosticIR[];
 };
 

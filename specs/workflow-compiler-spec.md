@@ -8,28 +8,21 @@
 
 ### Public API
 
-- The package MUST expose `compileWorkflowModule(entry, options?)`.
-- The package MUST expose `tryCompileWorkflowModule(entry, options?)`.
 - The package MUST expose `prepareWorkflow(options)`.
 - The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
 
-### Module Compilation
+### Internal Module Compilation
 
-- `compileWorkflowModule(entry, options?)` MUST read the workflow source file.
-- `compileWorkflowModule(...)` MUST import the module and require the default export to be an Acpus workflow definition.
-- `tryCompileWorkflowModule(...)` MUST return a neverthrow `ResultAsync<WorkflowIR, CompileWorkflowModuleError>` for recoverable module compile failures.
-- `CompileWorkflowModuleError` MUST be a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside workspace.
-- `compileWorkflowModule(...)` MUST return the successful
-  `tryCompileWorkflowModule(...)` value or throw an `Error` carrying the compile
-  failure message.
-- `compileWorkflowModule(...)` MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
-- `compileWorkflowModule(...)` MUST attach a `sha256:` `workflowSourceDigest` computed from the workflow source text.
-- `compileWorkflowModule(...)` MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
+- The preparation compile worker MUST read and import the workflow source file and require its default export to be an Acpus workflow definition.
+- Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside workspace.
+- Internal module compilation MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
+- Internal module compilation MUST return a `sha256:` source digest alongside the compiled IR, computed from the workflow source text without embedding it in `WorkflowIR`.
+- Internal module compilation MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
 - Scope-ref legality diagnostics MUST come from `validateWorkflowIR(...)` so module compilation, `workflow check`, preparation, and runtime admission share the same backstop for malformed or hand-authored IR.
-- `compileWorkflowModule(...)` MUST NOT run the preparation check phase itself.
+- Internal module compilation MUST NOT run the preparation check phase itself.
 
 ### Static Check And Worker Import
 
@@ -51,7 +44,7 @@
   to live package source through the `development` condition.
 - Published installs MUST rely on normal package resolution for non-Acpus
   dependencies.
-- Acpus authoring rules MUST run only Acpus-owned checks and MUST NOT load user ESLint config, editor config, or broad third-party presets.
+- The check phase MUST run only the TypeScript compiler and Acpus-owned checks; it MUST NOT load user or editor lint configuration or third-party rule presets.
 - Public TypeScript types MUST own every authoring constraint expressible by the type system. Acpus AST authoring rules MUST NOT duplicate those constraints or remap native TypeScript diagnostics to Acpus codes.
 - Authors who use `any` opt out of TypeScript guarantees. Acpus AST authoring rules MUST NOT add compensating type or output-shape checks for values hidden behind `any`; IR validation and runtime normalization remain mandatory backstops.
 - Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical operators, TypeScript-accepted equality operators, untagged template interpolation containing `Expr`, string-typed node ids derived from Expr values, invalid callback source forms, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
@@ -59,8 +52,7 @@
 - Acpus authoring rules MUST inspect `fmap`, `lift2`, `lift3`, and `lift` calls imported from the supported `acpus/expression` facade, including named aliases and namespace imports.
 - Acpus authoring rules MUST accept expression-body and block-body arrows, including nested block-body arrows, and MUST reject callable references, normal or generator functions, callback arity that TypeScript permits but the serialized operator cannot execute, default/rest/computed bindings, `this`, non-arrow nested functions, and references to workflow/module lexical bindings outside callback parameters, local declarations, and nested callback parameters.
 - Missing or non-callable callbacks, excess callback parameters, async callbacks, and non-`WorkflowData` callback returns MUST be reported only by TypeScript.
-- Block-body expression callbacks MUST contain at most eight executable statements across the outer callback and nested arrows. Acpus authoring rules MUST report one `AL007` error per callback at nine or more statements. The recursive count MUST include runtime control and child statements, count each variable statement once, and exclude blocks, empty statements, comments, formatting, interfaces, type aliases, and other type-only syntax.
-- Acpus authoring rules MUST allow ordinary synchronous JavaScript syntax inside expression callbacks when it does not introduce external lexical captures or exceed the statement budget, including ordinary methods, nested arrows, local declarations, control flow, runtime globals such as `Math`, `JSON`, and `Date`, assignments, `new`, and dynamic imports. TypeScript owns callback return-type admissibility.
+- Acpus authoring rules MUST allow ordinary synchronous JavaScript syntax inside expression callbacks when it does not introduce external lexical captures, including ordinary methods, nested arrows, local declarations, control flow, runtime globals such as `Math`, `JSON`, and `Date`, assignments, `new`, and dynamic imports. TypeScript owns callback return-type admissibility.
 - Expression callback capture checks and inline task self-contained checks MUST share runtime-global detection, including rejection of workflow/module bindings that shadow globals such as `Math`, `JSON`, and `Date`.
 - Acpus authoring rules MUST ignore unrelated property calls that merely share names such as `.task(...)` or `.loop(...)` unless the receiver is a direct `step("id")` call or is typed as an Acpus `StepDeclaration`.
 - Graph output aliases, spreads, computed keys, callback variables, and heterogeneous branch or root returns MUST NOT be rejected solely because of source shape.
@@ -74,7 +66,6 @@
 | `AL004` | Expr interpolated into an untagged template literal |
 | `AL005` | String-typed node id derived from Expr |
 | `AL006` | Expression callback source, parameter, or capture is not serializable |
-| `AL007` | Expression callback exceeds the statement budget |
 | `TB001` | Reusable task is not exported as a loadable module value |
 | `TB002` | Reusable task reference or export is not a `task.define(...)` token |
 | `TB003` | Inline task captures an external binding |
@@ -96,29 +87,17 @@
   `tryPrepareWorkflow(options)` value or throw `WorkflowPreparationError`
   carrying the preparation failure.
 
-### Internal Fixture ESLint
-
-- The `./internal/eslint-plugin` subpath MUST expose one default ESLint plugin
-  for repository-internal fixture review. This subpath is not a product API and
-  MUST NOT be re-exported from the root package entrypoint.
-- The default internal ESLint plugin MUST provide one `acpus-internal/check`
-  rule that reuses Acpus authoring-rule behavior and reports only Acpus `AL...`
-  and `TB...` diagnostics, not TypeScript `TS...` diagnostics.
-- The internal ESLint rule MUST require typed parser services and report a clear configuration diagnostic when those services are unavailable.
-- The repository ESLint flat config MUST scope this rule to workflow-compiler fixtures only, MUST NOT add a default lint script or CI gate, and MAY no-op when the built internal plugin subpath is unavailable.
-- Task-authoring diagnostics reported through the internal ESLint rule MUST use task-analysis callsite source locations when available.
-
 ### Task Analysis And Reusable References
 
 - Task analysis MUST use parser-only static source analysis of the workflow source where source-level task callsite metadata is required.
 - Task analysis MUST produce diagnostic-free facts and reusable module reference metadata only.
 - Acpus authoring rules MUST own task authoring diagnostic codes, messages, and hints.
-- Compile MUST consume task metadata and MUST NOT duplicate lint rule text.
+- Internal module compilation MUST consume task metadata; authoring diagnostics remain owned by the check rules.
 - The analyzer MUST match direct `step("id").task(...)` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
 - Reusable tasks MAY be imported from the supported official `acpus/tasks/git`
   facade subpath without a workflow-local Acpus installation.
-- Reusable task metadata MUST be derived from `task.define({ inputSchema, exec })`; reusable tasks MUST NOT require or preserve an `outputSchema` field.
+- Reusable task metadata MUST be derived from `task.define({ inputSchema, exec })`; `inputSchema` MUST remain a config-time TypeScript type witness and MUST NOT be retained in reusable execution metadata. Reusable tasks MUST NOT require or preserve an `outputSchema` field.
 - Reusable module metadata MUST identify the source-level specifier, export name, and workflow source referrer needed for runtime import.
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Same-file reusable task metadata MUST identify the workflow source module and exported task name.
@@ -130,7 +109,7 @@
 - Inline task source MUST be preserved as a self-contained function source in the serialized IR.
 - Inline task source analysis MUST treat task output as TypeScript-inferred from `exec`, not as schema-declared metadata.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics during preparation.
-- Direct `compileWorkflowModule(...)` MUST NOT run Acpus authoring rules, but it MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
+- Internal module compilation MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
 - The task authoring diagnostic set MUST use `TB001` through `TB004` exactly as defined by the current authoring diagnostic table.
 
 ### Prepared Workflow Data
@@ -140,18 +119,19 @@
 - The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
 - The lock metadata MUST use kind `acpus_workflow_preparation_lock`.
-- The lock metadata MUST reference workflow entry, IR digest, source graph digest, and optional package lock digest.
+- The lock metadata MUST reference workflow entry, workflow source digest, IR digest, source graph digest, and optional package lock digest.
+- Preparation lock metadata MUST be deterministic for identical workflow source, IR, and package lock inputs; it MUST NOT contain a generation timestamp.
 - Workflow preparation MUST NOT write `.acpus/.local/preflight/**` artifacts.
 
 ## Verification
 
-- Public API contract and type tests MUST cover exported compiler/preparation functions, error class, and public types.
+- Public API contract and type tests MUST cover exported preparation functions, error class, and public types.
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
-- Tests MUST cover accepted expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, recursive statement-budget diagnostics, globals and ordinary methods, and rejected captures, helper references, invalid arity, and function expressions.
+- Tests MUST cover accepted expression-body and block-body `fmap`/`lift2`/`lift3`/`lift` callbacks, globals and ordinary methods, and rejected captures, helper references, invalid arity, and function expressions.
 - Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, `unknown` rejection, and the explicit `any` escape hatch.
 - Authoring-rule tests MUST cover only source-level invariants, MUST assert the
-  exact contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify
+  exact contiguous `AL001`-`AL006` and `TB001`-`TB004` sets, and MUST verify
   that type-owned diagnostics are not emitted as Acpus authoring diagnostics.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.

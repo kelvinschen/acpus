@@ -9,9 +9,8 @@ function taskNode(id: string): TaskNodeIR {
     id,
     kind: "task",
     run: {
-      kind: "task_run",
       input: {},
-      target: { kind: "inline", runtime: "node", source: "async () => ({})" },
+      target: { kind: "inline", source: "async () => ({})" },
     },
   };
 }
@@ -21,13 +20,13 @@ const allNodeKinds: ScopeIR = {
     {
       id: "agent",
       kind: "agent",
-      run: { kind: "agent_run", agent: "worker", prompt: truthy },
+      run: { agent: "worker", prompt: truthy },
     },
     taskNode("task"),
     {
       id: "signal",
       kind: "signal",
-      run: { kind: "signal_run", prompt: truthy },
+      run: { prompt: truthy },
     },
     { id: "assert", kind: "assert", condition: truthy },
     {
@@ -51,15 +50,15 @@ const allNodeKinds: ScopeIR = {
       kind: "parallel",
       strategy: "all",
       branches: {
-        first: { scope: { nodes: [taskNode("parallel_first")] } },
-        second: { scope: { nodes: [taskNode("parallel_second")] } },
+        first: { nodes: [taskNode("parallel_first")] },
+        second: { nodes: [taskNode("parallel_second")] },
       },
     },
     {
       id: "fanout",
       kind: "fanout",
       strategy: "all",
-      over: { kind: "literal", value: [] },
+      over: { kind: "array", items: [] },
       do: {
         nodes: [
           {

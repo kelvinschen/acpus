@@ -3,16 +3,14 @@ import { stableJson } from "../stable-json.js";
 import { isTerminalAttemptStatus, isTerminalFrameStatus, isTerminalGroupMemberStatus, isTerminalInstanceStatus, type SchedulerEvent } from "./events.js";
 import { ancestorGroupMembersForNode, descendantFramesForFrame, descendantFramesForMember, descendantGroupKeysForFrame, descendantGroupKeysForMember, descendantGroupMembersForFrame, descendantGroupMembersForMember, descendantInstancesForFrame, descendantInstancesForMember } from "./membership.js";
 import type {
-  FailureClass,
   GroupMember,
   GroupProjection,
   NodeInstance,
-  RetryTargetStatus,
   SchedulerFrame,
   SchedulerProjection,
 } from "./types.js";
 
-export type GroupCompletion =
+type GroupCompletion =
   | { status: "running" }
   | { status: "completed"; acceptedMemberKeys: string[]; cancelRemaining: boolean }
   | { status: "failed"; reason: string; cancelRemaining: boolean };
@@ -120,7 +118,7 @@ export function applyTimestampedSchedulerEvents(runId: string, events: readonly 
   return { projection, timings };
 }
 
-export function evaluateGroupCompletion(group: GroupProjection, members: readonly GroupMember[]): GroupCompletion {
+function evaluateGroupCompletion(group: GroupProjection, members: readonly GroupMember[]): GroupCompletion {
   if (group.status === "completed") return { status: "completed", acceptedMemberKeys: [], cancelRemaining: false };
   if (group.status !== "running") return { status: "failed", reason: group.error?.message as string ?? "group_not_running", cancelRemaining: false };
   if (group.strategy === "all") {
@@ -280,18 +278,6 @@ export function nextLoopStep(input: { iter: number; transition?: JsonValue }): L
   return transition.stop
     ? { action: "complete", output: transition.state, terminalReason: "stopped" }
     : { action: "start_iteration", iter: input.iter + 1, state: transition.state };
-}
-
-export function resolveScopedNodeKey(scopes: readonly Record<string, string>[], nodeId: string): string {
-  for (let index = scopes.length - 1; index >= 0; index -= 1) {
-    const found = scopes[index]?.[nodeId];
-    if (found) return found;
-  }
-  throw new Error(`Node '${nodeId}' is not visible in the current execution scope.`);
-}
-
-export function retryTargetClass(status: RetryTargetStatus, failureClass?: FailureClass): "retryable" | "not_retryable" {
-  return status === "failed" && failureClass !== "retryable" ? "retryable" : "not_retryable";
 }
 
 function loopTransition(value: JsonValue | undefined): { ok: true; state: JsonValue; stop: boolean } | { ok: false; message: string } {
@@ -566,7 +552,7 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
   }
   if (event.type === "instance.retry_requested") {
     assertInstanceRetryable(instance);
-    if (event.payload.source === "control") reopenForControlNodeRetry(projection, instance);
+    reopenForControlNodeRetry(projection, instance);
     delete projection.signalWaits[event.payload.nodeKey];
     projection.instances[event.payload.nodeKey] = compactInstance({
       runId: instance.runId,
@@ -576,7 +562,7 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
       instancePath: instance.instancePath,
       ...(instance.parentFrameKey === undefined ? {} : { parentFrameKey: instance.parentFrameKey }),
       readinessSequence: event.payload.readinessSequence ?? instance.readinessSequence,
-      statusReason: event.payload.source === "scheduler" ? "scheduler_retry" : "retry",
+      statusReason: "retry",
     });
     return;
   }
@@ -639,7 +625,7 @@ function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent)
     }
     if (event.type === "group.member_retry_requested") {
       assertGroupMemberRetryable(member);
-      if (event.payload.source === "control") reopenGroupForControlRetry(projection, member.groupKey);
+      reopenGroupForControlRetry(projection, member.groupKey);
       projection.groupMembers[event.payload.memberKey] = compactMember({
         ...member,
         status: "ready",
@@ -778,8 +764,7 @@ function applySignalEvent(projection: SchedulerProjection, event: Extract<Schedu
       ...wait,
       status: "consumed",
       payload: event.payload.payload,
-      ...(event.payload.payloadDigest === undefined ? {} : { payloadDigest: event.payload.payloadDigest }),
-      ...(event.payload.commandIdempotencyKey === undefined ? {} : { commandIdempotencyKey: event.payload.commandIdempotencyKey }),
+      commandIdempotencyKey: event.payload.commandIdempotencyKey,
     });
   }
   if (event.type === "signal.timed_out") {

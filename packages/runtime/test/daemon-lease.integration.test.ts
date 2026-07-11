@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { admitPreparedWorkflowRun, daemonEndpoint, getRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
+import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 
@@ -108,7 +108,7 @@ describe("daemon lease", () => {
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonControl(dir, { requestId: "test-cancel", type: "cancel", runId: awaiting.run.id, input: {} })).resolves.toMatchObject({
+      await expect(requestDaemonControl(dir, { requestId: "test-cancel", type: "cancel", runId: awaiting.run.id })).resolves.toMatchObject({
         run: { id: awaiting.run.id, status: "canceled" },
       });
     } finally {
@@ -119,16 +119,15 @@ describe("daemon lease", () => {
   it("applies cancel to daemon-owned active execution without lease conflict", async () => {
     const markerPath = join(dir, "active-cancel.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
       await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
 
-      await expect(requestDaemonControl(dir, { requestId: "test-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+      await expect(requestDaemonControl(dir, { requestId: "test-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
@@ -141,28 +140,72 @@ describe("daemon lease", () => {
     }
   }, 5_000);
 
-  it("runs hooks for daemon-owned active controls", async () => {
-    await mkdir(join(dir, ".acpus"), { recursive: true });
-    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
-      "run.canceled": [{
-        id: "active-canceled",
-        command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.status))"`,
-      }],
-    }));
-    const markerPath = join(dir, "active-cancel-hook.marker");
-    const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
+  it("aborts only the targeted active Task while a parallel sibling completes", async () => {
+    const leftMarker = join(dir, "targeted-parallel-left.marker");
+    const rightMarker = join(dir, "targeted-parallel-right.marker");
+    const prepared = await prepareSyntheticWorkflow(dir, targetedParallelTaskWorkflow());
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { leftMarker, rightMarker } });
+      await waitUntil(async () =>
+        await readFile(leftMarker, "utf8").catch(() => undefined) === "started"
+        && await readFile(rightMarker, "utf8").catch(() => undefined) === "started");
+      const attempts = runtimeRows(dir, "SELECT attempt_id, node_key, node_id FROM node_attempts WHERE run_id = ? AND status = 'started' ORDER BY node_id", admitted.id) as Array<{ attempt_id: string; node_key: string; node_id: string }>;
+      expect(attempts.map(attempt => attempt.node_id)).toEqual(["left_task", "right_task"]);
+      const left = attempts.find(attempt => attempt.node_id === "left_task")!;
+
+      await expect(requestDaemonControl(dir, {
+        requestId: "test-targeted-active-cancel",
+        type: "cancel",
+        runId: admitted.id,
+        target: left.node_key,
+      })).resolves.toMatchObject({ run: { id: admitted.id, status: "running" } });
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
+        status: "completed",
+        run: { status: "completed", output: { winner: "right", value: "right" } },
+      });
+      await expect(readFile(leftMarker, "utf8")).resolves.toBe("aborted");
+      await expect(readFile(rightMarker, "utf8")).resolves.toBe("completed");
+      expect(runtimeRows(dir, "SELECT node_id, status, cancel_reason FROM node_attempts WHERE run_id = ? ORDER BY node_id", admitted.id)).toEqual([
+        { node_id: "left_task", status: "cancelled", cancel_reason: "operator_cancelled" },
+        { node_id: "right_task", status: "completed", cancel_reason: null },
+      ]);
+      expect(runtimeRows(dir, "SELECT branch_id, status, terminal_reason FROM group_members WHERE run_id = ? ORDER BY branch_id", admitted.id)).toEqual([
+        { branch_id: "left", status: "cancelled", terminal_reason: "operator_cancelled" },
+        { branch_id: "right", status: "completed", terminal_reason: null },
+      ]);
+    } finally {
+      await loop.shutdown();
+    }
+  }, 10_000);
+
+  it("runs hooks for daemon-owned active controls", async () => {
+    const sideEffectPath = join(dir, "active-cancel-hook-side-effect.marker");
+    await mkdir(join(dir, ".acpus"), { recursive: true });
+    await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      "run.canceled": [{
+        id: "active-canceled",
+        command: `${process.execPath} -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{require("node:fs").appendFileSync(${JSON.stringify(sideEffectPath)},"fired\\n");process.stdout.write(JSON.parse(s).run.status)})'`,
+      }],
+    }));
+    const markerPath = join(dir, "active-cancel-hook.marker");
+    const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
       await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
-      await expect(requestDaemonControl(dir, { requestId: "test-active-cancel-hook", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+      await expect(requestDaemonControl(dir, { requestId: "test-active-cancel-hook", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
-      await waitUntil(() => store.getHookJournal(admitted.id).length > 0);
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
+      await loop.shutdown();
+      await expect(readFile(sideEffectPath, "utf8")).resolves.toBe("fired\n");
       expect(store.getHookJournal(admitted.id)).toEqual([
         expect.objectContaining({
           handlerId: "active-canceled",
@@ -176,17 +219,39 @@ describe("daemon lease", () => {
     }
   }, 5_000);
 
-  it("applies immediate control after start without falling back to a second owner", async () => {
-    const markerPath = join(dir, "immediate-cancel.marker");
+  it("does not expose inactive scheduler ownership details through daemon control", async () => {
+    const markerPath = join(dir, "inactive-owner-control.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
-      await expect(requestDaemonControl(dir, { requestId: "test-immediate-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
+      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+      const row = runtimeRows(dir, "SELECT owner_id, owner_epoch, lease_expires_at FROM run_leases WHERE run_id = ? AND released_at IS NULL", admitted.id)[0] as { owner_id: string; owner_epoch: number; lease_expires_at: string };
+      expect(store.scheduler.releaseRun({ runId: admitted.id, ownerId: row.owner_id, ownerEpoch: row.owner_epoch, leaseExpiresAt: row.lease_expires_at })).toBe(true);
+
+      const error = await requestDaemonControl(dir, { requestId: "test-inactive-owner", type: "cancel", runId: admitted.id }).catch(cause => cause as Error & { code?: string });
+      expect(error).toMatchObject({
+        code: "RUN_NOT_CONTROLLABLE",
+        message: `Control 'cancel' could not be applied to run '${admitted.id}'.`,
+      });
+    } finally {
+      await loop.shutdown();
+    }
+  }, 5_000);
+
+  it("applies immediate control after admission without falling back to a second owner", async () => {
+    const markerPath = join(dir, "immediate-cancel.marker");
+    const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 10,
+      packageVersion: "0.0.0-test",
+    });
+    try {
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
+      await expect(requestDaemonControl(dir, { requestId: "test-immediate-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
@@ -207,13 +272,12 @@ describe("daemon lease", () => {
       }],
     }));
     const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { ready: true });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { ready: true } });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "completed" });
       await waitUntil(() => store.getHookJournal(admitted.id).length > 0);
       expect(store.getHookJournal(admitted.id)).toEqual([
@@ -274,7 +338,7 @@ describe("daemon lease", () => {
       packageVersion: "0.0.0-test",
     });
     try {
-      const fork = await requestDaemonControl(dir, { requestId: "test-fork-hook", type: "fork", runId: source.run.id, input: {} });
+      const fork = await requestDaemonControl(dir, { requestId: "test-fork-hook", type: "fork", runId: source.run.id });
       expect(fork.forkRunId).toEqual(expect.any(String));
       await waitUntil(() => store.getHookJournal(fork.forkRunId!).length > 0);
       expect(store.getHookJournal(fork.forkRunId!)).toEqual([
@@ -305,16 +369,15 @@ describe("daemon lease", () => {
   it("rejects shutdown while a run execution session is active", async () => {
     const markerPath = join(dir, "shutdown-active.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
       await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
       await expect(requestDaemonShutdown(dir)).rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
-      await expect(requestDaemonControl(dir, { requestId: "test-shutdown-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+      await expect(requestDaemonControl(dir, { requestId: "test-shutdown-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
@@ -327,13 +390,12 @@ describe("daemon lease", () => {
   it("fences and stops active executors during host teardown without mutating the run", async () => {
     const markerPath = join(dir, "host-teardown.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      await requestDaemonStartRun(dir, admitted.id);
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
       await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
 
       await loop.shutdown();
@@ -350,17 +412,16 @@ describe("daemon lease", () => {
   it("does not idle-stop while a run execution session is active", async () => {
     const markerPath = join(dir, "idle-active.marker");
     const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-    const admitted = await admitPreparedWorkflowRun(dir, prepared, { markerPath });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       idleStopMs: 20,
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
       await new Promise(resolve => setTimeout(resolve, 50));
       await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });
-      await expect(requestDaemonControl(dir, { requestId: "test-idle-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
+      await expect(requestDaemonControl(dir, { requestId: "test-idle-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
@@ -375,7 +436,7 @@ describe("daemon lease", () => {
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonControl(dir, { requestId: "test-missing", type: "cancel", runId: "run_missing", input: {} }))
+      await expect(requestDaemonControl(dir, { requestId: "test-missing", type: "cancel", runId: "run_missing" }))
         .rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
     } finally {
       await loop.shutdown();
@@ -389,9 +450,9 @@ describe("daemon lease", () => {
       packageVersion: "0.0.0-test",
     });
     try {
-      await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id, input: { target: "approve" } }))
+      await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id, target: "approve" }))
         .resolves.toMatchObject({ forkRunId: expect.any(String) });
-      await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id, input: {} }))
+      await expect(requestDaemonControl(dir, { requestId: "fork-conflict", type: "fork", runId: source.run.id }))
         .rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
     } finally {
       await loop.shutdown();
@@ -496,6 +557,49 @@ function activeTaskWorkflow() {
       },
     });
     return { ok: task.output.ok };
+  });
+}
+
+function targetedParallelTaskWorkflow() {
+  return defineWorkflow({
+    name: "daemon-targeted-active-cancel",
+    inputSchema: z.object({ leftMarker: z.string(), rightMarker: z.string() }),
+  }).build(({ input, step }) => {
+    const race = step("race").parallel({
+      strategy: "race",
+      branches: {
+        left() {
+          const task = step("left_task").task({
+            run: { input: { markerPath: input.leftMarker, value: "left", delayMs: 5_000 }, exec: cancellableMarkerTask },
+          });
+          return { value: task.output.value };
+        },
+        right() {
+          const task = step("right_task").task({
+            run: { input: { markerPath: input.rightMarker, value: "right", delayMs: 500 }, exec: cancellableMarkerTask },
+          });
+          return { value: task.output.value };
+        },
+      },
+    });
+    return { winner: race.output.winner, value: race.output.result.value };
+  });
+}
+
+async function cancellableMarkerTask({ input, abortSignal }: { input: { markerPath: string; value: string; delayMs: number }; abortSignal: AbortSignal }): Promise<{ value: string }> {
+  process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, "started");
+  return await new Promise(resolve => {
+    let settled = false;
+    const finish = (marker: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, marker);
+      resolve({ value: input.value });
+    };
+    const timer = setTimeout(() => finish("completed"), input.delayMs);
+    abortSignal.addEventListener("abort", () => finish("aborted"), { once: true });
+    if (abortSignal.aborted) finish("aborted");
   });
 }
 

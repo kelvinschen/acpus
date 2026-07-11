@@ -1,5 +1,4 @@
 export {
-  normalizeSignalPayload,
   normalizeWorkflowInput,
 } from "./admission/input.js";
 export {
@@ -12,38 +11,27 @@ export {
   requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonShutdown,
-  requestDaemonStartRun,
   requestDaemonStatus,
   type DaemonControlIntent,
   type DaemonErrorCode,
   type DaemonShutdownResult,
   type DaemonAdmitRunInput,
+  type DaemonControlResult,
   DaemonRequestError,
   type DaemonStatus,
 } from "./daemon/socket.js";
 export {
-  admitPreparedWorkflowRun,
-  applyRunControl,
-  applySignalRunControl,
   deleteRun,
   getArtifact,
   getRuntimeHealth,
   getRun,
-  getRunStaticVisualizationOverlay,
   getRunVisualizationSnapshot,
-  listArtifacts,
   listRuns,
   normalizeForkInput,
   type RuntimeHealthCheck,
   type RuntimeHealthReport,
-  type RuntimeHealthStatus,
-  type RuntimeMutationAction,
-  type RuntimeMutationInput,
-  type RuntimeMutationResult,
   RuntimeUseCaseException,
-  type RuntimeUseCaseError,
   type ArtifactRecord,
-  type RunVisualizationSnapshot,
 } from "./runs/use-cases.js";
 export {
   getRunInspection,
@@ -75,9 +63,6 @@ export type {
   RunInspectionTargetDocument,
   RunInspectionTargetSummary,
 } from "./inspection/types.js";
-export {
-  type RuntimeAdvanceResult,
-} from "./runs/advance-runtime.js";
 export {
   hookEvents,
   validateHooksFile,
@@ -122,14 +107,5 @@ export {
   type RunDetails,
   type RunRecord,
   type RunStatus,
-  type DaemonWork,
   type RunWorkflowLockArtifact,
-  type ForkPreparedWorkflow,
 } from "./store/store.js";
-export {
-  type ForkSeedFailure,
-} from "./scheduler/fork-seed.js";
-export {
-  type SchedulerStoreError,
-  type SchedulerStoreResult,
-} from "./scheduler/store-port.js";

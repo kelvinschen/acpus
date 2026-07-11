@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeEdgeIds, canStartPan, compositeBadge, compositeDescriptor, compositeStrategy, displayStatus, graphItemZIndex, isPanPastThreshold, normalizeSelections, safeParents, selectionContext, selectorOptionLabel, selectorStatusSummary, toRenderModel } from "../src/graph-renderer.js";
+import { activeEdgeIds, canStartPan, compositeBadge, compositeDescriptor, compositeStrategy, graphItemZIndex, isPanPastThreshold, normalizeSelections, safeParents, selectionContext, selectorOptionLabel, toRenderModel } from "../src/graph-renderer.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 
 function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
@@ -12,7 +12,6 @@ function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
     label: partial.label ?? id,
     path: partial.path ?? ["root", id],
     status: partial.status ?? "completed",
-    dynamic: { instances: 0, frames: 0, attempts: 0, signalWaits: 0 },
   };
 }
 
@@ -27,7 +26,6 @@ function graphOf(partial: Partial<WebGraph> & { nodes: WebGraphNode[] }): WebGra
     edges: partial.edges ?? [],
     selectors: partial.selectors ?? [],
     runtimeStates: partial.runtimeStates ?? [],
-    groups: partial.groups ?? [],
   };
 }
 
@@ -69,7 +67,7 @@ describe("toRenderModel server graph consumption", () => {
     const graph = graphOf({
       nodes: [
         node({ id: "exec", kind: "parallel", detail: { kind: "parallel", branches: ["cache"], strategy: "all" } }),
-        node({ id: "cache_hit", parentId: "exec::branch%3Acache", parentNodeId: "exec", path: ["root", "exec", "branch:cache", "cache_hit"] }),
+        node({ id: "cache_hit", parentId: "exec::branch%3Acache", path: ["root", "exec", "branch:cache", "cache_hit"] }),
       ],
       containers: [
         { id: "exec::branch%3Acache", nodeId: "exec", kind: "branch", label: "branch: cache", path: ["root", "exec", "branch:cache"], parentId: "exec", status: "completed" },
@@ -89,17 +87,17 @@ describe("toRenderModel server graph consumption", () => {
       workflow: { name: "test", status: "completed" },
       nodes: [
         node({ id: "gate", kind: "if", detail: { kind: "if", condition: "input.ok" }, status: "completed" }),
-        node({ id: "then_task", parentId: "gate::then", parentNodeId: "gate", path: ["root", "gate", "then", "then_task"], status: "not_started" }),
-        node({ id: "else_task", parentId: "gate::else", parentNodeId: "gate", path: ["root", "gate", "else", "else_task"], status: "completed" }),
+        node({ id: "then_task", parentId: "gate::then", path: ["root", "gate", "then", "then_task"], status: "not_started" }),
+        node({ id: "else_task", parentId: "gate::else", path: ["root", "gate", "else", "else_task"], status: "completed" }),
       ],
       containers: [
         { id: "gate::then", nodeId: "gate", kind: "branch", label: "then", path: ["root", "gate", "then"], parentId: "gate", status: "not_started" },
         { id: "gate::else", nodeId: "gate", kind: "branch", label: "else", path: ["root", "gate", "else"], parentId: "gate", status: "completed" },
       ],
       runtimeStates: [
-        { targetId: "gate", nodeId: "gate", status: "completed", selectors: [] },
-        { targetId: "gate::else", nodeId: "gate", status: "completed", selectors: [] },
-        { targetId: "else_task", nodeId: "else_task", status: "completed", selectors: [] },
+        { targetId: "gate", status: "completed", selectors: [] },
+        { targetId: "gate::else", status: "completed", selectors: [] },
+        { targetId: "else_task", status: "completed", selectors: [] },
       ],
     });
 
@@ -110,15 +108,7 @@ describe("toRenderModel server graph consumption", () => {
     expect(model.items.get("else_task")?.dimmed).toBe(false);
   });
 
-  it("normalizes display statuses without globally converting failed-run downstream nodes to skipped", () => {
-    expect(displayStatus("started")).toBe("running");
-    expect(displayStatus("timed_out")).toBe("failed");
-    expect(displayStatus("pending")).toBe("queued");
-    expect(displayStatus("ready")).toBe("queued");
-    expect(displayStatus("cancelled")).toBe("canceled");
-    expect(displayStatus("canceled")).toBe("canceled");
-    expect(displayStatus("awaiting")).toBe("awaiting");
-
+  it("keeps failed-run downstream nodes not-started", () => {
     const graph = graphOf({
       workflow: { name: "failed-run", status: "failed" },
       nodes: [
@@ -199,7 +189,7 @@ describe("toRenderModel server graph consumption", () => {
     ]);
   });
 
-  it("exposes selector status summaries and active control-flow edges", () => {
+  it("marks active control-flow edges", () => {
     const graph = graphOf({
       workflow: { name: "running", status: "running" },
       nodes: [
@@ -208,16 +198,14 @@ describe("toRenderModel server graph consumption", () => {
       ],
       edges: [{ id: "prepare->review", source: "prepare", target: "review", kind: "sequence" }],
       runtimeStates: [
-        { targetId: "prepare", nodeId: "prepare", status: "completed", selectors: [] },
-        { targetId: "review", nodeId: "review", status: "running", selectors: [] },
+        { targetId: "prepare", status: "completed", selectors: [] },
+        { targetId: "review", status: "running", selectors: [] },
       ],
     });
     const model = toRenderModel(graph);
     expect(model.items.get("review")?.active).toBe(true);
     expect([...activeEdgeIds(model)]).toEqual(["prepare->review"]);
 
-    const selector = fanoutGraph().selectors[0]!;
-    expect(selectorStatusSummary(selector, "lanes:item:1")).toEqual({ status: "completed", label: "2/2" });
   });
 });
 
@@ -235,7 +223,7 @@ describe("composite header metadata", () => {
       nodeId: "repair_loop",
       kind: "loop" as const,
       targetId: "repair_loop::do",
-      options: [{ id: "repair_loop:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [] }],
+      options: [{ id: "repair_loop:iteration:0", iteration: 0, parentSelections: [] }],
     };
 
     expect(compositeDescriptor({ kind: "loop", state: "state" })).toBeUndefined();
@@ -246,7 +234,7 @@ describe("composite header metadata", () => {
     const graph = graphOf({
       nodes: [
         node({ id: "gate", kind: "if", detail: { kind: "if", condition: "input.runAgents" } }),
-        node({ id: "run_agent", parentId: "gate::then", parentNodeId: "gate", path: ["root", "gate", "then", "run_agent"] }),
+        node({ id: "run_agent", parentId: "gate::then", path: ["root", "gate", "then", "run_agent"] }),
       ],
       containers: [
         { id: "gate::then", nodeId: "gate", kind: "branch", label: "then", path: ["root", "gate", "then"], parentId: "gate", status: "completed" },
@@ -302,10 +290,10 @@ function fanoutGraph(): WebGraph {
   return graphOf({
     nodes: [
       node({ id: "lanes", kind: "fanout", detail: { kind: "fanout", over: "input.lanes", strategy: "all" }, status: "completed" }),
-      node({ id: "route", kind: "switch", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "lanes", "do", "route"], detail: { kind: "switch", cases: ["item.auto"], hasDefault: true }, status: "completed" }),
-      node({ id: "auto_route", parentId: "route::case%3A0", parentNodeId: "route", path: ["root", "lanes", "do", "route", "case:0", "auto_route"], status: "completed" }),
-      node({ id: "manual_route", parentId: "route::default", parentNodeId: "route", path: ["root", "lanes", "do", "route", "default", "manual_route"], status: "completed" }),
-      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", parentNodeId: "lanes", path: ["root", "lanes", "do", "repair_loop"], detail: { kind: "loop", state: "state" }, status: "completed" }),
+      node({ id: "route", kind: "switch", parentId: "lanes::do", path: ["root", "lanes", "do", "route"], detail: { kind: "switch", cases: ["item.auto"], hasDefault: true }, status: "completed" }),
+      node({ id: "auto_route", parentId: "route::case%3A0", path: ["root", "lanes", "do", "route", "case:0", "auto_route"], status: "completed" }),
+      node({ id: "manual_route", parentId: "route::default", path: ["root", "lanes", "do", "route", "default", "manual_route"], status: "completed" }),
+      node({ id: "repair_loop", kind: "loop", parentId: "lanes::do", path: ["root", "lanes", "do", "repair_loop"], detail: { kind: "loop", state: "state" }, status: "completed" }),
     ],
     containers: [
       { id: "lanes::do", nodeId: "lanes", kind: "scope", label: "do", path: ["root", "lanes", "do"], parentId: "lanes", status: "completed" },
@@ -319,8 +307,8 @@ function fanoutGraph(): WebGraph {
         targetId: "lanes::do",
         defaultOptionId: "lanes:item:1",
         options: [
-          { id: "lanes:item:0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: ["root", "lanes", "do"], parentSelections: [] },
-          { id: "lanes:item:1", label: "item[1]", status: "completed", itemIndex: 1, scopePath: ["root", "lanes", "do"], parentSelections: [] },
+          { id: "lanes:item:0", label: "item[0]", itemIndex: 0, parentSelections: [] },
+          { id: "lanes:item:1", label: "item[1]", itemIndex: 1, parentSelections: [] },
         ],
       },
       {
@@ -329,20 +317,20 @@ function fanoutGraph(): WebGraph {
         targetId: "repair_loop",
         defaultOptionId: "repair_loop:beta:iteration:0",
         options: [
-          { id: "repair_loop:alpha:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-          { id: "repair_loop:beta:iteration:0", label: "iteration 0", status: "completed", iteration: 0, scopePath: [], parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+          { id: "repair_loop:alpha:iteration:0", iteration: 0, parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+          { id: "repair_loop:beta:iteration:0", iteration: 0, parentSelections: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
         ],
       },
     ],
     runtimeStates: [
-      { targetId: "lanes", nodeId: "lanes", status: "completed", selectors: [] },
-      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "route", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "route::case%3A0", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "route::default", nodeId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "auto_route", nodeId: "auto_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "manual_route", nodeId: "manual_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "repair_loop", nodeId: "repair_loop", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "lanes", status: "completed", selectors: [] },
+      { targetId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "route::case%3A0", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route::default", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "auto_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "manual_route", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "repair_loop", status: "completed", selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
     ],
   });
 }
@@ -351,8 +339,8 @@ function nestedFanoutGraph(): WebGraph {
   return graphOf({
     nodes: [
       node({ id: "groups", kind: "fanout", detail: { kind: "fanout", over: "input.groups", strategy: "all" } }),
-      node({ id: "items", kind: "fanout", parentId: "groups::do", parentNodeId: "groups", detail: { kind: "fanout", over: "groups.item.items", strategy: "all" } }),
-      node({ id: "leaf", parentId: "items::do", parentNodeId: "items" }),
+      node({ id: "items", kind: "fanout", parentId: "groups::do", detail: { kind: "fanout", over: "groups.item.items", strategy: "all" } }),
+      node({ id: "leaf", parentId: "items::do" }),
     ],
     containers: [
       { id: "groups::do", nodeId: "groups", kind: "scope", label: "do", path: ["root", "groups", "do"], parentId: "groups", status: "running" },
@@ -365,8 +353,8 @@ function nestedFanoutGraph(): WebGraph {
         targetId: "groups::do",
         defaultOptionId: "groups.1",
         options: [
-          { id: "groups.0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: [], parentSelections: [] },
-          { id: "groups.1", label: "item[1]", status: "running", itemIndex: 1, scopePath: [], parentSelections: [] },
+          { id: "groups.0", label: "item[0]", itemIndex: 0, parentSelections: [] },
+          { id: "groups.1", label: "item[1]", itemIndex: 1, parentSelections: [] },
         ],
       },
       {
@@ -375,9 +363,9 @@ function nestedFanoutGraph(): WebGraph {
         targetId: "items::do",
         defaultOptionId: "items.1.0",
         options: [
-          { id: "items.0.0", label: "item[0]", status: "completed", itemIndex: 0, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
-          { id: "items.0.1", label: "item[1]", status: "completed", itemIndex: 1, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
-          { id: "items.1.0", label: "item[0]", status: "running", itemIndex: 0, scopePath: [], parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }] },
+          { id: "items.0.0", label: "item[0]", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+          { id: "items.0.1", label: "item[1]", itemIndex: 1, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
+          { id: "items.1.0", label: "item[0]", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }] },
         ],
       },
     ],

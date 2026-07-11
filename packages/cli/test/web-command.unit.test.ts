@@ -1,102 +1,127 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createWebCommand } from "../src/commands/web.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
-type StartedWebServerOptions = Parameters<NonNullable<Parameters<typeof createWebCommand>[0]["startWebServer"]>>[0];
+type StartWebServer = typeof import("@acpus/web")["startWebServer"];
+
+const mocks = vi.hoisted(() => ({
+  startWebServer: vi.fn<StartWebServer>(),
+}));
+
+vi.mock("@acpus/web", () => ({ startWebServer: mocks.startWebServer }));
+
+beforeEach(() => {
+  mocks.startWebServer.mockReset();
+});
 
 describe("web command options", () => {
   it("does not request token access for network hosts by default", async () => {
-    const startWebServer = vi.fn(async (_options: StartedWebServerOptions) => ({
-      url: "http://0.0.0.0:4517",
-      close: async () => undefined,
-    }));
+    const close = vi.fn(async () => undefined);
+    mocks.startWebServer.mockResolvedValue({ url: "http://0.0.0.0:4517", close });
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
+    const listenerCounts = signalListenerCounts();
 
-    await createWebCommand({
+    const command = createWebCommand({
       cwd: "/workspace",
       stdout,
       stderr,
       wantsJson: true,
-      startWebServer,
-      waitForSignals: false,
     }).parseAsync(["--host", "0.0.0.0"], { from: "user" });
+    await waitForSignalListeners(listenerCounts);
 
-    expect(startWebServer).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/workspace",
       host: "0.0.0.0",
+      ensureDaemonRunning: expect.any(Function),
     }));
-    expect(startWebServer.mock.calls[0]![0]).not.toHaveProperty("token");
+    expect(mocks.startWebServer.mock.calls[0]![0]).not.toHaveProperty("token");
     expect(JSON.parse(stdout.text)).toEqual({ url: "http://0.0.0.0:4517" });
     expect(stderr.text).toBe("");
+
+    process.emit("SIGINT");
+    await command;
+    expect(close).toHaveBeenCalledOnce();
+    expect(signalListenerCounts()).toEqual(listenerCounts);
   });
 
   it("passes token access when --token is set", async () => {
-    const startWebServer = vi.fn(async (_options: StartedWebServerOptions) => ({
+    const close = vi.fn(async () => undefined);
+    mocks.startWebServer.mockResolvedValue({
       url: "http://localhost:4517/?token=generated",
       token: "generated",
-      close: async () => undefined,
-    }));
+      close,
+    });
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
+    const listenerCounts = signalListenerCounts();
 
-    await createWebCommand({
+    const command = createWebCommand({
       cwd: "/workspace",
       stdout,
       stderr,
       wantsJson: true,
-      startWebServer,
-      waitForSignals: false,
     }).parseAsync(["--token"], { from: "user" });
+    await waitForSignalListeners(listenerCounts);
 
-    expect(startWebServer).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/workspace",
       host: "localhost",
       token: true,
+      ensureDaemonRunning: expect.any(Function),
     }));
     expect(JSON.parse(stdout.text)).toEqual({
       url: "http://localhost:4517/?token=generated",
       token: "generated",
     });
     expect(stderr.text).toBe("");
+
+    process.emit("SIGTERM");
+    await command;
+    expect(close).toHaveBeenCalledOnce();
+    expect(signalListenerCounts()).toEqual(listenerCounts);
   });
 
-  it("closes once for repeated shutdown signals", async () => {
+  it("closes once for repeated shutdown signals and resolves naturally", async () => {
     let resolveClose!: () => void;
     const close = vi.fn(() => new Promise<void>(resolve => {
       resolveClose = resolve;
     }));
-    const startWebServer = vi.fn(async (_options: StartedWebServerOptions) => ({
-      url: "http://localhost:4517",
-      close,
-    }));
-    const exitProcess = vi.fn();
+    mocks.startWebServer.mockResolvedValue({ url: "http://localhost:4517", close });
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const sigintListeners = process.listenerCount("SIGINT");
-    const sigtermListeners = process.listenerCount("SIGTERM");
+    const listenerCounts = signalListenerCounts();
 
     const command = createWebCommand({
       cwd: "/workspace",
       stdout,
       stderr,
       wantsJson: false,
-      startWebServer,
-      exitProcess,
     }).parseAsync([], { from: "user" });
-    await new Promise(resolve => setImmediate(resolve));
+    await waitForSignalListeners(listenerCounts);
 
     process.emit("SIGINT");
     process.emit("SIGINT");
     process.emit("SIGTERM");
 
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledOnce();
     resolveClose();
     await command;
 
-    expect(exitProcess).toHaveBeenCalledTimes(1);
-    expect(exitProcess).toHaveBeenCalledWith(0);
-    expect(process.listenerCount("SIGINT")).toBe(sigintListeners);
-    expect(process.listenerCount("SIGTERM")).toBe(sigtermListeners);
+    expect(signalListenerCounts()).toEqual(listenerCounts);
   });
 });
+
+function signalListenerCounts(): { sigint: number; sigterm: number } {
+  return {
+    sigint: process.listenerCount("SIGINT"),
+    sigterm: process.listenerCount("SIGTERM"),
+  };
+}
+
+async function waitForSignalListeners(baseline: ReturnType<typeof signalListenerCounts>): Promise<void> {
+  await vi.waitFor(() => {
+    expect(process.listenerCount("SIGINT")).toBe(baseline.sigint + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline.sigterm + 1);
+  });
+}

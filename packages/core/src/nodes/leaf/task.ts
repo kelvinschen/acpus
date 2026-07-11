@@ -13,18 +13,16 @@ import type { TaskOutputCheck } from "../../graph/scope.js";
 type BaseTaskToken<Input, Output> = {
   readonly [TASK]: true;
   readonly fn: TaskFunction<Input, Output>;
-  readonly source: string;
 };
 
 type InlineTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
   readonly kind: "inline";
-  readonly inputSchema?: undefined;
+  readonly source: string;
   readonly outputSchema?: undefined;
 };
 
 export type ReusableTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
   readonly kind: "external";
-  readonly inputSchema: Schema<Input>;
 };
 
 export type TaskToken<Input, Output> =
@@ -35,15 +33,12 @@ type TaskStepOptions = {
   cwd?: Resolvable<string>;
   env?: EnvInput;
   execution?: {
-    shell?: "bash" | "powershell" | "pwsh";
     defaultCommandTimeout?: Resolvable<string>;
-    commandRunner?: "acpus-zx-core" | "custom";
   };
 };
 
 type TaskNodeOptions = {
   timeout?: Resolvable<string>;
-  retry?: never;
 };
 
 export type InlineTaskStepSpec<
@@ -75,23 +70,13 @@ type ValidTaskSpec<Input extends StepInput> = {
   runOptions: TaskStepOptions;
 };
 
-function makeTaskToken<Input, Output>(args: {
-  kind: "inline" | "external";
-  inputSchema?: Schema<Input>;
-  fn: TaskFunction<Input, Output>;
-}): TaskToken<Input, Output> {
-  const source = args.fn.toString();
+function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Output>): InlineTaskToken<Input, Output> {
   return {
     [TASK]: true as const,
-    kind: args.kind,
-    inputSchema: args.inputSchema,
-    fn: args.fn,
-    source,
-  } as TaskToken<Input, Output>;
-}
-
-function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Output>): InlineTaskToken<Input, Output> {
-  return makeTaskToken({ kind: "inline", fn }) as InlineTaskToken<Input, Output>;
+    kind: "inline",
+    fn,
+    source: fn.toString(),
+  };
 }
 
 export interface TaskFactory {
@@ -118,11 +103,11 @@ export const task: TaskFactory = {
   }) {
     type Input = z.output<InputSchema>;
     type Output = Awaited<ReturnType<Exec>>;
-    return makeTaskToken({
+    return {
+      [TASK]: true as const,
       kind: "external",
-      inputSchema: config.inputSchema,
       fn: config.exec,
-    }) as ReusableTaskToken<Input, Output>;
+    } as ReusableTaskToken<Input, Output>;
   },
   isToken(value: unknown): value is TaskToken<any, any> {
     return Boolean(value && typeof value === "object" && (value as any)[TASK]);
@@ -135,9 +120,6 @@ export function buildTaskNode<const Input extends StepInput>(
   diagnostics: DiagnosticIR[],
 ): TaskNodeIR {
   assertStableId(id, diagnostics);
-  if ((spec as { retry?: unknown }).retry !== undefined) {
-    diagnostics.push({ code: "IR001", severity: "error", message: `Task node '${id}' does not support workflow-level automatic retry.`, path: `root.nodes.${id}.retry` });
-  }
   const parsed = taskSpecParts(spec);
   if (!parsed) {
     diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { run: { input, exec } } or reusable { run: { input, task } }.` });
@@ -146,21 +128,18 @@ export function buildTaskNode<const Input extends StepInput>(
     id,
     kind: "task",
     run: parsed ? {
-      kind: "task_run",
       input: bindingsToIR(parsed.inputBindings),
       target: taskTarget(parsed.run),
       cwd: parsed.runOptions.cwd === undefined ? undefined : valueToExprIR(parsed.runOptions.cwd),
       env: envToIR(parsed.runOptions.env),
       execution: parsed.runOptions.execution === undefined ? undefined : {
-        ...parsed.runOptions.execution,
         defaultCommandTimeout: parsed.runOptions.execution.defaultCommandTimeout === undefined
           ? undefined
           : valueToExprIR(parsed.runOptions.execution.defaultCommandTimeout),
       },
     } : {
-      kind: "task_run",
       input: {},
-      target: { kind: "inline", runtime: "node", source: "" },
+      target: { kind: "inline", source: "" },
     },
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
   }) as TaskNodeIR;
@@ -187,12 +166,11 @@ function taskSpecParts<const Input extends StepInput>(spec: TaskStepSpec<Input>)
 }
 
 function taskTarget(run: TaskToken<any, any>): TaskExecutionTargetIR {
-  if (run.kind === "inline") return { kind: "inline", runtime: "node", source: run.source };
+  if (run.kind === "inline") return { kind: "inline", source: run.source };
   return {
     kind: "module",
-    runtime: "node",
     specifier: "",
     exportName: "",
-    referrer: { kind: "workflow", path: "" },
+    referrer: { path: "" },
   };
 }

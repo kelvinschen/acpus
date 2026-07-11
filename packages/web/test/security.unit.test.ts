@@ -38,11 +38,6 @@ describe("createAccessPolicy", () => {
     expect(tokenBytes.length).toBe(24);
   });
 
-  it("uses provided token when specified", () => {
-    const policy = createAccessPolicy({ enabled: true, token: "test-token-123" });
-    expect(policy.token).toBe("test-token-123");
-    expect(policy.tokenHash).toBeDefined();
-  });
 });
 
 describe("requireToken middleware", () => {

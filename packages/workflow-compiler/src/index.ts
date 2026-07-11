@@ -1,10 +1,4 @@
 export {
-  compileWorkflowModule,
-  tryCompileWorkflowModule,
-  type CompileOptions,
-  type CompileWorkflowModuleError,
-} from "./compiler/module.js";
-export {
   prepareWorkflow,
   tryPrepareWorkflow,
   type PreparedWorkflow,

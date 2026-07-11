@@ -9,7 +9,7 @@ import type {
   WebGraphSelector,
   WebGraphSelectorOption,
 } from "./client/api.js";
-import { displayNodeStatus, displayRunStatus, isActiveDisplayStatus, normalizeRuntimeStatus, type DisplayStatus } from "./runtime-status.js";
+import { displayNodeStatus, displayRunStatus, isActiveDisplayStatus, type DisplayStatus } from "./runtime-status.js";
 
 const leafWidth = 200;
 const leafHeight = 72;
@@ -138,19 +138,7 @@ export function compositeDescriptor(detail: NodeDetail | undefined): string | un
 
 export function selectorOptionLabel(selector: WebGraphSelector, option: WebGraphSelectorOption): string {
   if (selector.kind === "loop" && "iteration" in option) return `iter ${option.iteration}`;
-  return option.label;
-}
-
-export function selectorStatusSummary(selector: WebGraphSelector, selectedOptionId: string | undefined): { status: DisplayStatus; label: string } | undefined {
-  const option = selector.options.find(candidate => candidate.id === selectedOptionId)
-    ?? selector.options.find(candidate => candidate.id === selector.defaultOptionId)
-    ?? selector.options[0];
-  if (!option) return undefined;
-  if (selector.kind === "fanout") {
-    const completed = selector.options.filter(candidate => normalizeRuntimeStatus(candidate.status) === "completed").length;
-    return { status: displayStatus(option.status), label: `${completed}/${selector.options.length}` };
-  }
-  return { status: displayStatus(option.status), label: displayStatus(option.status).replaceAll("_", " ") };
+  return "label" in option ? option.label : `iter ${option.iteration}`;
 }
 
 export function compositeBadge(kind: string): string {
@@ -170,7 +158,7 @@ export function toRenderModel(graph: WebGraph | undefined, selections: GraphSele
   const ids = new Set([...graph.nodes.map(node => node.id), ...graph.containers.map(container => container.id)]);
   const parentOf = safeParents([
     ...graph.containers.map(container => ({ id: container.id, parentId: container.parentId })),
-    ...graph.nodes.map(node => parentRef(node.id, node.parentId ?? node.parentNodeId)),
+    ...graph.nodes.map(node => parentRef(node.id, node.parentId)),
   ], ids);
   const items = new Map<string, RenderItem>();
 
@@ -604,10 +592,6 @@ export function isCompositeKind(kind: string): boolean {
 
 function parentRef(id: string, parentId: string | undefined): { id: string; parentId?: string } {
   return parentId === undefined ? { id } : { id, parentId };
-}
-
-export function displayStatus(status: string): DisplayStatus {
-  return normalizeRuntimeStatus(status);
 }
 
 function targetStatus(

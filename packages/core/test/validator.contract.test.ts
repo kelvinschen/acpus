@@ -3,24 +3,23 @@ import { validateWorkflowIR, type WorkflowIR } from "../src/ir.js";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "minimal",
     agents: {},
     root: { nodes: [] },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
     diagnostics: [],
     ...overrides,
   };
 }
 
-const inlineTaskTarget = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+const inlineTaskTarget = { kind: "inline" as const, source: "async function task() { return {}; }" };
 
 function taskNode(id: string, input: Record<string, any> = {}) {
   return {
     id,
     kind: "task" as const,
-    run: { kind: "task_run" as const, input, target: inlineTaskTarget },
+    run: { input, target: inlineTaskTarget },
   };
 }
 
@@ -39,10 +38,9 @@ describe("WorkflowIR diagnostics contract", () => {
           id: "review",
           kind: "agent",
           run: {
-            kind: "agent_run",
             agent: "reviewer",
             prompt: { kind: "literal", value: "" },
-            sessionKey: { kind: "template", template: { kind: "template", parts: [{ kind: "text", value: "shared" }] } },
+            sessionKey: { kind: "template", parts: [{ kind: "text", value: "shared" }] },
           },
         }],
       },
@@ -60,7 +58,7 @@ describe("WorkflowIR diagnostics contract", () => {
       node: {
         id: "review",
         kind: "agent",
-        run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "review" }, sessionKey: null },
+        run: { agent: "reviewer", prompt: { kind: "literal", value: "review" }, sessionKey: null },
       },
     },
     {
@@ -71,7 +69,7 @@ describe("WorkflowIR diagnostics contract", () => {
       node: {
         id: "review",
         kind: "agent",
-        run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "review" }, cwd: null },
+        run: { agent: "reviewer", prompt: { kind: "literal", value: "review" }, cwd: null },
       },
     },
     {
@@ -101,7 +99,7 @@ describe("WorkflowIR diagnostics contract", () => {
         kind: "signal",
         timeout: { kind: "literal", value: "1m" },
         onTimeout: null,
-        run: { kind: "signal_run", prompt: { kind: "literal", value: "approve" } },
+        run: { prompt: { kind: "literal", value: "approve" } },
       },
     },
   ])("rejects explicit null for optional $name", ({ code, path, agents, node }) => {
@@ -115,7 +113,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("accepts expression callback-source calls through the workflow validator", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "callback_expression",
       agents: {},
       root: {
@@ -132,11 +130,6 @@ describe("WorkflowIR diagnostics contract", () => {
         },
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     };
 
@@ -145,7 +138,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns stable diagnostic codes and paths for invalid IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad workflow name",
       inputSchema: {
         kind: "object",
@@ -160,7 +153,6 @@ describe("WorkflowIR diagnostics contract", () => {
             id: "review",
             kind: "agent",
             run: {
-              kind: "agent_run",
               agent: "reviewer",
               prompt: { kind: "literal", value: "" },
             },
@@ -176,11 +168,6 @@ describe("WorkflowIR diagnostics contract", () => {
         },
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     };
 
@@ -206,7 +193,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates parallel and fanout strategy invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_strategy",
       agents: {},
       root: {
@@ -235,11 +222,6 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     };
 
@@ -255,7 +237,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates agent definition IR invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_agents",
       agents: {
         missing_use: {
@@ -294,11 +276,6 @@ describe("WorkflowIR diagnostics contract", () => {
       } as any,
       root: { nodes: [] },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     };
 
@@ -338,7 +315,7 @@ describe("WorkflowIR diagnostics contract", () => {
     }));
   });
 
-  it("validates current retry IR contract", () => {
+  it("validates current agent retry IR contract", () => {
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       agents: {
         reviewer: {
@@ -352,7 +329,6 @@ describe("WorkflowIR diagnostics contract", () => {
             id: "agent_without_schema_retry",
             kind: "agent",
             run: {
-              kind: "agent_run",
               agent: "reviewer",
               prompt: { kind: "literal", value: "" },
             },
@@ -363,21 +339,10 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "agent",
             outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
             run: {
-              kind: "agent_run",
               agent: "reviewer",
               prompt: { kind: "literal", value: "" },
             },
             retry: { max: { kind: "literal", value: 1 }, on: ["output_conformance"], backoff: "linear" },
-          },
-          {
-            id: "task_with_retry",
-            kind: "task",
-            run: {
-              kind: "task_run",
-              input: {},
-              target: { kind: "inline", runtime: "node", source: "async function task() { return {}; }" },
-            },
-            retry: { max: 1 },
           },
         ],
       },
@@ -387,7 +352,6 @@ describe("WorkflowIR diagnostics contract", () => {
       ["IR001", "root.nodes.agent_without_schema_retry.retry"],
       ["IR001", "root.nodes.agent_bad_retry_shape.retry.on"],
       ["IR001", "root.nodes.agent_bad_retry_shape.retry.backoff"],
-      ["IR001", "root.nodes.task_with_retry.retry"],
     ]);
   });
 
@@ -400,7 +364,7 @@ describe("WorkflowIR diagnostics contract", () => {
             id: "bad_retry",
             kind: "agent",
             outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "review" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "review" } },
             retry: { max: { kind: "literal", value: -1 } },
           },
           {
@@ -408,7 +372,7 @@ describe("WorkflowIR diagnostics contract", () => {
             kind: "parallel",
             strategy: "all",
             maxConcurrency: { kind: "literal", value: 0 },
-            branches: { only: { scope: { nodes: [] } } },
+            branches: { only: { nodes: [] } },
           },
           {
             id: "bad_fanout",
@@ -416,7 +380,7 @@ describe("WorkflowIR diagnostics contract", () => {
             strategy: "quorum",
             count: { kind: "literal", value: 1.5 },
             maxConcurrency: { kind: "literal", value: "many" },
-            over: { kind: "literal", value: [] },
+            over: { kind: "array", items: [] },
             do: { nodes: [] },
           },
         ],
@@ -432,7 +396,7 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("validates node timeout duration strings", () => {
-    const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+    const target = { kind: "inline" as const, source: "async function task() { return {}; }" };
 
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       agents: {
@@ -446,37 +410,37 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "agent_non_string",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: 1000 },
           },
           {
             id: "task_decimal",
             kind: "task",
-            run: { kind: "task_run", input: {}, target },
+            run: { input: {}, target },
             timeout: { kind: "literal", value: "1.5s" },
           },
           {
             id: "signal_negative",
             kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+            run: { prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "-1s" },
           },
           {
             id: "agent_spaced",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "5 m" },
           },
           {
             id: "task_compound",
             kind: "task",
-            run: { kind: "task_run", input: {}, target },
+            run: { input: {}, target },
             timeout: { kind: "literal", value: "1m30s" },
           },
           {
             id: "task_out_of_range",
             kind: "task",
-            run: { kind: "task_run", input: {}, target },
+            run: { input: {}, target },
             timeout: { kind: "literal", value: "9007199254740991s" },
           },
         ],
@@ -494,7 +458,7 @@ describe("WorkflowIR diagnostics contract", () => {
   });
 
   it("accepts supported timeout duration strings", () => {
-    const target = { kind: "inline" as const, runtime: "node" as const, source: "async function task() { return {}; }" };
+    const target = { kind: "inline" as const, source: "async function task() { return {}; }" };
 
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       agents: {
@@ -508,36 +472,36 @@ describe("WorkflowIR diagnostics contract", () => {
           {
             id: "agent_milliseconds",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "500ms" },
           },
           {
             id: "task_seconds",
             kind: "task",
-            run: { kind: "task_run", input: {}, target },
+            run: { input: {}, target },
             timeout: { kind: "literal", value: "30s" },
           },
           {
             id: "signal_minutes",
             kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+            run: { prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "5m" },
           },
           {
             id: "task_default_milliseconds",
             kind: "task",
-            run: { kind: "task_run", input: {}, target, execution: { defaultCommandTimeout: { kind: "literal", value: "1000" } } },
+            run: { input: {}, target, execution: { defaultCommandTimeout: { kind: "literal", value: "1000" } } },
           },
           {
             id: "agent_hours",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "1h" },
           },
           {
             id: "signal_zero",
             kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+            run: { prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "0" },
           },
         ],
@@ -554,9 +518,8 @@ describe("WorkflowIR diagnostics contract", () => {
           id: "bad_command_timeout",
           kind: "task",
           run: {
-            kind: "task_run",
             input: {},
-            target: { kind: "inline", runtime: "node", source: "async function task() { return {}; }" },
+            target: { kind: "inline", source: "async function task() { return {}; }" },
             execution: { defaultCommandTimeout: { kind: "literal", value: "1m30s" } },
           },
         }],
@@ -570,56 +533,38 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates signal timeout invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_completion",
       agents: {},
       root: {
         nodes: [
           {
-            id: "bad_timeout",
-            kind: "signal",
-            outputSchema: {
-              kind: "object",
-              fields: {},
-              required: [],
-              additionalProperties: false,
-            },
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "1m" },
-            onTimeout: { action: "retry" },
-          } as any,
-          {
             id: "missing_timeout",
             kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
-            onTimeout: { action: "fail" },
+            run: { prompt: { kind: "literal", value: "" } },
+            onTimeout: {},
           } as any,
           {
             id: "bad_timeout_message",
             kind: "signal",
-            run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+            run: { prompt: { kind: "literal", value: "" } },
             timeout: { kind: "literal", value: "1m" },
-            onTimeout: { action: "fail", message: { kind: "literal", value: 123 } },
+            onTimeout: { message: { kind: "literal", value: 123 } },
           } as any,
         ],
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     };
 
     const diagnostics = validateWorkflowIR(ir);
 
-    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "S001", "S001"]);
+    expect(diagnostics.map(diagnostic => diagnostic.code)).toEqual(["S001", "S001"]);
   });
 
   it("validates required aligned IR fields", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_required_fields",
       agents: {},
       root: {
@@ -653,11 +598,6 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     } as any;
 
@@ -682,7 +622,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("rejects fields outside the closed IR shape", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "closed_shape",
       agents: { reviewer: { kind: "agent_definition", use: "codex" } },
       root: {
@@ -691,7 +631,6 @@ describe("WorkflowIR diagnostics contract", () => {
             id: "review",
             kind: "agent",
             run: {
-              kind: "agent_run",
               agent: "reviewer",
               use: "reviewer",
               session: { key: { kind: "literal", value: "" } },
@@ -739,11 +678,6 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     } as any;
 
@@ -789,9 +723,9 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
-  it("returns diagnostics for malformed expr, template, env, and secret IR", () => {
+  it("returns diagnostics for malformed expr, template, and env IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "malformed_nested_ir",
       agents: {
         worker: {
@@ -799,7 +733,7 @@ describe("WorkflowIR diagnostics contract", () => {
           use: "codex",
           env: {
             BAD_EXPR: 1,
-            BAD_SECRET: { kind: "secret" },
+            BAD_OBJECT: { kind: "literal", value: "not-static" },
           },
         },
       },
@@ -809,7 +743,7 @@ describe("WorkflowIR diagnostics contract", () => {
             id: "bad_assert",
             kind: "assert",
             condition: "ready",
-            message: { kind: "template", template: { kind: "template", parts: [{ kind: "text", value: 1 }, { kind: "expr" }, { kind: "bogus" }] } },
+            message: { kind: "template", parts: [{ kind: "text", value: 1 }, { kind: "expr" }, { kind: "bogus" }] },
           },
           {
             id: "bad_signal",
@@ -820,7 +754,7 @@ describe("WorkflowIR diagnostics contract", () => {
               required: [],
               additionalProperties: false,
             },
-            run: { kind: "signal_run", prompt: { kind: "template" } },
+            run: { prompt: { kind: "template" } },
           },
           {
             id: "bad_fanout",
@@ -831,11 +765,6 @@ describe("WorkflowIR diagnostics contract", () => {
         ],
       },
       outputs: {},
-      lock: {
-        acpusCoreVersion: "test",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        notes: [],
-      },
       diagnostics: [],
     } as any;
 
@@ -843,12 +772,12 @@ describe("WorkflowIR diagnostics contract", () => {
 
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "E004", path: "agents.worker.env.BAD_EXPR" }),
-      expect.objectContaining({ code: "SEC001", path: "agents.worker.env.BAD_SECRET.name" }),
+      expect.objectContaining({ code: "E004", path: "agents.worker.env.BAD_OBJECT" }),
       expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.condition" }),
-      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.template.parts.0.value" }),
-      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.template.parts.1.expr" }),
-      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.template.parts.2.kind" }),
-      expect.objectContaining({ code: "E004", path: "root.nodes.bad_signal.run.prompt.template" }),
+      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.parts.0.value" }),
+      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.parts.1.expr" }),
+      expect.objectContaining({ code: "E004", path: "root.nodes.bad_assert.message.parts.2.kind" }),
+      expect.objectContaining({ code: "E004", path: "root.nodes.bad_signal.run.prompt.parts" }),
       expect.objectContaining({ code: "E000", path: "root.nodes.bad_fanout.over" }),
     ]));
   });
@@ -860,9 +789,8 @@ describe("WorkflowIR diagnostics contract", () => {
           id: "run_task",
           kind: "task",
           run: {
-            kind: "task_run",
             input: {},
-            target: { kind: "inline", runtime: "node", source: "async function task() {}" },
+            target: { kind: "inline", source: "async function task() {}" },
             unexpected: { mode: "strict" },
           } as any,
         }],
@@ -881,14 +809,12 @@ describe("WorkflowIR diagnostics contract", () => {
           id: "run_task",
           kind: "task",
           run: {
-            kind: "task_run",
             input: {},
             target: {
               kind: "module",
-              runtime: "node",
               specifier: "",
               exportName: "",
-              referrer: { kind: "workflow", path: "../workflow.ts" },
+              referrer: { path: "../workflow.ts" },
             },
           },
         }],
@@ -904,7 +830,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates SchemaIR as a closed recursive union", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_schema",
       inputSchema: {
         kind: "object",
@@ -922,7 +848,6 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -939,7 +864,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates literal, enum, unknown, and closed schema variants", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "bad_schema_variants",
       inputSchema: {
         kind: "union",
@@ -953,7 +878,6 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -967,7 +891,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("accepts valid recursive core-only SchemaIR", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "valid_recursive_schema",
       inputSchema: {
         kind: "object",
@@ -983,7 +907,6 @@ describe("WorkflowIR diagnostics contract", () => {
       agents: {},
       root: { nodes: [] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
 
@@ -1116,16 +1039,12 @@ describe("WorkflowIR diagnostics contract", () => {
             strategy: "all",
             branches: {
               left: {
-                scope: {
-                  nodes: [taskNode("left_task")],
-                  outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
-                },
+                nodes: [taskNode("left_task")],
+                outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
               },
               right: {
-                scope: {
-                  nodes: [],
-                  outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
-                },
+                nodes: [],
+                outputs: { value: { kind: "ref", path: ["nodes", "left_task", "output", "value"] } },
               },
             },
           },
@@ -1155,7 +1074,7 @@ describe("WorkflowIR diagnostics contract", () => {
     } as any));
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "IR003", path: "root.nodes.branches.branches.right.scope.outputs.value.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.nodes.branches.branches.right.outputs.value.path" }),
       expect.objectContaining({ code: "IR003", path: "root.nodes.route.cases.1.then.outputs.value.path" }),
     ]));
   });
@@ -1246,23 +1165,18 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns diagnostics instead of throwing for malformed top-level containers", () => {
     const malformed = {
-      irVersion: 1,
+      irVersion: 4,
       name: "malformed",
       agents: [],
       root: "bad",
       outputs: [],
-      lock: { notes: "bad" },
       diagnostics: {},
     };
 
     expect(() => validateWorkflowIR(malformed as any)).not.toThrow();
     expect(validateWorkflowIR(malformed as any)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "IR002", path: "irVersion" }),
       expect.objectContaining({ code: "IR002", path: "agents" }),
       expect.objectContaining({ code: "E004", path: "outputs" }),
-      expect.objectContaining({ code: "IR002", path: "lock.acpusCoreVersion" }),
-      expect.objectContaining({ code: "IR002", path: "lock.generatedAt" }),
-      expect.objectContaining({ code: "IR002", path: "lock.notes" }),
       expect.objectContaining({ code: "IR002", path: "diagnostics" }),
       expect.objectContaining({ code: "IR002", path: "root" }),
     ]));
@@ -1302,15 +1216,14 @@ describe("WorkflowIR diagnostics contract", () => {
           id: "review",
           kind: "agent",
           run: {
-            kind: "agent_run",
             agent: "reviewer",
-            prompt: { kind: "template", template: { kind: "template", parts } },
+            prompt: { kind: "template", parts },
           },
         }],
       },
     } as any))).toContainEqual(expect.objectContaining({
       code: "E004",
-      path: "root.nodes.review.run.prompt.template.parts.0",
+      path: "root.nodes.review.run.prompt.parts.0",
     }));
   });
 });

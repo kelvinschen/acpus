@@ -99,15 +99,17 @@ failures to stable CLI phases and exit codes.
 - Global catalog materialization MUST follow symlinks and copy target content.
 - Runtime run records MUST NOT persist catalog metadata.
 - `workflow run` MUST call workflow preparation, normalize submitted input,
-  validate agent overrides, admit a durable run, start or wake the workspace
-  daemon, call daemon `startRun(runId)`, and follow the shared read-only runtime
-  inspection stream until the run reaches a terminal durable status.
+  validate agent overrides, start or wake the workspace daemon, admit the run
+  through the daemon, and follow the shared read-only runtime inspection stream
+  until the run reaches a terminal durable status. Successful daemon admission
+  MUST mean the daemon accepted responsibility for executing or queueing the
+  durable run.
 - `workflow run` MUST NOT synchronously advance scheduler work in the CLI
   process, hold runtime run leases, own active attempts, or create runtime
   execution abort controllers.
-- `workflow run --background` MUST admit a durable run, start or wake the
-  workspace daemon, call daemon `startRun(runId)`, and return only after the
-  daemon accepts responsibility for the admitted run.
+- `workflow run --background` MUST start or wake the workspace daemon, admit
+  the run through it, and return only after the daemon accepts responsibility
+  for executing or queueing the durable run.
 - Invalid JSON input MUST fail as a usage error before workflow preparation.
 - Invalid `--agents` JSON, or a non-object `--agents` value, MUST fail as a
   usage error before workflow preparation or runtime mutation.
@@ -141,10 +143,14 @@ failures to stable CLI phases and exit codes.
 - `workflow viz` HTML output MAY embed the WebUI static graph React runtime,
   but MUST NOT embed live WebUI API polling, source browsing, runtime controls,
   or the Workflows source picker.
+- `workflow viz` CLI results MUST retain workflow preparation diagnostics, but
+  the generated HTML bundle MUST NOT embed diagnostics that the static graph
+  does not render.
 - `workflow viz --out` MUST fail before overwriting an existing file unless
   `--force` is passed.
 - `workflow viz` MUST reuse `@acpus/web` workflow graph and HTML rendering
-  helpers.
+  helpers, while the CLI MUST create parent directories and write the output
+  itself using exclusive creation unless `--force` is passed.
 - CLI workflow preparation adapters MUST consume `@acpus/workflow-compiler`
   typed preparation results at the package boundary and map tagged failures to
   CLI errors.
@@ -153,6 +159,10 @@ failures to stable CLI phases and exit codes.
   Acpus packages in the workflow workspace.
 - Runtime admission, daemon start/wake, run inspection/follow, and run-control
   behavior MUST be delegated to `@acpus/runtime`.
+- Daemon start/wake MUST reuse an existing ready daemon without spawning
+  another process. When no ready daemon exists, the CLI MUST wait for daemon
+  status with a generation before dispatching one admission or control
+  request.
 - Run inspection commands MUST delegate to runtime read APIs.
 - Run inspection commands MUST NOT start or wake the daemon.
 - `runs inspect` MUST use overview mode by default. `--all` MUST request the
@@ -197,7 +207,8 @@ failures to stable CLI phases and exit codes.
   against the replacement workflow when provided, or against the source run's
   frozen workflow otherwise, before sending daemon control.
 - Run control commands MUST start or wake the workspace daemon and send the
-  requested control through daemon `control(runId, intent)`.
+  requested control through daemon `control(intent)`; the intent MUST identify
+  the run.
 - Run control commands MUST NOT synchronously advance scheduler work in the CLI
   process, hold runtime run leases, own active attempts, or create runtime
   execution abort controllers.
@@ -262,15 +273,19 @@ failures to stable CLI phases and exit codes.
 ### Output And Exit Codes
 
 - JSON output MUST include stable keys for `ok`, `phase`, workflow summary,
-  diagnostics, IR digest, source graph digest, output path when a file is
-  written, run summaries or details when available, control outcome when
-  available, workflow catalog entries or invocation source when available,
-  hook validation/list details when available, and doctor checks when available.
+  diagnostics, source graph digest, output path when a file is
+  written, compact run summaries or inspection documents when available,
+  control outcome when available, workflow catalog entries or invocation
+  source when available, hook validation/list details when available, and
+  doctor checks when available.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
   `skill`, and `init`.
 - Non-streaming commands MUST emit one JSON object.
+- Non-streaming admission, control, and delete result `run` fields MUST contain
+  a compact runtime run record. Richer run state MUST use inspection documents,
+  and complete run details MUST require the explicit raw inspection surface.
 - Foreground `workflow run --json` MUST emit newline-delimited JSON records:
   an admitted record followed by the same `snapshot`, `update`, `resync`,
   `done`, and `error` inspection records used by `runs inspect --follow`.
@@ -440,6 +455,8 @@ failures to stable CLI phases and exit codes.
   snapshot/update/resync/done/error ordering with terminal output exactly once.
 - Tests MUST cover background run admission and daemon acceptance without local
   scheduler advancement.
+- Tests MUST cover ready-daemon reuse, daemon startup readiness waiting, and
+  exactly one daemon admission or control dispatch after readiness.
 - Tests MUST cover check failure, compile/validation failure, invalid JSON
   input, and input-schema validation failure phase mapping.
 - Tests MUST cover diagnostic hint rendering in text output and hint

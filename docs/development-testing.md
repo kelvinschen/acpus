@@ -8,7 +8,7 @@ This guide describes how to change the TypeScript workflow core safely while the
 2. Keep changes at the lowest useful layer. Prefer changing a pure lowering function before adding another wrapper, option, factory, or compatibility shim.
 3. Treat `legacy/` as read-only history. Do not copy compatibility rules, YAML workflow behavior, or old terminology into the TypeScript core unless explicitly requested.
 4. Preserve the owning package's public API. Core workflow authoring belongs in `packages/core/src/index.ts`; expression authoring belongs in `packages/expression/src/index.ts`; advanced expression construction/evaluation/validation belongs on focused expression subpaths.
-5. Keep IR serializable and deterministic except for explicitly dynamic lock fields such as `generatedAt`. Do not put live Zod objects, functions, process handles, or runtime-only values into IR.
+5. Keep IR and preparation locks serializable and deterministic. Do not put live Zod objects, functions, process handles, timestamps, or runtime-only values into either artifact.
 
 ## Test taxonomy
 
@@ -16,7 +16,7 @@ The root Vitest config groups tests by filename. Choose the cheapest project tha
 
 | Project | Filename | Use for | Avoid |
 | --- | --- | --- | --- |
-| Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, secret/env lowering. | Dynamic import, filesystem, subprocesses, real commands. |
+| Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, env lowering. | Dynamic import, filesystem, subprocesses, real commands. |
 | Contract | `*.contract.test.ts` | Public API exports, stable IR shape, diagnostic codes/paths, compatibility between spec and serialized contracts. | Implementation details and incidental ordering except where the contract requires it. |
 | Type contract | `*.type.test-d.ts` | Public TypeScript authoring contracts: inferred refs, callback return types, expected compile errors, and schema-aware scope output checks. | Runtime behavior, lowering assertions, broad source compilation already covered by `pnpm typecheck`. |
 | Integration | `*.integration.test.ts` | Cross-layer authoring flows such as `defineWorkflow` -> graph builder -> compiler -> validator. Composite node shape, task execution descriptors, inline embedded source, and live reusable task references belong here. | Real agents, external services, shelling out to package managers. |
@@ -27,9 +27,9 @@ The root Vitest config groups tests by filename. Choose the cheapest project tha
 
 Every test should answer one concrete question: "what breakage would this catch?" Put that answer in the `it(...)` name or the setup shape.
 
-Prefer exact assertions for stable outputs: lowered `ExprIR`, `SchemaIR`, diagnostic `code`/`path`, exit code, node ids, and public output keys. Use partial matchers only for intentionally dynamic values such as `lock.generatedAt`, source text captured from `Function#toString()`, and temp paths.
+Prefer exact assertions for stable outputs: lowered `ExprIR`, `SchemaIR`, preparation locks, diagnostic `code`/`path`, exit code, node ids, and public output keys. Use partial matchers only for intentionally dynamic values such as source text captured from `Function#toString()` and temp paths.
 
-Do not snapshot whole `WorkflowIR` objects. Full snapshots make `generatedAt`, function source, and unrelated lock metadata noisy. Instead, assert the stable slices that define the contract.
+Do not snapshot whole `WorkflowIR` objects. Full snapshots couple a test to unrelated graph fields and embedded function source. Instead, assert the stable slices that define the contract. Preparation locks are separate deterministic artifacts and SHOULD be asserted exactly when their shape is the risk under test.
 
 Keep tests hermetic. No network. No dependence on local Git state, user config, or installed global binaries. For file tests, create a temp directory with `mkdtemp(...)` and clean it up in `finally`.
 
@@ -53,13 +53,13 @@ When a spec says a behavior MUST exist, add or update a test in the same change.
 
 The initial core test foundation should cover these chains:
 
-- Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path; parse issues use Acpus-style paths.
+- Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path.
 - Expressions: `fmap`, `lift2`, `lift3`, `lift`, templates, ref access, callback-source calls, validation, and evaluation lower to canonical `ExprIR` in `@acpus/expression`.
 - IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and malformed task execution descriptors produce stable diagnostic codes and paths.
-- Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, secrets, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
+- Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
 - Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `fmap`/`lift` callback inference, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
-- Module compiler: a checked-in workflow module fixture compiles through `compileWorkflowModule(...)` with `irVersion: 3`, expected node ids, task execution descriptors, outputs, and the trusted-import compiler diagnostic.
+- Module compiler: a checked-in workflow module fixture compiles through the internal preparation compiler with `irVersion: 4`, a separate source digest, expected node ids, task execution descriptors, outputs, and module-import diagnostics.
 
 ## Commands
 

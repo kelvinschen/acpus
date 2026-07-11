@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, type AgentOverrideMap, type DaemonControlIntent, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails, type RuntimeMutationResult } from "@acpus/runtime";
+import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonStatus, type AgentOverrideMap, type DaemonControlIntent, type DaemonControlResult, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 
 export class DaemonControlFailure extends Error {
@@ -16,46 +16,41 @@ export class DaemonControlFailure extends Error {
   }
 }
 
-export function ensureDaemonRunning(cwd: string): void {
-  const child = spawn(process.execPath, daemonEntryArgs(cwd), {
-    cwd,
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-}
-
-export async function sendDaemonControl(cwd: string, intent: DaemonControlIntent): Promise<RuntimeMutationResult> {
-  ensureDaemonRunning(cwd);
+export async function ensureDaemonRunning(cwd: string): Promise<void> {
   const deadline = Date.now() + 30_000;
   let lastError: unknown;
+  let spawned = false;
   while (Date.now() <= deadline) {
     try {
-      return await requestDaemonControl(cwd, intent);
+      await requestDaemonStatus(cwd);
+      return;
     } catch (error) {
-      if (error instanceof DaemonRequestError && error.code !== "INTERNAL_ERROR") throw await daemonControlFailure(cwd, intent, error.code, error);
+      if (isDaemonStartupConnectionError(error)) {
+        if (!spawned) {
+          const child = spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" });
+          child.unref();
+          spawned = true;
+        }
+      } else if (!(error instanceof DaemonRequestError && error.code === "EXECUTION_UNAVAILABLE")) throw error;
       lastError = error;
-      await new Promise(resolve => setTimeout(resolve, 100));
     }
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
-  throw await daemonControlFailure(cwd, intent, "EXECUTION_UNAVAILABLE", lastError);
+  throw lastError instanceof Error ? lastError : new Error("Daemon did not become ready.");
 }
 
-export async function sendDaemonAdmitRun(cwd: string, input: { prepared: PreparedRunWorkflow; input: JsonValue; agentOverrides?: AgentOverrideMap; start: boolean }): Promise<RunDetails> {
-  ensureDaemonRunning(cwd);
-  const deadline = Date.now() + 30_000;
-  let lastError: unknown;
-  while (Date.now() <= deadline) {
-    try {
-      return await requestDaemonAdmitRun(cwd, input);
-    } catch (error) {
-      if (error instanceof DaemonRequestError) throw error;
-      if (!isDaemonStartupConnectionError(error)) throw error;
-      lastError = error;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+export async function sendDaemonControl(cwd: string, intent: DaemonControlIntent): Promise<DaemonControlResult> {
+  try {
+    await ensureDaemonRunning(cwd);
+    return await requestDaemonControl(cwd, intent);
+  } catch (error) {
+    throw await daemonControlFailure(cwd, intent, error instanceof DaemonRequestError ? error.code : "EXECUTION_UNAVAILABLE", error);
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+export async function sendDaemonAdmitRun(cwd: string, input: { prepared: PreparedRunWorkflow; input: JsonValue; agentOverrides?: AgentOverrideMap }): Promise<RunDetails> {
+  await ensureDaemonRunning(cwd);
+  return requestDaemonAdmitRun(cwd, input);
 }
 
 export function daemonControlRequestId(): string {

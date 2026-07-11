@@ -3,14 +3,6 @@ import { err, ok, type Result } from "neverthrow";
 import type { JsonPrimitive, JsonValue, SchemaIR } from "../ir/types.js";
 import type { Schema } from "./zod.js";
 
-export function toJSONSchema(schema: Schema<any>): JsonValue {
-  return zod.toJSONSchema(schema as zod.ZodTypeAny) as JsonValue;
-}
-
-export function assertBoundarySchema(schema: Schema<any>, path = "$schema"): void {
-  toSchemaIR(schema, path);
-}
-
 export type SchemaLoweringError =
   | { type: "invalid-literal"; path: string; valueType: string; message: string }
   | { type: "invalid-default"; path: string; valueType: string; message: string }

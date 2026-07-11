@@ -35,7 +35,7 @@ describe("expression validator", () => {
     expect(validateExprIR({ kind: "call", fn: "lift2", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: "(a, b) => a + b" }] })).toEqual([]);
     expect(validateExprIR({ kind: "call", fn: "lift3", args: [{ kind: "literal", value: 1 }, { kind: "literal", value: 2 }, { kind: "literal", value: 3 }, { kind: "literal", value: "(a, b, c) => a + b + c" }] })).toEqual([]);
     expect(validateExprIR({ kind: "call", fn: "lift", args: [{ kind: "object", fields: { a: { kind: "literal", value: 1 } } }, { kind: "literal", value: "({ a }) => a" }] })).toEqual([]);
-    expect(validateExprIR({ kind: "call", fn: "access", args: [{ kind: "literal", value: { a: 1 } }, { kind: "literal", value: "a" }] })).toEqual([]);
+    expect(validateExprIR({ kind: "call", fn: "access", args: [{ kind: "object", fields: { a: { kind: "literal", value: 1 } } }, { kind: "literal", value: "a" }] })).toEqual([]);
   });
 
   it("accepts expression-body and block-body callback source strings", () => {
@@ -59,94 +59,45 @@ describe("expression validator", () => {
     }]);
   });
 
-  it("rejects removed lambda and var IR", () => {
-    expect(validateExprIR({ kind: "var", id: "v0", path: [] } as any)).toEqual([{
-      code: "EX002",
-      severity: "error",
-      message: "Unknown expression kind 'var'.",
-      path: "$.kind",
-    }]);
-    expect(validateExprIR({ kind: "lambda", params: [{ id: "v0" }], body: { kind: "literal", value: true } } as any)).toEqual([{
-      code: "EX002",
-      severity: "error",
-      message: "Unknown expression kind 'lambda'.",
-      path: "$.kind",
-    }]);
-  });
-
-  it("rejects removed operators", () => {
-    for (const fn of [
-      "not",
-      "and",
-      "or",
-      "eq",
-      "ne",
-      "lt",
-      "lte",
-      "gt",
-      "gte",
-      "add",
-      "subtract",
-      "multiply",
-      "divide",
-      "mod",
-      "ifElse",
-      "coalesce",
-      "len",
-      "includes",
-      "isEmpty",
-      "startsWith",
-      "endsWith",
-      "matches",
-      "get",
-      "head",
-      "every",
-      "some",
-      "map",
-      "filter",
-      "join",
-      "max",
-      "min",
-      "where",
-      "pick",
-      "transform",
-    ]) {
-      expect(validateExprIR({ kind: "call", fn, args: [] })).toEqual([{
-        code: "EX001",
-        severity: "error",
-        message: `Unknown expression operator '${fn}'.`,
-        path: "$.fn",
-      }]);
-    }
-  });
-
   it("validates malformed expression shapes", () => {
     expect(validateExprIR({ kind: "literal", value: undefined } as any)).toEqual([{
       code: "EX002",
       severity: "error",
-      message: "Expression literal value must be JSON-compatible.",
+      message: "Expression literal value must be a JSON primitive.",
       path: "$.value",
     }]);
     expect(validateExprIR({ kind: "literal", value: Number.POSITIVE_INFINITY } as any)).toEqual([{
       code: "EX002",
       severity: "error",
-      message: "Expression literal value must be JSON-compatible.",
+      message: "Expression literal value must be a JSON primitive.",
       path: "$.value",
     }]);
     expect(validateExprIR({ kind: "literal", value: Number.NaN } as any)).toEqual([{
       code: "EX002",
       severity: "error",
-      message: "Expression literal value must be JSON-compatible.",
+      message: "Expression literal value must be a JSON primitive.",
+      path: "$.value",
+    }]);
+    expect(validateExprIR({ kind: "literal", value: [] } as any)).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "Expression literal value must be a JSON primitive.",
+      path: "$.value",
+    }]);
+    expect(validateExprIR({ kind: "literal", value: {} } as any)).toEqual([{
+      code: "EX002",
+      severity: "error",
+      message: "Expression literal value must be a JSON primitive.",
       path: "$.value",
     }]);
     expect(validateExprIR({
       kind: "template",
-      template: { kind: "template", parts: [{ kind: "text" }] },
+      parts: [{ kind: "text" }],
     } as any)).toEqual([{
       code: "EX002",
       severity: "error",
       message: "Template text value must be a string.",
-      path: "$.template.parts[0].value",
+      path: "$.parts[0].value",
     }]);
     expect(validateExprIR({ kind: "ref", path: [] })).toEqual([{
       code: "EX006",
@@ -187,43 +138,23 @@ describe("expression validator", () => {
     ]);
 
     const parts = new Array(1);
-    expect(validateExprIR({ kind: "template", template: { kind: "template", parts } } as any)).toEqual([{
+    expect(validateExprIR({ kind: "template", parts } as any)).toEqual([{
       code: "EX002",
       severity: "error",
       message: "Array values must not contain sparse holes.",
-      path: "$.template.parts[0]",
+      path: "$.parts[0]",
     }]);
-  });
-
-  it("validates type metadata", () => {
-    expect(validateExprIR({ kind: "literal", value: 1, type: { kind: "integer" } } as any)).toEqual([{
-      code: "EX009",
-      severity: "error",
-      message: "Unknown type kind 'integer'.",
-      path: "$.type.kind",
-    }]);
-
-    expect(validateExprIR({
-      kind: "literal",
-      value: 1,
-      type: { kind: "object", fields: { id: { kind: "string" } }, required: ["missing"], additionalProperties: false },
-    } as any)).toContainEqual({
-      code: "EX009",
-      severity: "error",
-      message: "Required type field 'missing' is not present in object fields.",
-      path: "$.type.required[0]",
-    });
   });
 
   it("rejects malformed templates", () => {
     expect(validateExprIR({
       kind: "template",
-      template: { kind: "not_template", parts: [] },
+      parts: [{ kind: "unknown" }],
     } as any)).toEqual([{
       code: "EX002",
       severity: "error",
-      message: "Expression template must contain template parts.",
-      path: "$.template",
+      message: "Unknown template part kind 'unknown'.",
+      path: "$.parts[0].kind",
     }]);
   });
 });

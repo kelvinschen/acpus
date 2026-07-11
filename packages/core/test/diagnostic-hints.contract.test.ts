@@ -5,12 +5,11 @@ import { compileWorkflowDefinition } from "../src/workflow.js";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "diagnostic_hints",
     agents: {},
     root: { nodes: [] },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-01-01T00:00:00.000Z", notes: [] },
     diagnostics: [],
     ...overrides,
   };
@@ -30,7 +29,7 @@ describe("core diagnostic hints contract", () => {
           {
             id: "missing_agent",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
           },
           {
             id: "if_without_else",

@@ -44,11 +44,11 @@ export function childScopes(node: NodeIR): readonly NodeChildScope[] {
         { kind: "switch", owner: node, branchId: "default", scope: node.default },
       ];
     case "parallel":
-      return Object.entries(node.branches).map(([branchId, branch]) => ({
+      return Object.entries(node.branches).map(([branchId, scope]) => ({
         kind: "parallel",
         owner: node,
         branchId,
-        scope: branch.scope,
+        scope,
       }));
     case "fanout":
       return [{ kind: "fanout", owner: node, scope: node.do }];

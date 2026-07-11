@@ -50,8 +50,6 @@ export type AgentExecutorOptions = {
   progressWriter?: NodeProgressWriter;
   initialPromptKind?: "task" | "plain_continuation";
   signal?: AbortSignal;
-  executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
-  repairDelayMs?: number;
 };
 
 type AgentTurnRecord = {
@@ -121,7 +119,6 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
       ...(definition.model ? { model: definition.model } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     } satisfies Omit<AgentTurnRequest, "prompt" | "agentMode">;
-    const executeTurn = options.executeTurn ?? executeAgentTurn;
     const maxRepairTurns = node.outputSchema
       ? node.retry?.max === undefined
         ? 2
@@ -147,7 +144,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(onProgress ? { onProgress } : {}),
       } satisfies AgentTurnRequest;
-      const result = await executeTurn(request);
+      const result = await executeAgentTurn(request);
       turns.push(await writeAgentTurnArtifacts(node, options, turn + 1, request.prompt, result, captureRawDebug));
       if (result.status === "cancelled") {
         await writeTerminalState("cancelled", result.message, result, turn + 1);
@@ -182,7 +179,7 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         await writeTerminalState("failed", failure.message, result, turn + 1);
         throw new AgentNodeExecutionError(failure);
       }
-      await delay(options.repairDelayMs ?? DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
+      await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
       prompt = buildAgentPrompt(CONTINUATION_PROMPT, node.outputSchema);
     }
     throw new Error(`Agent node '${node.id}' exhausted response repair.`);
@@ -221,18 +218,12 @@ function setOptionalEnv(env: NodeJS.ProcessEnv, key: string, value: string | und
 
 function dynamicEnv(env: AgentNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
   if (!env) return {};
-  return Object.fromEntries(Object.entries(env).map(([key, value]) => {
-    if (value && typeof value === "object" && value.kind === "secret") throw new Error(`Agent env '${key}' references an unresolved secret.`);
-    return [key, resolveOrThrow(tryResolveString(value, scope, `Agent env '${key}'`))];
-  }));
+  return Object.fromEntries(Object.entries(env).map(([key, value]) =>
+    [key, resolveOrThrow(tryResolveString(value, scope, `Agent env '${key}'`))]));
 }
 
 function staticEnv(env: AgentDefinitionIR["env"]): Record<string, string> {
-  if (!env) return {};
-  return Object.fromEntries(Object.entries(env).map(([key, value]) => {
-    if (typeof value !== "string") throw new Error(`Agent env '${key}' references an unresolved secret.`);
-    return [key, value];
-  }));
+  return env ? { ...env } : {};
 }
 
 function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"] {
@@ -394,7 +385,6 @@ async function writeAgentTurnArtifacts(
   if (!options.store || !options.runId) return base;
   const promptArtifact = await writeAgentArtifact(options, turn, "prompt.md", prompt, "text/markdown");
   const responseArtifact = await writeAgentArtifact(options, turn, "response.md", result.responseText, "text/markdown");
-  const telemetry = telemetryWithArtifactRefs(result.telemetry, promptArtifact, responseArtifact);
   return {
     ...base,
     promptArtifact,
@@ -405,18 +395,10 @@ async function writeAgentTurnArtifacts(
       status: result.status,
       nodeId: node.id,
       turn,
-      telemetry,
+      telemetry: result.telemetry,
       ...(result.status === "failed" ? { failure: result.failure } : {}),
       ...(result.status === "cancelled" ? { message: result.message } : {}),
     }, null, 2)}\n`, "application/json"),
-  };
-}
-
-function telemetryWithArtifactRefs(telemetry: AgentTurnTelemetry, promptArtifact: AgentArtifactRef, responseArtifact: AgentArtifactRef): AgentTurnTelemetry {
-  return {
-    ...telemetry,
-    ...(telemetry.input ? { input: { ...telemetry.input, artifactRef: promptArtifact.relativePath } } : {}),
-    ...(telemetry.output ? { output: { ...telemetry.output, artifactRef: responseArtifact.relativePath } } : {}),
   };
 }
 

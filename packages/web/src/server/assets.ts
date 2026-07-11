@@ -2,8 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, normalize, relative, resolve } from "node:path";
 import type { Hono } from "hono";
 
-export function mountStaticAssets(app: Hono, staticDir: string | undefined): void {
-  if (!staticDir) return;
+export function mountStaticAssets(app: Hono, staticDir: string): void {
   app.get("/assets/*", context => serveAsset(context, staticDir, context.req.path.slice(1)));
   app.get("/favicon.ico", context => serveAsset(context, staticDir, "favicon.ico"));
   app.get("*", context => {

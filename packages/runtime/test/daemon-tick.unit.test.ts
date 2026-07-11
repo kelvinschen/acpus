@@ -6,7 +6,7 @@ describe("daemon tick", () => {
   it("does not let hook journal prune failures block runnable work", async () => {
     const started: string[] = [];
 
-    await expect(runDaemonTick(fakeStore(), { startRun: runId => started.push(runId) })).resolves.toEqual({
+    await expect(runDaemonTick(fakeStore(), { startSession: runId => started.push(runId) })).resolves.toEqual({
       runs: 1,
       idleBlockers: 0,
     });

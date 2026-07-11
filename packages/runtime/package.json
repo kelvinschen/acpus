@@ -33,8 +33,7 @@
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "jsonrepair": "^3.14.1",
-    "neverthrow": "^8.2.0",
-    "p-queue": "^9.3.0"
+    "neverthrow": "^8.2.0"
   },
   "devDependencies": {
     "@acpus/workflow-compiler": "workspace:*",

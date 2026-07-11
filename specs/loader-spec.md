@@ -9,7 +9,6 @@
 ### Public Surface
 
 - The package MUST expose `officialAuthoringTypeScriptPaths(fromDir)`.
-- The package MUST expose `registerAuthoringModuleLoader()`.
 - The package MUST expose `importAuthoringModule(specifier, { parentURL })`.
 - The package MUST NOT expose user-facing CLI commands, runtime state, workflow compilation APIs, or task execution APIs.
 - The package MUST keep TypeScript loader implementation details private to this package.
@@ -30,8 +29,7 @@
 
 ### Module Loading
 
-- `registerAuthoringModuleLoader()` MUST be idempotent.
-- `registerAuthoringModuleLoader()` MUST register the TypeScript authoring module loader, official facade mappings, CommonJS `_resolveFilename` fallback, ESM loader resolution, and feature-detected synchronous `module.registerHooks` resolution when available.
+- `importAuthoringModule(...)` MUST lazily register the TypeScript authoring loader, official facade mappings, CommonJS `_resolveFilename` fallback, ESM loader resolution, and feature-detected synchronous `module.registerHooks` resolution at most once per process.
 - The synchronous `module.registerHooks` hook MUST be optional and MUST NOT raise on Node versions that do not provide it.
 - `importAuthoringModule(specifier, { parentURL })` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the referrer.
 - Relative `.js` source-level specifiers MUST continue to load matching TypeScript source files through the authoring loader.

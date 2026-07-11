@@ -9,7 +9,7 @@ describe("workflow visualization CLI contract", () => {
   it("generates workflow visualization HTML with overwrite controls", async () => {
     await withTestWorkspace("workflow-viz-program", async workspace => {
       const workflow = join(workspace, "workflow.ts");
-      const out = join(workspace, "viz.html");
+      const out = join(workspace, "artifacts", "viz.html");
       await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
 
 export default defineWorkflow({

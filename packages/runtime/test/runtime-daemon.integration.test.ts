@@ -3,17 +3,18 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
+import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
+import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
-import { applySignalRunControl } from "../src/runs/use-cases.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe.concurrent("runtime daemon ticks", () => {
-  it("admits runs through the daemon with explicit start behavior", async () => {
-    await withRuntimeWorkspace("runtime-daemon-admit-start-behavior", async workspace => {
+  it("admits runs only after registering daemon-owned execution", async () => {
+    await withRuntimeWorkspace("runtime-daemon-admit-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
@@ -21,31 +22,22 @@ describe.concurrent("runtime daemon ticks", () => {
         packageVersion: "test",
       });
       try {
-        const pending = await requestDaemonAdmitRun(workspace, {
+        const admitted = await requestDaemonAdmitRun(workspace, {
           prepared,
           input: { ready: true },
-          start: false,
         });
 
-        expect(pending).toMatchObject({
+        expect(admitted).toMatchObject({
           name: "cli-valid",
-          status: "pending",
           input: { ready: true },
         });
-        expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id = ?", pending.id)).toEqual([{ id: pending.id }]);
+        expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id = ?", admitted.id)).toEqual([{ id: admitted.id }]);
+        const terminal = await waitForTerminalRun(workspace, admitted.id);
 
-        const started = await requestDaemonAdmitRun(workspace, {
-          prepared,
-          input: { ready: true },
-          start: true,
-        });
-        const advanced = await waitForTerminalRun(workspace, started.id);
-
-        expect(started).toMatchObject({ name: "cli-valid" });
-        expect(advanced).toMatchObject({
+        expect(terminal).toMatchObject({
           status: "completed",
           run: {
-            id: started.id,
+            id: admitted.id,
             status: "completed",
             output: { ready: true },
           },
@@ -71,12 +63,137 @@ describe.concurrent("runtime daemon ticks", () => {
             irJson: `${JSON.stringify({ ...prepared.ir, name: "different" })}\n`,
           },
           input: { ready: true },
-          start: false,
         })).rejects.toMatchObject({
           code: "INVALID_REQUEST",
           message: expect.stringContaining("does not match prepared IR"),
         });
         expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("rejects malformed prepared workflow locks at the daemon socket boundary", async () => {
+    await withRuntimeWorkspace("runtime-daemon-admit-malformed-lock", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        const malformed = [
+          {
+            ...prepared,
+            lock: {
+              ...prepared.lock,
+              workflow: { entry: prepared.lock.workflow.entry },
+            },
+          },
+          {
+            ...prepared,
+            lock: {
+              ...prepared.lock,
+              ir: { ...prepared.lock.ir, path: "workflow.json" },
+            },
+          },
+          {
+            ...prepared,
+            lock: {
+              ...prepared.lock,
+              generatedAt: "2026-07-11T00:00:00.000Z",
+            },
+          },
+        ];
+        for (const candidate of malformed) {
+          await expect(requestDaemonAdmitRun(workspace, {
+            prepared: candidate as unknown as typeof prepared,
+            input: { ready: true },
+          })).rejects.toMatchObject({
+            code: "INVALID_REQUEST",
+            message: "Invalid daemon admission request.",
+          });
+        }
+        expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("rejects inconsistent prepared workflow lock digests before admission", async () => {
+    await withRuntimeWorkspace("runtime-daemon-admit-inconsistent-lock", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const otherDigest = `sha256:${"a".repeat(64)}`;
+      const thirdDigest = `sha256:${"b".repeat(64)}`;
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        const inconsistent = [
+          {
+            candidate: { ...prepared, lock: { ...prepared.lock, sourceGraphDigest: otherDigest } },
+            message: "lock source graph digest",
+          },
+          {
+            candidate: { ...prepared, sourceGraphDigest: otherDigest, lock: { ...prepared.lock, sourceGraphDigest: otherDigest } },
+            message: "source graph digest does not match workflow and package lock digests",
+          },
+          {
+            candidate: { ...prepared, packageLockDigest: otherDigest },
+            message: "lock package lock digest",
+          },
+          {
+            candidate: { ...prepared, packageLockDigest: otherDigest, lock: { ...prepared.lock, packageLockDigest: thirdDigest } },
+            message: "lock package lock digest",
+          },
+          {
+            candidate: { ...prepared, lock: { ...prepared.lock, workflow: { ...prepared.lock.workflow, entry: "other.workflow.ts" } } },
+            message: "lock entry",
+          },
+        ];
+        for (const { candidate, message } of inconsistent) {
+          await expect(requestDaemonAdmitRun(workspace, {
+            prepared: candidate,
+            input: { ready: true },
+          })).rejects.toMatchObject({
+            code: "INVALID_REQUEST",
+            message: expect.stringContaining(message),
+          });
+        }
+        expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
+  it("rejects an inconsistent replacement fork lock before creating the fork", async () => {
+    await withRuntimeWorkspace("runtime-daemon-fork-inconsistent-lock", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        const source = await requestDaemonAdmitRun(workspace, { prepared, input: { ready: true } });
+        await expect(requestDaemonControl(workspace, {
+          requestId: "fork-inconsistent-lock",
+          type: "fork",
+          runId: source.id,
+          prepared: {
+            ...prepared,
+            packageLockDigest: `sha256:${"a".repeat(64)}`,
+          },
+        })).rejects.toMatchObject({
+          code: "INVALID_REQUEST",
+          message: expect.stringContaining("lock package lock digest"),
+        });
+        expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id != ?", source.id)).toEqual([]);
       } finally {
         await loop.shutdown();
       }
@@ -204,7 +321,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const store = await openExistingWritableRuntimeStore(workspace);
       expect(store).toBeDefined();
       try {
-        await expect(runDaemonTick(store!, { startRun: () => {
+        await expect(runDaemonTick(store!, { startSession: () => {
           throw new Error("no run should start");
         } })).resolves.toMatchObject({ runs: 0 });
       } finally {
@@ -223,11 +340,11 @@ describe.concurrent("runtime daemon ticks", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        await expect(advanceRuntimeRun(workspace, store, run.id)).resolves.toMatchObject({ status: "completed" });
+        await expect(advanceRuntimeRun(workspace, store, run.id, "hook-prune-owner")).resolves.toMatchObject({ status: "completed" });
         store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
         store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
 
-        await expect(runDaemonTick(store, { startRun: () => {
+        await expect(runDaemonTick(store, { startSession: () => {
           throw new Error("no run should start");
         } })).resolves.toMatchObject({ runs: 0 });
 
@@ -252,7 +369,7 @@ describe.concurrent("runtime daemon ticks", () => {
         });
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startRun: runId => started.push(runId) })).resolves.toMatchObject({
+        await expect(runDaemonTick(store, { startSession: runId => started.push(runId) })).resolves.toMatchObject({
           runs: 0,
           idleBlockers: 1,
         });
@@ -272,7 +389,7 @@ describe.concurrent("runtime daemon ticks", () => {
         appendTimedSignalWait(store, run.id, "2000-01-01T00:00:00.000Z");
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startRun: runId => started.push(runId) })).resolves.toMatchObject({
+        await expect(runDaemonTick(store, { startSession: runId => started.push(runId) })).resolves.toMatchObject({
           runs: 1,
           idleBlockers: 1,
         });
@@ -286,9 +403,22 @@ describe.concurrent("runtime daemon ticks", () => {
   it("recovers signal controls that were consumed without a follow-up drive", async () => {
     await withRuntimeWorkspace("runtime-daemon-signal-control-recovery", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
-      await expect(applySignalRunControl(workspace, awaiting.run.id, "approve", { ok: true }, { requestId: "test-signal-control" })).resolves.toMatchObject({
-        run: { id: awaiting.run.id, status: "running" },
-      });
+      const store = await openRuntimeStore(workspace);
+      try {
+        const claim = store.scheduler.claimRun(awaiting.run.id, "signal-control-owner", 30_000)!;
+        applySchedulerControlIntent(store, {
+          requestId: "test-signal-control",
+          runId: awaiting.run.id,
+          type: "signal",
+          node: "approve",
+          payload: { ok: true },
+          commandIdempotencyKey: "test-signal-control",
+        }, claim.ownerEpoch);
+        store.scheduler.releaseRun(claim);
+      } finally {
+        store.close();
+      }
+      expect(runtimeRow(workspace, "SELECT status FROM runs WHERE id = ?", awaiting.run.id)).toMatchObject({ status: "running" });
 
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
@@ -350,9 +480,9 @@ function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStore
   const claim = store.scheduler.claimRun(runId, "owner-a", 60_000);
   if (!claim) throw new Error("failed to claim test run");
   try {
-    store.scheduler.appendSchedulerEvents({
+    throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
       runId,
-      expectedVersion: store.scheduler.loadRunSnapshot(runId).version,
+      expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).version,
       ownerEpoch: claim.ownerEpoch,
       idempotencyKey: `daemon-signal-timeout:${deadlineAt}`,
       events: [

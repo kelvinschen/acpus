@@ -587,7 +587,7 @@ describe("executeAgentTurn", () => {
     });
   });
 
-  it("captures context, token usage, full IO preview, cwd, and acpx record id", async () => {
+  it("captures normalized facts without duplicating prompt or response text", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
     try {
@@ -602,14 +602,16 @@ describe("executeAgentTurn", () => {
       );
       const { executeAgentTurn } = await import("@acpus/agent-executor");
 
-      await expect(executeAgentTurn({
+      const result = await executeAgentTurn({
         agent: { kind: "named", name: "codex" },
         prompt: "review",
         cwd: "/repo",
         env: {},
         sessionName: "session",
         permissionMode: "approve-all",
-      })).resolves.toMatchObject({
+      });
+
+      expect(result).toMatchObject({
         status: "completed",
         responseText: "hello",
         telemetry: {
@@ -626,12 +628,12 @@ describe("executeAgentTurn", () => {
             totalTokens: 24,
           },
           tools: { totalToolCallCount: 0, calls: [] },
-          input: { preview: "review", truncated: false, originalBytes: 6, headBytes: 6 },
-          output: { preview: "hello", truncated: false, originalBytes: 5, headBytes: 5 },
           cwd: "/repo",
           acpxRecordId: "record-1",
         },
       });
+      expect(JSON.stringify(result.telemetry)).not.toContain("review");
+      expect(JSON.stringify(result.telemetry)).not.toContain("hello");
     } finally {
       vi.useRealTimers();
     }
@@ -684,8 +686,6 @@ describe("executeAgentTurn", () => {
               totalTokens: 24,
             },
             tools: { totalToolCallCount: 0, calls: [] },
-            input: { preview: "review", truncated: false, originalBytes: 6, headBytes: 6 },
-            output: { preview: "", truncated: false, originalBytes: 0, headBytes: 0 },
             cwd: "/repo",
             acpxRecordId: "record-1",
           },

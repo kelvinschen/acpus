@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
-import { resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { walkNodes } from "@acpus/core/ir";
 import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
@@ -12,6 +13,7 @@ import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { writeWorkflowInit } from "../workflow-init/write.js";
 import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonAdmitRun } from "./daemon.js";
+import { toRunRecord } from "../run-record.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
@@ -200,7 +202,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   }
 
   if (options.background) {
-    const run = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
+    const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
@@ -208,8 +210,8 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
       workflow: summarizeWorkflow(prepared.ir),
       diagnostics: prepared.ir.diagnostics,
       sourceGraphDigest: prepared.sourceGraphDigest,
-      run,
-      followRunId: run.id,
+      run: toRunRecord(admitted),
+      followRunId: admitted.id,
       ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
     }, outputFormat(ctx), ctx, 0));
     return;
@@ -232,7 +234,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
 
 async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
   try {
-    return await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }), start: true });
+    return await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
   } catch (error) {
     if (error instanceof DaemonRequestError && error.code === "STORE_BUSY") {
       throw runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
@@ -244,12 +246,11 @@ async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWork
 async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  const { renderWorkflowVizHtml, workflowIrToWebGraph, writeWorkflowVizHtml } = await import("@acpus/web");
+  const { renderWorkflowVizHtml, workflowIrToWebGraph } = await import("@acpus/web");
   const outputPath = resolve(ctx.cwd, options.out!);
   const graph = workflowIrToWebGraph(prepared.ir);
   const html = renderWorkflowVizHtml({
     graph,
-    title: prepared.ir.name,
     workflow: {
       name: prepared.ir.name,
       ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
@@ -260,12 +261,16 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
       outputs: prepared.ir.outputs,
     },
-    diagnostics: prepared.ir.diagnostics,
     sourceGraphDigest: prepared.sourceGraphDigest,
   });
   try {
-    await writeWorkflowVizHtml(outputPath, html, { force: options.force === true });
+    await mkdir(dirname(outputPath), { recursive: true });
+    if (options.force) await writeFile(outputPath, html);
+    else await writeFile(outputPath, html, { flag: "wx" });
   } catch (error) {
+    if (!options.force && (error as NodeJS.ErrnoException)?.code === "EEXIST") {
+      throw usageError(`Output file already exists: ${outputPath}`);
+    }
     throw usageError(error instanceof Error ? error.message : String(error));
   }
   ctx.setExitCode(writeResult({

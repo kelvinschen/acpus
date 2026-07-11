@@ -1,9 +1,6 @@
 import { defineWorkflow, z } from "acpus/core";
-import { fmap, lift2, template } from "acpus/expression";
-// Additional Expr operators and helpers:
-// import { and, eq, gt, gte, lift, lift3, lt, lte, md, ne, not, or } from "acpus/expression";
-// Optional Git task helper:
-// import { createWorktree } from "acpus/tasks/git";
+import { fmap, lift2, template, /* md, lift3, lift, and, not, or, eq, ne, gt, lt, gte, lte */ } from "acpus/expression";
+// import { createWorktree } from "acpus/tasks/git"; // Optional Git task helper:
 
 /*
  * Authoring rules:
@@ -45,8 +42,22 @@ export default defineWorkflow({
     (ready, summary) => `${ready ? "READY" : "NOT READY"}: ${summary}`,
   );
 
+  const writeSummary = step("write_summary").task({
+    run: {
+      input: { summary },
+      exec: async ({ input, artifact }) => ({
+        summaryArtifact: await artifact.writeText(
+          "summary.md",
+          `${input.summary}\n`,
+          { mediaType: "text/markdown" },
+        ),
+      }),
+    },
+  });
+
   return {
     runId: meta.runId,
     summary,
+    summaryArtifact: writeSummary.output.summaryArtifact,
   };
 });

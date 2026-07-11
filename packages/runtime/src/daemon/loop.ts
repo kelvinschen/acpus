@@ -1,24 +1,19 @@
-import { createHash } from "node:crypto";
 import { normalizeWorkflowInput } from "../admission/input.js";
-import { isRuntimeStoreBusyError, openRuntimeStore, validateAgentOverrides } from "../store/store.js";
+import { ForkRequestConflictError, isRuntimeStoreBusyError, openRuntimeStore, PreparedRunWorkflowValidationError, validateAgentOverrides } from "../store/store.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
-import { stableJson } from "../stable-json.js";
+import { SchedulerControlInputError, schedulerStoreError } from "../scheduler/store-port.js";
+import { ForkSeedPlanError } from "../scheduler/fork-seed.js";
 import { RunExecutionSessions } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
-import { DaemonRequestError, startDaemonServer, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
+import { DaemonRequestError, startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
 import { runDaemonTick } from "./tick.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
 export type DaemonLoopOptions = {
   heartbeatMs?: number;
-  workspaceRealpath?: string;
-  pid?: number;
-  protocolVersion?: number;
   packageVersion: string;
-  nodeVersion?: string;
-  execPath?: string;
   idleStopMs?: number;
   onShutdown?: () => void;
 };
@@ -30,7 +25,6 @@ export type DaemonLoopHandle = {
 export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): Promise<DaemonLoopHandle> {
   const heartbeatMs = options.heartbeatMs ?? 1_000;
   const idleStopMs = options.idleStopMs ?? 30_000;
-  const workspaceRealpath = options.workspaceRealpath ?? cwd;
   let leaseGeneration: number | undefined;
   const store = await openRuntimeStore(cwd);
   const hooksConfig = await loadHooksConfig(cwd);
@@ -44,46 +38,48 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   let server: DaemonServerHandle;
   try {
     server = await startDaemonServer(cwd, {
-      status: () => ({
-        status: "ok",
-        pid: options.pid ?? process.pid,
-        ...(leaseGeneration === undefined ? {} : { generation: leaseGeneration }),
-        protocolVersion: options.protocolVersion ?? 1,
-        packageVersion: options.packageVersion,
-      }),
-      admitRun: request => mutations.enqueue("admitRun", async () => {
+      status: () => {
+        const generation = requireLeaseGeneration();
+        return {
+          status: "ok",
+          pid: process.pid,
+          generation,
+          protocolVersion: 1,
+          packageVersion: options.packageVersion,
+        };
+      },
+      admitRun: request => mutations.enqueue(async () => {
+        requireLeaseGeneration();
         let input;
         let agentOverrides;
-        let prepared;
         try {
-          prepared = canonicalPreparedRunWorkflow(request.prepared);
-          input = normalizeWorkflowInput(prepared.ir, request.input);
-          agentOverrides = validateAgentOverrides(prepared.ir, request.agentOverrides);
+          input = normalizeWorkflowInput(request.prepared.ir, request.input);
+          agentOverrides = validateAgentOverrides(request.prepared.ir, request.agentOverrides);
         } catch (error) {
           throw new DaemonRequestError("INVALID_REQUEST", error instanceof Error ? error.message : String(error));
         }
         try {
-          const run = await store.admitRun({ prepared, cwd, input, agentOverrides });
-          const details = store.getRun(run.id);
-          if (!details) throw new DaemonRequestError("STORE_ERROR", `Admitted run ${run.id} was not persisted.`);
-          if (request.start) sessions.start(run.id);
-          return details;
+          const run = await store.admitRun({ prepared: request.prepared, cwd, input, agentOverrides });
+          return sessions.start(run.id);
         } catch (error) {
-          throw new DaemonRequestError(daemonAdmissionCode(error), error instanceof Error ? error.message : String(error));
+          const code = daemonAdmissionCode(error);
+          throw new DaemonRequestError(code, daemonAdmissionMessage(code, error));
         }
       }),
-      control: intent => mutations.enqueue(`control:${intent.type}`, async () => {
+      control: intent => mutations.enqueue(async () => {
+        requireLeaseGeneration();
         try {
           const result = await sessions.control(intent);
           if (!result) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
           if (intent.type === "resume" || intent.type === "retry" || intent.type === "signal") sessions.start(intent.runId);
           return result;
         } catch (error) {
-          throw new DaemonRequestError(daemonControlCode(error), error instanceof Error ? error.message : String(error));
+          const code = daemonControlCode(error);
+          throw new DaemonRequestError(code, daemonControlMessage(intent, code, error));
         }
       }),
-      startRun: runId => sessions.start(runId),
       shutdown: () => {
+        requireLeaseGeneration();
         if (server.activeConnections() > 1) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active client requests.");
         if (!mutations.isIdle()) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active runtime mutations.");
         if (sessions.activeCount() > 0) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active run sessions.");
@@ -100,12 +96,12 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   let lease: ReturnType<typeof store.claimDaemon>;
   try {
     lease = store.claimDaemon({
-      workspaceRealpath,
-      pid: options.pid ?? process.pid,
-      protocolVersion: options.protocolVersion ?? 1,
+      workspaceRealpath: cwd,
+      pid: process.pid,
+      protocolVersion: 1,
       packageVersion: options.packageVersion,
-      nodeVersion: options.nodeVersion ?? process.version,
-      execPath: options.execPath ?? process.execPath,
+      nodeVersion: process.version,
+      execPath: process.execPath,
       idleStopMs,
     });
   } catch (error) {
@@ -114,6 +110,11 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     throw error;
   }
   leaseGeneration = lease.generation;
+
+  function requireLeaseGeneration(): number {
+    if (leaseGeneration === undefined) throw new DaemonRequestError("EXECUTION_UNAVAILABLE", "Daemon is still initializing.");
+    return leaseGeneration;
+  }
 
   let ticking = false;
   let heartbeating = false;
@@ -149,7 +150,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       } finally {
         try {
           store.releaseDaemon({
-            workspaceRealpath,
+            workspaceRealpath: cwd,
             generation: lease.generation,
           });
         } finally {
@@ -173,7 +174,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     if (heartbeating || stopped) return;
     heartbeating = true;
     try {
-      if (!store.heartbeatDaemon({ workspaceRealpath, generation: lease.generation })) {
+      if (!store.heartbeatDaemon({ workspaceRealpath: cwd, generation: lease.generation })) {
         requestShutdown("heartbeat");
       }
     } catch (error) {
@@ -188,16 +189,16 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   async function tick(): Promise<void> {
     ticking = true;
     try {
-      const result = await runDaemonTick(store, { startRun: runId => sessions.start(runId) });
+      const result = await runDaemonTick(store, { startSession: runId => sessions.start(runId) });
       if (stopped) return;
       if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0 || sessions.hookActiveCount() > 0 || server.activeConnections() > 0) {
         idleSince = undefined;
-        store.setDaemonIdleState({ workspaceRealpath, generation: lease.generation, idleStopMs });
+        store.setDaemonIdleState({ workspaceRealpath: cwd, generation: lease.generation, idleStopMs });
         return;
       }
       idleSince ??= Date.now();
       store.setDaemonIdleState({
-        workspaceRealpath,
+        workspaceRealpath: cwd,
         generation: lease.generation,
         idleSinceAt: new Date(idleSince).toISOString(),
         idleStopMs,
@@ -226,42 +227,48 @@ async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {
   }
 }
 
-function canonicalPreparedRunWorkflow<T extends { ir: unknown; irJson: string; lock: { ir: { digest: string } } }>(prepared: T): T {
-  const irFromJson = JSON.parse(prepared.irJson) as unknown;
-  if (stableJsonLine(irFromJson) !== stableJsonLine(prepared.ir)) throw new Error("Prepared workflow IR JSON does not match prepared IR.");
-  if (sha256(prepared.irJson) !== prepared.lock.ir.digest) throw new Error("Prepared workflow lock IR digest does not match IR JSON.");
-  return { ...prepared, ir: irFromJson } as T;
-}
-
-function sha256(value: string): string {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
-function stableJsonLine(value: unknown): string {
-  return `${stableJson(value)}\n`;
-}
-
 function daemonControlCode(error: unknown): DaemonErrorCode {
   if (error instanceof DaemonRequestError) return error.code;
+  if (error instanceof PreparedRunWorkflowValidationError) return "INVALID_REQUEST";
   if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
-  if (isDaemonErrorCode((error as { code?: unknown })?.code)) return (error as { code: DaemonErrorCode }).code;
-  const failure = typeof error === "object" && error !== null && "failure" in error
-    ? (error as { failure?: { type?: string } }).failure
-    : undefined;
-  if (failure?.type === "run-not-found" || failure?.type === "runtime-store-not-found") return "RUN_NOT_FOUND";
-  if (failure?.type === "scheduler-store-failed") return "STORE_ERROR";
-  if (failure?.type === "run-control-failed" && error instanceof Error && (error.message.includes("currently controlled by another owner") || error.message.includes("conflicts with a different fork input"))) return "CONTROL_CONFLICT";
-  if (error instanceof Error && error.message.includes("conflicts with a different fork input")) return "CONTROL_CONFLICT";
+  const storeError = schedulerStoreError(error);
+  if (storeError?.type === "run-not-found") return "RUN_NOT_FOUND";
+  if (storeError?.type === "idempotency-conflict") return "CONTROL_CONFLICT";
+  if (error instanceof ForkRequestConflictError) return "CONTROL_CONFLICT";
   return "RUN_NOT_CONTROLLABLE";
+}
+
+function daemonControlMessage(intent: DaemonControlIntent, code: DaemonErrorCode, error: unknown): string {
+  if (error instanceof DaemonRequestError
+    || error instanceof PreparedRunWorkflowValidationError
+    || error instanceof SchedulerControlInputError
+    || error instanceof ForkSeedPlanError
+    || error instanceof ForkRequestConflictError) return error.message;
+  const storeError = schedulerStoreError(error);
+  if (storeError?.type === "run-not-found") return `Run '${intent.runId}' was not found.`;
+  if (storeError?.type === "missing-retry-target"
+    || storeError?.type === "invalid-retry-target"
+    || storeError?.type === "missing-cancel-target"
+    || storeError?.type === "invalid-cancel-target"
+    || storeError?.type === "signal-wait-not-found"
+    || storeError?.type === "signal-wait-terminal") return storeError.message;
+  if (storeError?.type === "idempotency-conflict") return `Control request '${intent.requestId}' conflicts with a different request.`;
+  if (storeError?.type === "run-paused") return `Run '${intent.runId}' is paused.`;
+  if (code === "STORE_BUSY") return "Runtime store is busy. Retry the request.";
+  if (code === "CONTROL_CONFLICT") return `Control '${intent.type}' for run '${intent.runId}' conflicts with another request.`;
+  if (code === "RUN_NOT_FOUND") return `Run '${intent.runId}' was not found.`;
+  return `Control '${intent.type}' could not be applied to run '${intent.runId}'.`;
 }
 
 function daemonAdmissionCode(error: unknown): DaemonErrorCode {
   if (error instanceof DaemonRequestError) return error.code;
+  if (error instanceof PreparedRunWorkflowValidationError) return "INVALID_REQUEST";
   if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
-  if (isDaemonErrorCode((error as { code?: unknown })?.code)) return (error as { code: DaemonErrorCode }).code;
   return "STORE_ERROR";
 }
 
-function isDaemonErrorCode(value: unknown): value is DaemonErrorCode {
-  return typeof value === "string" && ["INVALID_REQUEST", "INVALID_CONTROL", "RUN_NOT_FOUND", "RUN_TERMINAL", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_BUSY", "STORE_ERROR", "INTERNAL_ERROR"].includes(value);
+function daemonAdmissionMessage(code: DaemonErrorCode, error: unknown): string {
+  if (error instanceof DaemonRequestError || error instanceof PreparedRunWorkflowValidationError) return error.message;
+  if (code === "STORE_BUSY") return "Runtime store is busy. Retry the request.";
+  return "Run admission could not be persisted.";
 }

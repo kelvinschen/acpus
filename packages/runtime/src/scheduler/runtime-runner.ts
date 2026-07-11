@@ -1,10 +1,8 @@
 import { resolve } from "node:path";
-import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import type { NodeIR } from "@acpus/core/ir";
 import { ok } from "neverthrow";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { resolutionErrorPayload, tryCreateDeadline, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
-import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { buildHookContext } from "../hooks/context.js";
 import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
 import type { HookRunner } from "../hooks/runner.js";
@@ -15,40 +13,35 @@ import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { indexNodes } from "./ir-walk.js";
 import { scopeForNodeAttempt } from "./scope.js";
+import { throwSchedulerStoreResult } from "./store-port.js";
+import type { SchedulerProjection } from "./types.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
   ownerId: string;
   runId: string;
   store: RuntimeStore;
-  leaseMs?: number;
-  maxLeafConcurrency?: number;
-  now?: () => Date;
-  executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
-  agentRepairDelayMs?: number;
   onClaim?: AdvanceRunInput["onClaim"];
   onRelease?: AdvanceRunInput["onRelease"];
   onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
   hookRunner?: HookRunner;
+  hookCursor?: RuntimeHookCursor;
   progressWriter?: NodeProgressWriter;
-  taskAttemptRunner?: TaskAttemptRunner;
 };
+
+export type RuntimeHookCursor = { sequence: number };
 
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
   const scope = rootScope(frozen);
   const nodes = indexNodes(frozen.ir.root);
-  const eventCursor = input.store.getLastRunEventSequence(input.runId);
+  const hookCursor = input.hookCursor ?? { sequence: input.store.getLastRunEventSequence(input.runId) };
   const summary = await advanceRun({
     runId: input.runId,
     ownerId: input.ownerId,
     store: input.store.scheduler,
-    ...(input.leaseMs === undefined ? {} : { leaseMs: input.leaseMs }),
-    ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
-    ...(input.now === undefined ? {} : { now: input.now }),
     localConcurrencyLimitFor: (_groupKey, projection) => projection.groups[_groupKey]?.maxConcurrency,
-    maxAttemptsFor: () => undefined,
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
       const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);
@@ -108,12 +101,9 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       scope,
       store: input.store,
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
-      ...(input.executeAgentTurn ? { executeAgentTurn: input.executeAgentTurn } : {}),
-      ...(input.agentRepairDelayMs === undefined ? {} : { agentRepairDelayMs: input.agentRepairDelayMs }),
-      ...(input.taskAttemptRunner === undefined ? {} : { taskAttemptRunner: input.taskAttemptRunner }),
     }),
   });
-  triggerHooksForCommittedRows({ ...input, frozen, afterSequence: eventCursor });
+  triggerHooksForCommittedRows({ ...input, frozen, hookCursor });
   return summary;
 }
 
@@ -123,19 +113,20 @@ function triggerHooksForCommittedRows(input: {
   store: RuntimeStore;
   hookRunner?: HookRunner;
   frozen: FrozenRun;
-  afterSequence: number;
+  hookCursor: RuntimeHookCursor;
 }): void {
   if (!input.hookRunner) return;
   let rows: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>;
   try {
-    rows = input.store.getCommittedRuntimeEventsAfter(input.runId, input.afterSequence);
+    rows = input.store.getCommittedRuntimeEventsAfter(input.runId, input.hookCursor.sequence);
   } catch {
     return;
   }
   if (rows.length === 0) return;
-  let projection: ReturnType<RuntimeStore["scheduler"]["loadRunSnapshot"]>["projection"];
+  input.hookCursor.sequence = rows.at(-1)!.sequence;
+  let projection: SchedulerProjection;
   try {
-    projection = input.store.scheduler.loadRunSnapshot(input.runId).projection;
+    projection = throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId)).projection;
   } catch {
     return;
   }
@@ -170,7 +161,7 @@ export function triggerHooksForCommittedRowsForRun(input: {
   runId: string;
   store: RuntimeStore;
   hookRunner?: HookRunner;
-  afterSequence: number;
+  hookCursor: RuntimeHookCursor;
 }): void {
   if (!input.hookRunner) return;
   const frozen = input.store.getFrozenRun(input.runId);
@@ -185,7 +176,6 @@ export function drainFrozenRunTransitions(input: {
   store: RuntimeStore;
   runId: string;
   ownerEpoch: number;
-  now?: () => Date;
 }) {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
@@ -194,9 +184,8 @@ export function drainFrozenRunTransitions(input: {
     input.store.scheduler,
     input.runId,
     { runId: input.runId, ownerEpoch: input.ownerEpoch },
-    input.now ?? (() => new Date()),
+    () => new Date(),
     snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
-    () => undefined,
   );
 }
 

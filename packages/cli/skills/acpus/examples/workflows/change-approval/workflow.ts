@@ -89,7 +89,7 @@ export default defineWorkflow({
           `,
         },
         timeout: "24h",
-        onTimeout: { action: "fail", message: "approval timed out" },
+        onTimeout: { message: "approval timed out" },
       });
       return { approved: human.output.approved, notes: human.output.notes };
     },

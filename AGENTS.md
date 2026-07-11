@@ -50,7 +50,7 @@ Detailed guidance lives in `docs/development-testing.md`.
 - **Refactor-resistant** — survives implementation changes as long as the contract holds.
 - **Clear failure signal** — test name + diff reveal which rule was violated.
 - **Cost proportional to risk** — reserve expensive E2E tests for high-value cross-layer paths.
-- **No whole-IR snapshots** — assert stable slices and use partial matchers for dynamic fields such as `generatedAt`, task source text, digest values, and temp paths.
+- **No whole-IR snapshots** — assert stable slices and use partial matchers for dynamic fields such as task source text, digest values, and temp paths.
 
 ## Build Maintenance
 - After fully completing any feature implementation, MUST run the relevant build/test command so checked-in generated artifacts stay current.

@@ -383,7 +383,7 @@ function semanticNodeSignatures(workflow: WorkflowIR): Map<string, string> {
 }
 
 function semanticNodeSignature(node: NodeIR, workflow: WorkflowIR): unknown {
-  const { source: _source, ...semantic } = node;
+  const semantic = node;
   if (semantic.kind === "agent") return { ...semantic, agentDefinition: workflow.agents[semantic.run.agent] };
   if (semantic.kind === "if") return { id: semantic.id, kind: semantic.kind, condition: semantic.condition, branches: ["then", "else"] };
   if (semantic.kind === "switch") return { id: semantic.id, kind: semantic.kind, cases: semantic.cases.map(c => c.when), default: true };
@@ -491,7 +491,7 @@ function leafPatterns(node: NodeIR, basePath: PathPattern): PathPattern[] {
     ...node.cases.flatMap((c, index) => leafPatternsInScope(c.then, appendPatternBranch(basePath, node.id, `case:${index}`))),
     ...leafPatternsInScope(node.default, appendPatternBranch(basePath, node.id, "default")),
   ];
-  if (node.kind === "parallel" && node.strategy === "all") return Object.entries(node.branches).flatMap(([branchId, branch]) => leafPatternsInScope(branch.scope, appendPatternBranch(basePath, node.id, branchId)));
+  if (node.kind === "parallel" && node.strategy === "all") return Object.entries(node.branches).flatMap(([branchId, branch]) => leafPatternsInScope(branch, appendPatternBranch(basePath, node.id, branchId)));
   if (node.kind === "fanout" && node.strategy === "all") return leafPatternsInScope(node.do, [...basePath, { kind: "fanout", nodeId: node.id }]);
   if (node.kind === "loop") return leafPatternsInScope(node.do, [...basePath, { kind: "loop", nodeId: node.id }]);
   return [];
@@ -562,7 +562,7 @@ function branchScope(node: NodeIR, branchId: string): ScopeIR | undefined {
     const index = Number(branchId.replace("case:", ""));
     return Number.isInteger(index) ? node.cases[index]?.then : undefined;
   }
-  if (node.kind === "parallel") return node.branches[branchId]?.scope;
+  if (node.kind === "parallel") return node.branches[branchId];
   return undefined;
 }
 

@@ -7,6 +7,7 @@ import { followRunInspection } from "../src/inspection/use-cases.js";
 import type { RunInspectionEmission, RunInspectionError } from "../src/inspection/types.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("run inspection follow", () => {
   beforeEach(() => {
@@ -287,8 +288,8 @@ async function admittedAgentStore(workspace: string): Promise<RuntimeStore> {
 
 function startAgent(store: RuntimeStore, runId: string) {
   const claim = store.scheduler.claimRun(runId, "inspection-test", 60_000)!;
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
@@ -304,7 +305,7 @@ function startAgent(store: RuntimeStore, runId: string) {
       },
     }],
   });
-  return store.scheduler.startAttempt({
+  return throwingSchedulerStore(store.scheduler).startAttempt({
     runId,
     nodeKey: "observe~1",
     nodeId: "observe",
@@ -315,8 +316,8 @@ function startAgent(store: RuntimeStore, runId: string) {
 
 function readyAgents(store: RuntimeStore, runId: string, count: number): void {
   const claim = store.scheduler.claimRun(runId, "inspection-budget-test", 60_000)!;
-  const snapshot = store.scheduler.loadRunSnapshot(runId);
-  store.scheduler.appendSchedulerEvents({
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,

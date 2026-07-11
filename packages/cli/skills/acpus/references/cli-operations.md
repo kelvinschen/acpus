@@ -27,7 +27,7 @@ Prefer command help for exact options. The skill should describe operating strat
 - Use `acpus runs inspect [run-id]` before any retry, fork, signal, pause, resume, cancel, or delete.
 - Use `--json` only when structured parsing is needed. Text output is usually better for human diagnosis.
 
-`workflow check` prepares the workflow in memory and reports diagnostics, digests, and workflow summary data. It does not admit a runtime run and does not write durable preflight artifacts.
+`workflow check` prepares the workflow in memory and reports diagnostics, the source graph digest, and workflow summary data. It does not admit a runtime run and does not write durable preflight artifacts.
 
 Agent nodes and agent declarations are validated by `workflow check`, but check does not invoke `acpx`, start an agent session, run Task or Signal nodes, admit a run, or count as an Agent workflow execution.
 

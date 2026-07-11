@@ -14,7 +14,7 @@ acpus workflow check workflow.ts
 Use TypeScript workflow modules and user-facing facades only:
 
 ```ts
-import { defineWorkflow, task, secret, z } from "acpus/core";
+import { defineWorkflow, task, z } from "acpus/core";
 import { template, md, eq, lte, gte, and, or, fmap, lift2, lift3, lift } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 ```
@@ -36,12 +36,11 @@ timeout: input.timeout,
 maxConcurrency: input.parallelism,
 count: input.quorum,
 onTimeout: {
-  action: "fail",
   message: template`Request ${input.requestId} timed out`,
 },
 ```
 
-Node ids, strategies, schemas, task targets, agent selectors/model/modes, permission policy, command runner, shell, and secret names stay static. Top-level Agent `cwd`/`env` are also static; only node `run.cwd`/`run.env` are runtime-resolvable.
+Node ids, strategies, schemas, task targets, agent selectors/model/modes, and permission modes stay static. Top-level Agent `cwd`/`env` are also static; only node `run.cwd`/`run.env` are runtime-resolvable.
 
 ### Minimal Workflow Skeleton
 
@@ -125,7 +124,6 @@ const overLimit = lift(
 Callbacks are intentionally a simplified task-like surface:
 
 - They must be inline synchronous arrows. Prefer an expression body for simple transforms; a block body may use local declarations and control flow.
-- A block callback may contain at most eight executable statements across itself and nested arrows. Move larger multi-step logic into a Task and pass dependencies through `run.input`.
 - They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `fmap`/`lift*`.
 - They must return `WorkflowData`: JSON primitives.
 
@@ -147,13 +145,13 @@ const prompt = md`
 
 Boundary schemas use the native Zod 4 `z` re-exported from `acpus/core`. Filesystem paths are ordinary `z.string()` fields; use field names and descriptions to explain their meaning. Infer schema values with `z.infer<typeof Schema>`.
 
-Keep workflow input, Agent output, Signal output, and reusable task input JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
+Keep workflow input, Agent output, Signal output, and values passed to reusable tasks JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
 
 ## Workflow Building Blocks
 
 ### Leaf Nodes
 
-Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, retry, and artifacts only when the workflow needs them.
+Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, Agent response repair, and artifacts only when the workflow needs them.
 
 Agent nodes run an ACP agent. Without `outputSchema`, `output` is text:
 
@@ -176,7 +174,7 @@ const status = step("status").task({
 });
 ```
 
-Reusable tasks own their input schema and executable body:
+Reusable tasks declare a config-time input type witness and an executable body:
 
 ```ts
 // tasks/normalize-name.ts
@@ -187,6 +185,9 @@ export const normalizeName = task.define({
   exec: async ({ input }) => ({ slug: input.name.toLowerCase() }),
 });
 ```
+
+The `inputSchema` types `exec` and call-site `run.input`; the runtime does not
+retain or parse it.
 
 ```ts
 const normalized = step("normalize").task({

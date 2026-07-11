@@ -7,6 +7,15 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("runtime run deletion", () => {
+  it("treats a missing store or run as an ordinary no-op", async () => {
+    await withRuntimeWorkspace("runs-delete-missing", async workspace => {
+      await expect(deleteRun(workspace, "missing")).resolves.toBeUndefined();
+      const store = await openRuntimeStore(workspace);
+      store.close();
+      await expect(deleteRun(workspace, "missing")).resolves.toBeUndefined();
+    });
+  });
+
   it("hard-deletes a run record, cascaded rows, and run directory", async () => {
     await withRuntimeWorkspace("runs-delete-hard", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

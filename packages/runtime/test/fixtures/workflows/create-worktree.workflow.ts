@@ -19,7 +19,6 @@ export default defineWorkflow({
   });
 
   return {
-    ok: result.output.ok,
     worktreePath: result.output.worktreePath,
     baseSha: result.output.baseSha,
   };

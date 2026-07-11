@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
-import { mutateRun, signalRun, tryMutateRun, trySignalRun } from "../src/runs/use-cases.js";
+import type { RunControlIntent } from "../src/scheduler/control.js";
 import { stableJson } from "../src/stable-json.js";
-import { openExistingWritableRuntimeStore } from "../src/store/store.js";
+import { openExistingWritableRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
   failOnceTaskWorkflow,
@@ -27,8 +28,9 @@ import {
   timedSignalWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
+import { applySchedulerControlIntent } from "./support/scheduler.js";
 
-describe.concurrent("runtime controls and recovery use cases", () => {
+describe.concurrent("runtime controls and recovery", () => {
   it("pauses, resumes, and applies retries to durable runs", async () => {
     await withRuntimeWorkspace("runtime-controls", async workspace => {
       const missingProvider = await admitSyntheticWorkflow(workspace, missingProviderWorkflow());
@@ -39,47 +41,32 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(awaiting.status).toBe("awaiting");
       const runId = awaiting.run.id;
 
-      await expect(mutateRun(workspace, runId, "pause")).resolves.toMatchObject({
-        run: { status: "paused" },
-      });
-      await expect(mutateRun(workspace, runId, "resume")).resolves.toMatchObject({
-        run: { status: "awaiting" },
-      });
-      await expect(mutateRun(workspace, runId, "pause")).resolves.toMatchObject({
-        run: { status: "paused" },
-      });
+      await expect(controlRun(workspace, runId, "pause")).resolves.toMatchObject({ status: "paused" });
+      await expect(controlRun(workspace, runId, "resume")).resolves.toMatchObject({ status: "awaiting" });
+      await expect(controlRun(workspace, runId, "pause")).resolves.toMatchObject({ status: "paused" });
 
       const failed = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(failed.status).toBe("failed");
       const failedId = failed.run.id;
-      await expect(mutateRun(workspace, failedId, "retry")).resolves.toMatchObject({
-        run: { status: "failed" },
-        advanced: { status: "failed" },
-      });
+      await expect(controlRun(workspace, failedId, "retry")).resolves.toMatchObject({ status: "failed" });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failedId)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failedId)).toMatchObject({ count: 2 });
 
       const failOnce = await admitSyntheticWorkflow(workspace, failOnceTaskWorkflow(), { workDir: workspace });
       expect(failOnce.status).toBe("failed");
-      await expect(mutateRun(workspace, failOnce.run.id, "retry")).resolves.toMatchObject({
-        run: { status: "completed", output: { ok: true } },
-        advanced: { status: "completed" },
-      });
+      await expect(controlRun(workspace, failOnce.run.id, "retry")).resolves.toMatchObject({ status: "completed", output: { ok: true } });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
 
       const rerun = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(rerun.status).toBe("failed");
-      await expect(mutateRun(workspace, rerun.run.id, "retry")).resolves.toMatchObject({
-        run: { status: "failed" },
-        advanced: { status: "failed" },
-      });
+      await expect(controlRun(workspace, rerun.run.id, "retry")).resolves.toMatchObject({ status: "failed" });
       expect(runtimeRows(workspace, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'commands'")).toEqual([]);
     });
   });
 
-  it("reports unapplied controls as typed conflicts when another owner holds the run lease", async () => {
+  it("does not apply controls when another owner holds the run lease", async () => {
     await withRuntimeWorkspace("runtime-control-lease-conflict", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
       const store = await openExistingWritableRuntimeStore(workspace);
@@ -87,13 +74,13 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const claim = store!.scheduler.claimRun(awaiting.run.id, "other-owner", 30_000);
       expect(claim).toBeDefined();
       try {
-        const result = await tryMutateRun(workspace, awaiting.run.id, "cancel");
-        expect(result.isErr()).toBe(true);
-        if (result.isOk()) throw new Error("expected lease conflict");
-        expect(result.error).toMatchObject({
-          type: "run-control-failed",
-          controlType: "cancel",
-        });
+        const result = await applySchedulerControlIntent(workspace, store!, {
+          requestId: "lease-conflict",
+          runId: awaiting.run.id,
+          type: "cancel",
+        }, { ownerId: "test-control-owner" });
+        expect(result.advanced).toMatchObject({ status: "lease_lost" });
+        expect(store!.getRun(awaiting.run.id)).toMatchObject({ status: "awaiting" });
       } finally {
         if (claim) store!.scheduler.releaseRun(claim);
         store?.close();
@@ -106,7 +93,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       expect(source.status).toBe("completed");
 
-      const fork = await mutateRun(workspace, source.run.id, "fork");
+      const fork = await forkRun(workspace, source.run.id);
 
       expect(fork?.run.status).toBe("completed");
       expect(fork?.run.id).not.toBe(source.run.id);
@@ -124,7 +111,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const source = await admitSyntheticWorkflow(workspace, metaWorkflow());
       await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, "lock.json"), "{}\n");
 
-      await expect(mutateRun(workspace, source.run.id, "fork")).rejects.toThrow("Frozen workflow lock digest mismatch.");
+      await expect(forkRun(workspace, source.run.id)).rejects.toThrow("Frozen workflow lock digest mismatch.");
       expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id != ?", source.run.id)).toEqual([]);
     });
   });
@@ -133,9 +120,9 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-request", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
 
-      const first = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1" });
-      const second = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1" });
-      const third = await mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-2" });
+      const first = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
+      const second = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
+      const third = await forkRun(workspace, source.run.id, { requestId: "fork-request-2" });
       const forkRunId = first?.forkRunId;
       if (!forkRunId) throw new Error("Expected fork run id.");
 
@@ -155,10 +142,10 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const secondInput = await normalizeForkInput(workspace, source.run.id, { value: "second" });
       if (firstInput === undefined || secondInput === undefined) throw new Error("expected fork input to normalize");
 
-      await expect(mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1", input: firstInput })).resolves.toMatchObject({
+      await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: firstInput })).resolves.toMatchObject({
         forkRunId: expect.any(String),
       });
-      await expect(mutateRun(workspace, source.run.id, "fork", { requestId: "fork-request-1", input: secondInput })).rejects.toThrow("conflicts with a different fork input");
+      await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: secondInput })).rejects.toThrow("conflicts with a different fork input");
     });
   });
 
@@ -218,7 +205,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         db.close();
       }
 
-      const fork = await mutateRun(workspace, source.run.id, "fork");
+      const fork = await forkRun(workspace, source.run.id);
       const forkArtifacts = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id);
       expect(forkArtifacts).toHaveLength(1);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(failedRelativePath);
@@ -233,7 +220,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const source = await admitSyntheticWorkflow(workspace, metaWorkflow());
       expect(source.status).toBe("completed");
 
-      const fork = await mutateRun(workspace, source.run.id, "fork");
+      const fork = await forkRun(workspace, source.run.id);
 
       expect(fork?.run.status).toBe("completed");
       expect(fork?.run.id).not.toBe(source.run.id);
@@ -254,13 +241,13 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       expect(source.status).toBe("completed");
       const replacement = await prepareSyntheticWorkflow(workspace, replacementTaskWorkflow());
 
-      const fork = await mutateRun(workspace, source.run.id, "fork", { prepared: replacement });
+      const fork = await forkRun(workspace, source.run.id, { prepared: replacement });
 
       expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "running" });
       const store = await openExistingWritableRuntimeStore(workspace);
       expect(store).toBeDefined();
       try {
-        await advanceRuntimeRun(workspace, store!, fork!.run.id);
+        await advanceRuntimeRun(workspace, store!, fork!.run.id, `test:${fork!.run.id}`);
       } finally {
         store?.close();
       }
@@ -274,11 +261,11 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       const inputSource = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
       const input = await normalizeForkInput(workspace, inputSource.run.id, { value: "new" });
       if (input === undefined) throw new Error("expected fork input to normalize");
-      const inputFork = await mutateRun(workspace, inputSource.run.id, "fork", { input });
+      const inputFork = await forkRun(workspace, inputSource.run.id, { input });
       const store2 = await openExistingWritableRuntimeStore(workspace);
       expect(store2).toBeDefined();
       try {
-        await advanceRuntimeRun(workspace, store2!, inputFork!.run.id);
+        await advanceRuntimeRun(workspace, store2!, inputFork!.run.id, `test:${inputFork!.run.id}`);
       } finally {
         store2?.close();
       }
@@ -286,28 +273,16 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     });
   }, 20_000);
 
-  it("reports targeted fork seed failures as typed runtime errors", async () => {
+  it("reports targeted fork seed failures from the store boundary", async () => {
     await withRuntimeWorkspace("runtime-fork-seed-typed-error", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
 
-      const result = await tryMutateRun(workspace, completed.run.id, "fork", { target: "missing~abc" });
-
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected typed fork seed failure");
-      expect(result.error).toMatchObject({
-        type: "fork-seed-failed",
-        cause: {
+      await expect(forkRun(workspace, completed.run.id, { target: "missing~abc" })).rejects.toMatchObject({
+        failure: {
           type: "target-resolution-failure",
           target: "missing~abc",
         },
       });
-    });
-  });
-
-  it("rejects empty fork targets before applying control", async () => {
-    await withRuntimeWorkspace("runtime-fork-empty-target", async workspace => {
-      const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      await expect(mutateRun(workspace, completed.run.id, "fork", { target: "" })).rejects.toThrow("Fork target must be a non-empty string.");
     });
   });
 
@@ -321,14 +296,8 @@ describe.concurrent("runtime controls and recovery use cases", () => {
       ]);
 
       await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow("Signal payload does not match schema");
-      const typedInvalidSignal = await trySignalRun(workspace, runId, "approve", { ok: "yes" });
-      expect(typedInvalidSignal.isErr()).toBe(true);
-      if (typedInvalidSignal.isOk()) throw new Error("expected typed invalid signal failure");
-      expect(typedInvalidSignal.error).toMatchObject({ type: "invalid-signal-payload", nodeId: "approve" });
 
-      await expect(mutateRun(workspace, runId, "resume")).resolves.toMatchObject({
-        run: { status: "awaiting" },
-      });
+      await expect(controlRun(workspace, runId, "resume")).resolves.toMatchObject({ status: "awaiting" });
 
       const eventCountBeforeMissingSignal = runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ?", runId).length;
       await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toThrow("Signal node 'missing' was not found.");
@@ -364,11 +333,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         return typeof row?.deadline_at === "string" && Date.now() > Date.parse(row.deadline_at);
       });
 
-      const result = await trySignalRun(workspace, runId, "approve", { ok: "yes" });
-
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected late signal failure");
-      expect(result.error.type).toBe("run-control-failed");
+      await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow();
       await expect(getRun(workspace, runId)).resolves.toMatchObject({ status: "failed" });
       expect(runtimeRows(workspace, "SELECT status, terminal_reason FROM signal_waits WHERE run_id = ?", runId)).toEqual([
         { status: "timed_out", terminal_reason: "signal_timeout" },
@@ -376,7 +341,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     });
   });
 
-  it("signals dynamic fanout nodeKeys through the runtime control use case", async () => {
+  it("signals dynamic fanout nodeKeys through scheduler control", async () => {
     await withRuntimeWorkspace("runtime-signal-dynamic", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, fanoutSignalWorkflow(), { items: ["a", "b"] });
       expect(awaiting.status).toBe("awaiting");
@@ -422,7 +387,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
     });
   });
 
-  it("signals parallel all and race branches through the runtime control use case", async () => {
+  it("signals parallel all and race branches through scheduler control", async () => {
     await withRuntimeWorkspace("runtime-signal-parallel", async workspace => {
       const all = await admitSyntheticWorkflow(workspace, parallelSignalAllWorkflow());
       expect(all.status).toBe("awaiting");
@@ -435,7 +400,7 @@ describe.concurrent("runtime controls and recovery use cases", () => {
           output: { approvals: { left: { ok: true }, right: { ok: true } } },
         },
       });
-      const fork = await mutateRun(workspace, all.run.id, "fork");
+      const fork = await forkRun(workspace, all.run.id);
       expect(fork).toMatchObject({
         run: {
           status: "completed",
@@ -462,6 +427,67 @@ describe.concurrent("runtime controls and recovery use cases", () => {
   });
 
 });
+
+type ForkOptions = {
+  requestId?: string;
+  target?: string;
+  prepared?: PreparedRunWorkflow;
+  input?: JsonValue;
+  unsafeReuse?: boolean;
+};
+
+async function controlRun(
+  workspace: string,
+  runId: string,
+  type: "pause" | "resume" | "retry" | "cancel",
+  target?: string,
+): Promise<RunDetails> {
+  const intent: RunControlIntent = type === "retry" || type === "cancel"
+    ? { requestId: `${type}:${randomUUID()}`, runId, type, ...(target === undefined ? {} : { target }) }
+    : { requestId: `${type}:${randomUUID()}`, runId, type };
+  return await applyControl(workspace, intent);
+}
+
+async function signalRun(workspace: string, runId: string, node: string, payload: JsonValue): Promise<{ run: RunDetails }> {
+  const requestId = `signal:${randomUUID()}`;
+  return {
+    run: await applyControl(workspace, {
+      requestId,
+      runId,
+      type: "signal",
+      node,
+      payload,
+      commandIdempotencyKey: requestId,
+    }),
+  };
+}
+
+async function applyControl(workspace: string, intent: RunControlIntent): Promise<RunDetails> {
+  const store = await openExistingWritableRuntimeStore(workspace);
+  if (!store) throw new Error("Expected runtime store.");
+  try {
+    const result = await applySchedulerControlIntent(workspace, store, intent, { ownerId: `test:${intent.requestId}` });
+    if (result.advanced?.status === "lease_lost") throw new Error(`Run '${intent.runId}' is controlled by another owner.`);
+    const run = store.getRun(intent.runId);
+    if (!run) throw new Error(`Run '${intent.runId}' was not found.`);
+    return run;
+  } finally {
+    store.close();
+  }
+}
+
+async function forkRun(workspace: string, runId: string, options: ForkOptions = {}): Promise<{ run: RunDetails; forkRunId: string }> {
+  const store = await openExistingWritableRuntimeStore(workspace);
+  if (!store) throw new Error("Expected runtime store.");
+  try {
+    const fork = await store.forkRun(runId, options);
+    const run = store.getRun(fork.id);
+    if (!run) throw new Error(`Fork run '${fork.id}' was not found.`);
+    return { run, forkRunId: fork.id };
+  } finally {
+    store.close();
+  }
+}
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

@@ -6,7 +6,7 @@ import { tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolveOrThrow, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
-import { runTaskAttempt, taskAttemptFailureMessage, type TaskAttemptFailure, type TaskAttemptRunner } from "./task-process.js";
+import { runTaskAttempt, taskAttemptFailureMessage, type TaskAttemptFailure } from "./task-process.js";
 
 export type TaskExecutorOptions = {
   cwd: string;
@@ -17,7 +17,6 @@ export type TaskExecutorOptions = {
   attemptNo?: number;
   deadlineAt?: string;
   signal?: AbortSignal;
-  taskAttemptRunner?: TaskAttemptRunner;
 };
 
 export class TaskAttemptExecutionError extends Error {
@@ -27,7 +26,6 @@ export class TaskAttemptExecutionError extends Error {
 }
 
 export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<unknown> {
-  validateExecutionOptions(node);
   const runDir = options.store.getRunDir(options.runId);
   if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
   const workspaceDir = resolve(options.cwd);
@@ -42,11 +40,7 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   const defaultCommandTimeout = node.run.execution?.defaultCommandTimeout === undefined
     ? undefined
     : resolveOrThrow(tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`));
-  const execution = node.run.execution === undefined ? undefined : {
-    ...(node.run.execution.shell === undefined ? {} : { shell: node.run.execution.shell }),
-    ...(node.run.execution.commandRunner === undefined ? {} : { commandRunner: node.run.execution.commandRunner }),
-    ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
-  };
+  const execution = defaultCommandTimeout === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.value };
   const metadataTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
   const visibleAttempt = options.attemptNo ?? 1;
   options.store.writeExecutionMetadata({
@@ -68,7 +62,7 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
   await mkdir(join(absoluteRunDir, "work", nodeKey, attemptDir), { recursive: true });
   const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
 
-  const result = await (options.taskAttemptRunner ?? runTaskAttempt)({
+  const result = await runTaskAttempt({
     nodeId: node.id,
     cwd,
     env,
@@ -89,15 +83,8 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
 
 function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
   if (!env) return {};
-  return Object.fromEntries(Object.entries(env).map(([key, value]) => {
-    if ("kind" in value && value.kind === "secret") throw new Error(`Task env '${key}' references an unresolved secret.`);
-    return [key, resolveOrThrow(tryResolveString(value, scope, `Task env '${key}'`))];
-  }));
-}
-
-function validateExecutionOptions(node: TaskNodeIR): void {
-  if (node.run.execution?.shell && node.run.execution.shell !== "bash") throw new Error(`Task node '${node.id}' execution shell '${node.run.execution.shell}' is not supported yet.`);
-  if (node.run.execution?.commandRunner && node.run.execution.commandRunner !== "acpus-zx-core") throw new Error(`Task node '${node.id}' execution commandRunner '${node.run.execution.commandRunner}' is not supported yet.`);
+  return Object.fromEntries(Object.entries(env).map(([key, value]) =>
+    [key, resolveOrThrow(tryResolveString(value, scope, `Task env '${key}'`))]));
 }
 
 function remainingTimeout(deadlineAt: string | undefined, nodeId: string): number | undefined {

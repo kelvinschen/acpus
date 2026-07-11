@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, JsonPrimitive, WorkflowIR } from "@acpus/core/ir";
 import { createWorkflowVisualizationOverlay } from "../src/visualization/overlay.js";
 
 const timing = { createdAt: "2026-07-03T00:00:00.000Z", updatedAt: "2026-07-03T00:00:01.000Z" };
@@ -94,7 +94,7 @@ describe("workflow visualization overlay", () => {
     expect(detailById.get("lanes")).toEqual({ kind: "fanout", over: ref("input", "lanes"), strategy: "all" });
     expect(detailById.get("retry")).toEqual({
       kind: "loop",
-      state: lit({}),
+      state: { kind: "object", fields: {} },
     });
   });
 
@@ -126,7 +126,7 @@ describe("workflow visualization overlay", () => {
 
 function compositePathWorkflow(): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "composite-paths",
     agents: {},
     root: {
@@ -148,7 +148,7 @@ function compositePathWorkflow(): WorkflowIR {
           id: "items",
           kind: "fanout",
           strategy: "all",
-          over: { kind: "literal", value: [] },
+          over: { kind: "array", items: [] },
           do: { nodes: [task("fanout_body")] },
         },
         {
@@ -166,14 +166,13 @@ function compositePathWorkflow(): WorkflowIR {
       ],
     },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet" } },
@@ -182,13 +181,13 @@ function detailWorkflow(): WorkflowIR {
         {
           id: "prepare",
           kind: "task",
-          run: { kind: "task_run", input: { lane: ref("input", "lane") }, target: { kind: "inline", runtime: "node", source: "async function t() {}" } },
+          run: { input: { lane: ref("input", "lane") }, target: { kind: "inline", source: "async function t() {}" } },
         },
         {
           id: "review",
           kind: "agent",
           outputSchema: { kind: "object", fields: { ok: { kind: "boolean" }, note: { kind: "string", optional: true } }, required: ["ok"], additionalProperties: false },
-          run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "" } },
+          run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
         },
         { id: "gate", kind: "assert", condition: call("gte", ref("input", "score"), lit(50)) },
         {
@@ -202,7 +201,7 @@ function detailWorkflow(): WorkflowIR {
           id: "router",
           kind: "switch",
           cases: [{ when: call("eq", ref("input", "mode"), lit("auto")), then: { nodes: [] } }],
-          default: { nodes: [{ id: "fallback", kind: "task", run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function t() {}" } } }] },
+          default: { nodes: [{ id: "fallback", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function t() {}" } } }] },
         },
         {
           id: "lanes",
@@ -214,32 +213,32 @@ function detailWorkflow(): WorkflowIR {
         {
           id: "retry",
           kind: "loop",
-          state: lit({}),
+          state: { kind: "object", fields: {} },
           do: { nodes: [], outputs: { state: ref("loop", "retry", "state"), stop: ref("loop", "retry", "state", "done") } },
         },
       ],
       outputs: {},
     },
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    outputs: {},
     diagnostics: [],
-  } as unknown as WorkflowIR;
+  };
 }
 
-function ref(...path: string[]) {
+function ref(...path: string[]): ExprIR {
   return { kind: "ref", path };
 }
 
-function lit(value: unknown) {
+function lit(value: JsonPrimitive): ExprIR {
   return { kind: "literal", value };
 }
 
-function call(fn: string, ...args: unknown[]) {
+function call(fn: string, ...args: ExprIR[]): ExprIR {
   return { kind: "call", fn, args };
 }
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
@@ -251,23 +250,23 @@ function workflow(): WorkflowIR {
           kind: "parallel",
           strategy: "all",
           branches: {
-            left: { scope: { nodes: [signal("left_approve")] } },
-            right: { scope: { nodes: [signal("right_approve")] } },
+            left: { nodes: [signal("left_approve")] },
+            right: { nodes: [signal("right_approve")] },
           },
         },
       ],
       outputs: {},
     },
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-06-30T00:00:00.000Z", notes: [] },
+    outputs: {},
     diagnostics: [],
-  } as unknown as WorkflowIR;
+  };
 }
 
 function task(id: string): WorkflowIR["root"]["nodes"][number] {
   return {
     id,
     kind: "task",
-    run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } },
+    run: { input: {}, target: { kind: "inline", source: "async function task() {}" } },
   };
 }
 
@@ -276,6 +275,6 @@ function signal(id: string): WorkflowIR["root"]["nodes"][number] {
     id,
     kind: "signal",
     outputSchema: { kind: "object", fields: {}, required: [], additionalProperties: true },
-    run: { kind: "signal_run", prompt: { kind: "literal", value: "" } },
+    run: { prompt: { kind: "literal", value: "" } },
   };
 }

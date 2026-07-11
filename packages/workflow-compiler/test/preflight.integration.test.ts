@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -15,22 +15,38 @@ describe("workflow preparation", () => {
   it("prepares exported same-file reusable tasks with workflow-module import semantics", async () => {
     await withCompilerWorkspace("compiler-same-file-task", async cwd => {
       const workflow = await copyFixture(cwd, "workflows/same-file-reusable.workflow.ts");
+      const packageLock = "lockfileVersion: '9.0'\n";
+      await writeFile(join(cwd, "pnpm-lock.yaml"), packageLock);
       const prepared = await prepareWorkflow({ workflow, cwd });
+      const repeated = await prepareWorkflow({ workflow, cwd });
+      const sourceDigest = digest(await readFile(workflow, "utf8"));
+      const packageLockDigest = digest(packageLock);
 
-      expect(JSON.parse(prepared.irJson)).toMatchObject({ name: "same-file-reusable" });
-      expectSha256Digest(prepared.sourceGraphDigest);
+      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 4, name: "same-file-reusable" });
+      expect(prepared.lock.workflow.sourceDigest).toBe(sourceDigest);
+      expect(prepared.packageLockDigest).toBe(packageLockDigest);
+      expect(prepared.lock.packageLockDigest).toBe(packageLockDigest);
+      expect(prepared.sourceGraphDigest).toBe(digest(`${sourceDigest}\n${packageLockDigest}`));
+      expect(prepared.lock.sourceGraphDigest).toBe(prepared.sourceGraphDigest);
       expectSha256Digest(prepared.lock.ir.digest);
       expect(prepared.lock.ir.digest).toBe(digest(prepared.irJson));
       expect(prepared.lock).toMatchObject({
         kind: "acpus_workflow_preparation_lock",
         version: 1,
+        workflow: {
+          entry: "same-file-reusable.workflow.ts",
+          sourceDigest: prepared.lock.workflow.sourceDigest,
+        },
         ir: { path: "workflow.ir.json", digest: prepared.lock.ir.digest },
       });
+      expect(repeated.irJson).toBe(prepared.irJson);
+      expect(repeated.sourceGraphDigest).toBe(prepared.sourceGraphDigest);
+      expect(repeated.lock).toEqual(prepared.lock);
       expect(taskTarget(prepared.ir, "normalize_path")).toMatchObject({
         kind: "module",
         specifier: "./same-file-reusable.workflow.ts",
         exportName: "normalizePath",
-        referrer: { kind: "workflow", path: expect.stringContaining("same-file-reusable.workflow.ts") },
+        referrer: { path: expect.stringContaining("same-file-reusable.workflow.ts") },
       });
       expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
     });
@@ -61,7 +77,7 @@ export default defineWorkflow({
         kind: "module",
         specifier: "fixture-task-package/tasks",
         exportName: "packageTask",
-        referrer: { kind: "workflow", path: "package-task.workflow.ts" },
+        referrer: { path: "package-task.workflow.ts" },
       });
     });
   });
@@ -80,44 +96,6 @@ export default defineWorkflow({
         code: "TB003",
         source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
         hint: expect.stringContaining("run.input"),
-      }));
-    });
-  });
-
-  it("rejects oversized expression callbacks before compile", async () => {
-    await withCompilerWorkspace("compiler-expression-budget", async cwd => {
-      const workflow = join(cwd, "expression-budget.workflow.ts");
-      await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
-import { lift } from "acpus/expression";
-
-export default defineWorkflow({
-  name: "expression-budget",
-  inputSchema: z.object({ value: z.number() }),
-}).build(({ input }) => {
-  const value = lift({ value: input.value }, ({ value }) => {
-    const value1 = value;
-    const value2 = value1;
-    const value3 = value2;
-    const value4 = value3;
-    const value5 = value4;
-    const value6 = value5;
-    const value7 = value6;
-    const value8 = value7;
-    return value8;
-  });
-  return { value };
-});
-`);
-
-      const result = await tryPrepareWorkflow({ workflow, cwd });
-
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected check failure");
-      if (result.error.type !== "check-failed") throw new Error("expected typed check failure");
-      expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
-        code: "AL007",
-        severity: "error",
-        message: expect.stringContaining("9 executable statements"),
       }));
     });
   });

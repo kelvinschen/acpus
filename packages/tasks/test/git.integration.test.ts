@@ -5,15 +5,15 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createDollar } from "@acpus/core/runtime";
-import { createWorktree, tryCreateWorktree } from "../src/git.js";
-import { createWorktree as publicCreateWorktree, tryCreateWorktree as publicTryCreateWorktree } from "@acpus/tasks/git";
+import { createWorktree } from "../src/git.js";
+import { createWorktree as publicCreateWorktree } from "@acpus/tasks/git";
 
 const exec = promisify(execFile);
 
 describe("createWorktree", () => {
   it("is exported through the public git subpath", () => {
     expect(publicCreateWorktree.kind).toBe("external");
-    expect(publicTryCreateWorktree).toBe(tryCreateWorktree);
+    expect(publicCreateWorktree).toBe(createWorktree);
   });
 
   it("creates a detached worktree from a tiny local repository", async () => {
@@ -29,47 +29,36 @@ describe("createWorktree", () => {
       const head = stdout.trim();
 
       const result = await createWorktree.fn({
-        input: { repo, path: worktree, ref: "HEAD", detach: true, forceRemove: false },
+        input: { repo, path: worktree, ref: "HEAD", forceRemove: false },
         $: createDollar({ cwd: root, env: testGitEnv() }),
         artifact: {} as never,
         env: {},
         abortSignal: new AbortController().signal,
       });
 
-      expect(result).toMatchObject({
-        ok: true,
+      expect(result).toEqual({
         repoPath: repo,
         worktreePath: worktree,
         ref: "HEAD",
         baseSha: head,
-        detached: true,
-        created: true,
-        dirtyStatus: "",
       });
       await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
+      await expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).resolves.toMatchObject({ stdout: "HEAD\n" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("returns typed errors for dirty source repositories", async () => {
+  it("refuses dirty source repositories", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-dirty-result-"));
     try {
       const { repo, worktree } = await tinyRepo(root);
       await writeFile(join(repo, "dirty.txt"), "dirty\n");
 
-      const result = await tryCreateWorktree(
-        { repo, path: worktree },
-        createDollar({ cwd: root, env: testGitEnv() }),
+      await expect(runCreateWorktree(root, { repo, path: worktree })).rejects.toThrow(
+        `Refusing to create worktree from dirty repository '${repo}'.`,
       );
-
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected dirty repository failure");
-      expect(result.error).toMatchObject({
-        type: "dirty-repository",
-        repoPath: repo,
-        dirtyStatus: expect.stringContaining("dirty.txt"),
-      });
+      await expect(access(worktree)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -82,33 +71,55 @@ describe("createWorktree", () => {
       await mkdir(worktree);
       await writeFile(join(worktree, "keep.txt"), "keep\n");
 
-      await expect(createWorktree.fn({
-        input: { repo, path: worktree, forceRemove: true },
-        $: createDollar({ cwd: root, env: testGitEnv() }),
-        artifact: {} as never,
-        env: {},
-        abortSignal: new AbortController().signal,
-      })).rejects.toThrow("not a registered worktree");
+      await expect(runCreateWorktree(root, { repo, path: worktree, forceRemove: true })).rejects.toThrow("not a registered worktree");
       await expect(access(join(worktree, "keep.txt"))).resolves.toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("returns a typed error for non-detached worktree requests before running git", async () => {
-    const result = await tryCreateWorktree(
-      { repo: "/no/such/repo", path: "/no/such/worktree", detach: false },
-      createDollar({ cwd: "/", env: testGitEnv() }),
-    );
+  it("refuses to replace the source repository", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-source-"));
+    try {
+      const { repo } = await tinyRepo(root);
+      await expect(runCreateWorktree(root, { repo, path: repo })).rejects.toThrow("Refusing to use the source repository as the worktree path");
+      await expect(access(join(repo, "README.md"))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected non-detached worktree failure");
-    expect(result.error).toMatchObject({
-      type: "non-detached-worktree",
-      message: "createWorktree only supports detached worktrees in this version.",
-    });
+  it("force removes and recreates a registered worktree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-recreate-"));
+    try {
+      const { repo, worktree, head } = await tinyRepo(root);
+      await runCreateWorktree(root, { repo, path: worktree });
+
+      await expect(runCreateWorktree(root, { repo, path: worktree, forceRemove: true })).resolves.toEqual({
+        repoPath: repo,
+        worktreePath: worktree,
+        ref: "HEAD",
+        baseSha: head,
+      });
+      await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
+
+function runCreateWorktree(
+  root: string,
+  input: Parameters<typeof createWorktree.fn>[0]["input"],
+): ReturnType<typeof createWorktree.fn> {
+  return createWorktree.fn({
+    input,
+    $: createDollar({ cwd: root, env: testGitEnv() }),
+    artifact: {} as never,
+    env: {},
+    abortSignal: new AbortController().signal,
+  });
+}
 
 async function tinyRepo(root: string): Promise<{ repo: string; worktree: string; head: string }> {
   const repo = join(root, "repo");

@@ -4,52 +4,51 @@ import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { JsonValue } from "@acpus/expression/ir";
-import { isRuntimeStoreBusyError, openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow } from "../store/store.js";
-import { type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
-import { RuntimeUseCaseException, type RuntimeMutationAction, type RuntimeMutationInput, type RuntimeMutationResult } from "../runs/use-cases.js";
-import type { RunDetails } from "../store/store.js";
+import { isRuntimeStoreBusyError, openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
 
 export type DaemonStatus = {
   status: "ok";
   pid: number;
-  generation?: number;
+  generation: number;
   protocolVersion: number;
   packageVersion: string;
 };
 
-type DaemonRequest = {
-  id?: string;
-  method: "status";
-} | {
-  id?: string;
-  method: "shutdown";
-} | {
-  id?: string;
-  method: "control";
-  control: DaemonControlIntent;
-} | {
-  id?: string;
-  method: "admitRun";
+export type DaemonAdmitRunInput = {
   prepared: PreparedRunWorkflow;
   input: JsonValue;
   agentOverrides?: AgentOverrideMap;
-  start: boolean;
+};
+
+type DaemonAdmitRunRequest = { method: "admitRun" } & DaemonAdmitRunInput;
+
+type DaemonRequest = {
+  method: "status";
 } | {
-  id?: string;
-  method: "startRun";
-  runId: string;
+  method: "shutdown";
+} | {
+  method: "control";
+  control: DaemonControlIntent;
+} | DaemonAdmitRunRequest;
+
+export type DaemonControlResult = {
+  run: RunDetails;
+  forkRunId?: string;
 };
 
 export type DaemonControlIntent =
-  | { requestId: string; type: Exclude<RuntimeMutationAction, "fork">; runId: string; input?: RuntimeMutationInput }
-  | { requestId: string; type: "fork"; runId: string; input?: RuntimeMutationInput }
-  | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: unknown };
+  | { requestId: string; type: "pause" | "resume"; runId: string }
+  | { requestId: string; type: "retry" | "cancel"; runId: string; target?: string }
+  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; unsafeReuse?: boolean }
+  | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue };
 
 type DaemonResponse =
-  | { id?: string; ok: true; outcome: "applied"; result: DaemonStatus | DaemonShutdownResult | RunDetails | RuntimeAdvanceResult | RuntimeMutationResult }
-  | { id?: string; ok: false; outcome: "failed"; error: { code: DaemonErrorCode; message: string } };
+  | { ok: true; result: DaemonStatus | DaemonShutdownResult | RunDetails | DaemonControlResult }
+  | { ok: false; error: { code: DaemonErrorCode; message: string } };
 
-export type DaemonErrorCode = "INVALID_REQUEST" | "INVALID_CONTROL" | "RUN_NOT_FOUND" | "RUN_TERMINAL" | "RUN_NOT_CONTROLLABLE" | "CONTROL_CONFLICT" | "EXECUTION_UNAVAILABLE" | "STORE_BUSY" | "STORE_ERROR" | "INTERNAL_ERROR";
+const DAEMON_ERROR_CODES = ["INVALID_REQUEST", "RUN_NOT_FOUND", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_BUSY", "STORE_ERROR", "INTERNAL_ERROR"] as const;
+
+export type DaemonErrorCode = (typeof DAEMON_ERROR_CODES)[number];
 
 export type DaemonShutdownResult = {
   status: "shutdown";
@@ -62,7 +61,6 @@ export class DaemonRequestError extends Error {
 }
 
 export type DaemonServerHandle = {
-  endpoint: string;
   activeConnections(): number;
   close(): Promise<void>;
 };
@@ -79,8 +77,6 @@ export function daemonEndpoint(cwd: string): string {
   return join(tmpdir(), `acpus-daemon-${digest}.sock`);
 }
 
-export type DaemonAdmitRunInput = Extract<DaemonRequest, { method: "admitRun" }>;
-
 export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): Promise<DaemonServerHandle> {
   const endpoint = daemonEndpoint(cwd);
   if (isFilesystemSocket(endpoint)) {
@@ -89,20 +85,12 @@ export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): 
 
   const sockets = new Set<Socket>();
   let activeConnections = 0;
-  const requestTracker = {
-    begin: () => {
-      activeConnections += 1;
-    },
-    end: () => {
-      activeConnections -= 1;
-    },
-  };
   const server = createServer({ allowHalfOpen: true }, socket => {
-    requestTracker.begin();
+    activeConnections += 1;
     sockets.add(socket);
     socket.once("close", () => {
       sockets.delete(socket);
-      requestTracker.end();
+      activeConnections -= 1;
     });
     void handleSocket(socket, handlers);
   });
@@ -115,7 +103,6 @@ export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): 
   }
 
   return {
-    endpoint,
     activeConnections: () => activeConnections,
     close: async () => {
       for (const socket of sockets) socket.destroy();
@@ -181,24 +168,17 @@ export async function requestDaemonStatus(cwd: string): Promise<DaemonStatus> {
   return response.result;
 }
 
-export async function requestDaemonControl(cwd: string, control: DaemonControlIntent): Promise<RuntimeMutationResult> {
+export async function requestDaemonControl(cwd: string, control: DaemonControlIntent): Promise<DaemonControlResult> {
   const response = await requestDaemon(cwd, { method: "control", control });
   if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (isDaemonStatus(response.result) || isDaemonShutdownResult(response.result) || isRunDetails(response.result) || isRuntimeAdvanceResult(response.result)) throw new Error("Daemon returned an invalid control response.");
+  if (!isDaemonControlResult(response.result)) throw new Error("Daemon returned an invalid control response.");
   return response.result;
 }
 
-export async function requestDaemonAdmitRun(cwd: string, input: Omit<DaemonAdmitRunInput, "method">): Promise<RunDetails> {
+export async function requestDaemonAdmitRun(cwd: string, input: DaemonAdmitRunInput): Promise<RunDetails> {
   const response = await requestDaemon(cwd, { ...input, method: "admitRun" });
   if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (isDaemonStatus(response.result) || isRuntimeAdvanceResult(response.result) || !isRunDetails(response.result)) throw new Error("Daemon returned an invalid admitRun response.");
-  return response.result;
-}
-
-export async function requestDaemonStartRun(cwd: string, runId: string): Promise<RunDetails> {
-  const response = await requestDaemon(cwd, { method: "startRun", runId });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (isDaemonStatus(response.result) || isRuntimeAdvanceResult(response.result) || !isRunDetails(response.result)) throw new Error("Daemon returned an invalid startRun response.");
+  if (!isRunDetails(response.result)) throw new Error("Daemon returned an invalid admitRun response.");
   return response.result;
 }
 
@@ -227,7 +207,9 @@ async function requestDaemon(cwd: string, request: DaemonRequest): Promise<Daemo
     socket.once("end", () => {
       if (timeout) clearTimeout(timeout);
       try {
-        resolveRequest(JSON.parse(Buffer.concat(chunks).toString("utf8")) as DaemonResponse);
+        const response = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+        if (!isDaemonResponse(response)) throw new Error("Daemon returned an invalid response.");
+        resolveRequest(response);
       } catch (error) {
         rejectRequest(error);
       }
@@ -241,8 +223,7 @@ async function requestDaemon(cwd: string, request: DaemonRequest): Promise<Daemo
 type DaemonHandlers = {
   status(): DaemonStatus;
   admitRun(input: DaemonAdmitRunInput): Promise<RunDetails> | RunDetails;
-  control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>;
-  startRun(runId: string): Promise<RunDetails> | RunDetails;
+  control(intent: DaemonControlIntent): Promise<DaemonControlResult>;
   shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult;
 };
 
@@ -262,85 +243,71 @@ async function handleSocket(socket: Socket, handlers: DaemonHandlers): Promise<v
 
 function parseRequest(raw: string): { ok: true; value: DaemonRequest } | { ok: false; response: DaemonResponse } {
   try {
-    const value = JSON.parse(raw) as Partial<DaemonRequest>;
-    if (value.method !== "status") {
-      if (value.method === "shutdown") return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method } };
-      if (value.method === "startRun") {
-        if (typeof value.runId !== "string") return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Invalid daemon run request.") };
-        return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method, runId: value.runId } };
-      }
-      if (value.method === "admitRun") {
-        if (!isAdmitRunRequest(value)) return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Invalid daemon admission request.") };
-        return { ok: true, value };
-      }
-      if (value.method !== "control" || !isControlIntent(value.control)) {
-        return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Unsupported daemon method.") };
-      }
-      return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: "control", control: value.control } };
+    const value = JSON.parse(raw) as unknown;
+    if (!isPlainRecord(value) || typeof value.method !== "string") return { ok: false, response: failedResponse("INVALID_REQUEST", "Invalid daemon request.") };
+    if (value.method === "status" || value.method === "shutdown") {
+      return hasExactKeys(value, ["method"])
+        ? { ok: true, value: { method: value.method } }
+        : { ok: false, response: failedResponse("INVALID_REQUEST", "Invalid daemon request.") };
     }
-    return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method } };
+    if (value.method === "admitRun") {
+      if (!isAdmitRunRequest(value)) return { ok: false, response: failedResponse("INVALID_REQUEST", "Invalid daemon admission request.") };
+      return { ok: true, value };
+    }
+    if (value.method !== "control" || !hasExactKeys(value, ["method", "control"]) || !isControlIntent(value.control)) {
+      return { ok: false, response: failedResponse("INVALID_REQUEST", "Unsupported daemon method.") };
+    }
+    return { ok: true, value: { method: "control", control: value.control } };
   } catch {
-    return { ok: false, response: failedResponse(undefined, "INVALID_REQUEST", "Invalid daemon request JSON.") };
+    return { ok: false, response: failedResponse("INVALID_REQUEST", "Invalid daemon request JSON.") };
   }
 }
 
 async function dispatchRequest(request: DaemonRequest, handlers: DaemonHandlers): Promise<DaemonResponse> {
   try {
-    if (request.method === "admitRun") return appliedResponse(request.id, await handlers.admitRun(request));
-    if (request.method === "control") return appliedResponse(request.id, await handlers.control(request.control));
-    if (request.method === "startRun") return appliedResponse(request.id, await handlers.startRun(request.runId));
-    if (request.method === "shutdown") return appliedResponse(request.id, await handlers.shutdown());
-    return appliedResponse(request.id, handlers.status());
+    if (request.method === "admitRun") return appliedResponse(await handlers.admitRun(request));
+    if (request.method === "control") return appliedResponse(await handlers.control(request.control));
+    if (request.method === "shutdown") return appliedResponse(await handlers.shutdown());
+    return appliedResponse(handlers.status());
   } catch (error) {
-    return failedResponse(request.id, daemonRequestErrorCode(request, error), error instanceof Error ? error.message : String(error));
+    const code = daemonRequestErrorCode(request, error);
+    return failedResponse(code, error instanceof DaemonRequestError ? error.message : daemonFailureMessage(request, code));
   }
 }
 
-function responseId(id: string | undefined): { id?: string } {
-  return id === undefined ? {} : { id };
+function appliedResponse(result: Exclude<DaemonResponse, { ok: false }>["result"]): DaemonResponse {
+  return { ok: true, result };
 }
 
-function appliedResponse(id: string | undefined, result: Exclude<DaemonResponse, { ok: false }>["result"]): DaemonResponse {
-  return { ...responseId(id), ok: true, outcome: "applied", result };
-}
-
-function failedResponse(id: string | undefined, code: DaemonErrorCode, message: string): DaemonResponse {
-  return { ...responseId(id), ok: false, outcome: "failed", error: { code, message } };
+function failedResponse(code: DaemonErrorCode, message: string): DaemonResponse {
+  return { ok: false, error: { code, message } };
 }
 
 function describeRequest(request: DaemonRequest): string {
   if (request.method === "admitRun") return "run admission";
   if (request.method === "control") return `${request.control.type} control for run '${request.control.runId}'`;
-  if (request.method === "startRun") return `${request.method} for run '${request.runId}'`;
   return request.method;
 }
 
 function daemonControlErrorCode(error: unknown): DaemonErrorCode {
   if (error instanceof DaemonRequestError) return error.code;
   if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
-  const failure = runtimeFailure(error);
-  if (failure) {
-    if (failure.type === "run-not-found" || failure.type === "runtime-store-not-found") return "RUN_NOT_FOUND";
-    if (failure.type === "scheduler-store-failed") return "STORE_ERROR";
-    if (failure.type === "run-control-failed" && error instanceof Error && error.message.includes("currently controlled by another owner")) return "CONTROL_CONFLICT";
-    return "RUN_NOT_CONTROLLABLE";
-  }
   return "RUN_NOT_CONTROLLABLE";
 }
 
 function daemonRequestErrorCode(request: DaemonRequest, error: unknown): DaemonErrorCode {
-  if (request.method === "status") return "INTERNAL_ERROR";
   if (error instanceof DaemonRequestError) return error.code;
+  if (request.method === "status") return "INTERNAL_ERROR";
   if (request.method === "admitRun") return isRuntimeStoreBusyError(error) ? "STORE_BUSY" : "STORE_ERROR";
   return daemonControlErrorCode(error);
 }
 
-function runtimeFailure(error: unknown): RuntimeUseCaseException["failure"] | undefined {
-  if (error instanceof RuntimeUseCaseException) return error.failure;
-  if (typeof error !== "object" || error === null || !("failure" in error)) return undefined;
-  const failure = (error as { failure?: unknown }).failure;
-  if (typeof failure !== "object" || failure === null || !("type" in failure)) return undefined;
-  return failure as RuntimeUseCaseException["failure"];
+function daemonFailureMessage(request: DaemonRequest, code: DaemonErrorCode): string {
+  if (code === "STORE_BUSY") return "Runtime store is busy. Retry the request.";
+  if (request.method === "status") return "Daemon status is unavailable.";
+  if (request.method === "admitRun") return "Run admission failed.";
+  if (request.method === "control") return `Control '${request.control.type}' could not be applied to run '${request.control.runId}'.`;
+  return "Daemon shutdown failed.";
 }
 
 function isFilesystemSocket(endpoint: string): boolean {
@@ -348,39 +315,72 @@ function isFilesystemSocket(endpoint: string): boolean {
 }
 
 function isDaemonStatus(value: unknown): value is DaemonStatus {
-  return typeof value === "object" && value !== null && (value as { status?: unknown }).status === "ok";
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["status", "pid", "generation", "protocolVersion", "packageVersion"])
+    && value.status === "ok"
+    && Number.isInteger(value.pid) && Number(value.pid) > 0
+    && Number.isInteger(value.generation) && Number(value.generation) > 0
+    && Number.isInteger(value.protocolVersion) && Number(value.protocolVersion) > 0
+    && typeof value.packageVersion === "string";
 }
 
 function isDaemonShutdownResult(value: unknown): value is DaemonShutdownResult {
-  return typeof value === "object" && value !== null && (value as { status?: unknown }).status === "shutdown";
+  return isPlainRecord(value) && hasExactKeys(value, ["status"]) && value.status === "shutdown";
 }
 
 function isRunDetails(value: unknown): value is RunDetails {
   return typeof value === "object" && value !== null && typeof (value as { id?: unknown }).id === "string" && typeof (value as { status?: unknown }).status === "string";
 }
 
-function isRuntimeAdvanceResult(value: unknown): value is RuntimeAdvanceResult {
-  return typeof value === "object" && value !== null && "summary" in value && "run" in value;
+function isDaemonControlResult(value: unknown): value is DaemonControlResult {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["run"], ["forkRunId"])
+    && isRunDetails(value.run)
+    && (value.forkRunId === undefined || typeof value.forkRunId === "string");
+}
+
+function isDaemonResponse(value: unknown): value is DaemonResponse {
+  if (!isPlainRecord(value)) return false;
+  if (value.ok === true) return hasExactKeys(value, ["ok", "result"]);
+  if (value.ok !== false || !hasExactKeys(value, ["ok", "error"]) || !isPlainRecord(value.error)) return false;
+  return hasExactKeys(value.error, ["code", "message"])
+    && DAEMON_ERROR_CODES.includes(value.error.code as DaemonErrorCode)
+    && typeof value.error.message === "string";
 }
 
 function isControlIntent(value: unknown): value is DaemonControlIntent {
-  if (typeof value !== "object" || value === null) return false;
-  const intent = value as { requestId?: unknown; type?: unknown; runId?: unknown; nodeId?: unknown };
-  if (typeof intent.requestId !== "string" || typeof intent.type !== "string" || typeof intent.runId !== "string") return false;
-  return intent.type === "signal" ? typeof intent.nodeId === "string" : ["pause", "resume", "retry", "cancel", "fork"].includes(intent.type);
+  if (!isPlainRecord(value) || typeof value.requestId !== "string" || typeof value.type !== "string" || typeof value.runId !== "string") return false;
+  if (value.type === "pause" || value.type === "resume") return hasExactKeys(value, ["requestId", "type", "runId"]);
+  if (value.type === "retry" || value.type === "cancel") {
+    return hasExactKeys(value, ["requestId", "type", "runId"], ["target"])
+      && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
+  }
+  if (value.type === "signal") {
+    return hasExactKeys(value, ["requestId", "type", "runId", "nodeId", "payload"])
+      && typeof value.nodeId === "string"
+      && isJsonValue(value.payload);
+  }
+  if (value.type !== "fork"
+    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentOverrides", "unsafeReuse"])) return false;
+  return (value.target === undefined || typeof value.target === "string" && value.target.length > 0)
+    && (value.prepared === undefined || isPreparedRunWorkflow(value.prepared))
+    && (value.input === undefined || isJsonValue(value.input))
+    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
+    && (value.unsafeReuse === undefined || typeof value.unsafeReuse === "boolean");
 }
 
-function isAdmitRunRequest(value: Partial<DaemonRequest>): value is DaemonAdmitRunInput {
+function isAdmitRunRequest(value: Record<string, unknown>): value is DaemonAdmitRunRequest {
   return value.method === "admitRun"
+    && hasExactKeys(value, ["method", "prepared", "input"], ["agentOverrides"])
     && isPreparedRunWorkflow(value.prepared)
     && hasOwn(value, "input")
     && isJsonValue(value.input)
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
-    && typeof value.start === "boolean";
+    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides));
 }
 
 function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
-  if (!isPlainRecord(value)) return false;
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["workflowPath", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"])) return false;
   const ir = value.ir;
   return typeof value.workflowPath === "string"
     && isPlainRecord(ir)
@@ -389,7 +389,25 @@ function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
     && typeof value.irJson === "string"
     && typeof value.sourceGraphDigest === "string"
     && (value.packageLockDigest === undefined || typeof value.packageLockDigest === "string")
-    && isPlainRecord(value.lock);
+    && isRunWorkflowLockArtifact(value.lock);
+}
+
+function isRunWorkflowLockArtifact(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["kind", "version", "workflow", "ir", "sourceGraphDigest"], ["packageLockDigest"])
+    || value.kind !== "acpus_workflow_preparation_lock"
+    || value.version !== 1
+    || typeof value.sourceGraphDigest !== "string"
+    || (value.packageLockDigest !== undefined && typeof value.packageLockDigest !== "string")
+    || !isPlainRecord(value.workflow)
+    || !hasExactKeys(value.workflow, ["entry", "sourceDigest"])
+    || typeof value.workflow.entry !== "string"
+    || typeof value.workflow.sourceDigest !== "string"
+    || !isPlainRecord(value.ir)
+    || !hasExactKeys(value.ir, ["path", "digest"])
+    || value.ir.path !== "workflow.ir.json"
+    || typeof value.ir.digest !== "string") return false;
+  return true;
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
@@ -410,9 +428,14 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function hasExactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return required.every(key => hasOwn(value, key)) && Object.keys(value).every(key => allowed.has(key));
+}
+
 async function hasLiveDaemon(cwd: string): Promise<boolean> {
   try {
-    await requestDaemonStatus(cwd);
+    await requestDaemon(cwd, { method: "status" });
     return true;
   } catch {
     return false;

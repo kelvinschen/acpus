@@ -9,12 +9,11 @@ export type AccessPolicy = {
 
 export type AccessPolicyOptions = {
   enabled?: boolean;
-  token?: string;
 };
 
 export function createAccessPolicy(options: AccessPolicyOptions = {}): AccessPolicy {
   if (!options.enabled) return {};
-  const token = options.token ?? randomBytes(24).toString("base64url");
+  const token = randomBytes(24).toString("base64url");
   return { token, tokenHash: sha256(token) };
 }
 

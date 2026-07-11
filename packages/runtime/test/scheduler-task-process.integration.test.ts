@@ -7,6 +7,7 @@ import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("runtime scheduler task process", () => {
   it("boots a frozen root task into durable scheduler projection and executes it", async () => {
@@ -24,7 +25,7 @@ describe("runtime scheduler task process", () => {
           store,
         });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.frames.root).toMatchObject({ status: "completed", result: {} });
         expect(projection.run).toMatchObject({ status: "completed" });
         expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: {} });
@@ -52,7 +53,7 @@ describe("runtime scheduler task process", () => {
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed", failed: 1 });
 
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         const nodeKey = deriveInstanceKey(appendNode([], "bad_output"));
         expect(projection.instances[nodeKey]).toMatchObject({
           status: "failed",
@@ -80,7 +81,7 @@ describe("runtime scheduler task process", () => {
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'instance.ready' AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM node_attempts WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
         expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, nodeKey)).toMatchObject({ count: 1 });
-        expect(store.scheduler.loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed" });
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed" });
       } finally {
         store.close();
       }
@@ -158,7 +159,7 @@ describe("runtime scheduler task process", () => {
         const forkArtifact = runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", fork.id, nodeKey);
         expect(forkArtifact?.id).toBeDefined();
         expect(forkArtifact?.id).not.toBe(sourceArtifact?.id);
-        expect(store.scheduler.loadRunSnapshot(fork.id).projection.instances[nodeKey]?.output).toMatchObject({
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[nodeKey]?.output).toMatchObject({
           artifact: { kind: "artifact", uri: `artifact://${fork.id}/${String(forkArtifact?.id)}` },
         });
       } finally {
@@ -167,7 +168,7 @@ describe("runtime scheduler task process", () => {
     });
   });
 
-  it("does not apply workflow-level automatic retry to task failures", async () => {
+  it("does not automatically retry task failures", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-no-task-auto-retry", async workspace => {
       (globalThis as Record<string, unknown>).__acpus_scheduler_node_executor_retry_count = 0;
       const prepared = await prepareSyntheticWorkflow(workspace, retryingTaskWorkflow());
@@ -178,7 +179,7 @@ describe("runtime scheduler task process", () => {
 
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store }))
           .resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
-        const projection = store.scheduler.loadRunSnapshot(run.id).projection;
+        const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.instances[nodeKey]).toMatchObject({ status: "failed" });
         expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey).map(attempt => attempt.status)).toEqual(["failed"]);
         expect(runtimeRows(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY attempt", run.id, nodeKey)).toEqual([

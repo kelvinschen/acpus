@@ -214,7 +214,6 @@ function RuntimePage({
     onSuccess: async (_data, variables) => {
       push({ tone: "success", title: `${commandLabel(variables)} accepted` });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["run", runId] }),
         queryClient.invalidateQueries({ queryKey: ["run-runtime-snapshot", runId] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
       ]);
@@ -237,7 +236,7 @@ function RuntimePage({
     setRetryTarget(current => current && values.has(current) ? current : retryTargets[0]?.value);
   }, [retryTargetSignature]);
 
-  if (!runId) return <EmptyState title="No Run Selected" detail="Open Runs to choose a durable run." />;
+  if (!runId) return <EmptyState title="No Run Selected" detail="Use the run selector to choose a durable run." />;
   const headerState = runHeaderViewState(runDetails, snapshot.error);
 
   return (

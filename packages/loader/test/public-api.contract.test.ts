@@ -12,7 +12,6 @@ describe("loader public API", () => {
     expect(Object.keys(api).sort()).toEqual([
       "importAuthoringModule",
       "officialAuthoringTypeScriptPaths",
-      "registerAuthoringModuleLoader",
     ]);
   });
 

@@ -82,18 +82,17 @@ describe("run inspection projection", () => {
 
   it("counts every repeated Assert frame as a distinct execution context", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "repeated-assert",
       agents: {},
       root: { nodes: [{
         id: "batch",
         kind: "fanout",
         strategy: "all",
-        over: { kind: "literal", value: [] },
+        over: { kind: "array", items: [] },
         do: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] },
       }] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -244,12 +243,11 @@ describe("run inspection projection", () => {
 
   it("keeps materialized Assert nodes in the authored compact tree", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "assert-inspection",
       agents: {},
       root: { nodes: [{ id: "require_ready", kind: "assert", condition: { kind: "literal", value: true } }] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -380,17 +378,16 @@ describe("run inspection projection", () => {
     const fields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`field_${index}`, { kind: "string" as const }]));
     const outputSchema: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "signal-inspection",
       agents: {},
       root: { nodes: [{
         id: "approve",
         kind: "signal",
-        run: { kind: "signal_run", prompt: { kind: "literal", value: "authored prompt" } },
+        run: { prompt: { kind: "literal", value: "authored prompt" } },
         outputSchema,
       }] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
     const prompt = `${"Approve the detailed release checklist. ".repeat(12)}PROMPT_TAIL`;
@@ -467,12 +464,11 @@ describe("run inspection projection", () => {
     });
 
     const taskIr: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "task-failure",
       agents: {},
-      root: { nodes: [{ id: "work", kind: "task", run: { kind: "task_run", input: {}, target: { kind: "inline", runtime: "node", source: "async function task() {}" } } }] },
+      root: { nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
     const taskRun = repeatedAgentRun(1);
@@ -528,17 +524,16 @@ describe("run inspection projection", () => {
 
   it("selects composite member counts from the matching repeated group instance", () => {
     const ir: WorkflowIR = {
-      irVersion: 3,
+      irVersion: 4,
       name: "repeated-composite",
       agents: {},
       root: { nodes: [{
         id: "work",
         kind: "parallel",
         strategy: "all",
-        branches: { left: { scope: { nodes: [] } }, right: { scope: { nodes: [] } } },
+        branches: { left: { nodes: [] }, right: { nodes: [] } },
       }] },
       outputs: {},
-      lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -578,7 +573,7 @@ describe("run inspection projection", () => {
 
 function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_definition", use: "claude", model: "sonnet" }): WorkflowIR {
   return {
-    irVersion: 3,
+    irVersion: 4,
     name: "inspection-composite",
     agents: { reviewer: agent },
     root: {
@@ -586,18 +581,17 @@ function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_
         id: "batch",
         kind: "fanout",
         strategy: "all",
-        over: { kind: "literal", value: [] },
+        over: { kind: "array", items: [] },
         do: {
           nodes: [{
             id: "review",
             kind: "agent",
-            run: { kind: "agent_run", agent: "reviewer", prompt: { kind: "literal", value: "Review this item" } },
+            run: { agent: "reviewer", prompt: { kind: "literal", value: "Review this item" } },
           }],
         },
       }],
     },
     outputs: {},
-    lock: { acpusCoreVersion: "test", generatedAt: "2026-07-01T00:00:00.000Z", notes: [] },
     diagnostics: [],
   };
 }
