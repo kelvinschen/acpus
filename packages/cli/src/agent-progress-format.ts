@@ -6,7 +6,7 @@ export function formatAgentProgressLines(progress: RunNodeProgress): string[] {
   return lines;
 }
 
-export function formatAgentProgressDetailLines(progress: RunNodeProgress, options: { includeMessage?: boolean; nowMs?: number } = {}): string[] {
+function formatAgentProgressDetailLines(progress: RunNodeProgress, options: { includeMessage?: boolean; nowMs?: number } = {}): string[] {
   const lines: string[] = [];
   const lastActive = formatLastActive(progress.updatedAt, options.nowMs);
   if (lastActive) lines.push(`Last active: ${lastActive}`);

@@ -2,12 +2,12 @@ import type { Writable } from "node:stream";
 import { resolve } from "node:path";
 import { Command } from "commander";
 import { walkNodes } from "@acpus/core/ir";
-import { DaemonRequestError, normalizeWorkflowInput, requestDaemonObserveRun, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RuntimeAdvanceResult, type RunDetails } from "@acpus/runtime";
+import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { runError, usageError, validationError } from "../errors.js";
+import { followRun, parseFollowInterval } from "../run-follow.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
-import { formatRunObservationRow, formatRunStatusSurface, staticNodesForWorkflow, type RunStatusStaticNode } from "../run-status-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { writeWorkflowInit } from "../workflow-init/write.js";
 import { parseAgents, parseInput } from "./json.js";
@@ -27,6 +27,7 @@ type WorkflowOptions = {
   background?: boolean;
   out?: string;
   force?: boolean;
+  interval?: string;
 } & WorkflowCatalogScopeOptions;
 
 export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
@@ -108,6 +109,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .option("--input <json>", "freeze this JSON value as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
     .option("--background", "admit the run and execute it in the background")
+    .option("--interval <duration>", "refresh foreground run status (default: 1s, minimum: 250ms)")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: WorkflowOptions) => {
@@ -183,6 +185,8 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+  if (options.background && options.interval !== undefined) throw usageError("--interval cannot be used with --background.");
+  const intervalMs = parseFollowInterval(options.interval);
   const input = parseInput(options.input);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
@@ -205,39 +209,25 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
       diagnostics: prepared.ir.diagnostics,
       sourceGraphDigest: prepared.sourceGraphDigest,
       run,
+      followRunId: run.id,
       ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
     }, outputFormat(ctx), ctx, 0));
     return;
   }
 
   const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
-  const staticNodes = staticNodesForWorkflow(prepared.ir);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
-  const seen = new Set([
-    ...(admitted.dynamic?.nodeInstances.map(node => `node:${node.nodeKey}:${node.status}`) ?? []),
-    ...(admitted.dynamic?.frames.map(frame => `frame:${frame.frameKey}:${frame.status}`) ?? []),
-  ]);
-  const detach = installDetachHandler(ctx, admitted.id);
-  let advanced: RuntimeAdvanceResult;
-  try {
-    advanced = await requestDaemonObserveRun(ctx.cwd, admitted.id);
-    writeRunObservations(ctx, seen, advanced.run, staticNodes);
-  } finally {
-    detach();
-  }
-  if (ctx.wantsJson) {
-    writeJsonLine(ctx.stdout, {
-      ok: advanced.status !== "failed" && advanced.status !== "canceled",
-      phase: "run",
-      kind: terminalKind(advanced.status),
-      run: advanced.run,
-      ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
-    });
-    ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
+  const outcome = await followRun(ctx.cwd, { runId: admitted.id, mode: "overview", intervalMs }, {
+    phase: "run",
+    wantsJson: ctx.wantsJson,
+    stdout: ctx.stdout,
+    stderr: ctx.stderr,
+  });
+  if (outcome.kind !== "done") {
+    ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
     return;
   }
-  ctx.stdout.write(formatRunStatusSurface(advanced.run, staticNodes));
-  ctx.setExitCode(advanced.status === "failed" || advanced.status === "canceled" ? 1 : 0);
+  ctx.setExitCode(outcome.run.status === "failed" || outcome.run.status === "canceled" ? 1 : 0);
 }
 
 async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
@@ -292,98 +282,4 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
 
 function outputFormat(ctx: WorkflowCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
-}
-
-function installDetachHandler(ctx: WorkflowCommandContext, runId: string): () => void {
-  const handler = (): void => {
-    if (ctx.wantsJson) {
-      writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "detached", run: { id: runId } });
-    } else {
-      ctx.stdout.write(`Detached from run ${runId}. Background daemon continues running.\n`);
-    }
-    process.exitCode = 0;
-    process.exit(0);
-  };
-  process.once("SIGINT", handler);
-  return () => {
-    process.off("SIGINT", handler);
-  };
-}
-
-function writeRunObservations(ctx: WorkflowCommandContext, seen: Set<string>, run: RuntimeAdvanceResult["run"], staticNodes: readonly RunStatusStaticNode[]): void {
-  for (const observation of runObservations(seen, run)) {
-    if (ctx.wantsJson) writeJsonLine(ctx.stdout, observation);
-    else ctx.stdout.write(`${formatRunObservationRow(run, observationTarget(observation), Date.now(), staticNodes) ?? `${observation.kind}: ${observationTarget(observation)} ${observation.status}`}\n`);
-  }
-}
-
-type RunObservation = {
-  ok: boolean;
-  phase: "run";
-  kind: string;
-  runId: string;
-  status: string;
-  nodeKey?: string;
-  frameKey?: string;
-  nodeId?: string;
-  reason?: string;
-  error?: unknown;
-};
-
-function runObservations(seen: Set<string>, run: RuntimeAdvanceResult["run"]): RunObservation[] {
-  const nodes = (run.dynamic?.nodeInstances ?? [])
-    .filter(node => !seen.has(`node:${node.nodeKey}:${node.status}`))
-    .slice(0, 100)
-    .map((node): RunObservation => {
-      seen.add(`node:${node.nodeKey}:${node.status}`);
-      return {
-        ok: node.status !== "failed",
-        phase: "run",
-        kind: nodeObservationKind(node.status),
-        runId: run.id,
-        nodeKey: node.nodeKey,
-        nodeId: node.nodeId,
-        status: node.status,
-        ...(node.statusReason ? { reason: node.statusReason } : {}),
-        ...(node.error ? { error: node.error } : {}),
-      };
-    });
-  const frames = (run.dynamic?.frames ?? [])
-    .filter(frame => frame.nodeId && !seen.has(`frame:${frame.frameKey}:${frame.status}`))
-    .slice(0, Math.max(0, 100 - nodes.length))
-    .map((frame): RunObservation => {
-      seen.add(`frame:${frame.frameKey}:${frame.status}`);
-      return {
-        ok: frame.status !== "failed",
-        phase: "run",
-        kind: nodeObservationKind(frame.status),
-        runId: run.id,
-        frameKey: frame.frameKey,
-        ...(frame.nodeKey ? { nodeKey: frame.nodeKey } : {}),
-        ...(frame.nodeId ? { nodeId: frame.nodeId } : {}),
-        status: frame.status,
-        ...(frame.terminalReason ? { reason: frame.terminalReason } : {}),
-        ...(frame.error ? { error: frame.error } : {}),
-      };
-    });
-  return [...nodes, ...frames];
-}
-
-function observationTarget(observation: RunObservation): string {
-  return observation.nodeKey ?? observation.frameKey ?? observation.runId;
-}
-
-function nodeObservationKind(status: string): string {
-  if (status === "completed") return "node completed";
-  if (status === "failed") return "node failed";
-  if (status === "awaiting") return "node awaiting signal";
-  if (status === "cancelled") return "node cancelled";
-  if (status === "running") return "node started";
-  return "node updated";
-}
-
-function terminalKind(status: string): string {
-  if (status === "awaiting") return "node awaiting signal";
-  if (status === "paused") return "run paused";
-  return status === "failed" || status === "completed" || status === "canceled" ? "terminal summary" : "run idle";
 }

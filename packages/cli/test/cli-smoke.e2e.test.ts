@@ -1,5 +1,6 @@
 import { cp } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { getRunInspection } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
@@ -42,22 +43,24 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(records.at(-1)).toMatchObject({
         ok: true,
         phase: "run",
-        kind: "terminal summary",
+        kind: "done",
         run: {
           name: "cli-valid",
           status: "completed",
-          output: { ready: true },
         },
+        output: { ready: true },
       });
+      expect(records.filter(record => record.output !== undefined)).toHaveLength(1);
     });
   });
 
   it("signals an awaiting workflow through the subprocess CLI", async () => {
     await withTestWorkspace("e2e-runs-signal", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--json"]);
+      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
       expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
-      const runId = JSON.parse(admitted.stdout.trim().split("\n").at(-1)!).run.id;
+      const runId = JSON.parse(admitted.stdout).run.id;
+      await waitForAwaitingSignal(workspace, runId, "approve");
 
       const signaled = await runSourceCli(workspace, ["runs", "signal", runId, "--target", "approve", "--payload", "{\"ok\":true}", "--json"]);
 
@@ -88,31 +91,54 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         },
       });
       expect(admittedJson.run.id).toMatch(runIdPattern);
+      expect(admittedJson.followRunId).toBe(admittedJson.run.id);
 
-      const inspected = await waitForCompletedRun(workspace, admittedJson.run.id);
-      expect(inspected).toMatchObject({
+      const followed = await runSourceCli(workspace, ["runs", "inspect", admittedJson.run.id, "--follow", "--interval", "250ms", "--json"]);
+      expect(followed.exitCode, followed.stdout || followed.stderr).toBe(0);
+      expect(followed.stderr).toBe("");
+      const followRecords = followed.stdout.trim().split("\n").map(line => JSON.parse(line));
+      expect(followRecords.length).toBeGreaterThanOrEqual(2);
+      expect(followRecords[0]).toMatchObject({
         ok: true,
         phase: "inspect",
-        run: {
-          id: admittedJson.run.id,
-          status: "completed",
-          output: { ok: true },
+        schemaVersion: 1,
+        kind: "snapshot",
+        document: {
+          kind: "snapshot",
+          run: { id: admittedJson.run.id },
+          items: expect.any(Array),
         },
       });
+      expect(followRecords[0].document.run.dynamic).toBeUndefined();
+      expect(followRecords[0].document.output).toBeUndefined();
+      expect(followRecords.slice(1, -1).every(record => record.kind === "update")).toBe(true);
+      expect(followRecords.at(-1)).toMatchObject({
+        ok: true,
+        phase: "inspect",
+        kind: "done",
+        run: {
+          id: admittedJson.run.id,
+          name: "cli-concurrency-short-task",
+          status: "completed",
+        },
+        output: { ok: true },
+      });
+      expect(followRecords.filter(record => record.output !== undefined)).toHaveLength(1);
     });
   });
 
-  async function waitForCompletedRun(workspace: string, runId: string): Promise<unknown> {
+  async function waitForAwaitingSignal(workspace: string, runId: string, target: string): Promise<void> {
     const deadline = Date.now() + 5_000;
-    let lastJson: unknown;
+    let lastStatus: string | undefined;
     while (Date.now() <= deadline) {
-      const inspected = await runSourceCli(workspace, ["runs", "inspect", runId, "--json"]);
-      expect(inspected.stderr).toBe("");
-      lastJson = JSON.parse(inspected.stdout);
-      if ((lastJson as { run?: { status?: unknown } }).run?.status === "completed") return lastJson;
-      await new Promise(resolve => setTimeout(resolve, 25));
+      const inspected = await getRunInspection(workspace, { runId, mode: "target", target });
+      if (inspected.isOk() && inspected.value.kind === "target") {
+        lastStatus = inspected.value.summary.nodeStatus;
+        if (lastStatus === "awaiting") return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
-    throw new Error(`Run ${runId} did not complete. Last inspect: ${JSON.stringify(lastJson)}`);
+    throw new Error(`Signal target ${target} did not become awaiting; last status: ${lastStatus ?? "unavailable"}.`);
   }
 
   it("runs concurrent foreground workflows through a shared daemon", async () => {
@@ -132,12 +158,12 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         expect(records.at(-1), `terminal for process ${index}`).toMatchObject({
           ok: true,
           phase: "run",
-          kind: "terminal summary",
+          kind: "done",
           run: {
             name: "cli-concurrency-short-task",
             status: "completed",
-            output: { ok: true },
           },
+          output: { ok: true },
         });
       }
       expect(runIds.size).toBe(results.length);

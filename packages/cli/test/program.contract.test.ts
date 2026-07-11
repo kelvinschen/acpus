@@ -91,6 +91,80 @@ describe("CLI program usage contracts", () => {
     expect(stderr.text).toBe("");
   });
 
+  it("documents global JSON in root and nested command help", async () => {
+    for (const argv of [["--help"], ["runs", "inspect", "--help"]]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+
+      const exitCode = await runCli(argv, {
+        cwd: process.cwd(),
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stdout.text).toContain("--json");
+      expect(stderr.text).toBe("");
+    }
+  });
+
+  it("documents the run inspection and foreground refresh options", async () => {
+    const inspectStdout = new CaptureStream();
+    const inspectStderr = new CaptureStream();
+    expect(await runCli(["runs", "inspect", "--help"], {
+      cwd: process.cwd(), stdout: inspectStdout, stderr: inspectStderr,
+    })).toBe(0);
+    for (const option of ["--target", "--all", "--follow", "--interval", "--raw", "--json"]) {
+      expect(inspectStdout.text).toContain(option);
+    }
+
+    const runStdout = new CaptureStream();
+    const runStderr = new CaptureStream();
+    expect(await runCli(["workflow", "run", "--help"], {
+      cwd: process.cwd(), stdout: runStdout, stderr: runStderr,
+    })).toBe(0);
+    expect(runStdout.text).toContain("--interval");
+    expect(inspectStderr.text).toBe("");
+    expect(runStderr.text).toBe("");
+  });
+
+  it("rejects incompatible inspection modes before reading runtime state", async () => {
+    const cases = [
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--all", "--json"], message: "--target cannot be used with --all" },
+      { argv: ["runs", "inspect", "run_1", "--interval", "1s", "--json"], message: "--interval requires --follow" },
+      { argv: ["runs", "inspect", "run_1", "--follow", "--interval", "100ms", "--json"], message: "--interval must be at least 250ms" },
+      { argv: ["runs", "inspect", "run_1", "--raw", "--follow", "--json"], message: "--raw cannot be used" },
+    ];
+
+    for (const testCase of cases) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(testCase.argv, { cwd: process.cwd(), stdout, stderr });
+      expect(exitCode).toBe(2);
+      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+      expect(stdout.text).toContain(testCase.message);
+      expect(stderr.text).toBe("");
+    }
+
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    expect(await runCli(["runs", "inspect", "run_1", "--raw"], { cwd: process.cwd(), stdout, stderr })).toBe(2);
+    expect(stderr.text).toContain("--raw requires --json");
+  });
+
+  it("rejects a background refresh interval before workflow preparation", async () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runCli(["workflow", "run", "missing.workflow.ts", "--background", "--interval", "1s", "--json"], {
+      cwd: process.cwd(), stdout, stderr,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+    expect(stdout.text).toContain("--interval cannot be used with --background");
+    expect(stderr.text).toBe("");
+  });
+
   it("lists an empty workflow catalog", async () => {
     await withTestWorkspace("catalog-empty", async workspace => {
       const stdout = new CaptureStream();

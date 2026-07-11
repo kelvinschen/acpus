@@ -36,6 +36,26 @@ export type AgentBackendFailureKind =
   | "provider_exit"
   | "timeout";
 
+export type AgentJsonValue = null | boolean | number | string | AgentJsonValue[] | { [key: string]: AgentJsonValue };
+
+export type AgentBackendFailure = {
+  kind: AgentBackendFailureKind;
+  message: string;
+  upstream?: {
+    source: "acpx";
+    operation: "sessions.ensure" | "session.set_mode" | "prompt";
+    exitCode?: number;
+    code?: string;
+    origin?: string;
+    protocol?: {
+      name: "json-rpc";
+      code?: string | number;
+      message?: string;
+    };
+    data?: AgentJsonValue;
+  };
+};
+
 export type AgentIoPreview = {
   preview: string;
   truncated: boolean;
@@ -110,8 +130,7 @@ export type AgentTurnResult =
     }
   | {
       status: "failed";
-      failureKind: AgentBackendFailureKind;
-      message: string;
+      failure: AgentBackendFailure;
       responseText: string;
       stderr: string;
       telemetry: AgentTurnTelemetry;
@@ -151,7 +170,15 @@ type PromptSummary = {
   responseText: string;
   telemetry: AgentTurnTelemetry;
   malformedLine?: string;
-  errorMessage?: string;
+  error?: JsonRpcFailure;
+};
+
+type JsonRpcFailure = {
+  code?: string | number;
+  message: string;
+  data?: AgentJsonValue;
+  acpxCode?: string;
+  origin?: string;
 };
 
 type PromptSummaryOptions = {
@@ -165,7 +192,7 @@ type PromptAccumulator = {
   eventCount: number;
   stopReason?: string;
   malformedLine?: string;
-  errorMessage?: string;
+  error?: JsonRpcFailure;
   tools: Map<string, AgentToolCallTelemetry>;
   context?: AgentContextTelemetry;
   tokenUsage?: AgentTokenUsageTelemetry;
@@ -203,7 +230,7 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   if (ensure.exitCode !== 0 || ensure.stdinError !== undefined || ensure.spawnError || ensure.timedOut || ensure.aborted) {
-    return failedControlResult("sessions ensure", ensure, "provider_exit", request.timeoutMs);
+    return failedControlResult("sessions.ensure", ensure, "provider_exit", request.timeoutMs);
   }
 
   if (request.agentMode) {
@@ -220,7 +247,7 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
     if (setMode.exitCode !== 0 || setMode.stdinError !== undefined || setMode.spawnError || setMode.timedOut || setMode.aborted) {
-      return failedControlResult("set-mode", setMode, "config", request.timeoutMs);
+      return failedControlResult("session.set_mode", setMode, "config", request.timeoutMs);
     }
   }
 
@@ -254,13 +281,14 @@ export async function executeAgentTurn(request: AgentTurnRequest): Promise<Agent
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   const summary = summarizePromptOutput(prompt.stdout, accumulator.options);
+  const promptRpc = summary.error ?? extractJsonRpcFailure(prompt.stderr);
   const rawDebug = request.captureRawDebug ? { stdout: prompt.stdout } : undefined;
   if (prompt.aborted) return withRawDebug({ status: "cancelled", message: "Agent turn was aborted.", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.timedOut) return withRawDebug({ status: "failed", failureKind: "timeout", message: timeoutMessage(request.timeoutMs), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.spawnError) return withRawDebug({ status: "failed", failureKind: "spawn", message: prompt.spawnError, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (summary.malformedLine) return withRawDebug({ status: "failed", failureKind: "provider_exit", message: `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (summary.errorMessage) return withRawDebug({ status: "failed", failureKind: classifyFailureText(summary.errorMessage), message: summary.errorMessage, responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
-  if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug({ status: "failed", failureKind: classifyProviderExit(prompt), message: failureMessage(prompt), responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
+  if (prompt.timedOut) return withRawDebug(failedTurn("timeout", timeoutMessage(request.timeoutMs), prompt, summary, "prompt"), rawDebug);
+  if (prompt.spawnError) return withRawDebug(failedTurn("spawn", prompt.spawnError, prompt, summary, "prompt"), rawDebug);
+  if (summary.malformedLine) return withRawDebug(failedTurn("provider_exit", `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, prompt, summary, "prompt"), rawDebug);
+  if (promptRpc) return withRawDebug(failedTurn(failureKindForRpc(promptRpc, "provider_exit"), actionableRpcMessage(promptRpc), prompt, summary, "prompt", promptRpc), rawDebug);
+  if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug(failedTurn("provider_exit", failureMessage(prompt), prompt, summary, "prompt"), rawDebug);
   return withRawDebug({ status: "completed", responseText: summary.responseText, stderr: prompt.stderr, telemetry: summary.telemetry }, rawDebug);
 }
 
@@ -471,8 +499,8 @@ function consumePromptLineEvent(accumulator: PromptAccumulator, line: string, ev
     return;
   }
   accumulator.eventCount += 1;
-  const errorMessage = jsonRpcErrorMessage(event);
-  if (accumulator.errorMessage === undefined && errorMessage !== undefined) accumulator.errorMessage = errorMessage;
+  const error = jsonRpcFailure(event);
+  if (accumulator.error === undefined && error !== undefined) accumulator.error = error;
   accumulator.responseText += textFromEvent(event);
   const context = contextFromEvent(event, accumulator.context);
   if (context !== undefined) accumulator.context = context;
@@ -490,7 +518,7 @@ function summaryFromAccumulator(accumulator: PromptAccumulator): PromptSummary {
     responseText: accumulator.responseText,
     telemetry: telemetryFromAccumulator(accumulator),
     ...(accumulator.malformedLine ? { malformedLine: accumulator.malformedLine } : {}),
-    ...(accumulator.errorMessage ? { errorMessage: accumulator.errorMessage } : {}),
+    ...(accumulator.error ? { error: accumulator.error } : {}),
   };
 }
 
@@ -647,41 +675,72 @@ function emptyTelemetry(): AgentTurnTelemetry {
   return { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } };
 }
 
-function failedControlResult(command: string, result: AcpxProcessResult, defaultKind: AgentBackendFailureKind = "provider_exit", timeoutMs: number | undefined = undefined): AgentTurnResult {
-  if (result.aborted) return cancelledResult(`Agent ${command} was aborted.`);
-  if (result.timedOut) return failedResult("timeout", timeoutMessage(timeoutMs), result);
-  if (result.spawnError) return failedResult("spawn", result.spawnError, result);
-  const message = failureMessage(result);
-  return failedResult(defaultKind === "provider_exit" ? classifyFailureText(message) : defaultKind, message, result);
+function failedControlResult(
+  operation: NonNullable<AgentBackendFailure["upstream"]>["operation"],
+  result: AcpxProcessResult,
+  defaultKind: AgentBackendFailureKind = "provider_exit",
+  timeoutMs: number | undefined = undefined,
+): AgentTurnResult {
+  if (result.aborted) return cancelledResult(`Agent ${operation} was aborted.`);
+  const summary = summarizePromptOutput(result.stdout);
+  const rpc = summary.error ?? extractJsonRpcFailure(result.stderr);
+  if (result.timedOut) return failedTurn("timeout", timeoutMessage(timeoutMs), result, summary, operation, rpc);
+  if (result.spawnError) return failedTurn("spawn", result.spawnError, result, summary, operation, rpc);
+  const kind = rpc ? failureKindForRpc(rpc, defaultKind) : defaultKind;
+  return failedTurn(kind, rpc ? actionableRpcMessage(rpc) : failureMessage(result), result, summary, operation, rpc);
 }
 
 function timeoutResult(timeoutMs: number | undefined): AgentTurnResult {
-  return { status: "failed", failureKind: "timeout", message: timeoutMessage(timeoutMs), responseText: "", stderr: "", telemetry: emptyTelemetry() };
+  return { status: "failed", failure: { kind: "timeout", message: timeoutMessage(timeoutMs) }, responseText: "", stderr: "", telemetry: emptyTelemetry() };
 }
 
 function configResult(message: string): AgentTurnResult {
-  return { status: "failed", failureKind: "config", message, responseText: "", stderr: "", telemetry: emptyTelemetry() };
+  return { status: "failed", failure: { kind: "config", message }, responseText: "", stderr: "", telemetry: emptyTelemetry() };
 }
 
-function failedResult(kind: AgentBackendFailureKind, message: string, result: AcpxProcessResult): AgentTurnResult {
-  const summary = summarizePromptOutput(result.stdout);
-  return { status: "failed", failureKind: kind, message, responseText: summary.responseText, stderr: result.stderr, telemetry: summary.telemetry };
+function failedTurn(
+  kind: AgentBackendFailureKind,
+  message: string,
+  result: AcpxProcessResult,
+  summary: PromptSummary,
+  operation: NonNullable<AgentBackendFailure["upstream"]>["operation"],
+  rpc?: JsonRpcFailure,
+): AgentTurnResult {
+  const upstream: NonNullable<AgentBackendFailure["upstream"]> = {
+    source: "acpx",
+    operation,
+    ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+    ...(rpc?.acpxCode ? { code: rpc.acpxCode } : {}),
+    ...(rpc?.origin ? { origin: rpc.origin } : {}),
+    ...(rpc ? {
+      protocol: {
+        name: "json-rpc",
+        ...(rpc.code === undefined ? {} : { code: rpc.code }),
+        message: rpc.message,
+      },
+      ...(rpc.data === undefined ? {} : { data: rpc.data }),
+    } : {}),
+  };
+  return {
+    status: "failed",
+    failure: { kind, message, ...(rpc || result.exitCode !== null ? { upstream } : {}) },
+    responseText: summary.responseText,
+    stderr: result.stderr,
+    telemetry: summary.telemetry,
+  };
 }
 
 function cancelledResult(message: string): AgentTurnResult {
   return { status: "cancelled", message, responseText: "", stderr: "", telemetry: emptyTelemetry() };
 }
 
-function classifyProviderExit(result: AcpxProcessResult): AgentBackendFailureKind {
-  return classifyFailureText(failureMessage(result));
-}
-
-function classifyFailureText(text: string): AgentBackendFailureKind {
-  return /invalid params|unsupported|capability|model|set.?mode/i.test(text) ? "config" : "provider_exit";
+function failureKindForRpc(error: JsonRpcFailure, fallback: AgentBackendFailureKind): AgentBackendFailureKind {
+  return error.code === -32602 || error.code === "-32602" ? "config" : fallback;
 }
 
 function failureMessage(result: AcpxProcessResult): string {
-  return (extractHumanError(result.stdout) || extractHumanError(result.stderr) || nonJsonTail(result.stderr) || nonJsonTail(result.stdout) || result.stdinError || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
+  const rpc = extractJsonRpcFailure(result.stdout) ?? extractJsonRpcFailure(result.stderr);
+  return (rpc ? actionableRpcMessage(rpc) : nonJsonTail(result.stderr) || nonJsonTail(result.stdout) || result.stdinError || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
 }
 
 function timeoutMessage(timeoutMs: number | undefined): string {
@@ -692,19 +751,45 @@ function boundedTail(value: string, max = 4000): string {
   return value.length > max ? value.slice(value.length - max) : value;
 }
 
-function extractHumanError(value: string): string {
+function extractJsonRpcFailure(value: string): JsonRpcFailure | undefined {
   for (const { event } of acpxJsonLines(value)) {
-    const message = jsonRpcErrorMessage(event);
-    if (message) return boundedTail(message);
+    const failure = jsonRpcFailure(event);
+    if (failure) return failure;
   }
-  return "";
+  return undefined;
 }
 
-function jsonRpcErrorMessage(event: unknown): string | undefined {
+function jsonRpcFailure(event: unknown): JsonRpcFailure | undefined {
   if (!isRecord(event)) return undefined;
   const error = isRecord(event.error) ? event.error : undefined;
-  if (typeof error?.message === "string") return error.message;
-  return undefined;
+  if (typeof error?.message !== "string") return undefined;
+  const data = isAgentJsonValue(error.data) ? error.data : undefined;
+  const fields = agentJsonObject(data);
+  const code = typeof error.code === "string" || typeof error.code === "number" ? error.code : undefined;
+  return {
+    ...(code === undefined ? {} : { code }),
+    message: error.message,
+    ...(data === undefined ? {} : { data }),
+    ...(typeof fields?.acpxCode === "string" ? { acpxCode: fields.acpxCode } : {}),
+    ...(typeof fields?.origin === "string" ? { origin: fields.origin } : {}),
+  };
+}
+
+function actionableRpcMessage(error: JsonRpcFailure): string {
+  const fields = agentJsonObject(error.data);
+  const details = typeof fields?.details === "string" ? fields.details.trim() : "";
+  return boundedTail(details || error.message.trim());
+}
+
+function isAgentJsonValue(value: unknown): value is AgentJsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isAgentJsonValue);
+  return Boolean(value && typeof value === "object" && Object.values(value).every(isAgentJsonValue));
+}
+
+function agentJsonObject(value: AgentJsonValue | undefined): { [key: string]: AgentJsonValue } | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
 function nonJsonTail(value: string): string {

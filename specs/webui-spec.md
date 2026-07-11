@@ -88,9 +88,27 @@
 - Workflow-level Input/Output inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - Runtime node inspection MUST resolve node instances, attempts, artifacts, and execution metadata against the current graph fanout/loop selector context. It MUST NOT show runtime output from another selected item or iteration.
 - Runtime node inspection context MUST identify each fanout selection with a non-negative integer `itemIndex` and each loop selection with a non-negative integer iteration. The WebUI API MUST reject incomplete or malformed selector context.
-- Node inspection MUST present a low-noise Overview with identity, status, prompt, input, output, and diagnostics where relevant. It MUST NOT expose generic raw `Instances`, `Frames`, `Signals`, or `Metadata` tabs.
+- Runtime node inspection APIs MUST consume the shared runtime target inspection
+  projection rather than independently resolving static nodes, dynamic
+  instances, frames, attempts, signals, progress, execution metadata, or
+  artifact references in the Web server.
+- Runtime node Overview inspection MUST refresh once per second while the run
+  is non-terminal and MUST stop periodic refresh after terminal state.
+- Runtime Agent Overview data MUST use the authored Agent key and normalized
+  compact Agent state supplied by runtime target inspection, including current
+  activity, turn, context/token counters, and bounded recent tool commands.
+  The Web server MUST NOT re-resolve the effective Agent or re-parse tool input
+  previews for Overview.
+- Node inspection MUST present a low-noise Overview with identity, status,
+  prompt, input, output, and the shared structured failure where relevant. It
+  MUST preserve upstream acpx/RPC cause fields without independently parsing
+  provider error text, and MUST NOT expose generic raw `Instances`, `Frames`,
+  `Signals`, or `Metadata` tabs.
 - Artifact content MUST be shown in a conditional `Artifacts` tab for leaf nodes with artifacts, and artifact preview requests MUST be lazy-loaded from that tab. Artifact rows MUST truncate long artifact titles while exposing the full title on hover or keyboard focus, and artifact previews MUST stay inside the Inspector width without page-level horizontal overflow.
 - Agent execution telemetry MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
+- Artifact bodies and full Agent telemetry artifacts MUST NOT be embedded in the
+  shared target inspection response. The Web server MUST load them only through
+  the existing artifact preview or active Execution-tab paths.
 - Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw telemetry JSON as the primary UI.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
 - Prompt and structured output/error content MUST render through Markdown and JSON viewer components.
@@ -111,6 +129,11 @@
 - Tests MUST cover default fit-view math and rendered-edge filtering for containment edges.
 - Tests MUST cover precise graph wheel zoom, wheel event consumption, inspector dock/undock animation hooks, and selected-node visibility after viewport resize.
 - Tests MUST cover workflow-level Input/Output inspection for runtime run values and static workflow contract data.
+- Tests MUST cover runtime node Overview delegation to the shared target
+  projection, exact fanout/loop context forwarding, one-second non-terminal
+  refresh, and terminal refresh cessation.
+- Tests MUST prove artifact previews and Agent telemetry artifact reads remain
+  lazy after adopting the shared target projection.
 - Tests MUST cover WebUI control visibility, disabled terminal controls, target-first retry behavior, and absence of WebUI fork control.
 - Tests MUST cover WebUI control confirmation text and command payloads before controls are submitted.
 - Manual browser smoke SHOULD capture runtime and workflow static graph screenshots before handoff.

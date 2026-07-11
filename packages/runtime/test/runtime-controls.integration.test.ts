@@ -265,7 +265,8 @@ describe.concurrent("runtime controls and recovery use cases", () => {
         store?.close();
       }
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true, extra: true } });
-      await expect(getRunInspection(workspace, fork!.run.id)).resolves.toMatchObject({
+      const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
+      expect(inspection.isOk() ? inspection.value : undefined).toMatchObject({
         run: { id: fork!.run.id, name: "cli-task-replacement" },
       });
       expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id)).toHaveLength(1);

@@ -8,6 +8,12 @@
    acpus runs inspect <run-id>
    ```
 
+   Keep the view attached while the run is changing:
+
+   ```sh
+   acpus runs inspect <run-id> --follow
+   ```
+
 2. Identify:
    - durable run status and derived execution state
    - failed, timed-out, canceled, paused, or awaiting node/frame
@@ -17,6 +23,16 @@
    - whether the workflow source changed after admission
 
 3. Choose the smallest safe action.
+
+Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when the compact
+tree identifies the relevant execution. Use `--all` only when every repeated
+fanout or loop context is needed. These views stay normalized and status-first;
+`--raw --json` is the explicit unbounded diagnostic fallback.
+
+Agent failures preserve Acpus origin/code separately from their upstream acpx
+cause. Compact text shows the actionable upstream detail and bounded acpx code;
+use target JSON for the complete parsed JSON-RPC error data. Do not infer an
+authentication, model, or quota category from provider error wording.
 
 ## Phase-based fixes
 
@@ -55,7 +71,8 @@ Use `--unsafe-reuse` when the user clearly wants to reuse earlier completed node
 
 ## Signal
 
-Inspect output usually gives a copyable command. General form:
+Compact inspection gives a copyable command; target inspection exposes the
+complete persisted prompt and schema. General form:
 
 ```sh
 acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json-or-string>'
@@ -84,14 +101,40 @@ Ask before canceling unless the user already clearly requested cancellation.
 
 ## Stale non-terminal execution
 
-`runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. Do not mutate state just because a run is stale. Re-inspect, run `acpus doctor`, and choose a control only when the user asks to recover or continue.
+`runs inspect` may report non-terminal execution as stale based on daemon
+heartbeat or lease evidence. Do not mutate state just because a run is stale.
+An attached `--follow` view remains read-only and continues waiting through a
+stale state. Run `acpus doctor`, and choose a control only when the user asks to
+recover or continue.
 
 ## Artifact reading
 
-Prefer artifact references and metadata from `runs inspect --json`. Do not guess at run-local paths unless the inspection output exposes them. Typical run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is under `.acpus/.local/state/runtime.db`.
+Prefer artifact references from `runs inspect <run-id> --target <target> --json`.
+Do not guess at run-local paths unless inspection exposes them. Typical
+run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is
+under `.acpus/.local/state/runtime.db`.
 
 Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.
 
 ## Agent telemetry
 
-`runs inspect --json` exposes Agent attempt metadata under `run.dynamic.executionMetadata[]` entries with `kind: "agent_attempt"`. These entries can include session name, turn count, stop reason, workflow Agent tool-call telemetry, and artifact references for prompt, response, parsed JSON, and telemetry. JSON inspection can be large for composite-heavy runs; use it with `jq` to query exact telemetry or dynamic node keys you need.
+`runs inspect --json` is a bounded status-first projection. Use
+`runs inspect <run-id> --target <agent-node-or-attempt> --json` for complete
+matching attempt history, progress, session/turn summaries, stop reason, and
+artifact references. Artifact contents remain separate and lazy. Use
+`--raw --json` only when the unbounded run/frozen-WorkflowIR/artifact bundle is
+specifically required. Full authored Agent commands are available under
+`.workflow.agents`; compact inspection never exposes them.
+
+During an active run, prefer non-TTY `--follow` output when operating through
+an agent or pipe. Its progress rows report the authored Agent key, last
+activity, current turn, context/token counters, and up to three intent-only tool
+commands. Semantic rows start with elapsed run time, such as `+14s`; text omits
+event-sequence and progress-version identifiers because append order already
+communicates operator-visible chronology. Matching terminal transition and
+Agent progress from one observation are merged into one complete text row. Use
+structured JSON/NDJSON for an unmerged projection; `--follow --json` preserves
+the separate, ordered changes and exact durable-event, progress-version, and
+cursor values. A 30-second checkpoint means observation is still attached; it
+does not indicate a runtime state transition. Silence between changes or
+checkpoints does not mean the run has stopped.

@@ -88,12 +88,20 @@ state.
 
 - `completed` results MUST include final assistant response text, stderr, and
   normalized telemetry facts.
-- `failed` results MUST include a stable backend failure kind, message,
-  response text collected before failure, stderr, and normalized telemetry
-  facts.
+- `failed` results MUST include one structured failure with a stable backend
+  kind, actionable message, optional normalized acpx cause, response text
+  collected before failure, stderr, and normalized telemetry facts.
 - `cancelled` results MUST be separate from backend failure kinds.
 - Stable backend failure kinds MUST include `config`, `spawn`,
   `provider_exit`, and `timeout`.
+- JSON-RPC failures MUST preserve protocol code, message, and JSON data. Acpx
+  envelope fields such as `acpxCode` and `origin` MUST remain separately
+  queryable, and a non-empty string `data.details` MUST be the actionable
+  message ahead of a generic protocol message.
+- Failure classification MUST use local execution boundaries and stable
+  protocol codes, not provider-error text matching. JSON-RPC invalid params
+  (`-32602`) MUST be `config`; other prompt/session provider failures MUST be
+  `provider_exit` unless timeout or spawn handling applies.
 - The executor MUST NOT expose raw ACP JSON lines as runtime decision input.
   It MUST derive normalized per-turn telemetry from the ACP JSON stream.
 - Normalized turn telemetry MUST include event count, optional stop reason,

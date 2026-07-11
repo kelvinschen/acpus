@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { walkNodes, type ExprIR, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { ResultAsync } from "neverthrow";
 import { normalizeWorkflowInput } from "../admission/input.js";
@@ -23,20 +22,6 @@ import {
 export type { ArtifactRecord };
 
 export type RuntimeMutationAction = "pause" | "resume" | "retry" | "fork" | "cancel";
-
-export type RunInspectionStaticNode = {
-  nodeId: string;
-  kind: NodeIR["kind"];
-  order: number;
-  input?: Record<string, ExprIR>;
-  prompt?: ExprIR;
-  outputSchema?: SchemaIR;
-};
-
-export type RunInspection = {
-  run: RunDetails;
-  staticNodes: RunInspectionStaticNode[];
-};
 
 export type RunVisualizationSnapshot = {
   run: RunDetails;
@@ -182,22 +167,6 @@ async function deleteRunResult(cwd: string, runId: string): Promise<RunRecord> {
   }
 }
 
-export async function getRunInspection(cwd: string, runId: string): Promise<RunInspection | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    const run = store.getRun(runId);
-    if (!run) return undefined;
-    const frozen = store.getFrozenRun(runId);
-    return {
-      run,
-      staticNodes: frozen ? inspectionStaticNodes(frozen.ir) : [],
-    };
-  } finally {
-    store.close();
-  }
-}
-
 export async function getArtifact(cwd: string, runId: string, artifactId: string): Promise<ArtifactRecord | undefined> {
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
@@ -245,17 +214,6 @@ export async function getRunStaticVisualizationOverlay(cwd: string, runId: strin
   } finally {
     store.close();
   }
-}
-
-function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
-  return Array.from(walkNodes(ir.root), ({ node }, order) => ({
-    nodeId: node.id,
-    kind: node.kind,
-    order,
-    ...(node.kind === "task" ? { input: node.run.input } : {}),
-    ...(node.kind === "agent" || node.kind === "signal" ? { prompt: node.run.prompt } : {}),
-    ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
-  }));
 }
 
 export async function normalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): Promise<JsonValue | undefined> {

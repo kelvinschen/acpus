@@ -1,3 +1,5 @@
+import type { RunInspectionTargetDocument } from "@acpus/runtime";
+
 export type RunRecord = {
   id: string;
   name: string;
@@ -175,78 +177,10 @@ type WebGraphGroup = {
   ))>;
 };
 
-export type NodeInspection = {
-  target: { kind: string; id: string };
-  staticNode?: { nodeId: string; kind: string; order: number; input?: Record<string, unknown>; outputSchema?: unknown };
-  summary: {
-    targetKind: string;
-    targetId: string;
-    runStatus: string;
-    runStartedAt?: string;
-    runFinishedAt?: string;
-    runDurationMs?: number;
-    nodeId?: string;
-    nodeKey?: string;
-    frameKey?: string;
-    nodeStatus?: string;
-    staticKind?: string;
-    staticOrder?: number;
-    input?: {
-      kind: "runtime" | "authored";
-      value: unknown;
-    };
-    output?: unknown;
-    error?: unknown;
-    prompt?: {
-      kind: "signal" | "artifact" | "authored";
-      text?: string;
-      artifactId?: string;
-      relativePath?: string;
-      mediaType?: string;
-    };
-    latestAttempt?: {
-      attemptId: string;
-      attemptNo: number;
-      status: string;
-      startedAt: string;
-      finishedAt?: string;
-      error?: unknown;
-      result?: unknown;
-    };
-    loopProgress?: {
-      frameKey: string;
-      index: number;
-      round: number;
-      state?: unknown;
-      stop?: boolean;
-      transition?: unknown;
-      activeIterationFrameKey?: string;
-      activeChildNodeKeys: string[];
-    };
-    artifacts: ArtifactReference[];
-  };
-  instances: unknown[];
-  frames: unknown[];
-  attempts: Array<{
-    attemptId: string;
-    status: string;
-    startedAt: string;
-    finishedAt?: string;
-    error?: unknown;
-    result?: unknown;
-  }>;
-  signalWaits: Array<{
-    nodeKey: string;
-    nodeId: string;
-    status: string;
-    renderedPrompt?: string;
-  }>;
-  executionMetadata: unknown[];
-  artifacts: ArtifactReference[];
-};
+export type NodeInspection = RunInspectionTargetDocument;
 
 export type NodeExecutionInspection = {
-  target: { kind: string; id: string };
+  target: NodeInspection["target"];
   nodeId?: string;
   nodeKey?: string;
   attemptId?: string;
@@ -269,6 +203,9 @@ export type NodeExecutionInspection = {
     source?: string;
     inputTokens?: number;
     outputTokens?: number;
+    cachedReadTokens?: number;
+    cachedWriteTokens?: number;
+    thoughtTokens?: number;
     totalTokens?: number;
   };
   output?: {

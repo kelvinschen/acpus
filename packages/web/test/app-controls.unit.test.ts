@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandForControl, confirmationForControl, controlStateForRun, retryCommandTarget, retryTargetsForRun } from "../src/client/ui/App.js";
+import { commandForControl, confirmationForControl, controlStateForRun, nodeInspectionRefetchInterval, retryCommandTarget, retryTargetsForRun } from "../src/client/ui/App.js";
 import type { RunDetails } from "../src/client/api.js";
 
 describe("runtime run controls", () => {
@@ -29,6 +29,14 @@ describe("runtime run controls", () => {
       expect(controls.map(control => control.id)).toEqual(["pause", "cancel"]);
       expect(controls.every(control => control.disabled)).toBe(true);
     }
+  });
+
+  it("refreshes node Overview every second only while the run is non-terminal", () => {
+    expect(nodeInspectionRefetchInterval("running")).toBe(1_000);
+    expect(nodeInspectionRefetchInterval("awaiting")).toBe(1_000);
+    expect(nodeInspectionRefetchInterval("completed")).toBe(false);
+    expect(nodeInspectionRefetchInterval("failed")).toBe(false);
+    expect(nodeInspectionRefetchInterval("canceled")).toBe(false);
   });
 
   it("extracts failed retry targets from frames, node instances, and group members", () => {

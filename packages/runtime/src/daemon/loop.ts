@@ -83,7 +83,6 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         }
       }),
       startRun: runId => sessions.start(runId),
-      observeRun: runId => sessions.observe(runId),
       shutdown: () => {
         if (server.activeConnections() > 1) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active client requests.");
         if (!mutations.isIdle()) throw new DaemonRequestError("CONTROL_CONFLICT", "Daemon has active runtime mutations.");

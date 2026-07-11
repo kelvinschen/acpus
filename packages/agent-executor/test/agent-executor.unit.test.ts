@@ -169,8 +169,7 @@ describe("executeAgentTurn", () => {
       timeoutMs,
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "config",
-      message: "Agent turn timeoutMs must be a non-negative safe integer.",
+      failure: { kind: "config", message: "Agent turn timeoutMs must be a non-negative safe integer." },
     });
     expect(fake.spawn).not.toHaveBeenCalled();
   });
@@ -188,8 +187,7 @@ describe("executeAgentTurn", () => {
       timeoutMs: 0,
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "timeout",
-      message: "Agent turn timed out after 0ms.",
+      failure: { kind: "timeout", message: "Agent turn timed out after 0ms." },
     });
     expect(fake.spawn).not.toHaveBeenCalled();
   });
@@ -227,7 +225,7 @@ describe("executeAgentTurn", () => {
       ]);
       fake.state.children[1]!.emit("close", null);
 
-      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      await expect(result).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
     } finally {
       vi.useRealTimers();
     }
@@ -254,7 +252,7 @@ describe("executeAgentTurn", () => {
       });
       await vi.runAllTimersAsync();
 
-      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      await expect(result).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
       expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toEqual([
         ["codex", "sessions", "ensure", "--name", "run-node"],
         ["codex", "prompt", "-s", "run-node", "-f", "-"],
@@ -282,7 +280,7 @@ describe("executeAgentTurn", () => {
         sessionName: "run-node",
         permissionMode: "approve-all",
         timeoutMs: 5,
-      })).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      })).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
     } finally {
       now.mockRestore();
     }
@@ -305,7 +303,7 @@ describe("executeAgentTurn", () => {
         sessionName: "run-node",
         permissionMode: "approve-all",
         timeoutMs: 5,
-      })).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      })).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
     } finally {
       now.mockRestore();
     }
@@ -419,7 +417,7 @@ describe("executeAgentTurn", () => {
       vi.setSystemTime(new Date("2026-06-30T23:59:00.000Z"));
       await vi.advanceTimersByTimeAsync(8);
 
-      await expect(result).resolves.toMatchObject({ status: "failed", failureKind: "timeout" });
+      await expect(result).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
     } finally {
       vi.useRealTimers();
     }
@@ -506,8 +504,7 @@ describe("executeAgentTurn", () => {
 
       await expect(result).resolves.toMatchObject({
         status: "failed",
-        failureKind: "timeout",
-        message: "Agent turn timed out after 5ms.",
+        failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
       });
       expect(fake.state.calls.map(call => tailFromAgent(call.args, "claude"))).toEqual([
         ["claude", "sessions", "ensure", "--name", "session"],
@@ -1041,8 +1038,7 @@ describe("executeAgentTurn", () => {
       agentMode: "missing-mode",
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "config",
-      message: "Invalid params: unsupported mode",
+      failure: { kind: "config", message: "Invalid params: unsupported mode" },
     });
     expect(fake.state.calls).toHaveLength(2);
   });
@@ -1060,8 +1056,7 @@ describe("executeAgentTurn", () => {
       permissionMode: "approve-all",
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "spawn",
-      message: "spawn failed",
+      failure: { kind: "spawn", message: "spawn failed" },
     });
   });
 
@@ -1085,8 +1080,7 @@ describe("executeAgentTurn", () => {
       onProgress: update => progress.push(update),
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "provider_exit",
-      message: "provider rejected input",
+      failure: { kind: "provider_exit", message: "provider rejected input" },
       stderr: "provider rejected input",
       responseText: "",
     });
@@ -1106,12 +1100,11 @@ describe("executeAgentTurn", () => {
       permissionMode: "approve-all",
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "provider_exit",
-      message: "Malformed acpx JSON output: not json",
+      failure: { kind: "provider_exit", message: "Malformed acpx JSON output: not json" },
     });
   });
 
-  it("extracts JSON-RPC error messages without exposing raw protocol JSON", async () => {
+  it("preserves structured JSON-RPC prompt failures without exposing raw protocol JSON by default", async () => {
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}\n", 1));
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
@@ -1126,12 +1119,61 @@ describe("executeAgentTurn", () => {
       captureRawDebug: true,
     })).resolves.toMatchObject({
       status: "failed",
-      failureKind: "config",
-      message: "Unsupported model",
+      failure: {
+        kind: "config",
+        message: "Unsupported model",
+        upstream: {
+          source: "acpx",
+          operation: "prompt",
+          exitCode: 1,
+          protocol: { name: "json-rpc", code: -32602, message: "Unsupported model" },
+        },
+      },
       rawDebug: {
         stdout: "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}\n",
       },
     });
+  });
+
+  it("uses acpx JSON-RPC details as the actionable sessions ensure failure", async () => {
+    const data = {
+      acpxCode: "RUNTIME",
+      origin: "cli",
+      sessionId: "unknown",
+      details: "failed to reload config: /home/example/.codex/config.toml:6:26: unknown variant `max`",
+      extra: { preserved: true },
+    };
+    fake.state.scenarios.push(fake.scenario.stdout(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32603, message: "Internal error", data },
+    })}\n`, 1));
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+    })).resolves.toMatchObject({
+      status: "failed",
+      failure: {
+        kind: "provider_exit",
+        message: data.details,
+        upstream: {
+          source: "acpx",
+          operation: "sessions.ensure",
+          exitCode: 1,
+          code: "RUNTIME",
+          origin: "cli",
+          protocol: { name: "json-rpc", code: -32603, message: "Internal error" },
+          data,
+        },
+      },
+    });
+    expect(fake.state.calls).toHaveLength(1);
   });
 
   it("classifies provider exits", async () => {
@@ -1145,7 +1187,24 @@ describe("executeAgentTurn", () => {
       env: {},
       sessionName: "session",
       permissionMode: "approve-all",
-    })).resolves.toMatchObject({ status: "failed", failureKind: "provider_exit", message: "agent crashed" });
+    })).resolves.toMatchObject({ status: "failed", failure: { kind: "provider_exit", message: "agent crashed" } });
+  });
+
+  it("does not infer backend failure kinds from authentication or model wording", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    fake.state.scenarios.push(fake.scenario.success, fake.scenario.exit(1, "Authentication required for selected model"));
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "pi" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+    })).resolves.toMatchObject({
+      status: "failed",
+      failure: { kind: "provider_exit", message: "Authentication required for selected model" },
+    });
   });
 
   it("classifies turn timeouts", async () => {
@@ -1172,8 +1231,7 @@ describe("executeAgentTurn", () => {
 
       await expect(result).resolves.toMatchObject({
         status: "failed",
-        failureKind: "timeout",
-        message: "Agent turn timed out after 5ms.",
+        failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
         responseText: "partial",
       });
       expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);

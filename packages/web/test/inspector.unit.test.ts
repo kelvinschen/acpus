@@ -4,6 +4,7 @@ import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentOverview } from "../src/client/ui/App.js";
 import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/client/ui/Inspector.js";
 import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
 
@@ -124,6 +125,41 @@ describe("Inspector presence", () => {
 });
 
 describe("Inspector primitives", () => {
+  it("renders normalized compact Agent state before full execution telemetry is loaded", async () => {
+    vi.setSystemTime(new Date("2026-07-01T00:00:06.000Z"));
+    await render(React.createElement(AgentOverview, {
+      agent: {
+        key: "observer",
+        backend: { kind: "command" },
+        model: "opus",
+        turnCount: 2,
+        lastActivityAt: "2026-07-01T00:00:04.000Z",
+        context: { used: 26_100, size: 200_000 },
+        tokenUsage: { inputTokens: 51_800, outputTokens: 205, totalTokens: 52_005 },
+        tools: {
+          totalCallCount: 3,
+          recent: [
+            { command: "Read", status: "completed" },
+            { command: "Bash: rg", status: "in_progress" },
+            { command: "Write", status: "failed" },
+          ],
+        },
+      },
+    }));
+
+    expect(container.querySelector("h3")?.textContent).toBe("Agent State");
+    expect([...container.querySelectorAll(".key-value")].map(row => row.textContent)).toEqual([
+      "Agentobserver",
+      "Modelopus",
+      "Turns2",
+      "Last active2s ago",
+      "Context26.1k/200k (13%)",
+      "Tokensin 51.8k, out 205, total 52k",
+      "Last tools✓ Read · ⠋ Bash: rg · ◆ Write",
+    ]);
+    expect(container.textContent).not.toContain("command");
+  });
+
   it("keeps dialog, heading, key-value, Escape, and cleanup behavior", async () => {
     const onClose = vi.fn();
     await render(React.createElement(

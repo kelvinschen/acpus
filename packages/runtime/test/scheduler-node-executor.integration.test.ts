@@ -967,7 +967,7 @@ describe("runtime scheduler node executor", () => {
             expect.objectContaining({
               turn: 1,
               status: "completed",
-              failureKind: "output_conformance",
+              failure: expect.objectContaining({ kind: "output_conformance" }),
               telemetry: {
                 eventCount: 5,
                 stopReason: "end_turn",
@@ -1317,8 +1317,7 @@ describe("runtime scheduler node executor", () => {
           store,
           executeAgentTurn: async () => ({
             status: "failed",
-            failureKind: "timeout",
-            message: "Agent turn timed out after 5ms.",
+            failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
             responseText: "partial",
             stderr: "",
             telemetry: agentTelemetry(1),
@@ -1406,8 +1405,19 @@ describe("runtime scheduler node executor", () => {
           store,
           executeAgentTurn: async () => ({
             status: "failed",
-            failureKind: "provider_exit",
-            message: "agent failed",
+            failure: {
+              kind: "provider_exit",
+              message: "credential helper failed",
+              upstream: {
+                source: "acpx",
+                operation: "sessions.ensure",
+                exitCode: 1,
+                code: "RUNTIME",
+                origin: "cli",
+                protocol: { name: "json-rpc", code: -32603, message: "Internal error" },
+                data: { acpxCode: "RUNTIME", origin: "cli", details: "credential helper failed" },
+              },
+            },
             responseText: "partial",
             stderr: "",
             telemetry: agentTelemetry(1),
@@ -1422,12 +1432,21 @@ describe("runtime scheduler node executor", () => {
           attemptNo: attempt.attemptNo,
           ownerEpoch,
           signal: new AbortController().signal,
-        })).rejects.toThrow("provider_exit: agent failed");
+        })).resolves.toMatchObject({
+          status: "failed",
+          reason: "provider_exit",
+          error: {
+            origin: "provider",
+            code: "provider_exit",
+            message: "credential helper failed",
+            upstream: { source: "acpx", code: "RUNTIME", data: { details: "credential helper failed" } },
+          },
+        });
         expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
           expect.objectContaining({
             attemptId: attempt.attemptId,
             status: "failed",
-            message: "provider_exit: agent failed",
+            message: "credential helper failed",
           }),
         ]);
       } finally {
@@ -1460,12 +1479,16 @@ describe("runtime scheduler node executor", () => {
           attemptNo: attempt.attemptNo,
           ownerEpoch,
           signal: new AbortController().signal,
-        })).rejects.toThrow("output_conformance");
+        })).resolves.toMatchObject({
+          status: "failed",
+          reason: "output_conformance",
+          error: { origin: "provider", code: "output_conformance", message: expect.any(String) },
+        });
         expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
           expect.objectContaining({
             attemptId: attempt.attemptId,
             status: "failed",
-            message: expect.stringContaining("output_conformance"),
+            message: expect.stringContaining("could not be recovered as JSON"),
           }),
         ]);
       } finally {
@@ -1635,8 +1658,7 @@ describe("runtime scheduler node executor", () => {
             expect(request.captureRawDebug).toBe(true);
             return {
               status: "failed",
-              failureKind: "provider_exit",
-              message: "agent crashed",
+              failure: { kind: "provider_exit", message: "agent crashed" },
               responseText: "",
               stderr: "",
               telemetry: agentTelemetry(1),
@@ -1653,7 +1675,7 @@ describe("runtime scheduler node executor", () => {
         const failedMetadata = store.getRun(failed.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(failedMetadata).toMatchObject({
           status: "failed",
-          turns: [expect.objectContaining({ status: "failed", failureKind: "provider_exit" })],
+          turns: [expect.objectContaining({ status: "failed", failure: { kind: "provider_exit", message: "agent crashed" } })],
         });
         expectAgentArtifactRef(failedMetadata?.turns?.[0]?.rawAcpDebugArtifact, failedRawAcpPath, "application/x-ndjson", failedArtifactRows);
       } finally {
@@ -2310,7 +2332,7 @@ describe("runtime scheduler node executor", () => {
         ]);
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata?.turns).toEqual([
-          expect.objectContaining({ failureKind: "empty_response" }),
+          expect.objectContaining({ failure: { kind: "empty_response", message: expect.any(String) } }),
         ]);
         expect(metadata?.turns).toEqual([
           expect.not.objectContaining({ rawParsedOutputArtifact: expect.anything() }),
@@ -2348,8 +2370,7 @@ describe("runtime scheduler node executor", () => {
           store,
           executeAgentTurn: async () => ({
             status: "failed",
-            failureKind: "timeout",
-            message: "Agent turn timed out after 5ms.",
+            failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
             responseText: "",
             stderr: "",
             telemetry: agentTelemetry(0),
@@ -2366,13 +2387,18 @@ describe("runtime scheduler node executor", () => {
           signal: new AbortController().signal,
         })).resolves.toEqual({
           status: "timed_out",
-          reason: "Agent turn timed out after 5ms.",
+          reason: "timeout",
+          error: {
+            origin: "provider",
+            code: "timeout",
+            message: "Agent turn timed out after 5ms.",
+          },
         });
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata).toMatchObject({
           status: "timed_out",
           turnCount: 1,
-          turns: [expect.objectContaining({ status: "failed", failureKind: "timeout" })],
+          turns: [expect.objectContaining({ status: "failed", failure: { kind: "timeout", message: "Agent turn timed out after 5ms." } })],
         });
       } finally {
         store.close();
@@ -2419,7 +2445,7 @@ describe("runtime scheduler node executor", () => {
           status: "cancelled",
           turnCount: 1,
           message: "Agent response repair was aborted.",
-          turns: [expect.objectContaining({ status: "completed", failureKind: "output_conformance" })],
+          turns: [expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } })],
         });
       } finally {
         store.close();
@@ -2742,12 +2768,12 @@ describe("runtime scheduler node executor", () => {
           status: "failed",
           turnCount: 3,
           turns: [
-            expect.objectContaining({ status: "completed", failureKind: "output_conformance" }),
-            expect.objectContaining({ status: "completed", failureKind: "output_conformance" }),
-            expect.objectContaining({ status: "completed", failureKind: "output_conformance" }),
+            expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } }),
+            expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } }),
+            expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } }),
           ],
         });
-        expect(metadata?.message).toContain("output_conformance");
+        expect(metadata?.message).toContain("does not match schema");
       } finally {
         store.close();
       }

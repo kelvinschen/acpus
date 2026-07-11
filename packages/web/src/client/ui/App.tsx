@@ -207,7 +207,7 @@ function RuntimePage({
     queryKey: ["node-inspection", runId, selectedNodeId, selectedNodeContext],
     queryFn: () => getNodeInspection(runId!, selectedNodeId!, selectedNodeContext),
     enabled: Boolean(runId && selectedNodeId),
-    refetchInterval: 2_500,
+    refetchInterval: nodeInspectionRefetchInterval(snapshot.data?.run.status),
   });
   const command = useMutation({
     mutationFn: (input: Record<string, unknown>) => submitRunCommand(runId!, input),
@@ -1052,6 +1052,8 @@ function Inspector({
 
         <InspectorTabPanel id="overview">
           <>
+          {summary.agent && <AgentOverview agent={summary.agent} />}
+
           <InspectorSection title="Identity">
             {summary.nodeId && <KeyValue label="Node ID" value={summary.nodeId} />}
             {summary.nodeKey && <KeyValue label="Node Key" value={summary.nodeKey} />}
@@ -1091,8 +1093,8 @@ function Inspector({
             <JsonSection title="Output" value={summary.output} />
           )}
 
-          {summary.error !== undefined && (
-            <JsonSection title="Diagnostics" value={summary.error} />
+          {summary.failure !== undefined && (
+            <JsonSection title="Diagnostics" value={summary.failure} />
           )}
           </>
         </InspectorTabPanel>
@@ -1111,6 +1113,53 @@ function Inspector({
       </Tabs>
     </div>
   );
+}
+
+export function AgentOverview({ agent }: { agent: NonNullable<NodeInspection["summary"]["agent"]> }) {
+  const context = agent.context
+    ? `${formatCompactCount(agent.context.used)}/${formatCompactCount(agent.context.size)}${agent.context.size > 0 ? ` (${Math.round((agent.context.used / agent.context.size) * 100)}%)` : ""}`
+    : undefined;
+  const tokens = agentTokenSummary(agent.tokenUsage);
+  const tools = agent.tools?.recent.map(tool => {
+    const glyph = toolStatusGlyph(tool.status);
+    return `${glyph ? `${glyph} ` : ""}${tool.command}`;
+  }).join(" · ");
+  return (
+    <InspectorSection title="Agent State">
+      <KeyValue label="Agent" value={agent.key} />
+      {agent.model && <KeyValue label="Model" value={agent.model} />}
+      {agent.turnCount !== undefined && <KeyValue label="Turns" value={String(agent.turnCount)} />}
+      {agent.lastActivityAt && <KeyValue label="Last active" value={formatRelativeAge(agent.lastActivityAt)} />}
+      {context && <KeyValue label="Context" value={context} />}
+      {tokens && <KeyValue label="Tokens" value={tokens} />}
+      {tools && <KeyValue label="Last tools" value={tools} />}
+    </InspectorSection>
+  );
+}
+
+function agentTokenSummary(usage: NonNullable<NodeInspection["summary"]["agent"]>["tokenUsage"]): string | undefined {
+  if (!usage) return undefined;
+  return [
+    usage.inputTokens === undefined ? undefined : `in ${formatCompactCount(usage.inputTokens)}`,
+    usage.outputTokens === undefined ? undefined : `out ${formatCompactCount(usage.outputTokens)}`,
+    usage.cachedReadTokens === undefined ? undefined : `cache read ${formatCompactCount(usage.cachedReadTokens)}`,
+    usage.cachedWriteTokens === undefined ? undefined : `cache write ${formatCompactCount(usage.cachedWriteTokens)}`,
+    usage.thoughtTokens === undefined ? undefined : `thought ${formatCompactCount(usage.thoughtTokens)}`,
+    usage.totalTokens === undefined ? undefined : `total ${formatCompactCount(usage.totalTokens)}`,
+  ].filter((value): value is string => value !== undefined).join(", ") || undefined;
+}
+
+function toolStatusGlyph(status: string | undefined): string | undefined {
+  if (status === "running" || status === "started" || status === "in_progress") return "⠋";
+  if (status === "completed" || status === "success" || status === "succeeded") return "✓";
+  if (status === "failed" || status === "error" || status === "timed_out") return "◆";
+  if (status === "canceled" || status === "cancelled") return "✗";
+  return undefined;
+}
+
+function formatCompactCount(value: number): string {
+  if (value < 1_000) return String(value);
+  return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
 }
 
 type InspectorTabId = "overview" | "artifacts" | "execution";
@@ -1509,6 +1558,10 @@ function RunStatusIndicator({ status }: { status: string }) {
 function isTerminalRunStatus(status: string | undefined): boolean {
   const display = normalizeRuntimeStatus(status);
   return display === "completed" || display === "failed" || display === "canceled";
+}
+
+export function nodeInspectionRefetchInterval(status: string | undefined): 1_000 | false {
+  return isTerminalRunStatus(status) ? false : 1_000;
 }
 
 function runStatusIcon(status: string) {

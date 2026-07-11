@@ -2,14 +2,124 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { getRunInspection } from "../src/runs/use-cases.js";
+import { getRunInspection } from "../src/inspection/use-cases.js";
 import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { stableJson } from "../src/stable-json.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler store port", () => {
+  it("reads inspection events, projection, and cursors from one store snapshot", async () => {
+    await withRuntimeWorkspace("scheduler-store-inspection-read", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const admitted = store.readRunInspection(run.id, 0);
+        expect(admitted.cursor).toEqual({ eventSequence: 1, progressVersion: 0 });
+        expect(admitted.events.map(event => event.sequence)).toEqual([1]);
+        expect(admitted.run?.eventCount).toBe(1);
+
+        const claim = store.scheduler.claimRun(run.id, "inspection-reader", 60_000)!;
+        store.scheduler.appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "inspection-read:ready",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
+          ],
+        });
+
+        const advanced = store.readRunInspection(run.id, admitted.cursor.eventSequence);
+        expect(advanced.events.map(event => event.sequence)).toEqual([2, 3]);
+        expect(advanced.cursor).toEqual({ eventSequence: 3, progressVersion: 0 });
+        expect(advanced.run?.dynamic?.version).toBe(3);
+        expect(advanced.run?.dynamic?.nodeInstances).toEqual(expect.arrayContaining([
+          expect.objectContaining({ nodeKey: "require_ready~1", status: "ready" }),
+        ]));
+
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          kind: "agent",
+          status: "running",
+          context: { used: 10, size: 100 },
+        });
+        const progressed = store.readRunInspection(run.id, advanced.cursor.eventSequence);
+        expect(progressed.events).toEqual([]);
+        expect(progressed.cursor).toEqual({ eventSequence: 3, progressVersion: 1 });
+        expect(progressed.run?.dynamic?.progress).toEqual(expect.arrayContaining([
+          expect.objectContaining({ nodeKey: "require_ready~1", context: { used: 10, size: 100 } }),
+        ]));
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("keeps inspection event counts and cursor aligned during concurrent commits", async () => {
+    await withRuntimeWorkspace("scheduler-store-inspection-concurrent-read", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const databasePath = join(workspace, ".acpus", ".local", "state", "runtime.db");
+        const worker = new Worker(`
+          const { parentPort, workerData } = require("node:worker_threads");
+          const { DatabaseSync } = require("node:sqlite");
+          parentPort.once("message", () => {
+            const db = new DatabaseSync(workerData.databasePath);
+            db.exec("PRAGMA busy_timeout = 5000");
+            const insert = db.prepare("INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key) VALUES (?, ?, 'run.paused', NULL, '{}', ?, ?)");
+            const wait = new Int32Array(new SharedArrayBuffer(4));
+            for (let sequence = 2; sequence <= 101; sequence += 1) {
+              insert.run(workerData.runId, sequence, new Date().toISOString(), "inspection-concurrent:" + sequence);
+              Atomics.wait(wait, 0, 0, 1);
+            }
+            db.close();
+            parentPort.postMessage("done");
+          });
+          parentPort.postMessage("ready");
+        `, { eval: true, workerData: { databasePath, runId: run.id } });
+        const ready = await new Promise<string>((resolve, reject) => {
+          worker.once("message", resolve);
+          worker.once("error", reject);
+        });
+        expect(ready).toBe("ready");
+        let done = false;
+        const completed = new Promise<void>((resolve, reject) => {
+          worker.on("message", message => {
+            if (message === "done") {
+              done = true;
+              resolve();
+            }
+          });
+          worker.once("error", reject);
+        });
+        worker.postMessage("start");
+        const observed = new Set<number>();
+        while (!done) {
+          const read = store.readRunInspection(run.id, 0);
+          observed.add(read.cursor.eventSequence);
+          expect(read.run?.eventCount).toBe(read.cursor.eventSequence);
+          expect(read.events).toHaveLength(read.cursor.eventSequence);
+          expect(read.events.at(-1)?.sequence).toBe(read.cursor.eventSequence);
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+        await completed;
+        expect(observed.size).toBeGreaterThan(1);
+        expect(store.readRunInspection(run.id, 0).cursor.eventSequence).toBe(101);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("claims run ownership, appends scheduler events, and rebuilds snapshots", async () => {
     await withRuntimeWorkspace("scheduler-store-port", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -1089,8 +1199,10 @@ describe("scheduler store port", () => {
 
         dbRun(workspace, "UPDATE node_instances SET status_reason = 'retry' WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1");
         expect(store.getRun(run.id)?.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
-        const inspected = await getRunInspection(workspace, run.id);
-        expect(inspected?.run.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
+        const inspected = await getRunInspection(workspace, { runId: run.id, mode: "target", target: "require_ready~1" });
+        expect(inspected.isOk() && inspected.value.kind === "target"
+          ? inspected.value.instances.find(node => node.nodeKey === "require_ready~1")?.statusReason
+          : "inspection failed").toBeUndefined();
       } finally {
         store.close();
       }

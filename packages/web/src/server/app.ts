@@ -9,16 +9,18 @@ import {
   getRunInspection,
   getRunVisualizationSnapshot,
   getRuntimeHealth,
-  listArtifacts,
   listRuns,
   RuntimeUseCaseException,
+  type RunInspectionContext,
+  type RunInspectionError,
+  type RunInspectionTargetDocument,
   type RuntimeMutationAction,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AccessPolicy } from "./security.js";
 import { requireToken } from "./security.js";
 import { graphFromOverlay } from "./graph.js";
-import { inspectNode, inspectNodeExecution, type NodeInspectionContext } from "./node-inspection.js";
+import { inspectNodeExecution } from "./node-inspection.js";
 import { listProjectWorkflowCatalog, listWorkflowFiles, visualizeWorkflowSource, type WorkflowVisualizationSource } from "./workflows.js";
 import { ApiError, apiError } from "./errors.js";
 import { mountStaticAssets } from "./assets.js";
@@ -61,24 +63,29 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/runs/:id/nodes/:target/execution", async (context) => {
     const runId = context.req.param("id");
-    const inspection = await getRunInspection(options.cwd, context.req.param("id"));
-    if (!inspection) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
+    const inspection = await readNodeInspection(
+      options.cwd,
+      runId,
+      context.req.param("target"),
+      inspectionContext(context.req.query("context")),
+    );
     return context.json({
       ok: true,
       execution: await inspectNodeExecution(
         inspection,
-        context.req.param("target"),
-        inspectionContext(context.req.query("context")),
         artifactRef => readRunJsonArtifact(options.cwd, runId, artifactRef),
       ),
     });
   });
 
   app.get("/api/runs/:id/nodes/:target", async (context) => {
-    const inspection = await getRunInspection(options.cwd, context.req.param("id"));
-    if (!inspection) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
-    const artifacts = await listArtifacts(options.cwd, context.req.param("id"));
-    return context.json({ ok: true, inspection: inspectNode(inspection, context.req.param("target"), artifacts, inspectionContext(context.req.query("context"))) });
+    const inspection = await readNodeInspection(
+      options.cwd,
+      context.req.param("id"),
+      context.req.param("target"),
+      inspectionContext(context.req.query("context")),
+    );
+    return context.json({ ok: true, inspection });
   });
 
   app.post("/api/runs/:id/controls", async (context) => {
@@ -235,7 +242,33 @@ async function readRunJsonArtifact(cwd: string, runId: string, artifactRef: unkn
   }
 }
 
-function inspectionContext(value: string | undefined): NodeInspectionContext {
+async function readNodeInspection(
+  cwd: string,
+  runId: string,
+  target: string,
+  context: RunInspectionContext,
+): Promise<RunInspectionTargetDocument> {
+  const result = await getRunInspection(cwd, {
+    runId,
+    mode: "target",
+    target,
+    ...(context.length === 0 ? {} : { context }),
+  });
+  if (result.isErr()) inspectionError(result.error);
+  if (result.value.kind !== "target") apiError(500, "inspection_read_failed", "Runtime returned a non-target inspection document.");
+  return result.value;
+}
+
+function inspectionError(error: RunInspectionError): never {
+  if (error.type === "run-not-found" || error.type === "runtime-store-not-found") {
+    apiError(404, "run_not_found", error.message);
+  }
+  if (error.type === "target-not-found") apiError(404, "target_not_found", error.message);
+  if (error.type === "invalid-query") apiError(400, "invalid_inspection_query", error.message);
+  apiError(500, "inspection_read_failed", error.message);
+}
+
+function inspectionContext(value: string | undefined): RunInspectionContext {
   if (!value) return [];
   let parsed: unknown;
   try {
@@ -245,7 +278,7 @@ function inspectionContext(value: string | undefined): NodeInspectionContext {
     apiError(400, "invalid_context", "Inspection context must be base64url JSON.");
   }
   if (!Array.isArray(parsed)) apiError(400, "invalid_context", "Inspection context must be an array.");
-  return parsed.map((item, index): NodeInspectionContext[number] => {
+  return parsed.map((item, index): RunInspectionContext[number] => {
     if (!item || typeof item !== "object") {
       apiError(400, "invalid_context", `Inspection context entry ${index} must be an object.`);
     }

@@ -108,6 +108,63 @@
 - Runtime read APIs used for run inspection MUST expose frozen static node
   metadata, including signal output schemas, so CLI output can render expected
   signal payload guidance without reading live workflow source.
+- `getRunInspection(cwd, query)` MUST expose a typed `ResultAsync` boundary with
+  overview, all, target, and raw query modes. Missing-store, missing-run,
+  missing-target, invalid-query, and inspection-read failures MUST remain
+  tagged inspection errors.
+- Overview inspection MUST return a versioned compact projection containing a
+  run summary, scheduler-event and progress cursors, exact status counts,
+  normalized sparse structural items, operator actions, exact omitted counts,
+  and terminal workflow output when recorded.
+- Exact status counts MUST count every dynamic leaf execution context,
+  including repeated Assert node frames, while counting an unmaterialized
+  authored leaf once and excluding composite/grouping rows.
+- Overview inspection MUST preserve the authored tree while bounding expanded
+  dynamic contexts to 20. All-mode inspection MUST expose every normalized
+  dynamic context without reverting to raw scheduler projection tables.
+- Target inspection MUST resolve static node ids, dynamic node keys, frame
+  keys, and attempt ids. Static node ids MUST aggregate matching dynamic
+  instances, while dynamic keys and attempt ids MUST select their exact
+  execution context.
+- Target inspection MUST include complete matching attempt history,
+  status/progress, signal details, execution metadata, and artifact references
+  without reading or embedding artifact file contents.
+- Raw inspection MUST expose the unbounded run details, complete frozen
+  `WorkflowIR`, and artifact registry records without replacing the frozen IR
+  with a lossy static-node summary.
+- Inspection MUST expose Agent identity by the authored key stored in
+  `node.run.agent`, regardless of an effective run override. Compact Agent
+  state MUST describe an effective `use` backend by name or a `command`
+  backend by kind without embedding the command text; complete command
+  definitions MUST remain limited to target or raw inspection.
+- Compact Agent state MUST type context-window and token-usage counters and
+  MUST include at most the three most recent normalized tool commands in
+  chronological order with their statuses. It MUST NOT include tool ids,
+  arguments, input previews, output previews, prompts, or responses.
+- Tool command normalization MUST prefer the executor tool name, then kind,
+  then title. Shell-like tools MUST expose only the first executable basename,
+  ignoring environment assignments and wrapper commands such as `env` and
+  `sudo`; an unsafe or unparseable preview MUST fall back to the shell tool
+  name. Each normalized command MUST be bounded to three words and 32 visible
+  characters.
+- Compact Signal state MUST bound rendered prompt and schema summaries to 160
+  visible characters each. Complete persisted prompts and `SchemaIR` values
+  MUST remain available in target and raw inspection only.
+- Inspection failure projection MUST prefer a persisted explicit origin and
+  otherwise distinguish scheduler expression/deadline/materialization failures
+  from provider, Task, and Signal failures using a closed set of stable
+  scheduler reasons; provider/Task codes such as `invalid_api_key` or
+  `invalid_output` MUST NOT be reclassified by a broad prefix heuristic.
+- Compact inspection MUST preserve a bounded upstream acpx summary containing
+  operation, exit status, acpx code/origin, and JSON-RPC code/message when
+  present, while target inspection MUST preserve the complete parsed
+  JSON-RPC error data without embedding raw ACP lines.
+- A repeated composite projection MUST select group membership counts by the
+  matching dynamic `nodeKey`; it MUST NOT reuse the first group sharing a
+  static node id.
+- Agent turn count MUST use the greatest available value from persisted attempt
+  metadata and current Agent progress so live inspection cannot regress behind
+  a running turn.
 - Node progress snapshots MUST be latest-state observation data and MUST NOT be
   scheduler events or scheduler transition inputs.
 - Starting a new attempt for a node MUST clear any previous progress snapshot for
@@ -257,6 +314,10 @@
   budget. Empty response text MUST NOT enter JSON parsing.
 - Backend failures from `@acpus/agent-executor` MUST fail directly and MUST NOT
   enter agent response repair.
+- Runtime MUST persist backend Agent failures as structured provider errors
+  with stable `code`, actionable `message`, and the normalized upstream acpx
+  cause. Scheduler status reasons MUST contain the stable code rather than a
+  concatenated `code: message` string.
 - Schema-backed agent nodes MUST default to one initial turn plus two response
   repair turns. Explicit `retry.max` overrides the number of repair turns, and
   `retry.max = 0` disables response repair.
@@ -313,8 +374,7 @@
   known payload fields such as pause reason, retry target, cancel target, fork
   options, and signal node/payload.
 - The runtime daemon MUST expose a small local request/response interface:
-  `startRun(runId)`, `control(runId, intent)`, `observeRun(runId)`,
-  `shutdown()`, and `status()`.
+  `startRun(runId)`, `control(runId, intent)`, `shutdown()`, and `status()`.
 - Runtime control requests from clients MUST route through the local daemon and
   daemon-hosted per-run execution sessions; clients MUST NOT apply scheduler
   controls directly through SQLite or become scheduler run owners.
@@ -480,6 +540,50 @@
 - Agent and Task hook contexts MUST read rendered prompt and Task input from persisted attempt execution metadata and MUST NOT re-evaluate authored expressions. Signal-awaiting hook contexts MUST read the persisted rendered prompt from the signal event or projection.
 - Fork semantic signatures MUST include complete runtime configuration `ExprIR` so changing a configuration expression invalidates safe reuse.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
+- `followRunInspection(cwd, query)` MUST expose an async iterable of typed
+  inspection results and MUST remain a read-only store observer. It MUST NOT
+  start or wake the daemon, acquire run ownership, or mutate scheduler state.
+- Follow MUST begin with a compact snapshot and MUST convert every durable
+  scheduler event after the snapshot cursor into ordered semantic changes.
+  Multiple transitions between polling intervals and repeated statuses from a
+  new attempt MUST remain observable in event-sequence order.
+- Follow MUST use progress version independently from scheduler event sequence
+  for latest-state agent telemetry and MUST suppress emissions for clock-only
+  or unchanged projection data.
+- Follow progress comparison MUST be per Agent. An Agent MUST emit immediately
+  for its first state and for attempt, turn, recent-tool command/status,
+  stop-reason, or failure changes. Context- or token-only changes MUST expose
+  the newest absolute counters at most once per Agent per ten seconds, and a
+  last-activity timestamp change by itself MUST NOT emit a runtime update.
+- Follow updates MUST carry ordered semantic changes plus one sparse projection
+  patch containing item upserts/removals and changed counts, actions, omitted
+  summary, or hooks. Changes MUST reference patched items by stable item key
+  instead of duplicating complete items.
+- A sparse projection patch MUST include `itemOrder` only when structural
+  insertion or removal changes deterministic authored-tree order. Applying the
+  patch and optional order MUST reproduce the current projected item array
+  without requiring a resynchronization snapshot.
+- Durable transition status MUST be derived from the transition event rather
+  than the latest projection, so multiple transitions within one polling
+  interval retain their intermediate statuses.
+- A follow read interval MUST obtain the current run projection, artifact
+  registry, event cursor, and events after the previous cursor from one
+  consistent SQLite read transaction. The emitted cursor MUST NOT advance past
+  an event excluded from that read.
+- Each follow interval MUST reconcile semantic changes against a current full
+  inspection projection. Cursor gaps or projection mismatch MUST emit a
+  resynchronization snapshot rather than silently continuing from inconsistent
+  state.
+- Ordinary overview, all, or target changes MUST use sparse updates and MUST
+  NOT cause resynchronization. In particular, target follow MUST NOT repeatedly
+  resend complete attempt, frame, progress, execution-metadata, or artifact
+  collections.
+- Follow MUST continue across paused, awaiting, inactive, and stale states and
+  terminate only when the run becomes terminal, the caller aborts observation,
+  or a tagged inspection error occurs.
+- Follow terminal emission MUST carry the complete recorded workflow output
+  exactly once. A terminal run observed initially MUST still produce one
+  snapshot followed by one terminal emission.
 - Read-only health checks MUST NOT create runtime state when no runtime store
   exists.
 - A missing runtime store MUST be reported as a healthy not-initialized state by
@@ -514,9 +618,8 @@
 - The daemon MUST persist its current idle-since timestamp and configured idle
   window while it is leased.
 - The daemon MUST release its lease and exit after a continuous 30,000
-  millisecond idle window with no active run sessions, no attached observe
-  clients, and no admitted non-terminal run that is currently runnable or
-  otherwise continuable locally.
+  millisecond idle window with no active run sessions and no admitted
+  non-terminal run that is currently runnable or otherwise continuable locally.
 - Paused runs and signal waits without timeout MUST NOT keep the daemon resident
   solely because future input may resume them.
 - Signal waits with timeout deadlines MUST keep the daemon resident until the
@@ -589,3 +692,14 @@
   stable public daemon error codes without exposing internal details.
 - Tests MUST cover read-only inspect stale execution classification without
   daemon startup or store mutation.
+- Tests MUST cover compact nested inspection projection, deterministic
+  fanout/loop identity, progressive folding and its 20-context bound, all-mode
+  expansion, target resolution, and raw detail preservation.
+- Tests MUST cover inspection omitting default node IO and raw scheduler tables,
+  while preserving complete terminal workflow output and exact omitted counts.
+- Tests MUST cover follow event fidelity for rapid transitions and retry,
+  progress-only changes including budget-omitted Agents, unchanged and
+  clock/liveness-only polling suppression, cursor-gap resync, transactionally
+  consistent reads during concurrent commits, terminal output exactly once,
+  caller detach, and read-only operation without daemon startup or store
+  mutation.

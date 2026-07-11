@@ -50,7 +50,7 @@ try {
   assert.deepEqual(pickRunResult(records.at(-1)), {
     ok: true,
     phase: "run",
-    kind: "terminal summary",
+    kind: "done",
     name: "cli-concurrency-short-task",
     status: "completed",
     output: { ok: true },
@@ -67,7 +67,7 @@ function pickRunResult(record) {
     kind: record?.kind,
     name: record?.run?.name,
     status: record?.run?.status,
-    ...(record?.run?.output === undefined ? {} : { output: record.run.output }),
+    ...(record?.output === undefined ? {} : { output: record.output }),
   };
 }
 

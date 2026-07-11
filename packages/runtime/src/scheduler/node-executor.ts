@@ -1,6 +1,7 @@
 import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
-import { AgentNodeCancelledError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
+import type { JsonObject } from "@acpus/expression/ir";
+import { AgentNodeCancelledError, AgentNodeExecutionError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
 import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-executor.js";
 import type { TaskAttemptRunner } from "../execution/task-process.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
@@ -51,7 +52,8 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
         } catch (error) {
           if (error instanceof ResolutionException) return resolutionFailure(error);
           if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
-          if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.message };
+          if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.failure.code, error: normalizeWorkflowData(error.failure, "Agent failure") as JsonObject };
+          if (error instanceof AgentNodeExecutionError) return { status: "failed", reason: error.failure.code, error: normalizeWorkflowData(error.failure, "Agent failure") as JsonObject };
           throw error;
         }
       }

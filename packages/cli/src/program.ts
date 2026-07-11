@@ -20,13 +20,12 @@ export type CliIo = {
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
   const wantsJson = argv.includes("--json");
-  const normalizedArgv = argv.filter(arg => arg !== "--json");
   const program = createProgram(io, code => {
     exitCode = code;
   }, wantsJson);
 
   try {
-    await program.parseAsync(normalizedArgv, { from: "user" });
+    await program.parseAsync(argv, { from: "user" });
     return exitCode;
   } catch (error) {
     if (error instanceof CliError) {
@@ -50,6 +49,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
     .name("acpus")
     .description("Acpus TypeScript workflow CLI.")
     .version(getCliPackageInfo().version)
+    .option("--json", "emit structured JSON output")
     .exitOverride()
     .helpCommand(false)
     .showHelpAfterError()
@@ -96,5 +96,19 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson
     wantsJson,
   }));
 
+  configureCommandTree(program, io, wantsJson);
+
   return program;
+}
+
+function configureCommandTree(command: Command, io: CliIo, wantsJson: boolean): void {
+  command.configureHelp({ showGlobalOptions: true });
+  command.configureOutput({
+    writeOut: text => io.stdout.write(text),
+    writeErr: text => {
+      if (!wantsJson) io.stderr.write(text);
+    },
+    outputError: (text, write) => write(text),
+  });
+  for (const child of command.commands) configureCommandTree(child, io, wantsJson);
 }

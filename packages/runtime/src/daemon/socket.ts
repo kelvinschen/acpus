@@ -36,7 +36,7 @@ type DaemonRequest = {
   start: boolean;
 } | {
   id?: string;
-  method: "startRun" | "observeRun";
+  method: "startRun";
   runId: string;
 };
 
@@ -202,13 +202,6 @@ export async function requestDaemonStartRun(cwd: string, runId: string): Promise
   return response.result;
 }
 
-export async function requestDaemonObserveRun(cwd: string, runId: string): Promise<RuntimeAdvanceResult> {
-  const response = await requestDaemon(cwd, { method: "observeRun", runId });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (!isRuntimeAdvanceResult(response.result)) throw new Error("Daemon returned an invalid observeRun response.");
-  return response.result;
-}
-
 export async function requestDaemonShutdown(cwd: string): Promise<DaemonShutdownResult> {
   const response = await requestDaemon(cwd, { method: "shutdown" });
   if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
@@ -221,7 +214,7 @@ async function requestDaemon(cwd: string, request: DaemonRequest): Promise<Daemo
   return new Promise<DaemonResponse>((resolveRequest, rejectRequest) => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "observeRun" || request.method === "admitRun" ? undefined : request.method === "control" ? 30_000 : 1_000;
+    const timeoutMs = request.method === "admitRun" ? undefined : request.method === "control" ? 30_000 : 1_000;
     const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
       socket.destroy();
       rejectRequest(new DaemonRequestError("EXECUTION_UNAVAILABLE", `Timed out waiting for daemon ${describeRequest(request)} response.`));
@@ -250,7 +243,6 @@ type DaemonHandlers = {
   admitRun(input: DaemonAdmitRunInput): Promise<RunDetails> | RunDetails;
   control(intent: DaemonControlIntent): Promise<RuntimeMutationResult>;
   startRun(runId: string): Promise<RunDetails> | RunDetails;
-  observeRun(runId: string): Promise<RuntimeAdvanceResult>;
   shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult;
 };
 
@@ -273,7 +265,7 @@ function parseRequest(raw: string): { ok: true; value: DaemonRequest } | { ok: f
     const value = JSON.parse(raw) as Partial<DaemonRequest>;
     if (value.method !== "status") {
       if (value.method === "shutdown") return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method } };
-      if (value.method === "startRun" || value.method === "observeRun") {
+      if (value.method === "startRun") {
         if (typeof value.runId !== "string") return { ok: false, response: failedResponse(value.id, "INVALID_REQUEST", "Invalid daemon run request.") };
         return { ok: true, value: { ...(value.id === undefined ? {} : { id: value.id }), method: value.method, runId: value.runId } };
       }
@@ -297,7 +289,6 @@ async function dispatchRequest(request: DaemonRequest, handlers: DaemonHandlers)
     if (request.method === "admitRun") return appliedResponse(request.id, await handlers.admitRun(request));
     if (request.method === "control") return appliedResponse(request.id, await handlers.control(request.control));
     if (request.method === "startRun") return appliedResponse(request.id, await handlers.startRun(request.runId));
-    if (request.method === "observeRun") return appliedResponse(request.id, await handlers.observeRun(request.runId));
     if (request.method === "shutdown") return appliedResponse(request.id, await handlers.shutdown());
     return appliedResponse(request.id, handlers.status());
   } catch (error) {
@@ -320,7 +311,7 @@ function failedResponse(id: string | undefined, code: DaemonErrorCode, message: 
 function describeRequest(request: DaemonRequest): string {
   if (request.method === "admitRun") return "run admission";
   if (request.method === "control") return `${request.control.type} control for run '${request.control.runId}'`;
-  if (request.method === "startRun" || request.method === "observeRun") return `${request.method} for run '${request.runId}'`;
+  if (request.method === "startRun") return `${request.method} for run '${request.runId}'`;
   return request.method;
 }
 

@@ -17,12 +17,6 @@ export function renderExpr(expr: ExprIR): string {
   }
 }
 
-export function renderPromptExpr(expr: ExprIR): string {
-  if (expr.kind === "literal" && typeof expr.value === "string") return expr.value;
-  if (expr.kind === "template") return renderTemplate(expr.template);
-  return renderExpr(expr);
-}
-
 function renderTemplate(template: TemplateIR): string {
   return template.parts
     .map(part => (part.kind === "text" ? part.value : `\${${renderExpr(part.expr)}}`))

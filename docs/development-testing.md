@@ -33,6 +33,10 @@ Do not snapshot whole `WorkflowIR` objects. Full snapshots make `generatedAt`, f
 
 Keep tests hermetic. No network. No dependence on local Git state, user config, or installed global binaries. For file tests, create a temp directory with `mkdtemp(...)` and clean it up in `finally`.
 
+Drive polling and interval behavior with virtual time at the lowest stable async boundary. Do not make integration or contract tests wait for real timer intervals; advance fake timers deliberately and assert the pending or emitted state after each poll.
+
+Keep each E2E scenario to the minimum subprocesses needed to prove its user-facing chain. Exercise option and output-mode matrices with contract tests, and validate projection contents with unit tests, instead of starting another CLI process for every equivalent mode.
+
 Use the public entrypoint for public behavior tests: import from `../src/index.js` in core tests. Import internal modules only when the test is intentionally about a private helper.
 
 Use the runtime's internal `TaskAttemptRunner` adapter for scheduler state tests. Process isolation, inline/module loading, `cwd`/`env`, `$`, artifacts, and timeout/kill behavior MUST remain covered by real-process integration tests.

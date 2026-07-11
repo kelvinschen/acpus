@@ -3,7 +3,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
+import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
@@ -39,7 +39,7 @@ describe.concurrent("runtime daemon ticks", () => {
           input: { ready: true },
           start: true,
         });
-        const advanced = await requestDaemonObserveRun(workspace, started.id);
+        const advanced = await waitForTerminalRun(workspace, started.id);
 
         expect(started).toMatchObject({ name: "cli-valid" });
         expect(advanced).toMatchObject({
@@ -328,6 +328,15 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 });
+
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<Awaited<ReturnType<typeof getRun>>> }> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const run = await getRun(cwd, runId);
+    if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Run '${runId}' did not become terminal.`);
+}
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

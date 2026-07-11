@@ -8,7 +8,6 @@ const mockListRuns = vi.fn();
 const mockGetRun = vi.fn();
 const mockGetRunVisualizationSnapshot = vi.fn();
 const mockGetRunInspection = vi.fn();
-const mockListArtifacts = vi.fn().mockResolvedValue([]);
 const mockApplyRunControl = vi.fn();
 const mockApplySignalRunControl = vi.fn();
 
@@ -19,7 +18,6 @@ vi.mock("@acpus/runtime", () => ({
   createWorkflowVisualizationOverlay: (ir: any) => ({ workflow: { name: ir.name }, nodes: [], groups: [] }),
   getRunVisualizationSnapshot: (...args: unknown[]) => mockGetRunVisualizationSnapshot(...args),
   getRunInspection: (...args: unknown[]) => mockGetRunInspection(...args),
-  listArtifacts: (...args: unknown[]) => mockListArtifacts(...args),
   applyRunControl: (...args: unknown[]) => mockApplyRunControl(...args),
   applySignalRunControl: (...args: unknown[]) => mockApplySignalRunControl(...args),
   RuntimeUseCaseException: class extends Error {
@@ -143,31 +141,17 @@ describe("web API contract", () => {
 
   describe("GET /api/runs/:id/nodes/:target", () => {
     it("returns agent execution last active from progress", async () => {
-      mockGetRunInspection.mockResolvedValue({
-        run: {
-          id: "run_1",
-          dynamic: {
-            version: 3,
-            progressVersion: 1,
-            progress: [{
-              nodeKey: "review~abc",
-              nodeId: "review",
-              attemptId: "attempt_1",
-              attemptNo: 1,
-              kind: "agent",
-              status: "running",
-              updatedAt: "2026-07-01T00:00:02.000Z",
-            }],
-            frames: [],
-            nodeInstances: [{ nodeKey: "review~abc", nodeId: "review", status: "running", createdAt: "t", updatedAt: "t" }],
-            attempts: [{ attemptId: "attempt_1", nodeKey: "review~abc", nodeId: "review", attemptNo: 1, status: "started", startedAt: "t" }],
-            groupMembers: [],
-            signalWaits: [],
-            executionMetadata: [],
-          },
-        },
-        staticNodes: [{ nodeId: "review", kind: "agent", order: 0 }],
-      });
+      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
+        progress: [{
+          nodeKey: "review~abc",
+          nodeId: "review",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          kind: "agent",
+          status: "running",
+          updatedAt: "2026-07-01T00:00:02.000Z",
+        }],
+      })));
 
       const res = await app.request("/api/runs/run_1/nodes/review~abc/execution");
 
@@ -181,23 +165,31 @@ describe("web API contract", () => {
       });
     });
 
-    it("returns inspection details for a valid run", async () => {
-      mockGetRunInspection.mockResolvedValue({
-        run: { id: "run_1", dynamic: { version: 3, progressVersion: 0, progress: [], frames: [], nodeInstances: [], attempts: [], groupMembers: [], signalWaits: [], executionMetadata: [] } },
-        staticNodes: [{ nodeId: "step_1", kind: "task", order: 0 }],
-      });
-      const res = await app.request("/api/runs/run_1/nodes/step_1");
+    it("delegates target and selector context to runtime inspection", async () => {
+      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection()));
+      const selectorContext = [{ nodeId: "items", kind: "fanout", itemIndex: 1 }];
+      const context = Buffer.from(JSON.stringify(selectorContext)).toString("base64url");
+      const res = await app.request(`/api/runs/run_1/nodes/review~abc?context=${context}`);
+
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
       expect(body.ok).toBe(true);
-      expect(body.inspection.target).toEqual({ kind: "static-node", id: "step_1" });
+      expect(body.inspection.target).toEqual({ kind: "dynamic-node", id: "review~abc" });
+      expect(body.inspection.summary.agent).toEqual({
+        key: "reviewer",
+        backend: { kind: "use", name: "claude" },
+        turnCount: 1,
+        tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
+      });
+      expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
+        runId: "run_1",
+        mode: "target",
+        target: "review~abc",
+        context: selectorContext,
+      });
     });
 
     it("rejects fanout inspection context without an item index", async () => {
-      mockGetRunInspection.mockResolvedValue({
-        run: { id: "run_1", dynamic: { version: 3, progressVersion: 0, progress: [], frames: [], nodeInstances: [], attempts: [], groupMembers: [], signalWaits: [], executionMetadata: [] } },
-        staticNodes: [{ nodeId: "step_1", kind: "task", order: 0 }],
-      });
       const context = Buffer.from(JSON.stringify([{ nodeId: "items", kind: "fanout" }])).toString("base64url");
       const res = await app.request(`/api/runs/run_1/nodes/step_1?context=${context}`);
 
@@ -207,12 +199,30 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for unknown run", async () => {
-      mockGetRunInspection.mockResolvedValue(undefined);
+      mockGetRunInspection.mockResolvedValue(inspectionErr({
+        type: "run-not-found",
+        runId: "nonexistent",
+        message: "Run 'nonexistent' was not found.",
+      }));
       const res = await app.request("/api/runs/nonexistent/nodes/step_1");
       expect(res.status).toBe(404);
       const body = await res.json() as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.error.code).toBe("run_not_found");
+    });
+
+    it("returns 404 for an unknown inspection target", async () => {
+      mockGetRunInspection.mockResolvedValue(inspectionErr({
+        type: "target-not-found",
+        runId: "run_1",
+        target: "missing",
+        message: "Target 'missing' was not found.",
+      }));
+
+      const res = await app.request("/api/runs/run_1/nodes/missing");
+
+      expect(res.status).toBe(404);
+      expect((await res.json() as JsonBody).error.code).toBe("target_not_found");
     });
   });
 
@@ -422,3 +432,77 @@ describe("web API contract", () => {
     });
   });
 });
+
+function inspectionOk(value: JsonBody) {
+  return {
+    value,
+    isOk: () => true,
+    isErr: () => false,
+  };
+}
+
+function inspectionErr(error: JsonBody) {
+  return {
+    error,
+    isOk: () => false,
+    isErr: () => true,
+  };
+}
+
+function targetInspection(overrides: { progress?: JsonBody[] } = {}): JsonBody {
+  return {
+    schemaVersion: 1,
+    kind: "target",
+    cursor: { eventSequence: 3, progressVersion: 1 },
+    run: {
+      id: "run_1",
+      name: "review-workflow",
+      status: "running",
+      workflowEntry: "review.workflow.ts",
+      createdAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:02.000Z",
+      execution: { state: "active", lastStatus: "running" },
+    },
+    target: { kind: "dynamic-node", id: "review~abc" },
+    staticNode: { nodeId: "review", kind: "agent", order: 0, path: ["review"], agent: "reviewer" },
+    summary: {
+      targetKind: "dynamic-node",
+      targetId: "review~abc",
+      runStatus: "running",
+      runStartedAt: "2026-07-01T00:00:00.000Z",
+      nodeId: "review",
+      nodeKey: "review~abc",
+      nodeStatus: "running",
+      staticKind: "agent",
+      staticOrder: 0,
+      agent: {
+        key: "reviewer",
+        backend: { kind: "use", name: "claude" },
+        turnCount: 1,
+        tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
+      },
+      artifacts: [],
+    },
+    items: [],
+    instances: [{
+      nodeKey: "review~abc",
+      nodeId: "review",
+      status: "running",
+      createdAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:02.000Z",
+    }],
+    frames: [],
+    attempts: [{
+      attemptId: "attempt_1",
+      nodeKey: "review~abc",
+      nodeId: "review",
+      attemptNo: 1,
+      status: "started",
+      startedAt: "2026-07-01T00:00:00.000Z",
+    }],
+    signalWaits: [],
+    executionMetadata: [],
+    progress: overrides.progress ?? [],
+    artifacts: [],
+  };
+}

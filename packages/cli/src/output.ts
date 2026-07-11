@@ -36,6 +36,7 @@ export type CliResult = {
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
   forkRunId?: string;
+  followRunId?: string;
   checks?: RuntimeHealthCheck[];
   errorCode?: string;
   control?: { type: string; runId: string };
@@ -141,6 +142,7 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
     for (const run of result.skippedRuns) stream.write(`Skipped: ${run.id}\t${run.status}\t${run.name}\n`);
   }
   if (result.forkRunId) stream.write(`Fork run: ${result.forkRunId}\n`);
+  if (result.followRunId) stream.write(`Next: acpus runs inspect ${result.followRunId} --follow\n`);
   if (result.checks) {
     for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
   }

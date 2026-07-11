@@ -1,10 +1,11 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type PreparedRunWorkflow, type RunDetails, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type OutputFormat } from "../output.js";
-import { formatRunStatusSurface } from "../run-status-surface.js";
+import { followRun, parseFollowInterval } from "../run-follow.js";
+import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseJsonOption, parseRequiredPayload } from "./json.js";
 import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
@@ -28,6 +29,14 @@ type RunsCommandOptions = {
   unsafeReuse?: boolean;
 };
 
+type InspectRunOptions = {
+  target?: string;
+  all?: boolean;
+  follow?: boolean;
+  interval?: string;
+  raw?: boolean;
+};
+
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 export function createRunsCommand(ctx: RunsCommandContext): Command {
@@ -44,9 +53,15 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
 
   command.addCommand(new Command("inspect")
     .exitOverride()
+    .description("Inspect durable run structure and status.")
     .argument("[run-id]", "run id")
-    .action(async (runId: string | undefined) => {
-      await inspectRunCommand(ctx, runId);
+    .option("--target <run-target>", "inspect one static node, dynamic node, frame, or attempt")
+    .option("--all", "expand every dynamic run context")
+    .option("--follow", "follow run status until completion or Ctrl-C")
+    .option("--interval <duration>", "refresh followed status (default: 1s, minimum: 250ms)")
+    .option("--raw", "emit the unbounded raw inspection bundle (requires --json)")
+    .action(async (runId: string | undefined, options: InspectRunOptions) => {
+      await inspectRunCommand(ctx, runId, options);
     }));
 
   command.addCommand(new Command("delete")
@@ -92,27 +107,34 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
   return command;
 }
 
-async function inspectRun(ctx: RunsCommandContext, runId: string): Promise<void> {
-  if (!ctx.wantsJson) {
-    const inspection = await getRunInspection(ctx.cwd, runId);
-    if (!inspection) throw notFoundError(`Run '${runId}' was not found.`);
-    ctx.stdout.write(formatRunStatusSurface(inspection.run, inspection.staticNodes));
-    ctx.setExitCode(0);
+async function inspectRun(ctx: RunsCommandContext, runId: string, options: InspectRunOptions): Promise<void> {
+  const query = inspectionQuery(runId, options);
+  if (options.follow) {
+    if (query.mode === "raw") throw usageError("--raw cannot be followed.");
+    const outcome = await followRun(ctx.cwd, { ...query, intervalMs: parseFollowInterval(options.interval) }, {
+      phase: "inspect",
+      wantsJson: ctx.wantsJson,
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+    });
+    ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
     return;
   }
-  const run = await getRun(ctx.cwd, runId);
-  if (!run) throw notFoundError(`Run '${runId}' was not found.`);
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "inspect",
-    message: "Run inspected.",
-    run,
-  }, outputFormat(ctx), ctx, 0));
+
+  const inspected = await getRunInspection(ctx.cwd, query);
+  if (inspected.isErr()) throw inspectionError(inspected.error);
+  if (ctx.wantsJson) {
+    ctx.stdout.write(`${JSON.stringify({ ok: true, phase: "inspect", ...inspected.value }, null, 2)}\n`);
+  } else {
+    ctx.stdout.write(formatRunInspectionDocument(inspected.value));
+  }
+  ctx.setExitCode(0);
 }
 
-async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
+async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefined, options: InspectRunOptions): Promise<void> {
+  validateInspectOptions(ctx, options);
   if (runId !== undefined) {
-    await inspectRun(ctx, runId);
+    await inspectRun(ctx, runId, options);
     return;
   }
   if (ctx.wantsJson) throw usageError("Run id is required when --json is used.");
@@ -123,7 +145,30 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
 
   const selectedRunId = await pickRunId(runs, ctx);
   if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
-  await inspectRun(ctx, selectedRunId);
+  await inspectRun(ctx, selectedRunId, options);
+}
+
+function inspectionQuery(runId: string, options: InspectRunOptions): RunInspectionQuery {
+  if (options.raw) return { runId, mode: "raw" };
+  if (options.target !== undefined) return { runId, mode: "target", target: options.target };
+  if (options.all) return { runId, mode: "all" };
+  return { runId, mode: "overview" };
+}
+
+function inspectionError(error: RunInspectionError): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
+  if (error.type === "invalid-query") return usageError(error.message);
+  return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
+}
+
+function validateInspectOptions(ctx: RunsCommandContext, options: InspectRunOptions): void {
+  if (options.target === "") throw usageError("--target must be a non-empty string.");
+  if (options.target !== undefined && options.all) throw usageError("--target cannot be used with --all.");
+  if (options.interval !== undefined && !options.follow) throw usageError("--interval requires --follow.");
+  if (options.raw && !ctx.wantsJson) throw usageError("--raw requires --json.");
+  if (options.raw && (options.follow || options.all || options.target !== undefined)) {
+    throw usageError("--raw cannot be used with --follow, --all, or --target.");
+  }
+  if (options.follow) void parseFollowInterval(options.interval);
 }
 
 async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
@@ -230,6 +275,7 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
     phase: "control",
     message: "Signal accepted.",
     run: runSummary(result.run),
+    ...(terminalRun(result.run) ? {} : { followRunId: runId }),
   }, outputFormat(ctx), ctx, 0));
 }
 
@@ -261,6 +307,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
     message: action === "fork" ? "Run forked." : action === "cancel" ? "Run canceled." : `Run ${action}d.`,
     run: runSummary(result.run),
     ...(result.forkRunId ? { forkRunId: result.forkRunId } : {}),
+    ...(result.forkRunId ? { followRunId: result.forkRunId } : terminalRun(result.run) ? {} : { followRunId: runId }),
   }, outputFormat(ctx), ctx, 0));
 }
 
@@ -307,4 +354,8 @@ function runSummary(run: RunDetails): RunRecord {
     updatedAt: run.updatedAt,
     progressVersion: run.progressVersion,
   };
+}
+
+function terminalRun(run: RunDetails): boolean {
+  return run.status === "completed" || run.status === "failed" || run.status === "canceled";
 }

@@ -26,6 +26,9 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflow check <workflow-module>`.
 - The CLI MUST support `acpus workflow run <workflow-module>`.
 - The CLI MUST support `acpus workflow run <workflow-module> --background`.
+- The CLI MUST support `--interval <duration>` on foreground `workflow run`,
+  default it to one second, reject values below 250 milliseconds, and reject it
+  with `--background`.
 - The CLI MUST support `acpus workflow init file <file.ts>`.
 - The CLI MUST support `acpus workflow init catalog <name>`.
 - The CLI MUST support `acpus workflow viz <workflow-module> --out <file.html>`.
@@ -36,7 +39,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus workflow show <name> [--project | --global]`.
 - The CLI MUST support `--project` and `--global` on workflow check and run
   commands as explicit catalog scope selectors.
-- The CLI MUST support `acpus runs inspect [run-id]`.
+- The CLI MUST support `acpus runs inspect [run-id]` with `--all`,
+  `--target <run-target>`, `--follow`, `--interval <duration>`, and `--raw`.
 - The CLI MUST support `acpus runs delete [run-id]`.
 - The CLI MUST support `acpus runs pause <run-id>`,
   `resume <run-id>`, `retry <run-id>`, `cancel <run-id>`,
@@ -58,7 +62,8 @@ failures to stable CLI phases and exit codes.
 - The CLI MUST support `acpus skill uninstall`.
 - The CLI MUST support `acpus hooks validate [--project | --global]`.
 - The CLI MUST support `acpus hooks list [--project | --global]`.
-- The CLI MUST support global `--json` before or after command names.
+- The CLI MUST support global `--json` before or after command names, register
+  it as a Commander option, and show it in root and subcommand help.
 - The CLI MUST keep help on `-h` and `--help` and MUST NOT expose an
   `acpus help` command.
 
@@ -95,8 +100,8 @@ failures to stable CLI phases and exit codes.
 - Runtime run records MUST NOT persist catalog metadata.
 - `workflow run` MUST call workflow preparation, normalize submitted input,
   validate agent overrides, admit a durable run, start or wake the workspace
-  daemon, call daemon `startRun(runId)`, and observe daemon-owned execution until
-  the run reaches a terminal durable status.
+  daemon, call daemon `startRun(runId)`, and follow the shared read-only runtime
+  inspection stream until the run reaches a terminal durable status.
 - `workflow run` MUST NOT synchronously advance scheduler work in the CLI
   process, hold runtime run leases, own active attempts, or create runtime
   execution abort controllers.
@@ -146,10 +151,19 @@ failures to stable CLI phases and exit codes.
 - The CLI package MUST carry official Acpus authoring dependencies so workflow
   modules can import supported `acpus/*` facade subpaths without installing
   Acpus packages in the workflow workspace.
-- Runtime admission, daemon start/wake, daemon observation, and run-control
+- Runtime admission, daemon start/wake, run inspection/follow, and run-control
   behavior MUST be delegated to `@acpus/runtime`.
 - Run inspection commands MUST delegate to runtime read APIs.
 - Run inspection commands MUST NOT start or wake the daemon.
+- `runs inspect` MUST use overview mode by default. `--all` MUST request the
+  complete normalized dynamic structure, `--target` MUST request one static or
+  dynamic target projection, and `--raw --json` MUST request the unbounded raw
+  inspection bundle.
+- `runs inspect --target` and `--all` MUST be mutually exclusive. `--raw` MUST
+  require `--json` and MUST be mutually exclusive with `--target`, `--all`, and
+  `--follow`.
+- `runs inspect --interval` MUST require `--follow`, default to one second, and
+  reject values below 250 milliseconds.
 - `runs inspect` without a run id MUST be available only in text-mode
   interactive TTY sessions, MUST list known runs through runtime read APIs, and
   MUST inspect the run selected by the user.
@@ -239,6 +253,9 @@ failures to stable CLI phases and exit codes.
 - On `Ctrl-C` during foreground `workflow run`, the CLI MUST detach from
   observation without canceling the daemon-owned run, print the run id and an
   explicit `acpus runs cancel <run-id>` command, and exit.
+- On `Ctrl-C` during `runs inspect --follow`, the CLI MUST detach without
+  canceling or otherwise mutating the run and MUST restore the terminal before
+  exiting.
 - The CLI MUST NOT implement hidden terminal-signal controls such as
   double-`Ctrl-C` cancel.
 
@@ -255,7 +272,40 @@ failures to stable CLI phases and exit codes.
   `skill`, and `init`.
 - Non-streaming commands MUST emit one JSON object.
 - Foreground `workflow run --json` MUST emit newline-delimited JSON records:
-  an admitted record, daemon observation records, and a terminal summary record.
+  an admitted record followed by the same `snapshot`, `update`, `resync`,
+  `done`, and `error` inspection records used by `runs inspect --follow`.
+- `runs inspect --follow --json` MUST emit NDJSON. Its first record MUST be a
+  compact snapshot; later records MUST be semantic updates or resynchronization
+  snapshots; and terminal output MUST appear exactly once in the `done` record.
+- `runs inspect --follow` in a TTY MUST redraw the current compact tree in
+  place and MAY refresh elapsed-time presentation at most once per second.
+  Non-TTY text output MUST print the initial compact tree once, then append
+  semantic changes, bounded liveness checkpoints, and terminal output instead
+  of unchanged periodic snapshots.
+- A non-TTY text follow session with no semantic output for 30 seconds MUST
+  append one checkpoint and MUST repeat at most once per additional 30 seconds
+  of silence. A checkpoint MUST contain exact run status counts, expand at most
+  three actionable nodes, summarize the rest exactly, and MUST NOT advance the
+  runtime cursor or appear in JSON follow output.
+- Non-TTY semantic lines MUST use `+<elapsed>` relative to run start as their
+  only leading marker and MUST NOT display durable event-sequence or Agent
+  progress-version identifiers. They MUST preserve every emitted context's
+  operator-visible intermediate transitions in emission order.
+- When one emission contains both a terminal durable transition and terminal
+  Agent progress for the same exact dynamic execution and terminal status,
+  non-TTY text MUST merge them into one line at the durable transition's
+  position and time without dropping attempt, telemetry, stop/failure, or
+  distinct message information. Text MUST NOT merge changes for different
+  dynamic executions, statuses, emissions, or non-Agent items.
+- Default overview follow MUST bound ordinary transcript output to 20 unique
+  dynamic contexts across the initial compact tree and subsequent updates.
+  Failed, timed-out, awaiting, and retried contexts MUST bypass that bound.
+  Omitted contexts MUST be represented by one bounded line with their exact
+  unique-context count, final-status counts, and an
+  `acpus runs inspect <run-id> --all --follow` hint. Explicit `--all` and
+  `--target` text follow and every NDJSON follow record MUST remain unbudgeted.
+- Follow MUST remain attached through paused, awaiting, inactive, and stale
+  non-terminal states until terminal state or operator detach.
 - Foreground `workflow run` text output MUST include bounded projection
   observations before the final run summary.
 - Foreground `workflow run` text observations and final run summaries MUST use
@@ -264,6 +314,9 @@ failures to stable CLI phases and exit codes.
   and error results in human-readable form.
 - Text workflow summaries MUST label workflow node counts as static graph nodes
   rather than runtime execution nodes.
+- Successful background admission and non-terminal control text output MUST
+  include an exact `acpus runs inspect <run-id> --follow` next step. Fork output
+  MUST use the created child run id in that command rather than the source id.
 - Text run inspection output MUST render a compact run status surface headed by
   `Run <id>  <workflow-name>  <status>  <duration>`.
 - Text run inspection output MUST append a `Hooks:` section only for terminal
@@ -275,12 +328,17 @@ failures to stable CLI phases and exit codes.
   execution state, for example
   `stale (daemon heartbeat expired, last status: running)`, without implying a
   fabricated durable terminal status.
-- Text run status surface rows MUST render in deterministic workflow order for
-  static nodes and dynamic key order for repeated instances of the same node.
-- Text run status surface node rows MUST use dynamic node keys, compact node
-  kinds `task`, `agent`, `signal`, `assert`, `if`, `switch`, `parallel`,
-  `fanout`, and `loop`, status for non-completed nodes, duration when known,
-  and attempt numbers only when greater than one.
+- Text run status surface rows MUST render an authored structural tree with
+  deterministic branch declaration order, zero-based fanout item identity, and
+  one-based loop round labels. Unselected branches MUST render as
+  `not_selected` rather than pending work.
+- Default text inspection MUST progressively fold homogeneous completed or
+  canceled repeated contexts, expand actionable current contexts first, and
+  render at most 20 expanded dynamic contexts while preserving exact omitted
+  counts and commands for `--all` or `--target`.
+- Text run status surface node rows MUST use compact node kinds `task`,
+  `agent`, `signal`, `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop`,
+  status, duration when known, and attempt numbers only when greater than one.
 - Text run status surface status glyphs MUST be `○` for `pending` or `ready`,
   `⠋` for `running` or `started`, `⏳` for `awaiting`, `✓` for `completed`,
   `◆` for `failed` or `timed_out`, `⏸` for `paused`, and `✗` for `canceled`
@@ -290,17 +348,50 @@ failures to stable CLI phases and exit codes.
   thereafter.
 - Text run status surface output MUST NOT inline full agent prompts, model
   responses, raw scheduler events, or artifact contents.
+- TTY trees and non-TTY terminal transitions MUST render the same bounded
+  layered failure, in the form `Error (<origin> <code> · acpx <code>):
+  <actionable message>` when an upstream acpx code exists. They MUST suppress
+  duplicate status-reason text and leave complete upstream data to target/raw
+  JSON or referenced artifacts.
 - Text run status surface agent progress telemetry MUST stay compact: context
   and token counts use `k` units at one decimal place, token rows are omitted
-  when token usage is absent, tool progress shows at most the last three command
-  names without arguments or statuses, progress detail rows include a relative
-  `Last active` age under the corresponding agent node row, and agent progress
-  output tails are not rendered.
+  when token usage is absent, progress detail rows include a relative `Last
+  active` age under the corresponding agent node row, and agent progress output
+  tails are not rendered. The `Agent:` label MUST use the authored Agent key,
+  not an effective provider name or command definition.
+- Agent text detail MUST show at most the last three tool calls from oldest to
+  newest with a running, completed, failed, or canceled glyph. Each command
+  MUST use the runtime-normalized intent-only label, be bounded to three words
+  and 32 visible characters, and MUST NOT expose tool arguments, ids, input
+  previews, output, prompts, or responses.
 - Text run status surface output MUST show actionable awaiting signal targets
-  with rendered prompt text when available, expected payload guidance, and a
-  copyable `acpus runs signal` command.
+  with a bounded rendered prompt preview when available, expected payload
+  guidance, and a copyable `acpus runs signal` command. Target inspection MUST
+  expose the complete persisted prompt and schema.
 - Text run status surface output MUST render completed workflow output as a full
-  pretty-JSON `Output:` section and MUST omit missing or empty outputs.
+  pretty-JSON `Output:` section and MUST omit missing or empty outputs. Follow
+  output MUST render that section exactly once at terminal completion.
+- Default `runs inspect --json` MUST emit a versioned compact inspection
+  document with run summary, event/progress cursor, status counts, normalized
+  sparse items, actions, exact omitted counts, and terminal workflow output
+  where present. It MUST NOT expose raw frame, instance, attempt, group, or
+  execution-metadata tables as the default document.
+- Compact JSON Agent items MUST expose the authored Agent key, typed effective
+  backend descriptor and model, typed context/token counters, turn/activity
+  state, and normalized recent tool commands. A command backend descriptor MUST
+  NOT contain its command text.
+- JSON follow updates MUST contain ordered changes and a single sparse patch of
+  item upserts/removals and changed run summaries. A change MUST refer to its
+  item by stable key rather than duplicate the item payload, and clock-only
+  checkpoints MUST NOT produce NDJSON records. The patch MUST carry item order
+  only when a structural change cannot preserve deterministic tree order by
+  append/remove alone. JSON and NDJSON documents MUST NOT apply terminal text
+  coalescing. NDJSON MUST preserve event sequence, progress version, and the
+  original separate ordered changes.
+- `runs inspect --target --json` MUST include the selected target's complete
+  attempt history, status/progress, signal details, and artifact references
+  without inlining artifact contents. `runs inspect --raw --json` MUST emit the
+  unbounded run, complete frozen `WorkflowIR`, and artifact records.
 - Interactive run picker output MUST render on stderr and MUST leave stdout for
   the selected command output.
 - Text diagnostic output MUST render `source` and `hint` when present.
@@ -346,7 +437,7 @@ failures to stable CLI phases and exit codes.
   `--force` overwrite behavior.
 - Tests MUST cover foreground run output for a pure completed workflow.
 - Tests MUST cover foreground text observations and JSONL admitted,
-  observation, and terminal summary ordering.
+  snapshot/update/resync/done/error ordering with terminal output exactly once.
 - Tests MUST cover background run admission and daemon acceptance without local
   scheduler advancement.
 - Tests MUST cover check failure, compile/validation failure, invalid JSON
@@ -360,8 +451,19 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover explicit run delete, picker delete, picker all-deletable
   delete, active-run skip reporting, active explicit-delete rejection,
   hard-deleted run directories, omitted-id usage errors, and daemon non-startup.
-- Tests MUST cover compact text rendering for run inspection and JSON detail
-  preservation.
+- Tests MUST cover nested text tree rendering, deterministic fanout/loop
+  identity, progressive folding, the 20-context overview budget, `--all`
+  expansion, target projection, compact JSON, and raw JSON detail preservation.
+- Tests MUST cover inspect option conflicts, interval parsing/default/minimum,
+  global JSON help discoverability, TTY redraw, non-TTY semantic append output,
+  valid NDJSON, and follow detach without run cancellation.
+- Tests MUST cover authored Agent-key display, normalized and bounded Last Tool
+  Calls with statuses, rapid transition fidelity, ten-second Agent telemetry
+  coalescing, a large-fanout non-TTY transcript budget with protected failure,
+  timeout, awaiting, and retry contexts, 30-second bounded non-TTY checkpoints,
+  `+<elapsed>`-only semantic prefixes, exact terminal transition/progress text
+  coalescing without cross-instance merging, preserved separate NDJSON changes,
+  and absence of clock-only NDJSON records.
 - Tests MUST cover stale non-terminal execution rendering in run inspect.
 - Tests MUST cover actionable awaiting signal status surface output including
   prompt, payload guidance, and signal command.
@@ -373,8 +475,9 @@ failures to stable CLI phases and exit codes.
   behavior, and absence of `--no-wait` and timeout configuration.
 - Tests MUST cover `runs resume` and `runs signal` start/wake behavior for
   daemon-idle-stopped paused or signal-waiting runs.
-- Tests MUST cover foreground `workflow run` daemon observation, final exit
-  code from durable terminal status, and `Ctrl-C` detach without cancellation.
+- Tests MUST cover foreground `workflow run` runtime inspection follow, final
+  exit code from durable terminal status, and `Ctrl-C` detach without
+  cancellation.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
   ambiguity handling, catalog-backed check and run, global materialization,
   doctor no-store output, package boundary, and program output contracts.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { admitPreparedWorkflowRun, daemonEndpoint, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
+import { admitPreparedWorkflowRun, daemonEndpoint, getRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 
@@ -131,7 +131,7 @@ describe("daemon lease", () => {
       await expect(requestDaemonControl(dir, { requestId: "test-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
-      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
         status: "canceled",
         run: { id: admitted.id, status: "canceled" },
       });
@@ -189,7 +189,7 @@ describe("daemon lease", () => {
       await expect(requestDaemonControl(dir, { requestId: "test-immediate-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
-      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
         status: "canceled",
         run: { id: admitted.id, status: "canceled" },
       });
@@ -214,7 +214,7 @@ describe("daemon lease", () => {
     });
     try {
       await expect(requestDaemonStartRun(dir, admitted.id)).resolves.toMatchObject({ id: admitted.id });
-      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({ status: "completed" });
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "completed" });
       await waitUntil(() => store.getHookJournal(admitted.id).length > 0);
       expect(store.getHookJournal(admitted.id)).toEqual([
         expect.objectContaining({
@@ -317,7 +317,7 @@ describe("daemon lease", () => {
       await expect(requestDaemonControl(dir, { requestId: "test-shutdown-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
-      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
       await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "aborted");
     } finally {
       await loop.shutdown();
@@ -363,7 +363,7 @@ describe("daemon lease", () => {
       await expect(requestDaemonControl(dir, { requestId: "test-idle-active-cancel", type: "cancel", runId: admitted.id, input: {} })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
       });
-      await expect(requestDaemonObserveRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
+      await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({ status: "canceled" });
     } finally {
       await loop.shutdown();
     }
@@ -505,6 +505,15 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<v
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error("condition was not met");
+}
+
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<Awaited<ReturnType<typeof getRun>>> }> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const run = await getRun(cwd, runId);
+    if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Run '${runId}' did not become terminal.`);
 }
 
 function storeDbColumns(table: string): string[] {

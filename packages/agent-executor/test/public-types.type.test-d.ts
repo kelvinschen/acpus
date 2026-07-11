@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import type { AgentBackendFailureKind, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentBackendFailure, AgentBackendFailureKind, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { executeAgentTurn } from "@acpus/agent-executor";
 
 const telemetry = { eventCount: 1, tools: { totalToolCallCount: 0, calls: [] } };
@@ -17,7 +17,8 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   assertType<AgentTurnProgress>({ responseText: "partial", telemetry, updatedAt: "2026-07-01T00:00:00.000Z" });
   assertType<AgentTurnRawDebug>({ stdout: "{\"jsonrpc\":\"2.0\"}\n" });
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", telemetry, rawDebug: { stdout: "{}\n" } });
-  assertType<AgentTurnResult>({ status: "failed", failureKind: "config", message: "bad mode", responseText: "", stderr: "", telemetry: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } } });
+  assertType<AgentBackendFailure>({ kind: "provider_exit", message: "bad config", upstream: { source: "acpx", operation: "sessions.ensure", code: "RUNTIME", protocol: { name: "json-rpc", code: -32603 }, data: { details: "bad config" } } });
+  assertType<AgentTurnResult>({ status: "failed", failure: { kind: "config", message: "bad mode" }, responseText: "", stderr: "", telemetry: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } } });
   assertType<AgentTurnResult>({ status: "cancelled", message: "cancelled", responseText: "", stderr: "", telemetry: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } } });
   assertType<AgentTurnRequest>({
     agent: { kind: "named", name: "codex" },

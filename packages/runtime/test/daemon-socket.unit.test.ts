@@ -20,9 +20,6 @@ describe("daemon socket server", () => {
       startRun: () => {
         throw new Error("not used");
       },
-      observeRun: () => {
-        throw new Error("not used");
-      },
       shutdown: async () => {
         await new Promise<void>(resolve => {
           finishShutdown = resolve;
@@ -79,9 +76,6 @@ function testHandlers(): Parameters<typeof startDaemonServer>[1] {
       throw new Error("not used");
     },
     startRun: () => {
-      throw new Error("not used");
-    },
-    observeRun: () => {
       throw new Error("not used");
     },
     shutdown: () => ({ status: "shutdown" }),

@@ -85,20 +85,24 @@ describe.concurrent("runtime admission use cases", () => {
       const admitted = await admitWorkflowRun(workspace, prepared, normalizeWorkflowInput(prepared.ir, {}));
       await writeFile(prepared.workflowPath, "throw new Error('live source should not be read');\n");
 
-      await expect(getRunInspection(workspace, admitted.run.id)).resolves.toMatchObject({
+      await expect(rawInspection(workspace, admitted.run.id)).resolves.toMatchObject({
         run: { id: admitted.run.id, name: "cli-signal" },
-        staticNodes: expect.arrayContaining([
-          expect.objectContaining({
-            nodeId: "approve",
-            kind: "signal",
-            order: 1,
-            outputSchema: expect.objectContaining({
-              kind: "object",
-              fields: { ok: { kind: "boolean" } },
-              required: ["ok"],
-            }),
-          }),
-        ]),
+        workflow: {
+          name: "cli-signal",
+          root: {
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                id: "approve",
+                kind: "signal",
+                outputSchema: expect.objectContaining({
+                  kind: "object",
+                  fields: { ok: { kind: "boolean" } },
+                  required: ["ok"],
+                }),
+              }),
+            ]),
+          },
+        },
       });
     });
   });
@@ -107,7 +111,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-frozen-digest-mismatch", async workspace => {
       const corrupted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       await writeFile(join(workspace, ".acpus", ".local", "runs", corrupted.run.id, "workflow.ir.json"), "{}\n");
-      await expect(getRunInspection(workspace, corrupted.run.id)).rejects.toThrow("Frozen workflow IR digest mismatch.");
+      await expect(inspectionErrorMessage(workspace, corrupted.run.id)).resolves.toContain("Frozen workflow IR digest mismatch.");
     });
   });
 
@@ -115,7 +119,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-frozen-file-invariants", async workspace => {
       const missing = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       await rm(join(workspace, ".acpus", ".local", "runs", missing.run.id, "workflow.ir.json"));
-      await expect(getRunInspection(workspace, missing.run.id)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(inspectionErrorMessage(workspace, missing.run.id)).resolves.toContain("ENOENT");
 
       const escapedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
@@ -124,7 +128,7 @@ describe.concurrent("runtime admission use cases", () => {
       } finally {
         db.close();
       }
-      await expect(getRunInspection(workspace, escapedFile.run.id)).rejects.toThrow("Path '../outside.json' escapes run directory.");
+      await expect(inspectionErrorMessage(workspace, escapedFile.run.id)).resolves.toContain("Path '../outside.json' escapes run directory.");
 
       const escapedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const runDirDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
@@ -133,7 +137,7 @@ describe.concurrent("runtime admission use cases", () => {
       } finally {
         runDirDb.close();
       }
-      await expect(getRunInspection(workspace, escapedRunDir.run.id)).rejects.toThrow(
+      await expect(inspectionErrorMessage(workspace, escapedRunDir.run.id)).resolves.toContain(
         "Run directory '.acpus/.local/outside' is outside .acpus/.local/runs.",
       );
 
@@ -142,7 +146,7 @@ describe.concurrent("runtime admission use cases", () => {
       const outsideRunPath = join(workspace, "outside-run");
       await rename(symlinkedRunPath, outsideRunPath);
       await symlink(outsideRunPath, symlinkedRunPath, "dir");
-      await expect(getRunInspection(workspace, symlinkedRunDir.run.id)).rejects.toThrow(
+      await expect(inspectionErrorMessage(workspace, symlinkedRunDir.run.id)).resolves.toContain(
         `Run directory '${join(".acpus", ".local", "runs", symlinkedRunDir.run.id)}' is outside .acpus/.local/runs.`,
       );
 
@@ -152,14 +156,14 @@ describe.concurrent("runtime admission use cases", () => {
       await writeFile(outsideWorkflowPath, await readFile(workflowPath));
       await rm(workflowPath);
       await symlink(outsideWorkflowPath, workflowPath);
-      await expect(getRunInspection(workspace, symlinkedFile.run.id)).rejects.toThrow("is a symbolic link");
+      await expect(inspectionErrorMessage(workspace, symlinkedFile.run.id)).resolves.toContain("is a symbolic link");
 
       const symlinkedRunsRoot = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const runsRoot = join(workspace, ".acpus", ".local", "runs");
       const outsideRunsRoot = join(workspace, "outside-runs-root");
       await rename(runsRoot, outsideRunsRoot);
       await symlink(outsideRunsRoot, runsRoot, "dir");
-      await expect(getRunInspection(workspace, symlinkedRunsRoot.run.id)).rejects.toThrow(
+      await expect(inspectionErrorMessage(workspace, symlinkedRunsRoot.run.id)).resolves.toContain(
         `Run directory root '${join(".acpus", ".local", "runs")}' is outside the workspace.`,
       );
     });
@@ -466,6 +470,18 @@ describe.concurrent("runtime admission use cases", () => {
     }
   });
 });
+
+async function rawInspection(workspace: string, runId: string) {
+  const result = await getRunInspection(workspace, { runId, mode: "raw" });
+  if (result.isErr()) throw new Error(result.error.message);
+  return result.value;
+}
+
+async function inspectionErrorMessage(workspace: string, runId: string): Promise<string> {
+  const result = await getRunInspection(workspace, { runId, mode: "raw" });
+  if (result.isOk()) throw new Error("Expected inspection to fail.");
+  return result.error.message;
+}
 
 function sourcePackageResolverImport(aliases: Record<string, string>): string {
   const loader = `

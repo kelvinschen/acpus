@@ -1,5 +1,6 @@
 import { expectTypeOf, test } from "vitest";
 import type {
+  AgentInspectionState,
   AgentOverrideMap,
   ForkSeedFailure,
   ForkPreparedWorkflow,
@@ -10,12 +11,16 @@ import type {
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
   RunNodeProgress,
+  RunInspectionEmission,
+  RunInspectionDetailedFailure,
+  RunInspectionItem,
+  RunInspectionPatch,
+  RunInspectionRaw,
   RunDynamicSignalWait,
   RunDetails,
   RunRecord,
   RunStatus,
   RunWorkflowLockArtifact,
-  RuntimeAdvanceResult,
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimeMutationAction,
@@ -37,7 +42,7 @@ import type {
   WorkflowVisualizationOverlay,
   RunVisualizationSnapshot,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonObserveRun, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, admitPreparedWorkflowRun, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeSignalPayload, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStartRun, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
@@ -58,7 +63,6 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
   expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: Omit<DaemonAdmitRunInput, "method">) => Promise<RunDetails>>();
   expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<RuntimeMutationResult>>();
   expectTypeOf(requestDaemonStartRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails>>();
-  expectTypeOf(requestDaemonObserveRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RuntimeAdvanceResult>>();
   expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => Promise<DaemonShutdownResult>>();
   expectTypeOf(new DaemonRequestError("RUN_NOT_CONTROLLABLE", "failed").code).toEqualTypeOf<DaemonErrorCode>();
   expectTypeOf(new RuntimeUseCaseException({ type: "runtime-store-not-found", message: "missing" }).failure).toEqualTypeOf<RuntimeUseCaseError>();
@@ -91,6 +95,26 @@ test("@acpus/runtime public types describe use-case level runtime APIs", () => {
     tokenUsage?: unknown;
     tools?: unknown;
     updatedAt: string;
+  }>();
+  expectTypeOf<AgentInspectionState>().toMatchTypeOf<{
+    key: string;
+    backend?: { kind: "use"; name: string } | { kind: "command" };
+    tools?: { totalCallCount: number; recent: Array<{ command: string; status?: string }> };
+  }>();
+  expectTypeOf<RunInspectionPatch>().toMatchTypeOf<{
+    upsertItems: RunInspectionItem[];
+    removeItemKeys: string[];
+    itemOrder?: string[];
+  }>();
+  expectTypeOf<Extract<RunInspectionEmission, { kind: "update" }>["patch"]>().toEqualTypeOf<RunInspectionPatch>();
+  expectTypeOf<RunInspectionRaw["workflow"]>().toEqualTypeOf<WorkflowIR>();
+  expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
+    origin: string;
+    message: string;
+    upstream?: { source: "acpx"; data?: JsonValue };
+  }>();
+  expectTypeOf<Extract<RunInspectionEmission, { kind: "update" }>["changes"][number]>().toMatchTypeOf<{
+    summary?: { kind: "omitted-agent-progress"; changed: number; tracked: number };
   }>();
   expectTypeOf<NonNullable<RunDynamicFrame["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<NonNullable<RunDynamicNodeInstance["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();

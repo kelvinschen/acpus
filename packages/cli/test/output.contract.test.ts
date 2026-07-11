@@ -4,6 +4,22 @@ import { summarizeWorkflow, writeResult, type CliResult } from "../src/output.js
 import { CaptureStream } from "./support/capture-stream.js";
 
 describe("CLI result output contracts", () => {
+  it("renders an exact follow next step when a command returns a live run", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    expect(writeResult({
+      ok: true,
+      phase: "control",
+      message: "Run forked.",
+      forkRunId: "run_child",
+      followRunId: "run_child",
+    }, "text", { stdout, stderr }, 0)).toBe(0);
+
+    expect(stdout.text).toContain("Next: acpus runs inspect run_child --follow");
+    expect(stderr.text).toBe("");
+  });
+
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
       irVersion: 3,

@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { schemaToJsonSchema } from "@acpus/core/schema";
 import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
-import { executeAgentTurn, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
+import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
 import { tryParsePersistedDeadline } from "../deadline.js";
@@ -20,7 +20,23 @@ const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
 const PROGRESS_TOOL_LIMIT = 3;
 
 export class AgentNodeCancelledError extends Error {}
-export class AgentNodeTimeoutError extends Error {}
+export class AgentNodeExecutionError extends Error {
+  constructor(readonly failure: AgentNodeFailure) {
+    super(`${failure.code}: ${failure.message}`);
+  }
+}
+export class AgentNodeTimeoutError extends AgentNodeExecutionError {
+  constructor(failure: AgentNodeFailure | string) {
+    super(typeof failure === "string" ? { origin: "provider", code: "timeout", message: failure } : failure);
+  }
+}
+
+export type AgentNodeFailure = {
+  origin: "provider";
+  code: string;
+  message: string;
+  upstream?: AgentBackendFailure["upstream"];
+};
 
 export type AgentExecutorOptions = {
   cwd: string;
@@ -48,8 +64,7 @@ type AgentTurnRecord = {
   telemetryArtifact?: AgentArtifactRef;
   rawAcpDebugArtifact?: AgentArtifactRef;
   rawParsedOutputArtifact?: AgentArtifactRef;
-  failureKind?: string;
-  message?: string;
+  failure?: { kind: string; message: string; upstream?: AgentBackendFailure["upstream"] };
 };
 
 type AgentTurnTelemetrySummary = Pick<AgentTurnTelemetry, "eventCount" | "stopReason" | "context" | "tokenUsage"> & {
@@ -138,13 +153,15 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         await writeTerminalState("cancelled", result.message, result, turn + 1);
         throw new AgentNodeCancelledError(result.message);
       }
-      if (result.status === "failed" && result.failureKind === "timeout") {
-        await writeTerminalState("timed_out", result.message, result, turn + 1);
-        throw new AgentNodeTimeoutError(result.message);
+      if (result.status === "failed" && result.failure.kind === "timeout") {
+        const failure = agentNodeFailure(result.failure);
+        await writeTerminalState("timed_out", failure.message, result, turn + 1);
+        throw new AgentNodeTimeoutError(failure);
       }
       if (result.status === "failed") {
-        await writeTerminalState("failed", `${result.failureKind}: ${result.message}`, result, turn + 1);
-        throw new Error(`${result.failureKind}: ${result.message}`);
+        const failure = agentNodeFailure(result.failure);
+        await writeTerminalState("failed", failure.message, result, turn + 1);
+        throw new AgentNodeExecutionError(failure);
       }
       if (!node.outputSchema) {
         await writeTerminalState("completed", undefined, result, turn + 1);
@@ -159,10 +176,11 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
         await writeTerminalState("completed", undefined, result, turn + 1);
         return conformed.output;
       }
-      turns[turn] = { ...turns[turn]!, failureKind: conformed.kind, message: conformed.message };
+      turns[turn] = { ...turns[turn]!, failure: { kind: conformed.kind, message: conformed.message } };
       if (turn === maxRepairTurns) {
-        await writeTerminalState("failed", `${conformed.kind}: ${conformed.message}`, result, turn + 1);
-        throw new Error(`${conformed.kind}: ${conformed.message}`);
+        const failure: AgentNodeFailure = { origin: "provider", code: conformed.kind, message: conformed.message };
+        await writeTerminalState("failed", failure.message, result, turn + 1);
+        throw new AgentNodeExecutionError(failure);
       }
       await delay(options.repairDelayMs ?? DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
       prompt = buildAgentPrompt(CONTINUATION_PROMPT, node.outputSchema);
@@ -174,6 +192,15 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     }
     throw error;
   }
+}
+
+function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
+  return {
+    origin: "provider",
+    code: failure.kind,
+    message: failure.message,
+    ...(failure.upstream ? { upstream: failure.upstream } : {}),
+  };
 }
 
 function shouldCaptureRawAcpDebug(): boolean {
@@ -361,7 +388,7 @@ async function writeAgentTurnArtifacts(
     turn,
     status: result.status,
     telemetry: telemetrySummary(result.telemetry),
-    ...(result.status === "failed" ? { failureKind: result.failureKind, message: result.message } : {}),
+    ...(result.status === "failed" ? { failure: result.failure } : {}),
     ...(result.status === "cancelled" ? { message: result.message } : {}),
   } satisfies AgentTurnRecord;
   if (!options.store || !options.runId) return base;
@@ -379,7 +406,7 @@ async function writeAgentTurnArtifacts(
       nodeId: node.id,
       turn,
       telemetry,
-      ...(result.status === "failed" ? { failureKind: result.failureKind, message: result.message } : {}),
+      ...(result.status === "failed" ? { failure: result.failure } : {}),
       ...(result.status === "cancelled" ? { message: result.message } : {}),
     }, null, 2)}\n`, "application/json"),
   };

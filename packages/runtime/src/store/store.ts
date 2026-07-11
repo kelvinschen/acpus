@@ -88,6 +88,7 @@ export type RuntimeStore = {
   pruneHookJournal(cutoff: Date): number;
   getLastRunEventSequence(runId: string): number;
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
+  readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
   registerArtifact(input: RegisterArtifactInput): void;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
@@ -98,6 +99,17 @@ export type RuntimeStore = {
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
   getRuntimeDiagnostics(): RuntimeDiagnostics;
+};
+
+export type RunInspectionStoreRead = {
+  run?: RunDetails;
+  frozen?: FrozenRun;
+  artifacts: ArtifactRecord[];
+  cursor: {
+    eventSequence: number;
+    progressVersion: number;
+  };
+  events: CommittedRuntimeEventRow[];
 };
 
 export type DaemonWork = {
@@ -1147,6 +1159,33 @@ class SqliteRuntimeStore implements RuntimeStore {
       idempotency_key: string;
     }>;
     return rows.map(decodeCommittedRuntimeEventRow);
+  }
+
+  readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead {
+    let transactionStarted = false;
+    try {
+      this.db.exec("BEGIN");
+      transactionStarted = true;
+      const run = this.getRun(runId);
+      const frozen = run ? this.getFrozenRun(runId) : undefined;
+      const eventSequence = run ? this.getLastRunEventSequence(runId) : 0;
+      const artifacts = run ? this.listArtifacts(runId) : [];
+      const events = run && afterEventSequence !== undefined
+        ? this.getCommittedRuntimeEventsAfter(runId, afterEventSequence)
+        : [];
+      this.db.exec("COMMIT");
+      transactionStarted = false;
+      return {
+        ...(run ? { run } : {}),
+        ...(frozen ? { frozen } : {}),
+        artifacts,
+        cursor: { eventSequence, progressVersion: run?.progressVersion ?? 0 },
+        events,
+      };
+    } catch (error) {
+      if (transactionStarted) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getRunDir(runId: string): string | undefined {

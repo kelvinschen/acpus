@@ -1,5 +1,5 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { advanceRuntimeRun, runtimeAdvanceResult, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
+import { advanceRuntimeRun, type RuntimeAdvanceResult } from "../runs/advance-runtime.js";
 import type { RuntimeMutationInput, RuntimeMutationResult } from "../runs/use-cases.js";
 import type { ActiveAttempt } from "../scheduler/advance.js";
 import { applySchedulerControlIntentWithOwnerEpoch, type RunControlIntent } from "../scheduler/control.js";
@@ -62,13 +62,6 @@ export class RunExecutionSessions {
       session.promise = this.run(runId);
     }
     return existing;
-  }
-
-  async observe(runId: string): Promise<RuntimeAdvanceResult> {
-    const run = this.start(runId);
-    const session = this.sessions.get(runId);
-    if (!session?.promise) return runtimeAdvanceResult(this.store, runId, { status: terminalSummaryStatus(run.status) ?? "idle", runId, started: 0, completed: 0, failed: 0, cancelled: 0, active: 0 });
-    return session.promise;
   }
 
   async control(intent: DaemonControlIntent): Promise<RuntimeMutationResult | undefined> {
@@ -209,9 +202,4 @@ function controlIntent(intent: DaemonControlIntent): RunControlIntent {
 
 function isTerminal(status: RunDetails["status"]): boolean {
   return status === "completed" || status === "failed" || status === "canceled";
-}
-
-function terminalSummaryStatus(status: RunDetails["status"]): RuntimeAdvanceResult["status"] | undefined {
-  if (status === "completed" || status === "failed" || status === "canceled") return status;
-  return undefined;
 }
