@@ -1,4 +1,4 @@
-import { tryParseDurationMs } from "@acpus/core/ir";
+import { isPositiveInteger, tryParseDurationMs } from "@acpus/core/ir";
 import type { ExprIR, JsonObject } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import { tryCreateDeadline as tryCreatePersistedDeadline } from "../deadline.js";
@@ -65,12 +65,35 @@ export function tryResolveInteger(
   const resolved = tryEvaluate(expr, scope, field);
   if (resolved.isErr()) return err(resolved.error);
   if (typeof resolved.value !== "number") return typeError(field, "integer", resolved.value);
-  if (!Number.isInteger(resolved.value) || resolved.value < minimum) {
+  const invalid = minimum === 1
+    ? !isPositiveInteger(resolved.value)
+    : !Number.isInteger(resolved.value) || resolved.value < minimum;
+  if (invalid) {
     return err({
       type: "constraint",
       field,
       expected: `integer greater than or equal to ${minimum}`,
       message: `${field} must resolve to an integer greater than or equal to ${minimum}.`,
+    });
+  }
+  return ok(resolved.value);
+}
+
+export function tryResolveConcurrencyLimit(
+  expr: ExprIR,
+  scope: EvaluationScope,
+  field: string,
+): Result<number | undefined, ResolutionError> {
+  const resolved = tryEvaluate(expr, scope, field);
+  if (resolved.isErr()) return err(resolved.error);
+  if (resolved.value === undefined || resolved.value === 0) return ok(undefined);
+  if (typeof resolved.value !== "number") return typeError(field, "integer", resolved.value);
+  if (!isPositiveInteger(resolved.value)) {
+    return err({
+      type: "constraint",
+      field,
+      expected: "0 or a positive integer",
+      message: `${field} must resolve to 0 or a positive integer.`,
     });
   }
   return ok(resolved.value);

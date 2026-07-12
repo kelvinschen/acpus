@@ -71,7 +71,7 @@ column totals 66.
 | Issue | Priority | Pitfall class | Frequency | Module | Batch | State |
 | --- | --- | --- | ---: | --- | --- | --- |
 | AE-001 | P0 | Skill, examples, declarations, and executed CLI disagree about the current authoring interface. | 6 | M1 | B01 | implemented; final benchmark pending |
-| AE-002 | P0 | Optional `maxConcurrency` becomes `Expr<number \| undefined>`; unsafe coercions such as zero can pass check. | 5 | M2 | B02 | queued |
+| AE-002 | P0 | Optional `maxConcurrency` becomes `Expr<number \| undefined>`; unsafe coercions such as zero can pass check. | 5 | M2 | B02 | implemented; final benchmark pending |
 | AE-003 | P1 | Composite output nesting and plain-object callback return rules are hard to predict. | 12 | M3 | B03 | queued |
 | AE-004 | P1 | Authors use JavaScript operators/control flow over `Expr<T>`, including inside templates and loops. | 9 | M3 | B04 | queued |
 | AE-005 | P1 | Task/fanout/branch output types widen to `any`, `unknown`, or unusable unions. | 8 | M3 | B05 | queued |
@@ -195,7 +195,7 @@ both humans and agents cleanly.
 
 ## B02 — Safe Optional Concurrency
 
-State: queued
+State: implementation complete; final benchmark pending
 Priority: P0
 Primary module: M2 — Resolvable resource controls
 Issues: AE-002
@@ -206,7 +206,8 @@ Observed frequency: 5
 An optional input projects as `Expr<number | undefined>`, while
 `maxConcurrency` accepts `number | Expr<number> | undefined`. Agents responded
 with fixed literals, defaults, casts, and `lift(value, v => v ?? 0)`. The last
-form passed check even though zero can make fanout non-progressing or invalid.
+form passed check even though the runtime previously rejected zero only after
+the run had been admitted.
 
 ### Deep-module direction
 
@@ -215,19 +216,19 @@ resource-limit lowering path shared by authoring validation and runtime
 materialization. Authors should not need to know whether omission lives outside
 or inside an Expr union.
 
-The batch begins by recording one product decision in the relevant spec.
-Recommended semantics: omission means no authored cap, a positive integer sets
-the cap, and zero/negative/non-integer values are rejected before admission.
+The selected semantics make omission and zero mean no authored local cap, while
+a positive integer sets the cap. Negative, fractional, and wrong-type dynamic
+values fail when the group materializes. Quorum count remains strictly positive.
 
-### Planned work
+### Recorded outcome
 
-- Align the public TypeScript type with the chosen omitted-value semantics.
-- Validate literal and runtime-resolved limits through the same rule.
-- Produce a stable check/input diagnostic for invalid literal/default values.
-- Preserve the invariant during runtime evaluation instead of relying only on
-  TypeScript types.
-- Apply the same internal rule to other positive resource/count fields where
-  semantics match; do not add a generic public abstraction for unrelated counts.
+- The public TypeScript type accepts optional runtime expressions directly.
+- Frozen IR preserves authored zero and dynamic expressions; effective group
+  state omits missing and zero local caps.
+- Core validation and runtime resolution share the positive-integer predicate.
+- Negative, fractional, and wrong-type literals fail check; dynamic values fail
+  with a tagged materialization error.
+- Quorum count reuses the positive-integer rule without adopting zero omission.
 
 ### Deterministic verification
 
@@ -248,14 +249,16 @@ the cap, and zero/negative/non-integer values are rejected before admission.
 
 ### Completion record
 
-- Started: TBD
-- Completed: TBD
+- Started: 2026-07-12
+- Implementation completed: 2026-07-12
 - Change/PR: TBD
-- Specs updated: TBD
-- Test commands: TBD
-- Final benchmark run: TBD
-- Before/final AE-002 count: `5 → TBD`
-- Follow-ups: TBD
+- Specs updated: `core-spec.md`, `runtime-spec.md`
+- Test commands: `pnpm typecheck`; `pnpm test`; `pnpm check:dead-code`;
+  `pnpm check:dependencies`; `pnpm check:dependencies:strict`;
+  `pnpm build:clean && pnpm test:dist`; all passed.
+- Final benchmark run: deferred until all optimization batches are complete
+- Before/final AE-002 count: `5 → pending final benchmark`
+- Follow-ups: keep AE-002 open until the single final benchmark confirms the authoring workarounds are gone.
 
 ## B03 — Composite Result Ergonomics
 

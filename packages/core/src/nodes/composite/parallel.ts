@@ -15,7 +15,7 @@ export type ParallelStepSpec<
   Strategy extends ParallelStrategy = "all",
 > = Simplify<{
   branches: Branches & CheckedBranches<NoInfer<Branches>>;
-  maxConcurrency?: Resolvable<number>;
+  maxConcurrency?: Resolvable<number | undefined>;
 } & (Strategy extends "race" ? { strategy: "race" } : { strategy?: "all" })>;
 
 type BranchOutput<Branch> = Branch extends (ctx: never) => infer Output ? RuntimeValueOf<Output> : never;

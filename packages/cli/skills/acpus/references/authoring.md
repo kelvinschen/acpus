@@ -33,9 +33,9 @@ Use this boundary rule consistently: a plain `T` field is declaration-time struc
 
 ```ts
 timeout: "5m",
-timeout: input.timeout,
-maxConcurrency: input.parallelism,
-count: input.quorum,
+timeout: input.timeout, 
+maxConcurrency: input.parallelism, // Optional 
+count: input.quorum,  // Quorum `count` is required when in quorum mode
 onTimeout: {
   message: template`Request ${input.requestId} timed out`,
 },

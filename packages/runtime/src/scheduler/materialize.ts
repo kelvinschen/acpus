@@ -2,7 +2,7 @@ import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } fro
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
-import { resolutionErrorPayload, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
+import { resolutionErrorPayload, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
@@ -280,7 +280,7 @@ function materializeParallelEvents(input: { runId: string; node: ParallelNodeIR;
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node", input.node.strategy);
   let maxConcurrency: number | undefined;
   if (input.node.maxConcurrency !== undefined) {
-    const resolved = tryResolveInteger(input.node.maxConcurrency, input.scope, `Parallel node '${input.node.id}' maxConcurrency`, 1);
+    const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Parallel node '${input.node.id}' maxConcurrency`);
     if (resolved.isErr()) {
       return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
     }
@@ -338,7 +338,7 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
     }
     let maxConcurrency: number | undefined;
     if (input.node.maxConcurrency !== undefined) {
-      const resolved = tryResolveInteger(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`, 1);
+      const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`);
       if (resolved.isErr()) {
         return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
       }

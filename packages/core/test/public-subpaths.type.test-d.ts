@@ -5,6 +5,7 @@ import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
 import {
   childScopes,
+  isPositiveInteger,
   tryParseDurationMs,
   validateWorkflowIR,
   walkNodes,
@@ -51,6 +52,7 @@ test("public package subpaths expose the intended type surface", () => {
   assertType<ExprIR>({ kind: "literal", value: true });
   assertType<WorkflowIR["diagnostics"]>(validateWorkflowIR(compileWorkflowDefinition(definition)));
   expectTypeOf(tryParseDurationMs).toEqualTypeOf<(value: string) => Result<number, DurationParseError>>();
+  expectTypeOf(isPositiveInteger).toEqualTypeOf<(value: unknown) => value is number>();
   expectTypeOf<DurationParseError>().toEqualTypeOf<
     | { type: "invalid-duration-syntax"; value: string }
     | { type: "duration-out-of-range"; value: string }

@@ -1,5 +1,6 @@
 import { validateExprIR, type ExpressionDiagnostic } from "@acpus/expression/validator";
 import { tryParseDurationMs } from "./duration.js";
+import { isPositiveInteger } from "./integer.js";
 import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, TemplateIR, WorkflowIR } from "./types.js";
 
 export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
@@ -206,7 +207,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
     case "parallel": {
       validateKnownFields(node, ["id", "kind", "branches", "strategy", "maxConcurrency"], diagnostics, path);
       if (node.strategy !== "all" && node.strategy !== "race") addError(diagnostics, "P001", `Parallel node '${node.id}' strategy must be 'all' or 'race'.`, `${path}.strategy`);
-      validateIntegerExpr(node.maxConcurrency, diagnostics, `${path}.maxConcurrency`, `Parallel node '${node.id}' maxConcurrency`, "P001", refsFromScope(ctx), 1);
+      validateConcurrencyExpr(node.maxConcurrency, diagnostics, `${path}.maxConcurrency`, `Parallel node '${node.id}' maxConcurrency`, "P001", refsFromScope(ctx));
       if (!isRecord(node.branches)) {
         addError(diagnostics, "IR002", "Parallel branches must be an object.", `${path}.branches`);
         break;
@@ -226,7 +227,7 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
       if (strategy === "quorum" && count === undefined) addError(diagnostics, "F002", `Fanout node '${node.id}' quorum count is required.`, `${path}.count`);
       if (strategy === "quorum" && count !== undefined) validateIntegerExpr(count, diagnostics, `${path}.count`, `Fanout node '${node.id}' quorum count`, "F002", refsFromScope(ctx), 1);
       if (strategy !== "quorum" && count !== undefined) addError(diagnostics, "F003", `Fanout node '${node.id}' count is only valid with quorum strategy.`, `${path}.count`);
-      validateIntegerExpr(node.maxConcurrency, diagnostics, `${path}.maxConcurrency`, `Fanout node '${node.id}' maxConcurrency`, "F001", refsFromScope(ctx), 1);
+      validateConcurrencyExpr(node.maxConcurrency, diagnostics, `${path}.maxConcurrency`, `Fanout node '${node.id}' maxConcurrency`, "F001", refsFromScope(ctx));
       const validOver = validateExpr(node.over, diagnostics, `${path}.over`, refsFromScope(ctx));
       if (validOver) validateFanoutOver(node.over, diagnostics, `${path}.over`);
       validateScope(node.do, diagnostics, childScopeContext(ctx, `${path}.do`, { fanoutId: id }));
@@ -414,8 +415,25 @@ function validateIntegerExpr(
   minimum: number,
 ): void {
   if (value === undefined || !validateExpr(value, diagnostics, path, refs)) return;
-  if (value.kind === "literal" && (typeof value.value !== "number" || !Number.isInteger(value.value) || value.value < minimum)) {
+  const invalid = value.kind === "literal" && (minimum === 1
+    ? !isPositiveInteger(value.value)
+    : typeof value.value !== "number" || !Number.isInteger(value.value) || value.value < minimum);
+  if (invalid) {
     addError(diagnostics, code, `${label} must resolve to an integer greater than or equal to ${minimum}.`, path);
+  }
+}
+
+function validateConcurrencyExpr(
+  value: unknown,
+  diagnostics: DiagnosticIR[],
+  path: string,
+  label: string,
+  code: DiagnosticIR["code"],
+  refs: RefContext,
+): void {
+  if (value === undefined || !validateExpr(value, diagnostics, path, refs)) return;
+  if (value.kind === "literal" && value.value !== 0 && !isPositiveInteger(value.value)) {
+    addError(diagnostics, code, `${label} must resolve to 0 or a positive integer.`, path);
   }
 }
 

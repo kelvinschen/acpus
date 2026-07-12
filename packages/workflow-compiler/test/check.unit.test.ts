@@ -291,6 +291,36 @@ describe("workflow check pipeline", () => {
     });
   });
 
+  it("accepts optional concurrency expressions without casts or fixed fallbacks", async () => {
+    await withCheckWorkspace("workflow-optional-concurrency", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, z } from "acpus/core";
+        import { lift } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "optional_concurrency",
+          inputSchema: z.object({
+            items: z.array(z.string()),
+            parallelism: z.number().optional(),
+          }),
+        }).build(({ input, step }) => {
+          step("parallel").parallel({
+            maxConcurrency: input.parallelism,
+            branches: { only() { return {}; } },
+          });
+          step("fanout").fanout({
+            over: input.items,
+            maxConcurrency: lift(input.parallelism, value => value ?? 0),
+            do({ item }) { return { item }; },
+          });
+          return {};
+        });
+      `);
+
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
   it("reports durable output and loop contract violations as TypeScript diagnostics only", async () => {
     await withCheckWorkspace("workflow-output-types", async cwd => {
       const result = await runCheck(cwd, `

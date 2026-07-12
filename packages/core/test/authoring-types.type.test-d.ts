@@ -287,6 +287,7 @@ test("runtime configuration fields share the Resolvable seam", () => {
       timeout: z.string(),
       text: z.string(),
       count: z.number(),
+      optionalCount: z.number().optional(),
       ready: z.boolean(),
       items: z.array(z.string()),
     }),
@@ -316,15 +317,24 @@ test("runtime configuration fields share the Resolvable seam", () => {
     });
     step("assert").assert({ condition: input.ready, message: input.text });
     step("parallel").parallel({
-      maxConcurrency: input.count,
+      maxConcurrency: input.optionalCount,
       branches: { only() { return {}; } },
     });
     step("fanout").fanout({
       over: input.items,
       strategy: "quorum",
       count: input.count,
-      maxConcurrency: input.count,
+      maxConcurrency: input.optionalCount,
       do({ item }) { return { item }; },
+    });
+    step("literal_concurrency").parallel({
+      maxConcurrency: 0,
+      branches: { only() { return {}; } },
+    });
+    step("invalid_concurrency").parallel({
+      // @ts-expect-error concurrency limits accept only numeric runtime values.
+      maxConcurrency: null,
+      branches: { only() { return {}; } },
     });
     return {};
   });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { lift } from "@acpus/expression";
 import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../src/evaluation/evaluator.js";
-import { tryCreateDeadline, tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
+import { tryCreateDeadline, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
 
 const literal = (value: any): ExprIR => ({ kind: "literal", value });
 const ref = (path: string[]): ExprIR => ({ kind: "ref", path });
@@ -16,9 +16,9 @@ describe("runtime expression evaluator", () => {
       expected: "string",
       actual: "number",
     });
-    expect(tryResolveInteger(literal(0), {}, "maxConcurrency", 1)._unsafeUnwrapErr()).toMatchObject({
+    expect(tryResolveInteger(literal(0), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
       type: "constraint",
-      field: "maxConcurrency",
+      field: "count",
     });
     expect(tryResolveDuration(literal("soon"), {}, "timeout")._unsafeUnwrapErr()).toMatchObject({
       type: "constraint",
@@ -29,6 +29,16 @@ describe("runtime expression evaluator", () => {
       field: "count",
       message: expect.stringContaining("boom"),
     });
+  });
+
+  it("treats missing and zero concurrency limits as omitted", () => {
+    expect(tryResolveConcurrencyLimit(ref(["input", "parallelism"]), { input: {} }, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
+    expect(tryResolveConcurrencyLimit(literal(0), {}, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
+    expect(tryResolveConcurrencyLimit(call("lift", [ref(["input", "parallelism"]), literal("value => value ?? 0")]), { input: {} }, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
+    expect(tryResolveConcurrencyLimit(literal(2), {}, "maxConcurrency")._unsafeUnwrap()).toBe(2);
+    expect(tryResolveConcurrencyLimit(literal(-1), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "constraint" });
+    expect(tryResolveConcurrencyLimit(literal(1.5), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "constraint" });
+    expect(tryResolveConcurrencyLimit(literal("many"), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "type" });
   });
 
   it("rejects duration overflow and unrepresentable deadlines", () => {

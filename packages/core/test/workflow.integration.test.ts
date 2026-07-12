@@ -464,6 +464,22 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[3]).not.toHaveProperty("until");
   });
 
+  it("preserves zero concurrency as an authored runtime sentinel", () => {
+    const ir = compileWorkflowDefinition(defineWorkflow({ name: "zero_concurrency" }).build(({ step }) => {
+      step("parallel").parallel({
+        maxConcurrency: 0,
+        branches: { only() { return {}; } },
+      });
+      return {};
+    }));
+
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.root.nodes[0]).toMatchObject({
+      kind: "parallel",
+      maxConcurrency: { kind: "literal", value: 0 },
+    });
+  });
+
   it("declares closed-over step calls in the active fanout scope", () => {
     const definition = defineWorkflow({
       name: "active_scope_fanout_step",

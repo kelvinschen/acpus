@@ -35,6 +35,55 @@ describe("scheduler materialization", () => {
     expect(fanoutProjection.groups[deriveInstanceKey(appendNode([], "items"))]).toMatchObject({ quorumCount: 1, maxConcurrency: 2 });
   });
 
+  it("omits missing and zero local concurrency from group state", () => {
+    const missing = applySchedulerEvents(
+      createSchedulerProjection("run_missing"),
+      bootstrapRootEvents("run_missing", workflowWithRootNode({
+        id: "parallel",
+        kind: "parallel",
+        strategy: "all",
+        maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
+        branches: { only: { nodes: [] } },
+      }), { input: {} }),
+    );
+    const zero = applySchedulerEvents(
+      createSchedulerProjection("run_zero"),
+      bootstrapRootEvents("run_zero", workflowWithRootNode({
+        id: "items",
+        kind: "fanout",
+        strategy: "all",
+        over: stringArray("a"),
+        maxConcurrency: { kind: "literal", value: 0 },
+        do: { nodes: [] },
+      })),
+    );
+
+    expect(missing.groups[deriveInstanceKey(appendNode([], "parallel"))]).not.toHaveProperty("maxConcurrency");
+    expect(zero.groups[deriveInstanceKey(appendNode([], "items"))]).not.toHaveProperty("maxConcurrency");
+  });
+
+  it("fails invalid dynamic concurrency during materialization", () => {
+    const frameKey = deriveInstanceKey(appendNode([], "items"));
+    const events = bootstrapRootEvents("run_invalid", workflowWithRootNode({
+      id: "items",
+      kind: "fanout",
+      strategy: "all",
+      over: stringArray("a"),
+      maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
+      do: { nodes: [] },
+    }), { input: { parallelism: -1 } });
+
+    expect(events).toContainEqual({
+      type: "frame.failed",
+      payload: {
+        frameKey,
+        terminalReason: "expression_resolution_failed",
+        error: expect.objectContaining({ reason: "expression_resolution_failed", type: "constraint", field: "Fanout node 'items' maxConcurrency" }),
+      },
+    });
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "group.started" }));
+  });
+
   it("fails materialization with a tagged resolution constraint error", () => {
     const frameKey = deriveInstanceKey(appendNode([], "items"));
     const events = bootstrapRootEvents("run_1", workflowWithRootNode({

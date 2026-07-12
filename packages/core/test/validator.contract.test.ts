@@ -320,17 +320,24 @@ describe("WorkflowIR diagnostics contract", () => {
       root: {
         nodes: [
           {
-            id: "bad_parallel",
+            id: "zero_parallel",
             kind: "parallel",
             strategy: "all",
             maxConcurrency: { kind: "literal", value: 0 },
             branches: { only: { nodes: [] } },
           },
           {
+            id: "bad_parallel",
+            kind: "parallel",
+            strategy: "all",
+            maxConcurrency: { kind: "literal", value: -1 },
+            branches: { only: { nodes: [] } },
+          },
+          {
             id: "bad_fanout",
             kind: "fanout",
             strategy: "quorum",
-            count: { kind: "literal", value: 1.5 },
+            count: { kind: "literal", value: 0 },
             maxConcurrency: { kind: "literal", value: "many" },
             over: { kind: "array", items: [] },
             do: { nodes: [] },

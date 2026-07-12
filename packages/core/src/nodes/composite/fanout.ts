@@ -9,7 +9,7 @@ import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, OutputO
 
 type BaseFanoutStepSpec<Over extends ResolvableArray<any>, Output extends OutputObject> = {
   over: Over;
-  maxConcurrency?: Resolvable<number>;
+  maxConcurrency?: Resolvable<number | undefined>;
   do: (ctx: FanoutScopeContext<ArrayItem<Over>>) => OutputValues<Output> & GraphOutputCheck<NoInfer<Output>>;
   itemOutputSchema?: never;
 };

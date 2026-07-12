@@ -8,6 +8,7 @@ import { advanceFrozenRun as advanceFrozenRunProduction } from "../src/scheduler
 import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
+import { normalizeWorkflowInput } from "../src/admission/input.js";
 import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
@@ -514,6 +515,25 @@ describe("runtime scheduler runner", () => {
           ]);
           const itemRow = runtimeRow(workspace, "SELECT item_json FROM group_members WHERE run_id = ? AND item_index = 0", run.id) as { item_json: string };
           expect(JSON.parse(itemRow.item_json)).toBe("a");
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("treats defaulted zero fanout concurrency as no local cap and keeps progressing", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-root-fanout-zero-concurrency", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ maxConcurrency: 0, dynamicLimits: true }));
+        const store = await openRuntimeStore(workspace);
+        try {
+          const input = normalizeWorkflowInput(prepared.ir, { items: ["a", "b"] });
+          const run = await store.admitRun({ prepared, input, cwd: workspace });
+          const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
+          const group = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groups)[0];
+
+          expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
+          expect(group).toMatchObject({ status: "completed" });
+          expect(group).not.toHaveProperty("maxConcurrency");
         } finally {
           store.close();
         }
@@ -1198,7 +1218,7 @@ function rootFanoutTaskWorkflow(options: { strategy?: "all" | "quorum"; count?: 
     } else {
       step("items").fanout({
         over: input.items,
-        ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
+        ...(options.dynamicLimits ? { maxConcurrency: input.parallelism } : options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
         do({ item, itemIndex }) {
           const task = step("item_task").task({
             input: { item, itemIndex, abortItem: options.abortItem ?? null },
