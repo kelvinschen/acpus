@@ -62,33 +62,36 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, semantic: SemanticCapture
   const callbackImports = collectExpressionCallbackImports(sourceFile, checker);
   const visit = (node: ts.Node): void => {
     if (isConditionExpression(node) && isExpr(checker, node)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, "Use lift(value, value => condition) or an expression predicate helper."));
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, conditionHint(node)));
     }
     if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken && isExpr(checker, node.operand)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use lift(value, value => !value) or the not helper."));
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use not(value) for a boolean predicate, or lift(value, value => !value) to compute a value."));
     }
     if (ts.isBinaryExpression(node)) {
       if ((node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
         && (isExpr(checker, node.left) || isExpr(checker, node.right))) {
-        diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, "Use lift(a, b, (a, b) => a && b) or the and/or helpers."));
+        diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, logicalHint(checker, node)));
       }
       if (EQUALITY_OPERATORS.has(node.operatorToken.kind)
         && (isExpr(checker, node.left) || isExpr(checker, node.right))
         && typesOverlap(checker, node.left, node.right)) {
-        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, "Use lift(a, b, (a, b) => a === b) or the eq/ne helpers."));
+        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, equalityHint(node.operatorToken.kind)));
       }
     }
-    if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent) && node.templateSpans.some(span => isExpr(checker, span.expression))) {
+    if (ts.isTemplateExpression(node)
+      && !ts.isTaggedTemplateExpression(node.parent)
+      && !isDirectStepId(node)
+      && node.templateSpans.some(span => isExpr(checker, span.expression))) {
       diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from acpus/expression."));
     }
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "step") {
       const id = node.arguments[0];
       if (id && isStringAssignable(checker, id) && isExprDerived(checker, id)) {
-        diagnostics.push(diagnostic("AL005", "Node ids cannot be derived from runtime Expr values.", id, "Node ids must be compile-time stable strings."));
+        diagnostics.push(diagnostic("AL005", "Node ids cannot be derived from runtime Expr values.", id, "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey."));
       }
     }
     const unjoinableReason = unjoinableTaskCallsiteReason(node, checker);
-    if (unjoinableReason) {
+    if (unjoinableReason && !(unjoinableReason === "non-literal-task-id" && hasExprDerivedStringTaskId(node, checker))) {
       diagnostics.push(taskCallsiteDiagnostic(unjoinableReason, node));
     }
     if (ts.isCallExpression(node)) {
@@ -103,6 +106,67 @@ function checkExprAuthoring(sourceFile: ts.SourceFile, semantic: SemanticCapture
     node.forEachChild(visit);
   };
   visit(sourceFile);
+}
+
+function conditionHint(node: ts.Expression): string {
+  if (ts.isConditionalExpression(node.parent)) {
+    return "Use lift(condition, value => value ? whenTrue : whenFalse) to compute a conditional value.";
+  }
+  if (ts.isIfStatement(node.parent)) {
+    return "Use step(\"id\").if({ condition, then, else }) for graph control; use lift(condition, value => ...) only to compute a value.";
+  }
+  return "Use a graph loop for repeated work, or lift(condition, value => ...) only to compute a value.";
+}
+
+function logicalHint(checker: Checker, node: ts.BinaryExpression): string {
+  if (isBooleanRuntimeValue(checker, node.left) && isBooleanRuntimeValue(checker, node.right)) {
+    return node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      ? "Use and(left, right) for boolean Expr operands."
+      : "Use or(left, right) for boolean Expr operands.";
+  }
+  return node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ? "Use unary lift(value, value => value && result) when the other operand is literal, or pass both operands to binary lift."
+    : "Use unary lift(value, value => value || \"fallback\") for a literal fallback, or pass both operands to binary lift.";
+}
+
+function isBooleanRuntimeValue(checker: Checker, node: ts.Expression): boolean {
+  const type = checker.getTypeAtLocation(node);
+  if (!type || type.isErrorType()) return false;
+  const marker = checker.getPropertyOfType(type, "__type");
+  const runtimeType = marker ? checker.getTypeOfSymbolAtLocation(marker, node) : type;
+  return checker.isTypeAssignableTo(runtimeType, checker.getBooleanType());
+}
+
+function equalityHint(operator: ts.SyntaxKind): string {
+  return operator === ts.SyntaxKind.ExclamationEqualsToken || operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    ? "Use ne(left, right) for inequality over runtime values."
+    : "Use eq(left, right) for equality over runtime values.";
+}
+
+function hasExprDerivedStringTaskId(node: ts.Node, checker: Checker): boolean {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "task") return false;
+  const stepCall = node.expression.expression;
+  if (!ts.isCallExpression(stepCall) || !ts.isIdentifier(stepCall.expression) || stepCall.expression.text !== "step") return false;
+  const id = stepCall.arguments[0];
+  return Boolean(id && isStringAssignable(checker, id) && isExprDerived(checker, id));
+}
+
+function isDirectStepId(node: ts.Expression): boolean {
+  let expression = node;
+  while (
+    (ts.isParenthesizedExpression(expression.parent)
+      || ts.isAssertionExpression(expression.parent)
+      || ts.isNonNullExpression(expression.parent)
+      || ts.isSatisfiesExpression(expression.parent))
+    && expression.parent.expression === expression
+  ) {
+    expression = expression.parent;
+  }
+  const parent = expression.parent;
+  return ts.isCallExpression(parent)
+    && ts.isIdentifier(parent.expression)
+    && parent.expression.text === "step"
+    && parent.arguments[0] === expression;
 }
 
 type ExpressionCallbackHelper = ExpressionCallbackOperatorName;

@@ -262,6 +262,11 @@ failures to stable CLI phases and exit codes.
   or wake the daemon.
 - `skill install` MUST install only the bundled Acpus skill from the local
   `acpus` npm package.
+- The bundled authoring guidance MUST distinguish graph control, boolean
+  predicates, value computation through `lift`, and string rendering. It MUST
+  explain that loop/fanout step ids remain static while runtime `nodeKey` values
+  identify instances, and that durable absence uses `null` rather than
+  `undefined`.
 - `skill install` MUST reject a bundled skill whose
   `metadata.acpus-version` does not equal the local `acpus` package version and
   MUST report that version in successful structured output.

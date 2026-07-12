@@ -74,6 +74,21 @@ An `Expr<T>` means "a value of type `T` that will exist at run time." You can pr
 
 Use graph nodes for control flow, predicate helpers for standard boolean conditions, `template`/`md` for rendered strings, and `lift` for custom computed values. Inside a `lift` callback, write normal JavaScript over plain runtime values.
 
+Choose the smallest runtime construct that matches the intent:
+
+| Intent | Use |
+| --- | --- |
+| Select workflow branches or repeat work | `if`, `switch`, `loop`, or `fanout` nodes |
+| Build a standard boolean condition | `eq`/`ne`, numeric predicates, or `not`/`and`/`or` |
+| Compute a value, fallback, arithmetic result, or array summary | `lift` |
+| Render a string without other computation | `template` or `md` |
+
+For example, use `step("route").if({ condition: input.ready, ... })` to select
+graph branches, but use `lift(input.ready, ready => ready ? "yes" : "no")` to
+compute a string value. Use `lift(input.note, note => note || "missing")` for a
+fallback; `or` combines boolean predicates and is not a general JavaScript `||`
+replacement.
+
 ### Expression Functions
 
 Prefer the standard predicate helpers when they express the whole condition:
@@ -294,6 +309,10 @@ const items = step("items").fanout({
 
 
 `loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`. Do not mirror runtime `index` or `round` into `state` unless downstream nodes need the final iteration number through `loop.output`.
+
+A loop or fanout callback declares one static subgraph. Keep inner `step` ids
+static across iterations; the runtime instance path already gives each round or
+item a distinct `nodeKey`.
 
 ```ts
 const refined = step("refine").loop({

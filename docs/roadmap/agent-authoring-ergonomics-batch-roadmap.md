@@ -73,11 +73,11 @@ column totals 66.
 | AE-001 | P0 | Skill, examples, declarations, and executed CLI disagree about the current authoring interface. | 6 | M1 | B01 | implemented; final benchmark pending |
 | AE-002 | P0 | Optional `maxConcurrency` becomes `Expr<number \| undefined>`; unsafe coercions such as zero can pass check. | 5 | M2 | B02 | implemented; final benchmark pending |
 | AE-003 | P1 | Composite output nesting and plain-object callback return rules are hard to predict. | 12 | M3 | B03 | implemented; final benchmark pending |
-| AE-004 | P1 | Authors use JavaScript operators/control flow over `Expr<T>`, including inside templates and loops. | 9 | M3 | B04 | queued |
+| AE-004 | P1 | Authors use JavaScript operators/control flow over `Expr<T>`, including inside templates and loops. | 9 | M3 | B04 | implemented; final benchmark pending |
 | AE-005 | P1 | Task/fanout/branch output types widen to `any`, `unknown`, or unusable unions. | 8 | M3 | B05 | queued |
 | AE-006 | P1 | Inline Task input, output inference, and self-containment rules are not evident from the interface. | 6 | M4 | B06 | queued |
-| AE-007 | P1 | Node and Task ids are generated dynamically instead of using stable literals. | 4 | M3 | B04 | queued |
-| AE-008 | P1 | `lift` captures outer bindings or durable values use `undefined` instead of JSON-compatible absence. | 4 | M3 | B04 | queued |
+| AE-007 | P1 | Node and Task ids are generated dynamically instead of using stable literals. | 4 | M3 | B04 | implemented; final benchmark pending |
+| AE-008 | P1 | `lift` captures outer bindings or durable values use `undefined` instead of JSON-compatible absence. | 4 | M3 | B04 | implemented; final benchmark pending |
 | AE-009 | P2 | NodeNext and Zod 4 details cause avoidable authoring failures or cascading diagnostics. | 4 | M1/M5 | B08 | queued |
 | AE-010 | P2 | `$` command syntax is misread and no read-only git-facts Task exists. | 3 | M4 | B07 | queued |
 | AE-011 | P2 | Artifact option and path/ref semantics are difficult to discover. | 2 | M4 | B07 | queued |
@@ -335,7 +335,7 @@ diagnostic remapping. Entry-source `AL007` removes the explicit-`any` escape.
 
 ## B04 — Expr, Lift, and Stable-ID Diagnostics
 
-State: queued
+State: implemented; final benchmark pending
 Priority: P1
 Primary module: M3 — Graph authoring interface
 Issues: AE-004, AE-007, AE-008
@@ -357,18 +357,17 @@ larger expression-helper interface. Add a public helper only when at least two
 real authoring cases cannot be expressed clearly with existing predicates and
 `lift`.
 
-### Planned work
+### Implemented work
 
-- Normalize diagnostics for JavaScript control flow/operators inside ordinary
-  code, template interpolation, and loop callbacks.
-- Point each diagnostic to the smallest offending expression and suggest the
-  matching predicate, `lift`, or Task boundary.
-- Explain that loop instance paths already encode rounds, so static node ids do
-  not need interpolation.
-- Distinguish a forbidden outer graph-token capture from JSON-incompatible
-  `undefined`; suggest explicit dependencies for the first and `null`/fixed
-  fields for the second.
-- Add concise DO/DON'T examples generated from checked fixtures.
+- Added context-specific AL001–AL003 hints for graph control, value computation,
+  boolean predicates, fallbacks, and equality without duplicating native
+  TypeScript diagnostics.
+- Made AL005 explain static ids and runtime instance keys, and removed duplicate
+  TB004 output for Expr-derived string Task ids.
+- Kept external `lift` captures behind AL006 while accepting the runtime global
+  `undefined`; TypeScript continues to own non-durable callback returns.
+- Added the decision model and static loop-id explanation to checked bundled
+  skill guidance and examples.
 
 ### Deterministic verification
 
@@ -385,14 +384,18 @@ real authoring cases cannot be expressed clearly with existing predicates and
 
 ### Completion record
 
-- Started: TBD
-- Completed: TBD
+- Started: 2026-07-12
+- Completed: 2026-07-12
 - Change/PR: TBD
-- Specs updated: TBD
-- Test commands: TBD
-- Final benchmark run: TBD
-- Before/final counts: `AE-004 9 → TBD`, `AE-007 4 → TBD`, `AE-008 4 → TBD`
-- Follow-ups: TBD
+- Specs updated: `workflow-compiler-spec.md`, `cli-spec.md`
+- Test commands: Skill Creator `quick_validate.py`; focused authoring, check,
+  scheduler identity, and skill-example tests; `pnpm typecheck`; `pnpm test`;
+  `pnpm check:dead-code`; `pnpm check:dependencies`;
+  `pnpm check:dependencies:strict`; `pnpm build:clean && pnpm test:dist`;
+  all passed.
+- Final benchmark run: deferred until all optimization batches are complete
+- Before/final counts: `AE-004 9 → pending final benchmark`, `AE-007 4 → pending final benchmark`, `AE-008 4 → pending final benchmark`
+- Follow-ups: keep AE-004/007/008 open until the single final benchmark measures repair iterations and pitfall counts.
 
 ## B05 — Type Preservation Across Graph Seams
 

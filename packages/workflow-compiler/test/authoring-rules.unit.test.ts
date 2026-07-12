@@ -44,9 +44,76 @@ describe("workflow authoring rules", () => {
         }),
       ]),
     );
-    for (const diagnostic of diagnostics.filter(({ code }) => ["AL001", "AL002", "AL003"].includes(code))) {
-      expect(diagnostic.hint).toContain("lift(");
-    }
+  });
+
+  it("gives syntax-specific Expr replacement hints at the offending expression", async () => {
+    const source = `
+      import type { Expr } from "acpus/expression";
+      declare const flag: Expr<boolean>;
+      declare const other: Expr<boolean>;
+      declare const note: Expr<string>;
+      if (flag) {}
+      const conditional = flag ? "yes" : "no";
+      const negated = !flag;
+      const conjunction = flag && other;
+      const disjunction = flag || other;
+      const fallback = note || "missing";
+      const equal = note === note;
+      const looseEqual = note == note;
+      const notEqual = note != note;
+      const strictNotEqual = note !== note;
+      const prompt = \`Status: \${note}\`;
+      void [conditional, negated, conjunction, disjunction, fallback, equal, looseEqual, notEqual, strictNotEqual, prompt];
+    `;
+    const diagnostics = (await checkAuthoring(source)).filter(diagnostic => diagnostic.code.startsWith("AL"));
+
+    expect(diagnostics).toEqual([
+      expectedDiagnostic(source, "AL001", "flag) {}", "Use step(\"id\").if({ condition, then, else }) for graph control; use lift(condition, value => ...) only to compute a value."),
+      expectedDiagnostic(source, "AL001", "flag ?", "Use lift(condition, value => value ? whenTrue : whenFalse) to compute a conditional value."),
+      expectedDiagnostic(source, "AL001", "!flag", "Use not(value) for a boolean predicate, or lift(value, value => !value) to compute a value."),
+      expectedDiagnostic(source, "AL002", "flag && other", "Use and(left, right) for boolean Expr operands."),
+      expectedDiagnostic(source, "AL002", "flag || other", "Use or(left, right) for boolean Expr operands."),
+      expectedDiagnostic(source, "AL002", "note || \"missing\"", "Use unary lift(value, value => value || \"fallback\") for a literal fallback, or pass both operands to binary lift."),
+      expectedDiagnostic(source, "AL003", "note === note", "Use eq(left, right) for equality over runtime values."),
+      expectedDiagnostic(source, "AL003", "note == note", "Use eq(left, right) for equality over runtime values."),
+      expectedDiagnostic(source, "AL003", "note != note", "Use ne(left, right) for inequality over runtime values."),
+      expectedDiagnostic(source, "AL003", "note !== note", "Use ne(left, right) for inequality over runtime values."),
+      expectedDiagnostic(source, "AL004", "`Status: ${note}`", "Use template or md from acpus/expression."),
+    ]);
+  });
+
+  it("reports one primary diagnostic for Expr-derived Task ids", async () => {
+    const diagnostics = await checkAuthoring(`
+      import type { Expr } from "acpus/expression";
+      declare const round: Expr<number>;
+      declare const dynamic: string;
+      declare const step: (id: string) => {
+        agent(spec: object): void;
+        task(spec: object): void;
+      };
+      step(\`agent_\${round}\`).agent({});
+      step((\`asserted_\${round}\` as string)).agent({});
+      step(\`task_\${round}\`).task({});
+      step(dynamic).task({});
+    `);
+
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "AL005")).toEqual([
+      expect.objectContaining({
+        code: "AL005",
+        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+      }),
+      expect.objectContaining({
+        code: "AL005",
+        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+      }),
+      expect.objectContaining({
+        code: "AL005",
+        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+      }),
+    ]);
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "TB004")).toEqual([
+      expect.objectContaining({ hint: expect.stringContaining("literal task step id") }),
+    ]);
   });
 
   it("leaves expression array properties and methods to TypeScript", async () => {
@@ -290,6 +357,23 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
+  it("distinguishes runtime undefined from an external lift capture", async () => {
+    const diagnostics = await checkAuthoringWithProgram(`
+      import { lift } from "acpus/expression";
+      declare const value: string | undefined;
+      const suffix = "!";
+      lift(value, current => current === undefined ? null : current);
+      lift(value, current => (current ?? "") + suffix);
+    `);
+
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([
+      expect.objectContaining({
+        message: "lift(...) callback cannot reference external binding 'suffix'.",
+        hint: "Add the value to lift's explicit dependency list and read it from the matching callback parameter; use a named object dependency when names matter.",
+      }),
+    ]);
+  });
+
   it("rejects invalid callback forms in one checked program", async () => {
     const callbackCases = [
       ["function expression", "lift(issue, function (value) { return value.title; })", "lift(...) callback must be an inline arrow function."],
@@ -305,6 +389,7 @@ describe("workflow authoring rules", () => {
       ["shadowed Math", "const Math = { max: (..._values: number[]) => 1 }; lift(issue, value => Math.max(value.count, 1))", "lift(...) callback cannot reference external binding 'Math'."],
       ["shadowed JSON", "const JSON = { stringify: (_value: unknown) => \"{}\" }; lift(issue, value => JSON.stringify(value))", "lift(...) callback cannot reference external binding 'JSON'."],
       ["shadowed Date", "const Date = { now: () => 0 }; lift(issue, value => Date.now() + value.count)", "lift(...) callback cannot reference external binding 'Date'."],
+      ["shadowed undefined", "const undefined = \"missing\"; lift(issue, value => value.title || undefined)", "lift(...) callback cannot reference external binding 'undefined'."],
       ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
       ["namespace capture", "expr.lift(issue, issue, issue, (a, b, c) => a.title + b.title + c.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
       ["nested default parameter", "lift(issue, value => value.labels.map((label = suffix) => label))", "lift(...) nested callback parameters must be simple identifiers or binding patterns."],
@@ -473,6 +558,18 @@ function analyzedIssue(issue: TaskAuthoringIssue): WorkflowTaskAnalysis extends 
 
 function codes(diagnostics: DiagnosticIR[]): string[] {
   return diagnostics.map(diagnostic => diagnostic.code);
+}
+
+function expectedDiagnostic(source: string, code: string, needle: string, hint: string): unknown {
+  const offset = source.indexOf(needle);
+  const prefix = source.slice(0, offset);
+  const line = prefix.split("\n").length;
+  const column = offset - prefix.lastIndexOf("\n");
+  return expect.objectContaining({
+    code,
+    hint,
+    source: expect.objectContaining({ line, column }),
+  });
 }
 
 async function filesUnder(root: string): Promise<string[]> {

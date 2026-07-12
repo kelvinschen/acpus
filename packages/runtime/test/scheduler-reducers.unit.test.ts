@@ -71,6 +71,15 @@ describe("scheduler identity and reducers", () => {
     expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{12}$/);
   });
 
+  it("gives a static loop-body node a distinct key in every iteration", () => {
+    const first = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "check"));
+    const second = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "check"));
+
+    expect(first).toMatch(/^retry#0\/check~[a-f0-9]{12}$/);
+    expect(second).toMatch(/^retry#1\/check~[a-f0-9]{12}$/);
+    expect(first).not.toBe(second);
+  });
+
   it("rebuilds frame, instance, attempt, group, branch, and signal projections from events", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
       { type: "control.paused", payload: {} },

@@ -44,6 +44,7 @@ export default defineWorkflow({
       draft: initial.output.nextDraft,
     },
     do({ round, state }) {
+      // This static id is reused safely; each loop iteration receives a distinct runtime nodeKey.
       const review = step("refine_round").agent({
         outputSchema: PlanOut,
         agent: agents.planner,

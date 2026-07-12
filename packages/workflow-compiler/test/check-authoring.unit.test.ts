@@ -136,6 +136,101 @@ describe("workflow check authoring diagnostics", () => {
     });
   });
 
+  it("leaves type-expressible Expr operations and durable undefined to TypeScript", async () => {
+    await withCheckWorkspace("workflow-native-expr-errors", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, z } from "acpus/core";
+        import { lift } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "native_expr_errors",
+          inputSchema: z.object({
+            count: z.number(),
+            limit: z.number(),
+            items: z.array(z.string()),
+            note: z.string().optional(),
+          }),
+        }).build(({ input }) => {
+          const incremented = input.count + 1;
+          const overLimit = input.count > input.limit;
+          const itemCount = input.items.length;
+          const missing = lift(input.note, note => note || undefined);
+          return { incremented, overLimit, itemCount, missing };
+        });
+      `);
+
+      expect(codes(result.diagnostics)).toEqual(["TS2345", "TS2365", "TS2339", "TS2769"]);
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("AL"))).toEqual([]);
+    });
+  });
+
+  it("accepts predicates, lift transforms, null absence, and static loop ids", async () => {
+    await withCheckWorkspace("workflow-expr-replacements", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, z } from "acpus/core";
+        import { gte, lift } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "expr_replacements",
+          inputSchema: z.object({
+            count: z.number(),
+            limit: z.number(),
+            items: z.array(z.string()),
+            note: z.string().optional(),
+          }),
+        }).build(({ input, step }) => {
+          const incremented = lift(input.count, count => count + 1);
+          const overLimit = gte(input.count, input.limit);
+          const itemCount = lift(input.items, items => items.length);
+          const note = lift(input.note, value => value ?? null);
+          const rounds = step("rounds").loop({
+            state: { count: 0 },
+            do({ round }) {
+              const current = step("current_round").task({
+                input: { round },
+                exec: async ({ input }) => ({ count: input.round }),
+              });
+              return { state: { count: current.output.count }, stop: gte(round, 2) };
+            },
+          });
+          return { incremented, overLimit, itemCount, note, rounds: rounds.output.count };
+        });
+      `);
+
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("reports only AL005 for Expr-derived ids inside a loop body", async () => {
+    await withCheckWorkspace("workflow-loop-dynamic-id", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+        import { gte } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "loop_dynamic_id",
+          agents: { worker: { use: "codex" } },
+        }).build(({ agents, step }) => {
+          const rounds = step("rounds").loop({
+            state: { count: 0 },
+            do({ round }) {
+              step(\`review_\${round}\`).agent({ agent: agents.worker, prompt: "review" });
+              const current = step(\`record_\${round}\`).task({
+                input: { round },
+                exec: async ({ input }) => ({ count: input.round }),
+              });
+              return { state: { count: current.output.count }, stop: gte(round, 2) };
+            },
+          });
+          return { count: rounds.output.count };
+        });
+      `);
+
+      expect(codes(result.diagnostics)).toEqual(["AL005", "AL005"]);
+      expect(result.diagnostics.every(diagnostic => diagnostic.hint?.includes("distinct nodeKey"))).toBe(true);
+    });
+  });
+
   it("accepts loop transition shorthand properties and still checks their types and keys", async () => {
     await withCheckWorkspace("workflow-loop-shorthand", async cwd => {
       const result = await runCheck(cwd, `

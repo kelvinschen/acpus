@@ -69,7 +69,7 @@ function isRuntimeGlobalIdentifier(node: ts.Identifier, semantic?: SemanticCaptu
     const declaration = handle.resolve(semantic.project);
     return declaration ? [declaration] : [];
   });
-  if (declarations.length === 0) return false;
+  if (declarations.length === 0) return RUNTIME_GLOBALS.has(node.text);
   if (declarations.every(declaration => semantic.program.isSourceFileDefaultLibrary(declaration.getSourceFile()))) return true;
   return RUNTIME_GLOBALS.has(node.text) && declarations.every(declaration => declaration.getSourceFile().isDeclarationFile);
 }
