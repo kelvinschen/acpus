@@ -37,12 +37,9 @@ Failure phases:
 - `compile`: module read/import/default-export/build failures.
 - `validate`: frozen IR structural diagnostics.
 
-Use `--json` when the exact phase matters. It is a discoverable global option
-and may appear before or after command names. For example, invalid `--agents`
-overrides are reported in the JSON `phase` field before any runtime admission.
+Use `--json` when the exact phase matters. It is a discoverable global option and may appear before or after command names. For example, invalid `--agents` overrides are reported in the JSON `phase` field before any runtime admission.
 
-`--input` accepts either inline strict JSON or a `.json` file path. The suffix
-is case-insensitive, and relative paths resolve from the CLI working directory:
+`--input` accepts either inline strict JSON or a `.json` file path. The suffix is case-insensitive, and relative paths resolve from the CLI working directory:
 
 ```sh
 acpus workflow check workflow.ts --input '{"topic":"release"}'
@@ -53,19 +50,13 @@ Use a file for realistic payloads instead of shell command substitution.
 
 ## Workflow run
 
-Foreground `--json` emits newline-delimited JSON: an admitted record followed
-by the same snapshot/update/resync/done stream as `runs inspect --follow`.
-Terminal workflow output appears exactly once in the done record. Text mode
-uses the same compact structural tree and follow renderer.
+Foreground `--json` emits newline-delimited JSON: an admitted record followed by the same snapshot/update/resync/done stream as `runs inspect --follow`. Terminal workflow output appears exactly once in the done record. Text mode uses the same compact structural tree and follow renderer.
 
-Use `--interval <duration>` to control the foreground observation cadence; it
-defaults to `1s` and cannot be lower than `250ms`. Background runs reject this
-option because they do not attach an observer.
+Use `--interval <duration>` to control the foreground observation cadence; it defaults to `1s` and cannot be lower than `250ms`. Background runs reject this option because they do not attach an observer.
 
 `Ctrl-C` during a foreground run detaches observation; it should not cancel the daemon-owned run. Use the printed run id and `acpus runs cancel <run-id>` only when cancellation is intended.
 
-For workflows that must receive a Signal, `--background` plus a follow view is
-usually the cleanest operator loop:
+For workflows that must receive a Signal, `--background` plus a follow view is usually the cleanest operator loop:
 
 1. Run once with `acpus workflow run <workflow.ts> --background --input sample-input.json`.
 2. Attach with `acpus runs inspect <run-id> --follow`; it remains attached while awaiting.
@@ -78,74 +69,57 @@ Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or glo
 
 ## Run inspection
 
-In interactive text terminals, omitting the run id opens the run picker.
-Read-only run inspection does not start or wake the daemon. It reports durable
-status plus derived execution state such as active, inactive, stale, terminal,
-or unknown.
+Read-only. Does not start or wake daemon. Omit run id in interactive TTY for picker.
 
-The default view is a bounded authored tree. Nested branches remain structural,
-loop rounds and fanout items keep their dynamic identity, and homogeneous
-completed contexts fold behind exact counts. Actionable current contexts are
-expanded first. When a signal is awaiting input, text output includes a prompt
-preview, payload guidance, and a copyable `runs signal` command.
-
-Choose the narrowest deeper view:
+**Mandatory:** Start with text. Never use `--json` for first inspection. When a concrete query needs JSON, always pipe through `jq` and select smallest useful fields. No `jq`: stay in text mode. `--raw --json`: last resort only.
 
 ```sh
+# Compact authored tree. Best first look.
+acpus runs inspect <run-id>
+
+# Stay attached. Do not poll with repeated inspect calls.
+acpus runs inspect <run-id> --follow
+
+# One node, frame, or attempt. Matching attempts, Signal details, current progress, artifact refs.
 acpus runs inspect <run-id> --target <nodeId-or-nodeKey-or-frameKey-or-attemptId>
+
+# Every normalized dynamic context.
 acpus runs inspect <run-id> --all
-acpus runs inspect <run-id> --raw --json
 ```
 
-`--target` provides full matching attempts, signal details, progress, and
-artifact references. `--all` expands every normalized dynamic context without
-raw scheduler tables. `--raw --json` is the explicit unbounded source bundle,
-including the complete frozen WorkflowIR under `.workflow`.
+Default tree keeps authored nesting and dynamic loop/fanout identity. Actionable contexts open; repeated completed contexts fold with exact counts. Awaiting Signal shows prompt, payload help, copyable signal command. Terminal view includes workflow output when present.
 
-Use `--follow` instead of repeatedly invoking inspect. TTY output redraws in
-place. Pipes print the compact tree once, append state transitions and compact
-Agent progress, and print a small liveness checkpoint after 30 seconds of
-otherwise silent observation. Agent progress identifies the authored Agent key
-and includes turn, activity, context/token counters, and at most three
-intent-only Last Tool Calls; it never prints command arguments or tool output.
-Semantic transcript rows use only `+<elapsed>` as their prefix; internal event
-sequence and Agent progress-version markers are intentionally omitted from text.
-When one observation contains both a terminal durable transition and matching
-terminal progress for the same Agent execution, text merges them into one
-information-complete row. Structured JSON/NDJSON does not apply this
-presentation merge: use `--follow --json` when exact event/progress cursors and
-replay order are needed.
-The default transcript retains 20 ordinary dynamic contexts, always preserves
-failure/timeout/await/retry contexts, and summarizes additional contexts with
-exact counts plus an `--all --follow` command.
-`--follow --json` emits sparse NDJSON updates and stays completely silent for
-clock-only checkpoints. The view remains attached through paused, awaiting,
-inactive, and stale states. `Ctrl-C` detaches without canceling the run.
+Follow text:
 
-Terminal text inspection includes the final workflow output when present. This is useful for operator handoffs.
+- TTY: redraw in place.
+- Pipe: initial tree, state changes, compact Agent progress, 30-second silent liveness checkpoint.
+- Agent progress: Agent key. When available: turn, activity, context/token counts, up to three tool intents. No tool arguments or output.
+- Transcript: `+<elapsed>` prefix. Matching terminal state/progress in same update merge into one row.
+- Bounded: 20 ordinary dynamic contexts. Failure, timeout, await, retry always kept. Use `--all --follow` for all.
+- Paused, awaiting, inactive, stale: stays attached. `Ctrl-C`: detach, never cancel.
 
-Default JSON inspection is also compact and versioned. It exposes normalized
-status items and exact omitted counts rather than raw frames, instances,
-attempts, groups, or execution-metadata tables. Use target or raw mode only
-when that additional scope is intentional.
+Need exact replay order and cursors:
 
-Failed Agent items expose a stable Acpus `failure.origin`/`failure.code`, an
-actionable message, and a bounded `failure.upstream` acpx summary. Target JSON
-adds the complete parsed upstream error data; raw ACP protocol lines remain
-separate from normal inspection.
+```sh
+acpus runs inspect <run-id> --follow --json |
+  jq -c '{kind, cursor, run: ((.run // .document.run) | {id, status}), changes: [.changes[]? | {sequence, progressVersion, subject, action, status}], output}'
+```
 
-Common compact queries do not require raw inspection:
+Sparse NDJSON. No clock-only records. No text presentation merge.
+
+Default JSON stays compact: normalized `.items`, exact omitted counts. Failed Agent item has stable `failure.origin`, optional `failure.code`, actionable message, bounded `failure.upstream`. Target JSON adds parsed upstream error data when available. Raw ACP lines stay outside normal inspection.
+
+Common queries need no raw mode:
 
 ```sh
 acpus runs inspect <run-id> --json |
-  jq '.items[] | select(.status == "running" or .status == "awaiting" or .status == "failed")'
+  jq '.items[] | select(.status == "running" or .status == "awaiting" or .status == "failed") | {nodeKey, status, failure}'
 
 acpus runs inspect <run-id> --json |
   jq '.items[] | select(.agent) | {nodeKey, status, agent: .agent.key, turn: .agent.turnCount, tools: .agent.tools}'
 ```
 
-Use raw mode only for an intentionally unbounded diagnostic query, for example
-an exact execution-metadata lookup:
+Raw mode only for exact internal lookup:
 
 ```sh
 acpus runs inspect <run-id> --raw --json |
@@ -175,22 +149,12 @@ If `use` or `command` changes identity, inherited `model` and `agentMode` are cl
 
 Controls route through the workspace daemon and wait only until the control is confirmed applied, failed, or the fixed client wait expires. They do not wait for the entire run to become terminal after the control effect.
 
-Success messages name that applied effect: `Retry applied.`, `Fork run
-created.`, and `Signal consumed.`. Signal success also reports the requested and
-resolved dynamic targets plus validation evidence without echoing payload.
-Fork JSON uses `.run` for the child and `control.sourceRunId` for the source; it
-uses no second child-id field.
+Success messages name that applied effect: `Retry applied.`, `Fork run created.`, and `Signal consumed.`. Signal success also reports the requested and resolved dynamic targets plus validation evidence without echoing payload. Fork JSON uses `.run` for the child and `control.sourceRunId` for the source; it uses no second child-id field.
 
-Successful non-terminal controls print an exact
-`acpus runs inspect <run-id> --follow` next step. Fork output uses the created
-child run id, not the source run id.
+Successful non-terminal controls print an exact `acpus runs inspect <run-id> --follow` next step. Fork output uses the created child run id, not the source run id.
 
-`runs delete` is not a control command. It hard-deletes durable run state and
-run-local artifacts without starting the daemon, rejects active live runs, and
-opens a multi-select picker with an all-deletable option when no run id is
-provided.
+`runs delete` is not a control command. It hard-deletes durable run state and run-local artifacts without starting the daemon, rejects active live runs, and opens a multi-select picker with an all-deletable option when no run id is provided.
 
-No `--no-wait` or custom timeout options are part of the next command surface.
 
 ## Hooks
 

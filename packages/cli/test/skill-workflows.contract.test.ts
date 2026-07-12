@@ -32,9 +32,6 @@ describe("skill workflow source contracts", () => {
         expect(discoverableHelpers(source, specifier), `${example.name}: ${specifier}`).toEqual(Object.keys(facade).sort());
       }
     }
-
-    const taskSource = await readFile(new URL("../skills/acpus/examples/workflows/issue-triage/tasks.ts", import.meta.url), "utf8");
-    expect(discoverableHelpers(taskSource, "acpus/core")).toEqual(Object.keys(core).sort());
   });
 });
 

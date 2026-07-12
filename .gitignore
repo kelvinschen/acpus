@@ -18,3 +18,4 @@ mock-trace.jsonl
 .pnpm-store
 .vscode
 eval
+benchmarks

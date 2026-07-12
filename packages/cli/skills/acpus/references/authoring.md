@@ -1,49 +1,31 @@
 # Authoring Workflows
 
-## Quick Start
+## Start
 
-Choose the closest file under `examples/workflows/` by its `Pattern` and
-`Nodes` header, then write the target workflow module directly. Validate it
-before running:
+Choose the closest `examples/workflows/` file by node coverage or pattern:
+
+| Example | Nodes | Pattern |
+| --- | --- | --- |
+| [`adversarial-review`](../examples/workflows/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
+| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, iteratively refine, optionally approve, and enforce a change plan. |
+| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Fan out issue triage, run branch work in parallel, and route by switch, with reusable task |
+| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel agent perspectives in a bounded synthesis loop. |
+| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Create parallel worktree implementations and have an agent judge them. |
+
+Write the workflow, then check it:
 
 ```sh
 acpus workflow check <workflow.ts-or-catalog>
 ```
 
-### Imports
-
-Use TypeScript workflow modules and user-facing facades only:
+Use public facades:
 
 ```ts
-import { defineWorkflow, task, z } from "acpus/core";
+import { defineWorkflow, z } from "acpus/core";
 import { template, md, eq, lte, gte, and, or, lift } from "acpus/expression";
-import { createWorktree } from "acpus/tasks/git";
 ```
 
-Import only the helpers the workflow uses. Official examples name the remaining
-public runtime helpers in import comments so each example exposes the complete
-authoring surface. For exact signatures, inspect the declarations listed under
-Declaration Lookup.
-
-Do not import `@acpus/*` from user workflows; those are implementation packages behind the `acpus/*` facades.
-
-Inside `build`, every run-dependent value from `input`, `meta`, and node `output` is an `Expr<T>` token. Field projection such as `review.output.ready` and array index projection such as `items[0]` are supported. Do not compute over expression values with authoring-time JavaScript; use workflow control nodes, predicate helpers, `template`/`md`, and `lift` for computed operations.
-
-Use this boundary rule consistently: a plain `T` field is declaration-time structure, while `Resolvable<T>` is evaluated from workflow scope at run time. Authors normally do not need to import `Resolvable`; the public node signatures reveal which fields support both literals and expressions. For example:
-
-```ts
-timeout: "5m",
-timeout: input.timeout, 
-maxConcurrency: input.parallelism, // Optional 
-count: input.quorum,  // Quorum `count` is required when in quorum mode
-onTimeout: {
-  message: template`Request ${input.requestId} timed out`,
-},
-```
-
-Node ids, strategies, schemas, task targets, agent selectors/model/modes, and permission modes stay static. Workflow-level Agent definition `cwd`/`env` fields are also static; Agent/Task step `cwd`/`env` fields are runtime-resolvable.
-
-### Minimal Workflow Skeleton
+Minimal workflow:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -51,7 +33,6 @@ import { template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "my-workflow",
-  description: "Analyze a topic in a repository.",
   inputSchema: z.object({ repoPath: z.string(), topic: z.string() }),
   agents: { worker: { use: "codex", model: "gpt-5.5" } },
 }).build(({ input, agents, meta, step }) => {
@@ -66,201 +47,99 @@ export default defineWorkflow({
 
 ## Mental Model
 
-### Why Expressions Exist
+`build` declares a static graph; it does not execute the workflow. Graph values such as `input`, `meta`, and node outputs are opaque `Expr<T>` tokens resolved later. Treat `Expr` like a functor: project fields/indexes directly; map or combine with `lift`. Use graph nodes for control flow. Composite callbacks declare static subgraphs instantiated by loop rounds, fanout items, or branches.
 
-Acpus workflows are TypeScript-authored durable graph definitions, not ordinary runtime TypeScript programs. `build` runs before any workflow run executes. Values from `input`, `meta`, and node `output` are therefore graph tokens: `Expr<T>`.
+## Core Rules
 
-An `Expr<T>` means "a value of type `T` that will exist at run time." You can project through it with field and index syntax, such as `review.output.ready` and `items[0]`, because those are still graph projections. You cannot use JavaScript control flow or operators over it at authoring time, because JavaScript would need the value immediately.
+- **Treat `input`, `meta`, and node outputs as `Expr<T>` runtime tokens.**
+- **Never use JS operators or control flow over `Expr`.** Use graph nodes, predicates, templates, or `lift`.
+- **Never capture outer vars or functions in `lift`.** Pass every dependency explicitly.
+- **Never capture outer vars or functions in inline Task `exec`.**  Inline task **MUST** self-contained, bind top-level Task `input`; read Task context.
+- **Inline Task first.** Define reusable Task only for reused logic or third-party package imports.
+- **Static step IDs only.** Loop/fanout instance paths create distinct runtime `nodeKey` values.
+- **Return named plain objects from workflow and composite callbacks.** Never return `Expr` or `NodeRef` directly.
+- **Read node results once through `.output`.** Never return `NodeRef`, even nested.
+- **Keep durable data JSON-compatible.** Use `null`, not `undefined`, for absence.
+- **Always check after editing.** Fix every diagnostic before running.
 
-Use graph nodes for control flow, predicate helpers for standard boolean conditions, `template`/`md` for rendered strings, and `lift` for custom computed values. Inside a `lift` callback, write normal JavaScript over plain runtime values.
+Static config includes node IDs, strategies, schemas, Task targets, agent selectors/models/modes, and permission modes.
 
-Choose the smallest runtime construct that matches the intent:
+## Expressions And Data
 
-| Intent | Use |
-| --- | --- |
-| Select workflow branches or repeat work | `if`, `switch`, `loop`, or `fanout` nodes |
-| Build a standard boolean condition | `eq`/`ne`, numeric predicates, or `not`/`and`/`or` |
-| Compute a value, fallback, arithmetic result, or array summary | `lift` |
-| Render a string without other computation | `template` or `md` |
+Project fields and array indexes directly: `review.output.ready`, `items[0]`.
+For other work:
 
-For example, use `step("route").if({ condition: input.ready, ... })` to select
-graph branches, but use `lift(input.ready, ready => ready ? "yes" : "no")` to
-compute a string value. Use `lift(input.note, note => note || "missing")` for a
-fallback; `or` combines boolean predicates and is not a general JavaScript `||`
-replacement.
+- Graph branches/repetition: `if`, `switch`, `loop`, `fanout`.
+- Scalar predicates: `eq`/`ne`, `lt`/`lte`/`gt`/`gte`, `not`/`and`/`or`.
+- Value transforms, fallbacks, arithmetic, array summaries: `lift`.
+- Rendered strings: `template` or `md`.
 
-### Expression Functions
-
-Prefer the standard predicate helpers when they express the whole condition:
+`eq`/`ne` use strict equality. Boolean helpers evaluate all operands; no short-circuit guarantee. Use unary, positional, or named-object `lift`:
 
 ```ts
-const isRelease = eq(input.kind, "release");
-const withinLimit = lte(selectedCount, input.maxItems);
-const shouldStop = or(input.ready, gte(round, 3));
-const canRelease = and(isRelease, withinLimit);
+const title = lift(input.issue, issue => issue.title.trim());
+const status = lift(input.kind, input.ready,
+  (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`);
+const overLimit = lift(
+  { count: input.count, limit: input.limit, urgent: input.urgent },
+  ({ count, limit, urgent }) => urgent || count > limit,
+);
+const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
 ```
 
-`eq`/`ne` use JavaScript strict equality over scalar values. `lt`/`lte`/`gt`/`gte` compare numbers. `not` negates one boolean, while `and`/`or` combine two or more booleans. Boolean operands are evaluated eagerly; `and` and `or` do not promise JavaScript short-circuit behavior.
-
-Think of `Expr` as a functor. The overloaded `lift` helper lifts a normal JavaScript function over one to three positional dependencies. A named object is one structured dependency, so use it when names matter or more values must be combined.
+`lift` callbacks must be inline synchronous arrows. Block bodies may use local declarations and control flow. Return `WorkflowData`: finite primitives, arrays, or plain objects.
 
 ```ts
-// Informal overloads:
+// Informal overloads of lift:
 lift :: Expr<A> -> (A -> B) -> Expr<B>
 lift :: Expr<A> -> Expr<B> -> ((A, B) -> C) -> Expr<C>
 lift :: Expr<A> -> Expr<B> -> Expr<C> -> ((A, B, C) -> D) -> Expr<D>
 ```
 
-Use unary `lift` for one dependency:
+Use unary `lift` for one dependency
+
+Use `template` for compact strings and `md` for multiline text. Interpolation renders scalars as strings and arrays/objects as compact JSON. Compute custom formatting first:
 
 ```ts
-const title = lift(input.issue, issue => issue.title.trim());
-const firstId = lift(input.items[0], item => item?.id ?? "none");
+const lines = lift(items, xs => xs.map(x => `- ${x.id}`).join("\n"));
+const prompt = md`Review:\n${lines}`;
 ```
 
-Use the binary or ternary overload for concise positional dependencies:
+Use native Zod 4 through `z` from `acpus/core`. Keep workflow input, Agent/Signal output, Task input, workflow output, and composite output durable. Exclude transforms, functions, promises, dates, maps, sets, bigint, symbols, class instances, non-finite numbers, sparse arrays, cycles, and `undefined`.
 
-```ts
-const statusLine = lift(
-  input.kind,
-  input.ready,
-  (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`,
-);
-```
+**Never write explicit `any`** in workflow entries;  Use `unknown` and narrow.
 
-Use named-object `lift` when names matter or there are many dependencies:
 
-```ts
-const overLimit = lift(
-  { priority: input.priority, selectedCount, maxItems: input.maxItems },
-  ({ priority, selectedCount, maxItems }) => priority === "high" || selectedCount > maxItems,
-);
-```
+## Nodes
 
-Callbacks are intentionally a simplified task-like surface:
+### Leaves
 
-- They must be inline synchronous arrows. Prefer an expression body for simple transforms; a block body may use local declarations and control flow.
-- They must not capture workflow/module-scope runtime values; pass every dependency explicitly through `lift`.
-- They must return `WorkflowData`: JSON-compatible primitives, arrays, or plain objects.
-
-### Templates
-
-Use `template` for compact strings and `md` for multiline prompts/messages. `md` trims surrounding blank lines and common indentation while preserving expression interpolation.
-
-Template interpolation renders strings directly, scalar non-strings with `String(value)`, and arrays/objects as compact JSON. For Markdown list rendering, compute explicit lines first:
-
-```ts
-const lines = lift(items, items => items.map(item => `- ${item.id}`).join("\n"));
-const prompt = md`
-  Review these items:
-  ${lines}
-`;
-```
-
-Agent prompts give a directly interpolated `ArtifactRef` to the Agent as its absolute local path. Explicit `${ref.uri}` interpolation keeps the logical URI, while a ref nested inside an interpolated object or array remains ordinary compact JSON.
-
-### Boundary Schemas
-
-Boundary schemas use the native Zod 4 `z` re-exported from `acpus/core`. Filesystem paths are ordinary `z.string()` fields; use field names and descriptions to explain their meaning. Infer schema values with `z.infer<typeof Schema>`.
-
-Keep workflow input, Agent output, Signal output, and values passed to reusable tasks JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
-
-Do not use explicit `any` in a workflow entry. `workflow check` reports every
-explicit `any` as `AL007`; use a precise type, or `unknown` followed by normal
-TypeScript narrowing before the value crosses an Acpus boundary.
-An `any` inherited from an imported helper becomes `never` when it reaches a
-workflow, composite, loop-state, or Task output seam, so it cannot be consumed.
-
-## Workflow Building Blocks
-
-### Leaf Nodes
-
-Leaf nodes do work or wait for external input. Keep options sparse; add schemas, timeouts, cwd, env, and artifacts only when the workflow needs them.
-
-Agent nodes run an ACP agent. Without `outputSchema`, `output` is text:
+Use `{ use: "<agent>" }` for configured agents. Read `acpx-agents.md` before using raw `{ command: "..." }` or choosing models. Omit `outputSchema` when natural-language text is enough. Omit `sessionKey` unless a multi-turn loop must reuse one agent session.
 
 ```ts
 const review = step("review").agent({
   agent: agents.reviewer,
   prompt: template`Review ${input.topic}`,
 });
-```
-
-Top-level agents use `use` for named acpx agents or `command` for raw ACP
-commands. Both accept a static optional `model`, validated by acpx; omit it for
-the agent default, and define separate Agent keys for different models. See
-`references/acpx-agents.md` for built-in agents and local discovery rules.
-
-Task nodes run local TypeScript glue. Bind workflow values through the step's top-level `input`; inside `exec`, use only task context:
-
-```ts
-const status = step("status").task({
+const facts = step("facts").task({
   input: { repoPath: input.repoPath },
   exec: async ({ input }) => ({ repoPath: input.repoPath, ok: true }),
 });
-```
-
-Reusable tasks declare a config-time input type witness and an executable body:
-
-```ts
-// tasks/normalize-name.ts
-import { task, z } from "acpus/core";
-
-export const normalizeName = task.define({
-  inputSchema: z.object({ name: z.string() }),
-  exec: async ({ input }) => ({ slug: input.name.toLowerCase() }),
-});
-```
-
-The `inputSchema` types `exec` and the call-site `input`; the runtime does not
-retain or parse it.
-
-```ts
-const normalized = step("normalize").task({
-  task: normalizeName,
-  input: { name: input.name },
-});
-```
-
-Signal nodes wait for operator input:
-
-```ts
 const approval = step("approval").signal({
   outputSchema: z.object({ approved: z.boolean() }),
   prompt: template`Approve ${review.output}?`,
 });
-```
-
-Assert nodes fail the run when an expression condition is false:
-
-```ts
 step("require_approval").assert({
   condition: approval.output.approved,
   message: "Approval denied.",
 });
 ```
 
-Inline task source is embedded in frozen IR. Reusable tasks can import package dependencies; inline tasks should stay self-contained.
+**Do not read `advanced-authoring.md` by default.** Read it only when the requirement needs reusable/prebuilt Tasks, third-party imports, artifacts, custom Task cwd/env/commands/timeouts, or cancellation handling.
 
-### Composite And Control Nodes
+### Composites And Control
 
-Composite node callbacks accept only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Declare nested nodes with the unified `step` provided by the enclosing `build` callback. Return a named plain object to declare output; do not add `outputSchema` to composites.
-
-The output rule is strict and uniform:
-
-- A `NodeRef` is a control handle. Read its result exactly once through
-  `.output`; never return the `NodeRef` itself, even nested in an object.
-- An `Expr` may be an object field, for example
-  `return { value: task.output.value }`, but cannot be the callback's direct
-  return value.
-- `parallel` with the default `all` strategy returns the branch record;
-  `race` returns `{ winner, result }`; `fanout` returns an array; `loop`
-  returns its final state.
-- Heterogeneous `if`, `switch`, and race branches remain unions. Project only
-  fields common to every branch directly; use `lift` to narrow before reading
-  a branch-specific field.
-
-`if` branches on one expression. Both branches should return compatible object shapes:
+Composite callbacks receive only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Use enclosing `step` for nested nodes. Return a named object. Do not add composite `outputSchema`.
 
 ```ts
 const gate = step("gate").if({
@@ -268,131 +147,49 @@ const gate = step("gate").if({
   then() { return { status: "ready" }; },
   else() { return { status: "blocked" }; },
 });
-```
-
-`switch` chooses the first matching case and requires `default`:
-
-```ts
 const route = step("route").switch({
-  cases: [
-    { when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } },
-  ],
+  cases: [{ when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } }],
   default() { return { owner: "backlog" }; },
 });
-```
-
-`parallel` runs static named branches:
-
-```ts
 const checks = step("checks").parallel({
   branches: {
     lint() { return { ok: true }; },
     test() { return { ok: true }; },
   },
 });
-```
-
-`fanout` expands a runtime array. Its output is an array:
-
-```ts
 const items = step("items").fanout({
   over: input.items,
-  do({ item }) {
-    const normalized = step("normalize_item").task({
-      input: { id: item.id },
-      exec: async ({ input }) => ({ id: input.id }),
-    });
-    return { id: normalized.output.id };
+  do({ item, itemIndex }) { return { item }; },
+});
+
+// access loop's output via `retry.output` instead of `retry.state`
+const retry = step("retry").loop({
+  state: { summary: "" },
+  do({ state, round }) {
+    return { state: { summary: state.summary }, stop: gte(round, 3) };
   },
 });
 ```
 
+Callbacks declare one static subgraph. Reuse inner static step IDs across loop rounds and fanout items.
 
-`loop` is a do-while primitive: it always runs one body round, carries `state`, and each body returns `{ state, stop }`. `loop.output` is the final `state`. Do not mirror runtime `index` or `round` into `state` unless downstream nodes need the final iteration number through `loop.output`.
+Default `parallel` returns the branch record.  Race returns `{ winner, result }`. Fanout returns an array; quorum returns accepted items.
 
-A loop or fanout callback declares one static subgraph. Keep inner `step` ids
-static across iterations; the runtime instance path already gives each round or
-item a distinct `nodeKey`.
+Loop is do-while and returns final state (access with `output`). Loop `index` starts at 0; `round` starts at 1. Give empty state arrays an explicit element type.
 
-```ts
-const refined = step("refine").loop({
-  state: { ready: false, summary: "" },
-  do({ state, index, round }) {
-    return {
-      state: {
-        ready: state.ready,
-        summary: state.summary,
-      },
-      stop: gte(round, 3),
-    };
-  },
-});
-```
+Heterogeneous if/switch/race outputs remain unions. Project common fields directly; 
 
-For `parallel({ strategy: "race" })`, output is `{ winner, result }`. For `fanout({ strategy: "quorum", count })`, output is the accepted item array. Loop `index` is 0-based and `round` is 1-based. Empty arrays in `state` need an explicit element type:
+use `lift` to narrow before branch-specific access.
 
-```ts
-type Round = { summary: string };
-const state = {
-  rounds: [] as Round[],
-};
-```
+## Check And Lookup
 
-## Best Practices
-
-### Structured Boundaries
-
-- Use the smallest structured boundary that the workflow actually needs.
-- Omit `outputSchema` when natural-language text is enough.
-- Add schemas only for values the workflow must branch on, fan out over, assert, or expose as machine-readable final output.
-- Let agents exchange Markdown when later agents can read the result directly.
-
-### Agent Sessions And Permissions
-
-- When the user has no agent preference, ask which agent to use.
-- Prefer `{ use: "<agent>" }` for built-in or locally configured acpx agents. Read `references/acpx-agents.md` before using `{ command: "..." }`.
-- Common built-ins visible at a glance: `codex`, `claude`, `gemini`, `cursor`, `copilot`, `qwen`, `trae`, `opencode`.
-- Check local availability with `command -v <binary>` before recommending a local agent.
-- Use `acpus runs retry` for control-plane retry after a failed run.
-- Omit `sessionKey` by default; set it only when a multi-turn loop explicitly needs the agent to reuse one session.
-- Omit `permissionMode` for normal authoring; use `permissionMode: "approve-reads"` only for agents that are explicitly not allowed to write, such as audit-only inspection.
-
-### Task Boundaries
-
-- Put reusable tasks in separate task modules when they need shared code or third-party packages installed with the workflow package.
-- Keep inline tasks self-contained: no third-party imports, module-scope environment reads, or module-scope captures.
-- Each Task attempt runs in a fresh Node process. Task module globals and module caches do not carry across tasks or retries.
-- Task artifacts use `artifact.write(name, string | Uint8Array, options?)`. Read files with Node `readFile` and serialize JSON with `JSON.stringify` before writing; there are no format-specific or file-copy helpers.
-- Use synchronous `artifact.path(ref)` for an absolute local path. The ref must arrive through Task input or come from that Task's own successful `artifact.write(...)`; arbitrary and cross-run refs are rejected.
-- The Task step's `cwd` is the Task process cwd: `process.cwd()`, relative Node filesystem calls, and default `$` commands all use it. Relative cwd values resolve from the workflow workspace, and the directory must exist before the attempt starts.
-- The Task step's `env` overlays the host environment. `process.env`, task context `env`, module top-level code, and default `$` commands see the same effective values.
-- A Task may call `process.chdir(...)` or update `process.env`; later relative Node operations and default `$` commands follow the changed process state.
-
-### Expression And Schema Hygiene
-
-- Start from the closest example by its file-header `Pattern` and `Nodes` labels; inspect declarations only when the examples do not answer the API question.
-- Use graph-level composites instead of JavaScript control flow over expression values.
-- Use field/index projection directly (`review.output.ready`, `items[0]`).
-- Prefer `eq`/`ne`, numeric comparisons, and `not`/`and`/`or` for standard predicates.
-- Use `lift` for small synchronous JSON transforms; prefer expression bodies, and use a short block when named intermediate values improve clarity.
-- Use `template` for compact strings and `md` for multiline prompts/messages.
-- Use signal nodes only when the workflow needs external control.
-- Keep graph-boundary schema values JSON-compatible and durable.
-
-## Validation And API Lookup
-
-### Workflow Check
-
-`acpus workflow check <workflow.ts-or-catalog>` prepares the workflow in memory and catches TypeScript diagnostics plus Acpus authoring diagnostics such as Expr truthiness, native operators over Expr values, dynamic node ids, task callsites that cannot be joined to task metadata, inline task captures, and non-admissible outputs.
-
-Output-shape mistakes such as returning `Expr`/`NodeRef` directly, omitting
-`.output`, or reading an unsafe union field remain native TypeScript diagnostics;
-Acpus does not duplicate or rewrite them.
-
-Run `acpus workflow check <workflow.ts-or-catalog>` before admitting a run.
+`workflow check` runs TypeScript plus Acpus authoring checks without admitting a run. Output-shape errors, unsafe union access, arithmetic over `Expr`, and array methods on `Expr` may remain native TypeScript diagnostics.
 
 ### Declaration Lookup
-Only when exact API usage is unclear, inspect installed declarations, never lookup it at first:
 
-1. Run the current CLI's `acpus doctor --json | jq ".authoring.imports"`.
-2. Select the relevant absolute path from `typesPath`, retrieve only the relevant symbol plus nearby doc comment/signature; do not dump full declaration files .
+Inspect declarations only when examples do not answer exact usage:
+
+1. Run `acpus doctor --json | jq ".authoring.imports"` with the current CLI.
+2. Read the relevant `typesPath` symbol and nearby signature only.
+
+For retry or run control, read `runtime-recovery.md`.

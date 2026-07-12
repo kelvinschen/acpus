@@ -24,15 +24,11 @@
 
 3. Choose the smallest safe action.
 
-Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when the compact
-tree identifies the relevant execution. Use `--all` only when every repeated
-fanout or loop context is needed. These views stay normalized and status-first;
+Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when the compact tree identifies the relevant execution. Use `--all` only when every repeated fanout or loop context is needed. These views stay normalized and status-first; 
 `--raw --json` is the explicit unbounded diagnostic fallback.
 
-Agent failures preserve Acpus origin/code separately from their upstream acpx
-cause. Compact text shows the actionable upstream detail and bounded acpx code;
-use target JSON for the complete parsed JSON-RPC error data. Do not infer an
-authentication, model, or quota category from provider error wording.
+Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Compact text shows the actionable upstream detail and bounded acpx code;
+use target JSON for the complete parsed JSON-RPC error data. Do not infer an authentication, model, or quota category from provider error wording.
 
 ## Phase-based fixes
 
@@ -71,8 +67,7 @@ Use `--unsafe-reuse` when the user clearly wants to reuse earlier completed node
 
 ## Signal
 
-Compact inspection gives a copyable command; target inspection exposes the
-complete persisted prompt and schema. General form:
+Compact inspection gives a copyable command; target inspection exposes the complete persisted prompt and schema. General form:
 
 ```sh
 acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json-or-string>'
@@ -108,45 +103,48 @@ Ask before canceling unless the user already clearly requested cancellation.
 
 ## Stale non-terminal execution
 
-`runs inspect` may report non-terminal execution as stale based on daemon
-heartbeat or lease evidence. Do not mutate state just because a run is stale.
-An attached `--follow` view remains read-only and continues waiting through a
-stale state. Run `acpus doctor`, and choose a control only when the user asks to
-recover or continue.
+`runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. Do not mutate state just because a run is stale.
+An attached `--follow` view remains read-only and continues waiting through a stale state. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
 
 ## Artifact reading
 
 Prefer artifact references from `runs inspect <run-id> --target <target> --json`.
-Do not guess at run-local paths unless inspection exposes them. Typical
-run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is
-under `.acpus/.local/state/runtime.db`.
+Do not guess at run-local paths unless inspection exposes them. Typical run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is under `.acpus/.local/state/runtime.db`.
 
 Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.
 
 ## Agent telemetry
 
-`runs inspect --json` is a bounded status-first projection. Use
-`runs inspect <run-id> --target <agent-node-or-attempt> --json` for complete
-matching attempt history, progress, session/turn summaries, stop reason, and
-artifact references. Artifact contents remain separate and lazy. Use
-`--raw --json` only when the unbounded run/frozen-WorkflowIR/artifact bundle is
-specifically required. Full authored Agent commands are available under
-`.workflow.agents`; compact inspection never exposes them.
+Start with text follow:
 
-Schema-backed response repair stays within one scheduler-visible Agent attempt.
-Its effective `responseRepairMax` comes from the daemon host environment and is
-recorded in attempt metadata; it is unrelated to `acpus runs retry`, which
-creates a new scheduler attempt after failure.
+```sh
+acpus runs inspect <run-id> --follow
+```
 
-During an active run, prefer non-TTY `--follow` output when operating through
-an agent or pipe. Its progress rows report the authored Agent key, last
-activity, current turn, context/token counters, and up to three intent-only tool
-commands. Semantic rows start with elapsed run time, such as `+14s`; text omits
-event-sequence and progress-version identifiers because append order already
-communicates operator-visible chronology. Matching terminal transition and
-Agent progress from one observation are merged into one complete text row. Use
-structured JSON/NDJSON for an unmerged projection; `--follow --json` preserves
-the separate, ordered changes and exact durable-event, progress-version, and
-cursor values. A 30-second checkpoint means observation is still attached; it
-does not indicate a runtime state transition. Silence between changes or
-checkpoints does not mean the run has stopped.
+Shows authored Agent key and available activity, turn, context/token counts, and up to three tool intents. Pipe rows use `+<elapsed>`. A 30-second checkpoint means still attached, not a runtime transition.
+
+Need one Agent execution:
+
+```sh
+acpus runs inspect <run-id> --target <agent-node-or-attempt>
+```
+
+Shows matching attempts, current Agent state, stop reason, artifact refs. Artifact contents stay separate.
+
+Need exact cursors and unmerged changes:
+
+```sh
+acpus runs inspect <run-id> --follow --json |
+  jq -c '{kind, cursor, run: ((.run // .document.run) | {id, status}), changes: [.changes[]? | {sequence, progressVersion, subject, action, status}], output}'
+```
+
+Text may merge matching terminal state/progress from one update. NDJSON keeps both.
+
+Need one full authored Agent definition:
+
+```sh
+acpus runs inspect <run-id> --raw --json |
+  jq '.workflow.agents["<agent-key>"]'
+```
+
+Response repair stays within one scheduler attempt. `responseRepairMax` comes from daemon environment and is recorded in attempt metadata. `acpus runs retry` creates a new attempt.

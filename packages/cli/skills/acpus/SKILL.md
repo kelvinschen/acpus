@@ -12,20 +12,20 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 ## Route the request
 
 - **Author or adapt:** Read `references/authoring.md` completely before editing. For new workflows, choose the closest file under `examples/workflows/` by its `Pattern` and `Nodes` header, then write the target workflow module directly.
+- **Advanced Task authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, or cancellation handling.
 - **Check, run, list, or show:** Read `references/cli-operations.md` and use `acpus <cmd> --help` for exact syntax.
 - **Inspect or control a run:** Read `references/runtime-recovery.md`; inspect before retry, fork, signal, cancel, pause, resume, or delete.
 - **Configure hooks:** Read `references/hooks-json.md`.
 - **Choose an agent:** Read `references/acpx-agents.md` when built-in or local agent availability matters.
-- **Explain concepts:** Read the focused reference above; use `references/authoring.md` for workflow, node, expression, schema, Task, or artifact semantics.
+- **Explain concepts:** Use `references/authoring.md` for workflow, node, expression, schema, or inline Task semantics. Use `references/advanced-authoring.md` only for its gated Task topics.
 
 Re-route when the request changes materially.
 
-## Authoring guardrails [Mandatory]
+## Inspection guardrails [Mandatory]
 
-- **NEVER treat graph tokens from input, meta, or node output as ordinary JavaScript values during graph construction**. **NEVER apply JavaScript operators or control flow to them**. These tokens are Expr<T> values resolved at run time. Use overloaded `lift` to map or combine tokens, and graph nodes for control flow.
-- **NEVER hide dependencies inside `lift`. NEVER capture outer values.** Pass every dependency as an argument; callbacks are inline synchronous computations over resolved values.
-- **NEVER capture workflow values inside inline Task `exec`.** Bind every workflow dependency through the Task step's top-level `input` and read it from Task context; use `task.define` for imports or shared code.
-- **ALWAYS run `acpus workflow check <workflow.ts-or-catalog>` after editing.** Resolve every error before running.
+- **NEVER start run inspection with `--json`.** Start with compact text; add `--target` or `--all` only when needed.
+- **ALWAYS pipe inspection `--json` or NDJSON through `jq`.** Select only fields needed for the current question. If `jq` is unavailable, stay in text mode.
+- **Use `--raw --json` only as last-resort diagnostics**, with a focused `jq` query. Never load the unbounded bundle into context by default.
 
 ## Safety
 
