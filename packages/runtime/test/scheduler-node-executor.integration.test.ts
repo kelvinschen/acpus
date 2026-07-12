@@ -18,6 +18,7 @@ import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.j
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
+import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
 
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -54,7 +55,8 @@ afterEach(() => {
   restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
 });
 
-type TestRuntimeNodeExecutorInput = RuntimeNodeExecutorInput & {
+type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & {
+  agentHostPolicy?: AgentHostPolicy;
   executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   taskAttemptRunner?: TaskAttemptRunner;
 };
@@ -66,13 +68,14 @@ function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (r
 }
 
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
-  const { executeAgentTurn, taskAttemptRunner, ...productionInput } = input;
+  const { executeAgentTurn, taskAttemptRunner, agentHostPolicy = loadAgentHostPolicy(process.env), ...productionInput } = input;
   if (executeAgentTurn) executorMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
   if (taskAttemptRunner) executorMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);
-  return createRuntimeNodeExecutorProduction(productionInput);
+  return createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy });
 }
 
-type TestAgentExecutorOptions = Parameters<typeof executeAgentNodeProduction>[2] & {
+type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy"> & {
+  hostPolicy?: AgentHostPolicy;
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
 };
 
@@ -81,9 +84,9 @@ function executeAgentNode(
   scope: Parameters<typeof executeAgentNodeProduction>[1],
   options: TestAgentExecutorOptions,
 ) {
-  const { executeTurn, ...productionOptions } = options;
+  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), ...productionOptions } = options;
   if (executeTurn) executorMocks.executeAgentTurn.mockImplementation(executeTurn);
-  return executeAgentNodeProduction(node, scope, productionOptions);
+  return executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy });
 }
 
 describe("runtime scheduler node executor", () => {
@@ -711,6 +714,31 @@ describe("runtime scheduler node executor", () => {
           { item: "a", value: "a-second" },
           { item: "b", value: "b-second" },
         ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("passes the configured per-run leaf ceiling into frozen-run scheduling", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-run-leaf-ceiling", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootFanoutWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: run.id,
+          ownerId: "owner-a",
+          store,
+          maxLeafConcurrency: 1,
+        })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
+
+        const firstNodes = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances)
+          .filter(instance => instance.nodeId === "first_task");
+        expect(firstNodes.filter(instance => instance.status === "completed")).toHaveLength(1);
+        expect(firstNodes.filter(instance => instance.status === "ready")).toHaveLength(1);
       } finally {
         store.close();
       }
@@ -2325,9 +2353,11 @@ describe("runtime scheduler node executor", () => {
       if (!node || node.kind !== "agent") throw new Error("expected review agent node");
       const store = await openRuntimeStore(workspace);
       const turns: AgentTurnRequest[] = [];
+      const previousRawDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG;
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
-        await expect(withAgentResponseRepairMax("1", () => withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
+        process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "0";
+        await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
           cwd: workspace,
           runId: run.id,
           nodeKey: "review.dynamic",
@@ -2335,19 +2365,29 @@ describe("runtime scheduler node executor", () => {
           attemptNo: 1,
           store,
           agents: prepared.ir.agents,
+          hostPolicy: loadAgentHostPolicy({
+            ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1",
+            ACPUS_AGENT_RAW_ACP_DEBUG: "1",
+          }),
           executeTurn: async request => {
             turns.push(request);
-            if (turns.length === 1) process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX = "0";
+            if (turns.length === 1) {
+              process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX = "0";
+              process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "0";
+            }
             return completedAgentTurn(turns.length === 1 ? "not json" : "{\"ok\":true}");
           },
-        })))).resolves.toEqual({ ok: true });
+        }))).resolves.toEqual({ ok: true });
 
         expect(turns).toHaveLength(2);
         expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
+        expect(turns.map(turn => turn.captureRawDebug)).toEqual([true, true]);
         expect(turns.map(turn => turn.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX)).toEqual(["0", "0"]);
+        expect(turns.map(turn => turn.env.ACPUS_AGENT_RAW_ACP_DEBUG)).toEqual(["0", "0"]);
         const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
         expect(metadata).toMatchObject({ responseRepairMax: 1, turnCount: 2 });
       } finally {
+        restoreEnv("ACPUS_AGENT_RAW_ACP_DEBUG", previousRawDebug);
         store.close();
       }
     });
@@ -3765,14 +3805,14 @@ function hostRepairBudgetAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-host-repair-budget",
     agents: {
-      reviewer: { use: "codex", env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" } },
+      reviewer: { use: "codex", env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0", ACPUS_AGENT_RAW_ACP_DEBUG: "0" } },
     },
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       agent: agents.reviewer,
       prompt: "review",
-      env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" },
+      env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0", ACPUS_AGENT_RAW_ACP_DEBUG: "0" },
     });
     return {};
   });
@@ -4104,6 +4144,7 @@ function replaceCompletedInstanceEventOutput(workspace: string, runId: string, n
       runId,
       nodeKey,
     );
+    db.prepare("DELETE FROM scheduler_projection_checkpoints WHERE run_id = ?").run(runId);
   } finally {
     db.close();
   }

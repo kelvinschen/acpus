@@ -7,6 +7,13 @@ export {
   type DaemonLoopOptions,
 } from "./daemon/loop.js";
 export {
+  tryLoadRuntimeConfiguration,
+  type AgentHostPolicy,
+  type AgentHostPolicyFailure,
+  type RuntimeConfiguration,
+  type RuntimeConfigurationFailure,
+} from "./configuration.js";
+export {
   daemonEndpoint,
   requestDaemonAdmitRun,
   requestDaemonControl,

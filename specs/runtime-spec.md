@@ -61,7 +61,14 @@
 ### Durable Scheduler And Execution
 
 - The runtime MUST advance admitted frozen `WorkflowIR` through an internal durable scheduler.
-- The scheduler MUST persist scheduler events in the public event stream using a scheduler envelope and MUST rebuild scheduler projection state from those events.
+- The scheduler MUST persist scheduler events in the public event stream using a scheduler envelope. Scheduler events MUST remain the sole durable facts for scheduler decisions.
+- Scheduler projection checkpoints and normalized projection tables MUST be transactionally derived from scheduler events. A scheduler transaction MUST atomically fence the owner and expected version, append events, apply normalized projection-row deltas, update the public projection, and persist any required checkpoint.
+- Normal scheduler snapshot loads MUST begin from a durable full-projection checkpoint and apply only scheduler events after its event sequence. An in-process snapshot cache MAY avoid decoding an empty tail, but MUST be published only after the corresponding SQLite transaction commits.
+- Admission MUST create an empty scheduler projection checkpoint. The scheduler MUST persist a new full checkpoint after at most 256 additional event sequences and MUST checkpoint terminal, paused, and explicitly released runs. A recovered scheduler MUST therefore apply at most 255 unchecked tail events after the most recent cadence checkpoint.
+- A missing checkpoint MUST cause one full event reduction from empty state. A read-only store MUST NOT persist that result; a writable store MUST persist it in the next scheduler transaction.
+- A checkpoint behind the event stream MUST be advanced by reducing its tail. Malformed checkpoint JSON, a checkpoint for another run, and a checkpoint sequence ahead of the event stream MUST fail as store invariants and MUST NOT be silently replaced.
+- Scheduler decisions MUST use checkpoint-plus-tail state rather than normalized projection tables. Projection-table drift MUST NOT change scheduler decisions; full reduction from events MAY be used only for missing-checkpoint bootstrap, read-only integrity verification, and internal drift audits.
+- The scheduler hot write path MUST use UPSERT and DELETE deltas for changed frames, dynamic node instances, attempts, group members, and signal waits. It MUST NOT delete and reinsert complete per-run projection tables or decode the complete event history.
 - Scheduler store control-flow failures MUST use stable tagged `SchedulerStoreError` values at the store-port boundary.
 - Scheduler store-port `try*` operations for snapshots, event appends,
   attempts, signal consumption, pause, resume, retry, and expired-owner
@@ -74,6 +81,9 @@
   failures MUST be translated at the daemon boundary to a stable daemon error
   code and message.
 - Scheduler advance logic MUST branch on scheduler store error tags and MUST NOT parse exception messages for lease, pause, version, or stale terminal control flow.
+- Derived transition draining MUST yield to the event loop after every committed batch, renew and verify the run owner lease on every batch, and return an internal `lease_lost` result when fencing fails. It MUST stop with an invariant failure after 1,000 consecutive derived batches without quiescing.
+- The daemon MUST read `ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY` once at startup as the per-run Task/Agent attempt concurrency ceiling. An absent value MUST default to 32. A present value MUST be a canonical positive decimal safe integer; invalid values MUST fail daemon startup before runtime store or socket creation rather than silently using the default.
+- Effective leaf concurrency MUST be the lower of the daemon's per-run ceiling and every applicable durable Parallel/Fanout `maxConcurrency`. Restarting the daemon MAY change the operational per-run ceiling for an unfinished run; this host capacity setting MUST NOT be frozen into workflow IR or persisted as a scheduler fact.
 - Scheduler store error tags MUST preserve user-facing messages separately from machine-readable fields such as `runId`, `attemptId`, `expectedVersion`, `actualVersion`, and `ownerEpoch`.
 - Scheduler store error tags MUST include recoverable idempotency conflicts,
   missing retry targets, and invalid retry targets without requiring callers to
@@ -299,9 +309,10 @@
   `ACPUS_RUNTIME_RUN_ID`, `ACPUS_RUNTIME_NODE_ID`, `ACPUS_RUNTIME_NODE_KEY`, and
   `ACPUS_RUNTIME_ATTEMPT` environment variables when the corresponding
   scheduler context exists.
-- Runtime-owned `ACPUS_RUNTIME_*` environment variables MUST be overwritten or
-  deleted before invoking acpx so stale host or node environment values cannot
-  create mixed scheduler identity.
+- The four scheduler identity environment variables above MUST be overwritten
+  or deleted before invoking acpx so stale host or node environment values
+  cannot create mixed scheduler identity. Other host `ACPUS_RUNTIME_*`
+  operational settings remain ordinary inherited host environment values.
 - Absent effective `permissionMode` MUST default to `approve-all`.
 - Agent overrides MUST support only `use`, `command`, `model`,
   `permissionMode`, `agentMode`, `cwd`, and `env`. Overrides MUST reject unknown
@@ -352,7 +363,7 @@
   required numeric form, and daemon-start environment boundary. Schema-less
   Agents MUST ignore the variable and use an effective response-repair max of
   zero.
-- The daemon MUST read this policy from its own process environment. Changes to
+- The daemon MUST read this policy once at startup from its own process environment. Changes to
   a caller shell environment MUST affect later attempts only after the daemon is
   restarted with that environment.
 - Response repair turns MUST reuse the same acpx session, use the fixed
@@ -383,6 +394,9 @@
   a turn metadata reference. Other values MUST leave raw ACP debug artifact
   capture disabled. Raw ACP debug artifacts MUST NOT affect scheduling,
   response repair or conformance decisions.
+- The daemon MUST capture the raw ACP debug policy once at startup. Every turn
+  in an Agent attempt MUST use that captured value, and caller-shell changes
+  MUST require a daemon restart.
 - Each scheduler-backed schema-backed acpx turn that parses JSON from the
   agent response MUST write the raw parsed value as a diagnostic artifact and
   expose that artifact reference in turn metadata. Raw parsed output MUST NOT
@@ -731,6 +745,10 @@
 - Tests MUST cover workflow input and signal payload normalization.
 - Tests MUST cover read-only list/show/status APIs without live source reads or state creation for missing stores.
 - Tests MUST cover scheduler execution of supported assert, if, switch, parallel, fanout, loop, dynamic identity, durable branch decisions, group completion, cancellation, retry, and timeout transitions.
+- Tests MUST prove that checkpoint-plus-tail reduction equals full reduction across scheduler event families; that missing, lagging, malformed, and ahead-of-log checkpoints follow their recovery semantics; and that event, checkpoint, normalized projection deltas, and public status commit or roll back atomically.
+- Tests MUST verify 10,000-event hot snapshot and small-append p95 below 100 ms, prove that restart reads only checkpoint tail events, and prove that small appends write only changed normalized projection rows.
+- Tests MUST cover short-lease nested derived transitions without owner-epoch crashes or superseded current-owner attempts, including event-loop yielding and lease renewal during drain.
+- Tests MUST cover the default, valid, and invalid `ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY` forms and prove that the configured ceiling reaches frozen-run scheduling while durable group limits can only reduce it.
 - Tests MUST cover expression evaluation, duration range and deadline representability, template rendering, operator errors, and boolean operand failures.
 - Tests MUST cover malformed persisted attempt and signal deadlines in durable events and projection rows, including daemon due-work selection rejecting corrupted signal deadlines, the daemon closing on that permanent tick failure while retrying transient store-busy failures, active-tick shutdown waiting, and teardown completion after lease-release failure.
 - Tests MUST cover persisted Agent deadlines becoming remaining numeric millisecond budgets, malformed Agent deadlines not invoking the executor, distant Task deadlines not overflowing native timers, setup-expired and malformed Task deadlines not starting a runner, synchronous Task startup accounting, deadline-first child result/artifact/error arbitration, and chunked timeout behavior under delayed callbacks and backward wall-clock changes.
@@ -752,6 +770,9 @@
   history, session context, and compact telemetry summaries.
 - Tests MUST cover the `ACPUS_AGENT_RAW_ACP_DEBUG=1` diagnostic switch and the
   default absence of raw ACP debug artifacts.
+- Tests MUST prove that response-repair and raw-debug host policies are captured
+  before Agent execution, remain fixed across repair turns and scheduler drives,
+  and cannot be changed by authored Agent environments.
 - Tests MUST cover raw parsed schema-backed agent output artifacts and prove
   they remain diagnostic rather than workflow-visible output.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, typed control effects, fork child-centric result identity, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.

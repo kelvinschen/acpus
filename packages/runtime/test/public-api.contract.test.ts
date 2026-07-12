@@ -29,6 +29,7 @@ describe("@acpus/runtime public API", () => {
       "requestDaemonShutdown",
       "requestDaemonStatus",
       "startDaemonLoop",
+      "tryLoadRuntimeConfiguration",
       "validateAgentOverrides",
       "validateHooksFile",
     ]);

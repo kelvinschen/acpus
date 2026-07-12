@@ -6,8 +6,8 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallTelemetry, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnTelemetry } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
-import { err, ok, type Result } from "neverthrow";
 import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
+import type { AgentHostPolicy } from "../configuration.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { ResolutionException, resolveOrThrow, tryResolveString } from "../evaluation/resolvable.js";
@@ -17,8 +17,6 @@ import type { NodeProgressWriter } from "../progress/writer.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
-const DEFAULT_RESPONSE_REPAIR_MAX = 2;
-const RESPONSE_REPAIR_MAX_ENV = "ACPUS_AGENT_RESPONSE_REPAIR_MAX";
 const PROGRESS_FLUSH_INTERVAL_MS = 1_000;
 const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
 const PROGRESS_TOOL_LIMIT = 3;
@@ -52,6 +50,7 @@ export type AgentExecutorOptions = {
   cwd: string;
   runId?: string;
   agents: WorkflowIR["agents"];
+  hostPolicy: AgentHostPolicy;
   nodeKey?: string;
   attemptId?: string;
   attemptNo?: number;
@@ -108,13 +107,17 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     const definition = options.agents[node.run.agent];
     if (!definition) throw new Error(`Agent '${node.run.agent}' is not declared.`);
     if (node.outputSchema) {
-      const configured = tryResponseRepairMax(process.env[RESPONSE_REPAIR_MAX_ENV]);
-      if (configured.isErr()) {
+      if (options.hostPolicy.responseRepair.type === "invalid") {
+        const failure: AgentNodeFailure = {
+          origin: "runtime",
+          code: "invalid_agent_response_repair_max",
+          message: options.hostPolicy.responseRepair.failure.message,
+        };
         responseRepairMax = null;
-        await writeTerminalState("failed", configured.error.message);
-        throw new AgentNodeExecutionError(configured.error);
+        await writeTerminalState("failed", failure.message);
+        throw new AgentNodeExecutionError(failure);
       }
-      responseRepairMax = configured.value;
+      responseRepairMax = options.hostPolicy.responseRepair.max;
     } else {
       responseRepairMax = 0;
     }
@@ -155,9 +158,9 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     let prompt = plainContinuation
       ? renderedPromptForMetadata
       : buildAgentPrompt(renderedPromptForMetadata, node.outputSchema);
+    const captureRawDebug = options.hostPolicy.captureRawAcpDebug;
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
-      const captureRawDebug = shouldCaptureRawAcpDebug();
       const onProgress = createAgentProgressReporter(node, options, turn + 1);
       const request = {
         ...turnBase,
@@ -221,23 +224,6 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
     message: failure.message,
     ...(failure.upstream ? { upstream: failure.upstream } : {}),
   };
-}
-
-function tryResponseRepairMax(value: string | undefined): Result<number, Extract<AgentNodeFailure, { origin: "runtime" }>> {
-  if (value === undefined) return ok(DEFAULT_RESPONSE_REPAIR_MAX);
-  if (/^(0|[1-9]\d*)$/.test(value)) {
-    const parsed = Number(value);
-    if (Number.isSafeInteger(parsed)) return ok(parsed);
-  }
-  return err({
-    origin: "runtime",
-    code: "invalid_agent_response_repair_max",
-    message: `Environment variable ${RESPONSE_REPAIR_MAX_ENV} must be a canonical non-negative decimal safe integer; set it before starting the Acpus daemon.`,
-  });
-}
-
-function shouldCaptureRawAcpDebug(): boolean {
-  return process.env.ACPUS_AGENT_RAW_ACP_DEBUG === "1";
 }
 
 function applyRuntimeAgentEnv(env: NodeJS.ProcessEnv, nodeId: string, options: AgentExecutorOptions): void {

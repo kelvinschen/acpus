@@ -11,12 +11,14 @@ import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
 import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput } from "./store-port.js";
 import { indexNodes } from "./ir-walk.js";
+import type { AgentHostPolicy } from "../configuration.js";
 
 export type RuntimeNodeExecutorInput = {
   cwd: string;
   ir: WorkflowIR;
   scope: EvaluationScope;
   store: RuntimeStore;
+  agentHostPolicy: AgentHostPolicy;
   progressWriter?: NodeProgressWriter;
 };
 
@@ -42,7 +44,7 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
       }
       if (node.kind === "agent") {
         try {
-          return completedResult(await executeAgent(node, scope, context, input), false);
+          return completedResult(await executeAgent(node, scope, context, input, input.agentHostPolicy), false);
         } catch (error) {
           if (error instanceof ResolutionException) return resolutionFailure(error);
           if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
@@ -77,11 +79,12 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
   });
 }
 
-async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput): Promise<unknown> {
+async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput, agentHostPolicy: AgentHostPolicy): Promise<unknown> {
   return executeAgentNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
     agents: input.ir.agents,
+    hostPolicy: agentHostPolicy,
     nodeKey: context.nodeKey,
     attemptId: context.attemptId,
     attemptNo: context.attemptNo,

@@ -9,6 +9,7 @@ import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { loadAgentHostPolicy } from "../src/configuration.js";
 
 describe("runtime scheduler task process", () => {
   it("boots a frozen root task into durable scheduler projection and executes it", async () => {
@@ -100,6 +101,7 @@ describe("runtime scheduler task process", () => {
           ir: prepared.ir,
           scope: {},
           store,
+          agentHostPolicy: loadAgentHostPolicy(process.env),
         });
 
         const result = await executor.execute({

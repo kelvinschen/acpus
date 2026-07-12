@@ -8,19 +8,24 @@ import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
 import type { HookRunner } from "../hooks/runner.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import type { FrozenRun, RuntimeStore } from "../store/store.js";
-import { advanceRun, drainDerivedTransitions, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
+import { advanceRun, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { indexNodes } from "./ir-walk.js";
 import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult } from "./store-port.js";
+import type { SchedulerSnapshot } from "./store-port.js";
+import { applySchedulerEvents, attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 import type { SchedulerProjection } from "./types.js";
+import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
   ownerId: string;
   runId: string;
   store: RuntimeStore;
+  maxLeafConcurrency?: number;
+  agentHostPolicy?: AgentHostPolicy;
   onClaim?: AdvanceRunInput["onClaim"];
   onRelease?: AdvanceRunInput["onRelease"];
   onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
@@ -37,10 +42,12 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
   const scope = rootScope(frozen);
   const nodes = indexNodes(frozen.ir.root);
   const hookCursor = input.hookCursor ?? { sequence: input.store.getLastRunEventSequence(input.runId) };
+  const agentHostPolicy = input.agentHostPolicy ?? loadAgentHostPolicy(process.env);
   const summary = await advanceRun({
     runId: input.runId,
     ownerId: input.ownerId,
     store: input.store.scheduler,
+    ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
     localConcurrencyLimitFor: (_groupKey, projection) => projection.groups[_groupKey]?.maxConcurrency,
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
@@ -100,6 +107,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ir: frozen.ir,
       scope,
       store: input.store,
+      agentHostPolicy,
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
     }),
   });
@@ -172,21 +180,37 @@ export function triggerHooksForCommittedRowsForRun(input: {
   });
 }
 
-export function drainFrozenRunTransitions(input: {
+export function settleFrozenRunTransitions(input: {
   store: RuntimeStore;
   runId: string;
   ownerEpoch: number;
-}) {
+  now?: Date;
+}): SchedulerSnapshot {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
   const scope = rootScope(frozen);
-  return drainDerivedTransitions(
-    input.store.scheduler,
-    input.runId,
-    { runId: input.runId, ownerEpoch: input.ownerEpoch },
-    () => new Date(),
-    snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
-  );
+  const current = throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId));
+  let projection = current.projection;
+  const events = [];
+  for (let batches = 0; batches < 1_000; batches += 1) {
+    const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
+    if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
+    if (derived.length === 0) derived.push(...attemptTimeoutEvents(projection, input.now ?? new Date()));
+    if (derived.length === 0) derived.push(...signalTimeoutEvents(projection, input.now ?? new Date()));
+    if (derived.length === 0) {
+      if (events.length === 0) return current;
+      return throwSchedulerStoreResult(input.store.scheduler.tryAppendSchedulerEvents({
+        runId: input.runId,
+        ownerEpoch: input.ownerEpoch,
+        expectedVersion: current.version,
+        idempotencyKey: `scheduler:settle-control:${input.runId}:${current.version}`,
+        events,
+      }));
+    }
+    events.push(...derived);
+    projection = applySchedulerEvents(projection, derived);
+  }
+  throw new Error(`Run '${input.runId}' did not quiesce after 1000 control-settlement transition batches.`);
 }
 
 function isSchedulerRetryLeaf(node: NodeIR): node is Extract<NodeIR, { kind: "task" | "agent" }> {

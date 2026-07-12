@@ -4,6 +4,7 @@ import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
 import { SchedulerControlInputError, schedulerStoreError } from "../scheduler/store-port.js";
 import { ForkSeedPlanError } from "../scheduler/fork-seed.js";
+import { tryLoadRuntimeConfiguration } from "../configuration.js";
 import { RunExecutionSessions } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
 import { DaemonRequestError, startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonServerHandle } from "./socket.js";
@@ -23,6 +24,8 @@ export type DaemonLoopHandle = {
 };
 
 export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): Promise<DaemonLoopHandle> {
+  const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
+  if (runtimeConfiguration.isErr()) throw new Error(runtimeConfiguration.error.message);
   const heartbeatMs = options.heartbeatMs ?? 1_000;
   const idleStopMs = options.idleStopMs ?? 30_000;
   let leaseGeneration: number | undefined;
@@ -33,7 +36,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     throw new Error(formatHookLoadError(hooksConfig.error));
   }
   const hookRunner = createHookRunner(hooksConfig.value, store);
-  const sessions = new RunExecutionSessions(cwd, store, hookRunner);
+  const sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value);
   const mutations = new RuntimeMutationQueue();
   let server: DaemonServerHandle;
   try {

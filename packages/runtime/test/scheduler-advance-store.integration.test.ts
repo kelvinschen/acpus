@@ -288,6 +288,103 @@ describe("durable scheduler advance with store", () => {
       }
     });
   });
+
+  it("does not continuously replay the full projection while an executor is active", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-active-poll", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      let releaseExecutor!: () => void;
+      const executorEntered = new Promise<void>(resolve => {
+        releaseExecutor = resolve;
+      });
+      const originalLoad = store.scheduler.tryLoadRunSnapshot.bind(store.scheduler);
+      let snapshotReads = 0;
+      store.scheduler.tryLoadRunSnapshot = runId => {
+        snapshotReads += 1;
+        return originalLoad(runId);
+      };
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
+          ownerEpoch: setupOwner.ownerEpoch,
+          idempotencyKey: "setup-active-poll",
+          events: [
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "slow", nodeId: "slow", instancePath: [{ kind: "node", nodeId: "slow" }], readinessSequence: 1 } },
+          ],
+        });
+        expireLease(workspace, run.id);
+
+        let markEntered!: () => void;
+        const entered = new Promise<void>(resolve => {
+          markEntered = resolve;
+        });
+        const advancing = advanceRun({
+          runId: run.id,
+          ownerId: "owner-b",
+          store: store.scheduler,
+          executor: {
+            execute: async () => {
+              markEntered();
+              await executorEntered;
+              return completed();
+            },
+          },
+        });
+        await entered;
+        const readsAtStart = snapshotReads;
+        await new Promise(resolve => setTimeout(resolve, 80));
+        const activeReads = snapshotReads - readsAtStart;
+        releaseExecutor();
+        await advancing;
+        expect(activeReads).toBeLessThanOrEqual(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("renews a short lease while draining multiple derived transition batches", async () => {
+    await withRuntimeWorkspace("scheduler-advance-store-derived-heartbeat", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const originalAppend = store.scheduler.tryAppendSchedulerEvents.bind(store.scheduler);
+      store.scheduler.tryAppendSchedulerEvents = input => {
+        const result = originalAppend(input);
+        const until = performance.now() + 40;
+        while (performance.now() < until) {}
+        return result;
+      };
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        await expect(advanceRun({
+          runId: run.id,
+          ownerId: "owner",
+          store: store.scheduler,
+          leaseMs: 70,
+          executor: { execute: () => Promise.reject(new Error("derived-only run must not execute a leaf")) },
+          bootstrap: snapshot => snapshot.projection.frames.root ? [] : [{
+            type: "frame.started",
+            payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: {} },
+          }],
+          materialize: snapshot => {
+            const child = snapshot.projection.frames.child;
+            if (!child) return [{
+              type: "frame.started",
+              payload: { runId: run.id, frameKey: "child", frameKind: "node", parentFrameKey: "root", nodeKey: "child", nodeId: "child", scope: {} },
+            }];
+            if (child.status === "running") return [{ type: "frame.completed", payload: { frameKey: "child", result: { ok: true } } }];
+            if (snapshot.projection.frames.root?.status === "running") return [{ type: "frame.completed", payload: { frameKey: "root", result: { ok: true } } }];
+            return [];
+          },
+        })).resolves.toMatchObject({ status: "completed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
 
 function expireLease(workspace: string, runId: string): void {

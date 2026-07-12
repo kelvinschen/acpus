@@ -7,6 +7,7 @@ import { triggerHooksForCommittedRowsForRun, type RuntimeHookCursor } from "../s
 import type { RunDetails, RuntimeStore } from "../store/store.js";
 import { DaemonRequestError, type DaemonControlIntent, type DaemonControlResult } from "./socket.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
+import type { RuntimeConfiguration } from "../configuration.js";
 
 type ActiveRunSession = {
   promise?: Promise<AdvanceRunSummary>;
@@ -21,7 +22,12 @@ export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
   private readonly progressWriter: CoalescingNodeProgressWriter;
 
-  constructor(private readonly cwd: string, private readonly store: RuntimeStore, private readonly hookRunner?: HookRunner) {
+  constructor(
+    private readonly cwd: string,
+    private readonly store: RuntimeStore,
+    private readonly hookRunner: HookRunner | undefined,
+    private readonly runtimeConfiguration: RuntimeConfiguration,
+  ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
   }
 
@@ -136,6 +142,8 @@ export class RunExecutionSessions {
     const session = this.sessions.get(runId);
     try {
       return await advanceRuntimeRun(this.cwd, this.store, runId, `daemon:${process.pid}:${runId}`, {
+        maxLeafConcurrency: this.runtimeConfiguration.runMaxLeafConcurrency,
+        agentHostPolicy: this.runtimeConfiguration.agentHostPolicy,
         onClaim: claim => {
           if (claim.runId === runId && session) {
             session.claim = claim;

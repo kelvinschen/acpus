@@ -11,13 +11,12 @@ import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { stableJson } from "../stable-json.js";
-import { applySchedulerEvents, applyTimestampedSchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, type TimestampedSchedulerEvent } from "../scheduler/transitions.js";
+import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, groupCompletionEvents, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerControlInputError, SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame } from "../scheduler/types.js";
-import { drainDerivedTransitions } from "../scheduler/advance.js";
+import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
@@ -628,6 +627,10 @@ class SqliteRuntimeStore implements RuntimeStore {
           INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
           VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
         `).run(runId, stableJsonLine(eventPayload), now, `admit:${runId}`);
+        this.db.prepare(`
+          INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+          VALUES (?, 1, ?, ?)
+        `).run(runId, stableJsonLine(createSchedulerProjection(runId) as unknown as JsonValue), now);
         for (const nodeId of collectNodeIds(prepared.ir.root)) {
           this.db.prepare(`
             INSERT INTO node_states (run_id, node_key, node_id, status)
@@ -960,6 +963,10 @@ class SqliteRuntimeStore implements RuntimeStore {
           VALUES (?, 2, 'run.completed', NULL, ?, ?, ?)
         `).run(forkId, stableJsonLine({ output: JSON.parse(forkOutputJson) as JsonValue }), now, `complete:${forkId}`);
       }
+      this.db.prepare(`
+        INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+        VALUES (?, ?, ?, ?)
+      `).run(forkId, forkStatus === "completed" ? 2 : 1, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
       if (targetedReplacement && seedPlan) {
         this.schedulerStore().insertForkSeedEventsInTransaction({
           runId: forkId,
@@ -1511,6 +1518,8 @@ class SqliteRuntimeStore implements RuntimeStore {
 }
 
 class SqliteSchedulerStorePort implements SchedulerStorePort {
+  private readonly snapshotCache = new Map<string, SchedulerSnapshot>();
+
   constructor(private readonly db: DatabaseSync, private readonly cwd: string) {}
 
   claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined {
@@ -1557,12 +1566,23 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   releaseRun(claim: RunOwnerClaim): boolean {
     const now = new Date().toISOString();
-    const result = this.db.prepare(`
-      UPDATE run_leases
-      SET released_at = ?
-      WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL
-    `).run(now, claim.runId, claim.ownerId, claim.ownerEpoch);
-    return result.changes === 1;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`
+        UPDATE run_leases
+        SET released_at = ?
+        WHERE run_id = ? AND owner_id = ? AND owner_epoch = ? AND released_at IS NULL
+      `).run(now, claim.runId, claim.ownerId, claim.ownerEpoch);
+      if (result.changes === 1) {
+        const snapshot = this.loadRunSnapshot(claim.runId);
+        this.maybePersistSchedulerCheckpoint(claim.runId, snapshot.version, snapshot.projection, now, true);
+      }
+      this.db.exec("COMMIT");
+      return result.changes === 1;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
@@ -1572,12 +1592,30 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   private loadRunSnapshot(runId: string): SchedulerSnapshot {
     const row = this.db.prepare("SELECT id FROM runs WHERE id = ?").get(runId);
     if (!row) throwSchedulerStoreError({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-    const events = this.schedulerEvents(runId);
-    return {
+    const version = this.currentVersion(runId);
+    const cached = this.snapshotCache.get(runId);
+    if (cached?.version === version) return cached;
+    const checkpoint = schedulerProjectionCheckpoint(this.db, runId);
+    if (checkpoint && checkpoint.event_sequence > version) {
+      throw new Error(`Run '${runId}' scheduler projection checkpoint sequence ${checkpoint.event_sequence} exceeds event sequence ${version}.`);
+    }
+    let projection: SchedulerProjection;
+    let afterSequence: number;
+    if (checkpoint) {
+      projection = parseSchedulerProjection(checkpoint.projection_json, runId);
+      afterSequence = checkpoint.event_sequence;
+    } else {
+      projection = createSchedulerProjection(runId);
+      afterSequence = 0;
+    }
+    projection = applySchedulerEvents(projection, this.schedulerEventsAfter(runId, afterSequence));
+    const snapshot = {
       runId,
-      version: this.currentVersion(runId),
-      projection: applySchedulerEvents(createSchedulerProjection(runId), events),
+      version,
+      projection,
     };
+    this.snapshotCache.set(runId, snapshot);
+    return snapshot;
   }
 
   tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
@@ -1604,25 +1642,21 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         });
       }
       this.requireOwnerEpoch(commit.runId, commit.ownerEpoch);
-      if (hasEvents) applySchedulerEvents(createSchedulerProjection(commit.runId), [...this.schedulerEvents(commit.runId), ...commit.events]);
+      const current = this.loadRunSnapshot(commit.runId);
       this.db.prepare(`
         INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, intent_digest)
         VALUES (?, ?, ?, ?, ?)
       `).run(commit.runId, commit.idempotencyKey, commit.events.length, eventDigest, commit.intentDigest ?? null);
-      let sequence = currentVersion + 1;
-      for (const [index, event] of commit.events.entries()) {
-        this.db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(commit.runId, sequence, event.type, eventNodeKey(event), encodeSchedulerPayload(event.payload), now, schedulerEventIdempotencyKey(commit.runId, commit.idempotencyKey, index));
-        sequence += 1;
-      }
-      if (hasEvents) {
-        this.syncSchedulerProjectionTables(commit.runId, now);
-        this.syncPublicRunProjection(commit.runId, now);
-      }
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: commit.runId,
+        current,
+        events: commit.events,
+        now,
+        idempotencyKeys: commit.events.map((_, index) => schedulerEventIdempotencyKey(commit.runId, commit.idempotencyKey, index)),
+      });
       this.db.exec("COMMIT");
-      return this.loadRunSnapshot(commit.runId);
+      this.snapshotCache.set(commit.runId, snapshot);
+      return snapshot;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -1641,23 +1675,19 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       ...event,
       payload: rewriteArtifactValue(event.payload as JsonValue, input.sourceRunId, input.runId, input.artifactIdMap),
     }) as SchedulerEvent);
-    applySchedulerEvents(createSchedulerProjection(input.runId), events);
-    const currentVersion = this.currentVersion(input.runId);
+    const current = this.loadRunSnapshot(input.runId);
     const commitKey = `fork-seed:${input.runId}`;
     this.db.prepare(`
       INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest)
       VALUES (?, ?, ?, ?)
     `).run(input.runId, commitKey, events.length, schedulerEventDigest(events));
-    let sequence = currentVersion + 1;
-    for (const [index, event] of events.entries()) {
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(input.runId, sequence, event.type, eventNodeKey(event), encodeSchedulerPayload(event.payload), input.now, schedulerEventIdempotencyKey(input.runId, commitKey, index));
-      sequence += 1;
-    }
-    this.syncSchedulerProjectionTables(input.runId, input.now);
-    this.syncPublicRunProjection(input.runId, input.now);
+    this.commitProjectionEventsInTransaction({
+      runId: input.runId,
+      current,
+      events,
+      now: input.now,
+      idempotencyKeys: events.map((_, index) => schedulerEventIdempotencyKey(input.runId, commitKey, index)),
+    });
   }
 
   tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }> {
@@ -1679,11 +1709,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
-      const currentProjection = applySchedulerEvents(createSchedulerProjection(input.runId), this.schedulerEvents(input.runId));
-      if (currentProjection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
+      const current = this.loadRunSnapshot(input.runId);
+      if (current.projection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
       const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
       const attemptNo = row?.count ?? 1;
-      const sequence = this.nextSequence(input.runId);
       const payload = {
         runId: input.runId,
         attemptId,
@@ -1695,27 +1724,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       };
       const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey } };
       const attemptStartedEvent: SchedulerEvent = { type: "attempt.started", payload };
-      const memberStartedEvents = this.groupMemberStartedEventsForNode(input.runId, input.nodeKey);
+      const memberStartedEvents = this.groupMemberStartedEventsForNode(input.runId, input.nodeKey, current.projection);
       const events = [instanceStartedEvent, ...memberStartedEvents, attemptStartedEvent];
-      applySchedulerEvents(createSchedulerProjection(input.runId), [...this.schedulerEvents(input.runId), ...events]);
-      let sequenceOffset = 0;
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, 'instance.started', ?, ?, ?, ?)
-      `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(instanceStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "instance"));
-      sequenceOffset += 1;
-      for (const [index, memberStartedEvent] of memberStartedEvents.entries()) {
-        this.db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, 'group.member_started', ?, ?, ?, ?)
-        `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(memberStartedEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, index === 0 ? "member" : `member:${index}`));
-        sequenceOffset += 1;
-      }
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, 'attempt.started', ?, ?, ?, ?)
-      `).run(input.runId, sequence + sequenceOffset, input.nodeKey, encodeSchedulerPayload(payload), now, input.idempotencyKey);
-      this.syncSchedulerProjectionTables(input.runId, now);
       const clearedProgress = this.db.prepare("DELETE FROM node_progress WHERE run_id = ? AND node_key = ?").run(input.runId, input.nodeKey);
       if (clearedProgress.changes > 0) {
         this.db.prepare(`
@@ -1724,8 +1734,20 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           WHERE id = ?
         `).run(now, input.runId);
       }
-      this.syncPublicRunProjection(input.runId, now);
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: input.runId,
+        current,
+        events,
+        now,
+        idempotencyKeys: [
+          derivedIdempotencyKey(input.idempotencyKey, "instance"),
+          ...memberStartedEvents.map((_, index) => derivedIdempotencyKey(input.idempotencyKey, index === 0 ? "member" : `member:${index}`)),
+          input.idempotencyKey,
+        ],
+        nodeKeys: events.map(() => input.nodeKey),
+      });
       this.db.exec("COMMIT");
+      this.snapshotCache.set(input.runId, snapshot);
       return { attemptId, attemptNo };
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1757,33 +1779,22 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       if (attempt.owner_epoch !== input.ownerEpoch) throwSchedulerStoreError({ type: "owner-epoch-stale", runId: input.runId, attemptId: input.attemptId, ownerEpoch: input.ownerEpoch, message: `Attempt '${input.attemptId}' owner epoch is stale.` });
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
       if (attempt.status !== "started") throwSchedulerStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
+      const current = this.loadRunSnapshot(input.runId);
       const event = attemptResultEvent(input, String(attempt.node_key));
       const instanceEvent = instanceResultEvent(input, String(attempt.node_key), event);
-      const memberEvent = this.groupMemberResultEventForNode(input.runId, String(attempt.node_key), input.result);
+      const memberEvent = this.groupMemberResultEventForNode(input.runId, String(attempt.node_key), input.result, current.projection);
       const events = [event, instanceEvent, ...(memberEvent ? [memberEvent] : [])];
-      applySchedulerEvents(createSchedulerProjection(input.runId), [...this.schedulerEvents(input.runId), ...events]);
-      const sequence = this.nextSequence(input.runId);
-      let sequenceOffset = 0;
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(input.runId, sequence + sequenceOffset, event.type, String(attempt.node_key), encodeSchedulerPayload(event.payload), now, input.idempotencyKey);
-      sequenceOffset += 1;
-      this.db.prepare(`
-        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(input.runId, sequence + sequenceOffset, instanceEvent.type, String(attempt.node_key), encodeSchedulerPayload(instanceEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "instance"));
-      sequenceOffset += 1;
-      if (memberEvent) {
-        this.db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(input.runId, sequence + sequenceOffset, memberEvent.type, String(attempt.node_key), encodeSchedulerPayload(memberEvent.payload), now, derivedIdempotencyKey(input.idempotencyKey, "member"));
-      }
-      this.syncSchedulerProjectionTables(input.runId, now);
-      this.syncPublicRunProjection(input.runId, now);
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: input.runId,
+        current,
+        events,
+        now,
+        idempotencyKeys: [input.idempotencyKey, derivedIdempotencyKey(input.idempotencyKey, "instance"), ...(memberEvent ? [derivedIdempotencyKey(input.idempotencyKey, "member")] : [])],
+        nodeKeys: events.map(() => String(attempt.node_key)),
+      });
       this.db.exec("COMMIT");
-      return this.loadRunSnapshot(input.runId);
+      this.snapshotCache.set(input.runId, snapshot);
+      return snapshot;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -2130,8 +2141,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     try {
       this.assertOwnerEpochExpired(runId, ownerEpoch);
       const attempts = this.db.prepare("SELECT attempt_id, node_key FROM node_attempts WHERE run_id = ? AND owner_epoch = ? AND status = 'started'").all(runId, ownerEpoch) as Array<{ attempt_id: string; node_key: string }>;
+      const current = this.loadRunSnapshot(runId);
+      let projection = current.projection;
+      const recoveryEvents: SchedulerEvent[] = [];
+      const idempotencyKeys: string[] = [];
+      const nodeKeys: string[] = [];
       for (const attempt of attempts) {
-        const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
         const instance = projection.instances[attempt.node_key];
         const members = ancestorGroupMembersForNode(projection, attempt.node_key).filter(member => member.status === "running");
         const events: SchedulerEvent[] = [
@@ -2141,31 +2156,55 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
             : []),
           ...members.map(member => ({ type: "group.member_requeued", payload: { memberKey: member.memberKey, reason: "superseded", readinessSequence: member.readinessSequence } }) satisfies SchedulerEvent),
         ];
-        applySchedulerEvents(createSchedulerProjection(runId), [...this.schedulerEvents(runId), ...events]);
-        const sequence = this.nextSequence(runId);
+        projection = applySchedulerEvents(projection, events);
         for (const [index, event] of events.entries()) {
-          this.db.prepare(`
-            INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(runId, sequence + index, event.type, eventNodeKey(event) ?? attempt.node_key, encodeSchedulerPayload(event.payload), now, `supersede:${runId}:${attempt.attempt_id}:${index}`);
+          recoveryEvents.push(event);
+          idempotencyKeys.push(`supersede:${runId}:${attempt.attempt_id}:${index}`);
+          nodeKeys.push(eventNodeKey(event) ?? attempt.node_key);
         }
       }
-      this.syncSchedulerProjectionTables(runId, now);
-      this.syncPublicRunProjection(runId, now);
+      const snapshot = this.commitProjectionEventsInTransaction({ runId, current, events: recoveryEvents, now, idempotencyKeys, nodeKeys });
       this.db.exec("COMMIT");
-      return this.loadRunSnapshot(runId);
+      this.snapshotCache.set(runId, snapshot);
+      return snapshot;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
   }
 
-  private schedulerEvents(runId: string): SchedulerEvent[] {
-    return schedulerEvents(this.db, runId);
+  private schedulerEventsAfter(runId: string, sequence: number): SchedulerEvent[] {
+    return schedulerEventsAfter(this.db, runId, sequence);
   }
 
-  private timestampedSchedulerEvents(runId: string): TimestampedSchedulerEvent[] {
-    return timestampedSchedulerEvents(this.db, runId);
+  private commitProjectionEventsInTransaction(input: {
+    runId: string;
+    current: SchedulerSnapshot;
+    events: SchedulerEvent[];
+    now: string;
+    idempotencyKeys: string[];
+    nodeKeys?: Array<string | null>;
+  }): SchedulerSnapshot {
+    if (input.events.length !== input.idempotencyKeys.length || (input.nodeKeys && input.events.length !== input.nodeKeys.length)) {
+      throw new Error(`Run '${input.runId}' scheduler projection commit metadata does not match its event count.`);
+    }
+    const projection = applySchedulerEvents(input.current.projection, input.events);
+    let sequence = input.current.version + 1;
+    const insert = this.db.prepare(`
+      INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [index, event] of input.events.entries()) {
+      insert.run(input.runId, sequence, event.type, input.nodeKeys?.[index] ?? eventNodeKey(event), encodeSchedulerPayload(event.payload), input.now, input.idempotencyKeys[index]!);
+      sequence += 1;
+    }
+    if (input.events.length > 0) {
+      this.syncSchedulerProjectionTables(input.runId, input.now, input.current.projection, projection);
+      this.syncPublicRunProjection(input.runId, input.now, input.current.projection, projection);
+    }
+    const version = this.currentVersion(input.runId);
+    this.maybePersistSchedulerCheckpoint(input.runId, version, projection, input.now);
+    return { runId: input.runId, version, projection };
   }
 
   private currentVersion(runId: string): number {
@@ -2186,14 +2225,28 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private drainDueSignalTimeouts(runId: string, ownerEpoch: number, now: Date): SchedulerSnapshot {
+    const snapshot = throwSchedulerStoreResult(this.tryLoadRunSnapshot(runId));
+    const events = signalTimeoutEvents(snapshot.projection, now);
+    if (events.length === 0) return snapshot;
     const frozen = this.loadFrozenRun(runId);
-    return drainDerivedTransitions(
-      this,
-      runId,
-      { runId, ownerEpoch },
-      () => now,
-      snapshot => continueRootEvents(frozen.ir, snapshot.projection, rootScope(frozen)),
-    );
+    const scope = rootScope(frozen);
+    let projection = applySchedulerEvents(snapshot.projection, events);
+    for (let batches = 0; batches < 1_000; batches += 1) {
+      const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
+      if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
+      if (derived.length === 0) {
+        return throwSchedulerStoreResult(this.tryAppendSchedulerEvents({
+          runId,
+          ownerEpoch,
+          expectedVersion: snapshot.version,
+          idempotencyKey: `scheduler:signal-timeouts:${runId}:${snapshot.version}`,
+          events,
+        }));
+      }
+      events.push(...derived);
+      projection = applySchedulerEvents(projection, derived);
+    }
+    throw new Error(`Run '${runId}' did not quiesce after 1000 signal-timeout transition batches.`);
   }
 
   private loadFrozenRun(runId: string): FrozenRun {
@@ -2237,15 +2290,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return { run_id: row.run_id, type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) };
   }
 
-  private groupMemberStartedEventsForNode(runId: string, nodeKey: string): Array<Extract<SchedulerEvent, { type: "group.member_started" }>> {
-    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+  private groupMemberStartedEventsForNode(_runId: string, nodeKey: string, projection: SchedulerProjection): Array<Extract<SchedulerEvent, { type: "group.member_started" }>> {
     return ancestorGroupMembersForNode(projection, nodeKey)
       .filter(member => member.status === "ready")
       .map(member => ({ type: "group.member_started", payload: { memberKey: member.memberKey } }));
   }
 
-  private groupMemberResultEventForNode(runId: string, nodeKey: string, result: AttemptCommitInput["result"]): Extract<SchedulerEvent, { type: "group.member_completed" | "group.member_failed" | "group.member_cancelled" }> | undefined {
-    const projection = applySchedulerEvents(createSchedulerProjection(runId), this.schedulerEvents(runId));
+  private groupMemberResultEventForNode(runId: string, nodeKey: string, result: AttemptCommitInput["result"], projection: SchedulerProjection): Extract<SchedulerEvent, { type: "group.member_completed" | "group.member_failed" | "group.member_cancelled" }> | undefined {
     const member = projection.groupMembers[nodeKey];
     if (!member || member.status !== "running") return undefined;
     if (result.status === "completed") {
@@ -2283,17 +2334,24 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     return this.loadRunSnapshot(runId);
   }
 
-  private syncSchedulerProjectionTables(runId: string, now: string): void {
-    const { projection, timings } = applyTimestampedSchedulerEvents(runId, this.timestampedSchedulerEvents(runId));
+  private syncSchedulerProjectionTables(runId: string, now: string, before: SchedulerProjection, projection: SchedulerProjection): void {
+    const delta = schedulerProjectionDelta(before, projection);
+    const timings = incrementalProjectionTimings(this.db, runId, now, before, projection, delta);
+    const frameKeys = delta.frame.upserts;
+    const instanceKeys = delta.instance.upserts;
+    const attemptKeys = delta.attempt.upserts;
+    const memberKeys = delta.member.upserts;
+    const signalKeys = delta.signal.upserts;
     const existingSignalWaits = new Map((this.db.prepare("SELECT node_key, consumed_at, created_at FROM signal_waits WHERE run_id = ?").all(runId) as Array<{ node_key: string; consumed_at: string | null; created_at: string }>)
       .map(row => [row.node_key, row]));
-    this.db.prepare("DELETE FROM scheduler_frames WHERE run_id = ?").run(runId);
-    this.db.prepare("DELETE FROM node_instances WHERE run_id = ?").run(runId);
-    this.db.prepare("DELETE FROM node_attempts WHERE run_id = ?").run(runId);
-    this.db.prepare("DELETE FROM group_members WHERE run_id = ?").run(runId);
-    this.db.prepare("DELETE FROM signal_waits WHERE run_id = ?").run(runId);
+    deleteProjectionRows(this.db, "scheduler_frames", "frame_key", runId, delta.frame.deletes);
+    deleteProjectionRows(this.db, "node_instances", "node_key", runId, delta.instance.deletes);
+    deleteProjectionRows(this.db, "node_attempts", "attempt_id", runId, delta.attempt.deletes);
+    deleteProjectionRows(this.db, "group_members", "member_key", runId, delta.member.deletes);
+    deleteProjectionRows(this.db, "signal_waits", "node_key", runId, delta.signal.deletes);
 
-    for (const frame of Object.values(projection.frames)) {
+    for (const frameKey of frameKeys) {
+      const frame = projection.frames[frameKey]!;
       const timing = timings.frame.get(frame.frameKey);
       this.db.prepare(`
         INSERT INTO scheduler_frames (
@@ -2301,6 +2359,21 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           terminal_reason, instance_path_json, scope_json, loop_json, result_json, error_json, created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, frame_key) DO UPDATE SET
+          parent_frame_key = excluded.parent_frame_key,
+          node_key = excluded.node_key,
+          node_id = excluded.node_id,
+          frame_kind = excluded.frame_kind,
+          status = excluded.status,
+          strategy = excluded.strategy,
+          terminal_reason = excluded.terminal_reason,
+          instance_path_json = excluded.instance_path_json,
+          scope_json = excluded.scope_json,
+          loop_json = excluded.loop_json,
+          result_json = excluded.result_json,
+          error_json = excluded.error_json,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
       `).run(
         frame.runId,
         frame.frameKey,
@@ -2321,7 +2394,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       );
     }
 
-    for (const instance of Object.values(projection.instances)) {
+    for (const instanceKey of instanceKeys) {
+      const instance = projection.instances[instanceKey]!;
       const timing = timings.instance.get(instance.nodeKey);
       this.db.prepare(`
         INSERT INTO node_instances (
@@ -2329,6 +2403,18 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           readiness_sequence, output_json, error_json, accepted_attempt_id, created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, node_key) DO UPDATE SET
+          node_id = excluded.node_id,
+          parent_frame_key = excluded.parent_frame_key,
+          instance_path_json = excluded.instance_path_json,
+          status = excluded.status,
+          status_reason = excluded.status_reason,
+          readiness_sequence = excluded.readiness_sequence,
+          output_json = excluded.output_json,
+          error_json = excluded.error_json,
+          accepted_attempt_id = excluded.accepted_attempt_id,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
       `).run(
         instance.runId,
         instance.nodeKey,
@@ -2346,7 +2432,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       );
     }
 
-    for (const attempt of Object.values(projection.attempts)) {
+    for (const attemptKey of attemptKeys) {
+      const attempt = projection.attempts[attemptKey]!;
       const timing = timings.attempt.get(attempt.attemptId);
       this.db.prepare(`
         INSERT INTO node_attempts (
@@ -2354,6 +2441,20 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           started_at, finished_at, result_json, error_json, terminal_reason, cancel_reason
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO UPDATE SET
+          run_id = excluded.run_id,
+          node_key = excluded.node_key,
+          node_id = excluded.node_id,
+          attempt_no = excluded.attempt_no,
+          owner_epoch = excluded.owner_epoch,
+          status = excluded.status,
+          deadline_at = excluded.deadline_at,
+          started_at = excluded.started_at,
+          finished_at = excluded.finished_at,
+          result_json = excluded.result_json,
+          error_json = excluded.error_json,
+          terminal_reason = excluded.terminal_reason,
+          cancel_reason = excluded.cancel_reason
       `).run(
         attempt.runId,
         attempt.attemptId,
@@ -2372,7 +2473,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       );
     }
 
-    for (const member of Object.values(projection.groupMembers)) {
+    for (const memberKey of memberKeys) {
+      const member = projection.groupMembers[memberKey]!;
       const timing = timings.member.get(member.memberKey);
       const branchId = member.memberKind === "branch" ? member.branchId : null;
       const itemIndex = member.memberKind === "fanout_item" ? member.itemIndex : null;
@@ -2383,6 +2485,22 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           status, readiness_sequence, completion_sequence, accepted_rank, terminal_reason, output_json, error_json, created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, member_key) DO UPDATE SET
+          group_key = excluded.group_key,
+          member_kind = excluded.member_kind,
+          branch_id = excluded.branch_id,
+          item_index = excluded.item_index,
+          item_json = excluded.item_json,
+          child_frame_key = excluded.child_frame_key,
+          status = excluded.status,
+          readiness_sequence = excluded.readiness_sequence,
+          completion_sequence = excluded.completion_sequence,
+          accepted_rank = excluded.accepted_rank,
+          terminal_reason = excluded.terminal_reason,
+          output_json = excluded.output_json,
+          error_json = excluded.error_json,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
       `).run(
         member.runId,
         member.groupKey,
@@ -2404,7 +2522,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       );
     }
 
-    for (const wait of Object.values(projection.signalWaits)) {
+    for (const signalKey of signalKeys) {
+      const wait = projection.signalWaits[signalKey]!;
       const existing = existingSignalWaits.get(wait.nodeKey);
       const timing = timings.signal.get(wait.nodeKey);
       this.db.prepare(`
@@ -2413,6 +2532,18 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           deadline_at, timeout_message, timeout_remaining_ms, rendered_prompt, consumed_at, terminal_reason, created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, node_key) DO UPDATE SET
+          node_id = excluded.node_id,
+          status = excluded.status,
+          payload_json = excluded.payload_json,
+          deadline_at = excluded.deadline_at,
+          timeout_message = excluded.timeout_message,
+          timeout_remaining_ms = excluded.timeout_remaining_ms,
+          rendered_prompt = excluded.rendered_prompt,
+          consumed_at = excluded.consumed_at,
+          terminal_reason = excluded.terminal_reason,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
       `).run(
         wait.runId,
         wait.nodeKey,
@@ -2431,11 +2562,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  private syncPublicRunProjection(runId: string, now: string): void {
-    const schedulerEvents = this.schedulerEvents(runId);
-    const projection = applySchedulerEvents(createSchedulerProjection(runId), schedulerEvents);
+  private syncPublicRunProjection(runId: string, now: string, before: SchedulerProjection, projection: SchedulerProjection): void {
     const current = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: RunStatus } | undefined;
-    const hasTargetedRetry = schedulerEvents.some(event => event.type === "instance.retry_requested" || event.type === "frame.retry_requested");
+    const hasTargetedRetry = Boolean(this.db.prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type IN ('instance.retry_requested', 'frame.retry_requested') LIMIT 1").get(runId));
     if (current?.status === "failed" && projection.run.status === "pending" && Object.keys(projection.frames).length === 0) {
       this.db.prepare("UPDATE runs SET status = 'pending', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
@@ -2443,26 +2572,26 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       return;
     }
     if (!current || current.status === "completed" || current.status === "canceled" || (current.status === "failed" && !hasTargetedRetry)) return;
-    this.syncPublicNodeStates(projection);
+    this.syncPublicNodeStates(before, projection);
     const root = projection.frames.root;
     if (projection.run.status === "completed") {
       const output = root?.result ?? {};
       this.db.prepare("UPDATE runs SET status = 'completed', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = ? WHERE run_id = ?").run(stableJsonLine(output), runId);
-      this.insertPublicRunEvent(runId, "run.completed", { output }, now, `scheduler-public:completed:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.completed")}`);
+      this.insertPublicRunEvent(runId, "run.completed", { output }, now, `scheduler-public:completed:${runId}:${this.rootTerminalEventCount(runId, "frame.completed")}`);
       return;
     }
     if (projection.run.status === "failed") {
       const error = root?.error ?? { reason: root?.terminalReason ?? "scheduler_failed" };
       this.db.prepare("UPDATE runs SET status = 'failed', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
-      this.insertPublicRunEvent(runId, "run.failed", error, now, `scheduler-public:failed:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.failed")}`);
+      this.insertPublicRunEvent(runId, "run.failed", error, now, `scheduler-public:failed:${runId}:${this.rootTerminalEventCount(runId, "frame.failed")}`);
       return;
     }
     if (projection.run.status === "canceled") {
       this.db.prepare("UPDATE runs SET status = 'canceled', updated_at = ? WHERE id = ?").run(now, runId);
       this.db.prepare("UPDATE run_inputs SET output_json = NULL WHERE run_id = ?").run(runId);
-      this.insertPublicRunEvent(runId, "run.canceled", { reason: root?.terminalReason ?? "operator_cancelled" }, now, `scheduler-public:canceled:${runId}:${rootTerminalEventCount(this.schedulerEvents(runId), "frame.cancelled")}`);
+      this.insertPublicRunEvent(runId, "run.canceled", { reason: root?.terminalReason ?? "operator_cancelled" }, now, `scheduler-public:canceled:${runId}:${this.rootTerminalEventCount(runId, "frame.cancelled")}`);
       return;
     }
     if (projection.run.status === "paused") {
@@ -2478,24 +2607,21 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     this.db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'canceled')").run(status, now, runId);
   }
 
-  private syncPublicNodeStates(projection: ReturnType<typeof createSchedulerProjection>): void {
-    const nodeKeys = Object.keys(projection.instances);
-    const dynamicNodeIds = [...new Set(Object.values(projection.instances)
+  private syncPublicNodeStates(before: SchedulerProjection, projection: SchedulerProjection): void {
+    const delta = recordDelta(before.instances, projection.instances);
+    const changedInstances = delta.upserts.map(nodeKey => projection.instances[nodeKey]!);
+    const dynamicNodeIds = [...new Set(changedInstances
       .filter(instance => instance.nodeKey !== instance.nodeId)
       .map(instance => instance.nodeId))];
     if (dynamicNodeIds.length > 0) {
       const placeholders = dynamicNodeIds.map(() => "?").join(", ");
       this.db.prepare(`DELETE FROM node_states WHERE run_id = ? AND node_key = node_id AND node_id IN (${placeholders})`).run(projection.run.runId, ...dynamicNodeIds);
     }
-    const historicalNodeKeys = schedulerEvents(this.db, projection.run.runId)
-      .filter(event => event.type === "instance.ready")
-      .map(event => event.payload.nodeKey)
-      .filter(nodeKey => !nodeKeys.includes(nodeKey));
-    if (historicalNodeKeys.length > 0) {
-      const placeholders = historicalNodeKeys.map(() => "?").join(", ");
-      this.db.prepare(`DELETE FROM node_states WHERE run_id = ? AND node_key IN (${placeholders})`).run(projection.run.runId, ...historicalNodeKeys);
+    if (delta.deletes.length > 0) {
+      const placeholders = delta.deletes.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM node_states WHERE run_id = ? AND node_key IN (${placeholders})`).run(projection.run.runId, ...delta.deletes);
     }
-    for (const instance of Object.values(projection.instances)) {
+    for (const instance of changedInstances) {
       this.db.prepare(`
         INSERT INTO node_states (run_id, node_key, node_id, status, output_json)
         VALUES (?, ?, ?, ?, ?)
@@ -2521,26 +2647,167 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       VALUES (?, ?, ?, NULL, ?, ?, ?)
     `).run(runId, this.nextSequence(runId), type, stableJsonLine(payload), now, idempotencyKey);
   }
+
+  private rootTerminalEventCount(runId: string, type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
+    const rows = this.db.prepare("SELECT payload_json FROM run_events WHERE run_id = ? AND type = ?").all(runId, type) as Array<{ payload_json: string }>;
+    return rows.filter(row => decodeSchedulerPayload(row.payload_json, type).frameKey === "root").length;
+  }
+
+  private maybePersistSchedulerCheckpoint(runId: string, eventSequence: number, projection: SchedulerProjection, now: string, release = false): void {
+    const existing = this.db.prepare("SELECT event_sequence FROM scheduler_projection_checkpoints WHERE run_id = ?").get(runId) as { event_sequence: number } | undefined;
+    if (existing?.event_sequence === eventSequence) return;
+    const force = release || projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "canceled" || projection.run.status === "paused";
+    if (existing && !force && eventSequence - existing.event_sequence < 256) return;
+    this.db.prepare(`
+      INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        event_sequence = excluded.event_sequence,
+        projection_json = excluded.projection_json,
+        updated_at = excluded.updated_at
+    `).run(runId, eventSequence, stableJsonLine(projection as unknown as JsonValue), now);
+  }
 }
 
-function schedulerEvents(db: DatabaseSync, runId: string): SchedulerEvent[] {
-  const rows = db.prepare("SELECT type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ type: string; payload_json: string }>;
+function schedulerEventsAfter(db: DatabaseSync, runId: string, sequence: number): SchedulerEvent[] {
+  const rows = db.prepare("SELECT type, payload_json FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence").all(runId, sequence) as Array<{ type: string; payload_json: string }>;
   return rows.flatMap(row => {
     if (!isSchedulerEventType(row.type)) return [];
     return [{ type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) } as SchedulerEvent];
   });
 }
 
-function timestampedSchedulerEvents(db: DatabaseSync, runId: string): TimestampedSchedulerEvent[] {
-  const rows = db.prepare("SELECT type, payload_json, created_at FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Array<{ type: string; payload_json: string; created_at: string }>;
-  return rows.flatMap(row => {
-    if (!isSchedulerEventType(row.type)) return [];
-    return [{ event: { type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) } as SchedulerEvent, createdAt: row.created_at }];
-  });
+function parseSchedulerProjection(json: string, runId: string): SchedulerProjection {
+  let projection: Partial<SchedulerProjection>;
+  try {
+    projection = JSON.parse(json) as Partial<SchedulerProjection>;
+  } catch (cause) {
+    throw new Error(`Run '${runId}' scheduler projection checkpoint JSON is malformed.`, { cause });
+  }
+  if (projection.run?.runId !== runId
+    || !projection.frames
+    || !projection.instances
+    || !projection.attempts
+    || !projection.groups
+    || !projection.groupMembers
+    || !projection.signalWaits
+    || !projection.branchDecisions) {
+    throw new Error(`Run '${runId}' scheduler projection checkpoint is malformed.`);
+  }
+  return projection as SchedulerProjection;
 }
 
-function rootTerminalEventCount(events: readonly SchedulerEvent[], type: "frame.completed" | "frame.failed" | "frame.cancelled"): number {
-  return events.filter(event => event.type === type && event.payload.frameKey === "root").length;
+function schedulerProjectionCheckpoint(db: DatabaseSync, runId: string): { event_sequence: number; projection_json: string } | undefined {
+  try {
+    return db.prepare(`
+      SELECT event_sequence, projection_json
+      FROM scheduler_projection_checkpoints
+      WHERE run_id = ?
+    `).get(runId) as { event_sequence: number; projection_json: string } | undefined;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("no such table: scheduler_projection_checkpoints")) return undefined;
+    throw error;
+  }
+}
+
+type ProjectionEntityDelta = { upserts: string[]; deletes: string[] };
+type SchedulerProjectionDelta = {
+  frame: ProjectionEntityDelta;
+  instance: ProjectionEntityDelta;
+  attempt: ProjectionEntityDelta;
+  member: ProjectionEntityDelta;
+  signal: ProjectionEntityDelta;
+};
+
+function schedulerProjectionDelta(before: SchedulerProjection, after: SchedulerProjection): SchedulerProjectionDelta {
+  return {
+    frame: recordDelta(before.frames, after.frames),
+    instance: recordDelta(before.instances, after.instances),
+    attempt: recordDelta(before.attempts, after.attempts),
+    member: recordDelta(before.groupMembers, after.groupMembers),
+    signal: recordDelta(before.signalWaits, after.signalWaits),
+  };
+}
+
+function recordDelta<T>(before: Record<string, T>, after: Record<string, T>): ProjectionEntityDelta {
+  return {
+    upserts: Object.keys(after).filter(key => before[key] !== after[key]),
+    deletes: Object.keys(before).filter(key => !(key in after)),
+  };
+}
+
+function incrementalProjectionTimings(
+  db: DatabaseSync,
+  runId: string,
+  now: string,
+  before: SchedulerProjection,
+  after: SchedulerProjection,
+  delta: SchedulerProjectionDelta,
+): SchedulerProjectionTimings {
+  const timings: SchedulerProjectionTimings = {
+    frame: new Map(),
+    instance: new Map(),
+    attempt: new Map(),
+    member: new Map(),
+    signal: new Map(),
+  };
+  for (const key of delta.frame.upserts) timings.frame.set(key, changedTiming(db, "scheduler_frames", "frame_key", runId, key, now, before.frames[key]?.status, after.frames[key]!.status));
+  for (const key of delta.instance.upserts) timings.instance.set(key, changedTiming(db, "node_instances", "node_key", runId, key, now, before.instances[key]?.status, after.instances[key]!.status));
+  for (const key of delta.attempt.upserts) timings.attempt.set(key, changedAttemptTiming(db, runId, key, now, before.attempts[key]?.status, after.attempts[key]!.status));
+  for (const key of delta.member.upserts) timings.member.set(key, changedTiming(db, "group_members", "member_key", runId, key, now, before.groupMembers[key]?.status, after.groupMembers[key]!.status));
+  for (const key of delta.signal.upserts) timings.signal.set(key, changedTiming(db, "signal_waits", "node_key", runId, key, now, before.signalWaits[key]?.status, after.signalWaits[key]!.status));
+  return timings;
+}
+
+function changedTiming(
+  db: DatabaseSync,
+  table: "scheduler_frames" | "node_instances" | "group_members" | "signal_waits",
+  keyColumn: "frame_key" | "node_key" | "member_key",
+  runId: string,
+  key: string,
+  now: string,
+  beforeStatus: string | undefined,
+  afterStatus: string,
+): { createdAt: string; updatedAt: string } {
+  const row = db.prepare(`SELECT created_at FROM ${table} WHERE run_id = ? AND ${keyColumn} = ?`).get(runId, key) as { created_at: string } | undefined;
+  return {
+    createdAt: row && !resetsProjectionLifecycle(beforeStatus, afterStatus) ? row.created_at : now,
+    updatedAt: now,
+  };
+}
+
+function changedAttemptTiming(
+  db: DatabaseSync,
+  runId: string,
+  attemptId: string,
+  now: string,
+  beforeStatus: string | undefined,
+  afterStatus: string,
+): { createdAt: string; updatedAt: string } {
+  const row = db.prepare("SELECT started_at FROM node_attempts WHERE run_id = ? AND attempt_id = ?").get(runId, attemptId) as { started_at: string } | undefined;
+  return {
+    createdAt: row && !resetsProjectionLifecycle(beforeStatus, afterStatus) ? row.started_at : now,
+    updatedAt: now,
+  };
+}
+
+function resetsProjectionLifecycle(before: string | undefined, after: string): boolean {
+  return before !== undefined && terminalProjectionStatus(before) && !terminalProjectionStatus(after);
+}
+
+function terminalProjectionStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "canceled" || status === "timed_out" || status === "consumed" || status === "superseded";
+}
+
+function deleteProjectionRows(
+  db: DatabaseSync,
+  table: "scheduler_frames" | "node_instances" | "node_attempts" | "group_members" | "signal_waits",
+  keyColumn: "frame_key" | "node_key" | "attempt_id" | "member_key",
+  runId: string,
+  keys: readonly string[],
+): void {
+  const statement = db.prepare(`DELETE FROM ${table} WHERE run_id = ? AND ${keyColumn} = ?`);
+  for (const key of keys) statement.run(runId, key);
 }
 
 function publicRunStatus(projection: ReturnType<typeof createSchedulerProjection>): RunStatus {
@@ -3042,6 +3309,13 @@ function initializeSchema(db: DatabaseSync): void {
       lease_expires_at TEXT NOT NULL,
       claimed_at TEXT NOT NULL,
       released_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS scheduler_projection_checkpoints (
+      run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      event_sequence INTEGER NOT NULL,
+      projection_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS scheduler_frames (

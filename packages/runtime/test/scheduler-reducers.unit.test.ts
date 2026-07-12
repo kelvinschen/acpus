@@ -1,8 +1,62 @@
 import { describe, expect, it } from "vitest";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, groupCompletionEvents, nextLoopStep, signalTimeoutEvents } from "../src/scheduler/transitions.js";
 
 describe("scheduler identity and reducers", () => {
+  it("produces the same projection from every checkpoint and tail split", () => {
+    const choose = deriveInstanceKey(appendNode([], "choose"));
+    const branch = deriveInstanceKey(appendBranch([], "choose", "then"));
+    const leaf = deriveInstanceKey(appendNode(appendBranch([], "choose", "then"), "leaf"));
+    const streams: SchedulerEvent[][] = [
+      [
+        { type: "control.paused", payload: {} },
+        { type: "control.resumed", payload: {} },
+        { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root" } },
+        { type: "frame.started", payload: { runId: "run_1", frameKey: "loop", frameKind: "loop", nodeKey: "loop", nodeId: "loop" } },
+        { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: { value: 0 } } },
+        { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: { value: 1 }, transition: { state: { value: 1 }, stop: false } } },
+        { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 1, state: { value: 1 } } },
+        { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
+        { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "race.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+        { type: "group.member_completed", payload: { memberKey: "race.left", completionSequence: 2 } },
+        { type: "group.completed", payload: { groupKey: "race", result: { acceptedMemberKeys: ["race.left"] } } },
+        { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: "approve", nodeId: "approve" } },
+        { type: "signal.consumed", payload: { nodeKey: "approve", payload: { ok: true }, commandIdempotencyKey: "approve-1" } },
+      ],
+      [
+        { type: "group.started", payload: { runId: "run_1", groupKey: "quorum", nodeKey: "quorum", nodeId: "quorum", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
+        { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
+        { type: "group.member_completed", payload: { memberKey: "quorum[0]", completionSequence: 3 } },
+        { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[1]", memberKind: "fanout_item", itemIndex: 1, item: 1, readinessSequence: 2 } },
+        { type: "group.member_completed", payload: { memberKey: "quorum[1]", completionSequence: 4 } },
+        { type: "group.completed", payload: { groupKey: "quorum", result: { acceptedMemberKeys: ["quorum[0]", "quorum[1]"] } } },
+      ],
+      [
+        { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root" } },
+        { type: "frame.started", payload: { runId: "run_1", frameKey: choose, frameKind: "node", nodeKey: choose, nodeId: "choose", parentFrameKey: "root", instancePath: appendNode([], "choose") } },
+        { type: "branch.decided", payload: { frameKey: choose, branchId: "then" } },
+        { type: "frame.started", payload: { runId: "run_1", frameKey: branch, frameKind: "branch", parentFrameKey: choose, instancePath: appendBranch([], "choose", "then") } },
+        { type: "instance.ready", payload: { runId: "run_1", nodeKey: leaf, nodeId: "leaf", parentFrameKey: branch, instancePath: appendNode(appendBranch([], "choose", "then"), "leaf") } },
+        { type: "instance.failed", payload: { nodeKey: leaf, error: { reason: "boom" } } },
+        { type: "frame.failed", payload: { frameKey: branch, error: { reason: "boom" } } },
+        { type: "frame.failed", payload: { frameKey: choose, error: { reason: "boom" } } },
+        { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+        { type: "frame.retry_requested", payload: { frameKey: choose } },
+        { type: "instance.ready", payload: { runId: "run_1", nodeKey: "cancel-me", nodeId: "cancel-me", instancePath: appendNode([], "cancel-me") } },
+        { type: "instance.cancelled", payload: { nodeKey: "cancel-me", cancelReason: "operator_cancelled" } },
+      ],
+    ];
+
+    for (const events of streams) {
+      const rebuilt = applySchedulerEvents(createSchedulerProjection("run_1"), events);
+      for (let split = 0; split <= events.length; split += 1) {
+        const checkpoint = JSON.parse(JSON.stringify(applySchedulerEvents(createSchedulerProjection("run_1"), events.slice(0, split))));
+        expect(applySchedulerEvents(checkpoint, events.slice(split))).toEqual(rebuilt);
+      }
+    }
+  });
+
   it("derives stable readable keys from structured instance paths", () => {
     const path = appendNode(
       appendLoopIteration(

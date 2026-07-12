@@ -4,7 +4,7 @@ import { normalizeSignalPayload } from "../admission/input.js";
 import { compactSchemaSummary } from "../schema-summary.js";
 import type { RuntimeStore } from "../store/store.js";
 import { SchedulerControlInputError, throwSchedulerStoreResult, type SchedulerSnapshot, type SchedulerStoreResult } from "./store-port.js";
-import { drainFrozenRunTransitions } from "./runtime-runner.js";
+import { settleFrozenRunTransitions } from "./runtime-runner.js";
 
 export type RunControlIntent =
   | { requestId: string; runId: string; type: "pause" }
@@ -38,7 +38,7 @@ export function applySchedulerControlIntent(
 ): SchedulerControlResult {
   const runId = intent.runId;
   const idempotencyKey = `scheduler:control:${intent.requestId}`;
-  const snapshot = drainFrozenRunTransitions({ store, runId, ownerEpoch });
+  const snapshot = settleFrozenRunTransitions({ store, runId, ownerEpoch });
   if (intent.type === "pause") {
     return {
       snapshot: unwrapStoreResult(store.scheduler.tryPauseRun({ runId, ownerEpoch, idempotencyKey })),

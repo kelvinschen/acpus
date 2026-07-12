@@ -14,6 +14,7 @@ const mock = vi.hoisted(() => {
     requestDaemonAdmitRun: vi.fn(),
     requestDaemonControl: vi.fn(),
     requestDaemonStatus: vi.fn(),
+    tryLoadRuntimeConfiguration: vi.fn(),
   };
 });
 
@@ -24,6 +25,7 @@ vi.mock("@acpus/runtime", () => ({
   requestDaemonAdmitRun: mock.requestDaemonAdmitRun,
   requestDaemonControl: mock.requestDaemonControl,
   requestDaemonStatus: mock.requestDaemonStatus,
+  tryLoadRuntimeConfiguration: mock.tryLoadRuntimeConfiguration,
 }));
 
 import { ensureDaemonRunning, sendDaemonAdmitRun, sendDaemonControl } from "../src/commands/daemon.js";
@@ -32,6 +34,7 @@ describe("CLI daemon client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mock.spawn.mockReturnValue({ unref: mock.unref });
+    mock.tryLoadRuntimeConfiguration.mockReturnValue({ isErr: () => false });
   });
 
   afterEach(() => {
@@ -61,6 +64,19 @@ describe("CLI daemon client", () => {
     expect(mock.spawn).toHaveBeenCalledOnce();
     expect(mock.unref).toHaveBeenCalledOnce();
     expect(mock.requestDaemonStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports invalid runtime configuration before spawning a detached daemon", async () => {
+    mock.requestDaemonStatus.mockRejectedValueOnce(Object.assign(new Error("socket missing"), { code: "ENOENT" }));
+    mock.tryLoadRuntimeConfiguration.mockReturnValue({
+      isErr: () => true,
+      error: { message: "Environment variable ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY is invalid." },
+    });
+
+    await expect(ensureDaemonRunning("/workspace")).rejects.toThrow(
+      "Environment variable ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY is invalid.",
+    );
+    expect(mock.spawn).not.toHaveBeenCalled();
   });
 
   it("waits without another spawn while a bound daemon claims its generation", async () => {

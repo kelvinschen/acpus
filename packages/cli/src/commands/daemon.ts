@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonStatus, type AgentOverrideMap, type DaemonControlIntent, type DaemonControlResult, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
+import { DaemonRequestError, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonStatus, tryLoadRuntimeConfiguration, type AgentOverrideMap, type DaemonControlIntent, type DaemonControlResult, type DaemonErrorCode, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 
 export class DaemonControlFailure extends Error {
@@ -27,6 +27,8 @@ export async function ensureDaemonRunning(cwd: string): Promise<void> {
     } catch (error) {
       if (isDaemonStartupConnectionError(error)) {
         if (!spawned) {
+          const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
+          if (runtimeConfiguration.isErr()) throw new Error(runtimeConfiguration.error.message);
           const child = spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" });
           child.unref();
           spawned = true;

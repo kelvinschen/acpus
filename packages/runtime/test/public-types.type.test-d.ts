@@ -21,6 +21,10 @@ import type {
   RunWorkflowLockArtifact,
   RuntimeHealthCheck,
   RuntimeHealthReport,
+  RuntimeConfiguration,
+  RuntimeConfigurationFailure,
+  AgentHostPolicy,
+  AgentHostPolicyFailure,
   DaemonControlIntent,
   DaemonControlResult,
   DaemonErrorCode,
@@ -33,9 +37,10 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import type { Result } from "neverthrow";
 
 test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
@@ -52,6 +57,15 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     onShutdown?: () => void;
   }>();
   expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
+  expectTypeOf(tryLoadRuntimeConfiguration).toEqualTypeOf<(env: NodeJS.ProcessEnv) => Result<RuntimeConfiguration, RuntimeConfigurationFailure>>();
+  expectTypeOf<RuntimeConfiguration>().toEqualTypeOf<{
+    runMaxLeafConcurrency: number;
+    agentHostPolicy: AgentHostPolicy;
+  }>();
+  expectTypeOf<AgentHostPolicy["responseRepair"]>().toEqualTypeOf<
+    | { type: "valid"; max: number }
+    | { type: "invalid"; failure: AgentHostPolicyFailure }
+  >();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Promise<DaemonStatus>>();
   expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: DaemonAdmitRunInput) => Promise<RunDetails>>();

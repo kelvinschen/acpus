@@ -1305,7 +1305,7 @@ describe("scheduler store port", () => {
     });
   });
 
-  it("derives attempt timings from scheduler event timestamps", async () => {
+  it("persists attempt timings from their committed scheduler events", async () => {
     await withRuntimeWorkspace("scheduler-store-attempt-timings", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
@@ -1328,18 +1328,8 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:timing:complete",
         });
 
-        const startedAt = "2026-07-03T01:02:03.000Z";
-        const finishedAt = "2026-07-03T01:02:07.000Z";
-        setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.started"], startedAt);
-        setSchedulerEventTypesCreatedAt(workspace, run.id, ["attempt.completed"], finishedAt);
-        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "scheduler:after-attempt-timing",
-          events: [{ type: "control.paused", payload: {} }],
-        });
+        const startedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'attempt.started'", run.id);
+        const finishedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'attempt.completed'", run.id);
 
         expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual({
           started_at: startedAt,

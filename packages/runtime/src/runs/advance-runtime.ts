@@ -4,8 +4,11 @@ import type { RunOwnerClaim } from "../scheduler/store-port.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { HookRunner } from "../hooks/runner.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
+import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 
 type RuntimeAdvanceOptions = {
+  maxLeafConcurrency?: number;
+  agentHostPolicy?: AgentHostPolicy;
   onClaim?: (claim: RunOwnerClaim) => void;
   onRelease?: (claim: RunOwnerClaim) => void;
   onActiveAttempt?: Parameters<typeof advanceFrozenRun>[0]["onActiveAttempt"];
@@ -19,6 +22,7 @@ export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId:
     throw new Error(`Run '${runId}' was not found.`);
   }
   const hookCursor = options.hookCursor ?? { sequence: store.getLastRunEventSequence(runId) };
+  const agentHostPolicy = options.agentHostPolicy ?? loadAgentHostPolicy(process.env);
   let last: AdvanceRunSummary | undefined;
   for (let drives = 0; drives < 1_000; drives += 1) {
     last = await advanceFrozenRun({
@@ -26,6 +30,8 @@ export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId:
       store,
       runId,
       ownerId,
+      ...(options.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: options.maxLeafConcurrency }),
+      agentHostPolicy,
       ...(options.onClaim === undefined ? {} : { onClaim: options.onClaim }),
       ...(options.onRelease === undefined ? {} : { onRelease: options.onRelease }),
       ...(options.onActiveAttempt === undefined ? {} : { onActiveAttempt: options.onActiveAttempt }),

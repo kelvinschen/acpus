@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -12,17 +12,30 @@ vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
 const { startDaemonLoop } = await import("../src/daemon/loop.js");
 
 let dir: string;
+const runMaxLeafConcurrency = process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
 
 beforeEach(async () => {
+  delete process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
   dir = await mkdtemp(join(tmpdir(), "acpus-daemon-loop-"));
   runDaemonTick.mockReset();
 });
 
 afterEach(async () => {
+  if (runMaxLeafConcurrency === undefined) delete process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
+  else process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY = runMaxLeafConcurrency;
   await rm(dir, { recursive: true, force: true });
 });
 
 describe("daemon loop", () => {
+  it("rejects invalid run leaf concurrency before creating runtime state", async () => {
+    process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY = "0";
+
+    await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
+      "Environment variable ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY must be a canonical positive decimal safe integer",
+    );
+    await expect(access(join(dir, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("continues heartbeating while a work tick is still running", async () => {
     let finishTick!: () => void;
     runDaemonTick.mockImplementationOnce(() => new Promise(resolve => {
