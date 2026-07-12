@@ -43,3 +43,8 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - CI and publish workflows MUST run `pnpm check:build-toolchain`.
 - `pnpm test:dist` MUST reject packages containing `.tsbuildinfo` files.
 - Build verification MUST cover a clean build and repeated no-change builds without imposing wall-clock thresholds in CI.
+- The package-version workflow MUST synchronize the bundled Acpus skill's
+  `metadata.acpus-version` after Changesets updates the CLI package version and
+  before lockfile and publish artifact verification.
+- Build-toolchain verification MUST reject a repository whose bundled Acpus
+  skill version differs from the CLI package version.

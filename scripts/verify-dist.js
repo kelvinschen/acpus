@@ -24,6 +24,7 @@ const publishedPackageNames = [
 
 const packages = await verifyPackages();
 await verifyPackedWorkflowCompiler(packages);
+await verifyPackedCli(packages);
 
 const workspace = await mkdtemp(join(tmpdir(), "acpus-dist-smoke-"));
 
@@ -189,6 +190,96 @@ assert.ok(checked.error.diagnostics.some(diagnostic => diagnostic.code === "TS23
     await execFileAsync(process.execPath, [join(consumerDirectory, "smoke.mjs")], {
       cwd: consumerDirectory,
       env: smokeEnvironment(),
+    });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+async function verifyPackedCli(packages) {
+  const workspace = await mkdtemp(join(tmpdir(), "acpus-packed-cli-"));
+  try {
+    const tarballsDirectory = join(workspace, "tarballs");
+    const consumerDirectory = join(workspace, "consumer");
+    await mkdir(tarballsDirectory);
+    await mkdir(consumerDirectory);
+
+    const packagesByName = new Map(packages.map(pkg => [pkg.manifest.name, pkg]));
+    const packageNames = localDependencyClosure("acpus", packagesByName);
+    const tarballs = new Map();
+    for (const name of packageNames) {
+      const pkg = packagesByName.get(name);
+      assert.ok(pkg, `packed CLI dependency is not publishable: ${name}`);
+      tarballs.set(name, await pnpmPack(pkg.packageDirectory, tarballsDirectory));
+    }
+    const fileSpecs = Object.fromEntries([...tarballs].map(([name, tarball]) => [
+      name,
+      localFileSpec(consumerDirectory, tarball),
+    ]));
+    await writeFile(join(consumerDirectory, "package.json"), `${JSON.stringify({
+      name: "acpus-packed-cli-smoke",
+      private: true,
+      type: "module",
+      dependencies: { acpus: fileSpecs.acpus },
+      pnpm: { overrides: fileSpecs },
+    }, null, 2)}\n`);
+    await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
+
+    const cliEntry = join(consumerDirectory, "node_modules", "acpus", "dist", "cli.js");
+    const codexHome = join(consumerDirectory, "codex-home");
+    const claudeHome = join(consumerDirectory, "claude-home");
+    const environment = { ...smokeEnvironment(), CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome };
+    const runCli = args => execFileAsync(process.execPath, [cliEntry, ...args], { cwd: consumerDirectory, env: environment });
+
+    const doctor = JSON.parse((await runCli(["doctor", "--json"])).stdout);
+    assert.equal(doctor.ok, true);
+    assert.equal(doctor.authoring.cli.version, packagesByName.get("acpus").manifest.version);
+    assert.ok(doctor.authoring.cli.packageRoot.startsWith(consumerDirectory));
+    assert.equal(doctor.authoring.skills.bundled.status, "aligned");
+    for (const authority of Object.values(doctor.authoring.imports)) {
+      assert.equal(authority.packageRoot.startsWith(consumerDirectory), true);
+      assert.equal(existsSync(authority.packageRoot), true);
+      assert.equal(existsSync(authority.typesPath), true);
+    }
+
+    const examplesRoot = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "examples", "workflows");
+    for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const workflow = join(examplesRoot, entry.name, "workflow.ts");
+      if (!existsSync(workflow)) continue;
+      const checked = JSON.parse((await runCli(["workflow", "check", workflow, "--json"])).stdout);
+      assert.equal(checked.ok, true, `packed skill example failed: ${entry.name}`);
+    }
+
+    await mkdir(join(consumerDirectory, ".agents", "skills"), { recursive: true });
+    await mkdir(join(consumerDirectory, ".claude", "skills"), { recursive: true });
+    const installed = JSON.parse((await runCli(["skill", "install", "--json"])).stdout);
+    assert.equal(installed.skill.version, doctor.authoring.cli.version);
+    const aligned = JSON.parse((await runCli(["doctor", "--json"])).stdout);
+    assert.deepEqual(aligned.authoring.skills.installed.map(skill => skill.status), ["aligned", "aligned"]);
+
+    const installedSkill = join(consumerDirectory, ".agents", "skills", "acpus", "SKILL.md");
+    await writeFile(installedSkill, (await readFile(installedSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
+    const stale = JSON.parse((await runCli(["doctor", "--json"])).stdout);
+    assert.equal(stale.ok, true);
+    assert.ok(stale.checks.some(check => check.area === "skill" && check.status === "warn" && check.details?.remediation === "acpus skill install --project"));
+
+    const installedManifestPath = join(consumerDirectory, "node_modules", "acpus", "package.json");
+    const installedManifestSource = await readFile(installedManifestPath, "utf8");
+    const installedManifest = JSON.parse(installedManifestSource);
+    installedManifest.dependencies["@acpus/core"] = "0.0.0";
+    await writeFile(installedManifestPath, `${JSON.stringify(installedManifest, null, 2)}\n`);
+    await assert.rejects(runCli(["doctor", "--json"]), error => {
+      const failed = JSON.parse(error.stdout);
+      return failed.ok === false && failed.checks.some(check => check.area === "authoring" && check.status === "fail");
+    });
+    await writeFile(installedManifestPath, installedManifestSource);
+
+    const bundledSkill = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "SKILL.md");
+    await writeFile(bundledSkill, (await readFile(bundledSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
+    await assert.rejects(runCli(["doctor", "--json"]), error => {
+      const failed = JSON.parse(error.stdout);
+      return failed.ok === false && failed.checks.some(check => check.area === "skill" && check.status === "fail");
     });
   } finally {
     await rm(workspace, { recursive: true, force: true });

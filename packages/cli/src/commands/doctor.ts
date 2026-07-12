@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
 import { getRuntimeHealth } from "@acpus/runtime";
+import { getAuthoringHealth, type AuthoringHealthCheck } from "../authoring-environment.js";
 import { writeResult } from "../output.js";
 
 export type DoctorCommandContext = {
@@ -24,11 +25,24 @@ export function createDoctorCommand(ctx: DoctorCommandContext): Command {
     .description("Run read-only workspace health checks.")
     .action(async () => {
       const report = await getRuntimeHealth(ctx.cwd);
+      let authoring: Awaited<ReturnType<typeof getAuthoringHealth>> | undefined;
+      let authoringFailure: AuthoringHealthCheck | undefined;
+      try {
+        authoring = await getAuthoringHealth(ctx.cwd);
+      } catch (error) {
+        authoringFailure = {
+          area: "authoring",
+          status: "fail",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const ok = report.ok && authoring?.ok !== false && authoringFailure === undefined;
       ctx.setExitCode(writeResult({
-        ok: report.ok,
+        ok,
         phase: "doctor",
-        message: report.ok ? "Doctor checks passed." : "Doctor checks failed.",
-        checks: report.checks,
-      }, ctx.wantsJson ? "json" : "text", ctx, report.ok ? 0 : 1));
+        message: ok ? "Doctor checks passed." : "Doctor checks failed.",
+        checks: [...report.checks, ...(authoring?.checks ?? []), ...(authoringFailure ? [authoringFailure] : [])],
+        ...(authoring ? { authoring: authoring.environment } : {}),
+      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
     });
 }

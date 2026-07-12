@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
+import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
@@ -47,7 +48,8 @@ export type CliResult = {
   catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
   followRunId?: string;
-  checks?: RuntimeHealthCheck[];
+  checks?: Array<RuntimeHealthCheck | AuthoringHealthCheck>;
+  authoring?: AuthoringEnvironment;
   errorCode?: string;
   control?: CliControl;
   hookValidation?: { count: number };
@@ -63,6 +65,7 @@ export type SkillCommandResult = {
   packageName: string;
   skillName: string;
   targetName: string;
+  version: string;
   scope: "project" | "global";
   dryRun: boolean;
   targets: {

@@ -77,7 +77,7 @@ pnpm build:clean
 pnpm test:dist
 ```
 
-`pnpm test:type` runs only Vitest type-contract tests with `--typecheck.only`. `pnpm test` uses `scripts/test.mjs` to run the type-contract, unit, contract, integration, E2E, and regression projects in parallel with the same per-project worker cap, then prints each project's output as one block. Use the matching `pnpm test:<layer> <filter-or-option>` command when passing file filters or other Vitest options. `pnpm typecheck` remains the broader package/source/fixture compilation check.
+`pnpm test:type` runs only Vitest type-contract tests with `--typecheck.only`. `pnpm test` uses `scripts/test.mjs` to run the type-contract, unit, contract, integration, E2E, and regression projects in parallel, then prints each project's output as one block. Integration receives enough workers to schedule every integration file in one wave; the other projects keep the lower default cap so the combined run stays within the repository's expected CPU budget. Use the matching `pnpm test:<layer> <filter-or-option>` command when passing file filters or other Vitest options. `pnpm typecheck` remains the broader package/source/fixture compilation check.
 
 `pnpm test:dist` is a repository-level release smoke and expects a fresh build. Run it after `pnpm build:clean`. It invokes the built `acpus` CLI without injecting an ambient `tsx` loader or the `development` export condition, then executes a real inline Task through the built authoring facade, compiler, loader, runtime, daemon, and Task subprocess. Keep distribution verification at this user-facing seam rather than adding package-local dist smokes for internal files. It is intentionally separate from the source-oriented `pnpm test` feedback loop.
 

@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const projects = [
   { name: "type", args: ["--typecheck.only", "--project", "type-contract"] },
-  { name: "unit", args: ["--project", "unit"] },
-  { name: "contract", args: ["--project", "contract"] },
-  { name: "integration", args: ["--project", "integration"] },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "13%" },
+  { name: "contract", args: ["--project", "contract"], maxWorkers: "13%" },
+  { name: "integration", args: ["--project", "integration"], maxWorkers: "38%" },
   { name: "e2e", args: ["--project", "e2e"] },
   { name: "regression", args: ["--project", "regression"] },
 ];
@@ -40,7 +40,7 @@ async function main() {
 function runProject(vitestCli, project) {
   return new Promise(resolve => {
     const output = [];
-    const child = spawn(process.execPath, [vitestCli, "run", ...project.args, "--maxWorkers=19%"], {
+    const child = spawn(process.execPath, [vitestCli, "run", ...project.args, `--maxWorkers=${project.maxWorkers ?? "19%"}`], {
       cwd: root,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],

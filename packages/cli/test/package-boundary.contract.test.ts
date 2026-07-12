@@ -34,10 +34,13 @@ describe("acpus package boundaries", () => {
   });
 
   it("declares the bundled Acpus skill in the package files", async () => {
-    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { private?: boolean; files?: string[] };
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version: string; private?: boolean; files?: string[] };
+    const skill = await readFile(skillPath, "utf8");
     expect(pkg.private).not.toBe(true);
     expect(pkg.files).toContain("skills");
-    expect(await readFile(skillPath, "utf8")).toContain("name: acpus");
+    expect(skill).toContain("name: acpus");
+    expect(skill).toContain(`acpus-version: ${pkg.version}`);
+    expect(skill).not.toContain("npm root -g");
   });
 });
 

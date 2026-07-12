@@ -12,7 +12,7 @@ const projects = {
   "workflow-compiler": ["core", "expression", "loader"],
   runtime: ["agent-executor", "core", "expression", "loader"],
   web: ["core", "expression", "runtime", "workflow-compiler"],
-  cli: ["core", "expression", "runtime", "tasks", "web", "workflow-compiler"],
+  cli: ["core", "expression", "loader", "runtime", "tasks", "web", "workflow-compiler"],
 };
 const foundation = ["agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
 const allProjects = [...foundation, "web", "cli"];
@@ -50,6 +50,10 @@ equal(rootManifest.scripts?.build, "node scripts/build.mjs", "root build script"
 equal(rootManifest.scripts?.["build:clean"], "pnpm clean && pnpm build", "clean build script");
 equal(rootManifest.scripts?.typecheck, "pnpm -r typecheck", "root typecheck script");
 equal(rootManifest.scripts?.["check:build-toolchain"], "node scripts/verify-build-toolchain.mjs", "toolchain check script");
+equal(rootManifest.scripts?.["version-packages"], "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only", "version packages script");
+const cliManifest = manifests.get("cli");
+const skillVersion = (await text("packages/cli/skills/acpus/SKILL.md")).match(/^\s+acpus-version:\s*([^\s#]+)/mu)?.[1];
+equal(skillVersion, cliManifest.version, "bundled Acpus skill version");
 
 const buildScript = await text("scripts/build.mjs");
 ordered(buildScript, ["tsconfig.build.foundation.json", "build-static-viz.mjs", "tsconfig.build.json"], "root build stages");

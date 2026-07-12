@@ -9,6 +9,9 @@
 ### Public Surface
 
 - The package MUST expose `officialAuthoringTypeScriptPaths(fromDir)`.
+- The package MUST expose `officialAuthoringEnvironment()` as the single
+  resolved authority for official facade implementation package names,
+  versions, package roots, and TypeScript authority paths.
 - The package MUST expose `importAuthoringModule(specifier, { parentURL })`.
 - The package MUST NOT expose user-facing CLI commands, runtime state, workflow compilation APIs, or task execution APIs.
 - The package MUST keep TypeScript loader implementation details private to this package.
@@ -26,6 +29,8 @@
 - `officialAuthoringTypeScriptPaths(fromDir)` MUST return `paths` entries that TypeScript scratch configs can use for the supported official facade specifiers.
 - Returned path targets MUST be relative to `fromDir`.
 - The return value MUST indicate whether any official facade target resolved to workspace source so callers can enable the `development` condition when needed.
+- `officialAuthoringEnvironment()` paths MUST be canonical absolute paths and
+  MUST describe the same targets returned by `officialAuthoringTypeScriptPaths(...)`.
 
 ### Module Loading
 

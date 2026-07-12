@@ -25,7 +25,7 @@
     "test:regression": "vitest run --project regression",
     "test:dist": "node scripts/verify-dist.js",
     "changeset": "changeset",
-    "version-packages": "changeset version && pnpm install --lockfile-only",
+    "version-packages": "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only",
     "ci:publish": "changeset publish",
     "clean": "pnpm -r clean"
   },

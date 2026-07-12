@@ -349,9 +349,7 @@ const state = {
 Run `acpus workflow check <workflow.ts-or-catalog>` before admitting a run.
 
 ### Declaration Lookup
-Only when exact API usage is unclear, inspect installed declarations:
+Only when exact API usage is unclear, inspect installed declarations, never lookup it at first:
 
-1. Start from the global install: `$(npm root -g)/acpus/dist/authoring/`.
-2. Read facade declarations there: `core.d.ts`, `expression.d.ts`, and `tasks/git.d.ts`.
-3. Follow re-exports into sibling global packages: `$(npm root -g)/@acpus/core/dist/*.d.ts`, `@acpus/expression/dist/*.d.ts`, and `@acpus/tasks/dist/*.d.ts`.
-4. Retrieve only the relevant symbol plus nearby doc comment/signature; do not dump full declaration files.
+1. Run the current CLI's `acpus doctor --json | jq ".authoring.imports"`.
+2. Select the relevant absolute path from `typesPath`, retrieve only the relevant symbol plus nearby doc comment/signature; do not dump full declaration files .

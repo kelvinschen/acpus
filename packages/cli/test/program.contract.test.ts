@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { getCliPackageInfo } from "../src/commands/version.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -51,6 +51,87 @@ describe("CLI program usage contracts", () => {
     expect(exitCode).toBe(0);
     expect(stdout.text).toBe(`${version}\n`);
     expect(stderr.text).toBe("");
+  });
+
+  it("reports absolute authoring authority without initializing runtime state", async () => {
+    await withTestWorkspace("doctor-authoring", async workspace => {
+      const previousCodexHome = process.env.CODEX_HOME;
+      const previousClaudeHome = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CODEX_HOME = join(workspace, "codex-home");
+      process.env.CLAUDE_CONFIG_DIR = join(workspace, "claude-home");
+      try {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
+        const result = JSON.parse(stdout.text);
+
+        expect(exitCode).toBe(0);
+        expect(result).toMatchObject({
+          ok: true,
+          phase: "doctor",
+          authoring: {
+            cli: { version: getCliPackageInfo().version },
+            skills: { bundled: { version: getCliPackageInfo().version, status: "aligned" }, installed: [] },
+          },
+        });
+        expect(isAbsolute(result.authoring.cli.entry)).toBe(true);
+        expect(isAbsolute(result.authoring.cli.packageRoot)).toBe(true);
+        for (const authority of Object.values(result.authoring.imports) as Array<{ packageRoot: string; typesPath: string }>) {
+          expect(isAbsolute(authority.packageRoot)).toBe(true);
+          expect(isAbsolute(authority.typesPath)).toBe(true);
+        }
+        await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(stderr.text).toBe("");
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        if (previousClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousClaudeHome;
+      }
+    });
+  });
+
+  it("warns for repairable installed skills but treats missing skills as neutral", async () => {
+    await withTestWorkspace("doctor-installed-skills", async workspace => {
+      const previousCodexHome = process.env.CODEX_HOME;
+      const previousClaudeHome = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CODEX_HOME = join(workspace, "codex-home");
+      process.env.CLAUDE_CONFIG_DIR = join(workspace, "claude-home");
+      try {
+        const projectAgents = join(workspace, ".agents", "skills");
+        const projectClaude = join(workspace, ".claude", "skills");
+        const globalAgents = join(process.env.CODEX_HOME, "skills");
+        await mkdir(join(projectAgents, "acpus"), { recursive: true });
+        await mkdir(join(projectClaude, "acpus"), { recursive: true });
+        await mkdir(globalAgents, { recursive: true });
+        await writeFile(join(projectAgents, "acpus", "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
+        await writeFile(join(projectClaude, "acpus", "SKILL.md"), "---\nname: acpus\n---\n");
+
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
+        const result = JSON.parse(stdout.text);
+
+        expect(exitCode).toBe(0);
+        expect(result.ok).toBe(true);
+        expect(result.authoring.skills.installed).toEqual(expect.arrayContaining([
+          expect.objectContaining({ scope: "project", kind: "agents", status: "stale", remediation: "acpus skill install --project" }),
+          expect.objectContaining({ scope: "project", kind: "claude", status: "unversioned", remediation: "acpus skill install --project" }),
+          expect.objectContaining({ scope: "global", kind: "agents", status: "missing" }),
+        ]));
+        const warnings = result.checks.filter((check: { area: string; status: string }) => check.area === "skill" && check.status === "warn");
+        expect(warnings).toHaveLength(2);
+        expect(warnings.some((check: { details?: { status?: string } }) => check.details?.status === "missing")).toBe(false);
+        const missing = result.authoring.skills.installed.find((skill: { scope: string; kind: string }) => skill.scope === "global" && skill.kind === "agents");
+        expect(missing).not.toHaveProperty("remediation");
+        expect(stderr.text).toBe("");
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        if (previousClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousClaudeHome;
+      }
+    });
   });
 
 
@@ -475,6 +556,7 @@ describe("CLI program usage contracts", () => {
           packageName: "acpus",
           skillName: "acpus",
           targetName: "acpus",
+          version: getCliPackageInfo().version,
           scope: "project",
           installations: [
             { scope: "project", kind: "agents", targetPath: agentsPath, status: "installed" },
@@ -486,6 +568,7 @@ describe("CLI program usage contracts", () => {
       expect((await lstat(agentsPath)).isSymbolicLink()).toBe(false);
       expect((await lstat(claudePath)).isDirectory()).toBe(true);
       expect(await readFile(join(agentsPath, "SKILL.md"), "utf8")).toContain("name: acpus");
+      expect(await readFile(join(agentsPath, "SKILL.md"), "utf8")).toContain(`acpus-version: ${getCliPackageInfo().version}`);
       await expect(lstat(join(workspace, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(installStderr.text).toBe("");
 

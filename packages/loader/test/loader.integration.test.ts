@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { importAuthoringModule, officialAuthoringTypeScriptPaths } from "../src/index.js";
+import { importAuthoringModule, officialAuthoringEnvironment, officialAuthoringTypeScriptPaths } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -238,6 +239,25 @@ console.log(JSON.stringify({ taskish: Boolean(token && typeof token === "object"
     }
   });
 
+  it("reports the same absolute authoring authority used by TypeScript paths", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-authority-"));
+    try {
+      const paths = officialAuthoringTypeScriptPaths(cwd);
+      const environment = officialAuthoringEnvironment();
+
+      for (const [specifier, authority] of Object.entries(environment.imports)) {
+        const target = paths.paths[specifier]?.[0];
+        if (!target) throw new Error(`missing TypeScript path for ${specifier}`);
+        expect(realpathSync(resolve(cwd, target))).toBe(authority.typesPath);
+        expect(isAbsolute(authority.packageRoot)).toBe(true);
+        expect(isAbsolute(authority.typesPath)).toBe(true);
+        expect(authority.version).not.toBe("");
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns declaration paths for installed package typecheck configs", async () => {
     const root = await mkdtemp(join(packageRoot, ".test-installed-"));
     try {
@@ -263,15 +283,25 @@ console.log(JSON.stringify({ taskish: Boolean(token && typeof token === "object"
       const cwd = join(root, "workspace");
       await mkdir(cwd);
       const stdout = await runPlainNodeScript(`
-import { officialAuthoringTypeScriptPaths } from ${JSON.stringify(pathToFileURL(join(loaderDist, "index.js")).href)};
-console.log(JSON.stringify(officialAuthoringTypeScriptPaths(${JSON.stringify(cwd)})));
+import { officialAuthoringEnvironment, officialAuthoringTypeScriptPaths } from ${JSON.stringify(pathToFileURL(join(loaderDist, "index.js")).href)};
+console.log(JSON.stringify({ paths: officialAuthoringTypeScriptPaths(${JSON.stringify(cwd)}), environment: officialAuthoringEnvironment() }));
 `);
-      const result = JSON.parse(stdout) as ReturnType<typeof officialAuthoringTypeScriptPaths>;
+      const result = JSON.parse(stdout) as {
+        paths: ReturnType<typeof officialAuthoringTypeScriptPaths>;
+        environment: ReturnType<typeof officialAuthoringEnvironment>;
+      };
 
-      expect(result.usesSource).toBe(false);
-      expect(result.paths["acpus/core"]?.[0]).toMatch(/@acpus\/core\/dist\/index\.d\.ts$/);
-      expect(result.paths["acpus/expression"]?.[0]).toMatch(/@acpus\/expression\/dist\/index\.d\.ts$/);
-      expect(result.paths["acpus/tasks/git"]?.[0]).toMatch(/@acpus\/tasks\/dist\/git\.d\.ts$/);
+      expect(result.paths.usesSource).toBe(false);
+      expect(result.paths.paths["acpus/core"]?.[0]).toMatch(/@acpus\/core\/dist\/index\.d\.ts$/);
+      expect(result.paths.paths["acpus/expression"]?.[0]).toMatch(/@acpus\/expression\/dist\/index\.d\.ts$/);
+      expect(result.paths.paths["acpus/tasks/git"]?.[0]).toMatch(/@acpus\/tasks\/dist\/git\.d\.ts$/);
+      expect(result.environment.imports["acpus/core"]).toMatchObject({ package: "@acpus/core", version: "1.0.0" });
+      expect(result.environment.imports["acpus/expression"]).toMatchObject({ package: "@acpus/expression", version: "1.0.0" });
+      expect(result.environment.imports["acpus/tasks/git"]).toMatchObject({ package: "@acpus/tasks", version: "1.0.0" });
+      for (const authority of Object.values(result.environment.imports)) {
+        expect(isAbsolute(authority.packageRoot)).toBe(true);
+        expect(isAbsolute(authority.typesPath)).toBe(true);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -290,6 +320,7 @@ async function writeInstalledPackage(root: string, name: string, entries: Record
   ]));
   await writeFile(join(packageDir, "package.json"), JSON.stringify({
     name,
+    version: "1.0.0",
     type: "module",
     exports: entries["."] ? exports["."] : exports,
   }));

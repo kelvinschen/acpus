@@ -1,12 +1,13 @@
 import type { Writable } from "node:stream";
 import { constants } from "node:fs";
-import { access, cp, lstat, mkdtemp, readFile, readlink, rename, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, cp, lstat, mkdtemp, readlink, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { skillError, usageError } from "../errors.js";
 import { writeResult, type SkillCommandResult } from "../output.js";
+import { existingSkillRootTargets, readAcpusSkillMetadata, skillTargets, type SkillScope, type SkillTarget } from "../skill-installation.js";
+import { getCliPackageInfo } from "./version.js";
 
 const ACPUS_PACKAGE = "acpus";
 const ACPUS_SKILL = "acpus";
@@ -20,20 +21,10 @@ export type SkillCommandContext = {
   setExitCode(code: number): void;
 };
 
-type SkillScope = "project" | "global";
-type SkillTargetKind = "agents" | "claude";
-
 type SkillOptions = {
   project?: boolean;
   global?: boolean;
   dryRun?: boolean;
-};
-
-type SkillTarget = {
-  scope: SkillScope;
-  kind: SkillTargetKind;
-  rootPath: string;
-  targetPath: string;
 };
 
 type InstallationResult = NonNullable<SkillCommandResult["installations"]>[number];
@@ -100,18 +91,19 @@ async function bundledSkillPath(): Promise<string> {
   const sourcePath = fileURLToPath(new URL("../../skills/acpus", import.meta.url));
   try {
     await access(join(sourcePath, "SKILL.md"), constants.R_OK);
+    const metadata = await readAcpusSkillMetadata(sourcePath);
+    if (metadata.name !== ACPUS_SKILL || metadata.version !== getCliPackageInfo().version) {
+      throw new Error("bundled skill identity mismatch");
+    }
     return sourcePath;
   } catch {
-    throw skillError("Bundled Acpus skill was not found in this acpus package.");
+    throw skillError("Bundled Acpus skill is missing or does not match this acpus package version.");
   }
 }
 
 async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "install" | "uninstall"): Promise<SkillTarget[]> {
-  const candidates = scope === "project" ? projectTargets(cwd) : globalTargets();
-  const targets: SkillTarget[] = [];
-  for (const candidate of candidates) {
-    if (await isDirectory(candidate.rootPath)) targets.push(candidate);
-  }
+  const candidates = skillTargets(cwd, scope);
+  const targets = await existingSkillRootTargets(cwd, [scope]);
   if (targets.length === 0) {
     const missing = candidates.map(candidate => ({
       scope,
@@ -125,26 +117,6 @@ async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "i
     });
   }
   return targets;
-}
-
-function projectTargets(cwd: string): SkillTarget[] {
-  return [
-    target("project", "agents", join(cwd, ".agents", "skills")),
-    target("project", "claude", join(cwd, ".claude", "skills")),
-  ];
-}
-
-function globalTargets(): SkillTarget[] {
-  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
-  const claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
-  return [
-    target("global", "agents", join(codexHome, "skills")),
-    target("global", "claude", join(claudeHome, "skills")),
-  ];
-}
-
-function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): SkillTarget {
-  return { scope, kind, rootPath, targetPath: join(rootPath, ACPUS_TARGET) };
 }
 
 async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dryRun: boolean): Promise<InstallationResult[]> {
@@ -203,8 +175,7 @@ async function isAcpusSkillSymlink(targetPath: string): Promise<boolean> {
 
 async function isAcpusSkillDirectory(targetPath: string): Promise<boolean> {
   try {
-    const skill = await readFile(join(targetPath, "SKILL.md"), "utf8");
-    return /^name:\s*acpus\s*$/m.test(skill);
+    return (await readAcpusSkillMetadata(targetPath)).name === ACPUS_SKILL;
   } catch {
     return false;
   }
@@ -243,19 +214,12 @@ function skillResult(
     packageName: ACPUS_PACKAGE,
     skillName: ACPUS_SKILL,
     targetName: ACPUS_TARGET,
+    version: getCliPackageInfo().version,
     scope,
     dryRun,
     targets: targets.map(target => ({ scope: target.scope, kind: target.kind, rootPath: target.rootPath, targetPath: target.targetPath })),
     ...details,
   };
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function isNotFound(error: unknown): boolean {

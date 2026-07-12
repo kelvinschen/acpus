@@ -15,6 +15,8 @@ failures to stable CLI phases and exit codes.
 - The CLI package MUST be named `acpus` and MUST expose a binary named `acpus`.
 - The `acpus` package MUST include the official Acpus agent skill under
   `skills/acpus/SKILL.md` in the published package.
+- The bundled skill frontmatter `metadata.acpus-version` MUST equal the
+  containing `acpus` package version.
 - The `acpus` package MUST expose authoring facade subpaths for `acpus/core`,
   `acpus/expression`, and `acpus/tasks/git`.
 - The `acpus` package MUST NOT expose a root authoring entrypoint that mixes
@@ -241,14 +243,28 @@ failures to stable CLI phases and exit codes.
   codes plus concise messages.
 - `runs resume <run-id>` and `runs signal <run-id>` MUST start or wake the
   daemon for paused runs and runs waiting for signal.
-- `doctor` MUST delegate to a read-only runtime health API and MUST NOT create
-  runtime state in an uninitialized workspace.
+- `doctor` MUST combine the read-only runtime health API with read-only
+  authoring authority checks and MUST NOT create runtime state in an
+  uninitialized workspace.
+- Doctor authoring authority MUST come from the same loader resolution used by
+  workflow checking. It MUST report canonical absolute CLI, package-root, and
+  TypeScript authority paths without exposing a source/dist mode or assuming a
+  global npm directory layout.
+- A missing or version-mismatched bundled skill and a published authoring
+  dependency version mismatch MUST fail Doctor. Unreadable, unversioned,
+  conflicting, or stale installed skill copies MUST warn without making Doctor
+  fail and MUST provide the applicable project/global skill install command.
+  Missing installed skill copies MUST remain visible as `missing` in structured
+  authoring information but MUST NOT produce a warning or remediation.
 - Read-only commands such as `runs inspect` and `doctor` MUST NOT start or wake
   the daemon.
 - Hook inspection commands MUST read hook configuration files and MUST NOT start
   or wake the daemon.
 - `skill install` MUST install only the bundled Acpus skill from the local
   `acpus` npm package.
+- `skill install` MUST reject a bundled skill whose
+  `metadata.acpus-version` does not equal the local `acpus` package version and
+  MUST report that version in successful structured output.
 - `skill install` MUST copy the bundled Acpus skill into existing selected
   skills roots as a real `acpus` directory, not as a symlink.
 - `skill install` and `skill uninstall` MUST support `--project`, `--global`,
@@ -286,7 +302,8 @@ failures to stable CLI phases and exit codes.
   written, compact run summaries or inspection documents when available,
   control outcome when available, workflow catalog entries or invocation
   source when available, hook validation/list details when available, and
-  doctor checks when available.
+  doctor checks when available, and the Doctor authoring authority projection
+  when authoring resolution succeeds.
 - JSON diagnostic output MUST preserve `hint` and `source` fields when present.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
@@ -477,6 +494,10 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover run inspect hook history rendering only for terminal runs
   with hook journal rows.
 - Tests MUST cover read-only run inspect and doctor without daemon startup.
+- Tests MUST cover Doctor authoring authority in uninitialized workspaces,
+  absolute resolved paths, bundled authoring identity failure, installed skill
+  warnings and remediation, and packed-install resolution without ambient
+  workspace packages.
 - Tests MUST cover explicit run delete, picker delete, picker all-deletable
   delete, active-run skip reporting, active explicit-delete rejection,
   hard-deleted run directories, omitted-id usage errors, and daemon non-startup.

@@ -51,6 +51,9 @@ importers:
       '@acpus/expression':
         specifier: workspace:*
         version: link:../expression
+      '@acpus/loader':
+        specifier: workspace:*
+        version: link:../loader
       '@acpus/runtime':
         specifier: workspace:*
         version: link:../runtime

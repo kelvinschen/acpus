@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { createRequire, register } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
@@ -19,6 +19,15 @@ const sourceTargets: Record<ImplementationSpecifier, string> = {
 
 type OfficialSpecifier = keyof typeof officialTargets;
 type ImplementationSpecifier = typeof officialTargets[OfficialSpecifier];
+
+export type OfficialAuthoringEnvironment = {
+  imports: Record<OfficialSpecifier, {
+    package: string;
+    version: string;
+    packageRoot: string;
+    typesPath: string;
+  }>;
+};
 
 type OfficialTypeScriptPaths = {
   paths: Record<string, string[]>;
@@ -48,6 +57,23 @@ export function officialAuthoringTypeScriptPaths(fromDir: string): OfficialTypeS
     usesSource ||= resolved.usesSource;
   }
   return { paths, usesSource };
+}
+
+export function officialAuthoringEnvironment(): OfficialAuthoringEnvironment {
+  return {
+    imports: Object.fromEntries(Object.entries(officialTargets).map(([specifier, target]) => {
+      const resolved = resolveOfficialImport(specifier as OfficialSpecifier);
+      const typesPath = realpathSync(typecheckImportPath(resolved));
+      const packageName = packageSpecifierParts(target)?.name;
+      if (!packageName) throw new Error(`Invalid Acpus authoring package specifier '${target}'.`);
+      const packageRoot = implementationPackageRoot(typesPath, packageName);
+      const manifest = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")) as { version?: unknown };
+      if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+        throw new Error(`Resolved Acpus authoring package '${target}' has no version.`);
+      }
+      return [specifier, { package: packageName, version: manifest.version, packageRoot, typesPath }];
+    })) as OfficialAuthoringEnvironment["imports"],
+  };
 }
 
 function registerAuthoringModuleLoader(): void {
@@ -97,6 +123,20 @@ function typecheckImportPath(resolved: { url: string; usesSource: boolean }): st
   if (resolved.usesSource || !path.endsWith(".js")) return path;
   const declarations = `${path.slice(0, -3)}.d.ts`;
   return existsSync(declarations) ? declarations : path;
+}
+
+function implementationPackageRoot(entry: string, expectedName: string): string {
+  let current = dirname(entry);
+  while (true) {
+    const manifestPath = resolve(current, "package.json");
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
+      if (manifest.name === expectedName) return realpathSync(current);
+    }
+    const parent = dirname(current);
+    if (parent === current) throw new Error(`Could not find package root for Acpus authoring package '${expectedName}'.`);
+    current = parent;
+  }
 }
 
 function configRelative(fromDir: string, to: string): string {

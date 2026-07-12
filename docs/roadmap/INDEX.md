@@ -12,6 +12,13 @@ pre-TypeScript history remains under `legacy/`.
   current behavior truth.
 - Do not use RFC 2119 normative verbs as constraints; those are reserved for specs. Use descriptive wording such as "plan", "goal", "gap", "candidate", and "TBD" here.
 
+## Active
+
+- [Agent Authoring Ergonomics Batch Roadmap](agent-authoring-ergonomics-batch-roadmap.md)
+  — turns the 66 pitfalls reported by two 30-case agent-authoring benchmarks
+  into prioritized, module-owned batches with deterministic and benchmark
+  exit gates.
+
 ## Completed
 
 - [YAGNI Surface Cleanup Roadmap](archive/yagni-surface-cleanup-roadmap.md)

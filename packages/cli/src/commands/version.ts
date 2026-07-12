@@ -1,5 +1,5 @@
 import type { Writable } from "node:stream";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
@@ -12,12 +12,17 @@ export type VersionCommandContext = {
 export type CliPackageInfo = {
   packageName: string;
   version: string;
+  entry: string;
+  packageRoot: string;
 };
 
 export function getCliPackageInfo(): CliPackageInfo {
-  const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+  const commandsDir = dirname(fileURLToPath(import.meta.url));
+  const packageRoot = realpathSync(join(commandsDir, "..", ".."));
+  const packageJsonPath = join(packageRoot, "package.json");
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name: string; version: string };
-  return { packageName: packageJson.name, version: packageJson.version };
+  const entry = realpathSync(join(packageRoot, import.meta.url.endsWith(".ts") ? "src/cli.ts" : "dist/cli.js"));
+  return { packageName: packageJson.name, version: packageJson.version, entry, packageRoot };
 }
 
 export function createVersionCommand(ctx: VersionCommandContext): Command {
