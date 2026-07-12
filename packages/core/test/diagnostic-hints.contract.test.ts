@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defineWorkflow } from "../src/index.js";
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "../src/ir.js";
-import { compileWorkflowDefinition } from "../src/workflow.js";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
@@ -49,22 +47,5 @@ describe("core diagnostic hints contract", () => {
     expectHint(diagnostics, "A001", ["defineWorkflow", "agents"]);
     expectHint(diagnostics, "G002", ["else"]);
     expectHint(diagnostics, "G003", ["default"]);
-  });
-
-  it("attaches actionable hints to build-time output diagnostics owned by core", () => {
-    const missingWorkflowOutput = defineWorkflow({ name: "missing_workflow_output" })
-      .build((() => undefined) as any);
-    const malformedComposite = defineWorkflow({ name: "malformed_composite" })
-      .build(({ step }) => {
-        step("gate").if({
-          condition: true,
-          then: (function () { return undefined; }) as any,
-          else() { return { status: "ok" }; },
-        });
-        return {};
-      });
-
-    expectHint(compileWorkflowDefinition(missingWorkflowOutput).diagnostics, "W001", ["Return", "workflow"]);
-    expectHint(compileWorkflowDefinition(malformedComposite).diagnostics, "B001", ["Return", "composite"]);
   });
 });

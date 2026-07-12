@@ -1,10 +1,15 @@
 import { isExpr, valueToExprIR } from "@acpus/expression/ir";
+import { NODE_REF } from "../internal/symbols.js";
 import type { DiagnosticIR, ExprIR } from "../ir/types.js";
 import type { EnvInput, StaticEnvInput } from "../nodes/leaf/shared.js";
 
-export function bindingsToIR(bindings?: Record<string, unknown>): Record<string, ExprIR> {
+export function bindingsToIR(bindings: Record<string, unknown>): Record<string, ExprIR> {
+  if (!isPlainObject(bindings) || isExpr(bindings) || isNodeRef(bindings)) {
+    throw new Error("Workflow outputs and bindings must be plain objects.");
+  }
   const result: Record<string, ExprIR> = {};
-  for (const [key, value] of Object.entries(bindings ?? {})) {
+  for (const [key, value] of Object.entries(bindings)) {
+    assertNoNodeRef(value);
     result[key] = valueToExprIR(value);
   }
   return result;
@@ -41,6 +46,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function assertNoNodeRef(value: unknown): void {
+  if (!value || typeof value !== "object" || isExpr(value)) return;
+  if (isNodeRef(value)) {
+    throw new Error("NodeRef cannot be lowered as durable data; return a named field from node.output instead.");
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoNodeRef(item);
+    return;
+  }
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) assertNoNodeRef(item);
+  }
+}
+
+function isNodeRef(value: object): boolean {
+  return Boolean((value as { [NODE_REF]?: unknown })[NODE_REF]);
 }
 
 export function assertStableId(id: string, diagnostics: DiagnosticIR[]): void {

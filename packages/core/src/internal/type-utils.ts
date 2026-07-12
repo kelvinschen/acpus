@@ -5,13 +5,9 @@
 // definitions after checking license, TypeScript compatibility, public .d.ts
 // impact, and whether the helper changes authoring semantics.
 
-export type IsAny<T> = 0 extends (1 & T) ? true : false;
-
-export type IsUnion<T, U = T> = IsAny<T> extends true
-  ? false
-  : T extends unknown
-    ? [U] extends [T] ? false : true
-    : false;
+export type IsUnion<T, U = T> = T extends unknown
+  ? [U] extends [T] ? false : true
+  : false;
 
 export type Simplify<T> = {
   [KeyType in keyof T]: T[KeyType];

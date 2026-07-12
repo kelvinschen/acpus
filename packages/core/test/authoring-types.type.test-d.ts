@@ -176,21 +176,19 @@ test("task options accept only string cwd and string env values", () => {
       exec: async () => ({ ok: true }),
     });
 
+    // @ts-expect-error cwd must be a string workflow value.
     step("bad_cwd").task({
       input: {},
-      // @ts-expect-error cwd must be a string workflow value.
       cwd: 1,
-      // @ts-expect-error the invalid cwd makes every Task execution overload inapplicable.
       exec: async () => ({ ok: true }),
     });
 
+    // @ts-expect-error env values must be string workflow values.
     step("bad_env").task({
       input: {},
       env: {
-        // @ts-expect-error env values must be string workflow values.
         VALUE: 1,
       },
-      // @ts-expect-error the invalid env makes every Task execution overload inapplicable.
       exec: async () => ({ ok: true }),
     });
 
@@ -379,12 +377,11 @@ test("declaration-time structure stays plain", () => {
     step("schema").agent({ outputSchema: input.strategy, agent: agents.reviewer, prompt: "review" });
     // @ts-expect-error reusable task targets are declaration-time structure.
     step("target").task({ task: input.strategy, input: {} });
+    // @ts-expect-error Task input cannot contain raw undefined.
     step("invalid_input").task({
       input: {
-        // @ts-expect-error Task input cannot contain raw undefined.
         omitted: undefined,
       },
-      // @ts-expect-error the invalid input makes every Task execution overload inapplicable.
       exec: async () => ({}),
     });
     return {};

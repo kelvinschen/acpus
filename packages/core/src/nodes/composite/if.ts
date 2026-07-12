@@ -2,7 +2,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Resolvable } from "@acpus/expression";
 import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
-import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
+import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback, ScopeOutput } from "./shared.js";
 
 /** Authoring spec for a graph-level conditional branch. */
 export type IfStepSpec<Then extends ScopeCallback = ScopeCallback, Else extends ScopeCallback = ScopeCallback> = {
@@ -13,7 +13,7 @@ export type IfStepSpec<Then extends ScopeCallback = ScopeCallback, Else extends 
 };
 
 export type IfNodeRefOutput<Then extends ScopeCallback, Else extends ScopeCallback> =
-  RuntimeValueOf<ReturnType<Then> | ReturnType<Else>>;
+  RuntimeValueOf<ScopeOutput<Then> | ScopeOutput<Else>>;
 
 export function buildIfNode<Then extends ScopeCallback, Else extends ScopeCallback>(
   id: string,

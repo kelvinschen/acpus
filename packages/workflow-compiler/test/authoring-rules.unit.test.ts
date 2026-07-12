@@ -18,7 +18,7 @@ describe("workflow authoring rules", () => {
       import type { Expr } from "acpus/expression";
       declare const expr: Expr<boolean>;
       declare const items: Expr<string[]>;
-      declare const step: any;
+      declare const step: (id: string) => { assert(spec: { condition: boolean }): void };
       if (expr) {}
       const negated = !expr;
       const logical = expr && true;
@@ -65,7 +65,7 @@ describe("workflow authoring rules", () => {
     const diagnostics = await checkAuthoringWithProgram(`
       export {};
       const Math = { max: (..._values: number[]) => 1 };
-      declare const step: any;
+      declare const step: (id: string) => { task(spec: { exec: () => unknown }): void };
       step("inline").task({
         exec: async () => ({ value: Math.max(1, 2) }),
       });
@@ -80,7 +80,7 @@ describe("workflow authoring rules", () => {
 
   it("reports reason-specific TB004 diagnostics for unjoinable task callsites", async () => {
     const diagnostics = await checkAuthoring(`
-      declare const step: any;
+      declare const step: (id: string) => { task(spec: object): void };
       declare const dynamic: string;
       declare const spec: object;
       import type { StepDeclaration } from "acpus/core";
@@ -119,14 +119,30 @@ describe("workflow authoring rules", () => {
 
   it("uses contiguous AL and TB diagnostic families", async () => {
     const exprDiagnostics = await checkAuthoring(`
-      import type { Expr } from "acpus/expression";
+      import { lift, type Expr } from "acpus/expression";
       declare const expr: Expr<boolean>;
-      declare const step: any;
+      declare const step: (id: string) => { assert(spec: { condition: boolean }): void };
+      declare const value: unknown;
+      declare const taskStep: (id: string) => { task(spec: unknown): unknown };
+      let annotated: any;
+      const asserted = value as any;
+      const array: any[] = [];
+      const generic: Array<any> = [];
+      type Default<T = any> = T;
+      type Keys = keyof any;
+      function returnsAny(): any { return annotated; }
+      function rest(...values: any[]) { return values; }
+      lift(value, (item: any) => item);
+      taskStep("inline").task({ exec: async (ctx: any): Promise<any> => ctx });
+      // any in a comment is inert.
+      const sentence = "any in a string is inert";
+      const anything = sentence;
       if (expr) {}
       void (expr && true);
       void (expr === expr);
       void \`value: \${expr}\`;
       step(String(expr)).assert({ condition: true });
+      void [asserted, array, generic, returnsAny, rest, anything];
     `);
     const callbackDiagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
@@ -153,6 +169,36 @@ describe("workflow authoring rules", () => {
       ]),
     });
 
+    const anyDiagnostics = exprDiagnostics.filter(diagnostic => diagnostic.code === "AL007");
+    expect(anyDiagnostics).toHaveLength(11);
+    expect(anyDiagnostics.map(diagnostic => ({
+      line: diagnostic.source?.line,
+      column: diagnostic.source?.column,
+    }))).toEqual([
+      { line: 7, column: 22 },
+      { line: 8, column: 33 },
+      { line: 9, column: 20 },
+      { line: 10, column: 28 },
+      { line: 11, column: 24 },
+      { line: 12, column: 25 },
+      { line: 13, column: 30 },
+      { line: 14, column: 32 },
+      { line: 15, column: 26 },
+      { line: 16, column: 51 },
+      { line: 16, column: 65 },
+    ]);
+    expect(anyDiagnostics).toEqual(anyDiagnostics.map(() => expect.objectContaining({
+      code: "AL007",
+      severity: "error",
+      message: "Explicit 'any' is not allowed in Acpus workflow authoring.",
+      hint: "Use a precise type, or use unknown and narrow it before crossing an Acpus boundary.",
+      source: expect.objectContaining({
+        file: expect.stringContaining("workflow.ts"),
+        line: expect.any(Number),
+        column: expect.any(Number),
+      }),
+    })));
+
     expect([...new Set(codes([...exprDiagnostics, ...callbackDiagnostics, ...taskDiagnostics]))].sort()).toEqual([
       "AL001",
       "AL002",
@@ -160,6 +206,7 @@ describe("workflow authoring rules", () => {
       "AL004",
       "AL005",
       "AL006",
+      "AL007",
       "TB001",
       "TB002",
       "TB003",
@@ -250,7 +297,7 @@ describe("workflow authoring rules", () => {
       ["missing binary parameter", "lift(issue, issue, value => value.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
       ["missing ternary parameter", "lift(issue, issue, issue, (a, b) => a.title + b.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
       ["missing named parameter", "lift({ issue }, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
-      ["spread arguments", "lift(...[issue, (value: any) => value.title] as const)", "lift(...) dependencies and callback must be passed as direct arguments."],
+      ["spread arguments", "lift(...[issue, (value: { title: string }) => value.title] as const)", "lift(...) dependencies and callback must be passed as direct arguments."],
       ["callable reference", "lift(issue, helper)", "lift(...) callback must be an inline arrow function."],
       ["capture", "lift(issue, value => value.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
       ["block capture", "lift(issue, value => { const title = value.title; return title + suffix; })", "lift(...) callback cannot reference external binding 'suffix'."],
@@ -270,7 +317,7 @@ describe("workflow authoring rules", () => {
       import { lift, lift as combine } from "acpus/expression";
       import * as expr from "acpus/expression";
 
-      declare const issue: any;
+      declare const issue: { title: string; labels: string[]; count: number };
       declare const helper: (value: unknown) => unknown;
       const suffix = "!";
       ${callbackCases.map(([name, statement], index) => `function callbackCase${index}() { // ${name}\n  ${statement};\n}`).join("\n")}
@@ -295,7 +342,7 @@ describe("workflow authoring rules", () => {
   it("rejects non-serializable callback bindings in one checked program", async () => {
     const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
-      declare const issue: any;
+      declare const issue: { title: string; labels: string[]; count: number };
       lift(issue, (value = issue) => value.title);
       lift(issue, (...values) => values[0].title);
       lift(issue, ({ ["title"]: title }) => title);
@@ -310,7 +357,7 @@ describe("workflow authoring rules", () => {
     const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       import * as expr from "acpus/expression";
-      declare const issue: any;
+      declare const issue: { title: string; labels: string[]; count: number };
       const suffix = "!";
       (lift)(issue, value => value.title + suffix);
       (lift as typeof lift)(issue, value => value.title + suffix);
@@ -332,7 +379,7 @@ describe("workflow authoring rules", () => {
       import { lift } from "acpus/expression";
       import * as expr from "acpus/expression";
 
-      declare const issue: any;
+      declare const issue: { title: string; labels: string[]; count: number };
       const suffix = "!";
       {
         const lift = (_value: unknown, _fn: unknown) => null;
@@ -352,7 +399,7 @@ describe("workflow authoring rules", () => {
     const diagnostics = await checkAuthoringWithProgram(`
       import { lift as internalLift } from "@acpus/expression";
 
-      declare const issue: any;
+      declare const issue: { title: string; labels: string[]; count: number };
       const suffix = "!";
       internalLift(issue, value => value.title + suffix);
     `);

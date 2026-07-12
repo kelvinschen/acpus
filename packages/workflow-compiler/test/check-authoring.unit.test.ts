@@ -6,10 +6,11 @@ import {
 } from "./support/check-workspace.js";
 
 describe("workflow check authoring diagnostics", () => {
-  it("aggregates TypeScript and Acpus authoring diagnostics", async () => {
+  it("aggregates native and Acpus diagnostics across authoring boundaries", async () => {
     await withCheckWorkspace("workflow-mixed-check", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow, z } from "acpus/core";
+        import { helper } from "./helper.js";
 
         export default defineWorkflow({
           name: "mixed_check",
@@ -17,19 +18,84 @@ describe("workflow check authoring diagnostics", () => {
             ready: z.boolean(),
           }),
         }).build(({ input, step }) => {
+          const inherited = step("inherited").task({ input: {}, exec: async () => helper() });
+          step("inherited_branch").parallel({ branches: { only() { return helper(); } } });
+          const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+          step("bad_expr").parallel({ branches: { only() { return leaf.output.value; } } });
+          const branch = step("branch").if({
+            condition: true,
+            then: () => ({ common: "a", left: true }),
+            else: () => ({ common: "b", right: true }),
+          });
           const wrong: string = 1;
+          const explicit = helper() as any;
           if (input.ready) step("ready").assert({ condition: true });
-          return { wrong };
+          void explicit;
+          return {
+            wrong,
+            leaf,
+            inherited: inherited.output.value,
+            missing: leaf.value,
+            unsafe: branch.output.left,
+          };
         });
-      `);
+      `, {
+        "helper.ts": `export function helper(): any { return {}; }`,
+      });
 
-      expect(codes(result.diagnostics)).toEqual(expect.arrayContaining([
+      expect(codes(result.diagnostics)).toEqual([
+        "TS2345",
+        "TS2769",
+        "TS2769",
         "TS2322",
+        "TS2339",
+        "TS2339",
+        "TS2339",
+        "AL007",
         "AL001",
-      ]));
+        "TB003",
+      ]);
+      expect(result.diagnostics.map(diagnostic => ({
+        code: diagnostic.code,
+        line: diagnostic.source?.line,
+      }))).toEqual([
+        { code: "TS2345", line: 10 },
+        { code: "TS2769", line: 12 },
+        { code: "TS2769", line: 14 },
+        { code: "TS2322", line: 20 },
+        { code: "TS2339", line: 27 },
+        { code: "TS2339", line: 28 },
+        { code: "TS2339", line: 29 },
+        { code: "AL007", line: 21 },
+        { code: "AL001", line: 22 },
+        { code: "TB003", line: 11 },
+      ]);
       expect(result.diagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: "AL001", hint: expect.any(String) }),
+        expect.objectContaining({
+          code: "AL007",
+          severity: "error",
+          message: "Explicit 'any' is not allowed in Acpus workflow authoring.",
+          hint: "Use a precise type, or use unknown and narrow it before crossing an Acpus boundary.",
+          source: expect.objectContaining({ file: expect.stringContaining("workflow.ts") }),
+        }),
+        expect.objectContaining({
+          code: "TS2339",
+          message: expect.stringContaining("Property 'value' does not exist on type 'NodeRef"),
+        }),
+        expect.objectContaining({
+          code: "TS2339",
+          message: expect.stringContaining("Property 'left' does not exist"),
+        }),
+        expect.objectContaining({
+          code: "TS2339",
+          message: expect.stringContaining("Property 'value' does not exist on type 'Expr<unknown>"),
+        }),
       ]));
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "AL007")).toHaveLength(1);
+      expect(result.diagnostics.every(diagnostic => diagnostic.source?.file?.endsWith("workflow.ts"))).toBe(true);
+      expect(codes(result.diagnostics)).not.toContain("W001");
+      expect(codes(result.diagnostics)).not.toContain("B001");
     });
   });
 

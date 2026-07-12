@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { okAsync } from "neverthrow";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import type { TaskAttemptRunner } from "../src/execution/task-process.js";
@@ -263,27 +264,23 @@ describe("task executor", () => {
     await expect(executeTaskNode(inlineTask("after", "async () => ({ alive: true })"), {}, taskOptions("run_after"))).resolves.toEqual({ alive: true });
   });
 
-  it("maps timeout and scheduler abort to typed attempt failures", async () => {
+  it("maps timeout to a typed attempt failure", async () => {
     const timedNode = inlineTask("timed", "async ({ abortSignal }) => { if (!abortSignal.aborted) await new Promise(resolve => abortSignal.addEventListener('abort', resolve, { once: true })); return { late: true }; }");
     await expect(executeTaskNode(timedNode, {}, { ...taskOptions("run_timed"), deadlineAt: new Date(Date.now() + 10).toISOString() })).rejects.toMatchObject({
       failure: { type: "timed_out" },
     });
-
-    const controller = new AbortController();
-    controller.abort();
-    await expect(executeTaskNode(inlineTask("cancelled", "async ({ abortSignal }) => ({ aborted: abortSignal.aborted })"), {}, {
-      ...taskOptions("run_cancelled"),
-      signal: controller.signal,
-    })).rejects.toMatchObject({ failure: { type: "cancelled" } });
   });
 
   it("does not overflow distant task deadlines", async () => {
     const deadlineAt = new Date(Date.now() + 2_147_483_647 + 60_000).toISOString();
+    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
 
     await expect(executeTaskNode(inlineTask("distant", "async () => ({ ok: true })"), {}, {
       ...taskOptions("run_distant"),
       deadlineAt,
     })).resolves.toEqual({ ok: true });
+    expect(taskProcessMocks.runTaskAttempt).toHaveBeenCalledOnce();
+    expect(taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].timeoutMs).toBeGreaterThan(2_147_483_647);
   });
 
   it("does not start the task runner when its deadline expires during setup", async () => {

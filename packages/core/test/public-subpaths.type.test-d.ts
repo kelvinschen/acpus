@@ -35,6 +35,10 @@ import { runtime as runtimeRef } from "@acpus/core/runtime";
 import type { Expr as RootExpr } from "@acpus/core";
 // @ts-expect-error IR types must not be exported from the root entrypoint.
 import type { WorkflowIR as RootWorkflowIR } from "@acpus/core";
+// @ts-expect-error output constraints are internal to workflow interfaces.
+import type { OutputValue as RootOutputValue, OutputValues as RootOutputValues } from "@acpus/core";
+// @ts-expect-error workflow subpath does not expose standalone output helper types.
+import type { OutputValue as WorkflowOutputValue, OutputValues as WorkflowOutputValues } from "@acpus/core/workflow";
 
 test("public package subpaths expose the intended type surface", () => {
   const Input = z.object({ ready: z.boolean(), name: z.string().optional() });
@@ -103,4 +107,8 @@ test("public package subpaths expose the intended type surface", () => {
   void runtimeRef;
   void (null as unknown as RootExpr);
   void (null as unknown as RootWorkflowIR);
+  void (null as unknown as RootOutputValue);
+  void (null as unknown as RootOutputValues);
+  void (null as unknown as WorkflowOutputValue);
+  void (null as unknown as WorkflowOutputValues);
 });

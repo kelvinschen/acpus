@@ -2,7 +2,7 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { assertStableId, stripUndefined } from "../../graph/lowering.js";
 import type { Resolvable } from "@acpus/expression";
 import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
-import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback } from "./shared.js";
+import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback, ScopeOutput } from "./shared.js";
 
 type SwitchCase = { when: Resolvable<boolean>; then: ScopeCallback };
 type CheckedSwitchCases<Cases extends ReadonlyArray<SwitchCase>> = {
@@ -21,10 +21,10 @@ export type SwitchStepSpec<
   default: Default & CheckedScopeCallback<NoInfer<Default>>;
 };
 
-type SwitchCaseOutput<Case> = Case extends { then: (ctx: never) => infer Output } ? Output : never;
+type SwitchCaseOutput<Case> = Case extends { then: infer Then extends ScopeCallback } ? ScopeOutput<Then> : never;
 
 export type SwitchNodeRefOutput<Cases extends ReadonlyArray<SwitchCase>, Default extends ScopeCallback> =
-  RuntimeValueOf<SwitchCaseOutput<Cases[number]> | ReturnType<Default>>;
+  RuntimeValueOf<SwitchCaseOutput<Cases[number]> | ScopeOutput<Default>>;
 
 export function buildSwitchNode<Cases extends ReadonlyArray<SwitchCase>, Default extends ScopeCallback>(
   id: string,

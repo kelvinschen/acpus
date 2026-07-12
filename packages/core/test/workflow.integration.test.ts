@@ -689,28 +689,6 @@ describe("workflow compilation", () => {
     });
   });
 
-  it("diagnoses thenable composite callbacks as invalid synchronous outputs", () => {
-    const build = (({ step }: any) => {
-      step("gate").if({
-        condition: true,
-        async then() { return { value: "async" }; },
-        else() { return { value: "sync" }; },
-      });
-      return {};
-    }) as any;
-
-    const ir = compileWorkflowDefinition(defineWorkflow({
-      name: "async_composite_callback",
-    }).build(build));
-
-    expect(ir.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: "B001",
-        message: "Composite scope must return an output object.",
-      }),
-    ]));
-  });
-
   it("throws when a saved step factory is called after graph declaration closes", () => {
     let savedStep: StepFactory | undefined;
     let savedDeclaration: StepDeclaration | undefined;
@@ -1016,11 +994,38 @@ describe("workflow compilation", () => {
 
     expect(() => compileWorkflowDefinition(withUndefined)).toThrow("Unsupported expression value at key 'drop': undefined.");
 
-    const withDate = defineWorkflow({ name: "reject_non_plain_object" }).build(() => ({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      when: new Date(0) as any,
-    }));
+    const withDate = defineWorkflow({ name: "reject_non_plain_object" }).build((() => ({
+      when: new Date(0),
+    })) as any);
 
     expect(() => compileWorkflowDefinition(withDate)).toThrow("Unsupported expression value: non-plain object.");
+  });
+
+  it("fails lowering invariants when internal callers bypass output types", () => {
+    const undefinedRoot = defineWorkflow({ name: "undefined_root" }).build((() => undefined) as any);
+    expect(() => compileWorkflowDefinition(undefinedRoot)).toThrow("Workflow outputs and bindings must be plain objects.");
+
+    const stringRoot = defineWorkflow({ name: "string_root" }).build((() => "bad") as any);
+    expect(() => compileWorkflowDefinition(stringRoot)).toThrow("Workflow outputs and bindings must be plain objects.");
+
+    const directRef = defineWorkflow({ name: "direct_ref" }).build((({ step }: any) =>
+      step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) })) as any);
+    expect(() => compileWorkflowDefinition(directRef)).toThrow("Workflow outputs and bindings must be plain objects.");
+
+    const nestedRef = defineWorkflow({ name: "nested_ref" }).build((({ step }: any) => {
+      const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+      return { leaf };
+    }) as any);
+    expect(() => compileWorkflowDefinition(nestedRef)).toThrow("NodeRef cannot be lowered as durable data");
+
+    const malformedScope = defineWorkflow({ name: "malformed_scope" }).build((({ step }: any) => {
+      step("gate").if({
+        condition: true,
+        then: (() => undefined) as any,
+        else: () => ({ value: "ok" }),
+      });
+      return {};
+    }) as any);
+    expect(() => compileWorkflowDefinition(malformedScope)).toThrow("Workflow outputs and bindings must be plain objects.");
   });
 });

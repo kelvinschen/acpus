@@ -9,7 +9,6 @@ import { getRun, getRunInspection, listRuns, normalizeWorkflowInput } from "@acp
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
-  admitFixture,
   admitPreparedWorkflowForTest,
   admitSyntheticWorkflow,
   failingPureWorkflow,
@@ -268,25 +267,44 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it.sequential("admits a workflow prepared from a real TypeScript fixture", async () => {
-    await withRuntimeWorkspace("runtime-compiler-wiring", async workspace => {
-      const admitted = await admitFixture(workspace, "workflows/valid.workflow.ts", { ready: true });
-
-      expect(admitted).toMatchObject({
-        status: "completed",
-        run: {
-          name: "runtime-wiring",
-        },
-      });
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
-        output: { ready: true },
-      });
-    });
-  });
-
   it.sequential("executes same-file reusable task references prepared from workflow module exports", async () => {
     await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
+      const packageLock = "lockfileVersion: '9.0'\n";
+      await writeFile(join(workspace, "pnpm-lock.yaml"), packageLock);
       const prepared = await prepareFixture(workspace, "workflows/same-file-reusable.workflow.ts");
+      const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+      const sourceDigest = digest(await readFile(prepared.workflowPath, "utf8"));
+      const packageLockDigest = digest(packageLock);
+      const task = prepared.ir.root.nodes.find(node => node.id === "normalize_path");
+
+      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 4, name: "runtime-same-file-reusable" });
+      expect(prepared.lock.workflow.sourceDigest).toBe(sourceDigest);
+      expect(prepared.packageLockDigest).toBe(packageLockDigest);
+      expect(prepared.lock.packageLockDigest).toBe(packageLockDigest);
+      expect(prepared.sourceGraphDigest).toBe(digest(`${sourceDigest}\n${packageLockDigest}`));
+      expect(prepared.lock.sourceGraphDigest).toBe(prepared.sourceGraphDigest);
+      expect(prepared.lock.ir.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(prepared.lock.ir.digest).toBe(digest(prepared.irJson));
+      expect(prepared.lock).toEqual({
+        kind: "acpus_workflow_preparation_lock",
+        version: 1,
+        workflow: { entry: "same-file-reusable.workflow.ts", sourceDigest },
+        ir: { path: "workflow.ir.json", digest: prepared.lock.ir.digest },
+        packageLockDigest,
+        sourceGraphDigest: prepared.sourceGraphDigest,
+      });
+      expect(task).toMatchObject({
+        kind: "task",
+        run: {
+          target: {
+            kind: "module",
+            specifier: "./same-file-reusable.workflow.ts",
+            exportName: "normalizePath",
+            referrer: { path: expect.stringContaining("same-file-reusable.workflow.ts") },
+          },
+        },
+      });
+      expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
       const otherCwd = join(workspace, "not-the-workflow-dir");
       await mkdir(otherCwd);
       setSingleTaskCwd(prepared.ir, otherCwd);
@@ -342,7 +360,24 @@ describe.concurrent("runtime admission use cases", () => {
       await git(repo, "-c", "user.name=Acpus Test", "-c", "user.email=test@example.com", "commit", "-m", "init");
       const head = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
 
-      const admitted = await admitFixture(workspace, "workflows/create-worktree.workflow.ts", { repo, path: worktree });
+      const prepared = await prepareFixture(workspace, "workflows/create-worktree.workflow.ts");
+      const task = prepared.ir.root.nodes.find(node => node.id === "create_worktree");
+      expect(task).toMatchObject({
+        kind: "task",
+        run: {
+          target: {
+            kind: "module",
+            specifier: "acpus/tasks/git",
+            exportName: "createWorktree",
+            referrer: { path: "create-worktree.workflow.ts" },
+          },
+        },
+      });
+      const admitted = await admitPreparedWorkflowForTest(
+        workspace,
+        prepared,
+        normalizeWorkflowInput(prepared.ir, { repo, path: worktree }),
+      );
 
       expect(admitted.status).toBe("completed");
       await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({

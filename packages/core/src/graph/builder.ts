@@ -4,7 +4,7 @@ import type { Resolvable } from "@acpus/expression";
 import type { z } from "zod";
 import { toSchemaIR, type Schema } from "../schema/index.js";
 import { agentDefinitionToIR, agentToken, buildAgentNode, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
-import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskStepSpec } from "../nodes/leaf/task.js";
+import { buildTaskNode, type InlineTaskStepSpec, type ReusableTaskStepSpec, type TaskResult, type TaskStepSpec } from "../nodes/leaf/task.js";
 import { buildSignalNode, type SignalStepSpec } from "../nodes/leaf/signal.js";
 import type { RuntimeInput, StepInput } from "../nodes/leaf/shared.js";
 import { buildAssertNode, type AssertSpec } from "../nodes/control/assert.js";
@@ -13,13 +13,14 @@ import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, isOutputObject, type GraphOutputCheck, type OutputValues } from "./scope.js";
+import { buildImplicitScope as buildScopeIR, type GraphOutputCheck, type OutputValues, type TaskOutputCheck } from "./scope.js";
 import { bindingsToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, OutputObject, ParallelStrategy, ResolvableArray, RuntimeValueOf, ScopeCallback, WidenRuntimeValue } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
 import type {
   AgentDefinitionIR,
   DiagnosticIR,
+  ExprIR,
   NodeIR,
   ScopeIR,
   WorkflowIR,
@@ -30,8 +31,6 @@ export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
 export type { StepInput, GraphInput, RuntimeInput } from "../nodes/leaf/shared.js";
-export type { OutputValue, OutputValues } from "./scope.js";
-
 export type AgentMap = Record<string, AgentDefinitionSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
   ? { readonly [K in Extract<keyof Agents, string>]: AgentToken<K> }
@@ -113,10 +112,12 @@ export type StepDeclaration = {
   /** Declares a Task node for deterministic local automation and artifact writing. */
   task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
     spec: InlineTaskStepSpec<Input, Exec>,
-  ): NodeRef<Awaited<ReturnType<Exec>>>;
+  ): NodeRef<TaskResult<Exec>>;
 
   task<const Input extends StepInput, TaskInput, Output>(
-    spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
+    spec: ReusableTaskStepSpec<Input, TaskInput, Output>
+      & (RuntimeInput<Input> extends TaskInput ? unknown : never)
+      & TaskOutputCheck<Output>,
   ): NodeRef<Output>;
 
   /** Declares a Signal node that waits for operator input. */
@@ -186,11 +187,13 @@ class GraphBuildState {
   task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
     id: string,
     spec: InlineTaskStepSpec<Input, Exec>,
-  ): NodeRef<Awaited<ReturnType<Exec>>>;
+  ): NodeRef<TaskResult<Exec>>;
 
   task<const Input extends StepInput, TaskInput, Output>(
     id: string,
-    spec: ReusableTaskStepSpec<Input, TaskInput, Output> & (RuntimeInput<Input> extends TaskInput ? unknown : never),
+    spec: ReusableTaskStepSpec<Input, TaskInput, Output>
+      & (RuntimeInput<Input> extends TaskInput ? unknown : never)
+      & TaskOutputCheck<Output>,
   ): NodeRef<Output>;
 
   task<const Input extends StepInput>(
@@ -279,7 +282,7 @@ class GraphBuildState {
   ): ScopeIR => {
     const child = new GraphBuildState(this.context);
     return this.context.withScope(child, () =>
-      buildScopeIR(this.context.diagnostics, child, fn as (ctx: Extra) => Record<string, unknown>, (extra ?? {}) as Extra));
+      buildScopeIR(child, fn as (ctx: Extra) => Record<string, unknown>, (extra ?? {}) as Extra));
   };
 }
 
@@ -318,7 +321,8 @@ class GraphBuildContext {
   private declare(id: string): StepDeclaration {
     this.activeScope();
     const agent = ((spec: AgentStepSpec<Schema<any> | undefined>) => this.withActiveDeclaration(scope => scope.agent(id, spec))) as StepDeclaration["agent"];
-    const task = ((spec: TaskStepSpec<StepInput>) => this.withActiveDeclaration(scope => scope.task(id, spec as any))) as StepDeclaration["task"];
+    const task = ((spec: TaskStepSpec<StepInput>) => this.withActiveDeclaration(scope =>
+      (scope.task as (id: string, spec: TaskStepSpec<StepInput>) => NodeRef<any>)(id, spec))) as StepDeclaration["task"];
     const signal = ((spec: SignalStepSpec<Schema<any> | undefined>) => this.withActiveDeclaration(scope => scope.signal(id, spec))) as StepDeclaration["signal"];
     const assert: StepDeclaration["assert"] = spec => this.withActiveDeclaration(scope => scope.assert(id, spec));
     const ifStep: StepDeclaration["if"] = spec => this.withActiveDeclaration(scope => scope.if(id, spec));
@@ -417,7 +421,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   const context = new GraphBuildContext(diagnostics);
   const builder = new GraphBuildState(context);
   const input = definition.config.inputSchema ? refExpr<any>(["input"]) : {};
-  let loweredOutputs: Record<string, any> = {};
+  let loweredOutputs: Record<string, ExprIR> = {};
   try {
     context.withScope(builder, () => {
       const result = definition.buildFn({
@@ -426,16 +430,6 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
         meta: refExpr<WorkflowMeta>(["meta"]),
         step: context.step,
       });
-      const validOutput = isOutputObject(result);
-      if (!validOutput) {
-        diagnostics.push({
-          code: "W001",
-          severity: "error",
-          message: "Workflow build must return an output object.",
-          hint: "Return a plain object from the workflow build callback, for example return { result: value }.",
-        });
-        return;
-      }
       loweredOutputs = bindingsToIR(result);
     });
   } finally {

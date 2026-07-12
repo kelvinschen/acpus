@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,10 +109,53 @@ describe.concurrent("workflow module compiler", () => {
 
   it("derives reusable task references from source, stable across compiles", async () => {
     const entry = fixture("release.workflow.ts");
-    const first = await compileModule(entry);
-    const second = await compileModule(entry);
+    const first = await compileModuleResult(entry);
+    const second = await compileModuleResult(entry);
 
-    expect(taskTarget(first.root, "normalize_path")).toEqual(taskTarget(second.root, "normalize_path"));
+    expect(second).toEqual(first);
+    expect(JSON.stringify(second.ir, null, 2)).toBe(JSON.stringify(first.ir, null, 2));
+  });
+
+  it("resolves reusable tasks from a generic package exports subpath", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-package-subpath-"));
+    try {
+      const nodeModules = join(cwd, "node_modules");
+      const packageRoot = join(nodeModules, "fixture-task-package");
+      await mkdir(packageRoot, { recursive: true });
+      await symlink(join(repoRoot, "packages", "cli"), join(nodeModules, "acpus"), "dir");
+      await writeFile(join(packageRoot, "package.json"), JSON.stringify({
+        name: "fixture-task-package",
+        type: "module",
+        exports: { "./tasks": "./tasks.ts" },
+      }));
+      await writeFile(join(packageRoot, "tasks.ts"), `import { task, z } from "acpus/core";
+export const packageTask = task.define({
+  inputSchema: z.object({ value: z.string() }),
+  exec: async ({ input }) => ({ value: input.value }),
+});
+`);
+      const workflow = join(cwd, "package-task.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow, z } from "acpus/core";
+import { packageTask } from "fixture-task-package/tasks";
+export default defineWorkflow({
+  name: "package-task",
+  inputSchema: z.object({ value: z.string() }),
+}).build(({ input, step }) => {
+  const result = step("package_task").task({ task: packageTask, input: { value: input.value } });
+  return { value: result.output.value };
+});
+`);
+
+      const ir = await compileModule(workflow, cwd);
+      expect(taskTarget(ir.root, "package_task")).toMatchObject({
+        kind: "module",
+        specifier: "fixture-task-package/tasks",
+        exportName: "packageTask",
+        referrer: { path: "package-task.workflow.ts" },
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("returns tagged errors for invalid workflow module exports", async () => {

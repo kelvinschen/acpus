@@ -65,11 +65,6 @@ export async function prepareFixture(workspace: string, relativePath: string): P
   return prepareWorkflow({ workflow: target, cwd: workspace }) as Promise<PreparedRunWorkflow>;
 }
 
-export async function admitFixture(workspace: string, relativePath: string, input: JsonValue = {}) {
-  const prepared = await prepareFixture(workspace, relativePath);
-  return admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
-}
-
 export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {
   const workflowPath = join(workspace, filename);
   await writeFile(workflowPath, "");

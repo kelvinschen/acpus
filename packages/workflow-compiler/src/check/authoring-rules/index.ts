@@ -28,10 +28,26 @@ export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR
     program: input.project.program,
     project: input.project,
   };
+  checkExplicitAny(input.sourceFile, diagnostics);
   checkExprAuthoring(input.sourceFile, semantic, diagnostics);
   checkTaskAuthoring(input.taskAnalysis, diagnostics);
   checkInlineTaskShadowedGlobalCapture(input.sourceFile, semantic, diagnostics);
   return diagnostics;
+}
+
+function checkExplicitAny(sourceFile: ts.SourceFile, diagnostics: DiagnosticIR[]): void {
+  const visit = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.AnyKeyword) {
+      diagnostics.push(diagnostic(
+        "AL007",
+        "Explicit 'any' is not allowed in Acpus workflow authoring.",
+        node,
+        "Use a precise type, or use unknown and narrow it before crossing an Acpus boundary.",
+      ));
+    }
+    node.forEachChild(visit);
+  };
+  visit(sourceFile);
 }
 
 const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([

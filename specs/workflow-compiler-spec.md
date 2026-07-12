@@ -49,7 +49,9 @@
   dependencies.
 - The check phase MUST run only the TypeScript compiler and Acpus-owned checks; it MUST NOT load user or editor lint configuration or third-party rule presets.
 - Public TypeScript types MUST own every authoring constraint expressible by the type system. Acpus AST authoring rules MUST NOT duplicate those constraints or remap native TypeScript diagnostics to Acpus codes.
-- Authors who use `any` opt out of TypeScript guarantees. Acpus AST authoring rules MUST NOT add compensating type or output-shape checks for values hidden behind `any`; IR validation and runtime normalization remain mandatory backstops.
+- The check phase MUST report one `AL007` error for every TypeScript `AnyKeyword` in the workflow entry source file, including annotations, assertions, arrays, generic arguments/defaults, return types, `keyof any`, rest parameters, and nested inline Task or expression callback bodies.
+- `AL007` MUST use message `Explicit 'any' is not allowed in Acpus workflow authoring.` and hint `Use a precise type, or use unknown and narrow it before crossing an Acpus boundary.`
+- `AL007` MUST NOT scan imported helper modules, read lint configuration, support suppression/configuration/autofix, or invoke ESLint.
 - Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical operators, TypeScript-accepted equality operators, untagged template interpolation containing `Expr`, string-typed node ids derived from Expr values, invalid callback source forms, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
 - Expr array properties and methods, relational operators, direct non-string node ids, callback output types, and other type-expressible failures MUST be left to TypeScript diagnostics.
 - Acpus authoring rules MUST inspect only `lift` calls imported from the supported `acpus/expression` facade, including named aliases, namespace property access, and string-literal namespace element access; transparent parentheses, type assertions, non-null assertions, and `satisfies` expressions around those callees or namespace receivers MUST NOT bypass inspection, while imports from internal implementation packages and shadowed bindings MUST NOT be treated as facade calls.
@@ -70,6 +72,7 @@
 | `AL004` | Expr interpolated into an untagged template literal |
 | `AL005` | String-typed node id derived from Expr |
 | `AL006` | Expression callback source, parameter, or capture is not serializable |
+| `AL007` | Explicit TypeScript `any` in the workflow entry source |
 | `TB001` | Reusable task is not exported as a loadable module value |
 | `TB002` | Reusable task reference or export is not a `task.define(...)` token |
 | `TB003` | Inline task captures an external binding |
@@ -137,9 +140,9 @@
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover TypeScript 7 native lifecycle cleanup, diagnostic-chain flattening, source locations, default-library globals, source overlays, repeated and concurrent checks, and `WF002` infrastructure failures.
 - Tests MUST cover accepted unary, binary, ternary, and named-object `lift` callbacks with expression and block bodies, aliases, namespaces, globals, and ordinary methods, plus rejected captures, spread arguments, callable references, insufficient callback parameters, invalid bindings, and function expressions.
-- Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, `unknown` rejection, and the explicit `any` escape hatch.
+- Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, and `unknown`/`any` rejection.
 - Authoring-rule tests MUST cover only source-level invariants, MUST assert the
-  exact contiguous `AL001`-`AL006` and `TB001`-`TB004` sets, and MUST verify
+  exact contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify
   that type-owned diagnostics are not emitted as Acpus authoring diagnostics.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.

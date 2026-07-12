@@ -9,6 +9,7 @@
 ### Public API
 
 - The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, and `task`.
+- The root and workflow entrypoints MUST NOT expose standalone `OutputValue` or `OutputValues` authoring types; output constraints MUST remain behind workflow and node interfaces.
 - `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
 - `@acpus/core/schema` MUST expose the native `z` authoring object, `toSchemaIR`, `tryToSchemaIR`, and `schemaToJsonSchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar` and related task runtime types.
@@ -81,14 +82,19 @@
 - Workflow and composite graph declaration callbacks MUST be synchronous. Calling `step()` after graph declaration has closed MUST fail with a clear authoring invariant error.
 - Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
-- Composite callbacks MUST declare their scope output by returning a plain object. TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
-- Workflow root and composite callback return types MUST use a recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, object-property `undefined`, and unions while rejecting `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`.
-- The recursive output constraint MUST preserve exact inferred output types and MUST allow `any` as the explicit TypeScript escape hatch. It MUST remain an internal type implementation detail rather than a required author import.
+- Workflow and composite callbacks MUST declare durable output by returning a named plain-object shape. A top-level `Expr` or `NodeRef`, and a `NodeRef` nested at any depth, MUST be rejected by the public TypeScript interface.
+- `Expr` values MAY appear as fields within a returned output object. A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST NOT be lowered as durable output.
+- TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
+- Workflow root and composite callback return types MUST use a recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` fields, and unions while rejecting raw `undefined`, `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
+- Workflow, composite, loop-state, and Task output seams MUST reduce `any`, including `any` inherited from imported helpers, to `never`; they MUST NOT provide a usable author-facing `any` escape hatch.
+- The recursive output constraint MUST preserve exact inferred output types and MUST remain an internal type implementation detail rather than a required author import.
 - Array output accessors MAY be combined through the `@acpus/expression` `lift` callback helper; no array-specific expression helper is required.
 - If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
 - Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
+- If and switch results MUST permit direct projection only of fields common to every possible branch. Authors MUST use `lift` to narrow a branch union before reading branch-specific fields.
 - Parallel nodes MUST express static named branches and support declaration-time `strategy?: "all" | "race"`, defaulting to `"all"`, plus runtime `maxConcurrency?: Resolvable<number | undefined>`.
+- Parallel `all` output MUST remain a record keyed by branch name; parallel `race` output MUST remain `{ winner, result }`; fanout output MUST remain the accepted item-output array; loop output MUST remain the final state.
 - Fanout nodes MUST express runtime array expansion through `over: Resolvable<readonly Item[]>`, support declaration-time `strategy?: "all" | "quorum"`, and accept runtime `count: Resolvable<number>` for quorum and `maxConcurrency?: Resolvable<number | undefined>`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
@@ -119,6 +125,7 @@
 ### IR And Validation
 
 - `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 4`.
+- If an internal caller bypasses the public TypeScript interface, workflow and composite outputs that are not plain objects, or that contain a `NodeRef`, MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
 - Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
 - `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, `outputs`, and `diagnostics`.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.

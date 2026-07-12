@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import { defineWorkflow, z, type ArtifactRef, type JsonValue, type OutputValues } from "../src/index.js";
+import { defineWorkflow, task, z, type ArtifactRef, type JsonValue, type TaskFunction } from "../src/index.js";
 import { lift, template, type Expr } from "@acpus/expression";
 
 test("loop state defines non-optional carried state and output shape", () => {
@@ -118,8 +118,14 @@ test("control-only and output-producing if/switch require fallbacks", () => {
 });
 
 test("nested objects and arrays are inferred from task and fanout callbacks", () => {
+  type AliasedOutput = { title: string; computed: boolean };
+  const base = { title: "ok" };
+  const key = "computed" as const;
+  const branchCallback = (): AliasedOutput => ({ ...base, [key]: true });
+  const taskCallback = async (): Promise<AliasedOutput> => ({ ...base, [key]: true });
+
   defineWorkflow({ name: "typed-nested-output" }).build(({ step }) => {
-    const task = step("task").task({
+    const nestedTask = step("task").task({
       input: {},
       exec: async () => ({
         nested: { title: "ok" },
@@ -127,8 +133,8 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
       }),
     });
 
-    expectTypeOf(task.output.nested.title).toEqualTypeOf<Expr<string>>();
-    expectTypeOf(lift(task.output.items, items => items[0]?.title ?? null)).toEqualTypeOf<Expr<string | null>>();
+    expectTypeOf(nestedTask.output.nested.title).toEqualTypeOf<Expr<string>>();
+    expectTypeOf(lift(nestedTask.output.items, items => items[0]?.title ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const fanout = step("items").fanout({
       over: ["a"],
@@ -138,13 +144,25 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
       }; },
     });
 
+    const parallel = step("parallel").parallel({ branches: { branchCallback } });
+    const callbackTask = step("callback_task").task({ input: {}, exec: taskCallback });
+    expectTypeOf(parallel.output.branchCallback.computed).toEqualTypeOf<Expr<boolean>>();
+    expectTypeOf(callbackTask.output.title).toEqualTypeOf<Expr<string>>();
+
     assertType<Expr<string | null>>(lift(fanout.output, items => items[0]?.nested.title ?? null));
-    return { count: fanout.output };
+    return {
+      count: fanout.output,
+      title: parallel.output.branchCallback.title,
+      computed: callbackTask.output.computed,
+    };
   });
 });
 
 test("parallel all output is keyed by branch", () => {
-  defineWorkflow({ name: "typed-parallel-output" }).build(({ step }) => {
+  defineWorkflow({
+    name: "typed-parallel-output",
+    agents: { worker: { command: "worker" } },
+  }).build(({ agents, step }) => {
     const parallel = step("parallel").parallel({
       branches: {
         left() {
@@ -152,15 +170,31 @@ test("parallel all output is keyed by branch", () => {
           return { summary: "ok" };
         },
         right() { return { count: 1 }; },
+        agentBranch() {
+          const review = step("review").agent({
+            agent: agents.worker,
+            prompt: "review",
+            outputSchema: z.object({ summary: z.string() }),
+          });
+          return { summary: review.output.summary };
+        },
+        taskBranch() {
+          const task = step("task").task({ input: {}, exec: async () => ({ ok: true }) });
+          return { ok: task.output.ok };
+        },
       },
     });
 
     expectTypeOf(parallel.output.left.summary).toEqualTypeOf<Expr<string>>();
     expectTypeOf(parallel.output.right.count).toEqualTypeOf<Expr<number>>();
+    expectTypeOf(parallel.output.agentBranch.summary).toEqualTypeOf<Expr<string>>();
+    expectTypeOf(parallel.output.taskBranch.ok).toEqualTypeOf<Expr<boolean>>();
 
     return {
       summary: parallel.output.left.summary,
       count: parallel.output.right.count,
+      review: parallel.output.agentBranch.summary,
+      ok: parallel.output.taskBranch.ok,
     };
   });
 });
@@ -301,69 +335,124 @@ test("task outputs may be primitive, array, object, union, or undefined", () => 
   });
 });
 
-test("workflow output types enforce durable data and preserve explicit escapes", () => {
+test("workflow and task output types enforce durable data", () => {
   const artifactRef = {} as ArtifactRef;
   const jsonValue = {} as JsonValue;
   const opaque = "value" as unknown;
   const escape = undefined as any;
+  const broadTask = undefined as unknown as TaskFunction<{}, any>;
 
-  defineWorkflow({ name: "typed-durable-outputs" }).build(({ step }) => {
+  defineWorkflow({
+    name: "typed-durable-outputs",
+    agents: { worker: { command: "worker" } },
+  }).build(({ agents, step }) => {
     step("valid_task").task({
       input: {},
       exec: async () => ({ artifactRef, jsonValue, optional: undefined }),
     });
-    step("escaped_task").task({
+    const escaped = step("escaped_task").task({
       input: {}, exec: async () => escape,
     });
+    // @ts-expect-error poisoned any output cannot cross a string seam.
+    step("escaped_prompt").agent({ agent: agents.worker, prompt: escaped.output });
+    step("escaped_condition").if({
+      // @ts-expect-error poisoned any output cannot cross a boolean seam.
+      condition: escaped.output,
+      then: () => ({}),
+      else: () => ({}),
+    });
+    const escapedExecutor = step("escaped_executor").task({ input: {}, exec: escape });
+    // @ts-expect-error an any executor cannot produce a consumable string output.
+    step("escaped_executor_prompt").agent({ agent: agents.worker, prompt: escapedExecutor.output });
+
+    step("escaped_branch").parallel({
+      branches: {
+        // @ts-expect-error inherited any cannot cross a composite output seam.
+        only() { return escape; },
+      },
+    });
+
+    step("nested_any_branch").parallel({
+      branches: {
+        // @ts-expect-error any cannot cross a nested composite output seam.
+        only() { return { escaped: escape }; },
+      },
+    });
+
+    step("any_loop_state").loop({
+      // @ts-expect-error any cannot cross the loop state seam.
+      state: { escaped: escape },
+      do({ state }) { return { state, stop: true }; },
+    });
+
+    const broadResult = step("broad_task").task({ input: {}, exec: broadTask });
+    step("broad_condition").if({
+      // @ts-expect-error broad Task any output cannot cross a boolean seam.
+      condition: broadResult.output,
+      then: () => ({}),
+      else: () => ({}),
+    });
+    const broadBranch = (() => ({ value: "ok" })) as () => Record<string, unknown>;
+    // @ts-expect-error unknown callback-variable outputs cannot cross a composite seam.
+    step("broad_parallel").parallel({ branches: { broadBranch } });
+
+    // @ts-expect-error unknown is not a durable Task output.
     step("invalid_unknown_task").task({
       input: {},
-      // @ts-expect-error unknown is not a durable Task output.
       exec: async () => opaque,
     });
+    // @ts-expect-error Date is not a durable Task output.
     step("invalid_date_task").task({
       input: {},
-      // @ts-expect-error Date is not a durable Task output.
       exec: async () => new Date(),
     });
+    // @ts-expect-error functions are not durable Task outputs.
     step("invalid_function_task").task({
       input: {},
-      // @ts-expect-error functions are not durable Task outputs.
       exec: async () => () => true,
     });
+    // @ts-expect-error nested promises are not durable Task outputs.
     step("invalid_promise_task").task({
       input: {},
-      // @ts-expect-error nested promises are not durable Task outputs.
       exec: async () => ({ pending: Promise.resolve("later") }),
     });
+    // @ts-expect-error Map is not a durable Task output.
     step("invalid_map_task").task({
       input: {},
-      // @ts-expect-error Map is not a durable Task output.
       exec: async () => new Map([["key", "value"]]),
     });
+    // @ts-expect-error Set is not a durable Task output.
     step("invalid_set_task").task({
       input: {},
-      // @ts-expect-error Set is not a durable Task output.
       exec: async () => new Set(["value"]),
     });
+    // @ts-expect-error symbols are not durable Task outputs.
     step("invalid_symbol_task").task({
       input: {},
-      // @ts-expect-error symbols are not durable Task outputs.
       exec: async () => Symbol("value"),
     });
+    // @ts-expect-error bigint is not a durable Task output.
     step("invalid_bigint_task").task({
       input: {},
-      // @ts-expect-error bigint is not a durable Task output.
       exec: async () => 1n,
     });
+    // @ts-expect-error undefined array entries are not durable.
     step("invalid_array_undefined_task").task({
       input: {},
-      // @ts-expect-error undefined array entries are not durable.
       exec: async () => ["ok", undefined],
     });
 
-    return { artifactRef, jsonValue, escaped: escape };
+    return { artifactRef, jsonValue };
   });
 
+  const escapedReusable = task.define({
+    inputSchema: z.object({}),
+    exec: async () => escape,
+  });
+  expectTypeOf<Awaited<ReturnType<typeof escapedReusable.fn>>>().toEqualTypeOf<never>();
+
+  // @ts-expect-error root workflow output cannot contain any.
+  defineWorkflow({ name: "invalid-root-any" }).build(() => ({ escaped: escape }));
   // @ts-expect-error root workflow output cannot contain unknown.
   defineWorkflow({ name: "invalid-root-output" }).build(() => ({ opaque }));
   // @ts-expect-error root workflow output cannot contain Date.
@@ -389,6 +478,7 @@ test("branch outputs infer unions while loop transitions remain exact", () => {
     expectTypeOf(conditional.output.common).toEqualTypeOf<Expr<string>>();
     // @ts-expect-error branch-specific fields are not safe on a union output.
     conditional.output.left;
+    expectTypeOf(lift(conditional.output, value => "left" in value ? value.left : false)).toEqualTypeOf<Expr<boolean>>();
 
     const switched = step("switched").switch({
       cases: [{ when: true, then() { return { common: "case", code: 1 }; } }],
@@ -420,6 +510,33 @@ test("branch outputs infer unions while loop transitions remain exact", () => {
 
 test("scope callback outputs are named objects", () => {
   defineWorkflow({ name: "typed-scope-object-output" }).build(({ step }) => {
+    const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+
+    step("bad_direct_ref").parallel({
+      branches: {
+        // @ts-expect-error NodeRef is a control handle, not a composite output.
+        only() { return leaf; },
+      },
+    });
+
+    step("bad_nested_ref").parallel({
+      branches: {
+        // @ts-expect-error NodeRef cannot be nested inside a durable output.
+        only() { return { leaf }; },
+      },
+    });
+
+    step("bad_direct_expr").parallel({
+      branches: {
+        // @ts-expect-error Expr must be assigned to a named output field.
+        only() { return leaf.output.value; },
+      },
+    });
+
+    step("valid_named_expr").parallel({
+      branches: { only() { return { value: leaf.output.value }; } },
+    });
+
     step("bad_fanout_item").fanout({
       over: ["a"],
       // @ts-expect-error fanout callbacks return named output objects.
@@ -432,7 +549,12 @@ test("scope callback outputs are named objects", () => {
       do() { return "bad"; },
     });
 
-    assertType<OutputValues<{ value: string }>>({ value: "ok" });
     return {};
   });
+
+  // @ts-expect-error workflow callbacks return named output objects, not Expr.
+  defineWorkflow({ name: "bad-direct-root-expr" }).build(() => template`bad`);
+  // @ts-expect-error workflow callbacks return named output objects, not NodeRef.
+  defineWorkflow({ name: "bad-direct-root-ref" }).build(({ step }) =>
+    step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) }));
 });

@@ -150,6 +150,12 @@ Boundary schemas use the native Zod 4 `z` re-exported from `acpus/core`. Filesys
 
 Keep workflow input, Agent output, Signal output, and values passed to reusable tasks JSON-compatible and durable. Avoid schema transforms, functions, promises, maps, sets, dates, bigint, symbol, `undefined`, `void`, `never`, non-finite numbers, sparse arrays, cycles, and class instances in graph-boundary values or runtime outputs.
 
+Do not use explicit `any` in a workflow entry. `workflow check` reports every
+explicit `any` as `AL007`; use a precise type, or `unknown` followed by normal
+TypeScript narrowing before the value crosses an Acpus boundary.
+An `any` inherited from an imported helper becomes `never` when it reaches a
+workflow, composite, loop-state, or Task output seam, so it cannot be consumed.
+
 ## Workflow Building Blocks
 
 ### Leaf Nodes
@@ -223,7 +229,21 @@ Inline task source is embedded in frozen IR. Reusable tasks can import package d
 
 ### Composite And Control Nodes
 
-Composite node callbacks accept only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Declare nested nodes with the unified `step` provided by the enclosing `build` callback. Return a plain object to declare output; do not add `outputSchema` to composites.
+Composite node callbacks accept only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Declare nested nodes with the unified `step` provided by the enclosing `build` callback. Return a named plain object to declare output; do not add `outputSchema` to composites.
+
+The output rule is strict and uniform:
+
+- A `NodeRef` is a control handle. Read its result exactly once through
+  `.output`; never return the `NodeRef` itself, even nested in an object.
+- An `Expr` may be an object field, for example
+  `return { value: task.output.value }`, but cannot be the callback's direct
+  return value.
+- `parallel` with the default `all` strategy returns the branch record;
+  `race` returns `{ winner, result }`; `fanout` returns an array; `loop`
+  returns its final state.
+- Heterogeneous `if`, `switch`, and race branches remain unions. Project only
+  fields common to every branch directly; use `lift` to narrow before reading
+  a branch-specific field.
 
 `if` branches on one expression. Both branches should return compatible object shapes:
 
@@ -345,6 +365,10 @@ const state = {
 ### Workflow Check
 
 `acpus workflow check <workflow.ts-or-catalog>` prepares the workflow in memory and catches TypeScript diagnostics plus Acpus authoring diagnostics such as Expr truthiness, native operators over Expr values, dynamic node ids, task callsites that cannot be joined to task metadata, inline task captures, and non-admissible outputs.
+
+Output-shape mistakes such as returning `Expr`/`NodeRef` directly, omitting
+`.output`, or reading an unsafe union field remain native TypeScript diagnostics;
+Acpus does not duplicate or rewrite them.
 
 Run `acpus workflow check <workflow.ts-or-catalog>` before admitting a run.
 

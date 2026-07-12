@@ -47,9 +47,12 @@ export type InlineTaskStepSpec<
 > = Simplify<TaskNodeOptions & TaskStepOptions & {
   outputSchema?: never;
   input: Input;
-  exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
+  exec: Exec & TaskOutputCheck<TaskResult<NoInfer<Exec>>>;
   task?: never;
 }>;
+
+export type TaskResult<Exec extends (...args: any[]) => any> =
+  0 extends (1 & Awaited<ReturnType<Exec>>) ? never : Awaited<ReturnType<Exec>>;
 
 export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = Simplify<TaskNodeOptions & TaskStepOptions & {
   outputSchema?: never;
@@ -87,25 +90,20 @@ export interface TaskFactory {
   define<InputSchema extends Schema<any>, Exec extends TaskFunction<z.output<InputSchema>, any>>(config: {
     inputSchema: InputSchema;
     outputSchema?: never;
-    exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
-  }): ReusableTaskToken<z.output<InputSchema>, Awaited<ReturnType<Exec>>>;
+    exec: Exec & TaskOutputCheck<TaskResult<NoInfer<Exec>>>;
+  }): ReusableTaskToken<z.output<InputSchema>, TaskResult<Exec>>;
   /** Returns true when a value is an Acpus Task token. */
   isToken(value: unknown): value is TaskToken<any, any>;
 }
 
 export const task: TaskFactory = {
-  define<InputSchema extends Schema<any>, Exec extends TaskFunction<z.output<InputSchema>, any>>(config: {
-    inputSchema: InputSchema;
-    exec: Exec & TaskOutputCheck<Awaited<ReturnType<NoInfer<Exec>>>>;
-  }) {
-    type Input = z.output<InputSchema>;
-    type Output = Awaited<ReturnType<Exec>>;
+  define: ((config: { inputSchema: Schema<any>; exec: TaskFunction<any, any> }) => {
     return {
       [TASK]: true as const,
       kind: "external",
       fn: config.exec,
-    } as ReusableTaskToken<Input, Output>;
-  },
+    };
+  }) as TaskFactory["define"],
   isToken(value: unknown): value is TaskToken<any, any> {
     return Boolean(value && typeof value === "object" && (value as any)[TASK]);
   },

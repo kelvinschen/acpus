@@ -225,8 +225,8 @@ function nonAdmissibleTaskWorkflow() {
   }).build(({ step }) => {
     step("bad_output").task({
       input: {},
-      exec: (async () => ({ when: new Date() })) as any,
-    });
+      exec: async () => ({ when: new Date() }),
+    } as never);
     return {};
   });
 }

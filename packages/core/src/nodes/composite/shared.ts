@@ -6,8 +6,15 @@ import type { ScopeIR } from "../../ir/types.js";
 export type OutputObject = Record<string, unknown>;
 export type ScopeCallback<Output extends OutputObject = any> =
   () => OutputValues<Output>;
+export type ScopeOutput<Callback extends (...args: any[]) => unknown> =
+  ReturnType<Callback> & GraphOutputCheck<ReturnType<Callback>>;
+// ScopeCallback is the pre-inference contextual signature. Exact callbacks
+// must satisfy the durable graph-output constraint.
 export type CheckedScopeCallback<Callback extends (...args: any[]) => OutputObject> =
-  Callback & ((...args: Parameters<Callback>) => ReturnType<Callback> & GraphOutputCheck<NoInfer<ReturnType<Callback>>>);
+  (...args: Parameters<Callback>) => ReturnType<Callback>
+    & (unknown extends ReturnType<NoInfer<Callback>> ? never
+      : ScopeCallback extends NoInfer<Callback> ? unknown
+        : GraphOutputCheck<ReturnType<NoInfer<Callback>>>);
 export type BuildScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
   fn: (ctx: Extra) => OutputValues<Output>,
   extra?: Extra,

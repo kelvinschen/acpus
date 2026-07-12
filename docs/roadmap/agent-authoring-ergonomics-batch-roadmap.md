@@ -72,7 +72,7 @@ column totals 66.
 | --- | --- | --- | ---: | --- | --- | --- |
 | AE-001 | P0 | Skill, examples, declarations, and executed CLI disagree about the current authoring interface. | 6 | M1 | B01 | implemented; final benchmark pending |
 | AE-002 | P0 | Optional `maxConcurrency` becomes `Expr<number \| undefined>`; unsafe coercions such as zero can pass check. | 5 | M2 | B02 | implemented; final benchmark pending |
-| AE-003 | P1 | Composite output nesting and plain-object callback return rules are hard to predict. | 12 | M3 | B03 | queued |
+| AE-003 | P1 | Composite output nesting and plain-object callback return rules are hard to predict. | 12 | M3 | B03 | implemented; final benchmark pending |
 | AE-004 | P1 | Authors use JavaScript operators/control flow over `Expr<T>`, including inside templates and loops. | 9 | M3 | B04 | queued |
 | AE-005 | P1 | Task/fanout/branch output types widen to `any`, `unknown`, or unusable unions. | 8 | M3 | B05 | queued |
 | AE-006 | P1 | Inline Task input, output inference, and self-containment rules are not evident from the interface. | 6 | M4 | B06 | queued |
@@ -262,7 +262,7 @@ values fail when the group materializes. Quorum count remains strictly positive.
 
 ## B03 — Composite Result Ergonomics
 
-State: queued
+State: implemented; final benchmark pending
 Priority: P1
 Primary module: M3 — Graph authoring interface
 Issues: AE-003
@@ -271,9 +271,9 @@ Observed frequency: 12
 ### Problem
 
 Authors repeatedly mispredicted `.output` nesting for parallel, if, switch,
-fanout, and nested leaf results. Composite callbacks also reject direct Expr or
-NodeRef output returns and require compatible plain-object shapes across
-branches.
+fanout, and nested leaf results. The public types also admitted `NodeRef` as
+durable data, while callback result rules and the former `any` escape weakened
+the TypeScript boundary.
 
 ### Deep-module direction
 
@@ -281,29 +281,33 @@ Treat composite result construction as one module interface owned by graph refs
 and builder lowering. Callers should learn one result rule, while node nesting,
 dependency registration, and durable lowering remain implementation details.
 
-The first implementation pass is diagnostic- and type-directed. A breaking
-flattening or auto-unwrapping change is considered only if the final
-benchmark still shows repeated nesting mistakes after the interface explains
-itself.
+The selected interface is strict named output: a `NodeRef` is always a control
+handle, an `Expr` is legal only below a named output field, and composite result
+envelopes remain unchanged. TypeScript owns output-shape errors without Acpus
+diagnostic remapping. Entry-source `AL007` removes the explicit-`any` escape.
 
 ### Planned work
 
-- Inventory the result shape of every composite and nested leaf combination.
-- Improve callback return types so direct Expr/NodeRef returns fail at the
-  smallest source expression with a concrete plain-object hint.
-- Improve missing `.output` diagnostics where TypeScript currently reports only
-  a distant property error.
-- Make incompatible if/switch branch fields produce one primary diagnostic with
-  both branch locations where feasible.
-- Reduce examples to one consistent branch-return pattern.
+- Preserve one `.output` read and the existing all/race/fanout/loop result
+  models; do not flatten or auto-unwrap.
+- Reject top-level Expr and top-level/nested NodeRef through public TypeScript
+  constraints; preserve heterogeneous unions and use `lift` for narrowing.
+- Add entry-file `AL007` with default `no-explicit-any` syntax coverage, without
+  ESLint, configuration, suppression, autofix, or helper-import scanning.
+- Delete W001/B001 lowering checks, public output helper types, duplicate output
+  recursion, and redundant `any`/union type plumbing.
+- Keep IR validation and runtime normalization for genuinely untrusted data.
 
 ### Deterministic verification
 
-- Type fixtures for parallel→Agent, parallel→Task, if/switch, fanout, race, and
-  quorum result access.
-- Negative fixtures for direct Expr return, direct NodeRef return, missing
-  `.output`, and asymmetric branch objects.
-- Exact diagnostic code/path/hint assertions at the lowest stable checker layer.
+- Type fixtures cover parallel→Agent/Task, if/switch, fanout all/quorum, race,
+  loop, unions, common-field projection, and `lift` narrowing.
+- Negative fixtures cover direct Expr, direct/nested NodeRef, missing `.output`,
+  unsafe union access, non-durable Task output, and inherited `any` reduction.
+- AL007 tests cover all supported syntax positions and exact diagnostic fields,
+  plus entry-only scanning and false-positive cases.
+- Pipeline tests prove output-shape failures remain native TypeScript
+  diagnostics and no W001/B001 author diagnostic remains.
 
 ### Final benchmark acceptance
 
@@ -313,15 +317,21 @@ itself.
 
 ### Completion record
 
-- Started: TBD
-- Completed: TBD
+- Started: 2026-07-12
+- Completed: 2026-07-12
 - Change/PR: TBD
-- Specs updated: TBD
-- Test commands: TBD
-- Final benchmark run: TBD
-- Before/final AE-003 count: `12 → TBD`
-- Interface decision: preserve / flatten / other — TBD
-- Follow-ups: TBD
+- Specs updated: `core-spec.md`, `workflow-compiler-spec.md`
+- Test commands: `pnpm test:type`; `pnpm typecheck`; `pnpm test`;
+  `pnpm check:dead-code`; `pnpm check:dependencies`;
+  `pnpm check:dependencies:strict`; `pnpm build:clean && pnpm test:dist`;
+  all passed.
+- Final benchmark run: deferred until all optimization batches are complete
+- Before/final AE-003 count: `12 → pending final benchmark`
+- Interface decision: preserve envelopes; strict named outputs; no flattening or auto-unwrapping
+- Adversarial review: two independent reviewers found inherited-`any`, poisoned-output assignability, lowering-invariant, generic package-resolution, determinism, and weak-oracle gaps; all were corrected before completion.
+- Test design: AL007, native diagnostic, inherited-`any`, and output-shape cases share existing checked programs; generic package exports use the compiler seam; compiler JSON equality plus exact runtime digest/lock assertions cover preparation determinism; distant-deadline arithmetic is tested at the Task runner seam without spawning an unrelated process.
+- Test performance: after one 9.845s warm-up, the final post-review full-suite runs completed in 10.002s, 9.455s, and 9.731s. All are below the 11.0s acceptance threshold without changing test-worker allocation.
+- Follow-ups: keep AE-003 open until the single final benchmark measures the remaining nesting mistakes.
 
 ## B04 — Expr, Lift, and Stable-ID Diagnostics
 
