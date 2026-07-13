@@ -20,11 +20,3 @@ pre-TypeScript history remains under `legacy/`.
   exit gates.
 
 ## Completed
-
-- [YAGNI Surface Cleanup Roadmap](archive/yagni-surface-cleanup-roadmap.md)
-  — removed unused authoring promises, speculative IR variants, duplicate
-  runtime paths, write-only state, and unconsumed CLI/Web projections in
-  independently reviewed batches.
-- [Repository Maintenance Cleanup Roadmap](archive/repository-maintenance-cleanup-roadmap.md)
-  — delete refactor residue, consolidate proven seams, and add dead-code,
-  dependency, CI, and package-artifact gates.
