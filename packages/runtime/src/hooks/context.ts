@@ -43,6 +43,7 @@ export function buildHookContext(input: {
   workspaceDir: string;
   workflowPath: string;
   executionMetadata: RunExecutionMetadata[];
+  agentPrompts?: ReadonlyMap<string, string>;
 }): HookContext {
   const context: HookContext = {
     event: input.hookEvent,
@@ -95,7 +96,7 @@ function buildNodeContext(input: Parameters<typeof buildHookContext>[0], nodeKey
   };
   const metadata = latestAttemptMetadata(input.executionMetadata, nodeKey, `${node.kind}_attempt`);
   if (node.kind === "agent") {
-    const agentPrompt = stringField(metadata, "renderedPrompt");
+    const agentPrompt = input.agentPrompts?.get(nodeKey);
     return { ...base, ...(agentPrompt === undefined ? {} : { agentPrompt }), ...nodeResultFields(input.hookEvent, input.row.payload) };
   }
   if (node.kind === "task") {

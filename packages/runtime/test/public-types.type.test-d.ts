@@ -1,7 +1,11 @@
 import { expectTypeOf, test } from "vitest";
 import type {
   AgentInspectionState,
+  AgentOutputProcessing,
+  AgentTraceRecord,
+  AgentTurnArtifact,
   AgentOverrideMap,
+  ArtifactRecord,
   PreparedRunWorkflow,
   RunDynamicAttempt,
   RunDynamicDetails,
@@ -37,13 +41,15 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, validateAgentOverrides } from "@acpus/runtime";
+import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, validateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import type { AgentTurnSummary } from "@acpus/agent-executor";
 import type { Result } from "neverthrow";
 
 test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
+  expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<{ run: RunDetails; overlay: WorkflowVisualizationOverlay } | undefined>>();
@@ -150,4 +156,23 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
+  expectTypeOf<AgentOutputProcessing>().toMatchTypeOf<{ recovery: string; conformance: "accepted" | "rejected" }>();
+  expectTypeOf<Extract<AgentTraceRecord, { type: "turn_start" }>>().toMatchTypeOf<{ schemaVersion: 1; sequence: number; runId: string; nodeId: string }>();
+  expectTypeOf<AgentTurnArtifact>().toEqualTypeOf<{
+    schemaVersion: 1;
+    runId: string;
+    nodeId: string;
+    nodeKey: string;
+    attemptNo: number;
+    turn: number;
+    agentKey: string;
+    sessionName: string;
+    status: "completed" | "failed" | "cancelled";
+    timing: import("@acpus/agent-executor").AgentTurnTiming;
+    prompt: string;
+    response: string;
+    summary: AgentTurnSummary;
+    failure?: import("@acpus/agent-executor").AgentBackendFailure;
+    message?: string;
+  }>();
 });

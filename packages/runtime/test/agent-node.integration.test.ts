@@ -12,7 +12,10 @@ import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
-import { agentTelemetry, completedAgentTurn } from "./support/agent-turn.js";
+import type { HookContext } from "../src/hooks/context.js";
+import type { HookRunner } from "../src/hooks/runner.js";
+import { agentSummary, agentTiming, completedAgentTurn } from "./support/agent-turn.js";
+import { listArtifacts as listRunArtifacts } from "../src/runs/use-cases.js";
 
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -119,16 +122,11 @@ describe("agent node execution", () => {
             expect(turns[1]!.prompt).toContain("# OUTPUT SCHEMA");
             const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, "review.dynamic") as RuntimeArtifactRow[];
             expect(artifactRows).toEqual([
-              expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md" }),
-              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json" }),
-              expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md" }),
-              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json" }),
-              expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.prompt.md" }),
-              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json" }),
-              expect.objectContaining({ media_type: "text/markdown", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.response.md" }),
+              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-001.json" }),
+              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.json" }),
               expect.objectContaining({ media_type: "text/plain", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.stderr.log" }),
-              expect.objectContaining({ media_type: "application/json", relative_path: "artifacts/review.dynamic/attempt-1/agent/turn-002.telemetry.json" }),
             ]);
+            expect(artifactRows.some(row => row.relative_path.endsWith(".trace.jsonl"))).toBe(false);
             const metadataEntry = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
             expect(metadataEntry).toMatchObject({ attemptId: "attempt_1", kind: "agent_attempt" });
             const metadata = metadataEntry?.metadata as AgentAttemptMetadata | undefined;
@@ -144,7 +142,8 @@ describe("agent node execution", () => {
                   turn: 1,
                   status: "completed",
                   failure: expect.objectContaining({ kind: "output_conformance" }),
-                  telemetry: {
+                  outputProcessing: { recovery: "direct", conformance: "rejected", projectionChanged: true },
+                  summary: {
                     eventCount: 5,
                     stopReason: "end_turn",
                     context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
@@ -154,25 +153,37 @@ describe("agent node execution", () => {
                     acpxRecordId: "record-1",
                   },
                 }),
-                expect.objectContaining({ turn: 2, status: "completed" }),
+                expect.objectContaining({
+                  turn: 2,
+                  status: "completed",
+                  outputProcessing: { recovery: "direct", conformance: "accepted", projectionChanged: true },
+                }),
               ],
             });
-            expectAgentArtifactRef(metadata?.turns?.[0]?.promptArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md", "text/markdown", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.rawParsedOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json", "application/json", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.responseArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md", "text/markdown", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.telemetryArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json", "application/json", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[1]?.rawParsedOutputArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json", "application/json", artifactRows);
+            expect(JSON.stringify(metadata)).not.toContain(turns[0]!.prompt);
+            expect(JSON.stringify(metadata)).not.toContain("{\"attempt\":1,\"extra\":\"drop\"}");
+            expect(JSON.stringify(metadata)).not.toContain("tool-1");
+            expect(JSON.stringify(metadata)).not.toContain("README.md");
+            expect(JSON.stringify(metadata)).not.toContain("\"timing\"");
+            expectAgentArtifactRef(metadata?.turns?.[0]?.turnArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-001.json", "application/json", artifactRows);
             expectAgentArtifactRef(metadata?.turns?.[1]?.stderrArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.stderr.log", "text/plain", artifactRows);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
-            await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.raw-parsed-output.json"))).resolves.toMatchObject({
-              rawParsedOutput: { attempt: 1, extra: "drop" },
-            });
-            await expect(readFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.prompt.md"), "utf8")).resolves.toBe(turns[0]!.prompt);
-            await expect(readFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.response.md"), "utf8")).resolves.toBe("{\"attempt\":1,\"extra\":\"drop\"}");
-            const telemetryArtifact = await readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.telemetry.json"));
-            expect(telemetryArtifact).toMatchObject({
-              telemetry: {
+            const turnArtifact = await readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.json"));
+            expect(turnArtifact).toMatchObject({
+              schemaVersion: 1,
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              attemptNo: 1,
+              turn: 1,
+              agentKey: "reviewer",
+              sessionName: turns[0]!.sessionName,
+              status: "completed",
+              timing: agentTiming(),
+              prompt: turns[0]!.prompt,
+              response: "{\"attempt\":1,\"extra\":\"drop\"}",
+              summary: {
                 eventCount: 5,
                 context: { used: 120, size: 240 },
                 tokenUsage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
@@ -192,14 +203,148 @@ describe("agent node execution", () => {
                 acpxRecordId: "record-1",
               },
             });
-            expect(telemetryArtifact).not.toHaveProperty("telemetry.input");
-            expect(telemetryArtifact).not.toHaveProperty("telemetry.output");
-            expect(JSON.stringify(telemetryArtifact)).not.toContain(turns[0]!.prompt);
-            expect(JSON.stringify(telemetryArtifact)).not.toContain("{\"attempt\":1,\"extra\":\"drop\"}");
-            await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.raw-parsed-output.json"))).resolves.toMatchObject({
-              rawParsedOutput: { attempt: "2", extra: "drop" },
+            expect(turnArtifact).not.toHaveProperty("summary.prompt");
+            expect(turnArtifact).not.toHaveProperty("summary.response");
+            expect(turnArtifact).not.toHaveProperty("summary.thinking");
+            expect(turnArtifact).not.toHaveProperty("summary.rawOutput");
+            await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.json"))).resolves.toMatchObject({
+              turn: 2,
+              timing: agentTiming(),
+            });
+            expect(artifactRows.some(row => row.relative_path.includes("raw-parsed-output"))).toBe(false);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("writes one normalized trace artifact for every repair turn when definition trace is enabled", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-trace", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const turns: AgentTurnRequest[] = [];
+          try {
+            const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+            await expect(withImmediateAgentRepairs(() => advanceFrozenRun({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "owner-a",
+              store,
+              executeAgentTurn: async request => {
+                turns.push(request);
+                return tracedCompletedAgentTurn(turns.length === 1 ? "not json" : "{\"ok\":true}");
+              },
+            }))).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+
+            expect(turns).toHaveLength(2);
+            expect(turns.every(turn => turn.captureTrace === true)).toBe(true);
+            const traces = store.listArtifacts(run.id).filter(artifact => artifact.path.endsWith(".trace.jsonl"));
+            expect(traces).toHaveLength(2);
+            expect(traces.map(artifact => artifact.mediaType)).toEqual(["application/x-ndjson", "application/x-ndjson"]);
+            expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".raw-acp.jsonl"))).toBe(false);
+            await expect(listRunArtifacts(workspace, run.id)).resolves.toEqual(store.listArtifacts(run.id));
+            await expect(listRunArtifacts(workspace, "missing")).resolves.toBeUndefined();
+
+            for (const [index, artifact] of traces.entries()) {
+              const records = (await readFile(artifact.path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+              expect(records.map(record => record.sequence)).toEqual([0, 1, 2]);
+              expect(records[0]).toMatchObject({
+                schemaVersion: 1,
+                type: "turn_start",
+                runId: run.id,
+                nodeId: "review",
+                nodeKey: artifact.nodeKey,
+                attemptNo: 1,
+                turn: index + 1,
+                agentKey: "reviewer",
+                sessionName: turns[index]!.sessionName,
+                cwd: workspace,
+              });
+              expect(records[1]).toMatchObject({ type: "message", channel: "assistant" });
+              expect(records[2]).toMatchObject({ type: "turn_end", status: "completed" });
+              expect(await readFile(artifact.path, "utf8")).not.toContain(turns[index]!.prompt);
+            }
+
+            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+            expect(metadata?.turns).toEqual([
+              expect.objectContaining({ traceArtifact: expect.objectContaining({ mediaType: "application/x-ndjson" }) }),
+              expect.objectContaining({ traceArtifact: expect.objectContaining({ mediaType: "application/x-ndjson" }) }),
+            ]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("keeps a partial trace artifact when a traced provider turn fails", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-failed-trace", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+            await expect(advanceFrozenRun({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "owner-a",
+              store,
+              executeAgentTurn: async () => ({
+                status: "failed",
+                failure: { kind: "provider_exit", message: "provider disconnected" },
+                responseText: "partial",
+                stderr: "",
+                summary: agentSummary(1),
+                timing: agentTiming(2),
+                trace: agentTrace("failed", "partial", "provider disconnected"),
+              }),
+            })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+            const trace = store.listArtifacts(run.id).find(artifact => artifact.path.endsWith(".trace.jsonl"));
+            expect(trace).toBeDefined();
+            const records = (await readFile(trace!.path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+            expect(records.at(-1)).toMatchObject({ type: "turn_end", status: "failed", message: "provider disconnected" });
+            const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
+            expect(turn).toBeDefined();
+            await expect(readJsonFile(turn!.path)).resolves.toMatchObject({
+              schemaVersion: 1,
+              status: "failed",
+              prompt: expect.stringContaining("# OUTPUT SCHEMA"),
+              response: "partial",
+              summary: agentSummary(1),
+              timing: agentTiming(2),
+              failure: { kind: "provider_exit", message: "provider disconnected" },
             });
           } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("records trace write errors without changing a successful node result", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-trace-write-error", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const registerArtifact = store.registerArtifact.bind(store);
+          const registration = vi.spyOn(store, "registerArtifact").mockImplementation(input => {
+            if (input.relativePath.endsWith(".trace.jsonl")) throw new Error("trace registry unavailable");
+            registerArtifact(input);
+          });
+          try {
+            const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+            await expect(advanceFrozenRun({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "owner-a",
+              store,
+              executeAgentTurn: async () => tracedCompletedAgentTurn("{\"ok\":true}"),
+            })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+
+            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+            expect(metadata?.turns).toEqual([
+              expect.objectContaining({ traceCaptureError: "trace registry unavailable" }),
+            ]);
+            expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".trace.jsonl"))).toBe(false);
+          } finally {
+            registration.mockRestore();
             store.close();
           }
         });
@@ -221,7 +366,7 @@ describe("agent node execution", () => {
                 request.onProgress?.({
                   responseText: "hello from a long running agent",
                   updatedAt: "2026-07-01T00:00:00.000Z",
-                  telemetry: {
+                  summary: {
                     eventCount: 3,
                     context: { used: 90, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
                     tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
@@ -295,7 +440,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("throttles identical agent progress but flushes changed telemetry immediately", async () => {
+    it("throttles identical agent progress but flushes changed summary immediately", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-progress-throttle", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -314,7 +459,7 @@ describe("agent node execution", () => {
               executeAgentTurn: async request => {
                 const base = {
                   updatedAt: "2026-07-01T00:00:00.000Z",
-                  telemetry: {
+                  summary: {
                     eventCount: 1,
                     tools: { totalToolCallCount: 0, calls: [] },
                   },
@@ -337,7 +482,7 @@ describe("agent node execution", () => {
                 request.onProgress?.({
                   ...base,
                   responseText: "three",
-                  telemetry: {
+                  summary: {
                     eventCount: 2,
                     tools: { totalToolCallCount: 1, calls: [{
                       toolCallId: "tool-1",
@@ -401,7 +546,7 @@ describe("agent node execution", () => {
                 request.onProgress?.({
                   responseText: longText,
                   updatedAt: "2026-07-01T00:00:00.000Z",
-                  telemetry: {
+                  summary: {
                     eventCount: 1,
                     tools: { totalToolCallCount: 0, calls: [] },
                   },
@@ -495,7 +640,8 @@ describe("agent node execution", () => {
                 failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
                 responseText: "partial",
                 stderr: "",
-                telemetry: agentTelemetry(1),
+                summary: agentSummary(1),
+                timing: agentTiming(),
               }),
             });
 
@@ -539,7 +685,8 @@ describe("agent node execution", () => {
                 message: "paused by operator",
                 responseText: "partial",
                 stderr: "",
-                telemetry: agentTelemetry(1),
+                summary: agentSummary(1),
+                timing: agentTiming(),
               }),
             });
 
@@ -595,7 +742,8 @@ describe("agent node execution", () => {
                 },
                 responseText: "partial",
                 stderr: "",
-                telemetry: agentTelemetry(1),
+                summary: agentSummary(1),
+                timing: agentTiming(),
               }),
             });
 
@@ -836,7 +984,8 @@ describe("agent node execution", () => {
                   failure: { kind: "provider_exit", message: "agent crashed" },
                   responseText: "",
                   stderr: "",
-                  telemetry: agentTelemetry(1),
+                  summary: agentSummary(1),
+                  timing: agentTiming(),
                   rawDebug: { stdout: rawStdout },
                 };
               },
@@ -985,7 +1134,7 @@ describe("agent node execution", () => {
             expect(turns[0]!.cwd).toBe(worktree);
             expect(turns[0]!.prompt).toBe(`direct=${artifactPath}|uri=${ref.uri}|nested=${JSON.stringify({ patch: ref })}`);
             const metadata = store.getExecutionMetadata(run.id).find(item => item.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
-            expect(metadata?.turns?.[0]?.promptArtifact).toEqual({ artifactId: expect.any(String), mediaType: "text/markdown" });
+            expect(metadata?.turns?.[0]?.turnArtifact).toEqual({ artifactId: expect.any(String), mediaType: "application/json" });
             expect(store.listArtifacts(run.id)).toEqual(expect.arrayContaining([
               expect.objectContaining({ id: artifactId, path: artifactPath }),
             ]));
@@ -1196,7 +1345,8 @@ describe("agent node execution", () => {
             failure: { kind: "provider_exit", message: "backend unavailable" },
             responseText: "",
             stderr: "",
-            telemetry: agentTelemetry(0),
+            summary: agentSummary(0),
+            timing: agentTiming(),
           }));
 
           await expect(withAgentResponseRepairMax("10", () => executeAgentNode(node, {}, {
@@ -1220,12 +1370,19 @@ describe("agent node execution", () => {
             vi.setSystemTime(now);
             const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "dynamic review" }, cwd: workspace });
             const turns: AgentTurnRequest[] = [];
+            const hookContexts: HookContext[] = [];
+            const hookRunner: HookRunner = {
+              trigger(_event, context) { hookContexts.push(context); },
+              async drain() {},
+              activeCount() { return 0; },
+            };
 
             await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
               cwd: workspace,
               runId: run.id,
               ownerId: "owner-a",
               store,
+              hookRunner,
               executeAgentTurn: async request => {
                 turns.push(request);
                 return completedAgentTurn("{\"ok\":true}");
@@ -1240,10 +1397,18 @@ describe("agent node execution", () => {
             expect(runtimeRow(workspace, "SELECT deadline_at FROM node_attempts WHERE run_id = ?", run.id)).toMatchObject({
               deadline_at: new Date(now.getTime() + 5_000).toISOString(),
             });
-            expect(store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata).toMatchObject({
-              renderedPrompt: "dynamic review",
+            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata;
+            expect(metadata).toMatchObject({
               responseRepairMax: 0,
               deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
+            });
+            expect(metadata).not.toHaveProperty("renderedPrompt");
+            const turnArtifact = store.listArtifacts(run.id).find(artifact => artifact.path.endsWith("/turn-001.json"));
+            expect(turnArtifact).toBeDefined();
+            expect(await readJsonFile(turnArtifact!.path)).toMatchObject({ prompt: turns[0]!.prompt });
+            expect(hookContexts.find(context => context.event === "node.completed")?.node).toMatchObject({
+              id: "review",
+              agentPrompt: turns[0]!.prompt,
             });
           } finally {
             vi.useRealTimers();
@@ -1302,7 +1467,7 @@ describe("agent node execution", () => {
         },
       );
 
-    it("does not write raw parsed output artifacts when agent JSON recovery fails", async () => {
+    it("records unrecoverable output metadata without creating an extra artifact", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-no-raw-parsed-output", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -1320,13 +1485,11 @@ describe("agent node execution", () => {
             const nodeKey = deriveInstanceKey(appendNode([], "review"));
             const artifactRows = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as Array<{ relative_path: string }>;
             expect(artifactRows.map(row => row.relative_path)).toEqual([
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.prompt.md`,
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.response.md`,
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.telemetry.json`,
+              `artifacts/${nodeKey}/attempt-1/agent/turn-001.json`,
             ]);
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata?.turns).toEqual([
-              expect.not.objectContaining({ rawParsedOutputArtifact: expect.anything() }),
+              expect.objectContaining({ outputProcessing: { recovery: "unrecoverable", conformance: "rejected" } }),
             ]);
           } finally {
             store.close();
@@ -1334,7 +1497,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("does not write raw parsed output artifacts for empty agent responses", async () => {
+    it("records empty output metadata without creating an extra artifact", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-empty-no-raw-parsed-output", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -1352,16 +1515,14 @@ describe("agent node execution", () => {
             const nodeKey = deriveInstanceKey(appendNode([], "review"));
             const artifactRows = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as Array<{ relative_path: string }>;
             expect(artifactRows.map(row => row.relative_path)).toEqual([
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.prompt.md`,
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.response.md`,
-              `artifacts/${nodeKey}/attempt-1/agent/turn-001.telemetry.json`,
+              `artifacts/${nodeKey}/attempt-1/agent/turn-001.json`,
             ]);
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata?.turns).toEqual([
               expect.objectContaining({ failure: { kind: "empty_response", message: expect.any(String) } }),
             ]);
             expect(metadata?.turns).toEqual([
-              expect.not.objectContaining({ rawParsedOutputArtifact: expect.anything() }),
+              expect.objectContaining({ outputProcessing: { recovery: "empty", conformance: "rejected" } }),
             ]);
           } finally {
             store.close();
@@ -1399,7 +1560,8 @@ describe("agent node execution", () => {
                 failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
                 responseText: "",
                 stderr: "",
-                telemetry: agentTelemetry(0),
+                summary: agentSummary(0),
+                timing: agentTiming(),
               }),
             });
 
@@ -1425,6 +1587,17 @@ describe("agent node execution", () => {
               status: "timed_out",
               turnCount: 1,
               turns: [expect.objectContaining({ status: "failed", failure: { kind: "timeout", message: "Agent turn timed out after 5ms." } })],
+            });
+            const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
+            expect(turn).toBeDefined();
+            await expect(readJsonFile(turn!.path)).resolves.toMatchObject({
+              schemaVersion: 1,
+              status: "failed",
+              prompt: expect.stringContaining("# OUTPUT SCHEMA"),
+              response: "",
+              summary: agentSummary(0),
+              timing: agentTiming(),
+              failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
             });
           } finally {
             store.close();
@@ -1512,7 +1685,8 @@ describe("agent node execution", () => {
                       message: "paused by operator",
                       responseText: "partial response\n",
                       stderr: "partial stderr\n",
-                      telemetry: agentTelemetry(1),
+                      summary: agentSummary(1),
+                      timing: agentTiming(),
                     });
                   }, { once: true });
                 });
@@ -1524,23 +1698,21 @@ describe("agent node execution", () => {
             expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "ready", statusReason: "paused" });
 
             const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as RuntimeArtifactRow[];
-            const promptPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.prompt.md`;
-            const responsePath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.response.md`;
+            const turnPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.json`;
             const stderrPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.stderr.log`;
-            const telemetryPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.telemetry.json`;
             expect(artifactRows).toEqual([
-              expect.objectContaining({ media_type: "text/markdown", relative_path: promptPath }),
-              expect.objectContaining({ media_type: "text/markdown", relative_path: responsePath }),
+              expect.objectContaining({ media_type: "application/json", relative_path: turnPath }),
               expect.objectContaining({ media_type: "text/plain", relative_path: stderrPath }),
-              expect.objectContaining({ media_type: "application/json", relative_path: telemetryPath }),
             ]);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
-            await expect(readFile(join(workspace, runDir, responsePath), "utf8")).resolves.toBe("partial response\n");
             await expect(readFile(join(workspace, runDir, stderrPath), "utf8")).resolves.toBe("partial stderr\n");
-            await expect(readJsonFile(join(workspace, runDir, telemetryPath))).resolves.toMatchObject({
+            await expect(readJsonFile(join(workspace, runDir, turnPath))).resolves.toMatchObject({
               status: "cancelled",
-              telemetry: agentTelemetry(1),
+              prompt: turns[0]!.prompt,
+              response: "partial response\n",
+              summary: agentSummary(1),
+              timing: agentTiming(),
               message: "paused by operator",
             });
 
@@ -1551,10 +1723,8 @@ describe("agent node execution", () => {
               message: "paused by operator",
               turns: [expect.objectContaining({ status: "cancelled", message: "paused by operator" })],
             });
-            expectAgentArtifactRef(metadata?.turns?.[0]?.promptArtifact, promptPath, "text/markdown", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.responseArtifact, responsePath, "text/markdown", artifactRows);
+            expectAgentArtifactRef(metadata?.turns?.[0]?.turnArtifact, turnPath, "application/json", artifactRows);
             expectAgentArtifactRef(metadata?.turns?.[0]?.stderrArtifact, stderrPath, "text/plain", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.telemetryArtifact, telemetryPath, "application/json", artifactRows);
 
             const claim = store.scheduler.claimRun(run.id, "resume-owner", 60_000);
             if (!claim) throw new Error("expected resume claim");
@@ -1871,6 +2041,62 @@ function retryingAgentWorkflow() {
   });
 }
 
+function tracedAgentWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-agent-trace",
+    agents: {
+      reviewer: { use: "codex", trace: true },
+    },
+  }).build(({ agents, step }) => {
+    step("review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      prompt: "review",
+    });
+    return {};
+  });
+}
+
+function tracedCompletedAgentTurn(responseText: string): AgentTurnResult {
+  return {
+    ...completedAgentTurn(responseText),
+    timing: agentTiming(2),
+    trace: agentTrace("completed", responseText),
+  };
+}
+
+function agentTrace(
+  status: "completed" | "failed" | "cancelled" | "timed_out",
+  text: string,
+  message?: string,
+): NonNullable<AgentTurnResult["trace"]> {
+  return {
+    startedAt: "2026-07-01T00:00:00.000Z",
+    elapsedMs: 2,
+    events: [
+      {
+        schemaVersion: 1,
+        sequence: 0,
+        observedAt: "2026-07-01T00:00:00.001Z",
+        elapsedMs: 1,
+        type: "message",
+        channel: "assistant",
+        content: { type: "text", text },
+        tag: "agent_message_chunk",
+      },
+      {
+        schemaVersion: 1,
+        sequence: 1,
+        observedAt: "2026-07-01T00:00:00.002Z",
+        elapsedMs: 2,
+        type: "turn_end",
+        status,
+        ...(message ? { message } : {}),
+      },
+    ],
+  };
+}
+
 function hostRepairBudgetAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-host-repair-budget",
@@ -2055,7 +2281,6 @@ type AgentAttemptMetadata = {
   status?: string;
   sessionName?: string;
   sessionKey?: string;
-  renderedPrompt?: string;
   responseRepairMax?: number | null;
   turnCount?: number;
   turns?: Array<Record<string, any>>;

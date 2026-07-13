@@ -40,7 +40,7 @@ describe("hooks events and context", () => {
     const projection = schedulerProjection();
     const executionMetadata = [
       { id: 1, kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
-      { id: 2, kind: "agent_attempt", metadata: { nodeKey: "review~1", renderedPrompt: "Review ready" }, createdAt: "2026-07-04T00:00:02.000Z" },
+      { id: 2, kind: "agent_attempt", metadata: { nodeKey: "review~1" }, createdAt: "2026-07-04T00:00:02.000Z" },
     ];
 
     expect(buildHookContext({
@@ -97,6 +97,7 @@ describe("hooks events and context", () => {
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
       executionMetadata,
+      agentPrompts: new Map([["review~1", "Review ready"]]),
     }).node).toMatchObject({
       id: "review",
       key: "review~1",

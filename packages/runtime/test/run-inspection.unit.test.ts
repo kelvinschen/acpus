@@ -140,15 +140,15 @@ describe("run inspection projection", () => {
     }
   });
 
-  it("reports how many budget-omitted Agents already carry telemetry", () => {
+  it("reports how many budget-omitted Agents already carry progress", () => {
     const run = repeatedAgentRun(25);
     const baseline = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
     if (baseline?.kind !== "snapshot") throw new Error("expected snapshot");
     const visible = new Set(baseline.items.flatMap(item => item.nodeKey ? [item.nodeKey] : []));
     const hidden = run.dynamic!.nodeInstances.find(instance => !visible.has(instance.nodeKey))!;
-    const { attemptId: _attemptId, ...telemetry } = run.dynamic!.progress[0]!;
+    const { attemptId: _attemptId, ...progress } = run.dynamic!.progress[0]!;
     run.dynamic!.progress.push({
-      ...telemetry,
+      ...progress,
       nodeKey: hidden.nodeKey,
       updatedAt: "2026-07-01T00:00:03.000Z",
     });
@@ -157,21 +157,21 @@ describe("run inspection projection", () => {
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(document.omitted).toMatchObject({
       dynamicContexts: 5,
-      agentTelemetry: { tracked: 1 },
+      agentProgress: { tracked: 1 },
     });
   });
 
   it("keeps default JSON compact and exposes complete target and raw projections", () => {
     const run = repeatedAgentRun(25);
     const artifact: ArtifactRecord = {
-      id: "telemetry-1",
+      id: "turn-1",
       runId: run.id,
       nodeKey: "review~0",
       attempt: 1,
       mediaType: "application/json",
       digest: "sha256:abc",
       size: 42,
-      path: "/workspace/.acpus/.local/runs/run_1/nodes/review~0/attempt-1/telemetry.json",
+      path: "/workspace/.acpus/.local/runs/run_1/artifacts/review~0/attempt-1/agent/turn-001.json",
     };
     const overview = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
     const target = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "target", target: "review" } });
@@ -181,6 +181,13 @@ describe("run inspection projection", () => {
     if (target?.kind !== "target" || raw?.kind !== "raw") throw new Error("expected target and raw");
     expect(target.instances).toHaveLength(25);
     expect(target.attempts).toHaveLength(25);
+    expect(target.summary.prompt).toEqual({
+      kind: "artifact",
+      artifactId: artifact.id,
+      path: artifact.path,
+      mediaType: "application/json",
+      field: "prompt",
+    });
     expect(target.artifacts).toEqual([artifact]);
     expect(isAbsolute(target.artifacts[0]!.path)).toBe(true);
     expect(JSON.stringify(target.artifacts)).not.toContain("relativePath");
@@ -325,7 +332,7 @@ describe("run inspection projection", () => {
     });
   });
 
-  it("uses terminal turn metadata as the Agent telemetry fallback", () => {
+  it("uses terminal turn summary metadata as the Agent inspection fallback", () => {
     const run = repeatedAgentRun(1);
     delete run.dynamic!.progress[0]!.context;
     delete run.dynamic!.progress[0]!.tokenUsage;
@@ -333,7 +340,7 @@ describe("run inspection projection", () => {
       turnCount: 2,
       turns: [{
         turn: 2,
-        telemetry: {
+        summary: {
           stopReason: "end_turn",
           context: { used: 4_000, size: 20_000, updatedAt: "2026-07-01T00:00:03.000Z" },
           tokenUsage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 },

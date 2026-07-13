@@ -322,6 +322,11 @@ describe("WorkflowIR diagnostics contract", () => {
           command: "acpx worker",
           agentMode: "",
         },
+        bad_trace: {
+          kind: "agent_definition",
+          use: "codex",
+          trace: "yes",
+        },
         bad_kind: {
           kind: "agent_builtin",
           use: "codex",
@@ -338,6 +343,7 @@ describe("WorkflowIR diagnostics contract", () => {
       "A002",
       "IR001",
       "IR001",
+      "A002",
       "A002",
       "A002",
       "A002",
@@ -361,6 +367,10 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
       path: "agents.bad_mode.agentMode",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "A002",
+      path: "agents.bad_trace.trace",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",

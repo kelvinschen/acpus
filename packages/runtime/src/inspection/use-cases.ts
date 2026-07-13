@@ -171,18 +171,18 @@ function omittedAgentProgressChange(
 function meaningfulAgentState(state: NormalizedAgentProgressState | undefined): string {
   if (!state) return "";
   const { updatedAt: _updatedAt, ...meaningful } = state;
-  const { lastActivityAt: _lastActivityAt, ...telemetry } = meaningful.telemetry;
-  return JSON.stringify({ ...meaningful, telemetry });
+  const { lastActivityAt: _lastActivityAt, ...agentState } = meaningful.agentState;
+  return JSON.stringify({ ...meaningful, agentState });
 }
 
 function structuralAgentState(state: NormalizedAgentProgressState): string {
-  const { context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...telemetry } = state.telemetry;
+  const { context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...agentState } = state.agentState;
   return JSON.stringify({
     attemptId: state.attemptId,
     attemptNo: state.attemptNo,
     status: state.status,
     message: state.message,
-    telemetry,
+    agentState,
   });
 }
 

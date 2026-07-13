@@ -85,6 +85,10 @@ acpus runs inspect <run-id> --target <nodeId-or-nodeKey-or-frameKey-or-attemptId
 
 # Every normalized dynamic context.
 acpus runs inspect <run-id> --all
+
+# Registry metadata and absolute paths only; does not read artifact bodies.
+acpus runs artifacts <run-id>
+acpus runs artifacts <run-id> --target <nodeId-or-nodeKey-or-frameKey-or-attemptId>
 ```
 
 Default tree keeps authored nesting and dynamic loop/fanout identity. Actionable contexts open; repeated completed contexts fold with exact counts. Awaiting Signal shows prompt, payload help, copyable signal command. Terminal view includes workflow output when present.

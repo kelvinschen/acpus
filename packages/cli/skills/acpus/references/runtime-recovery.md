@@ -108,43 +108,14 @@ An attached `--follow` view remains read-only and continues waiting through a st
 
 ## Artifact reading
 
-Prefer artifact references from `runs inspect <run-id> --target <target> --json`.
-Do not guess at run-local paths unless inspection exposes them. Typical run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is under `.acpus/.local/state/runtime.db`.
+List registry metadata and absolute paths without loading bodies:
+
+```sh
+acpus runs artifacts <run-id>
+acpus runs artifacts <run-id> --target <target>
+```
+
+Use target inspection when artifact paths need surrounding attempt state. Do not guess at run-local paths unless inspection or `runs artifacts` exposes them.
+Typical run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is under `.acpus/.local/state/runtime.db`.
 
 Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.
-
-## Agent telemetry
-
-Start with text follow:
-
-```sh
-acpus runs inspect <run-id> --follow
-```
-
-Shows authored Agent key and available activity, turn, context/token counts, and up to three tool intents. Pipe rows use `+<elapsed>`. A 30-second checkpoint means still attached, not a runtime transition.
-
-Need one Agent execution:
-
-```sh
-acpus runs inspect <run-id> --target <agent-node-or-attempt>
-```
-
-Shows matching attempts, current Agent state, stop reason, artifact refs. Artifact contents stay separate.
-
-Need exact cursors and unmerged changes:
-
-```sh
-acpus runs inspect <run-id> --follow --json |
-  jq -c '{kind, cursor, run: ((.run // .document.run) | {id, status}), changes: [.changes[]? | {sequence, progressVersion, subject, action, status}], output}'
-```
-
-Text may merge matching terminal state/progress from one update. NDJSON keeps both.
-
-Need one full authored Agent definition:
-
-```sh
-acpus runs inspect <run-id> --raw --json |
-  jq '.workflow.agents["<agent-key>"]'
-```
-
-Response repair stays within one scheduler attempt. `responseRepairMax` comes from daemon environment and is recorded in attempt metadata. `acpus runs retry` creates a new attempt.

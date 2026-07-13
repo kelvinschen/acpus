@@ -391,6 +391,9 @@ function normalizeAgentDefinition(name: string, value: unknown, diagnostics: Dia
   if (value.permissionMode !== undefined && value.permissionMode !== "approve-reads" && value.permissionMode !== "approve-all" && value.permissionMode !== "deny-all") {
     reject(`${path}.permissionMode`, `Agent '${name}' permissionMode must be approve-reads, approve-all, or deny-all.`);
   }
+  if (value.trace !== undefined && typeof value.trace !== "boolean") {
+    reject(`${path}.trace`, `Agent '${name}' trace must be a boolean.`);
+  }
   if (invalid) return undefined;
 
   if (hasUse) {

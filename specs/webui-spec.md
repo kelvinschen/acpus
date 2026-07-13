@@ -119,11 +119,15 @@
 - Artifact content MUST be shown in a conditional `Artifacts` tab for leaf nodes with artifacts, and artifact preview requests MUST be lazy-loaded from that tab. Artifact rows MUST truncate long artifact titles while exposing the full title on hover or keyboard focus, and artifact previews MUST stay inside the Inspector width without page-level horizontal overflow.
 - Artifact rows and runtime inspection responses MUST expose the absolute `path`; they MUST NOT expose the runtime store's internal relative path.
 - Artifact preview responses MUST cap the body at 128 KiB and MUST expose the preview media type through `Content-Type`.
-- Agent execution telemetry MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
-- Artifact bodies and full Agent telemetry artifacts MUST NOT be embedded in the
-  shared target inspection response. The Web server MUST load them only through
-  the existing artifact preview or active Execution-tab paths.
-- Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw telemetry JSON as the primary UI.
+- Agent execution details MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
+- Canonical turn artifact bodies MUST NOT be embedded by runtime target
+  inspection. The Web server MUST load complete tool summaries only through the
+  active Execution-tab path.
+- An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be
+  resolved by the Web server through the existing JSON artifact loader and
+  rendered as exact Markdown text. This field read MUST NOT use the 128 KiB
+  generic artifact preview limit.
+- Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw turn JSON as the primary UI.
 - Agent execution responses MUST contain only availability/reason, summary, last-active time, context-window usage, input/output/total token usage with source, streamed-output summary, tool-call count, and the recent tool-call fields rendered by the Execution tab.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
 - Prompt and structured output/error content MUST render through Markdown and JSON viewer components.
@@ -148,8 +152,9 @@
 - Tests MUST cover runtime node Overview delegation to the shared target
   projection, exact fanout/loop context forwarding, one-second non-terminal
   refresh, and terminal refresh cessation.
-- Tests MUST prove artifact previews and Agent telemetry artifact reads remain
-  lazy after adopting the shared target projection.
+- Tests MUST prove artifact previews and Agent turn artifact reads for
+  Execution remain lazy after adopting the shared target projection, while
+  Prompt loads the exact `turnArtifact.prompt` field beyond preview size limits.
 - Tests MUST cover WebUI control visibility, disabled terminal controls,
   target-first retry behavior, absence of WebUI fork control, closed request
   shapes, daemon readiness before submission, daemon intent mapping, and daemon

@@ -114,8 +114,8 @@ function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string 
   const byKey = new Map(document.items.map(item => [item.key, item]));
   for (const item of document.items) lines.push(...formatItem(item, depthFor(item, byKey), document.run.id, nowMs));
   if (document.omitted) {
-    const telemetry = document.omitted.agentTelemetry ? `  agent-telemetry=${document.omitted.agentTelemetry.tracked}` : "";
-    lines.push(`  … ${document.omitted.dynamicContexts} dynamic contexts omitted (${formatCounts(document.omitted.counts)})${telemetry}`);
+    const progress = document.omitted.agentProgress ? `  agent-progress=${document.omitted.agentProgress.tracked}` : "";
+    lines.push(`  … ${document.omitted.dynamicContexts} dynamic contexts omitted (${formatCounts(document.omitted.counts)})${progress}`);
   }
   for (const action of document.actions) {
     if (action.kind === "inspect-all") lines.push(`  More: acpus runs inspect ${document.run.id} --all`);

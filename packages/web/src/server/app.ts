@@ -121,7 +121,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       context.req.param("target"),
       inspectionContext(context.req.query("context")),
     );
-    return context.json({ ok: true, inspection });
+    return context.json({ ok: true, inspection: await loadInspectionPrompt(inspection) });
   });
 
   app.post("/api/runs/:id/controls", async (context) => {
@@ -282,6 +282,19 @@ async function readRunJsonArtifact(artifacts: RunInspectionTargetDocument["artif
   } catch {
     return undefined;
   }
+}
+
+async function loadInspectionPrompt(inspection: RunInspectionTargetDocument): Promise<RunInspectionTargetDocument> {
+  const prompt = inspection.summary.prompt;
+  if (prompt?.kind !== "artifact" || prompt.field !== "prompt") return inspection;
+  const artifact = await readRunJsonArtifact(inspection.artifacts, prompt);
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return inspection;
+  const text = (artifact as Record<string, unknown>)[prompt.field];
+  if (typeof text !== "string") return inspection;
+  return {
+    ...inspection,
+    summary: { ...inspection.summary, prompt: { ...prompt, text } },
+  };
 }
 
 async function readNodeInspection(

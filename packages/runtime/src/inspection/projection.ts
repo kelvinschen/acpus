@@ -167,7 +167,7 @@ export type NormalizedAgentProgressState = {
   status: RunInspectionStatus;
   message?: string;
   updatedAt: string;
-  telemetry: Omit<AgentInspectionState, "key" | "backend" | "model">;
+  agentState: Omit<AgentInspectionState, "key" | "backend" | "model">;
 };
 
 export function normalizedAgentProgressStates(run: RunDetails): NormalizedAgentProgressState[] {
@@ -184,7 +184,7 @@ export function normalizedAgentProgressStates(run: RunDetails): NormalizedAgentP
       status: normalizeStatus(progress.status),
       ...(progress.message ? { message: progress.message } : {}),
       updatedAt: progress.updatedAt,
-      telemetry: agentTelemetry(metadata, progress),
+      agentState: agentInspectionState(metadata, progress),
     };
   });
 }
@@ -273,7 +273,7 @@ function projectSnapshot(
   const selectedKeys = new Set(selected.map(item => item.nodeKey));
   const omittedInstances = candidates.filter(item => !selectedKeys.has(item.nodeKey));
   const omittedKeys = new Set(omittedInstances.map(item => item.nodeKey));
-  const omittedAgentTelemetry = dynamic?.progress.filter(item => item.kind === "agent" && omittedKeys.has(item.nodeKey)).length ?? 0;
+  const omittedAgentProgress = dynamic?.progress.filter(item => item.kind === "agent" && omittedKeys.has(item.nodeKey)).length ?? 0;
   const contexts = contextItems(selected, frames);
   const instanceItems = selected.map(instance => instanceItem(ir, run, instance, attempts, staticById));
   const items = orderProjectionItems([...structural, ...contexts, ...instanceItems, ...foldItems], staticById);
@@ -310,7 +310,7 @@ function projectSnapshot(
         limit: overviewContextLimit,
         dynamicContexts: hiddenCount,
         counts: statusCounts(omittedInstances.map(item => instanceStatuses.get(item.nodeKey) ?? "mixed")),
-        ...(omittedAgentTelemetry > 0 ? { agentTelemetry: { tracked: omittedAgentTelemetry } } : {}),
+        ...(omittedAgentProgress > 0 ? { agentProgress: { tracked: omittedAgentProgress } } : {}),
       },
     }),
     ...(terminalRun(run.status) && run.hooks.length > 0 ? { hooks: run.hooks } : {}),
@@ -556,7 +556,9 @@ function projectTarget(
   const node = resolvedStatic ? nodeById(ir, resolvedStatic.nodeId) : undefined;
   const metadata = latest(executionMetadata, item => item.createdAt);
   const currentProgress = latest(progress, item => item.updatedAt);
-  const promptArtifact = targetArtifacts.find(item => item.path.endsWith("prompt.md")) ?? targetArtifacts.find(item => basename(item.path).startsWith("prompt."));
+  const turnArtifact = [...targetArtifacts]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .find(item => /^turn-\d+\.json$/.test(basename(item.path)));
   const authoredInput = node?.kind === "task" ? Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, renderExpr(expr)])) : undefined;
   const runtimeInput = record(metadata?.metadata)?.input;
   const loopProgress = summarizeLoopProgress(frames);
@@ -598,7 +600,7 @@ function projectTarget(
       ...(latestInstance?.output !== undefined ? { output: latestInstance.output } : latestAttempt?.result !== undefined ? { output: latestAttempt.result } : latestFrame?.result !== undefined ? { output: latestFrame.result } : {}),
       ...(targetFailure ? { failure: targetFailure } : {}),
       ...(latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
-        : promptArtifact ? { prompt: { kind: "artifact", artifactId: promptArtifact.id, path: promptArtifact.path, ...(promptArtifact.mediaType ? { mediaType: promptArtifact.mediaType } : {}) } }
+        : turnArtifact ? { prompt: { kind: "artifact", artifactId: turnArtifact.id, path: turnArtifact.path, ...(turnArtifact.mediaType ? { mediaType: turnArtifact.mediaType } : {}), field: "prompt" } }
           : node?.kind === "agent" || node?.kind === "signal" ? { prompt: { kind: node.kind === "signal" ? "signal" : "authored", text: renderPromptExpr(node.run.prompt) } } : {}),
       ...(latestAttempt ? { latestAttempt: { attemptId: latestAttempt.attemptId, attemptNo: latestAttempt.attemptNo, status: latestAttempt.status, startedAt: latestAttempt.startedAt, ...(latestAttempt.finishedAt ? { finishedAt: latestAttempt.finishedAt } : {}), ...(latestAttempt.error !== undefined ? { error: latestAttempt.error } : {}), ...(latestAttempt.result !== undefined ? { result: latestAttempt.result } : {}) } } : {}),
       ...(loopProgress ? { loopProgress } : {}),
@@ -716,18 +718,18 @@ function agentDetails(
 ): NonNullable<RunInspectionItem["agent"]> {
   void run;
   const configured = ir.agents[node.run.agent];
-  const telemetry = agentTelemetry(metadata, progress);
+  const agentState = agentInspectionState(metadata, progress);
   return {
     key: node.run.agent,
     ...(configured?.kind === "agent_definition" ? { backend: { kind: "use" as const, name: configured.use } }
       : configured?.kind === "agent_command" ? { backend: { kind: "command" as const } }
         : {}),
     ...(configured?.model ? { model: configured.model } : {}),
-    ...telemetry,
+    ...agentState,
   };
 }
 
-function agentTelemetry(
+function agentInspectionState(
   metadata: RunExecutionMetadata | undefined,
   progress: RunNodeProgress | undefined,
 ): Omit<AgentInspectionState, "key" | "backend" | "model"> {
@@ -735,9 +737,9 @@ function agentTelemetry(
   const tools = record(progress?.tools);
   const turnsData = Array.isArray(data?.turns) ? data.turns : [];
   const lastTurn = record(turnsData.at(-1));
-  const turnTelemetry = record(lastTurn?.telemetry);
-  const metadataTools = record(turnTelemetry?.tools);
-  const metadataContext = record(turnTelemetry?.context);
+  const turnSummary = record(lastTurn?.summary);
+  const metadataTools = record(turnSummary?.tools);
+  const metadataContext = record(turnSummary?.context);
   const turns = [number(data?.turnCount), number(tools?.turn)].filter((value): value is number => value !== undefined);
   const turnCount = turns.length > 0 ? Math.max(...turns) : undefined;
   const recentTools = Array.isArray(tools?.lastCalls)
@@ -751,9 +753,9 @@ function agentTelemetry(
     })
     : [];
   const toolCallCount = number(tools?.totalToolCallCount) ?? number(metadataTools?.totalToolCallCount);
-  const stopReason = string(data?.stopReason) ?? string(turnTelemetry?.stopReason);
-  const context = inspectionContext(progress?.context) ?? inspectionContext(turnTelemetry?.context);
-  const tokenUsage = inspectionTokenUsage(progress?.tokenUsage) ?? inspectionTokenUsage(turnTelemetry?.tokenUsage);
+  const stopReason = string(data?.stopReason) ?? string(turnSummary?.stopReason);
+  const context = inspectionContext(progress?.context) ?? inspectionContext(turnSummary?.context);
+  const tokenUsage = inspectionTokenUsage(progress?.tokenUsage) ?? inspectionTokenUsage(turnSummary?.tokenUsage);
   const lastActivityAt = [progress?.updatedAt, string(metadataContext?.updatedAt), metadata?.createdAt]
     .filter((value): value is string => value !== undefined)
     .sort()

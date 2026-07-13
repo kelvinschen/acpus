@@ -146,7 +146,7 @@ describe("run inspection follow output", () => {
 
       const terminalLines = stdout.text.split("\n").filter(line => line.includes("observe  completed"));
       expect(terminalLines).toEqual([
-        "+21s  observe  completed  attempt=1  active=<1s  turn=1  tools=1[✓Bash:ls]  ctx=26.1k/200k  tok=52.1k  stop=end_turn  lifecycle complete · final telemetry",
+        "+21s  observe  completed  attempt=1  active=<1s  turn=1  tools=1[✓Bash:ls]  ctx=26.1k/200k  tok=52.1k  stop=end_turn  lifecycle complete · final progress",
       ]);
       expect(stdout.text).not.toMatch(/(?:^|\n)(?:#7|p6) /);
       expect(stdout.text.match(/"result": "ok"/g)).toHaveLength(1);
@@ -710,7 +710,7 @@ function terminalAgentFixture(): {
       action: "progress",
       status: "completed",
       attemptNo: 1,
-      message: "final telemetry",
+      message: "final progress",
     }],
   };
 }

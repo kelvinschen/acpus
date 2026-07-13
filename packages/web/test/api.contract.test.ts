@@ -208,6 +208,33 @@ describe("web API contract", () => {
       });
     });
 
+    it("loads the exact prompt field from a turn artifact without the preview size limit", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-turn-prompt-"));
+      const path = join(cwd, "turn-001.json");
+      const prompt = `${"p".repeat(130 * 1024)}PROMPT_TAIL`;
+      await writeFile(path, JSON.stringify({ prompt, response: "done", summary: {} }));
+      const artifact = {
+        id: "turn-1",
+        runId: "run_1",
+        nodeKey: "review~abc",
+        attempt: 1,
+        mediaType: "application/json",
+        digest: "sha256:test",
+        size: 1,
+        path,
+      };
+      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
+        prompt: { kind: "artifact", artifactId: artifact.id, path, mediaType: artifact.mediaType, field: "prompt" },
+        artifacts: [artifact],
+      })));
+      const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+
+      const res = await artifactApp.request("/api/runs/run_1/nodes/review~abc");
+
+      expect(res.status).toBe(200);
+      expect((await res.json() as JsonBody).inspection.summary.prompt).toMatchObject({ text: prompt, field: "prompt" });
+    });
+
     it("rejects fanout inspection context without an item index", async () => {
       const context = Buffer.from(JSON.stringify([{ nodeId: "items", kind: "fanout" }])).toString("base64url");
       const res = await app.request(`/api/runs/run_1/nodes/step_1?context=${context}`);
@@ -547,7 +574,7 @@ function inspectionErr(error: JsonBody) {
   };
 }
 
-function targetInspection(overrides: { progress?: JsonBody[] } = {}): JsonBody {
+function targetInspection(overrides: { progress?: JsonBody[]; prompt?: JsonBody; artifacts?: JsonBody[] } = {}): JsonBody {
   return {
     schemaVersion: 1,
     kind: "target",
@@ -579,7 +606,8 @@ function targetInspection(overrides: { progress?: JsonBody[] } = {}): JsonBody {
         turnCount: 1,
         tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
       },
-      artifacts: [],
+      ...(overrides.prompt ? { prompt: overrides.prompt } : {}),
+      artifacts: overrides.artifacts ?? [],
     },
     items: [],
     instances: [{
@@ -601,6 +629,6 @@ function targetInspection(overrides: { progress?: JsonBody[] } = {}): JsonBody {
     signalWaits: [],
     executionMetadata: [],
     progress: overrides.progress ?? [],
-    artifacts: [],
+    artifacts: overrides.artifacts ?? [],
   };
 }

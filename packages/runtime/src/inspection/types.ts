@@ -183,7 +183,7 @@ export type RunInspectionOmitted = {
   limit: number;
   dynamicContexts: number;
   counts: RunInspectionStatusCounts;
-  agentTelemetry?: {
+  agentProgress?: {
     tracked: number;
   };
 };
@@ -241,6 +241,7 @@ export type RunInspectionTargetSummary = {
     artifactId?: string;
     path?: string;
     mediaType?: string;
+    field?: "prompt";
   };
   latestAttempt?: {
     attemptId: string;

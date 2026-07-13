@@ -84,6 +84,17 @@ export async function getArtifact(cwd: string, runId: string, artifactId: string
   }
 }
 
+export async function listArtifacts(cwd: string, runId: string): Promise<ArtifactRecord[] | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    if (!store.getRun(runId)) return undefined;
+    return store.listArtifacts(runId);
+  } finally {
+    store.close();
+  }
+}
+
 export async function getRunVisualizationSnapshot(cwd: string, runId: string): Promise<RunVisualizationSnapshot | undefined> {
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;

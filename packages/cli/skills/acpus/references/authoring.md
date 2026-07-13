@@ -77,12 +77,21 @@ For other work:
 `eq`/`ne` use strict equality. Boolean helpers evaluate all operands; no short-circuit guarantee. Use unary, positional, or named-object `lift`:
 
 ```ts
+// lift 1
 const title = lift(input.issue, issue => issue.title.trim());
+// lift 2
 const status = lift(input.kind, input.ready,
   (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`);
+// lift 3
 const overLimit = lift(
-  { count: input.count, limit: input.limit, urgent: input.urgent },
-  ({ count, limit, urgent }) => urgent || count > limit,
+  input.count, input.limit, input.urgent,
+  (count, limit, urgent) => urgent || count > limit,
+);
+// More than 3 Expr dependencies MUST use named-object lift.
+const summary = lift(
+  { kind: input.kind, ready: input.ready, count: input.count, limit: input.limit },
+  ({ kind, ready, count, limit }) =>
+    `${kind}: ${ready ? "ready" : "blocked"} (${count}/${limit})`,
 );
 const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
 ```
@@ -90,10 +99,8 @@ const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
 `lift` callbacks must be inline synchronous arrows. Block bodies may use local declarations and control flow. Return `WorkflowData`: finite primitives, arrays, or plain objects.
 
 ```ts
-// Informal overloads of lift:
+// Informal overloads of lift (one dependency):
 lift :: Expr<A> -> (A -> B) -> Expr<B>
-lift :: Expr<A> -> Expr<B> -> ((A, B) -> C) -> Expr<C>
-lift :: Expr<A> -> Expr<B> -> Expr<C> -> ((A, B, C) -> D) -> Expr<D>
 ```
 
 Use unary `lift` for one dependency
@@ -135,7 +142,7 @@ step("require_approval").assert({
 });
 ```
 
-**Do not read `advanced-authoring.md` by default.** Read it only when the requirement needs reusable/prebuilt Tasks, third-party imports, artifacts, custom Task cwd/env/commands/timeouts, or cancellation handling.
+**Do not read `advanced-authoring.md` by default.** Read it only when the requirement needs one of its gated topics.
 
 ### Composites And Control
 

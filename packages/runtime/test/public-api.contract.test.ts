@@ -18,6 +18,7 @@ describe("@acpus/runtime public API", () => {
       "getRuntimeHealth",
       "globalHooksPath",
       "hookEvents",
+      "listArtifacts",
       "listRuns",
       "loadHooksConfigScope",
       "loadHooksConfigScopes",

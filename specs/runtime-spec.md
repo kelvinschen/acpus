@@ -149,6 +149,10 @@
   `WorkflowIR`, and artifact registry records without replacing the frozen IR
   with a lossy static-node summary.
 - Public artifact registry records and inspection prompt artifact references MUST expose only `path`, and that path MUST be absolute. SQLite rows and process registration messages MAY retain run-relative paths as an internal storage coordinate.
+- `listArtifacts(cwd, runId)` MUST return all public artifact registry records
+  with absolute paths, return an empty array for an existing run with no
+  artifacts, return `undefined` for a missing run or store, and MUST NOT read
+  artifact file contents.
 - Inspection MUST expose Agent identity by the authored key stored in
   `node.run.agent`, regardless of an effective run override. Compact Agent
   state MUST describe an effective `use` backend by name or a `command`
@@ -189,7 +193,7 @@
 - Node progress snapshots MUST be latest-state observation data and MUST NOT be
   scheduler events or scheduler transition inputs.
 - Starting a new attempt for a node MUST clear any previous progress snapshot for
-  that node so inspection never shows stale telemetry while the new attempt is
+  that node so inspection never shows stale Agent progress while the new attempt is
   waiting to emit progress.
 - Node progress snapshots MUST use typed channels for status/message, bounded
   output tail, context window, token usage, and tool-call summary where those
@@ -296,8 +300,8 @@
 - Agent progress snapshots MUST be derived from normalized executor progress.
   Runtime MUST NOT parse raw ACP JSON to produce progress.
 - Agent progress output MUST be bounded to a recent tail in SQLite. Full final
-  prompt, response, stderr, and telemetry MUST remain artifact-backed.
-- Agent progress writes SHOULD be throttled by time and meaningful telemetry or
+  turn data and non-empty stderr MUST remain artifact-backed.
+- Agent progress writes SHOULD be throttled by time and meaningful summary or
   tool-call changes so long-running agents remain observable without writing on
   every output chunk.
 - Agent progress `updatedAt` MUST represent the last persisted agent stream
@@ -327,6 +331,9 @@
   identity-tied fields `model` and `agentMode` MUST be cleared unless the same
   override supplies replacements. `permissionMode` MUST remain inherited across
   identity changes.
+- Agent overrides MUST NOT accept `trace`. Identity changes through `use` or
+  `command` MUST preserve the declared top-level Agent definition's `trace`
+  value.
 - Explicit agent `sessionKey` values MUST render to non-empty strings and act as
   run-local logical session keys. Runtime MUST include run id in the final acpx
   session identity when present. When no explicit key is declared, runtime MUST
@@ -381,15 +388,28 @@
 - Pause/resume of a requeued agent node MUST reuse the same acpx session
   identity for the dynamic node key and MUST send the fixed continuation prompt
   without appending the schema section for the restarted attempt's initial turn.
-- Each scheduler-backed acpx turn MUST write independent prompt, response,
-  stderr when present, and telemetry artifacts under the scheduler attempt's
-  run-local artifact path and register those files in SQLite.
-- Agent telemetry artifacts MUST persist the full normalized telemetry returned
-  by `@acpus/agent-executor` without embedding full prompt or response text.
-  Turn metadata MUST retain references to the independent prompt and response
-  artifacts when those artifacts are present.
+- Every scheduler-backed acpx turn MUST write and register
+  `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.json` with media type
+  `application/json`. This canonical turn artifact MUST use schema version 1
+  and contain run/node/attempt/turn/Agent/session identity, executor status,
+  the exact sent prompt, collected response, complete `AgentTurnSummary`,
+  executor-provided `AgentTurnTiming`, and structured failure or cancellation
+  message when present.
+- Turn timing MUST measure one `executeAgentTurn` call, including session
+  ensure, optional mode setup, prompt execution, cancellation settlement, and
+  result processing. It MUST exclude artifact writes, output conformance,
+  repair prompt construction, and delay between repair turns; every repair
+  turn MUST retain its own timing.
+- Non-empty stderr MUST remain independent at `turn-<NNN>.stderr.log`; empty
+  stderr MUST create no stderr artifact.
+- Runtime MUST export the canonical turn artifact shape as
+  `AgentTurnArtifact`.
+- The summary inside the canonical turn artifact MUST be an always-on
+  operational materialized view. It MUST NOT contain message/thought content or
+  tool output. Opt-in trace is the normalized fine-grained behavior event log;
+  independently enabled raw ACP debug is the exact wire record.
 - Agent turn artifact references MUST retain the artifact id and media type when present, and MUST NOT duplicate an artifact filesystem path.
-- Runtime MUST NOT parse raw ACP JSON to derive telemetry. ACP wire-shape
+- Runtime MUST NOT parse raw ACP JSON to derive the turn summary. ACP wire-shape
   interpretation belongs to `@acpus/agent-executor`.
 - When host environment variable `ACPUS_AGENT_RAW_ACP_DEBUG` is exactly `1`,
   scheduler-backed agent turns MUST request raw debug capture from the executor
@@ -400,21 +420,48 @@
 - The daemon MUST capture the raw ACP debug policy once at startup. Every turn
   in an Agent attempt MUST use that captured value, and caller-shell changes
   MUST require a daemon restart.
-- Each scheduler-backed schema-backed acpx turn that parses JSON from the
-  agent response MUST write the raw parsed value as a diagnostic artifact and
-  expose that artifact reference in turn metadata. Raw parsed output MUST NOT
-  replace the schema-projected workflow-visible node output.
+- When the effective top-level Agent definition has `trace: true`, every Agent
+  turn, including response-repair and failed turns, MUST request normalized
+  trace capture and write
+  `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.trace.jsonl` with media type
+  `application/x-ndjson`. Absent or false `trace` MUST create no trace artifact.
+- Persisted trace MUST use Acpus schema version 1. `turn_start` MUST be first
+  with sequence 0 and run/node/attempt/turn/Agent/session/cwd identity;
+  executor events MUST follow in arrival order; `turn_end` MUST be last.
+  `elapsedMs` MUST remain monotonic and `observedAt` MUST be the event-arrival
+  UTC time. Prompt content MUST remain in the turn artifact rather than being
+  duplicated into trace. Client-to-Agent protocol and control frames excluded
+  by the executor MUST NOT reappear in the persisted trace even when acpx emits
+  them on stdout; exact echoed frames and prompt wire content belong only in an
+  independently enabled raw ACP debug artifact.
+- Trace capture, serialization, and writing MUST be best effort. Success MUST
+  add `traceArtifact` to turn metadata. Failure MUST add
+  `traceCaptureError: string` and MUST NOT change Agent turn or node outcome.
+  The required turn artifact write retains required-write failure semantics.
+  Raw ACP debug capture and normalized trace capture MUST be independent.
+- Runtime MUST NOT write `raw-parsed-output` artifacts. After a schema-backed
+  turn reaches output conformance, turn metadata MUST instead contain
+  `outputProcessing`: empty and unrecoverable recovery are rejected; direct,
+  extracted, and repaired recovery record accepted/rejected conformance plus
+  `projectionChanged`.
+- `projectionChanged` MUST use structural equality between the recovered JSON
+  value and schema projection and MUST ignore object key order. Schema-less
+  turns and backend failures before conformance MUST omit `outputProcessing`.
 - Each scheduler-backed agent attempt MUST write structured execution metadata
   that records the turn list, artifact references, status, encoded acpx session
   name, and rendered explicit `sessionKey` when one was declared. Scheduler
   reducers MUST NOT depend on those artifact contents or metadata rows for
   attempt state transitions.
-- Turn metadata MUST include a compact telemetry summary containing event
+- Agent attempt metadata MUST NOT embed prompt or response content. The
+  canonical turn artifact is the only persisted Agent prompt/response record.
+- Turn metadata MUST include a compact summary projection containing event
   count, stop reason when present, context window when present, token usage
   when present, tool call count, cwd when present, and acpx record id when
-  present. Turn metadata MUST NOT embed full prompt/response IO or full tool
-  parameter previews because dedicated prompt, response, and telemetry
-  artifacts hold those details.
+  present. It MUST retain `turnArtifact` and MUST NOT embed full prompt,
+  response, timing, tool call lists, or tool parameter previews.
+- Target inspection MUST describe an Agent prompt through the canonical turn
+  artifact reference with `field: "prompt"`; runtime inspection MUST NOT read
+  or inline the artifact body.
 
 ### Controls, Daemon, Fork, And Signal
 
@@ -499,8 +546,8 @@
   resume, retry, signal, or fork state changes.
 - Pause MUST best-effort cancel started scheduler-visible attempts and requeue eligible dynamic work for a later resume.
 - Pausing an active scheduler-backed agent turn MUST abort the executor signal
-  and MUST preserve available prompt, response, stderr, telemetry artifacts,
-  and cancelled turn metadata.
+  and MUST preserve the available canonical turn artifact, non-empty stderr,
+  optional trace/raw-debug artifacts, and cancelled turn metadata.
 - Resume MUST clear the durable pause gate and re-drive eligible scheduler work.
 - Resume on an already resumed run MUST succeed without writing
   duplicate control events.
@@ -630,7 +677,11 @@
 - `getRun` MUST expose runtime execution metadata rows, including agent attempt
   turn metadata, when such rows exist for a run.
 - The runtime MUST provide a visualization overlay helper that shows authored `ExprIR` in static detail and combines it with persisted effective group, signal, and attempt values in runtime detail without adding layout-specific state.
-- Agent and Task hook contexts MUST read rendered prompt and Task input from persisted attempt execution metadata and MUST NOT re-evaluate authored expressions. Signal-awaiting hook contexts MUST read the persisted rendered prompt from the signal event or projection.
+- Agent hook contexts MUST read the prompt from the canonical first-turn
+  artifact, and Task hook contexts MUST read Task input from persisted attempt
+  execution metadata. They MUST NOT re-evaluate authored expressions.
+  Signal-awaiting hook contexts MUST read the persisted rendered prompt from
+  the signal event or projection.
 - Fork semantic signatures MUST include complete runtime configuration `ExprIR` so changing a configuration expression invalidates safe reuse.
 - Read-only inspection MUST NOT create runtime state when no runtime store exists.
 - `followRunInspection(cwd, query)` MUST expose an async iterable of typed
@@ -641,7 +692,7 @@
   Multiple transitions between polling intervals and repeated statuses from a
   new attempt MUST remain observable in event-sequence order.
 - Follow MUST use progress version independently from scheduler event sequence
-  for latest-state agent telemetry and MUST suppress emissions for clock-only
+  for latest-state Agent progress and MUST suppress emissions for clock-only
   or unchanged projection data.
 - Follow progress comparison MUST be per Agent. An Agent MUST emit immediately
   for its first state and for attempt, turn, recent-tool command/status,
@@ -767,18 +818,22 @@
   manual control-plane retry continuation,
   pause/resume continuation, and separation between scheduler-visible attempts
   and agent response repair turns.
-- Tests MUST cover scheduler-backed agent turn prompt, response, stderr, and
-  telemetry artifacts, including normalized context, token, and tool telemetry,
-  absence of duplicated prompt/response text in telemetry, prompt/response
-  artifact references, plus `getRun` execution metadata that exposes turn
-  history, session context, and compact telemetry summaries.
+- Tests MUST cover canonical scheduler-backed `turn.json` artifacts for repair,
+  failed, cancelled, and timed-out turns, including exact prompt/response,
+  normalized context/token usage, complete folded tool calls, structured
+  failure, and compact execution-metadata summary projections. Registry,
+  metadata, and filesystem assertions MUST prove that each turn has one
+  required canonical turn artifact.
 - Tests MUST cover the `ACPUS_AGENT_RAW_ACP_DEBUG=1` diagnostic switch and the
   default absence of raw ACP debug artifacts.
 - Tests MUST prove that response-repair and raw-debug host policies are captured
   before Agent execution, remain fixed across repair turns and scheduler drives,
   and cannot be changed by authored Agent environments.
-- Tests MUST cover raw parsed schema-backed agent output artifacts and prove
-  they remain diagnostic rather than workflow-visible output.
+- Tests MUST cover schema-backed Agent output processing metadata and prove
+  that the registry, metadata, and filesystem contain no raw-parsed-output
+  artifacts. Tests MUST cover default trace absence, one trace per repair turn,
+  partial failed-turn traces, raw-debug independence, and best-effort trace
+  write failure without node failure.
 - Tests MUST cover pause, resume, run retry, dynamic node retry, cancel, signal targeting and idempotency, typed control effects, fork child-centric result identity, targeted fork seed planning, unsafe targeted fork reuse, targeted fork missing/dynamic targets, static composite target subtree boundaries, direct daemon control application, and fork artifact reachability.
 - Tests MUST cover missing-store and missing-run deletion as no-ops and active-run deletion as the only exceptional delete case.
 - Tests MUST cover run-scoped same-control scheduler intent replay,

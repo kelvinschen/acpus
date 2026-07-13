@@ -28,6 +28,9 @@
 - Agent definition `use` and `command` MUST be mutually exclusive.
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
 - Named and custom command agent definitions MAY declare `model`.
+- Named and custom command agent definitions MAY declare `trace?: boolean`.
+  `trace` MUST be accepted only on the top-level Agent definition, MUST default
+  to disabled when absent or false, and MUST NOT be accepted on Agent nodes.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
 - Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
 - When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`.
@@ -62,7 +65,7 @@
 - Agent, Task, and Signal authoring specs MUST use flat kind-specific objects. Lowering MUST group their execution fields under the frozen node's `run` field. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
-- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `agentMode?: string`.
+- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"`, `agentMode?: string`, and `trace?: boolean`.
 - Signal nodes MUST use `step("id").signal({ prompt, outputSchema?, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ message? }`.
 - Signal `onTimeout` MUST NOT be present unless `timeout` is present.
@@ -133,6 +136,8 @@
 - Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
 - `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
+- `AgentDefinitionIR` MUST retain optional boolean `trace` in IR version 5.
+  Agent node and Agent run IR MUST remain closed shapes without a `trace` field.
 - `childScopes(node)` MUST return every direct child scope of a composite node and no child scopes for leaf nodes. If branches MUST be ordered `then` before `else`; switch cases MUST retain their authored index order before `default`; parallel branches MUST retain their authored key order; fanout and loop bodies MUST each expose their body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.

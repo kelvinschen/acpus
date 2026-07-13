@@ -35,13 +35,12 @@ export type NodeExecutionInspection = {
     status?: string;
     durationMs?: number;
     inputPreview?: string;
-    outputPreview?: string;
   }>;
 };
 
 export async function inspectNodeExecution(
   inspection: RunInspectionTargetDocument,
-  loadTelemetryArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
+  loadTurnArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
 ): Promise<NodeExecutionInspection> {
   const progress = latestAgentProgress(inspection);
   const compact = inspection.summary.agent;
@@ -54,7 +53,7 @@ export async function inspectNodeExecution(
   const turns = agentTurns(metadata);
   const progressToolCalls = toolCallsFromProgress(progress);
   const metadataToolCalls = turns.length > 0
-    ? (await Promise.all(turns.map(turn => toolCallsForTurn(turn, loadTelemetryArtifact)))).flat().slice(-3)
+    ? (await Promise.all(turns.map(turn => toolCallsForTurn(turn, loadTurnArtifact)))).flat().slice(-3)
     : undefined;
   const lastToolCalls = metadataToolCalls ?? progressToolCalls ?? toolCallsFromCompact(compact);
   const contextWindow = contextWindowFromProgress(progress) ?? latestContextWindow(turns) ?? contextWindowFromCompact(compact);
@@ -140,7 +139,7 @@ function contextWindowFromCompact(
 
 function latestContextWindow(turns: Record<string, unknown>[]): NodeExecutionInspection["contextWindow"] | undefined {
   const context = [...turns].reverse()
-    .map(turn => metadataRecord(metadataRecord(turn.telemetry)?.context))
+    .map(turn => metadataRecord(metadataRecord(turn.summary)?.context))
     .find(Boolean);
   if (!context) return undefined;
   return contextWindowFromRecord(context);
@@ -172,7 +171,7 @@ function aggregateTokenUsage(turns: Record<string, unknown>[]): NodeExecutionIns
   let totalTokens = 0;
   let hasUsage = false;
   for (const turn of turns) {
-    const usage = metadataRecord(metadataRecord(turn.telemetry)?.tokenUsage);
+    const usage = metadataRecord(metadataRecord(turn.summary)?.tokenUsage);
     if (!usage) continue;
     hasUsage = true;
     if (typeof usage.source === "string") source = usage.source;
@@ -221,7 +220,7 @@ function totalToolCallCount(turns: Record<string, unknown>[]): number | undefine
   let total = 0;
   let hasTools = false;
   for (const turn of turns) {
-    const count = numberField(metadataRecord(metadataRecord(turn.telemetry)?.tools)?.totalToolCallCount);
+    const count = numberField(metadataRecord(metadataRecord(turn.summary)?.tools)?.totalToolCallCount);
     if (count === undefined) continue;
     hasTools = true;
     total += count;
@@ -243,11 +242,11 @@ function toolCallsFromProgress(progress: NodeProgress | undefined): NodeExecutio
 
 async function toolCallsForTurn(
   turn: Record<string, unknown>,
-  loadTelemetryArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
+  loadTurnArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
 ): Promise<NodeExecutionInspection["lastToolCalls"]> {
   const turnNo = numberField(turn.turn) ?? 0;
-  const telemetry = metadataRecord(await loadTelemetryArtifact(turn.telemetryArtifact));
-  const calls = metadataRecord(metadataRecord(telemetry?.telemetry)?.tools)?.calls;
+  const turnArtifact = metadataRecord(await loadTurnArtifact(turn.turnArtifact));
+  const calls = metadataRecord(metadataRecord(turnArtifact?.summary)?.tools)?.calls;
   if (!Array.isArray(calls)) return [];
   return calls.flatMap(call => {
     const record = metadataRecord(call);
@@ -263,7 +262,6 @@ function toolCallFromRecord(record: Record<string, unknown>, turn: number, previ
   const toolName = stringField(record.toolName);
   const status = stringField(record.status);
   const inputPreview = previewMode === "progress" ? stringField(record.inputPreview) : previewField(record.input);
-  const outputPreview = previewMode === "artifact" ? previewField(record.output) : undefined;
   const duration = durationMs(startedAt, completedAt ?? "");
   return {
     turn,
@@ -272,7 +270,6 @@ function toolCallFromRecord(record: Record<string, unknown>, turn: number, previ
     ...(status ? { status } : {}),
     ...(duration === undefined ? {} : { durationMs: duration }),
     ...(inputPreview ? { inputPreview } : {}),
-    ...(outputPreview ? { outputPreview } : {}),
   };
 }
 

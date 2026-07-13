@@ -125,7 +125,7 @@ describe("Inspector presence", () => {
 });
 
 describe("Inspector primitives", () => {
-  it("renders normalized compact Agent state before full execution telemetry is loaded", async () => {
+  it("renders normalized compact Agent state before full execution details is loaded", async () => {
     vi.setSystemTime(new Date("2026-07-01T00:00:06.000Z"));
     await render(React.createElement(AgentOverview, {
       agent: {

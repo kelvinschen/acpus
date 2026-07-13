@@ -3545,6 +3545,7 @@ function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverri
     model: override.model ?? (identityChanged ? undefined : definition.model),
     permissionMode: override.permissionMode ?? definition.permissionMode,
     agentMode: override.agentMode ?? (identityChanged ? undefined : definition.agentMode),
+    trace: definition.trace,
     cwd: override.cwd ?? definition.cwd,
     env: override.env ?? definition.env,
   };

@@ -105,7 +105,7 @@ describe("executeAgentTurn", () => {
   it("ensures the session before prompting and extracts assistant text", async () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
-    await expect(executeAgentTurn({
+    const result = await executeAgentTurn({
       agent: { kind: "named", name: "codex" },
       prompt: "review",
       cwd: "/repo",
@@ -114,11 +114,19 @@ describe("executeAgentTurn", () => {
       permissionMode: "approve-all",
       model: "gpt-5.4",
       timeoutMs: 30_000,
-    })).resolves.toMatchObject({
+    });
+    expect(result).toMatchObject({
       status: "completed",
       responseText: "ok",
-      telemetry: { eventCount: 2, stopReason: "end_turn" },
+      summary: { eventCount: 2, stopReason: "end_turn" },
+      timing: {
+        startedAt: expect.any(String),
+        finishedAt: expect.any(String),
+        elapsedMs: expect.any(Number),
+      },
     });
+    expect(result).not.toHaveProperty("trace");
+    expect(result.summary).not.toHaveProperty("timing");
 
     expect(fake.state.calls.map(call => call.command)).toEqual([process.execPath, process.execPath]);
     expect(fake.state.calls.map(call => call.options.cwd)).toEqual(["/repo", "/repo"]);
@@ -170,6 +178,7 @@ describe("executeAgentTurn", () => {
     })).resolves.toMatchObject({
       status: "failed",
       failure: { kind: "config", message: "Agent turn timeoutMs must be a non-negative safe integer." },
+      timing: { elapsedMs: expect.any(Number) },
     });
     expect(fake.spawn).not.toHaveBeenCalled();
   });
@@ -185,9 +194,11 @@ describe("executeAgentTurn", () => {
       sessionName: "run-node",
       permissionMode: "approve-all",
       timeoutMs: 0,
+      captureTrace: true,
     })).resolves.toMatchObject({
       status: "failed",
       failure: { kind: "timeout", message: "Agent turn timed out after 0ms." },
+      trace: { events: [expect.objectContaining({ type: "turn_end", status: "timed_out" })] },
     });
     expect(fake.spawn).not.toHaveBeenCalled();
   });
@@ -417,7 +428,16 @@ describe("executeAgentTurn", () => {
       vi.setSystemTime(new Date("2026-06-30T23:59:00.000Z"));
       await vi.advanceTimersByTimeAsync(8);
 
-      await expect(result).resolves.toMatchObject({ status: "failed", failure: { kind: "timeout" } });
+      const outcome = await result;
+      expect(outcome).toMatchObject({
+        status: "failed",
+        failure: { kind: "timeout" },
+        timing: {
+          startedAt: "2026-07-01T00:00:00.000Z",
+          finishedAt: "2026-06-30T23:59:00.008Z",
+          elapsedMs: 10,
+        },
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -563,14 +583,16 @@ describe("executeAgentTurn", () => {
   it("returns raw acpx stdout only when raw debug capture is requested", async () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
-    await expect(executeAgentTurn({
+    const defaultResult = await executeAgentTurn({
       agent: { kind: "named", name: "codex" },
       prompt: "review",
       cwd: "/repo",
       env: {},
       sessionName: "session",
       permissionMode: "approve-all",
-    })).resolves.not.toHaveProperty("rawDebug");
+    });
+    expect(defaultResult).not.toHaveProperty("rawDebug");
+    expect(defaultResult).not.toHaveProperty("trace");
 
     await expect(executeAgentTurn({
       agent: { kind: "named", name: "codex" },
@@ -585,6 +607,166 @@ describe("executeAgentTurn", () => {
         stdout: expect.stringContaining("\"sessionUpdate\":\"agent_message_chunk\""),
       },
     });
+  });
+
+  it("captures ordered normalized trace events with full provider tool payloads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+    try {
+      fake.state.scenarios.push(
+        fake.scenario.stdout("{\"acpxRecordId\":\"record-1\"}\n"),
+        child => {
+          const emit = (event: unknown) => {
+            child.stdout.emit("data", `${JSON.stringify(event)}\n`);
+            vi.advanceTimersByTime(5);
+          };
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tool-1", title: "Read", kind: "read", status: "running", rawInput: { path: "README.md" }, rawOutput: { buffered: true }, content: [{ type: "text", text: "starting" }], locations: [{ path: "README.md", line: 1 }], _meta: { claudeCode: { toolName: "Read" } } } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tool-1", status: "completed", rawOutput: { text: "contents" }, content: [{ type: "text", text: "contents" }] } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used: 10, size: 100, _meta: { usage: { input_tokens: 8, output_tokens: 2 } } } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "plan", entries: [{ content: "inspect", status: "completed" }] } } });
+          emit({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "future_update", value: { keep: true } } } });
+          emit({ jsonrpc: "2.0", id: "req-1", result: { stopReason: "end_turn", usage: { inputTokens: 8, outputTokens: 2 } } });
+          child.emit("close", 0);
+        },
+      );
+      const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+      const result = await executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        captureTrace: true,
+      });
+
+      expect(result).toMatchObject({ status: "completed", responseText: "answer" });
+      expect(result.trace?.events.map(event => event.type)).toEqual([
+        "message", "message", "tool", "tool", "usage", "plan", "unknown", "usage", "turn_end",
+      ]);
+      expect(result.trace?.events.map(event => event.sequence)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(result.trace?.events[0]).toMatchObject({ type: "message", channel: "thought", content: { type: "text", text: "thinking" } });
+      expect(result.trace?.events[2]).toMatchObject({
+        type: "tool",
+        action: "call",
+        toolCallId: "tool-1",
+        toolName: "Read",
+        rawInput: { path: "README.md" },
+        rawOutput: { buffered: true },
+        content: [{ type: "text", text: "starting" }],
+        locations: [{ path: "README.md", line: 1 }],
+      });
+      expect(result.trace?.events[3]).toMatchObject({ type: "tool", action: "update", rawOutput: { text: "contents" } });
+      expect(result.trace?.events[4]).toMatchObject({ type: "usage", context: { used: 10, size: 100 }, tokenUsage: { input_tokens: 8, output_tokens: 2 } });
+      expect(result.trace?.events[5]).toMatchObject({ type: "plan", value: [{ content: "inspect", status: "completed" }] });
+      expect(result.trace?.events[6]).toMatchObject({ type: "unknown", tag: "future_update", value: expect.any(Object) });
+      expect(result.trace?.events.at(-1)).toMatchObject({ type: "turn_end", status: "completed", stopReason: "end_turn" });
+      expect(result.trace).toMatchObject({
+        startedAt: result.timing.startedAt,
+        elapsedMs: result.timing.elapsedMs,
+      });
+      expect(result.trace?.events.at(-1)).toMatchObject({
+        observedAt: result.timing.finishedAt,
+        elapsedMs: result.timing.elapsedMs,
+      });
+      expect(result.summary.tools.calls[0]).toMatchObject({
+        startedAt: "2026-07-01T00:00:00.010Z",
+        updatedAt: "2026-07-01T00:00:00.015Z",
+        completedAt: "2026-07-01T00:00:00.015Z",
+      });
+      expect(result.trace?.events.every((event, index, events) => index === 0 || event.elapsedMs >= events[index - 1]!.elapsedMs)).toBe(true);
+      expect(new Set(result.trace?.events.map(event => event.observedAt)).size).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("excludes client protocol frames from trace while retaining raw wire and provider operations", async () => {
+    const prompt = "run pwd and return TRACE_FILTER_OK";
+    const excludedMethods = [
+      "initialize",
+      "authenticate",
+      "logout",
+      "$/cancel_request",
+      "mcp/message",
+      "providers/list",
+      "nes/complete",
+      "document/open",
+      "session/new",
+      "session/load",
+      "session/prompt",
+      "session/cancel",
+      "session/set_mode",
+      "session/set_config_option",
+      "session/set_model",
+      "session/status",
+    ];
+    const retainedMethods = [
+      "session/request_permission",
+      "fs/read_text_file",
+      "terminal/create",
+      "elicitation/create",
+      "mcp/connect",
+      "mcp/disconnect",
+      "extension/future_operation",
+    ];
+    const events = [
+      ...excludedMethods.map(method => ({
+        jsonrpc: "2.0",
+        method,
+        params: method === "session/prompt" ? { prompt } : { marker: method },
+      })),
+      ...retainedMethods.map(method => ({ jsonrpc: "2.0", method, params: { marker: method } })),
+      { jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "future_update", value: { keep: true } } } },
+      { jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "TRACE_FILTER_OK" } } } },
+      { jsonrpc: "2.0", id: "req-1", result: { stopReason: "end_turn" } },
+    ];
+    fake.state.scenarios.push(
+      fake.scenario.stdout("{\"acpxRecordId\":\"record-1\"}\n"),
+      fake.scenario.stdout(events.map(event => JSON.stringify(event)).join("\n") + "\n"),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    const result = await executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt,
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      captureRawDebug: true,
+      captureTrace: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      responseText: "TRACE_FILTER_OK",
+      summary: { eventCount: events.length, stopReason: "end_turn" },
+    });
+    expect(result.rawDebug?.stdout).toContain('"method":"session/prompt"');
+    expect(result.rawDebug?.stdout).toContain(prompt);
+    expect(JSON.stringify(result.trace)).not.toContain(prompt);
+    const unknownValues = result.trace?.events
+      .filter(event => event.type === "unknown")
+      .map(event => event.value) ?? [];
+    expect(unknownValues.map(value => (value as { method?: string }).method)).toEqual([
+      ...retainedMethods,
+      "session/update",
+    ]);
+    expect(result.trace?.events.map(event => event.type)).toEqual([
+      ...retainedMethods.map(() => "unknown"),
+      "unknown",
+      "message",
+      "turn_end",
+    ]);
+    expect(result.trace?.events.map(event => event.sequence)).toEqual(
+      result.trace?.events.map((_, index) => index),
+    );
+    expect(result.trace?.events.at(-1)).toMatchObject({ type: "turn_end", status: "completed", stopReason: "end_turn" });
+    for (const method of excludedMethods) expect(JSON.stringify(result.trace)).not.toContain(`\"method\":\"${method}\"`);
   });
 
   it("captures normalized facts without duplicating prompt or response text", async () => {
@@ -614,7 +796,7 @@ describe("executeAgentTurn", () => {
       expect(result).toMatchObject({
         status: "completed",
         responseText: "hello",
-        telemetry: {
+        summary: {
           eventCount: 4,
           stopReason: "end_turn",
           context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
@@ -632,8 +814,8 @@ describe("executeAgentTurn", () => {
           acpxRecordId: "record-1",
         },
       });
-      expect(JSON.stringify(result.telemetry)).not.toContain("review");
-      expect(JSON.stringify(result.telemetry)).not.toContain("hello");
+      expect(JSON.stringify(result.summary)).not.toContain("review");
+      expect(JSON.stringify(result.summary)).not.toContain("hello");
     } finally {
       vi.useRealTimers();
     }
@@ -669,11 +851,11 @@ describe("executeAgentTurn", () => {
       });
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(Object.keys(progress[0] as Record<string, unknown>).sort()).toEqual(["responseText", "telemetry", "updatedAt"].sort());
+      expect(Object.keys(progress[0] as Record<string, unknown>).sort()).toEqual(["responseText", "summary", "updatedAt"].sort());
       expect(progress).toEqual([
         {
           responseText: "",
-          telemetry: {
+          summary: {
             eventCount: 1,
             context: { used: 80, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
             tokenUsage: {
@@ -691,11 +873,11 @@ describe("executeAgentTurn", () => {
           },
           updatedAt: "2026-07-01T00:00:00.000Z",
         },
-        expect.objectContaining({ responseText: "hel", telemetry: expect.objectContaining({ eventCount: 2 }) }),
-        expect.objectContaining({ responseText: "hello", telemetry: expect.objectContaining({ eventCount: 3 }) }),
+        expect.objectContaining({ responseText: "hel", summary: expect.objectContaining({ eventCount: 2 }) }),
+        expect.objectContaining({ responseText: "hello", summary: expect.objectContaining({ eventCount: 3 }) }),
         expect.objectContaining({
           responseText: "hello",
-          telemetry: expect.objectContaining({
+          summary: expect.objectContaining({
             eventCount: 4,
             tools: {
               totalToolCallCount: 1,
@@ -715,7 +897,7 @@ describe("executeAgentTurn", () => {
       await expect(resultPromise).resolves.toMatchObject({
         status: "completed",
         responseText: "hello",
-        telemetry: {
+        summary: {
           eventCount: 4,
           context: { used: 80, size: 200 },
           tokenUsage: { source: "usage_update", inputTokens: 10, outputTokens: 2, totalTokens: 24 },
@@ -754,7 +936,7 @@ describe("executeAgentTurn", () => {
 
       expect(progress).toEqual([{
         responseText: "",
-        telemetry: expect.objectContaining({
+        summary: expect.objectContaining({
           eventCount: 1,
           tools: { totalToolCallCount: 0, calls: [] },
         }),
@@ -765,7 +947,7 @@ describe("executeAgentTurn", () => {
       await expect(result).resolves.toMatchObject({
         status: "completed",
         responseText: "",
-        telemetry: { eventCount: 1 },
+        summary: { eventCount: 1 },
       });
     } finally {
       vi.useRealTimers();
@@ -802,7 +984,7 @@ describe("executeAgentTurn", () => {
       expect(progress).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
 
-      expect(progress).toMatchObject([{ responseText: "ok", telemetry: { eventCount: 1 } }]);
+      expect(progress).toMatchObject([{ responseText: "ok", summary: { eventCount: 1 } }]);
       await expect(result).resolves.toMatchObject({ status: "completed", responseText: "ok" });
     } finally {
       vi.useRealTimers();
@@ -918,7 +1100,7 @@ describe("executeAgentTurn", () => {
 
       expect(result).toMatchObject({
         status: "completed",
-        telemetry: {
+        summary: {
           tools: {
             totalToolCallCount: 1,
             calls: [{
@@ -940,7 +1122,7 @@ describe("executeAgentTurn", () => {
           },
         },
       });
-      expect(JSON.stringify(result.telemetry.tools.calls[0])).not.toContain("secret");
+      expect(JSON.stringify(result.summary.tools.calls[0])).not.toContain("secret");
     } finally {
       vi.useRealTimers();
     }
@@ -971,7 +1153,7 @@ describe("executeAgentTurn", () => {
       permissionMode: "approve-all",
     });
 
-    expect(result.telemetry.tools).toMatchObject({
+    expect(result.summary.tools).toMatchObject({
       totalToolCallCount: 1,
       calls: [{
         input: {
@@ -982,7 +1164,7 @@ describe("executeAgentTurn", () => {
         },
       }],
     });
-    expect(result.telemetry.tools.calls[0]!.input!.preview).toContain("[acpus truncated 9002 bytes]");
+    expect(result.summary.tools.calls[0]!.input!.preview).toContain("[acpus truncated 9002 bytes]");
   });
 
   it("uses acpx --agent for custom command agents and maps permission modes", async () => {
@@ -1057,6 +1239,7 @@ describe("executeAgentTurn", () => {
     })).resolves.toMatchObject({
       status: "failed",
       failure: { kind: "spawn", message: "spawn failed" },
+      timing: { elapsedMs: expect.any(Number) },
     });
   });
 
@@ -1180,14 +1363,17 @@ describe("executeAgentTurn", () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.exit(2, "agent crashed"));
-    await expect(executeAgentTurn({
+    const result = await executeAgentTurn({
       agent: { kind: "named", name: "codex" },
       prompt: "review",
       cwd: "/repo",
       env: {},
       sessionName: "session",
       permissionMode: "approve-all",
-    })).resolves.toMatchObject({ status: "failed", failure: { kind: "provider_exit", message: "agent crashed" } });
+      captureTrace: true,
+    });
+    expect(result).toMatchObject({ status: "failed", failure: { kind: "provider_exit", message: "agent crashed" } });
+    expect(result.trace?.events.at(-1)).toMatchObject({ type: "turn_end", status: "failed", message: "agent crashed" });
   });
 
   it("does not infer backend failure kinds from authentication or model wording", async () => {
@@ -1234,7 +1420,7 @@ describe("executeAgentTurn", () => {
         failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
         responseText: "partial",
       });
-      expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);
+      expect(progress).toMatchObject([{ responseText: "partial", summary: { eventCount: 1 } }]);
     } finally {
       vi.useRealTimers();
     }
@@ -1250,7 +1436,7 @@ describe("executeAgentTurn", () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
     const progress: unknown[] = [];
 
-    await expect(executeAgentTurn({
+    const result = await executeAgentTurn({
       agent: { kind: "named", name: "codex" },
       prompt: "review",
       cwd: "/repo",
@@ -1259,9 +1445,13 @@ describe("executeAgentTurn", () => {
       permissionMode: "approve-all",
       signal: controller.signal,
       onProgress: update => progress.push(update),
-    })).resolves.toMatchObject({ status: "cancelled", responseText: "partial" });
+      captureTrace: true,
+    });
+    expect(result).toMatchObject({ status: "cancelled", responseText: "partial" });
+    expect(result.timing.elapsedMs).toBeGreaterThanOrEqual(0);
 
-    expect(progress).toMatchObject([{ responseText: "partial", telemetry: { eventCount: 1 } }]);
+    expect(progress).toMatchObject([{ responseText: "partial", summary: { eventCount: 1 } }]);
+    expect(result.trace?.events.at(-1)).toMatchObject({ type: "turn_end", status: "cancelled" });
     expect(fake.state.calls.map(call => tailFromAgent(call.args, "codex"))).toContainEqual(["codex", "cancel", "-s", "session"]);
     const cancelChild = fake.state.children.at(-1)!;
     expect(cancelChild.listenerCount("error")).toBe(1);

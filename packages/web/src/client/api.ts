@@ -164,7 +164,6 @@ export type NodeExecutionInspection = {
     status?: string;
     durationMs?: number;
     inputPreview?: string;
-    outputPreview?: string;
   }>;
 };
 

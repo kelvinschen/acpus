@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { NodeIR } from "@acpus/core/ir";
 import { ok } from "neverthrow";
@@ -144,6 +145,7 @@ function triggerHooksForCommittedRows(input: {
   } catch {
     // Hooks still run without optional effective attempt values.
   }
+  const agentPrompts = loadAgentPrompts(input.store, input.runId, executionMetadata);
   for (const row of rows) {
     try {
       const hookEvent = mapRuntimeEventToHookEvent(row);
@@ -156,12 +158,41 @@ function triggerHooksForCommittedRows(input: {
         workspaceDir: input.frozen.meta.workspaceDir ?? input.cwd,
         workflowPath: resolve(input.cwd, input.frozen.meta.workflowPath ?? ""),
         executionMetadata,
+        agentPrompts,
       });
       input.hookRunner.trigger(hookEvent, context);
     } catch {
       // Hooks are non-interfering; context construction failures skip the hook.
     }
   }
+}
+
+function loadAgentPrompts(
+  store: RuntimeStore,
+  runId: string,
+  rows: ReturnType<RuntimeStore["getExecutionMetadata"]>,
+): Map<string, string> {
+  const prompts = new Map<string, string>();
+  for (const row of rows) {
+    if (row.kind !== "agent_attempt") continue;
+    const metadata = objectValue(row.metadata);
+    const nodeKey = typeof metadata?.nodeKey === "string" ? metadata.nodeKey : undefined;
+    const firstTurn = Array.isArray(metadata?.turns) ? objectValue(metadata.turns[0]) : undefined;
+    const turnArtifact = objectValue(firstTurn?.turnArtifact);
+    const artifactId = typeof turnArtifact?.artifactId === "string" ? turnArtifact.artifactId : undefined;
+    if (!nodeKey || !artifactId) continue;
+    try {
+      const path = store.getArtifact(runId, artifactId)?.path;
+      if (!path) continue;
+      const artifact = objectValue(JSON.parse(readFileSync(path, "utf8")));
+      if (typeof artifact?.prompt === "string") prompts.set(nodeKey, artifact.prompt);
+    } catch {}
+  }
+  return prompts;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 export function triggerHooksForCommittedRowsForRun(input: {

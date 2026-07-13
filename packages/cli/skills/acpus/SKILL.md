@@ -12,12 +12,13 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 ## Route the request
 
 - **Author or adapt:** Read `references/authoring.md` completely before editing. For new workflows, choose the closest file under `examples/workflows/` by its `Pattern` and `Nodes` header, then write the target workflow module directly.
-- **Advanced Task authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, or cancellation handling.
+- **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cancellation handling, or Agent tracing configuration.
 - **Check, run, list, or show:** Read `references/cli-operations.md` and use `acpus <cmd> --help` for exact syntax.
-- **Inspect or control a run:** Read `references/runtime-recovery.md`; inspect before retry, fork, signal, cancel, pause, resume, or delete.
+- **Inspect, query artifacts, or control a run:** Read `references/runtime-recovery.md`; inspect before retry, fork, signal, cancel, pause, resume, or delete. Use `runs artifacts` when the task needs artifact paths rather than run state.
+- **Trace Agent execution:** Read `references/agent-tracing.md` for turn records, normalized traces, raw ACP diagnostics, and trace consumption.
 - **Configure hooks:** Read `references/hooks-json.md`.
 - **Choose an agent:** Read `references/acpx-agents.md` when built-in or local agent availability matters.
-- **Explain concepts:** Use `references/authoring.md` for workflow, node, expression, schema, or inline Task semantics. Use `references/advanced-authoring.md` only for its gated Task topics.
+- **Explain concepts:** Use `references/authoring.md` for workflow, node, expression, schema, or inline Task semantics. Use `references/advanced-authoring.md` only for its gated topics and `references/agent-tracing.md` for Agent tracing semantics.
 
 Re-route when the request changes materially.
 

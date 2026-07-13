@@ -1248,11 +1248,11 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
     enabled: active,
     refetchInterval: active ? 2_500 : false,
   });
-  if (execution.isLoading) return <StateBlock tone="loading" title="Loading execution telemetry" />;
-  if (execution.error) return <StateBlock tone="error" title="Execution telemetry failed" detail={execution.error instanceof Error ? execution.error.message : String(execution.error)} />;
-  if (!execution.data) return <StateBlock tone="empty" title="No execution telemetry" detail="No agent execution metadata exists for the selected scope." />;
+  if (execution.isLoading) return <StateBlock tone="loading" title="Loading execution details" />;
+  if (execution.error) return <StateBlock tone="error" title="Execution details failed" detail={execution.error instanceof Error ? execution.error.message : String(execution.error)} />;
+  if (!execution.data) return <StateBlock tone="empty" title="No execution details" detail="No agent execution metadata exists for the selected scope." />;
   const data = execution.data;
-  if (!data.available) return <StateBlock tone="empty" title="No execution telemetry" detail={data.reason ?? "No agent execution metadata exists for the selected scope."} />;
+  if (!data.available) return <StateBlock tone="empty" title="No execution details" detail={data.reason ?? "No agent execution metadata exists for the selected scope."} />;
   return (
     <div className="inspector-stack">
       <InspectorSection title="Summary">
@@ -1333,7 +1333,6 @@ function ToolCallList({ calls, total }: { calls: NodeExecutionInspection["lastTo
             {call.status && <ToolCallStatus status={call.status} />}
           </div>
           {call.inputPreview && <p>{call.inputPreview}</p>}
-          {call.outputPreview && <p>{call.outputPreview}</p>}
         </div>
       ))}
     </div>

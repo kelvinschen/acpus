@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listRuns, normalizeForkInput, RuntimeUseCaseException, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, normalizeForkInput, RuntimeUseCaseException, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -38,6 +38,10 @@ type InspectRunOptions = {
   raw?: boolean;
 };
 
+type ArtifactsRunOptions = {
+  target?: string;
+};
+
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 export function createRunsCommand(ctx: RunsCommandContext): Command {
@@ -63,6 +67,15 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--raw", "emit the unbounded raw inspection bundle (requires --json)")
     .action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);
+    }));
+
+  command.addCommand(new Command("artifacts")
+    .exitOverride()
+    .description("List artifact metadata and absolute paths.")
+    .argument("<run-id>", "run id")
+    .option("--target <run-target>", "list artifacts for one static node, dynamic node, frame, or attempt")
+    .action(async (runId: string, options: ArtifactsRunOptions) => {
+      await artifactsRunCommand(ctx, runId, options);
     }));
 
   command.addCommand(new Command("delete")
@@ -159,6 +172,36 @@ function inspectionQuery(runId: string, options: InspectRunOptions): RunInspecti
 function inspectionError(error: RunInspectionError): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
   if (error.type === "invalid-query") return usageError(error.message);
   return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
+}
+
+async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, options: ArtifactsRunOptions): Promise<void> {
+  if (options.target === "") throw usageError("--target must be a non-empty string.");
+  let artifacts: ArtifactRecord[];
+  if (options.target === undefined) {
+    const listed = await listArtifacts(ctx.cwd, runId);
+    if (listed === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
+    artifacts = listed;
+  } else {
+    const inspected = await getRunInspection(ctx.cwd, { runId, mode: "target", target: options.target });
+    if (inspected.isErr()) throw inspectionError(inspected.error);
+    if (inspected.value.kind !== "target") throw new Error("Target inspection returned an unexpected document.");
+    artifacts = inspected.value.artifacts;
+  }
+
+  if (ctx.wantsJson) {
+    ctx.stdout.write(`${JSON.stringify({
+      ok: true,
+      phase: "inspect",
+      runId,
+      ...(options.target === undefined ? {} : { target: options.target }),
+      artifacts,
+    }, null, 2)}\n`);
+  } else if (artifacts.length === 0) {
+    ctx.stdout.write("No artifacts.\n");
+  } else {
+    ctx.stdout.write(`${artifacts.map(artifact => `${artifact.id} ${artifact.mediaType ?? "-"} ${artifact.path}`).join("\n")}\n`);
+  }
+  ctx.setExitCode(0);
 }
 
 function validateInspectOptions(ctx: RunsCommandContext, options: InspectRunOptions): void {

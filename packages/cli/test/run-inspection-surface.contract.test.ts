@@ -19,7 +19,7 @@ describe("compact run inspection surface", () => {
     expect(output).toContain("More: acpus runs inspect run_1 --all");
     expect(output).toContain('"field_29": 29');
     expect(output).not.toContain("prompt text must stay out of overview");
-    expect(output).not.toContain("artifacts/review/prompt.md");
+    expect(output).not.toContain("artifacts/review/turn-001.json");
   });
 
   it("renders only the public absolute artifact path", () => {

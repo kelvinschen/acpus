@@ -1,5 +1,5 @@
 /*
- * Pattern: Produce live Agent inspection telemetry through several read-only tools.
+ * Pattern: Produce live Agent inspection progress through several read-only tools.
  * Nodes: agent
  */
 import { defineWorkflow, z } from "acpus/core";
@@ -7,7 +7,7 @@ import { md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "inspect-claude-agent-smoke",
-  description: "Read-only Claude run used to verify compact and follow Agent telemetry.",
+  description: "Read-only Claude run used to verify compact and follow Agent progress.",
   inputSchema: z.object({
     repoPath: z.string(),
   }),
@@ -27,7 +27,7 @@ export default defineWorkflow({
       2. find the implementation of followRunInspection;
       3. read the relevant source and report, in at most five sentences, how non-TTY follow receives Agent progress.
 
-      Make at least two tool calls so run ${meta.runId} exposes useful live tool telemetry.
+      Make at least two tool calls so run ${meta.runId} exposes useful live tool progress.
     `,
     timeout: "10m",
   });

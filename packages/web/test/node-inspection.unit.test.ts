@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
 import { inspectNodeExecution } from "../src/server/node-inspection.js";
 
-const noTelemetry = async () => undefined;
+const noTurnArtifact = async () => undefined;
 
 describe("node execution inspection", () => {
   it("derives live execution summary from target-scoped progress", async () => {
@@ -27,7 +27,7 @@ describe("node execution inspection", () => {
       }],
     });
 
-    const result = await inspectNodeExecution(inspection, noTelemetry);
+    const result = await inspectNodeExecution(inspection, noTurnArtifact);
 
     expect(result).toMatchObject({
       available: true,
@@ -41,7 +41,7 @@ describe("node execution inspection", () => {
     });
   });
 
-  it("loads full tool telemetry through the artifact loader", async () => {
+  it("loads full tool summary through the artifact loader", async () => {
     const inspection = targetInspection({
       executionMetadata: [{
         id: 1,
@@ -54,8 +54,8 @@ describe("node execution inspection", () => {
           turnCount: 1,
           turns: [{
             turn: 1,
-            telemetryArtifact: { artifactId: "telemetry-1" },
-            telemetry: {
+            turnArtifact: { artifactId: "turn-1" },
+            summary: {
               context: { used: 4_000, size: 8_000 },
               tokenUsage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
               tools: { totalToolCallCount: 1 },
@@ -64,8 +64,8 @@ describe("node execution inspection", () => {
         },
       }],
     });
-    const loadTelemetry = vi.fn(async () => ({
-      telemetry: {
+    const loadTurnArtifact = vi.fn(async () => ({
+      summary: {
         tools: {
           calls: [{
             toolCallId: "tool_1",
@@ -74,17 +74,16 @@ describe("node execution inspection", () => {
             startedAt: "2026-07-01T00:00:00.000Z",
             completedAt: "2026-07-01T00:00:01.000Z",
             input: { preview: "pnpm test" },
-            output: { preview: "passed" },
           }],
         },
       },
     }));
 
-    const withoutArtifact = await inspectNodeExecution(inspection, noTelemetry);
-    const withArtifact = await inspectNodeExecution(inspection, loadTelemetry);
+    const withoutArtifact = await inspectNodeExecution(inspection, noTurnArtifact);
+    const withArtifact = await inspectNodeExecution(inspection, loadTurnArtifact);
 
-    expect(loadTelemetry).toHaveBeenCalledOnce();
-    expect(loadTelemetry).toHaveBeenCalledWith({ artifactId: "telemetry-1" });
+    expect(loadTurnArtifact).toHaveBeenCalledOnce();
+    expect(loadTurnArtifact).toHaveBeenCalledWith({ artifactId: "turn-1" });
     expect(withoutArtifact.lastToolCalls).toEqual([]);
     expect(withArtifact).toMatchObject({
       available: true,
@@ -97,13 +96,12 @@ describe("node execution inspection", () => {
         toolName: "shell",
         durationMs: 1_000,
         inputPreview: "pnpm test",
-        outputPreview: "passed",
       }],
     });
   });
 
-  it("reports unavailable when the target projection has no agent telemetry", async () => {
-    const result = await inspectNodeExecution(targetInspection(), noTelemetry);
+  it("reports unavailable when the target projection has no agent execution data", async () => {
+    const result = await inspectNodeExecution(targetInspection(), noTurnArtifact);
 
     expect(result).toMatchObject({
       available: false,
@@ -113,8 +111,8 @@ describe("node execution inspection", () => {
     });
   });
 
-  it("uses normalized compact Agent state without loading full telemetry", async () => {
-    const loadTelemetry = vi.fn();
+  it("uses normalized compact Agent state without loading full turn data", async () => {
+    const loadTurnArtifact = vi.fn();
     const result = await inspectNodeExecution(targetInspection({
       agent: {
         key: "observer",
@@ -131,9 +129,9 @@ describe("node execution inspection", () => {
           ],
         },
       },
-    }), loadTelemetry);
+    }), loadTurnArtifact);
 
-    expect(loadTelemetry).not.toHaveBeenCalled();
+    expect(loadTurnArtifact).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       available: true,
       summary: { status: "running", turnCount: 2 },

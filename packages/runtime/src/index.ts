@@ -33,6 +33,7 @@ export {
   getRuntimeHealth,
   getRun,
   getRunVisualizationSnapshot,
+  listArtifacts,
   listRuns,
   normalizeForkInput,
   type RuntimeHealthCheck,
@@ -40,6 +41,11 @@ export {
   RuntimeUseCaseException,
   type ArtifactRecord,
 } from "./runs/use-cases.js";
+export type {
+  AgentOutputProcessing,
+  AgentTraceRecord,
+  AgentTurnArtifact,
+} from "./execution/agent-node.js";
 export {
   getRunInspection,
   followRunInspection,

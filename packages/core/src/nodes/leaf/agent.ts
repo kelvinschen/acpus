@@ -16,6 +16,7 @@ export type AgentUseSpec = {
   model?: string;
   permissionMode?: AgentPermissionMode;
   agentMode?: string;
+  trace?: boolean;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -27,6 +28,7 @@ export type AgentCommandSpec = {
   model?: string;
   permissionMode?: AgentPermissionMode;
   agentMode?: string;
+  trace?: boolean;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -70,6 +72,7 @@ export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionI
       model: spec.model,
       permissionMode: spec.permissionMode,
       agentMode: spec.agentMode,
+      trace: spec.trace,
       cwd: spec.cwd,
       env: staticEnvToIR(spec.env),
     }) as AgentDefinitionIR;
@@ -80,6 +83,7 @@ export function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionI
     model: spec.model,
     permissionMode: spec.permissionMode,
     agentMode: spec.agentMode,
+    trace: spec.trace,
     cwd: spec.cwd,
     env: staticEnvToIR(spec.env),
   }) as AgentDefinitionIR;

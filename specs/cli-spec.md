@@ -41,6 +41,7 @@ failures to stable CLI phases and exit codes.
   commands as explicit catalog scope selectors.
 - The CLI MUST support `acpus runs inspect [run-id]` with `--all`,
   `--target <run-target>`, `--follow`, `--interval <duration>`, and `--raw`.
+- The CLI MUST support `acpus runs artifacts <run-id> [--target <run-target>]`.
 - The CLI MUST support `acpus runs delete [run-id]`.
 - The CLI MUST support `acpus runs pause <run-id>`,
   `resume <run-id>`, `retry <run-id>`, `cancel <run-id>`,
@@ -161,6 +162,17 @@ failures to stable CLI phases and exit codes.
   request.
 - Run inspection commands MUST delegate to runtime read APIs.
 - Run inspection commands MUST NOT start or wake the daemon.
+- `runs artifacts` MUST be read-only and MUST NOT start or wake the daemon.
+  Without `--target`, it MUST list every artifact for the run. With `--target`,
+  it MUST reuse target inspection resolution for static nodes, dynamic nodes,
+  frames, and attempts.
+- Text `runs artifacts` output MUST print one
+  `id mediaType absolutePath` record per line. An empty result MUST print
+  `No artifacts.` and exit 0.
+- JSON `runs artifacts` output MUST be
+  `{ ok: true, phase: "inspect", runId, target?, artifacts }`. It MUST expose
+  registry metadata and absolute paths without reading or inlining artifact
+  bodies. Missing runs and targets MUST use inspection errors.
 - `runs inspect` MUST use overview mode by default. `--all` MUST request the
   complete normalized dynamic structure, `--target` MUST request one static or
   dynamic target projection, and `--raw --json` MUST request the unbounded raw
@@ -340,7 +352,7 @@ failures to stable CLI phases and exit codes.
 - When one emission contains both a terminal durable transition and terminal
   Agent progress for the same exact dynamic execution and terminal status,
   non-TTY text MUST merge them into one line at the durable transition's
-  position and time without dropping attempt, telemetry, stop/failure, or
+  position and time without dropping attempt, progress, stop/failure, or
   distinct message information. Text MUST NOT merge changes for different
   dynamic executions, statuses, emissions, or non-Agent items.
 - Default overview follow MUST bound ordinary transcript output to 20 unique
@@ -400,7 +412,7 @@ failures to stable CLI phases and exit codes.
   <actionable message>` when an upstream acpx code exists. They MUST suppress
   duplicate status-reason text and leave complete upstream data to target/raw
   JSON or referenced artifacts.
-- Text run status surface agent progress telemetry MUST stay compact: context
+- Text run status surface Agent progress MUST stay compact: context
   and token counts use `k` units at one decimal place, token rows are omitted
   when token usage is absent, progress detail rows include a relative `Last
   active` age under the corresponding agent node row, and agent progress output
@@ -502,6 +514,9 @@ failures to stable CLI phases and exit codes.
 - Tests MUST cover run inspect hook history rendering only for terminal runs
   with hook journal rows.
 - Tests MUST cover read-only run inspect and doctor without daemon startup.
+- Tests MUST cover all-run and targeted artifact listing, empty artifacts,
+  missing runs/targets, text and JSON output, absolute paths, and absence of
+  artifact bodies.
 - Tests MUST cover Doctor authoring authority in uninitialized workspaces,
   absolute resolved paths, bundled authoring identity failure, installed skill
   warnings and remediation, and packed-install resolution without ambient
@@ -516,7 +531,7 @@ failures to stable CLI phases and exit codes.
   global JSON help discoverability, TTY redraw, non-TTY semantic append output,
   valid NDJSON, and follow detach without run cancellation.
 - Tests MUST cover authored Agent-key display, normalized and bounded Last Tool
-  Calls with statuses, rapid transition fidelity, ten-second Agent telemetry
+  Calls with statuses, rapid transition fidelity, ten-second Agent progress
   coalescing, a large-fanout non-TTY transcript budget with protected failure,
   timeout, awaiting, and retry contexts, 30-second bounded non-TTY checkpoints,
   `+<elapsed>`-only semantic prefixes, exact terminal transition/progress text
