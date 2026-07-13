@@ -6,9 +6,10 @@ import { describe, expect, it } from "vitest";
 import { daemonEndpoint, DaemonRequestError, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
 
 describe("daemon socket server", () => {
-  it("tracks active request handlers", async () => {
+  it("tracks a connection while its request handler is active", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-"));
-    let finishShutdown!: () => void;
+    const shutdownStarted = deferred();
+    const releaseShutdown = deferred();
     const server = await startDaemonServer(workspace, {
       status: () => ({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
       admitRun: () => {
@@ -18,21 +19,23 @@ describe("daemon socket server", () => {
         throw new Error("not used");
       },
       shutdown: async () => {
-        await new Promise<void>(resolve => {
-          finishShutdown = resolve;
-        });
+        shutdownStarted.resolve();
+        await releaseShutdown.promise;
         return { status: "shutdown" };
       },
     });
+    let request: ReturnType<typeof requestDaemonShutdown> | undefined;
     try {
-      const request = requestDaemonShutdown(workspace);
-      await waitUntil(() => server.activeConnections() === 1);
-      finishShutdown();
+      request = requestDaemonShutdown(workspace);
+      await shutdownStarted.promise;
+      expect(server.activeConnections()).toBe(1);
+      releaseShutdown.resolve();
       await expect(request).resolves.toEqual({ status: "shutdown" });
       await waitUntil(() => server.activeConnections() === 0);
       expect(server.activeConnections()).toBe(0);
     } finally {
-      finishShutdown?.();
+      releaseShutdown.resolve();
+      await request?.catch(() => undefined);
       await server.close();
       await rm(workspace, { recursive: true, force: true });
     }
@@ -226,6 +229,14 @@ function testHandlers(): Parameters<typeof startDaemonServer>[1] {
     },
     shutdown: () => ({ status: "shutdown" }),
   };
+}
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {

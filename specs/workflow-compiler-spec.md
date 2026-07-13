@@ -10,9 +10,34 @@
 
 - The package MUST expose `prepareWorkflow(options)`.
 - The package MUST expose `tryPrepareWorkflow(options)`.
+- The package MUST expose
+  `extractWorkflowMetadata(source, fileName)` as a
+  `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
+
+### Static Workflow Metadata
+
+- `extractWorkflowMetadata` MUST use the repository-pinned TypeScript compiler
+  API and MUST NOT import or execute the analyzed module.
+- Metadata extraction MUST accept `defineWorkflow` named imports and aliases,
+  plus namespace imports, from `acpus/core` and `@acpus/core`.
+- Metadata extraction MUST locate a direct default export of
+  `defineWorkflow(...).build(...)` or a default export that refers to one
+  unambiguous top-level `const` initialized with that expression. A module
+  MUST have exactly one default export.
+- Metadata extraction MUST require the workflow config to be an object literal
+  and the final `name` value, after evaluating properties in source order, to
+  be a direct string literal or no-substitution template literal.
+- A spread, nonliteral `name`, or statically unknown computed property after
+  the last known literal MUST make the name non-static; a later direct literal
+  `name` MUST establish the final static value.
+- Syntax errors, missing default exports, ambiguous or unsupported workflow
+  expressions, non-static names, and TypeScript analysis failures MUST return
+  stable tagged metadata errors.
+- Metadata results and failures MUST NOT expose native TypeScript project, AST,
+  symbol, type, or node objects.
 
 ### Internal Module Compilation
 
@@ -146,7 +171,11 @@
 
 ## Verification
 
-- Public API contract and type tests MUST cover exported preparation functions, error class, and public types.
+- Public API contract and type tests MUST cover exported preparation and static
+  metadata functions, error class, and public types.
+- Tests MUST cover direct, aliased, and namespace workflow imports; top-level
+  const default exports; string and template literals; property and spread
+  ordering; nonliteral names; ambiguous definitions; and syntax errors.
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover TypeScript 7 native lifecycle cleanup, diagnostic-chain flattening, source locations, default-library globals, source overlays, repeated and concurrent checks, and `WF002` infrastructure failures.

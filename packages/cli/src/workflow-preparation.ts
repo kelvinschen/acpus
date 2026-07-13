@@ -12,7 +12,7 @@ export async function prepareWorkflowForCli(workflow: string, cwd: string): Prom
   );
 }
 
-function workflowPreparationCliError(failure: WorkflowPreparationFailure): CliError {
+export function workflowPreparationCliError(failure: WorkflowPreparationFailure): CliError {
   if (failure.type === "check-failed") {
     return new CliError(1, {
       ok: false,

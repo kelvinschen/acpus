@@ -49,8 +49,10 @@
     "@acpus/web": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "@clack/prompts": "^1.6.0",
+    "@zip.js/zip.js": "^2.8.26",
     "commander": "^15.0.0",
-    "neverthrow": "^8.2.0"
+    "neverthrow": "^8.2.0",
+    "tar": "^7.5.20"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

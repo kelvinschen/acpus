@@ -23,6 +23,7 @@ Prefer command help for exact options. The skill should describe operating strat
 - Run `acpus doctor` when the workspace health is uncertain.
 - Use `acpus workflow check <workflow.ts-or-catalog>` before `run`.
 - Use `acpus workflow list` and `acpus workflow show <name>` for catalog discovery.
+- Use `acpus workflow import <source>` to copy a reusable workflow snapshot into the project catalog; add `--global` only when user-wide reuse is intended.
 - Use `acpus runs inspect [run-id]` before any retry, fork, signal, pause, resume, cancel, or delete.
 - Use `--json` only when structured parsing is needed. Text output is usually better for human diagnosis.
 
@@ -36,6 +37,7 @@ Failure phases:
 - `check`: TypeScript or Acpus authoring-rule diagnostics.
 - `compile`: module read/import/default-export/build failures.
 - `validate`: frozen IR structural diagnostics.
+- `import`: download, unpack, metadata, collision, or catalog commit failure.
 
 Use `--json` when the exact phase matters. It is a discoverable global option and may appear before or after command names. For example, invalid `--agents` overrides are reported in the JSON `phase` field before any runtime admission.
 
@@ -65,7 +67,25 @@ For workflows that must receive a Signal, `--background` plus a follow view is u
 
 ## Catalog entries
 
-Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or global `$HOME/.acpus/workflows/<name>/workflow.ts`. Discovery inspects only first-level directories. If project and global entries share a name, pass `--project` or `--global`.
+Catalog packages live under project `.acpus/workflows/<name>/workflow.ts` or global `$HOME/.acpus/workflows/<name>/workflow.ts`. The authored `defineWorkflow({ name })` is the catalog identity: it must be a direct lower-kebab string and exactly match the package directory. Discovery statically reads metadata without executing the module. Invalid first-level packages remain visible in `workflow list`, but cannot be shown, checked, run, or visualized by name. If available project and global entries share a name, pass `--project` or `--global`.
+
+Import a local file, package directory, ZIP, TGZ, or HTTP(S) snapshot:
+
+```sh
+acpus workflow import ./release.ts
+acpus workflow import ./release-package --project
+acpus workflow import https://example.invalid/release.tgz --global
+```
+
+Import copies the package once. It does not install dependencies, retain the source URL, update existing entries, or overwrite a same-name entry. The default path is static and does not execute top-level workflow code.
+
+Use `--check` only for a trusted source when a full preparation gate is required:
+
+```sh
+acpus workflow import ./release.tgz --check
+```
+
+`--check` may execute module top-level code. It commits only after check/compile/validate succeeds and the prepared workflow name matches the static name. A global `--check` is evaluated in the current workspace context, so success establishes compatibility with that project, not every future project.
 
 ## Run inspection
 

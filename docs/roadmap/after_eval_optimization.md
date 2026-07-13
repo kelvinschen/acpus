@@ -21,6 +21,3 @@
 8. ts error hint 优化
 9. fanout quorum 支持 number / Expr<number>
 10. loop ergonomic
-
-## Product
-1. workflow install: install from remote: tar/zip etc , or local, to project/global

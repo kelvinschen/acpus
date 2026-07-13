@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { discoverWorkflowCatalog } from "../src/catalog.js";
 import { repoRoot } from "./support/cli-runner.js";
@@ -23,13 +23,20 @@ describe("workflow catalog discovery", () => {
 
         const entries = await discoverWorkflowCatalog(workspace);
 
-        expect(entries.map(entry => [entry.scope, entry.name, entry.requiresScope])).toEqual([
-          ["global", "deploy", false],
-          ["project", "parent", false],
-          ["project", "release", false],
-          ["project", "shared", true],
-          ["global", "shared", true],
+        expect(entries.filter(entry => entry.status === "available").map(entry => [entry.status, entry.scope, entry.name, entry.requiresScope])).toEqual([
+          ["available", "global", "deploy", false],
+          ["available", "project", "parent", false],
+          ["available", "project", "release", false],
+          ["available", "project", "shared", true],
+          ["available", "global", "shared", true],
         ]);
+        const invalid = entries.filter(entry => entry.status === "invalid");
+        expect(invalid.map(entry => entry.packagePath)).toEqual(invalid.map(entry => entry.packagePath).sort((left, right) => left.localeCompare(right)));
+        expect(Object.fromEntries(invalid.map(entry => [basename(entry.packagePath), entry.errorCode]))).toEqual({
+          Bad: "CATALOG_NAME_INVALID",
+          empty: "CATALOG_ENTRY_MISSING",
+          "index-file": "CATALOG_ENTRY_MISSING",
+        });
         expect(entries.every(entry => entry.packagePath.startsWith("/"))).toBe(true);
         expect(entries.every(entry => entry.entryPath.endsWith("/workflow.ts"))).toBe(true);
       });
@@ -52,6 +59,30 @@ describe("workflow catalog discovery", () => {
       });
     });
   });
+
+  it("maps each static metadata failure to its stable catalog error code", async () => {
+    await withTestWorkspace("catalog-metadata-errors", async workspace => {
+      const root = join(workspace, ".acpus", "workflows");
+      await rawWorkflowPackage(root, "syntax", "export default (");
+      await rawWorkflowPackage(root, "missing-default", 'import { defineWorkflow } from "acpus/core";');
+      await rawWorkflowPackage(root, "not-static", "export default {};\n");
+      await rawWorkflowPackage(root, "name-not-static", [
+        'import { defineWorkflow } from "acpus/core";',
+        'const name = "name-not-static";',
+        "export default defineWorkflow({ name }).build(() => ({}));",
+      ].join("\n"));
+
+      const invalid = (await discoverWorkflowCatalog(workspace, { project: true }))
+        .filter(entry => entry.status === "invalid");
+
+      expect(Object.fromEntries(invalid.map(entry => [basename(entry.packagePath), entry.errorCode]))).toEqual({
+        "missing-default": "CATALOG_DEFAULT_EXPORT_MISSING",
+        "name-not-static": "CATALOG_NAME_NOT_STATIC",
+        "not-static": "CATALOG_WORKFLOW_NOT_STATIC",
+        syntax: "CATALOG_SOURCE_INVALID",
+      });
+    });
+  });
 });
 
 async function workflowPackage(root: string, name: string): Promise<void> {
@@ -64,6 +95,12 @@ async function ignoredIndexWorkflowFilePackage(root: string, name: string): Prom
   const dir = join(root, name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "index.workflow.ts"), workflowSource(name));
+}
+
+async function rawWorkflowPackage(root: string, name: string, source: string): Promise<void> {
+  const dir = join(root, name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "workflow.ts"), source);
 }
 
 function workflowSource(name: string): string {

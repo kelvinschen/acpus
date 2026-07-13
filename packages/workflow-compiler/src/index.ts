@@ -7,3 +7,8 @@ export {
   WorkflowPreparationError,
   type WorkflowPreparationFailure,
 } from "./preflight/index.js";
+export {
+  extractWorkflowMetadata,
+  type WorkflowMetadata,
+  type WorkflowMetadataError,
+} from "./metadata.js";

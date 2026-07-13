@@ -37,6 +37,9 @@ failures to stable CLI phases and exit codes.
   workflow check and run commands.
 - The CLI MUST support `acpus workflow list [--project | --global]`.
 - The CLI MUST support `acpus workflow show <name> [--project | --global]`.
+- The CLI MUST support
+  `acpus workflow import <source> [--project | --global] [--check]`, defaulting
+  to project scope when neither scope flag is present.
 - The CLI MUST support `--project` and `--global` on workflow check and run
   commands as explicit catalog scope selectors.
 - The CLI MUST support `acpus runs inspect [run-id]` with `--all`,
@@ -77,14 +80,25 @@ failures to stable CLI phases and exit codes.
 - `workflow check --agents` MUST validate agent overrides against declared
   workflow agents without admitting a run.
 - Workflow catalog discovery MUST inspect only first-level directories under
-  `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows`.
-- A workflow catalog entry MUST be a directory whose name matches
-  `[a-z0-9][a-z0-9-]*` and that contains `workflow.ts`.
-- Workflow catalog discovery MUST ignore non-package directories, invalid
-  package names, direct `.workflow.ts` files under the catalog root, and nested
-  package-looking directories inside a catalog package.
-- `workflow list` and `workflow show` MUST NOT compile, import, or validate
-  workflow modules.
+  `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows`; it MUST ignore
+  direct files and nested package-looking directories.
+- An available workflow catalog entry MUST be a regular directory containing a
+  regular `workflow.ts` whose statically extracted authored workflow name
+  matches `[a-z0-9][a-z0-9-]*` and exactly equals the directory name.
+- Catalog discovery MUST statically extract metadata without importing or
+  executing workflow modules.
+- A first-level catalog directory that cannot satisfy the available-entry
+  contract MUST be returned as an `invalid` entry with absolute
+  `packagePath`, expected absolute `entryPath`, `requiresScope: false`, a
+  stable `errorCode`, a display `error`, and the authored `name` when it was
+  extractable.
+- Available catalog entries MUST contain `status: "available"`, `scope`,
+  authored `name`, absolute `packagePath`, absolute `entryPath`, and
+  `requiresScope`.
+- Invalid catalog entries MUST NOT participate in `workflow show`, check, run,
+  or viz lookup.
+- `workflow list` and `workflow show` MUST NOT compile, import, execute, or
+  fully validate workflow modules.
 - Unscoped catalog lookup MUST succeed only when the catalog name is unique
   across project and global scopes.
 - Scoped catalog lookup MUST search only the selected project or global scope.
@@ -99,6 +113,58 @@ failures to stable CLI phases and exit codes.
   workflow preparation.
 - Global catalog materialization MUST follow symlinks and copy target content.
 - Runtime run records MUST NOT persist catalog metadata.
+
+### Workflow Catalog Import
+
+- `workflow import` MUST accept local regular `.ts`, `.zip`, `.tar.gz`, and
+  `.tgz` files, local directories, and HTTP or HTTPS URLs whose pathname has
+  one of the supported file suffixes. Suffix matching MUST be case-insensitive
+  and MUST ignore URL query parameters and response `Content-Type`.
+- Unsupported suffixes, non-HTTP(S) URLs, URL credentials, and conflicting
+  scope flags MUST fail as `usage` errors.
+- Remote import MUST follow at most five redirects, and every redirect target
+  MUST remain an anonymous HTTP or HTTPS URL.
+- Import MUST create a one-time local snapshot. It MUST NOT install
+  dependencies, retain source paths or URLs, record provenance, create an
+  update relationship, overwrite a same-scope entry, or special-case identical
+  content.
+- A single-file import MUST store the source as `workflow.ts`. Directory and
+  archive imports MUST contain `workflow.ts` at the package root or inside
+  exactly one top-level wrapper directory, and MUST copy every ordinary file
+  in the selected package root.
+- Import staging MUST live under the target scope's private `.acpus/.local`
+  tree and MUST be removed after success or failure.
+- ZIP extraction MUST use `@zip.js/zip.js`; TAR and compressed TAR extraction
+  MUST use `tar`. Archive import MUST enumerate and validate all entries before
+  writing extracted entries.
+- Archive and directory import MUST reject symbolic links, hard links, devices,
+  FIFOs, other special files, absolute paths, parent traversal, NUL, duplicate
+  paths, and paths that collide after Unicode NFC normalization or
+  case-folding.
+- Remote responses and ZIP archive entries MUST be streamed through private
+  staging files rather than materialized as complete in-memory buffers.
+- Imported ordinary file and directory modes MUST preserve permission and
+  execute bits while removing setuid, setgid, sticky, and file-type bits.
+- Import intentionally MUST NOT impose a download timeout, input-size limit,
+  archive-entry limit, decompressed-size limit, or decompression-ratio limit.
+- Import MUST statically extract the authored workflow name before commit. The
+  final name MUST match `[a-z0-9][a-z0-9-]*`, and the committed directory name
+  MUST exactly equal that authored name.
+- A same-name target that exists in the selected scope MUST fail without
+  replacement, even when its content is identical.
+- Without `--check`, import MUST NOT execute workflow source and MUST commit
+  after static metadata and package validation.
+- With `--check`, import MUST prepare the staged package in the current
+  workspace context and MUST execute no commit unless preparation succeeds.
+  Global imports MUST use a temporary current-workspace mirror for this check.
+- A successful checked import MUST verify that prepared `WorkflowIR.name`
+  equals the statically extracted name before commit.
+- Commit MUST atomically rename a fully prepared staged package into the
+  selected catalog. A concurrent same-name destination MUST be reported as a
+  collision.
+- Download, unpack, package, metadata, name, collision, and commit failures
+  MUST use phase `import` and exit code `1`. `--check` preparation failures MUST
+  preserve the existing `check`, `compile`, or `validate` phase.
 - `workflow run` MUST call workflow preparation, normalize submitted input,
   validate agent overrides, start or wake the workspace daemon, admit the run
   through the daemon, and follow the shared read-only runtime inspection stream
@@ -466,15 +532,22 @@ failures to stable CLI phases and exit codes.
 - Delete JSON output MUST include `deletedRuns` and `skippedRuns` arrays for
   aggregate delete results. Explicit single-run delete MAY also include `run`
   for the deleted run summary.
-- Workflow catalog JSON output MUST expose `scope`, `name`, `packagePath`,
-  `entryPath`, `status`, and `requiresScope` for catalog entries.
+- Available workflow catalog JSON entries MUST expose `scope`, `name`,
+  `packagePath`, `entryPath`, `status`, and `requiresScope`. Invalid entries
+  MUST expose `scope`, `packagePath`, expected `entryPath`, `status: "invalid"`,
+  `requiresScope: false`, stable `errorCode`, display `error`, and optional
+  extracted `name`.
 - Workflow catalog path fields MUST be absolute paths.
-- `workflow list` MUST sort catalog entries by `name ASC`, with project
-  entries before global entries for equal names.
+- `workflow list` MUST sort available entries by authored `name ASC`, with
+  project entries before global entries for equal names, then sort invalid
+  entries by absolute `packagePath ASC`.
 - Project and global entries with the same name MUST keep
   `status: "available"` and set `requiresScope: true`.
+- Successful workflow import JSON MUST use phase `import` and include the
+  committed available `catalog` entry plus `checked`; it MUST NOT include the
+  local source path or remote source URL.
 - Usage errors MUST exit with code `2`.
-- Successful check, run, inspection, control, delete, and doctor commands
+- Successful import, check, run, inspection, control, delete, and doctor commands
   MUST exit with code `0`.
 - Foreground `workflow run` completion MUST choose its exit code from the
   durable terminal run status: `completed` exits `0`, while `failed` and
@@ -482,9 +555,9 @@ failures to stable CLI phases and exit codes.
 - Foreground `workflow run` interrupted by `Ctrl-C` after successful detach
   MUST exit `0` without canceling the daemon-owned run.
 - Run control timeout MUST exit `1`.
-- Check, compile, validation, runtime admission, run lookup, runtime control,
-  runtime delete, catalog lookup or materialization, and failed doctor commands
-  MUST exit with code `1`.
+- Import, check, compile, validation, runtime admission, run lookup, runtime
+  control, runtime delete, catalog lookup or materialization, and failed doctor
+  commands MUST exit with code `1`.
 
 ## Verification
 
@@ -554,8 +627,15 @@ failures to stable CLI phases and exit codes.
   exit code from durable terminal status, and `Ctrl-C` detach without
   cancellation.
 - Tests MUST cover workflow catalog discovery, scope filtering, stable ordering,
+  authored-name identity, invalid-entry visibility and lookup exclusion,
   ambiguity handling, catalog-backed check and run, global materialization,
   doctor no-store output, package boundary, and program output contracts.
+- Tests MUST cover local file, directory, ZIP, TGZ, HTTP redirect, project, and
+  global imports; unsupported source usage; collision refusal; failure cleanup;
+  stable text and JSON output; archive traversal, absolute and colliding paths;
+  links and special entries; wrapper rules; default no-execution behavior;
+  checked execution and failure non-commit; and global checks in the current
+  workspace context.
 - Tests MUST cover `hooks validate`, `hooks list`, hook scope filtering, hook
   JSON output envelope fields, and mutually exclusive hook scope selectors.
 - Tests MUST cover Acpus skill install and uninstall JSON output, exact `acpus`

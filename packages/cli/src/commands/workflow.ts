@@ -5,14 +5,15 @@ import { Command } from "commander";
 import { walkNodes } from "@acpus/core/ir";
 import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import { staticExprShape, type JsonValue } from "@acpus/expression/ir";
-import { runError, usageError, validationError } from "../errors.js";
+import { importError, runError, usageError, validationError } from "../errors.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
-import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
+import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
-import { prepareWorkflowForCli } from "../workflow-preparation.js";
+import { prepareWorkflowForCli, workflowPreparationCliError } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonAdmitRun } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
+import { importWorkflowPackage } from "../workflow-import.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
@@ -29,6 +30,7 @@ type WorkflowOptions = {
   out?: string;
   force?: boolean;
   interval?: string;
+  check?: boolean;
 } & WorkflowCatalogScopeOptions;
 
 export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
@@ -42,7 +44,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
       },
       outputError: (text, write) => write(text),
     })
-    .description("Check, run, and inspect workflow definitions.");
+    .description("Import, check, run, and inspect workflow definitions.");
 
   command.addCommand(new Command("list")
     .exitOverride()
@@ -61,6 +63,17 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .option("--global", "show a global workflow catalog entry")
     .action(async (name: string, options: WorkflowOptions) => {
       await showCatalog(ctx, name, options);
+    }));
+
+  command.addCommand(new Command("import")
+    .exitOverride()
+    .description("Import a workflow package snapshot into a local catalog.")
+    .argument("<source>", "local workflow source or HTTP/HTTPS URL")
+    .option("--project", "import into the project workflow catalog (default)")
+    .option("--global", "import into the global workflow catalog")
+    .option("--check", "fully prepare the workflow before committing (executes module top-level code)")
+    .action(async (source: string, options: WorkflowOptions) => {
+      await importWorkflow(ctx, source, options);
     }));
 
   command.addCommand(new Command("check")
@@ -122,6 +135,37 @@ async function showCatalog(ctx: WorkflowCommandContext, name: string, options: W
     message: "Workflow catalog entry shown.",
     catalog,
   }, outputFormat(ctx), ctx, 0));
+}
+
+async function importWorkflow(ctx: WorkflowCommandContext, source: string, options: WorkflowOptions): Promise<void> {
+  const scope = importScope(options);
+  const imported = await importWorkflowPackage({
+    cwd: ctx.cwd,
+    source,
+    scope,
+    check: options.check ?? false,
+  });
+  imported.match(
+    result => {
+      ctx.setExitCode(writeResult({
+        ok: true,
+        phase: "import",
+        message: "Workflow imported.",
+        catalog: result.catalog,
+        checked: result.checked,
+      }, outputFormat(ctx), ctx, 0));
+    },
+    failure => {
+      if (failure.type === "preparation") throw workflowPreparationCliError(failure.failure);
+      if (failure.type === "usage") throw usageError(failure.message);
+      throw importError(failure.message, { errorCode: failure.errorCode });
+    },
+  );
+}
+
+function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope {
+  if (options.project && options.global) throw usageError("--project and --global are mutually exclusive.");
+  return options.global ? "global" : "project";
 }
 
 async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {

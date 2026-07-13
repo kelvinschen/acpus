@@ -3,10 +3,10 @@ import { isAbsolute, relative } from "node:path";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
-import type { WorkflowCatalogEntry } from "./catalog.js";
+import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
+export type ResultPhase = "usage" | "check" | "compile" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
 export type WorkflowSummary = {
   name: string;
@@ -37,9 +37,7 @@ export type CliAppliedControl =
 
 type CliControl = CliAppliedControl | { type: string; runId: string; state?: undefined };
 
-export type CliResult = {
-  ok: boolean;
-  phase: ResultPhase;
+type CliResultFields = {
   message?: string;
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
@@ -47,7 +45,6 @@ export type CliResult = {
   run?: RunRecord;
   deletedRuns?: RunRecord[];
   skippedRuns?: RunRecord[];
-  catalog?: WorkflowCatalogEntry;
   catalogEntries?: WorkflowCatalogEntry[];
   followRunId?: string;
   checks?: Array<RuntimeHealthCheck | AuthoringHealthCheck>;
@@ -59,6 +56,29 @@ export type CliResult = {
   outputPath?: string;
   skill?: SkillCommandResult;
 };
+
+type NonImportCliResult = CliResultFields & {
+  ok: boolean;
+  phase: Exclude<ResultPhase, "import">;
+  catalog?: WorkflowCatalogEntry;
+  checked?: never;
+};
+
+type ImportSuccessCliResult = CliResultFields & {
+  ok: true;
+  phase: "import";
+  catalog: AvailableWorkflowCatalogEntry;
+  checked: boolean;
+};
+
+type ImportFailureCliResult = CliResultFields & {
+  ok: false;
+  phase: "import";
+  catalog?: never;
+  checked?: never;
+};
+
+export type CliResult = NonImportCliResult | ImportSuccessCliResult | ImportFailureCliResult;
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
 
@@ -116,12 +136,17 @@ export function writeResult(
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }
   if (result.catalog) writeCatalogEntry(stream, result.catalog);
+  if (result.checked !== undefined) stream.write(`Checked: ${result.checked ? "yes" : "no"}\n`);
   if (result.catalogEntries) {
     if (result.catalogEntries.length === 0) {
       stream.write("No cataloged workflows.\n");
     } else {
       for (const entry of result.catalogEntries) {
-        stream.write(`${entry.scope}\t${entry.status}\t${entry.requiresScope ? "requires-scope" : "ready"}\t${entry.name}\t${entry.entryPath}\n`);
+        if (entry.status === "available") {
+          stream.write(`${entry.scope}\t${entry.status}\t${entry.requiresScope ? "requires-scope" : "ready"}\t${entry.name}\t${entry.entryPath}\n`);
+        } else {
+          stream.write(`${entry.scope}\t${entry.status}\tinvalid\t${entry.name ?? "-"}\t${entry.entryPath}\t${entry.errorCode}: ${entry.error}\n`);
+        }
       }
     }
   }
@@ -238,10 +263,11 @@ function writeHookScope(stream: Writable, label: "Project" | "Global", scope: No
 }
 
 function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void {
-  stream.write(`Catalog: ${entry.scope}/${entry.name}\n`);
+  stream.write(`Catalog: ${entry.scope}/${entry.name ?? "-"}\n`);
   stream.write(`Catalog status: ${entry.status}${entry.requiresScope ? " (requires --project or --global when unscoped)" : ""}\n`);
   stream.write(`Catalog package: ${entry.packagePath}\n`);
   stream.write(`Catalog entry: ${entry.entryPath}\n`);
+  if (entry.status === "invalid") stream.write(`Catalog error: ${entry.errorCode}: ${entry.error}\n`);
 }
 
 export function writeJsonLine(stream: Writable, value: unknown): void {

@@ -11,7 +11,12 @@ describe("workflow catalog CLI contracts", () => {
     await withTestWorkspace("catalog-cli", async workspace => {
       await withTestHome("catalog-cli-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "release");
-        await workflowPackage(join(workspace, ".acpus", "workflows"), "poison", "throw new Error('list/show must not import workflow modules');\n");
+        await workflowPackage(join(workspace, ".acpus", "workflows"), "poison", [
+          "throw new Error('list/show must not import workflow modules');",
+          'import { defineWorkflow } from "acpus/core";',
+          'export default defineWorkflow({ name: "poison" }).build(() => ({ ok: true }));',
+          "",
+        ].join("\n"));
         await workflowPackage(join(home, ".acpus", "workflows"), "deploy");
 
         const listed = await runJson(workspace, ["workflow", "list", "--json"]);
@@ -91,6 +96,32 @@ describe("workflow catalog CLI contracts", () => {
           ok: false,
           phase: "usage",
         });
+      });
+    });
+  });
+
+  it("lists invalid packages after available entries and excludes them from lookup", async () => {
+    await withTestWorkspace("catalog-cli-invalid", async workspace => {
+      await withTestHome("catalog-cli-invalid-home", async () => {
+        await workflowPackage(join(workspace, ".acpus", "workflows"), "available");
+        await workflowPackage(join(workspace, ".acpus", "workflows"), "wrong-directory", [
+          'import { defineWorkflow } from "acpus/core";',
+          'export default defineWorkflow({ name: "authored-name" }).build(() => ({ ok: true }));',
+          "",
+        ].join("\n"));
+        await mkdir(join(workspace, ".acpus", "workflows", "missing-entry"), { recursive: true });
+
+        const listed = await runJson(workspace, ["workflow", "list", "--project", "--json"]);
+        expect(listed.exitCode).toBe(0);
+        expect(listed.json.catalogEntries).toMatchObject([
+          { status: "available", name: "available" },
+          { status: "invalid", errorCode: "CATALOG_ENTRY_MISSING", requiresScope: false },
+          { status: "invalid", name: "authored-name", errorCode: "CATALOG_NAME_MISMATCH", requiresScope: false },
+        ]);
+
+        const invalid = await runJson(workspace, ["workflow", "show", "authored-name", "--project", "--json"]);
+        expect(invalid.exitCode).toBe(1);
+        expect(invalid.json).toMatchObject({ ok: false, phase: "inspect", errorCode: "CATALOG_NAME_MISMATCH" });
       });
     });
   });
