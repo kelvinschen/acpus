@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
 import { and, eq, gt, gte, lift, lt, lte, ne, not, or } from "@acpus/expression";
-import { refExpr } from "@acpus/expression/ir";
+import { refExpr, type ExprIR } from "@acpus/expression/ir";
 
 describe("expression evaluator", () => {
   const adapter = {
@@ -20,6 +20,13 @@ describe("expression evaluator", () => {
 
   it("evaluates literal expressions through the evaluator seam", () => {
     expect(evaluateExpr({ kind: "literal", value: true }, { resolveRef: () => undefined })).toBe(true);
+  });
+
+  it("omits missing object fields while preserving missing top-level and array values", () => {
+    const missing: ExprIR = { kind: "ref", path: ["input", "missing"] };
+    expect(evaluateExpr({ kind: "object", fields: { optional: missing } }, adapter)).toEqual({});
+    expect(evaluateExpr(missing, adapter)).toBeUndefined();
+    expect(() => evaluateExpr({ kind: "array", items: [missing] }, adapter)).toThrow("array(...) received missing value.");
   });
 
   it("formats template expression values", () => {

@@ -4,11 +4,12 @@ import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import type { ExprIR, JsonValue } from "@acpus/expression/ir";
+import { staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap } from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { stableJson } from "../stable-json.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, groupCompletionEvents, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
@@ -899,7 +900,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     ]));
     const forkOutputJson = source.status === "completed" && !replacement && input.output_json
       ? forkCompletedOutputJson({
-          outputs: forkIr.outputs,
+          output: forkIr.root.output,
           completedOutputRows,
           inheritableNodeKeys,
           inputJson: forkInputJson,
@@ -3654,19 +3655,16 @@ function isJsonValue(value: unknown): value is JsonValue {
   return Object.values(value).every(isJsonValue);
 }
 
-function evaluateRecordedOutputs(outputs: Record<string, ExprIR>, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {
-  return assertJsonValue(Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [
-    key,
-    evaluateExpr(expr, {
-      input,
-      meta,
-      nodes: Object.fromEntries(Object.entries(nodes).map(([nodeKey, output]) => [nodeKey, { status: "completed", output }])),
-    }),
-  ])), "fork output");
+function evaluateRecordedOutput(output: ExprIR, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {
+  return normalizeWorkflowData(evaluateExpr(output, {
+    input,
+    meta,
+    nodes: Object.fromEntries(Object.entries(nodes).map(([nodeKey, value]) => [nodeKey, { status: "completed", output: value }])),
+  }), "fork output") as JsonValue;
 }
 
 function forkCompletedOutputJson(args: {
-  outputs: Record<string, ExprIR>;
+  output: ExprIR;
   completedOutputRows: Array<{ nodeKey: string; nodeId: string; output: unknown }>;
   inheritableNodeKeys: Set<string>;
   inputJson: string;
@@ -3681,7 +3679,7 @@ function forkCompletedOutputJson(args: {
       ...row,
       output: rewriteArtifactValue(assertJsonValue(row.output, `fork node '${row.nodeKey}' output`), args.sourceRunId, args.forkRunId, args.artifactIdMap),
     })));
-  const output = evaluateRecordedOutputs(args.outputs, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
+  const output = evaluateRecordedOutput(args.output, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
   return rewriteArtifactRefs(stableJsonLine(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
 }
 
@@ -3930,7 +3928,7 @@ function summarizeWorkflowForEvent(ir: WorkflowIR): {
   description?: string;
   irVersion: number;
   nodeCount: number;
-  outputKeys: string[];
+  outputShape: StaticExprShape;
   diagnostics: { total: number; errors: number; warnings: number; infos: number };
 } {
   return {
@@ -3938,7 +3936,7 @@ function summarizeWorkflowForEvent(ir: WorkflowIR): {
     ...(ir.description === undefined ? {} : { description: ir.description }),
     irVersion: ir.irVersion,
     nodeCount: countNodes(ir.root),
-    outputKeys: Object.keys(ir.outputs).sort(),
+    outputShape: staticExprShape(ir.root.output),
     diagnostics: {
       total: ir.diagnostics.length,
       errors: ir.diagnostics.filter(diagnostic => diagnostic.severity === "error").length,

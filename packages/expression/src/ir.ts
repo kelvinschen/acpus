@@ -20,6 +20,27 @@ export type TemplatePartIR =
   | { kind: "text"; value: string }
   | { kind: "expr"; expr: ExprIR };
 
+export type StaticExprShape =
+  | { kind: "object"; possibleKeys: string[] }
+  | { kind: "array" }
+  | { kind: "scalar" }
+  | { kind: "dynamic" };
+
+export function staticExprShape(expr: ExprIR): StaticExprShape {
+  switch (expr.kind) {
+    case "object":
+      return { kind: "object", possibleKeys: Object.keys(expr.fields).sort() };
+    case "array":
+      return { kind: "array" };
+    case "literal":
+    case "template":
+      return { kind: "scalar" };
+    case "ref":
+    case "call":
+      return { kind: "dynamic" };
+  }
+}
+
 export { expr, isExpr, refExpr, valueToExprIR, tryValueToExprIR } from "./internal/expr.js";
 export type { Expr, ExprLoweringError, ExprValue, Resolvable, WorkflowData } from "./internal/expr.js";
 export { EXPRESSION_OPERATORS, expressionCallbackLayout, expressionCallbackOperatorNames, expressionOperatorSpec } from "./internal/operators.js";

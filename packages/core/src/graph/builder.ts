@@ -13,9 +13,9 @@ import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, type GraphOutputCheck, type OutputValues, type TaskOutputCheck } from "./scope.js";
-import { bindingsToIR, stripUndefined } from "./lowering.js";
-import type { FanoutStrategy, OutputObject, ParallelStrategy, ResolvableArray, RuntimeValueOf, ScopeCallback, WidenRuntimeValue } from "../nodes/composite/shared.js";
+import { buildImplicitScope as buildScopeIR, type GraphOutputCheck, type TaskOutputCheck } from "./scope.js";
+import { outputToIR, stripUndefined } from "./lowering.js";
+import type { FanoutStrategy, ParallelStrategy, ResolvableArray, RuntimeValueOf, ScopeCallback } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
 import type {
   AgentDefinitionIR,
@@ -70,12 +70,12 @@ export type BuildContext<InputSchema extends Schema<any> | undefined, Agents ext
   step: StepFactory;
 };
 
-type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => Record<string, unknown>;
+type BuildFn<InputSchema extends Schema<any> | undefined, Agents extends AgentMap | undefined = undefined> = (ctx: BuildContext<InputSchema, Agents>) => unknown;
 
 type CheckedBuildFn<
   InputSchema extends Schema<any> | undefined,
   Agents extends AgentMap | undefined,
-  Output extends Record<string, unknown>,
+  Output,
 > = ((ctx: BuildContext<InputSchema, Agents>) => Output)
   & ((ctx: BuildContext<InputSchema, Agents>) => Output & GraphOutputCheck<NoInfer<Output>>);
 
@@ -89,7 +89,7 @@ type CheckedBuildFn<
  */
 export function defineWorkflow<InputSchema extends Schema<any> | undefined = undefined, Agents extends AgentMap | undefined = undefined>(config: WorkflowConfig<InputSchema, Agents>) {
   return {
-    build<const Output extends Record<string, unknown>>(buildFn: CheckedBuildFn<InputSchema, Agents, Output>): WorkflowDefinition<InputSchema, Agents> {
+    build<Output>(buildFn: CheckedBuildFn<InputSchema, Agents, Output>): WorkflowDefinition<InputSchema, Agents> {
       return { [WORKFLOW]: true as const, config, buildFn };
     },
   };
@@ -152,18 +152,18 @@ export type StepDeclaration = {
   ): NodeRef<ParallelNodeRefOutput<Branches, "all">>;
 
   /** Declares runtime fanout over a workflow array value. */
-  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output>(
     spec: FanoutStepSpec<Over, Output, "quorum">,
   ): NodeRef<FanoutNodeRefOutput<Output>>;
 
-  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output>(
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   /** Declares a transition-style loop that always executes at least one iteration. */
-  loop<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial>>(
+  loop<Initial, Transition extends LoopTransitionOutput<Initial>>(
     spec: LoopStepSpec<Initial, Transition>,
-  ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>>;
+  ): NodeRef<RuntimeValueOf<Initial>>;
 };
 
 export type StepFactory = (id: string) => StepDeclaration;
@@ -250,39 +250,39 @@ class GraphBuildState {
     return makeNodeRef(id);
   }
 
-  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "quorum">,
   ): NodeRef<FanoutNodeRefOutput<Output>>;
 
-  fanout<const Over extends ResolvableArray<any>, Output extends OutputObject>(
+  fanout<const Over extends ResolvableArray<any>, Output>(
     id: string,
     spec: FanoutStepSpec<Over, Output, "all">,
   ): NodeRef<FanoutNodeRefOutput<Output>>;
 
   fanout(
     id: string,
-    spec: FanoutStepSpec<ResolvableArray<any>, any, FanoutStrategy>,
+    spec: FanoutStepSpec<ResolvableArray<any>, unknown, FanoutStrategy>,
   ): NodeRef<any> {
     this.nodes.push(buildFanoutNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
-  loop<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial>>(
+  loop<Initial, Transition extends LoopTransitionOutput<Initial>>(
     id: string,
     spec: LoopStepSpec<Initial, Transition>,
-  ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>> {
+  ): NodeRef<RuntimeValueOf<Initial>> {
     this.nodes.push(buildLoopNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
-  private readonly buildImplicitScope = <Extra extends object = {}, Output extends OutputObject = OutputObject>(
-    fn: (ctx: Extra) => OutputValues<Output>,
+  private readonly buildImplicitScope = <Extra extends object = {}>(
+    fn: (ctx: Extra) => unknown,
     extra?: Extra,
   ): ScopeIR => {
     const child = new GraphBuildState(this.context);
     return this.context.withScope(child, () =>
-      buildScopeIR(child, fn as (ctx: Extra) => Record<string, unknown>, (extra ?? {}) as Extra));
+      buildScopeIR(child, fn, (extra ?? {}) as Extra));
   };
 }
 
@@ -329,7 +329,7 @@ class GraphBuildContext {
     const switchStep: StepDeclaration["switch"] = spec => this.withActiveDeclaration(scope => scope.switch(id, spec));
     const parallel = ((spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>) =>
       this.withActiveDeclaration(scope => scope.parallel(id, spec as any))) as unknown as StepDeclaration["parallel"];
-    const fanout = ((spec: FanoutStepSpec<ResolvableArray<any>, any, FanoutStrategy>) =>
+    const fanout = ((spec: FanoutStepSpec<ResolvableArray<any>, unknown, FanoutStrategy>) =>
       this.withActiveDeclaration(scope => scope.fanout(id, spec as any))) as unknown as StepDeclaration["fanout"];
     const loop: StepDeclaration["loop"] = spec => this.withActiveDeclaration(scope => scope.loop(id, spec));
     return {
@@ -421,7 +421,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   const context = new GraphBuildContext(diagnostics);
   const builder = new GraphBuildState(context);
   const input = definition.config.inputSchema ? refExpr<any>(["input"]) : {};
-  let loweredOutputs: Record<string, ExprIR> = {};
+  let output: ExprIR = { kind: "object", fields: {} };
   try {
     context.withScope(builder, () => {
       const result = definition.buildFn({
@@ -430,20 +430,19 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
         meta: refExpr<WorkflowMeta>(["meta"]),
         step: context.step,
       });
-      loweredOutputs = bindingsToIR(result);
+      output = outputToIR(result);
     });
   } finally {
     context.close();
   }
 
   const ir = stripUndefined({
-    irVersion: 4,
+    irVersion: 5,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,
     agents: normalizeAgents(definition.config.agents, diagnostics),
-    root: { nodes: builder.nodes },
-    outputs: loweredOutputs,
+    root: { nodes: builder.nodes, output },
     diagnostics,
   }) as WorkflowIR;
 

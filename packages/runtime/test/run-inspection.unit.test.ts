@@ -83,17 +83,18 @@ describe("run inspection projection", () => {
 
   it("counts every repeated Assert frame as a distinct execution context", () => {
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "repeated-assert",
       agents: {},
-      root: { nodes: [{
+      root: {
+        output: { kind: "object", fields: {} }, nodes: [{
         id: "batch",
         kind: "fanout",
         strategy: "all",
         over: { kind: "array", items: [] },
-        do: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] },
+        do: { output: { kind: "object", fields: {} }, nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }] },
       }] },
-      outputs: {},
+
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -246,11 +247,11 @@ describe("run inspection projection", () => {
 
   it("keeps materialized Assert nodes in the authored compact tree", () => {
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "assert-inspection",
       agents: {},
-      root: { nodes: [{ id: "require_ready", kind: "assert", condition: { kind: "literal", value: true } }] },
-      outputs: {},
+      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "require_ready", kind: "assert", condition: { kind: "literal", value: true } }] },
+
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -381,16 +382,17 @@ describe("run inspection projection", () => {
     const fields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`field_${index}`, { kind: "string" as const }]));
     const outputSchema: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "signal-inspection",
       agents: {},
-      root: { nodes: [{
+      root: {
+        output: { kind: "object", fields: {} }, nodes: [{
         id: "approve",
         kind: "signal",
         run: { prompt: { kind: "literal", value: "authored prompt" } },
         outputSchema,
       }] },
-      outputs: {},
+
       diagnostics: [],
     };
     const prompt = `${"Approve the detailed release checklist. ".repeat(12)}PROMPT_TAIL`;
@@ -444,16 +446,17 @@ describe("run inspection projection", () => {
 
   it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "signal-timeout",
       agents: {},
-      root: { nodes: [{
+      root: {
+        output: { kind: "object", fields: {} }, nodes: [{
         id: "approve",
         kind: "signal",
         run: { prompt: { kind: "literal", value: "Approve release?" } },
         outputSchema: { kind: "object", fields: { approved: { kind: "boolean" } }, required: ["approved"], additionalProperties: false },
       }] },
-      outputs: {},
+
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -555,11 +558,11 @@ describe("run inspection projection", () => {
     });
 
     const taskIr: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "task-failure",
       agents: {},
-      root: { nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
-      outputs: {},
+      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
+
       diagnostics: [],
     };
     const taskRun = repeatedAgentRun(1);
@@ -615,16 +618,17 @@ describe("run inspection projection", () => {
 
   it("selects composite member counts from the matching repeated group instance", () => {
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "repeated-composite",
       agents: {},
-      root: { nodes: [{
+      root: {
+        output: { kind: "object", fields: {} }, nodes: [{
         id: "work",
         kind: "parallel",
         strategy: "all",
-        branches: { left: { nodes: [] }, right: { nodes: [] } },
+        branches: { left: { output: { kind: "object", fields: {} }, nodes: [] }, right: { output: { kind: "object", fields: {} }, nodes: [] } },
       }] },
-      outputs: {},
+
       diagnostics: [],
     };
     const run = repeatedAgentRun(0);
@@ -664,16 +668,18 @@ describe("run inspection projection", () => {
 
 function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_definition", use: "claude", model: "sonnet" }): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "inspection-composite",
     agents: { reviewer: agent },
     root: {
+      output: { kind: "object", fields: {} },
       nodes: [{
         id: "batch",
         kind: "fanout",
         strategy: "all",
         over: { kind: "array", items: [] },
         do: {
+          output: { kind: "object", fields: {} },
           nodes: [{
             id: "review",
             kind: "agent",
@@ -682,7 +688,7 @@ function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_
         },
       }],
     },
-    outputs: {},
+
     diagnostics: [],
   };
 }

@@ -108,29 +108,31 @@ describe("CLI result output contracts", () => {
 
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
-      irVersion: 4,
+      irVersion: 5,
       name: "nested",
       agents: {},
       root: {
+        output: { kind: "object", fields: {} },
         nodes: [{
           id: "choose",
           kind: "if",
           condition: { kind: "literal", value: true },
           then: {
+            output: { kind: "object", fields: {} },
             nodes: [{
               id: "then_task",
               kind: "task",
               run: { input: {}, target: { kind: "inline", source: "async function task() {}" } },
             }],
           },
-          else: { nodes: [{ id: "otherwise", kind: "assert", condition: { kind: "literal", value: true } }] },
+          else: { output: { kind: "object", fields: {} }, nodes: [{ id: "otherwise", kind: "assert", condition: { kind: "literal", value: true } }] },
         }, {
           id: "after",
           kind: "assert",
           condition: { kind: "literal", value: true },
         }],
       },
-      outputs: {},
+
       diagnostics: [],
     };
 
@@ -149,9 +151,9 @@ describe("CLI result output contracts", () => {
       workflow: {
         name: "cli-valid",
         description: "Validate CLI workflow summaries.",
-        irVersion: 4,
+        irVersion: 5,
         nodeCount: 1,
-        outputKeys: ["ready"],
+        outputShape: { kind: "object", possibleKeys: ["ready"] },
         diagnostics: {
           errors: 0,
           warnings: 0,
@@ -170,6 +172,7 @@ describe("CLI result output contracts", () => {
     expect(stdout.text).toContain("Workflow check passed.");
     expect(stdout.text).toContain("Description: Validate CLI workflow summaries.");
     expect(stdout.text).toContain("Static nodes: 1");
+    expect(stdout.text).toContain("Output: object (ready)");
     expect(stdout.text).not.toContain("Nodes: 1");
     expect(stderr.text).toBe("");
   });
@@ -324,9 +327,9 @@ function checkResult(): CliResult {
     workflow: {
       name: "cli-valid",
       description: "Validate CLI workflow summaries.",
-      irVersion: 4,
+      irVersion: 5,
       nodeCount: 1,
-      outputKeys: ["ready"],
+      outputShape: { kind: "object", possibleKeys: ["ready"] },
       diagnostics: {
         total: 0,
         errors: 0,

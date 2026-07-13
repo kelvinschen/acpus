@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import { isAbsolute, relative } from "node:path";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
+import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
@@ -12,7 +13,7 @@ export type WorkflowSummary = {
   description?: string;
   irVersion: number;
   nodeCount: number;
-  outputKeys: string[];
+  outputShape: StaticExprShape;
   diagnostics: {
     total: number;
     errors: number;
@@ -111,7 +112,7 @@ export function writeResult(
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
     stream.write(`IR version: ${result.workflow.irVersion}\n`);
     stream.write(`Static nodes: ${result.workflow.nodeCount}\n`);
-    stream.write(`Outputs: ${result.workflow.outputKeys.length ? result.workflow.outputKeys.join(", ") : "(none)"}\n`);
+    stream.write(`Output: ${formatOutputShape(result.workflow.outputShape)}\n`);
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }
   if (result.catalog) writeCatalogEntry(stream, result.catalog);
@@ -259,7 +260,12 @@ export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {
     ...(ir.description === undefined ? {} : { description: ir.description }),
     irVersion: ir.irVersion,
     nodeCount: Array.from(walkNodes(ir.root)).length,
-    outputKeys: Object.keys(ir.outputs).sort(),
+    outputShape: staticExprShape(ir.root.output),
     diagnostics,
   };
+}
+
+function formatOutputShape(shape: StaticExprShape): string {
+  if (shape.kind !== "object") return shape.kind;
+  return `object (${shape.possibleKeys.length ? shape.possibleKeys.join(", ") : "no possible keys"})`;
 }

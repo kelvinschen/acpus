@@ -24,6 +24,7 @@
 - Run admission MUST write the exact frozen `WorkflowIR` bytes to `.acpus/.local/runs/<run-id>/workflow.ir.json` and the exact workflow lock bytes to `.acpus/.local/runs/<run-id>/lock.json`.
 - Each admitted `run_inputs` row MUST persist non-null `workflow_ir_path`, `workflow_ir_digest`, `lock_path`, `lock_digest`, and `run_dir` values. The two file paths MUST be relative to the recorded run directory, and their digests MUST use `sha256:<hex>` over the exact corresponding file bytes.
 - Run admission MUST write a `run.admitted` event and the run projection in the same SQLite transaction.
+- The admitted workflow summary MUST expose `outputShape` derived from `staticExprShape(ir.root.output)` and MUST NOT expose an `outputKeys` projection.
 - Production run admission MUST route through the local daemon. Before returning
   a successful admission response, the daemon MUST register the admitted run in
   its execution-session registry and begin daemon-owned advancement when the run
@@ -193,7 +194,7 @@
 - Node progress snapshots MUST use typed channels for status/message, bounded
   output tail, context window, token usage, and tool-call summary where those
   channels are available.
-- Dynamic node outputs MUST resolve through lexical execution scope; child scope outputs MUST expose only declared composite outputs to the parent scope.
+- Dynamic node outputs MUST resolve through lexical execution scope; each child scope MUST evaluate its one `output: ExprIR`, and the parent scope MUST see only the resulting composite output value.
 - The scheduler MUST materialize valid frozen IR compositions recursively,
   including nested `assert`, `if`, `switch`, `parallel`, `fanout`, and `loop`
   nodes at any supported scope depth.
@@ -203,7 +204,7 @@
 - Conditional nodes MUST persist branch decisions and MUST resume from durable branch decisions instead of re-evaluating already-decided conditions.
 - Switch branch identity MUST use `case:<index>` for case branches and
   `default` for fallback branches.
-- Parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running member subtrees when one member fails.
+- Parallel branches MUST accept every workflow-data value without an object-only assertion. Parallel `all` strategy MUST aggregate branch outputs by branch key and MUST fail fast by cancelling remaining running member subtrees when one member fails.
 - Parallel `race` strategy MUST return the first successful branch with `{ winner, result }` and MUST cancel remaining running member subtrees after the winner is accepted.
 - Fanout `all` strategy MUST materialize item identity rows and aggregate item outputs as an array in ascending `itemIndex` (input) order. Empty input MUST produce an empty array.
 - Fanout `quorum` strategy MUST accept outputs in completion order, return the accepted item outputs as `Array<ItemOutput>` after quorum success, and cancel remaining running member subtrees after quorum is reached.
@@ -228,7 +229,8 @@
 - A Task process environment MUST start from the runtime host environment with evaluated `TaskNodeIR.run.env` values overriding matching keys. `process.env`, task context `env`, module top-level code, and the default `$` command wrapper MUST observe that effective environment.
 - The default Task `$` wrapper MUST inherit the live process cwd and environment at each command invocation so task-local `process.chdir(...)` and `process.env` mutations remain consistent with later commands.
 - Task execution MUST evaluate `TaskNodeIR.run.input`, `TaskNodeIR.run.cwd`, and `TaskNodeIR.run.env` expressions before invoking the task.
-- Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST normalize generic workflow data before values enter scope, events, or durable storage: a Task top-level `undefined` means no output, object properties whose value is `undefined` are omitted recursively, and array-element `undefined` is rejected. The normalizer MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.
+- Task and TypeScript-owned composite outputs MUST enter runtime scope without schema normalization. Runtime MUST normalize generic workflow data before values enter scope, events, or durable storage: a Task top-level `undefined` means no output, while a scope top-level `undefined` MUST fail; object properties whose value is `undefined` are omitted recursively; and array-element `undefined` is rejected. The normalizer MUST reject non-plain runtime values such as functions, class instances, `Date`, `Map`, `Set`, `symbol`, `bigint`, non-finite numbers, sparse arrays, and cycles without reintroducing business-shape validation.
+- Completed root scopes, fork completion, scheduler events, and SQLite run output MUST preserve arbitrary normalized workflow-data values, including scalar, null, array, and object values.
 - The runtime MUST pass the resolved Task default command timeout to the task `$` command wrapper.
 - The runtime MUST pass a per-attempt `abortSignal` into task code for cooperative cancellation. After cancellation or timeout, it MUST reject late successful output and artifact registration, then terminate the isolated Task process tree after a bounded cooperative grace period.
 - Cancellation of a scheduler-visible Task attempt before child process spawn

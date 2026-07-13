@@ -23,6 +23,7 @@ import {
   replacementTaskWorkflow,
   runtimeRow,
   runtimeRows,
+  scalarWorkflow,
   signalWorkflow,
   taskArtifactWorkflow,
   timedSignalWorkflow,
@@ -103,6 +104,18 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
+    });
+  });
+
+  it("preserves scalar workflow output across completed forks", async () => {
+    await withRuntimeWorkspace("runtime-fork-scalar-output", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, scalarWorkflow());
+      expect(source.run).toMatchObject({ status: "completed", output: "ready" });
+
+      const fork = await forkRun(workspace, source.run.id);
+
+      expect(fork?.run).toMatchObject({ status: "completed", output: "ready" });
+      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: "ready" });
     });
   });
 

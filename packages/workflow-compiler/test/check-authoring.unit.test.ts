@@ -51,7 +51,6 @@ describe("workflow check authoring diagnostics", () => {
         "TS2769",
         "TB004",
         "TS2769",
-        "TS2769",
         "TS2322",
         "AL007",
         "AL001",
@@ -68,7 +67,6 @@ describe("workflow check authoring diagnostics", () => {
         { code: "TS2769", line: 12 },
         { code: "TB004", line: 14 },
         { code: "TS2769", line: 15 },
-        { code: "TS2769", line: 16 },
         { code: "TS2322", line: 22 },
         { code: "AL007", line: 23 },
         { code: "AL001", line: 24 },
@@ -77,7 +75,7 @@ describe("workflow check authoring diagnostics", () => {
         { code: "TS2339", line: 31 },
       ]);
       expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: "TS2345", hint: expect.stringContaining("NodeRef") }),
+        expect.objectContaining({ code: "TS2345", hint: expect.stringContaining("Return node.output") }),
         expect.objectContaining({ code: "TB004", source: expect.objectContaining({ line: 14 }), hint: expect.stringContaining("13:") }),
         expect.objectContaining({ code: "TS2769", source: expect.objectContaining({ line: 15 }), hint: expect.stringContaining("convert Date") }),
         expect.objectContaining({ code: "AL001", hint: expect.any(String) }),

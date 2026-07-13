@@ -14,7 +14,7 @@
 - The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`,
   `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
-- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, and shared expression operator and arity-aware callback-layout metadata.
+- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.
 
@@ -23,6 +23,8 @@
 - `ExprIR` MUST be JSON-serializable and MUST NOT contain functions, Zod objects, processes, symbols, or runtime-only handles.
 - `ExprIR` MUST support `literal`, `ref`, `call`, `array`, `object`, and `template` nodes.
 - `ExprIR` MUST NOT support `lambda` or `var` nodes.
+- `StaticExprShape` MUST be `{ kind: "object"; possibleKeys: string[] } | { kind: "array" } | { kind: "scalar" } | { kind: "dynamic" }`.
+- `staticExprShape(expr)` MUST classify object and array syntax directly, classify literal and template syntax as scalar, and classify ref and call syntax as dynamic. Object `possibleKeys` MUST be sorted authored keys and MUST NOT claim that a key is required at run time.
 - Literal expression nodes MUST contain a `JsonPrimitive`; arrays and objects MUST use structural `array` and `object` nodes.
 - `TemplateIR` MUST use the canonical `{ kind: "template", parts: TemplatePartIR[] }` shape and MUST contain text parts and expression parts only.
 - `WorkflowData` MUST be JSON-compatible data: string, finite number, boolean, null, arrays, and plain objects with WorkflowData values.
@@ -61,6 +63,7 @@
 - Shared operator metadata MUST declare `lift` arity as 2, 3, or 4 and MUST provide an arity-aware callback layout whose callback-source index and callback parameter count equal `argCount - 1` and whose dependency indexes cover every preceding arg.
 - `access` MUST project object fields and canonical array indices from evaluated dependency values.
 - Missing object fields and out-of-bounds array indices MUST evaluate as `undefined` when used as projections.
+- Object expression evaluation MUST omit a field whose expression resolves as missing. Top-level missing expressions MUST evaluate as `undefined`, while array expression elements MUST reject missing values.
 - Unknown operators MUST fail validation and evaluation.
 
 ### Evaluation And Validation

@@ -43,6 +43,7 @@ describe("runtime admission normalization", () => {
 
   it("normalizes schema-backed signal payloads and requires raw strings without schema", () => {
     const ir = workflow({
+      output: { kind: "object", fields: {} },
       nodes: [
         {
           id: "raw",
@@ -71,19 +72,19 @@ describe("runtime admission normalization", () => {
 
 type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
   nodes?: WorkflowIR["root"]["nodes"];
+  output?: WorkflowIR["root"]["output"];
   root?: WorkflowIR["root"];
 };
 
 function workflow(partial: WorkflowParts = {}): WorkflowIR {
-  const { nodes, root, ...rest } = partial;
+  const { nodes, output = { kind: "object", fields: {} }, root, ...rest } = partial;
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "normalization",
     agents: {},
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-    outputs: {},
     diagnostics: [],
     ...rest,
-    root: root ?? { nodes: nodes ?? [] },
+    root: root ?? { nodes: nodes ?? [], output },
   } as WorkflowIR;
 }

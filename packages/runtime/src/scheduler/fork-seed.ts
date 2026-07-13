@@ -389,7 +389,7 @@ function semanticNodeSignature(node: NodeIR, workflow: WorkflowIR): unknown {
   if (semantic.kind === "switch") return { id: semantic.id, kind: semantic.kind, cases: semantic.cases.map(c => c.when), default: true };
   if (semantic.kind === "parallel") return { id: semantic.id, kind: semantic.kind, strategy: semantic.strategy, maxConcurrency: semantic.maxConcurrency, branchIds: Object.keys(semantic.branches) };
   if (semantic.kind === "fanout") return { id: semantic.id, kind: semantic.kind, over: semantic.over, strategy: semantic.strategy, count: semantic.count, maxConcurrency: semantic.maxConcurrency };
-  if (semantic.kind === "loop") return { id: semantic.id, kind: semantic.kind, state: semantic.state, outputs: semantic.do.outputs };
+  if (semantic.kind === "loop") return { id: semantic.id, kind: semantic.kind, state: semantic.state, output: semantic.do.output };
   return semantic;
 }
 

@@ -83,7 +83,7 @@ const triaged = step("triage_issues").fanout({
             input: { id: item.id, title: item.title, labels: item.labels },
             cwd: input.repoPath,
           });
-          return { titleLine: metadata.output.titleLine };
+          return metadata.output;
         },
         review() {
           const review = step("review_issue").agent({
@@ -100,7 +100,7 @@ const triaged = step("triage_issues").fanout({
             ...output,
             summary: output.summary.trim(),
           }));
-          return { route: view.route, summary: view.summary };
+          return view;
         },
       },
     });

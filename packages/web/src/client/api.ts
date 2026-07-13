@@ -1,4 +1,5 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
+import type { ExprIR, StaticExprShape } from "@acpus/expression/ir";
 
 export type RunRecord = {
   id: string;
@@ -197,7 +198,7 @@ export type WorkflowVisualizationResult =
     status: "ready";
     graph: WebGraph;
     workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
-    contract: { inputSchema?: unknown; outputs: Record<string, unknown> };
+    contract: { inputSchema?: unknown; output: ExprIR; outputShape: StaticExprShape };
     sourceGraphDigest: string;
   }
   | {

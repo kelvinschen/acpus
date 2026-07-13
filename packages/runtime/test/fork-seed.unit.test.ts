@@ -438,8 +438,8 @@ describe("targeted fork seed planning", () => {
   it("fails static targets on an unselected conditional path even when another branch is ready", () => {
     const plan = planTargetedForkSeed({
       forkRunId: "fork",
-      sourceWorkflow: workflow([ifNode({ kind: "literal", value: false }, { nodes: [taskNode("other")] })]),
-      replacementWorkflow: workflow([ifNode({ kind: "literal", value: false }, { nodes: [taskNode("other")] })]),
+      sourceWorkflow: workflow([ifNode({ kind: "literal", value: false }, { output: { kind: "object", fields: {} }, nodes: [taskNode("other")] })]),
+      replacementWorkflow: workflow([ifNode({ kind: "literal", value: false }, { output: { kind: "object", fields: {} }, nodes: [taskNode("other")] })]),
       replacementScope: rootScope(),
       sourceProjection: createSchedulerProjection("source"),
       inputChanged: false,
@@ -821,7 +821,7 @@ describe("targeted fork seed planning", () => {
       kind: "fanout",
       strategy: "all",
       over: { kind: "literal", value: "not-array" },
-      do: { nodes: [taskNode("prepare")], outputs: {} },
+      do: { nodes: [taskNode("prepare")], output: { kind: "object", fields: {} } },
     }, taskNode("after")]);
 
     const plan = planTargetedForkSeed({
@@ -939,11 +939,11 @@ function rootScope() {
 
 function workflow(nodes: NodeIR[], agents: WorkflowIR["agents"] = {}): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "fork-seed-test",
     agents,
-    root: { nodes },
-    outputs: {},
+    root: { output: { kind: "object", fields: {} }, nodes },
+
     diagnostics: [],
   };
 }
@@ -980,8 +980,8 @@ function parallelNode(): NodeIR {
     kind: "parallel",
     strategy: "all",
     branches: {
-      left: { nodes: [taskNode("left_first"), taskNode("left_target")] },
-      right: { nodes: [taskNode("right_task")] },
+      left: { output: { kind: "object", fields: {} }, nodes: [taskNode("left_first"), taskNode("left_target")] },
+      right: { output: { kind: "object", fields: {} }, nodes: [taskNode("right_task")] },
     },
   };
 }
@@ -992,18 +992,18 @@ function raceParallelNode(): NodeIR {
     kind: "parallel",
     strategy: "race",
     branches: {
-      winner: { nodes: [taskNode("winner_task")] },
-      loser: { nodes: [taskNode("loser_task")] },
+      winner: { output: { kind: "object", fields: {} }, nodes: [taskNode("winner_task")] },
+      loser: { output: { kind: "object", fields: {} }, nodes: [taskNode("loser_task")] },
     },
   };
 }
 
-function ifNode(condition: Extract<NodeIR, { kind: "if" }>["condition"], elseScope: Extract<NodeIR, { kind: "if" }>["else"] = { nodes: [] }): NodeIR {
+function ifNode(condition: Extract<NodeIR, { kind: "if" }>["condition"], elseScope: Extract<NodeIR, { kind: "if" }>["else"] = { output: { kind: "object", fields: {} }, nodes: [] }): NodeIR {
   return {
     id: "choose",
     kind: "if",
     condition,
-    then: { nodes: [taskNode("inner")] },
+    then: { output: { kind: "object", fields: {} }, nodes: [taskNode("inner")] },
     else: elseScope,
   };
 }
@@ -1013,7 +1013,7 @@ function fanoutNode(nodes: NodeIR[], options: { strategy?: "all" | "quorum"; cou
     id: "items",
     kind: "fanout" as const,
     over: { kind: "ref" as const, path: ["input", "items"] },
-    do: { nodes, outputs: {} },
+    do: { nodes, output: { kind: "object" as const, fields: {} } },
   };
   if (options.strategy === "quorum") {
     return { ...base, strategy: "quorum", count: { kind: "literal", value: options.count ?? 1 } };
@@ -1028,10 +1028,10 @@ function loopNode(nodes: NodeIR[]): NodeIR {
     state: { kind: "object", fields: { done: { kind: "literal", value: false } } },
     do: {
       nodes,
-      outputs: {
+      output: { kind: "object", fields: {
         state: { kind: "object", fields: { done: { kind: "ref", path: ["nodes", "target", "output", "done"] } } },
         stop: { kind: "ref", path: ["nodes", "target", "output", "done"] },
-      },
+      } },
     },
   };
 }

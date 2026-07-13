@@ -21,7 +21,7 @@ describe.concurrent("workflow module compiler", () => {
     const compiled = await compileFixtureResult("release.workflow.ts");
     const { ir } = compiled;
 
-    expect(ir.irVersion).toBe(4);
+    expect(ir.irVersion).toBe(5);
     expect(ir.name).toBe("release-readiness");
     expect(ir.diagnostics).toEqual([]);
     expect(compiled.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -95,7 +95,7 @@ describe.concurrent("workflow module compiler", () => {
       exportName: "normalizePath",
       referrer: { path: expect.stringContaining("same-file-reusable.workflow.ts") },
     });
-    expect(ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
+    expect(ir.root.output).toMatchObject({ kind: "object", fields: { normalized: { kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] } } });
   });
 
   it("compiles same-file task references without generated task source", async () => {
@@ -268,14 +268,14 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 
     expect(ir.name).toBe("orchestration-fixture");
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.outputs.run_id).toEqual({ kind: "ref", path: ["meta", "runId"] });
+    expect(ir.root.output).toMatchObject({ kind: "object", fields: { run_id: { kind: "ref", path: ["meta", "runId"] } } });
 
     const fanout = getNode(ir.root, "lanes");
     expect(fanout).toMatchObject({
       kind: "fanout",
       over: { kind: "ref", path: ["input", "lanes"] },
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           lane: {
             kind: "ref",
             path: ["fanout", "lanes", "item", "id"],
@@ -284,7 +284,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
             kind: "ref",
             path: ["nodes", "lane_parallel", "output", "route", "route"],
           },
-        },
+        } },
       },
     });
     if (fanout?.kind !== "fanout") throw new Error("expected fanout fixture node");
@@ -294,17 +294,17 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       kind: "parallel",
       branches: {
         review: {
-          outputs: {
+          output: { kind: "object", fields: {
             ok: { kind: "ref", path: ["nodes", "review_lane", "output", "ok"] },
-          },
+          } },
         },
         route: {
-          outputs: {
+          output: { kind: "object", fields: {
             route: {
               kind: "ref",
               path: ["nodes", "route_lane", "output", "route"],
             },
-          },
+          } },
         },
       },
     });
@@ -324,7 +324,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         },
       },
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           stop: {
             kind: "call",
             fn: "lift",
@@ -334,7 +334,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
               { kind: "literal", value: expect.any(String) },
             ],
           },
-        },
+        } },
       },
     });
     if (loop?.kind !== "loop") throw new Error("expected loop fixture node");
@@ -375,12 +375,12 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         },
       ],
       default: {
-        outputs: {
+        output: { kind: "object", fields: {
           route: {
             kind: "ref",
             path: ["nodes", "manual_route", "output", "route"],
           },
-        },
+        } },
       },
     });
 
@@ -394,14 +394,15 @@ export default defineWorkflow({ name: "throws" }).build(() => {
             kind: "signal",
           },
         ],
-        outputs: {
+        output: { kind: "object", fields: {
           approved: {
             kind: "ref",
             path: ["nodes", "human_approval", "output", "approved"],
           },
-        },
+        } },
       },
       else: {
+        output: { kind: "object", fields: {} },
         nodes: [
           {
             id: "automatic_approval",

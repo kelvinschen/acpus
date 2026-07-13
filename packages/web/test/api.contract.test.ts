@@ -492,11 +492,11 @@ describe("web API contract", () => {
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
       expect(body.result.status).toBe("ready");
-      expect(body.result.contract.inputSchema).toMatchObject({ kind: "object" });
-      expect(body.result.contract.outputs).toEqual(expect.objectContaining({
-        approved: expect.any(Object),
-        first_lane: expect.any(Object),
-      }));
+      expect(body.result.contract).toMatchObject({
+        inputSchema: { kind: "object" },
+        output: { kind: "object" },
+        outputShape: { kind: "object" },
+      });
     });
 
     it("rejects invalid visualization bodies", async () => {

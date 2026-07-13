@@ -16,6 +16,7 @@ function taskNode(id: string): TaskNodeIR {
 }
 
 const allNodeKinds: ScopeIR = {
+  output: { kind: "object", fields: {} },
   nodes: [
     {
       id: "agent",
@@ -33,25 +34,25 @@ const allNodeKinds: ScopeIR = {
       id: "if",
       kind: "if",
       condition: truthy,
-      then: { nodes: [taskNode("if_then")] },
-      else: { nodes: [taskNode("if_else")] },
+      then: { output: { kind: "object", fields: {} }, nodes: [taskNode("if_then")] },
+      else: { output: { kind: "object", fields: {} }, nodes: [taskNode("if_else")] },
     },
     {
       id: "switch",
       kind: "switch",
       cases: [
-        { when: truthy, then: { nodes: [taskNode("switch_case_0")] } },
-        { when: truthy, then: { nodes: [taskNode("switch_case_1")] } },
+        { when: truthy, then: { output: { kind: "object", fields: {} }, nodes: [taskNode("switch_case_0")] } },
+        { when: truthy, then: { output: { kind: "object", fields: {} }, nodes: [taskNode("switch_case_1")] } },
       ],
-      default: { nodes: [taskNode("switch_default")] },
+      default: { output: { kind: "object", fields: {} }, nodes: [taskNode("switch_default")] },
     },
     {
       id: "parallel",
       kind: "parallel",
       strategy: "all",
       branches: {
-        first: { nodes: [taskNode("parallel_first")] },
-        second: { nodes: [taskNode("parallel_second")] },
+        first: { output: { kind: "object", fields: {} }, nodes: [taskNode("parallel_first")] },
+        second: { output: { kind: "object", fields: {} }, nodes: [taskNode("parallel_second")] },
       },
     },
     {
@@ -60,6 +61,7 @@ const allNodeKinds: ScopeIR = {
       strategy: "all",
       over: { kind: "array", items: [] },
       do: {
+        output: { kind: "object", fields: {} },
         nodes: [
           {
             id: "loop",
@@ -67,7 +69,7 @@ const allNodeKinds: ScopeIR = {
             state: truthy,
             do: {
               nodes: [taskNode("loop_do")],
-              outputs: { state: truthy, stop: truthy },
+              output: { kind: "object", fields: { state: truthy, stop: truthy } },
             },
           },
         ],

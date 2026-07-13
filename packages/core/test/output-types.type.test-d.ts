@@ -382,7 +382,19 @@ test("workflow and task output types enforce durable data", () => {
     step("any_loop_state").loop({
       // @ts-expect-error any cannot cross the loop state seam.
       state: { escaped: escape },
-      do({ state }) { return { state, stop: true }; },
+      do() { return { state: { escaped: "safe" }, stop: true }; },
+    });
+
+    step("any_loop_transition").loop({
+      state: { ok: false },
+      // @ts-expect-error any cannot cross the loop transition seam.
+      do() { return escape; },
+    });
+
+    step("unknown_loop_transition").loop({
+      state: { ok: false },
+      // @ts-expect-error unknown cannot cross the loop transition seam.
+      do() { return opaque; },
     });
 
     const broadResult = step("broad_task").task({ input: {}, exec: broadTask });
@@ -395,6 +407,9 @@ test("workflow and task output types enforce durable data", () => {
     const broadBranch = (() => ({ value: "ok" })) as () => Record<string, unknown>;
     // @ts-expect-error unknown callback-variable outputs cannot cross a composite seam.
     step("broad_parallel").parallel({ branches: { broadBranch } });
+    const explicitlyUnknown = (() => "ok") as () => unknown;
+    // @ts-expect-error unknown callback outputs cannot cross a composite seam.
+    step("unknown_parallel").parallel({ branches: { explicitlyUnknown } });
 
     // @ts-expect-error unknown is not a durable Task output.
     step("invalid_unknown_task").task({
@@ -508,8 +523,8 @@ test("branch outputs infer unions while loop transitions remain exact", () => {
   });
 });
 
-test("scope callback outputs are named objects", () => {
-  defineWorkflow({ name: "typed-scope-object-output" }).build(({ step }) => {
+test("scope callbacks return arbitrary workflow data while NodeRef stays a control handle", () => {
+  defineWorkflow({ name: "typed-scope-workflow-data-output" }).build(({ step }) => {
     const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
 
     step("bad_direct_ref").parallel({
@@ -526,22 +541,83 @@ test("scope callback outputs are named objects", () => {
       },
     });
 
-    step("bad_direct_expr").parallel({
+    const directExpr = step("direct_expr").parallel({
       branches: {
-        // @ts-expect-error Expr must be assigned to a named output field.
         only() { return leaf.output.value; },
       },
     });
+    expectTypeOf(directExpr.output.only).toEqualTypeOf<Expr<string>>();
 
-    step("valid_named_expr").parallel({
-      branches: { only() { return { value: leaf.output.value }; } },
+    const scalarSource: string[] = ["a"];
+    const scalarItems = step("scalar_items").fanout({
+      over: scalarSource,
+      do({ item }) { return item; },
     });
+    expectTypeOf(lift(scalarItems.output, items => items[0] ?? null)).toEqualTypeOf<Expr<string | null>>();
 
-    step("bad_fanout_item").fanout({
-      over: ["a"],
-      // @ts-expect-error fanout callbacks return named output objects.
-      do() { return "bad"; },
+    const scalarBranch = step("scalar_branch").if({
+      condition: true,
+      then() { return "ready"; },
+      else() { return 0; },
     });
+    expectTypeOf(scalarBranch.output).toEqualTypeOf<Expr<string | number>>();
+
+    const widenedBranch = step("widened_branch").if({
+      condition: true,
+      then() { return "ready"; },
+      else() { return "blocked"; },
+    });
+    expectTypeOf(widenedBranch.output).toEqualTypeOf<Expr<string>>();
+
+    const narrowBranch = step("narrow_branch").if({
+      condition: true,
+      then() { return "ready" as const; },
+      else() { return "blocked" as const; },
+    });
+    expectTypeOf(narrowBranch.output).toEqualTypeOf<Expr<"ready" | "blocked">>();
+
+    const scalarParallel = step("scalar_parallel").parallel({
+      branches: {
+        count() { return 1; },
+        empty() { return null; },
+      },
+    });
+    expectTypeOf(scalarParallel.output.count).toEqualTypeOf<Expr<number>>();
+    expectTypeOf(scalarParallel.output.empty).toEqualTypeOf<Expr<null>>();
+
+    const scalarLoop = step("scalar_loop").loop({
+      state: 0,
+      do({ state }) {
+        expectTypeOf(state).toEqualTypeOf<Expr<number>>();
+        return { state, stop: true };
+      },
+    });
+    expectTypeOf(scalarLoop.output).toEqualTypeOf<Expr<number>>();
+
+    type Phase = "pending" | "done";
+    const literalLoop = step("literal_loop").loop({
+      state: "pending" as Phase,
+      do({ state }) { return { state, stop: true }; },
+    });
+    expectTypeOf(literalLoop.output).toEqualTypeOf<Expr<Phase>>();
+
+    const constLiteralLoop = step("const_literal_loop").loop({
+      state: "pending" as const,
+      do({ state }) { return { state, stop: true }; },
+    });
+    expectTypeOf(constLiteralLoop.output).toEqualTypeOf<Expr<"pending">>();
+
+    const nullLoop = step("null_loop").loop({
+      state: null,
+      do({ state }) { return { state, stop: true }; },
+    });
+    expectTypeOf(nullLoop.output).toEqualTypeOf<Expr<null>>();
+
+    const arrayLoop = step("array_loop").loop({
+      state: [] as string[],
+      do({ state }) { return { state, stop: true }; },
+    });
+    assertType<Expr<string[]>>(arrayLoop.output);
 
     step("bad_loop_body").loop({
       state: { value: "seed" },
@@ -549,12 +625,31 @@ test("scope callback outputs are named objects", () => {
       do() { return "bad"; },
     });
 
+    return leaf.output.value;
+  });
+
+  defineWorkflow({ name: "direct-root-scalar" }).build(() => "ok");
+  defineWorkflow({ name: "direct-root-null" }).build(() => null);
+  defineWorkflow({ name: "direct-root-array" }).build(() => ["ok", 1, null]);
+  // @ts-expect-error workflow callbacks cannot return NodeRef control handles.
+  defineWorkflow({ name: "bad-direct-root-ref" }).build(({ step }) =>
+    step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) }));
+  // @ts-expect-error scope callbacks are synchronous and promises are not durable values.
+  defineWorkflow({ name: "bad-root-promise" }).build(async () => "later");
+});
+
+test("optional expressions are allowed only as object fields", () => {
+  const optional = null as unknown as Expr<string | undefined>;
+
+  defineWorkflow({ name: "optional-object-field" }).build(() => ({ optional }));
+  defineWorkflow({ name: "optional-composite-field" }).build(({ step }) => {
+    const branch = step("branch").parallel({ branches: { only() { return { optional }; } } });
+    expectTypeOf(branch.output.only.optional).toEqualTypeOf<Expr<string | undefined>>();
     return {};
   });
 
-  // @ts-expect-error workflow callbacks return named output objects, not Expr.
-  defineWorkflow({ name: "bad-direct-root-expr" }).build(() => template`bad`);
-  // @ts-expect-error workflow callbacks return named output objects, not NodeRef.
-  defineWorkflow({ name: "bad-direct-root-ref" }).build(({ step }) =>
-    step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) }));
+  // @ts-expect-error a scope must always produce a top-level workflow value.
+  defineWorkflow({ name: "optional-root" }).build(() => optional);
+  // @ts-expect-error array elements cannot resolve to undefined.
+  defineWorkflow({ name: "optional-array-item" }).build(() => [optional]);
 });

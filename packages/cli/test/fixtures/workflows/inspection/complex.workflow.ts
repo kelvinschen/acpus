@@ -7,7 +7,7 @@ import { eq, gte, template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "inspect-composite-smoke",
-  description: "A deliberately nested, slowly advancing workflow for inspect/follow smoke tests.",
+  description: "A nested composite workflow for inspect/follow smoke tests.",
   inputSchema: z.object({
     items: z.array(z.string()).default(["alpha", "alpha", "beta"]),
     rounds: z.number().default(2),
@@ -20,21 +20,21 @@ export default defineWorkflow({
       const selected = step("primary_route").task({
         input: { mode: "primary" },
         exec: async ({ input }) => {
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 20));
           return { mode: input.mode };
         },
       });
-      return { mode: selected.output.mode };
+      return selected.output.mode;
     },
     else() {
       const skipped = step("fallback_route").task({
         input: { mode: "fallback" },
         exec: async ({ input }) => {
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await new Promise(resolve => setTimeout(resolve, 20));
           return { mode: input.mode };
         },
       });
-      return { mode: skipped.output.mode };
+      return skipped.output.mode;
     },
   });
 
@@ -52,7 +52,7 @@ export default defineWorkflow({
                 const iteration = step("refine_round").task({
                   input: { value: state.value, round, itemIndex },
                   exec: async ({ input }) => {
-                    await new Promise(resolve => setTimeout(resolve, 350));
+                    await new Promise(resolve => setTimeout(resolve, 20));
                     return {
                       value: `${input.value}:round-${input.round}`,
                       completedRounds: input.round,
@@ -76,24 +76,24 @@ export default defineWorkflow({
             };
           },
         });
-        return { results: batches.output };
+        return batches.output;
       },
       audit() {
         const audit = step("audit_route").task({
-          input: { mode: route.output.mode },
+          input: { mode: route.output },
           exec: async ({ input }) => {
-            await new Promise(resolve => setTimeout(resolve, 650));
+            await new Promise(resolve => setTimeout(resolve, 20));
             return { summary: `audited:${input.mode}` };
           },
         });
-        return { summary: audit.output.summary };
+        return audit.output.summary;
       },
     },
   });
 
   const approval = step("approval").signal({
     outputSchema: z.object({ approved: z.boolean(), note: z.string().default("") }),
-    prompt: template`Approve composite smoke run ${meta.runId} after ${work.output.audit.summary}?`,
+    prompt: template`Approve composite smoke run ${meta.runId} after ${work.output.audit}?`,
     timeout: "10m",
     onTimeout: { message: "composite smoke approval timed out" },
   });
@@ -105,9 +105,9 @@ export default defineWorkflow({
 
   return {
     runId: meta.runId,
-    mode: route.output.mode,
-    audit: work.output.audit.summary,
-    results: work.output.batches.results,
+    mode: route.output,
+    audit: work.output.audit,
+    results: work.output.batches,
     note: approval.output.note,
   };
 });

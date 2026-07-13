@@ -277,7 +277,7 @@ describe.concurrent("runtime admission use cases", () => {
       const packageLockDigest = digest(packageLock);
       const task = prepared.ir.root.nodes.find(node => node.id === "normalize_path");
 
-      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 4, name: "runtime-same-file-reusable" });
+      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 5, name: "runtime-same-file-reusable" });
       expect(prepared.lock.workflow.sourceDigest).toBe(sourceDigest);
       expect(prepared.packageLockDigest).toBe(packageLockDigest);
       expect(prepared.lock.packageLockDigest).toBe(packageLockDigest);
@@ -304,7 +304,7 @@ describe.concurrent("runtime admission use cases", () => {
           },
         },
       });
-      expect(prepared.ir.outputs.normalized).toEqual({ kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] });
+      expect(prepared.ir.root.output).toMatchObject({ kind: "object", fields: { normalized: { kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] } } });
       const otherCwd = join(workspace, "not-the-workflow-dir");
       await mkdir(otherCwd);
       setSingleTaskCwd(prepared.ir, otherCwd);

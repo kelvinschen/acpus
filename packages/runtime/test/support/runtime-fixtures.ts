@@ -118,6 +118,10 @@ export function validWorkflow() {
   });
 }
 
+export function scalarWorkflow() {
+  return defineWorkflow({ name: "runtime-scalar-output" }).build(() => "ready");
+}
+
 export function metaWorkflow() {
   return defineWorkflow({
     name: "cli-meta",

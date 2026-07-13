@@ -96,7 +96,7 @@
 - When a graph node is selected and the inspector opens or the graph viewport resizes, the selected node MUST remain visible in the graph viewport with reasonable margin.
 - Graph pages MUST expose a workflow-level Input/Output inspection target from the graph toolbar. Workflow inspection MUST be distinct from node inspection and MUST NOT be inferred from the root composite node.
 - Runtime workflow inspection MUST show actual `RunDetails.input` and final `RunDetails.output` when recorded. It MUST NOT derive partial workflow output from top-level node outputs while a run is active.
-- Static workflow inspection MUST show workflow contract data: input schema when declared and the workflow output expression mapping. It MUST NOT show fake runtime values.
+- Static workflow inspection MUST show workflow contract data: input schema when declared, the raw workflow `output: ExprIR`, and its `outputShape`. It MUST label the authored value as `Output Expression`, MUST NOT call it an output mapping, and MUST NOT show fake runtime values.
 - Workflow-level Input/Output inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - Runtime node inspection MUST resolve node instances, attempts, artifacts, and execution metadata against the current graph fanout/loop selector context. It MUST NOT show runtime output from another selected item or iteration.
 - Runtime node inspection context MUST identify each fanout selection with a non-negative integer `itemIndex` and each loop selection with a non-negative integer iteration. The WebUI API MUST reject incomplete or malformed selector context.

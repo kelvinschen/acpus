@@ -104,10 +104,10 @@ export function enrichTypeScriptDiagnostic(
     const callback = enclosingFunction(node);
     if (callback && isGraphCallback(callback, checker, project, roots)) {
       if (callbackReturnsNodeRef(callback, checker, project, roots)) {
-        return { hint: "Return named durable fields from graph callbacks and read node results through .output; do not return a NodeRef, even when nested." };
+        return { hint: "Return node.output from graph callbacks; do not return a NodeRef, even when nested." };
       }
       if (callbackReturnsNonDurable(callback, checker)) {
-        return { hint: "Return named JSON-compatible fields from graph callbacks; convert Date and other class instances to strings or plain objects." };
+        return { hint: "Return JSON-compatible WorkflowData from graph callbacks; convert Date and other class instances to strings or plain objects." };
       }
     }
   }

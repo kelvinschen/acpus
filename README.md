@@ -21,7 +21,7 @@ serializable IR which a runtime consumes.
 - Integration with `@acpus/expression`, the Acpus-owned expression language package for `ExprIR`, `TemplateIR`, predicate helpers, overloaded `lift`, `template`, and `md`.
 - Flat Agent / Task / Signal authoring specs that lower into explicit frozen-IR execution envelopes, durable workflow input and Agent/Signal output schemas, and config-time reusable Task input inference, plus composite nodes (`if`, `switch`, `parallel`, `fanout`, `loop`) and boolean `assert` nodes.
 - Trusted local **Task** nodes (replacing program nodes) with an Acpus-owned `$` command wrapper backed by `zx/core`. Security isolation is delegated to the runner/container/profile layer, not per-node syntax.
-- Compilation to a frozen `WorkflowIR` (`irVersion: 4`) with structural validation
+- Compilation to a frozen `WorkflowIR` (`irVersion: 5`) with structural validation
   and live reusable Task references.
 
 Representative workflow compiler fixtures live in `packages/workflow-compiler/test/fixtures/workflows/`.

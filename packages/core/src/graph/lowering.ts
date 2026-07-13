@@ -5,14 +5,15 @@ import type { EnvInput, StaticEnvInput } from "../nodes/leaf/shared.js";
 
 export function bindingsToIR(bindings: Record<string, unknown>): Record<string, ExprIR> {
   if (!isPlainObject(bindings) || isExpr(bindings) || isNodeRef(bindings)) {
-    throw new Error("Workflow outputs and bindings must be plain objects.");
+    throw new Error("Expression bindings must be plain objects.");
   }
-  const result: Record<string, ExprIR> = {};
-  for (const [key, value] of Object.entries(bindings)) {
-    assertNoNodeRef(value);
-    result[key] = valueToExprIR(value);
-  }
-  return result;
+  assertNoNodeRef(bindings);
+  return (valueToExprIR(bindings) as Extract<ExprIR, { kind: "object" }>).fields;
+}
+
+export function outputToIR(value: unknown): ExprIR {
+  assertNoNodeRef(value);
+  return valueToExprIR(value);
 }
 
 export function envToIR(env: EnvInput): Record<string, ExprIR>;
@@ -51,7 +52,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function assertNoNodeRef(value: unknown): void {
   if (!value || typeof value !== "object" || isExpr(value)) return;
   if (isNodeRef(value)) {
-    throw new Error("NodeRef cannot be lowered as durable data; return a named field from node.output instead.");
+    throw new Error("NodeRef cannot be lowered as durable data; return node.output instead.");
   }
   if (Array.isArray(value)) {
     for (const item of value) assertNoNodeRef(item);

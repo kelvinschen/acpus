@@ -74,10 +74,6 @@ function isRuntimeGlobalIdentifier(node: ts.Identifier, semantic?: SemanticCaptu
   return RUNTIME_GLOBALS.has(node.text) && declarations.every(declaration => declaration.getSourceFile().isDeclarationFile);
 }
 
-export function isRuntimeGlobalName(name: string): boolean {
-  return RUNTIME_GLOBALS.has(name);
-}
-
 function collectLocalBindings(fn: ts.FunctionLikeDeclaration): Map<string, ts.Node[]> {
   const bindings = new Map<string, ts.Node[]>();
   const visit = (node: ts.Node): void => {

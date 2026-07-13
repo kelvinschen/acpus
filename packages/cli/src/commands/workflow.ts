@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { walkNodes } from "@acpus/core/ir";
 import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
-import type { JsonValue } from "@acpus/expression/ir";
+import { staticExprShape, type JsonValue } from "@acpus/expression/ir";
 import { runError, usageError, validationError } from "../errors.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScopeOptions } from "../catalog.js";
@@ -219,7 +219,8 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
     },
     contract: {
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
-      outputs: prepared.ir.outputs,
+      output: prepared.ir.root.output,
+      outputShape: staticExprShape(prepared.ir.root.output),
     },
     sourceGraphDigest: prepared.sourceGraphDigest,
   });

@@ -122,13 +122,16 @@ export type AssertNodeIR = BaseNodeIR & {
 
 export type ScopeIR = {
   nodes: NodeIR[];
-  outputs?: Record<string, ExprIR>;
+  output: ExprIR;
 };
 
-export type LoopTransitionScopeIR = Omit<ScopeIR, "outputs"> & {
-  outputs: {
-    state: ExprIR;
-    stop: ExprIR;
+export type LoopTransitionScopeIR = Omit<ScopeIR, "output"> & {
+  output: {
+    kind: "object";
+    fields: {
+      state: ExprIR;
+      stop: ExprIR;
+    };
   };
 };
 
@@ -176,13 +179,12 @@ export type SourceLocationIR = {
 };
 
 export type WorkflowIR = {
-  irVersion: 4;
+  irVersion: 5;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;
   agents: Record<string, AgentDefinitionIR>;
   root: ScopeIR;
-  outputs: Record<string, ExprIR>;
   diagnostics: DiagnosticIR[];
 };
 

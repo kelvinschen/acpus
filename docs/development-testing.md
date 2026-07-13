@@ -27,7 +27,7 @@ The root Vitest config groups tests by filename. Choose the cheapest project tha
 
 Every test should answer one concrete question: "what breakage would this catch?" Put that answer in the `it(...)` name or the setup shape.
 
-Prefer exact assertions for stable outputs: lowered `ExprIR`, `SchemaIR`, preparation locks, diagnostic `code`/`path`, exit code, node ids, and public output keys. Use partial matchers only for intentionally dynamic values such as source text captured from `Function#toString()` and temp paths.
+Prefer exact assertions for stable outputs: lowered `ExprIR`, `SchemaIR`, preparation locks, diagnostic `code`/`path`, exit code, node ids, and public output expressions or static shapes. Use partial matchers only for intentionally dynamic values such as source text captured from `Function#toString()` and temp paths.
 
 Do not snapshot whole `WorkflowIR` objects. Full snapshots couple a test to unrelated graph fields and embedded function source. Instead, assert the stable slices that define the contract. Preparation locks are separate deterministic artifacts and SHOULD be asserted exactly when their shape is the risk under test.
 
@@ -59,7 +59,7 @@ The initial core test foundation should cover these chains:
 - Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
 - Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
 - Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `lift` callback inference, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
-- Module compiler: a checked-in workflow module fixture compiles through the internal preparation compiler with `irVersion: 4`, a separate source digest, expected node ids, task execution descriptors, outputs, and module-import diagnostics.
+- Module compiler: a checked-in workflow module fixture compiles through the internal preparation compiler with `irVersion: 5`, a separate source digest, expected node ids, task execution descriptors, scope output expressions, and module-import diagnostics.
 
 ## Commands
 

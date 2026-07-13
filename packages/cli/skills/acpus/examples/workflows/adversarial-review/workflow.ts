@@ -129,9 +129,7 @@ export default defineWorkflow({
                 timeout: "30m",
             });
 
-            return {
-                review: review.output,
-            };
+            return review.output;
         },
     });
 
@@ -185,9 +183,7 @@ export default defineWorkflow({
                 timeout: "30m",
             });
 
-            return {
-                critique: critique.output,
-            };
+            return critique.output;
         },
     });
 

@@ -82,17 +82,74 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     });
   });
 
-  it("signals an awaiting workflow through the subprocess CLI", async () => {
-    await withTestWorkspace("e2e-runs-signal", async workspace => {
-      const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
-      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
+  it("runs and inspects direct composite workflow values", async () => {
+    await withTestWorkspace("e2e-inspect-composite-values", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/inspection/complex.workflow.ts");
+      const admitted = await runSourceCli(workspace, [
+        "workflow",
+        "run",
+        workflow,
+        "--background",
+        "--input",
+        '{"items":["alpha","beta"],"rounds":1,"usePrimary":true}',
+        "--json",
+      ]);
       expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
-      const runId = JSON.parse(admitted.stdout).run.id;
-      await waitForAwaitingSignal(workspace, runId, "approve");
+      const runId = JSON.parse(admitted.stdout).run.id as string;
+      await waitForAwaitingSignal(workspace, runId, "approval");
+      const followedPromise = runSourceCli(workspace, ["runs", "inspect", runId, "--follow", "--interval", "250ms"]);
 
-      const signaled = await runSourceCli(workspace, ["runs", "signal", runId, "--target", "approve", "--payload", "{\"ok\":true}", "--json"]);
+      const overview = await runSourceCli(workspace, ["runs", "inspect", runId]);
+      expect(overview.exitCode, overview.stdout || overview.stderr).toBe(0);
+      expect(overview.stderr).toBe("");
+      expect(overview.stdout).toContain("inspect-composite-smoke  awaiting");
+      expect(overview.stdout).toContain("route  [if]");
+      expect(overview.stdout).toContain("work  [parallel]");
+      expect(overview.stdout).toContain("batches  [fanout]");
+      expect(overview.stdout).toContain("refine_item  [loop]");
+      expect(overview.stdout).toContain("approval  [signal]  awaiting");
 
-      expect(signaled.exitCode).toBe(0);
+      const route = await getRunInspection(workspace, { runId, mode: "target", target: "route" });
+      expect(route.isOk()).toBe(true);
+      if (route.isErr()) throw route.error;
+      expect(route.value.kind).toBe("target");
+      if (route.value.kind !== "target") throw new Error("Expected route target inspection.");
+      expect(route.value.summary.output).toBe("primary");
+
+      const work = await getRunInspection(workspace, { runId, mode: "target", target: "work" });
+      expect(work.isOk()).toBe(true);
+      if (work.isErr()) throw work.error;
+      expect(work.value.kind).toBe("target");
+      if (work.value.kind !== "target") throw new Error("Expected work target inspection.");
+      expect(work.value.summary.output).toEqual({
+        batches: [
+          { itemIndex: 0, value: "alpha:round-1", completedRounds: 1 },
+          { itemIndex: 1, value: "beta:round-1", completedRounds: 1 },
+        ],
+        audit: "audited:primary",
+      });
+
+      const expectedOutput = {
+        runId,
+        mode: "primary",
+        audit: "audited:primary",
+        results: [
+          { itemIndex: 0, value: "alpha:round-1", completedRounds: 1 },
+          { itemIndex: 1, value: "beta:round-1", completedRounds: 1 },
+        ],
+        note: "smoke-ok",
+      };
+      const signaled = await runSourceCli(workspace, [
+        "runs",
+        "signal",
+        runId,
+        "--target",
+        "approval",
+        "--payload",
+        '{"approved":true,"note":"smoke-ok"}',
+        "--json",
+      ]);
+      expect(signaled.exitCode, signaled.stdout || signaled.stderr).toBe(0);
       expect(signaled.stderr).toBe("");
       const signaledJson = JSON.parse(signaled.stdout);
       expect(signaledJson).toMatchObject({
@@ -103,66 +160,30 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
           type: "signal",
           state: "consumed",
           runId,
-          requestedTarget: "approve",
-          validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
+          requestedTarget: "approval",
+          validation: { kind: "schema" },
         },
         run: { id: runId },
       });
-      expect(signaledJson.control.target).toMatch(/^approve~/);
+      expect(signaledJson.control.target).toMatch(/^approval~/);
       expect(signaledJson).not.toHaveProperty("payload");
-    });
-  });
 
-  it("admits a background workflow and lets the daemon complete it", async () => {
-    await withTestWorkspace("e2e-background-run", async workspace => {
-      const workflow = await copyWorkflowFixture(workspace, "workflows/concurrency/short-task.workflow.ts");
-
-      const admitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--background", "--json"]);
-
-      expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
-      expect(admitted.stderr).toBe("");
-      const admittedJson = JSON.parse(admitted.stdout);
-      expect(admittedJson).toMatchObject({
-        ok: true,
-        phase: "run",
-        run: {
-          name: "cli-concurrency-short-task",
-        },
-      });
-      expect(admittedJson.run.id).toMatch(runIdPattern);
-      expect(admittedJson.followRunId).toBe(admittedJson.run.id);
-
-      const followed = await runSourceCli(workspace, ["runs", "inspect", admittedJson.run.id, "--follow", "--interval", "250ms", "--json"]);
+      const followed = await followedPromise;
       expect(followed.exitCode, followed.stdout || followed.stderr).toBe(0);
       expect(followed.stderr).toBe("");
-      const followRecords = followed.stdout.trim().split("\n").map(line => JSON.parse(line));
-      expect(followRecords.length).toBeGreaterThanOrEqual(2);
-      expect(followRecords[0]).toMatchObject({
-        ok: true,
-        phase: "inspect",
-        schemaVersion: 1,
+      expect(followed.stdout).toContain("inspect-composite-smoke  completed");
+      expect(followed.stdout).toContain("Output:");
+      expect(followed.stdout).toContain('"audit": "audited:primary"');
+      expect(followed.stdout).toContain('"note": "smoke-ok"');
+
+      const terminal = await getRunInspection(workspace, { runId, mode: "overview" });
+      expect(terminal.isOk()).toBe(true);
+      if (terminal.isErr()) throw terminal.error;
+      expect(terminal.value).toMatchObject({
         kind: "snapshot",
-        document: {
-          kind: "snapshot",
-          run: { id: admittedJson.run.id },
-          items: expect.any(Array),
-        },
+        run: { id: runId, status: "completed" },
+        output: expectedOutput,
       });
-      expect(followRecords[0].document.run.dynamic).toBeUndefined();
-      expect(followRecords[0].document.output).toBeUndefined();
-      expect(followRecords.slice(1, -1).every(record => record.kind === "update")).toBe(true);
-      expect(followRecords.at(-1)).toMatchObject({
-        ok: true,
-        phase: "inspect",
-        kind: "done",
-        run: {
-          id: admittedJson.run.id,
-          name: "cli-concurrency-short-task",
-          status: "completed",
-        },
-        output: { ok: true },
-      });
-      expect(followRecords.filter(record => record.output !== undefined)).toHaveLength(1);
     });
   });
 

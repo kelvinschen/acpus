@@ -30,8 +30,14 @@ function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
       return resolvePath(adapter.resolveRef(expr.path), []);
     case "array":
       return expr.items.map(item => requirePresent("array", evaluate(item, adapter)));
-    case "object":
-      return Object.fromEntries(Object.entries(expr.fields).map(([key, value]) => [key, requirePresent("object", evaluate(value, adapter))]));
+    case "object": {
+      const result: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(expr.fields)) {
+        const evaluated = evaluate(value, adapter);
+        if (evaluated !== MISSING) result[key] = evaluated;
+      }
+      return result;
+    }
     case "template":
       return renderTemplate(expr, adapter);
     case "call":

@@ -241,6 +241,7 @@ test("boolean node conditions require boolean workflow values", () => {
         {
           // @ts-expect-error switch case condition must be boolean.
           when: review.output.summary,
+          // @ts-expect-error the invalid case cannot establish a durable branch callback type.
           then() { return {}; },
         },
       ],
@@ -370,7 +371,6 @@ test("declaration-time structure stays plain", () => {
       over: ["item"],
       // @ts-expect-error fanout strategy is declaration-time structure.
       strategy: input.strategy,
-      // @ts-expect-error the invalid strategy makes the fanout callback output impossible.
       do() { return {}; },
     });
     // @ts-expect-error output schemas are declaration-time structure.

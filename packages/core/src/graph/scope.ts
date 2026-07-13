@@ -1,33 +1,51 @@
-import type { Expr, Resolvable } from "@acpus/expression";
-import { bindingsToIR } from "./lowering.js";
+import type { Expr } from "@acpus/expression";
+import { outputToIR } from "./lowering.js";
 import type { NodeRef } from "./refs.js";
 import type { NodeIR, ScopeIR } from "../ir/types.js";
 
-export type OutputValues<T extends object> = {
-  [K in keyof T]: Resolvable<T[K]>;
-};
+type OutputPosition = "top" | "object" | "array";
+type IsAny<T> = 0 extends (1 & T) ? true : false;
 
-type DurableOutput<T, AllowUndefined extends boolean, AllowExpr extends boolean> =
+type DurableRuntimeValue<T, Position extends OutputPosition> =
   unknown extends T ? never
-      : T extends NodeRef<any> ? never
-      : T extends undefined ? AllowUndefined extends true ? undefined : never
-        : T extends string | number | boolean | null ? T
-          : T extends Expr<infer Value> ? AllowExpr extends true
-            ? [Value] extends [DurableOutput<Value, true, false>] ? T : never
-            : never
+    : T extends undefined ? Position extends "object" ? undefined : never
+      : T extends string | number | boolean | null ? T
+        : T extends (...args: any[]) => any ? never
+          : T extends abstract new (...args: any[]) => any ? never
+            : T extends readonly (infer Item)[] ? readonly DurableRuntimeValue<Item, "array">[]
+              : T extends object ? { readonly [K in keyof T]: DurableRuntimeValue<T[K], "object"> }
+                : never;
+
+type DurableOutput<T, Position extends OutputPosition> =
+  unknown extends T ? never
+    : T extends NodeRef<any> ? never
+      : T extends Expr<infer Value>
+        ? [Value] extends [DurableRuntimeValue<Value, Position>] ? T : never
+        : T extends undefined ? never
+          : T extends string | number | boolean | null ? T
             : T extends (...args: any[]) => any ? never
               : T extends abstract new (...args: any[]) => any ? never
-                : T extends readonly (infer Item)[] ? readonly DurableOutput<Item, false, AllowExpr>[]
-                  : T extends object ? { readonly [K in keyof T]: DurableOutput<T[K], AllowUndefined, AllowExpr> }
+                : T extends readonly (infer Item)[] ? readonly DurableOutput<Item, "array">[]
+                  : T extends object ? { readonly [K in keyof T]: DurableOutput<T[K], "object"> }
                     : never;
 
-type OutputCheck<T, AllowUndefined extends boolean, AllowExpr extends boolean> =
-  [T] extends [DurableOutput<T, AllowUndefined, AllowExpr>] ? unknown : never;
+type OutputCheck<T, Position extends OutputPosition> =
+  [T] extends [DurableOutput<T, Position>] ? unknown : never;
 
-export type GraphOutputCheck<T> =
-  [T] extends [Expr<any> | NodeRef<any>] ? never
-    : [T] extends [Record<string, unknown>] ? OutputCheck<T, false, true> : never;
-export type TaskOutputCheck<T> = OutputCheck<T, true, false>;
+type DurableTaskOutput<T, Position extends OutputPosition> =
+  unknown extends T ? never
+    : T extends Expr<any> | NodeRef<any> ? never
+      : T extends undefined ? Position extends "array" ? never : undefined
+        : T extends string | number | boolean | null ? T
+          : T extends (...args: any[]) => any ? never
+            : T extends abstract new (...args: any[]) => any ? never
+              : T extends readonly (infer Item)[] ? readonly DurableTaskOutput<Item, "array">[]
+                : T extends object ? { readonly [K in keyof T]: DurableTaskOutput<T[K], "object"> }
+                  : never;
+
+export type GraphOutputCheck<T> = IsAny<T> extends true ? never : OutputCheck<T, "top">;
+export type TaskOutputCheck<T> =
+  [T] extends [DurableTaskOutput<T, "top">] ? unknown : never;
 
 type ScopeBuildState = {
   readonly nodes: NodeIR[];
@@ -35,8 +53,8 @@ type ScopeBuildState = {
 
 export function buildImplicitScope<Extra extends object>(
   child: ScopeBuildState,
-  fn: (ctx: Extra) => Record<string, unknown>,
+  fn: (ctx: Extra) => unknown,
   extra: Extra,
 ): ScopeIR {
-  return { nodes: child.nodes, outputs: bindingsToIR(fn(extra)) };
+  return { nodes: child.nodes, output: outputToIR(fn(extra)) };
 }

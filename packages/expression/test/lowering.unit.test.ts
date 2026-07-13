@@ -1,15 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { and, eq, gt, gte, lift, lt, lte, ne, not, or } from "@acpus/expression";
-import { refExpr, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
+import { refExpr, staticExprShape, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
 import { err } from "neverthrow";
 
 describe("expression lowering", () => {
-  it("lowers refs and literals through the package seam", () => {
+  it("lowers workflow values and refs through the package seam", () => {
     expect(refExpr<boolean>(["input", "ready"]).__ir).toEqual({ kind: "ref", path: ["input", "ready"] });
+    expect(valueToExprIR(null)).toEqual({ kind: "literal", value: null });
+    expect(valueToExprIR(["ok", 1])).toEqual({
+      kind: "array",
+      items: [{ kind: "literal", value: "ok" }, { kind: "literal", value: 1 }],
+    });
     expect(valueToExprIR({ ready: true })).toEqual({
       kind: "object",
       fields: { ready: { kind: "literal", value: true } },
     });
+  });
+
+  it("classifies static expression shapes without tracing expression sources", () => {
+    expect(staticExprShape({
+      kind: "object",
+      fields: {
+        zebra: { kind: "literal", value: true },
+        alpha: { kind: "ref", path: ["input", "alpha"] },
+      },
+    })).toEqual({ kind: "object", possibleKeys: ["alpha", "zebra"] });
+    expect(staticExprShape({ kind: "array", items: [] })).toEqual({ kind: "array" });
+    expect(staticExprShape({ kind: "literal", value: null })).toEqual({ kind: "scalar" });
+    expect(staticExprShape({ kind: "template", parts: [] })).toEqual({ kind: "scalar" });
+    expect(staticExprShape({ kind: "ref", path: ["input", "value"] })).toEqual({ kind: "dynamic" });
+    expect(staticExprShape({ kind: "call", fn: "lift", args: [] })).toEqual({ kind: "dynamic" });
   });
 
   it("rejects unsupported literal values", () => {

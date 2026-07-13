@@ -360,6 +360,7 @@ failures to stable CLI phases and exit codes.
   and error results in human-readable form.
 - Text workflow summaries MUST label workflow node counts as static graph nodes
   rather than runtime execution nodes.
+- Workflow summaries MUST expose `outputShape`, not `outputKeys`. Text output MUST render `Output: scalar`, `Output: array`, `Output: dynamic`, or `Output: object (<sorted possible keys>)`; an object with no authored keys MUST render as an object without implying required fields.
 - Successful background admission and non-terminal control text output MUST
   include an exact `acpus runs inspect <run-id> --follow` next step. Fork output
   MUST use the created child run id in that command rather than the source id.

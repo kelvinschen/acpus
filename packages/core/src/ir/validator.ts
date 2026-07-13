@@ -9,8 +9,8 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     addError(diagnostics, "IR002", "WorkflowIR must be an object.", "");
     return diagnostics;
   }
-  validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "outputs", "diagnostics"], diagnostics, "");
-  if (ir.irVersion !== 4) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 4.", "irVersion");
+  validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "diagnostics"], diagnostics, "");
+  if (ir.irVersion !== 5) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 5.", "irVersion");
   if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
     addWarning(diagnostics, "W002", `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.`);
   }
@@ -28,11 +28,6 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     path: "root",
     ids,
     agents: new Set(agents ? Object.keys(agents) : []),
-    visibleNodes: rootVisibleNodes,
-    fanoutIds: new Set(),
-    loopIds: new Set(),
-  });
-  validateExprObject(ir.outputs, diagnostics, "outputs", {
     visibleNodes: rootVisibleNodes,
     fanoutIds: new Set(),
     loopIds: new Set(),
@@ -93,25 +88,30 @@ type IrScopeContext = {
 
 function validateScope(scope: unknown, diagnostics: DiagnosticIR[], ctx: IrScopeContext): void {
   if (!requireRecord(scope, diagnostics, ctx.path, "IR002", "Scope must be an object.")) return;
-  validateKnownFields(scope, ["nodes", "outputs"], diagnostics, ctx.path);
+  validateKnownFields(scope, ["nodes", "output"], diagnostics, ctx.path);
   const nodes = requireArray<unknown>(scope.nodes, diagnostics, `${ctx.path}.nodes`, "IR002", "Scope nodes must be an array.");
-  if (!nodes) return;
-  forEachDense(nodes, diagnostics, `${ctx.path}.nodes`, node => {
-    const id = nodeId(node);
-    validateNode(node as NodeIR, diagnostics, ctx);
-    if (id) ctx.visibleNodes.add(id);
-  }, { code: "IR002" });
-  if (scope.outputs !== undefined) {
-    validateExprObject(scope.outputs, diagnostics, `${ctx.path}.outputs`, refsFromScope(ctx));
+  if (nodes) {
+    forEachDense(nodes, diagnostics, `${ctx.path}.nodes`, node => {
+      const id = nodeId(node);
+      validateNode(node as NodeIR, diagnostics, ctx);
+      if (id) ctx.visibleNodes.add(id);
+    }, { code: "IR002" });
   }
+  if (scope.output === undefined) addError(diagnostics, "IR002", "Scope output is required.", `${ctx.path}.output`);
+  else validateExpr(scope.output, diagnostics, `${ctx.path}.output`, refsFromScope(ctx));
 }
 
 function validateLoopTransitionScope(scope: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (!requireRecord(scope, diagnostics, path, "IR002", "Scope must be an object.")) return;
-  if (!requireRecord(scope.outputs, diagnostics, `${path}.outputs`, "E004", "Loop body outputs must be an object.")) return;
-  validateKnownFields(scope.outputs, ["state", "stop"], diagnostics, `${path}.outputs`);
-  if (scope.outputs.state === undefined) addError(diagnostics, "E000", "Loop body transition state is required.", `${path}.outputs.state`);
-  if (scope.outputs.stop === undefined) addError(diagnostics, "E000", "Loop body transition stop is required.", `${path}.outputs.stop`);
+  if (!requireRecord(scope.output, diagnostics, `${path}.output`, "E004", "Loop body output must be an object expression.")) return;
+  if (scope.output.kind !== "object") {
+    addError(diagnostics, "E004", "Loop body output must be an object expression.", `${path}.output`);
+    return;
+  }
+  if (!requireRecord(scope.output.fields, diagnostics, `${path}.output.fields`, "E004", "Loop body output must be an object expression.")) return;
+  validateKnownFields(scope.output.fields, ["state", "stop"], diagnostics, `${path}.output.fields`);
+  if (scope.output.fields.state === undefined) addError(diagnostics, "E000", "Loop body transition state is required.", `${path}.output.fields.state`);
+  if (scope.output.fields.stop === undefined) addError(diagnostics, "E000", "Loop body transition stop is required.", `${path}.output.fields.stop`);
 }
 
 function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeContext): void {

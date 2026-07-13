@@ -38,10 +38,7 @@ export default defineWorkflow({
               input: { id: item.id, title: item.title, labels: item.labels },
               cwd: input.repoPath,
             });
-            return {
-              labelCount: metadata.output.labelCount,
-              titleLine: metadata.output.titleLine,
-            };
+            return metadata.output;
           },
           review() {
             const review = step("review_issue").agent({
@@ -69,11 +66,7 @@ export default defineWorkflow({
               priority: output.priority,
               summary: output.summary.trim(),
             }));
-            return {
-              route: reviewView.route,
-              priority: reviewView.priority,
-              summary: reviewView.summary,
-            };
+            return reviewView;
           },
         },
       });
@@ -94,10 +87,7 @@ export default defineWorkflow({
                   action: `Escalate ${input.id} with priority ${input.priority}: ${input.summary}`,
                 }),
               });
-              return {
-                owner: escalation.output.owner,
-                action: escalation.output.action,
-              };
+              return escalation.output;
             },
           },
           {
@@ -110,7 +100,7 @@ export default defineWorkflow({
                   action: `Queue ${input.title} for this sprint`,
                 }),
               });
-              return { owner: queue.output.owner, action: queue.output.action };
+              return queue.output;
             },
           },
         ],
@@ -122,7 +112,7 @@ export default defineWorkflow({
               action: `Backlog ${input.id} with ${input.labelCount} labels`,
             }),
           });
-          return { owner: backlog.output.owner, action: backlog.output.action };
+          return backlog.output;
         },
       });
 

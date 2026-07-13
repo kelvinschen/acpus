@@ -156,10 +156,11 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "release",
     agents: {},
     root: {
+      output: { kind: "object", fields: {} },
       nodes: [
         {
           id: "build",
@@ -202,7 +203,7 @@ function workflow(): WorkflowIR {
         },
       ],
     },
-    outputs: {},
+
     diagnostics: [],
   };
 }

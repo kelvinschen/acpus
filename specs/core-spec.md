@@ -58,7 +58,7 @@
 ### Nodes
 
 - Schema-valued authoring fields MUST use the `Schema` suffix. Workflow `inputSchema` and Agent/Signal `outputSchema` are runtime schema boundaries; reusable Task `inputSchema` is a config-time TypeScript type witness.
-- Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their `output` by returning a plain object, not by calling an output helper.
+- Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their single `output` by returning a durable workflow value, not by calling an output helper.
 - Agent, Task, and Signal authoring specs MUST use flat kind-specific objects. Lowering MUST group their execution fields under the frozen node's `run` field. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
@@ -82,12 +82,14 @@
 - Workflow and composite graph declaration callbacks MUST be synchronous. Calling `step()` after graph declaration has closed MUST fail with a clear authoring invariant error.
 - Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
 - Parent scopes MUST access a composite node only through that node's projected `output`.
-- Workflow and composite callbacks MUST declare durable output by returning a named plain-object shape. A top-level `Expr` or `NodeRef`, and a `NodeRef` nested at any depth, MUST be rejected by the public TypeScript interface.
-- `Expr` values MAY appear as fields within a returned output object. A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST NOT be lowered as durable output.
+- Workflow and composite callbacks MUST declare one durable output value. They MUST accept primitives, `null`, arrays, plain objects, `ArtifactRef`, and `Expr` values whose resolved type is durable workflow data.
+- A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST be rejected both as a direct scope return and when nested at any depth. A direct `Expr` such as `task.output` MUST remain valid.
 - TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
-- Workflow root and composite callback return types MUST use a recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` fields, and unions while rejecting raw `undefined`, `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
+- Workflow root and composite callback return types MUST use a position-sensitive recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, and unions while rejecting raw `undefined`, `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
+- A scope output MUST NOT be raw `undefined` or an `Expr<T | undefined>` at the top level. An object field MAY be an `Expr<T | undefined>` and MUST remain optional to downstream projection; an array element MUST NOT be raw `undefined` or an `Expr<T | undefined>`.
 - Workflow, composite, loop-state, and Task output seams MUST reduce `any`, including `any` inherited from imported helpers, to `never`; they MUST NOT provide a usable author-facing `any` escape hatch.
 - The recursive output constraint MUST preserve exact inferred output types and MUST remain an internal type implementation detail rather than a required author import.
+- Ordinary authored literals MUST follow TypeScript widening. Authors MUST use `as const` or an explicit literal union when a narrow literal result is required.
 - Array output accessors MAY be combined through the `@acpus/expression` `lift` callback helper; no array-specific expression helper is required.
 - If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
 - Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
@@ -99,9 +101,9 @@
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
 - Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
-- Loop `stop` MUST accept a boolean workflow value and lower under `LoopNodeIR.do.outputs.stop`; `loop.output` MUST expose the final transition `state`.
+- Loop `stop` MUST accept a boolean workflow value and lower under the `stop` field of `LoopNodeIR.do.output`; `loop.output` MUST expose the final transition `state`.
 - Loop transition shape, stop type, and state convergence MUST be enforced by the public TypeScript interface rather than compiler AST rules.
-- Required output fields MUST NOT accept nullable or optional refs unless the author explicitly removes the nullish case, for example with `lift(value, value => value ?? fallback)`.
+- Control-only scopes MUST return `{}` explicitly. `null` MUST mean an explicit null output and MUST NOT represent an implicit no-output state.
 
 ### Task Authoring And Runtime Context Types
 
@@ -124,16 +126,18 @@
 
 ### IR And Validation
 
-- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 4`.
-- If an internal caller bypasses the public TypeScript interface, workflow and composite outputs that are not plain objects, or that contain a `NodeRef`, MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
+- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 5`.
+- If an internal caller bypasses the public TypeScript interface, workflow and composite outputs containing a `NodeRef` or a non-durable value MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
 - Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
-- `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, `outputs`, and `diagnostics`.
+- `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, and `diagnostics`.
+- Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
+- `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
 - `childScopes(node)` MUST return every direct child scope of a composite node and no child scopes for leaf nodes. If branches MUST be ordered `then` before `else`; switch cases MUST retain their authored index order before `default`; parallel branches MUST retain their authored key order; fanout and loop bodies MUST each expose their body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
-- `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST require IR version 5 and diagnose unknown fields, malformed agent definitions, malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
 - Node builders MUST NOT emit `ID001`. `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation; the default compilation path MUST append validator diagnostics once.
 - `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.

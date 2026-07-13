@@ -55,6 +55,7 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
         {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="IR version" value={String(workflow.irVersion)} />
         <KeyValue label="Node count" value={String(workflow.nodeCount)} />
+        <KeyValue label="Output shape" value={formatOutputShape(data.contract.outputShape)} />
         <KeyValue label="Source digest" value={data.sourceGraphDigest} />
       </InspectorSection>
       {data.contract.inputSchema ? (
@@ -64,9 +65,14 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
           <StateBlock title="No input schema" detail="This workflow does not declare an input schema." />
         </InspectorSection>
       )}
-      <JsonSection title="Output Mapping" value={data.contract.outputs} />
+      <JsonSection title="Output Expression" value={data.contract.output} />
     </div>
   );
+}
+
+function formatOutputShape(shape: StaticGraphData["contract"]["outputShape"]): string {
+  if (shape.kind !== "object") return shape.kind;
+  return `object (${shape.possibleKeys.length ? shape.possibleKeys.join(", ") : "no possible keys"})`;
 }
 
 function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; target: string | undefined }) {

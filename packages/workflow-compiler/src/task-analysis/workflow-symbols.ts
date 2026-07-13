@@ -19,12 +19,6 @@ export function collectImportBindings(sourceFile: ts.SourceFile): Map<string, Im
   return bindings;
 }
 
-export function collectLocalValueNames(sourceFile: ts.SourceFile): Set<string> {
-  const names = new Set<string>();
-  collectDeclaredNames(sourceFile, names);
-  return names;
-}
-
 export function collectDeclaredNames(node: ts.Node, out: Set<string>): void {
   if (ts.isParameterDeclaration(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)) {
     if (node.name) addBindingName(node.name, out);

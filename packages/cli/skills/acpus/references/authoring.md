@@ -57,10 +57,10 @@ export default defineWorkflow({
 - **Never capture outer vars or functions in inline Task `exec`.**  Inline task **MUST** self-contained, bind top-level Task `input`; read Task context.
 - **Inline Task first.** Define reusable Task only for reused logic or third-party package imports.
 - **Static step IDs only.** Loop/fanout instance paths create distinct runtime `nodeKey` values.
-- **Return named plain objects from workflow and composite callbacks.** Never return `Expr` or `NodeRef` directly.
-- **Read node results once through `.output`.** Never return `NodeRef`, even nested.
-- **Keep durable data JSON-compatible.** Use `null`, not `undefined`, for absence.
+- **Read node results once through `.output`.** `NodeRef` is a control handle; never return it directly or nested.
+- **Keep durable data JSON-compatible.** Use explicit `null`, not raw `undefined`, for authored absence.
 - **Always check after editing.** Fix every diagnostic before running.
+- **NEVER add `outputSchema` for composite and task.**
 
 Static config includes node IDs, strategies, schemas, Task targets, agent selectors/models/modes, and permission modes.
 
@@ -105,7 +105,7 @@ const lines = lift(items, xs => xs.map(x => `- ${x.id}`).join("\n"));
 const prompt = md`Review:\n${lines}`;
 ```
 
-Use native Zod 4 through `z` from `acpus/core`. Keep workflow input, Agent/Signal output, Task input, workflow output, and composite output durable. Exclude transforms, functions, promises, dates, maps, sets, bigint, symbols, class instances, non-finite numbers, sparse arrays, cycles, and `undefined`.
+Use native Zod 4 through `z` from `acpus/core`. Keep workflow input, Agent/Signal output, Task input, workflow output, and composite output durable. Exclude transforms, functions, promises, dates, maps, sets, bigint, symbols, class instances, non-finite numbers, sparse arrays, cycles, and raw `undefined`. A scope's top-level value and array elements must never resolve to `undefined`; an object field typed as `Expr<T | undefined>` is optional and is omitted when missing.
 
 **Never write explicit `any`** in workflow entries;  Use `unknown` and narrow.
 
@@ -139,7 +139,7 @@ step("require_approval").assert({
 
 ### Composites And Control
 
-Composite callbacks receive only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Use enclosing `step` for nested nodes. Return a named object. Do not add composite `outputSchema`.
+Composite callbacks receive only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Use enclosing `step` for nested nodes. Return any durable workflow value; return `{}` explicitly for a control-only scope.
 
 ```ts
 const gate = step("gate").if({
@@ -159,7 +159,7 @@ const checks = step("checks").parallel({
 });
 const items = step("items").fanout({
   over: input.items,
-  do({ item, itemIndex }) { return { item }; },
+  do({ item, itemIndex }) { return item; },
 });
 
 // access loop's output via `retry.output` instead of `retry.state`

@@ -88,7 +88,7 @@ export default defineWorkflow({
         timeout: "24h",
         onTimeout: { message: "approval timed out" },
       });
-      return { approved: human.output.approved, notes: human.output.notes };
+      return human.output;
     },
     else() {
       const automatic = step("auto_approval").task({
@@ -98,7 +98,7 @@ export default defineWorkflow({
           notes: input.ready ? "auto-approved ready plan" : "plan not ready",
         }),
       });
-      return { approved: automatic.output.approved, notes: automatic.output.notes };
+      return automatic.output;
     },
   });
 

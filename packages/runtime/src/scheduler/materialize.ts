@@ -34,7 +34,7 @@ export function bootstrapRootEvents(runId: string, ir: WorkflowIR, scope: Evalua
   };
   return [
     { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root", scope: rootFrame.scope } },
-    ...continueScopeFrameEvents({ frame: rootFrame, scopeIR: rootExecutionScope(ir), basePath: [], scope }, emptyProjection(runId)),
+    ...continueScopeFrameEvents({ frame: rootFrame, scopeIR: ir.root, basePath: [], scope }, emptyProjection(runId)),
   ];
 }
 
@@ -78,9 +78,9 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
     scope = scopeWithNodeOutput(scope, node.id, state.output);
   }
 
-  let result: JsonObject;
+  let result: JsonValue;
   try {
-    result = evaluateOutputs(input.scopeIR.outputs ?? {}, scope);
+    result = evaluateOutput(input.scopeIR.output, scope);
   } catch (error) {
     return terminalScopeFrameEvents(input, "failed", expressionFailure(error), "expression_failed");
   }
@@ -448,9 +448,9 @@ function materializeLoopIterationEvents(input: { runId: string; loop: LoopNodeIR
 function materializeScopeStart(runId: string, frameKey: string, scopeIR: ScopeIR, basePath: InstancePath, scope: EvaluationScope, readinessSequence: number, memberKey?: string): SchedulerEvent[] {
   const first = scopeIR.nodes[0];
   if (!first) {
-    let result: JsonObject;
+    let result: JsonValue;
     try {
-      result = evaluateOutputs(scopeIR.outputs ?? {}, scope);
+      result = evaluateOutput(scopeIR.output, scope);
     } catch (error) {
       return [
         { type: "frame.failed", payload: { frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } },
@@ -543,7 +543,7 @@ function nodeState(node: NodeIR, nodePath: InstancePath, projection: SchedulerPr
 
 function scopeFrame(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): ScopeFrame | undefined {
   if (frame.frameKey === "root") {
-    return { frame, scopeIR: rootExecutionScope(ir), basePath: [], scope: baseScopeForFrame(projection, frame, baseScope) };
+    return { frame, scopeIR: ir.root, basePath: [], scope: baseScopeForFrame(projection, frame, baseScope) };
   }
   if (!frame.instancePath) return undefined;
   const scopeIR = scopeForPath(ir.root, frame.instancePath);
@@ -596,20 +596,20 @@ function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerP
   if (node.kind === "parallel" && node.strategy === "all") {
     return Object.fromEntries(members
       .filter(member => member.memberKind === "branch")
-      .map(member => [member.branchId, requireObjectOutput(member.output, `Parallel branch '${member.branchId}'`)]));
+      .map(member => [member.branchId, requireWorkflowOutput(member.output, `Parallel branch '${member.branchId}'`)]));
   }
   if (node.kind === "parallel" && node.strategy === "race") {
     const winner = members
       .filter(member => member.memberKind === "branch")
       .filter(member => member.status === "completed")
       .sort(byCompletionSequence)[0];
-    return winner ? { winner: winner.branchId, result: requireObjectOutput(winner.output, `Parallel branch '${winner.branchId}'`) } : undefined;
+    return winner ? { winner: winner.branchId, result: requireWorkflowOutput(winner.output, `Parallel branch '${winner.branchId}'`) } : undefined;
   }
   if (node.kind === "fanout" && node.strategy === "all") {
     return members
       .filter(member => member.memberKind === "fanout_item")
       .sort((left, right) => left.itemIndex - right.itemIndex)
-      .map(member => member.output as JsonValue);
+      .map(member => requireWorkflowOutput(member.output, `Fanout item ${member.itemIndex}`));
   }
   if (node.kind === "fanout") {
     const quorumCount = projection.groups[groupKey]?.quorumCount;
@@ -617,8 +617,8 @@ function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerP
     const completed = members
       .filter(member => member.memberKind === "fanout_item" && member.status === "completed")
       .sort(byCompletionSequence)
-      .map(member => member.output as JsonValue);
-    return completed.slice(0, quorumCount);
+      .slice(0, quorumCount);
+    return completed.map(member => requireWorkflowOutput(member.output, `Fanout item ${member.itemIndex}`));
   }
   return undefined;
 }
@@ -654,10 +654,6 @@ function framePriority(frame: SchedulerFrame): number {
 
 function emptyProjection(runId: string): SchedulerProjection {
   return { run: { runId, status: "pending", paused: false }, frames: {}, instances: {}, attempts: {}, groups: {}, groupMembers: {}, signalWaits: {}, branchDecisions: {} };
-}
-
-function rootExecutionScope(ir: WorkflowIR): ScopeIR {
-  return { nodes: ir.root.nodes, outputs: ir.outputs };
 }
 
 function isScopeFrame(frame: SchedulerFrame): boolean {
@@ -719,14 +715,13 @@ function scopeMapForScope(basePath: InstancePath, scope: ScopeIR): Record<string
   return Object.fromEntries(scope.nodes.map(node => [node.id, deriveInstanceKey(appendNode(basePath, node.id))]));
 }
 
-function evaluateOutputs(outputs: NonNullable<ScopeIR["outputs"]>, scope: EvaluationScope): JsonObject {
-  const result = Object.fromEntries(Object.entries(outputs).map(([key, expr]) => [key, evaluateExpr(expr, scope) as JsonValue]));
-  return normalizeWorkflowData(result, "Scope output") as JsonObject;
+function evaluateOutput(output: ScopeIR["output"], scope: EvaluationScope): JsonValue {
+  return normalizeWorkflowData(evaluateExpr(output, scope), "Scope output") as JsonValue;
 }
 
-function requireObjectOutput(value: unknown, label: string): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} output is not an object.`);
-  return value as JsonObject;
+function requireWorkflowOutput(value: JsonValue | undefined, label: string): JsonValue {
+  if (value === undefined) throw new Error(`${label} did not produce an output.`);
+  return value;
 }
 
 function expressionFailure(error: unknown): JsonObject {

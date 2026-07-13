@@ -126,30 +126,31 @@ describe("workflow visualization overlay", () => {
 
 function compositePathWorkflow(): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "composite-paths",
     agents: {},
     root: {
+      output: { kind: "object", fields: {} },
       nodes: [
         {
           id: "choose",
           kind: "if",
           condition: { kind: "literal", value: true },
-          then: { nodes: [task("if_then")] },
-          else: { nodes: [task("if_else")] },
+          then: { output: { kind: "object", fields: {} }, nodes: [task("if_then")] },
+          else: { output: { kind: "object", fields: {} }, nodes: [task("if_else")] },
         },
         {
           id: "route",
           kind: "switch",
-          cases: [{ when: { kind: "literal", value: true }, then: { nodes: [task("switch_case")] } }],
-          default: { nodes: [task("switch_default")] },
+          cases: [{ when: { kind: "literal", value: true }, then: { output: { kind: "object", fields: {} }, nodes: [task("switch_case")] } }],
+          default: { output: { kind: "object", fields: {} }, nodes: [task("switch_default")] },
         },
         {
           id: "items",
           kind: "fanout",
           strategy: "all",
           over: { kind: "array", items: [] },
-          do: { nodes: [task("fanout_body")] },
+          do: { output: { kind: "object", fields: {} }, nodes: [task("fanout_body")] },
         },
         {
           id: "repeat",
@@ -157,26 +158,27 @@ function compositePathWorkflow(): WorkflowIR {
           state: { kind: "literal", value: null },
           do: {
             nodes: [task("loop_body")],
-            outputs: {
+            output: { kind: "object", fields: {
               state: { kind: "literal", value: null },
               stop: { kind: "literal", value: true },
-            },
+            } },
           },
         },
       ],
     },
-    outputs: {},
+
     diagnostics: [],
   };
 }
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet" } },
     root: {
+      output: { kind: "object", fields: {} },
       nodes: [
         {
           id: "prepare",
@@ -194,32 +196,31 @@ function detailWorkflow(): WorkflowIR {
           id: "branchy",
           kind: "if",
           condition: ref("input", "enabled"),
-          then: { nodes: [] },
-          else: { nodes: [] },
+          then: { output: { kind: "object", fields: {} }, nodes: [] },
+          else: { output: { kind: "object", fields: {} }, nodes: [] },
         },
         {
           id: "router",
           kind: "switch",
-          cases: [{ when: call("eq", ref("input", "mode"), lit("auto")), then: { nodes: [] } }],
-          default: { nodes: [{ id: "fallback", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function t() {}" } } }] },
+          cases: [{ when: call("eq", ref("input", "mode"), lit("auto")), then: { output: { kind: "object", fields: {} }, nodes: [] } }],
+          default: { output: { kind: "object", fields: {} }, nodes: [{ id: "fallback", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function t() {}" } } }] },
         },
         {
           id: "lanes",
           kind: "fanout",
           over: ref("input", "lanes"),
           strategy: "all",
-          do: { nodes: [] },
+          do: { output: { kind: "object", fields: {} }, nodes: [] },
         },
         {
           id: "retry",
           kind: "loop",
           state: { kind: "object", fields: {} },
-          do: { nodes: [], outputs: { state: ref("loop", "retry", "state"), stop: ref("loop", "retry", "state", "done") } },
+          do: { nodes: [], output: { kind: "object", fields: { state: ref("loop", "retry", "state"), stop: ref("loop", "retry", "state", "done") } } },
         },
       ],
-      outputs: {},
     },
-    outputs: {},
+
     diagnostics: [],
   };
 }
@@ -238,11 +239,12 @@ function call(fn: string, ...args: ExprIR[]): ExprIR {
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
     root: {
+      output: { kind: "object", fields: {} },
       nodes: [
         task("prepare"),
         {
@@ -250,14 +252,13 @@ function workflow(): WorkflowIR {
           kind: "parallel",
           strategy: "all",
           branches: {
-            left: { nodes: [signal("left_approve")] },
-            right: { nodes: [signal("right_approve")] },
+            left: { output: { kind: "object", fields: {} }, nodes: [signal("left_approve")] },
+            right: { output: { kind: "object", fields: {} }, nodes: [signal("right_approve")] },
           },
         },
       ],
-      outputs: {},
     },
-    outputs: {},
+
     diagnostics: [],
   };
 }

@@ -97,7 +97,7 @@ export default defineWorkflow({
               timeout: "45m",
             });
 
-            return { aspect: aspect.output };
+            return aspect.output;
           },
           beta() {
             const aspect = step("beta_aspect").agent({
@@ -135,7 +135,7 @@ export default defineWorkflow({
               timeout: "45m",
             });
 
-            return { aspect: aspect.output };
+            return aspect.output;
           },
           gamma() {
             const aspect = step("gamma_aspect").agent({
@@ -173,7 +173,7 @@ export default defineWorkflow({
               timeout: "45m",
             });
 
-            return { aspect: aspect.output };
+            return aspect.output;
           },
           delta() {
             const aspect = step("delta_aspect").agent({
@@ -211,7 +211,7 @@ export default defineWorkflow({
               timeout: "45m",
             });
 
-            return { aspect: aspect.output };
+            return aspect.output;
           },
         },
       });
@@ -243,10 +243,10 @@ export default defineWorkflow({
           Do not average opinions mechanically.
 
           Current aspect outputs:
-          Alpha: ${aspects.output.alpha.aspect}
-          Beta: ${aspects.output.beta.aspect}
-          Gamma: ${aspects.output.gamma.aspect}
-          Delta: ${aspects.output.delta.aspect}
+          Alpha: ${aspects.output.alpha}
+          Beta: ${aspects.output.beta}
+          Gamma: ${aspects.output.gamma}
+          Delta: ${aspects.output.delta}
 
           Return a concise natural-language synthesis with strongest directions, notable alternatives, tradeoffs, open questions, and next exploration steps.
         `,
@@ -255,10 +255,10 @@ export default defineWorkflow({
 
       return {
         state: {
-          alpha: aspects.output.alpha.aspect,
-          beta: aspects.output.beta.aspect,
-          gamma: aspects.output.gamma.aspect,
-          delta: aspects.output.delta.aspect,
+          alpha: aspects.output.alpha,
+          beta: aspects.output.beta,
+          gamma: aspects.output.gamma,
+          delta: aspects.output.delta,
           synthesis: synthesis.output,
         },
         stop: gte(round, input.rounds),
@@ -266,5 +266,5 @@ export default defineWorkflow({
     },
   });
 
-  return { synthesis: rounds.output.synthesis };
+  return rounds.output.synthesis;
 });

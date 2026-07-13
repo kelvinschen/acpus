@@ -3,11 +3,11 @@ import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "../src/i
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "diagnostic_hints",
     agents: {},
-    root: { nodes: [] },
-    outputs: {},
+    root: { output: { kind: "object", fields: {} }, nodes: [] },
+
     diagnostics: [],
     ...overrides,
   };
@@ -23,6 +23,7 @@ describe("core diagnostic hints contract", () => {
   it("attaches actionable hints to validation diagnostics owned by core", () => {
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       root: {
+        output: { kind: "object", fields: {} },
         nodes: [
           {
             id: "missing_agent",
@@ -33,12 +34,12 @@ describe("core diagnostic hints contract", () => {
             id: "if_without_else",
             kind: "if",
             condition: { kind: "literal", value: true },
-            then: { nodes: [], outputs: { status: { kind: "literal", value: "ok" } } },
+            then: { nodes: [], output: { kind: "object", fields: { status: { kind: "literal", value: "ok" } } } },
           },
           {
             id: "switch_without_default",
             kind: "switch",
-            cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], outputs: { status: { kind: "literal", value: "ok" } } } }],
+            cases: [{ when: { kind: "literal", value: true }, then: { nodes: [], output: { kind: "object", fields: { status: { kind: "literal", value: "ok" } } } } }],
           },
         ] as any,
       },

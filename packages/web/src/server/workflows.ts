@@ -1,6 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
 import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
+import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import { prepareWorkflow, WorkflowPreparationError, type PreparedWorkflow } from "@acpus/workflow-compiler";
 import { workflowIrToWebGraph, type WebGraph } from "./graph.js";
 import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
@@ -25,7 +26,7 @@ export type WorkflowVisualizationResult =
     status: "ready";
     graph: WebGraph;
     workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
-    contract: { inputSchema?: WorkflowIR["inputSchema"]; outputs: WorkflowIR["outputs"] };
+    contract: { inputSchema?: WorkflowIR["inputSchema"]; output: WorkflowIR["root"]["output"]; outputShape: StaticExprShape };
     sourceGraphDigest: string;
   }
   | {
@@ -112,7 +113,8 @@ export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): E
     },
     contract: {
       ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
-      outputs: prepared.ir.outputs,
+      output: prepared.ir.root.output,
+      outputShape: staticExprShape(prepared.ir.root.output),
     },
     sourceGraphDigest: prepared.sourceGraphDigest,
   };

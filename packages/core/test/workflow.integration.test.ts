@@ -109,7 +109,7 @@ describe("workflow compilation", () => {
     const ir = compileWorkflowDefinition(definition, { validate: false });
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.irVersion).toBe(4);
+    expect(ir.irVersion).toBe(5);
     expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
@@ -247,7 +247,7 @@ describe("workflow compilation", () => {
       },
     });
     expect(ir.root.nodes[4]).not.toHaveProperty("inputs");
-    expect(ir.outputs).toMatchObject({
+    expect(ir.root.output).toMatchObject({ kind: "object", fields: {
       ready: { kind: "ref", path: ["nodes", "review", "output", "ready"] },
       summary: { kind: "ref", path: ["nodes", "review", "output", "summary"] },
       approved: {
@@ -259,7 +259,7 @@ describe("workflow compilation", () => {
         path: ["nodes", "normalize_package", "output", "slug"],
       },
       runId: { kind: "ref", path: ["meta", "runId"] },
-    });
+    } });
     expect(ir.root.nodes[0]).toMatchObject({
       kind: "task",
       run: {
@@ -300,7 +300,7 @@ describe("workflow compilation", () => {
     expect(() => compileWorkflowDefinition(defineWorkflow({
       name: "reject_undefined_outputs",
       // Exercise the runtime lowering backstop independently of authoring types.
-    }).build((() => ({ omitted: undefined })) as any))).toThrow("Unsupported expression value: undefined.");
+    }).build((() => ({ omitted: undefined })) as any))).toThrow("Unsupported expression value at key 'omitted': undefined.");
 
     expect(() => compileWorkflowDefinition(defineWorkflow({
       name: "reject_nested_undefined_outputs",
@@ -311,14 +311,14 @@ describe("workflow compilation", () => {
         input: { omitted: undefined as any }, exec: async () => ({}),
       });
       return {};
-    }))).toThrow("Unsupported expression value: undefined.");
+    }))).toThrow("Unsupported expression value at key 'omitted': undefined.");
 
     expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_undefined_composite_output" }).build(({ step }) => {
       step("parallel").parallel({
         branches: { only: (() => ({ omitted: undefined })) as any },
       });
       return {};
-    }))).toThrow("Unsupported expression value: undefined.");
+    }))).toThrow("Unsupported expression value at key 'omitted': undefined.");
   });
 
   it("compiles current composite node shapes without invoking a runtime", () => {
@@ -392,12 +392,12 @@ describe("workflow compilation", () => {
       maxConcurrency: { kind: "literal", value: 2 },
       branches: {
         fast: {
-          outputs: {
+          output: { kind: "object", fields: {
             status: {
               kind: "ref",
               path: ["nodes", "gate", "output", "status"],
             },
-          },
+          } },
         },
       },
     });
@@ -408,7 +408,7 @@ describe("workflow compilation", () => {
       over: { kind: "ref", path: ["input", "items"] },
       strategy: "all",
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           ok: {
             kind: "call",
             fn: "lift",
@@ -417,12 +417,12 @@ describe("workflow compilation", () => {
               { kind: "literal", value: expect.any(String) },
             ],
           },
-        },
+        } },
       },
     });
     expect(ir.root.nodes[2]).not.toHaveProperty("itemOutputSchema");
     expect(ir.root.nodes[2]).not.toHaveProperty("outputSchema");
-    expect(ir.outputs).toMatchObject({
+    expect(ir.root.output).toMatchObject({ kind: "object", fields: {
       fastStatus: {
         kind: "ref",
         path: ["nodes", "checks", "output", "fast", "status"],
@@ -435,7 +435,7 @@ describe("workflow compilation", () => {
           { kind: "literal", value: expect.any(String) },
         ],
       },
-    });
+    } });
     expect(ir.root.nodes[3]).toMatchObject({
       id: "retry_until_done",
       kind: "loop",
@@ -447,7 +447,7 @@ describe("workflow compilation", () => {
         },
       },
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           state: {
             kind: "object",
             fields: {
@@ -474,7 +474,7 @@ describe("workflow compilation", () => {
               { kind: "literal", value: expect.any(String) },
             ],
           },
-        },
+        } },
       },
     });
     expect(ir.root.nodes[3]).not.toHaveProperty("outputSchema");
@@ -527,7 +527,7 @@ describe("workflow compilation", () => {
     ]));
     expect(fanout).toMatchObject({
       kind: "fanout",
-      do: { nodes: [expect.objectContaining({ id: "fanout_echo", kind: "task" })] },
+      do: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "fanout_echo", kind: "task" })] },
     });
   });
 
@@ -561,7 +561,7 @@ describe("workflow compilation", () => {
     expect(parallel).toMatchObject({
       kind: "parallel",
       branches: {
-        left: { nodes: [expect.objectContaining({ id: "parallel_left_echo", kind: "task" })] },
+        left: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "parallel_left_echo", kind: "task" })] },
       },
     });
   });
@@ -597,7 +597,7 @@ describe("workflow compilation", () => {
     ]));
     expect(gate).toMatchObject({
       kind: "if",
-      then: { nodes: [expect.objectContaining({ id: "if_then_echo", kind: "task" })] },
+      then: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "if_then_echo", kind: "task" })] },
     });
   });
 
@@ -630,7 +630,7 @@ describe("workflow compilation", () => {
     ]));
     expect(gate).toMatchObject({
       kind: "if",
-      then: { nodes: [expect.objectContaining({ id: "cached_echo", kind: "task" })] },
+      then: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "cached_echo", kind: "task" })] },
     });
   });
 
@@ -670,7 +670,7 @@ describe("workflow compilation", () => {
     expect(routed).toMatchObject({
       kind: "switch",
       cases: [
-        { then: { nodes: [expect.objectContaining({ id: "switch_case_echo", kind: "task" })] } },
+        { then: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "switch_case_echo", kind: "task" })] } },
       ],
     });
   });
@@ -702,7 +702,7 @@ describe("workflow compilation", () => {
     ]));
     expect(loop).toMatchObject({
       kind: "loop",
-      do: { nodes: [expect.objectContaining({ id: "loop_echo", kind: "task" })] },
+      do: { output: { kind: "object", fields: {} }, nodes: [expect.objectContaining({ id: "loop_echo", kind: "task" })] },
     });
   });
 
@@ -742,7 +742,7 @@ describe("workflow compilation", () => {
     const ir = compileWorkflowDefinition(definition);
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.outputs.ir).toEqual({ kind: "ref", path: ["nodes", "inspect", "output", "ir"] });
+    expect(ir.root.output).toMatchObject({ kind: "object", fields: { ir: { kind: "ref", path: ["nodes", "inspect", "output", "ir"] } } });
     expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
   });
 
@@ -804,10 +804,10 @@ describe("workflow compilation", () => {
       id: "retry",
       kind: "loop",
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           state: { kind: "object", fields: { ok: { kind: "literal", value: true } } },
           stop: { kind: "literal", value: true },
-        },
+        } },
       },
     });
     expect(ir.root.nodes[1]).not.toHaveProperty("onExhausted");
@@ -835,7 +835,7 @@ describe("workflow compilation", () => {
       id: "retry",
       kind: "loop",
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           stop: {
             kind: "call",
             fn: "lift",
@@ -845,7 +845,7 @@ describe("workflow compilation", () => {
               { kind: "literal", value: expect.any(String) },
             ],
           },
-        },
+        } },
       },
     });
   });
@@ -866,9 +866,9 @@ describe("workflow compilation", () => {
       id: "counted",
       kind: "loop",
       do: {
-        outputs: {
+        output: { kind: "object", fields: {
           stop: { kind: "literal", value: true },
-        },
+        } },
       },
     });
   });
@@ -984,8 +984,8 @@ describe("workflow compilation", () => {
       kind: "parallel",
       strategy: "race",
       branches: {
-        fast: { outputs: { id: { kind: "literal", value: "fast" } } },
-        slow: { outputs: { id: { kind: "literal", value: "slow" } } },
+        fast: { output: { kind: "object", fields: { id: { kind: "literal", value: "fast" } } } },
+        slow: { output: { kind: "object", fields: { id: { kind: "literal", value: "slow" } } } },
       },
     });
     expect((race as any).branches.fast).not.toHaveProperty("outputSchema");
@@ -1018,16 +1018,32 @@ describe("workflow compilation", () => {
     expect(() => compileWorkflowDefinition(withDate)).toThrow("Unsupported expression value: non-plain object.");
   });
 
-  it("fails lowering invariants when internal callers bypass output types", () => {
+  it("accepts scalar scope outputs and fails invalid lowering invariants", () => {
     const undefinedRoot = defineWorkflow({ name: "undefined_root" }).build((() => undefined) as any);
-    expect(() => compileWorkflowDefinition(undefinedRoot)).toThrow("Workflow outputs and bindings must be plain objects.");
+    expect(() => compileWorkflowDefinition(undefinedRoot)).toThrow("Unsupported expression value: undefined.");
 
-    const stringRoot = defineWorkflow({ name: "string_root" }).build((() => "bad") as any);
-    expect(() => compileWorkflowDefinition(stringRoot)).toThrow("Workflow outputs and bindings must be plain objects.");
+    const stringRoot = defineWorkflow({ name: "string_root" }).build((() => "ok") as any);
+    expect(compileWorkflowDefinition(stringRoot).root.output).toEqual({ kind: "literal", value: "ok" });
+
+    const exprRoot = defineWorkflow({ name: "expr_root" }).build((({ step }: any) => {
+      const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+      return leaf.output.value;
+    }) as any);
+    expect(compileWorkflowDefinition(exprRoot).root.output).toEqual({ kind: "ref", path: ["nodes", "leaf", "output", "value"] });
+
+    const scalarBranches = defineWorkflow({ name: "scalar_branches" }).build((({ step }: any) => {
+      step("gate").if({ condition: true, then: () => "ready", else: () => null });
+      return {};
+    }) as any);
+    expect(compileWorkflowDefinition(scalarBranches).root.nodes[0]).toMatchObject({
+      kind: "if",
+      then: { output: { kind: "literal", value: "ready" } },
+      else: { output: { kind: "literal", value: null } },
+    });
 
     const directRef = defineWorkflow({ name: "direct_ref" }).build((({ step }: any) =>
       step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) })) as any);
-    expect(() => compileWorkflowDefinition(directRef)).toThrow("Workflow outputs and bindings must be plain objects.");
+    expect(() => compileWorkflowDefinition(directRef)).toThrow("NodeRef cannot be lowered as durable data");
 
     const nestedRef = defineWorkflow({ name: "nested_ref" }).build((({ step }: any) => {
       const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
@@ -1043,6 +1059,6 @@ describe("workflow compilation", () => {
       });
       return {};
     }) as any);
-    expect(() => compileWorkflowDefinition(malformedScope)).toThrow("Workflow outputs and bindings must be plain objects.");
+    expect(() => compileWorkflowDefinition(malformedScope)).toThrow("Unsupported expression value: undefined.");
   });
 });

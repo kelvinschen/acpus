@@ -5,13 +5,60 @@ import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materi
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
 
 describe("scheduler materialization", () => {
+  it("completes an empty root scope with a scalar output", () => {
+    const workflow: WorkflowIR = {
+      ...workflowWithRootNodes([]),
+      root: { nodes: [], output: { kind: "literal", value: "ready" } },
+    };
+
+    expect(bootstrapRootEvents("run_scalar", workflow)).toEqual([
+      { type: "frame.started", payload: { runId: "run_scalar", frameKey: "root", frameKind: "root", scope: {} } },
+      { type: "frame.completed", payload: { frameKey: "root", result: "ready", terminalReason: "root_completed" } },
+    ]);
+  });
+
+  it("omits missing object fields and rejects missing top-level or array values", () => {
+    const missing: ExprIR = { kind: "ref", path: ["input", "missing"] };
+    const base = workflowWithRootNodes([]);
+
+    expect(bootstrapRootEvents("run_object", {
+      ...base,
+      root: { nodes: [], output: { kind: "object", fields: { optional: missing } } },
+    })).toContainEqual({
+      type: "frame.completed",
+      payload: { frameKey: "root", result: {}, terminalReason: "root_completed" },
+    });
+    expect(bootstrapRootEvents("run_top", {
+      ...base,
+      root: { nodes: [], output: missing },
+    })).toContainEqual({
+      type: "frame.failed",
+      payload: {
+        frameKey: "root",
+        error: { reason: "expression_failed", message: "Scope output is not workflow-admissible: $ is undefined." },
+        terminalReason: "expression_failed",
+      },
+    });
+    expect(bootstrapRootEvents("run_array", {
+      ...base,
+      root: { nodes: [], output: { kind: "array", items: [missing] } },
+    })).toContainEqual({
+      type: "frame.failed",
+      payload: {
+        frameKey: "root",
+        error: { reason: "expression_failed", message: "array(...) received missing value." },
+        terminalReason: "expression_failed",
+      },
+    });
+  });
+
   it("persists input-driven group configuration in projection state", () => {
     const parallel = workflowWithRootNode({
       id: "parallel",
       kind: "parallel",
       strategy: "all",
       maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
-      branches: { only: { nodes: [] } },
+      branches: { only: { output: { kind: "object", fields: {} }, nodes: [] } },
     });
     const parallelProjection = applySchedulerEvents(
       createSchedulerProjection("run_parallel"),
@@ -26,7 +73,7 @@ describe("scheduler materialization", () => {
       over: { kind: "ref", path: ["input", "items"] },
       count: { kind: "ref", path: ["input", "quorum"] },
       maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
-      do: { nodes: [] },
+      do: { output: { kind: "object", fields: {} }, nodes: [] },
     });
     const fanoutProjection = applySchedulerEvents(
       createSchedulerProjection("run_fanout"),
@@ -43,7 +90,7 @@ describe("scheduler materialization", () => {
         kind: "parallel",
         strategy: "all",
         maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
-        branches: { only: { nodes: [] } },
+        branches: { only: { output: { kind: "object", fields: {} }, nodes: [] } },
       }), { input: {} }),
     );
     const zero = applySchedulerEvents(
@@ -54,7 +101,7 @@ describe("scheduler materialization", () => {
         strategy: "all",
         over: stringArray("a"),
         maxConcurrency: { kind: "literal", value: 0 },
-        do: { nodes: [] },
+        do: { output: { kind: "object", fields: {} }, nodes: [] },
       })),
     );
 
@@ -70,7 +117,7 @@ describe("scheduler materialization", () => {
       strategy: "all",
       over: stringArray("a"),
       maxConcurrency: { kind: "ref", path: ["input", "parallelism"] },
-      do: { nodes: [] },
+      do: { output: { kind: "object", fields: {} }, nodes: [] },
     }), { input: { parallelism: -1 } });
 
     expect(events).toContainEqual({
@@ -92,7 +139,7 @@ describe("scheduler materialization", () => {
       strategy: "quorum",
       over: stringArray("a"),
       count: { kind: "ref", path: ["input", "quorum"] },
-      do: { nodes: [] },
+      do: { output: { kind: "object", fields: {} }, nodes: [] },
     }), { input: { quorum: 0 } });
 
     expect(events).toContainEqual({
@@ -246,8 +293,8 @@ describe("scheduler materialization", () => {
       id: "choose",
       kind: "if",
       condition: { kind: "literal", value: true },
-      then: { nodes: [taskNode("then_task")], outputs: { value: { kind: "ref", path: ["nodes", "then_task", "output", "value"] } } },
-      else: { nodes: [taskNode("else_task")], outputs: { value: { kind: "literal", value: "else" } } },
+      then: { nodes: [taskNode("then_task")], output: { kind: "ref", path: ["nodes", "then_task", "output", "value"] } },
+      else: { nodes: [taskNode("else_task")], output: { kind: "literal", value: "else" } },
     };
     const workflow = workflowWithRootNode(ifNode);
     const ifKey = deriveInstanceKey(appendNode([], "choose"));
@@ -264,7 +311,7 @@ describe("scheduler materialization", () => {
       { type: "instance.completed", payload: { nodeKey: thenKey, output: { value: "then" } } },
     ]);
     expect(continueRootEvents(workflow, afterLeaf, {})).toEqual([
-      { type: "frame.completed", payload: { frameKey: branchKey, result: { value: "then" }, terminalReason: "branch_completed" } },
+      { type: "frame.completed", payload: { frameKey: branchKey, result: "then", terminalReason: "branch_completed" } },
     ]);
   });
 
@@ -273,10 +320,10 @@ describe("scheduler materialization", () => {
       id: "choose",
       kind: "if",
       condition: { kind: "literal", value: false },
-      then: { nodes: [taskNode("then_task")], outputs: { value: { kind: "literal", value: "then" } } },
+      then: { nodes: [taskNode("then_task")], output: { kind: "object", fields: { value: { kind: "literal", value: "then" } } } },
       else: {
         nodes: [taskNode("else_task")],
-        outputs: { value: { kind: "ref", path: ["nodes", "else_task", "output", "value"] } },
+        output: { kind: "object", fields: { value: { kind: "ref", path: ["nodes", "else_task", "output", "value"] } } },
       },
     };
     const workflow = workflowWithRootNode(ifNode);
@@ -308,8 +355,8 @@ describe("scheduler materialization", () => {
       id: "choose",
       kind: "if",
       condition: { kind: "literal", value: true },
-      then: { nodes: [taskNode("then_task")], outputs: {} },
-      else: { nodes: [], outputs: {} },
+      then: { nodes: [taskNode("then_task")], output: { kind: "object", fields: {} } },
+      else: { nodes: [], output: { kind: "object", fields: {} } },
     };
     const workflow = workflowWithRootNode(ifNode);
     const ifKey = deriveInstanceKey(appendNode([], "choose"));
@@ -348,12 +395,12 @@ describe("scheduler materialization", () => {
     ]);
   });
 
-  it("materializes root switch default empty branch output", () => {
+  it("passes through a scalar root switch branch output", () => {
     const switchNode: NodeIR = {
       id: "route",
       kind: "switch",
-      cases: [{ when: { kind: "literal", value: false }, then: { nodes: [taskNode("case_task")], outputs: {} } }],
-      default: { nodes: [], outputs: { value: { kind: "literal", value: "fallback" } } },
+      cases: [{ when: { kind: "literal", value: false }, then: { nodes: [taskNode("case_task")], output: { kind: "object", fields: {} } } }],
+      default: { nodes: [], output: { kind: "literal", value: "fallback" } },
     };
     const workflow = workflowWithRootNode(switchNode);
     const switchKey = deriveInstanceKey(appendNode([], "route"));
@@ -361,9 +408,9 @@ describe("scheduler materialization", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflow));
 
     expect(projection.branchDecisions[switchKey]).toBe("default");
-    expect(projection.frames[branchKey]).toMatchObject({ status: "completed", instancePath: appendBranch([], "route", "default"), result: { value: "fallback" } });
+    expect(projection.frames[branchKey]).toMatchObject({ status: "completed", instancePath: appendBranch([], "route", "default"), result: "fallback" });
     expect(continueRootEvents(workflow, projection, {})).toEqual([
-      { type: "frame.completed", payload: { frameKey: switchKey, result: { value: "fallback" }, terminalReason: "branch_completed" } },
+      { type: "frame.completed", payload: { frameKey: switchKey, result: "fallback", terminalReason: "branch_completed" } },
     ]);
   });
 
@@ -405,8 +452,8 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "race",
       branches: {
-        left: { nodes: [taskNode("left_task")], outputs: {} },
-        right: { nodes: [taskNode("right_task")], outputs: {} },
+        left: { nodes: [taskNode("left_task")], output: { kind: "object", fields: {} } },
+        right: { nodes: [taskNode("right_task")], output: { kind: "object", fields: {} } },
       },
     }));
 
@@ -435,8 +482,8 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        pure: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }], outputs: {} },
-        leaf: { nodes: [taskNode("leaf_task")], outputs: {} },
+        pure: { nodes: [{ id: "check", kind: "assert", condition: { kind: "literal", value: true } }], output: { kind: "object", fields: {} } },
+        leaf: { nodes: [taskNode("leaf_task")], output: { kind: "object", fields: {} } },
       },
     }));
 
@@ -465,7 +512,7 @@ describe("scheduler materialization", () => {
       branches: {
         branch: {
           nodes: [taskNode("first_task"), taskNode("second_task")],
-          outputs: { value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] } },
+          output: { kind: "object", fields: { value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] } } },
         },
       },
     };
@@ -509,7 +556,7 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        empty: { nodes: [], outputs: { value: { kind: "literal", value: "done" } } },
+        empty: { nodes: [], output: { kind: "object", fields: { value: { kind: "literal", value: "done" } } } },
       },
     });
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflow));
@@ -521,6 +568,61 @@ describe("scheduler materialization", () => {
     ]);
   });
 
+  it("preserves parallel all and race envelopes around scalar branch outputs", () => {
+    for (const [strategy, expected] of [
+      ["all", { left: "left-value", right: 2 }],
+      ["race", { winner: "left", result: "left-value" }],
+    ] as const) {
+      const workflow: WorkflowIR = {
+        ...workflowWithRootNodes([]),
+        root: {
+          nodes: [{
+            id: "parallel",
+            kind: "parallel",
+            strategy,
+            branches: {
+              left: { nodes: [], output: { kind: "literal", value: "left-value" } },
+              right: { nodes: [], output: { kind: "literal", value: 2 } },
+            },
+          }],
+          output: { kind: "ref", path: ["nodes", "parallel", "output"] },
+        },
+      };
+      const groupKey = deriveInstanceKey(appendNode([], "parallel"));
+      let projection = applySchedulerEvents(createSchedulerProjection(`run_${strategy}`), bootstrapRootEvents(`run_${strategy}`, workflow));
+      projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+      projection = applySchedulerEvents(projection, continueRootEvents(workflow, projection, {}));
+
+      expect(continueRootEvents(workflow, projection, {})).toEqual([
+        { type: "frame.completed", payload: { frameKey: "root", result: expected, terminalReason: "root_completed" } },
+      ]);
+    }
+  });
+
+  it("collects scalar fanout item outputs in item order", () => {
+    const workflow: WorkflowIR = {
+      ...workflowWithRootNodes([]),
+      root: {
+        nodes: [{
+          id: "items",
+          kind: "fanout",
+          strategy: "all",
+          over: stringArray("first", "second"),
+          do: { nodes: [], output: { kind: "ref", path: ["fanout", "items", "item"] } },
+        }],
+        output: { kind: "ref", path: ["nodes", "items", "output"] },
+      },
+    };
+    const groupKey = deriveInstanceKey(appendNode([], "items"));
+    let projection = applySchedulerEvents(createSchedulerProjection("run_fanout_scalars"), bootstrapRootEvents("run_fanout_scalars", workflow));
+    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    projection = applySchedulerEvents(projection, continueRootEvents(workflow, projection, {}));
+
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      { type: "frame.completed", payload: { frameKey: "root", result: ["first", "second"], terminalReason: "root_completed" } },
+    ]);
+  });
+
   it("evaluates multi-node branch outputs with prior root scope", () => {
     const parallelNode: NodeIR = {
       id: "parallel",
@@ -529,10 +631,10 @@ describe("scheduler materialization", () => {
       branches: {
         branch: {
           nodes: [taskNode("first_task"), taskNode("second_task")],
-          outputs: {
+          output: { kind: "object", fields: {
             value: { kind: "ref", path: ["nodes", "second_task", "output", "value"] },
             rootPrefix: { kind: "ref", path: ["nodes", "prepare", "output", "prefix"] },
-          },
+          } },
         },
       },
     };
@@ -566,7 +668,7 @@ describe("scheduler materialization", () => {
       kind: "parallel",
       strategy: "all",
       branches: {
-        branch: { nodes: [taskNode("first_task"), taskNode("second_task")], outputs: {} },
+        branch: { nodes: [taskNode("first_task"), taskNode("second_task")], output: { kind: "object", fields: {} } },
       },
     };
     const workflow = workflowWithRootNode(parallelNode);
@@ -603,7 +705,7 @@ describe("scheduler materialization", () => {
       kind: "fanout",
       strategy: "all",
       over: stringArray("a", "b"),
-      do: { nodes: [taskNode("item_task")], outputs: {} },
+      do: { nodes: [taskNode("item_task")], output: { kind: "object", fields: {} } },
     }), {});
 
     const readyMembers = events.filter(event => event.type === "group.member_ready");
@@ -651,13 +753,41 @@ describe("scheduler materialization", () => {
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), bootstrapRootEvents("run_1", workflowWithRootNode(fanoutNode({
       over: stringArray("a"),
       doNodes: [],
-      doOutputs: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
+      doOutputFields: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
     })), {}));
 
     expect(projection.frames[itemFrameKey]).toMatchObject({ status: "completed", result: { item: "a" } });
     expect(projection.groupMembers[itemFrameKey]).toMatchObject({ status: "completed", output: { item: "a" } });
     expect(groupCompletionEvents(projection, fanoutKey)).toEqual([
       { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemFrameKey] } } },
+    ]);
+  });
+
+  it.each(["all", "quorum"] as const)("rejects missing accepted fanout item output for %s", strategy => {
+    const fanout = fanoutNode({
+      over: stringArray("a"),
+      doNodes: [],
+      doOutputFields: { item: { kind: "ref", path: ["fanout", "items", "item"] } },
+    }) as Extract<NodeIR, { kind: "fanout" }>;
+    const node: NodeIR = strategy === "all"
+      ? fanout
+      : { ...fanout, strategy: "quorum" as const, count: { kind: "literal" as const, value: 1 } };
+    const workflow = workflowWithRootNode(node);
+    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
+    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
+    let projection = applySchedulerEvents(createSchedulerProjection(`run_${strategy}`), bootstrapRootEvents(`run_${strategy}`, workflow));
+    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, fanoutKey));
+    delete projection.groupMembers[itemKey]!.output;
+
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      {
+        type: "frame.failed",
+        payload: {
+          frameKey: fanoutKey,
+          error: { reason: "expression_failed", message: "Fanout item 0 did not produce an output." },
+          terminalReason: "expression_failed",
+        },
+      },
     ]);
   });
 
@@ -685,7 +815,7 @@ describe("scheduler materialization", () => {
 
   it("aggregates fanout all outputs by item index after out-of-order completion", () => {
     const workflow = workflowWithRootNode(fanoutNode({
-      doOutputs: { value: { kind: "ref", path: ["nodes", "item_task", "output", "value"] } },
+      doOutputFields: { value: { kind: "ref", path: ["nodes", "item_task", "output", "value"] } },
     }));
     const fanoutKey = deriveInstanceKey(appendNode([], "items"));
     const firstPath = appendFanoutItem([], "items", 0);
@@ -730,7 +860,7 @@ describe("scheduler materialization", () => {
   it("continues multi-node root fanout item bodies sequentially", () => {
     const workflow = workflowWithRootNode(fanoutNode({
       doNodes: [taskNode("first"), taskNode("second")],
-      doOutputs: { value: { kind: "ref", path: ["nodes", "second", "output", "value"] } },
+      doOutputFields: { value: { kind: "ref", path: ["nodes", "second", "output", "value"] } },
     }));
     const itemFrameKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
     const firstKey = deriveInstanceKey(appendNode(appendFanoutItem([], "items", 0), "first"));
@@ -859,7 +989,7 @@ describe("scheduler materialization", () => {
   it("bootstraps and continues multi-node root loop iteration frames", () => {
     const workflow = workflowWithRootNode(loopNode({
       doNodes: [taskNode("first"), taskNode("second")],
-      doOutputs: {
+      doOutputFields: {
         state: {
           kind: "object",
           fields: {
@@ -906,7 +1036,7 @@ describe("scheduler materialization", () => {
   it("evaluates root loop continuation with prior root scope", () => {
     const loop = loopNode({
       doNodes: [taskNode("first"), taskNode("second")],
-      doOutputs: {
+      doOutputFields: {
         state: {
           kind: "object",
           fields: {
@@ -941,6 +1071,36 @@ describe("scheduler materialization", () => {
       { type: "frame.completed", payload: { frameKey: loopKey, result: { done: true, rootPrefix: "root" }, terminalReason: "stopped" } },
     ]);
   });
+
+  it("carries and returns scalar loop state", () => {
+    const workflow: WorkflowIR = {
+      ...workflowWithRootNodes([]),
+      root: {
+        nodes: [{
+          id: "retry",
+          kind: "loop",
+          state: { kind: "literal", value: 0 },
+          do: {
+            nodes: [],
+            output: {
+              kind: "object",
+              fields: {
+                state: { kind: "literal", value: 1 },
+                stop: { kind: "literal", value: true },
+              },
+            },
+          },
+        }],
+        output: { kind: "ref", path: ["nodes", "retry", "output"] },
+      },
+    };
+    let projection = applySchedulerEvents(createSchedulerProjection("run_scalar_loop"), bootstrapRootEvents("run_scalar_loop", workflow));
+    projection = applySchedulerEvents(projection, continueRootEvents(workflow, projection, {}));
+
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      { type: "frame.completed", payload: { frameKey: "root", result: 1, terminalReason: "root_completed" } },
+    ]);
+  });
 });
 
 function taskNode(id: string): NodeIR {
@@ -958,30 +1118,30 @@ function inlineTaskTarget(): Extract<Extract<NodeIR, { kind: "task" }>["run"]["t
 function fanoutNode(options: {
   over?: Extract<NodeIR, { kind: "fanout" }>["over"];
   doNodes?: NodeIR[];
-  doOutputs?: WorkflowIR["root"]["outputs"];
+  doOutputFields?: Extract<ExprIR, { kind: "object" }>["fields"];
 } = {}): NodeIR {
   return {
     id: "items",
     kind: "fanout",
     strategy: "all",
     over: options.over ?? stringArray("a", "b"),
-    do: { nodes: options.doNodes ?? [taskNode("item_task")], outputs: options.doOutputs ?? {} },
+    do: { nodes: options.doNodes ?? [taskNode("item_task")], output: { kind: "object", fields: options.doOutputFields ?? {} } },
   };
 }
 
 type LoopNodeIR = Extract<NodeIR, { kind: "loop" }>;
 
-function loopNode(options: { doNodes?: NodeIR[]; doOutputs?: LoopNodeIR["do"]["outputs"]; state?: LoopNodeIR["state"] } = {}): NodeIR {
+function loopNode(options: { doNodes?: NodeIR[]; doOutputFields?: LoopNodeIR["do"]["output"]["fields"]; state?: LoopNodeIR["state"] } = {}): NodeIR {
   return {
     id: "retry",
     kind: "loop",
     state: options.state ?? { kind: "object", fields: { done: { kind: "literal", value: false } } },
     do: {
       nodes: options.doNodes ?? [taskNode("loop_task")],
-      outputs: options.doOutputs ?? {
+      output: { kind: "object", fields: options.doOutputFields ?? {
         state: { kind: "object", fields: { done: { kind: "ref", path: ["nodes", "loop_task", "output", "done"] } } },
         stop: { kind: "ref", path: ["nodes", "loop_task", "output", "done"] },
-      },
+      } },
     },
   };
 }
@@ -1000,11 +1160,10 @@ function workflowWithRootNode(node: NodeIR): WorkflowIR {
 
 function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
   return {
-    irVersion: 4,
+    irVersion: 5,
     name: "test",
     inputSchema: objectSchema(),
-    root: { nodes, outputs: {} },
-    outputs: {},
+    root: { nodes, output: { kind: "object", fields: {} } },
     agents: {},
     diagnostics: [],
   };

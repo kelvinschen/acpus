@@ -108,7 +108,7 @@ export function tryValueToExprIR(value: unknown, path = "$"): Result<ExprIR, Exp
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       const child = tryValueToExprIR(item, `${path}.${key}`);
       if (child.isErr()) {
-        if (child.error.type === "unsupported-expression-value" && child.error.valueType === "undefined") {
+        if (child.error.type === "unsupported-expression-value" && child.error.valueType === "undefined" && child.error.path === `${path}.${key}`) {
           return err({ ...child.error, message: `Unsupported expression value at key '${key}': undefined.` });
         }
         return child;

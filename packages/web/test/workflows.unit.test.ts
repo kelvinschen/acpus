@@ -41,10 +41,11 @@ describe("workflow visualization helpers", () => {
     expect(result.workflow.description).toBe("Prepared workflow description.");
     expect(result.workflow.nodeCount).toBe(3);
     expect(result.contract.inputSchema).toMatchObject({ kind: "object" });
-    expect(result.contract.outputs).toEqual(expect.objectContaining({
+    expect(result.contract.output).toMatchObject({ kind: "object", fields: {
       approved: expect.any(Object),
       first_lane: expect.any(Object),
-    }));
+    } });
+    expect(result.contract.outputShape).toEqual({ kind: "object", possibleKeys: ["approved", "first_lane"] });
   });
 
   it("renders a self-contained HTML bundle with workflow metadata", () => {
@@ -63,22 +64,29 @@ describe("workflow visualization helpers", () => {
     expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
     expect(html).toContain(result.sourceGraphDigest);
     expect(html).toContain("Prepared workflow description.");
+    expect(html).toContain("Output Expression");
+    expect(html).not.toContain("Output Mapping");
   });
 });
 
 function preparedWorkflow(): PreparedWorkflow {
   const ir: WorkflowIR = {
-    irVersion: 4,
+    irVersion: 5,
     name: "prepared-static",
     description: "Prepared workflow description.",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
     root: {
+      output: { kind: "object", fields: {
+      approved: { kind: "literal", value: true },
+      first_lane: { kind: "literal", value: "lane-alpha" },
+    } },
       nodes: [{
         id: "choose",
         kind: "if",
         condition: { kind: "literal", value: true },
         then: {
+          output: { kind: "object", fields: {} },
           nodes: [{
             id: "review",
             kind: "task",
@@ -86,14 +94,12 @@ function preparedWorkflow(): PreparedWorkflow {
           }],
         },
         else: {
+          output: { kind: "object", fields: {} },
           nodes: [{ id: "fallback", kind: "assert", condition: { kind: "literal", value: true } }],
         },
       }],
     },
-    outputs: {
-      approved: { kind: "literal", value: true },
-      first_lane: { kind: "literal", value: "lane-alpha" },
-    },
+
     diagnostics: [],
   };
   return {
