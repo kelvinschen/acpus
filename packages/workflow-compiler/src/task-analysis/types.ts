@@ -17,7 +17,7 @@ export type TaskAuthoringIssue =
   | { kind: "workflow-local-reusable-task"; name: string }
   | { kind: "invalid-reusable-task-export"; importedName: string; file?: string; reason: "missing-default" | "missing-named" | "not-task-define" }
   | { kind: "inline-task-capture"; names: string[] }
-  | { kind: "ambiguous-task-callsite" };
+  | { kind: "ambiguous-task-callsite"; firstSource: TaskSourceLocation };
 
 export type TaskAnalysisFact = {
   stepId: string;

@@ -180,7 +180,7 @@ class GraphBuildState {
     id: string,
     spec: AgentStepSpec<OutSchema>,
   ): NodeRef<OutSchema extends Schema<any> ? z.output<OutSchema> : string> {
-    this.nodes.push(buildAgentNode(id, spec, this.context.diagnostics));
+    this.nodes.push(buildAgentNode(id, spec));
     return makeNodeRef(id);
   }
 
@@ -208,19 +208,19 @@ class GraphBuildState {
     id: string,
     spec: SignalStepSpec<OutSchema>,
   ): NodeRef<OutSchema extends Schema<any> ? z.output<OutSchema> : string> {
-    this.nodes.push(buildSignalNode(id, spec, this.context.diagnostics));
+    this.nodes.push(buildSignalNode(id, spec));
     return makeNodeRef(id);
   }
 
   assert(id: string, spec: AssertSpec): void {
-    this.nodes.push(buildAssertNode(id, spec, this.context.diagnostics));
+    this.nodes.push(buildAssertNode(id, spec));
   }
 
   if<const Then extends ScopeCallback, const Else extends ScopeCallback>(
     id: string,
     spec: IfStepSpec<Then, Else>,
   ): NodeRef<IfNodeRefOutput<Then, Else>> {
-    this.nodes.push(buildIfNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    this.nodes.push(buildIfNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
@@ -228,7 +228,7 @@ class GraphBuildState {
     id: string,
     spec: SwitchStepSpec<Cases, Default>,
   ): NodeRef<SwitchNodeRefOutput<Cases, Default>> {
-    this.nodes.push(buildSwitchNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    this.nodes.push(buildSwitchNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
@@ -246,7 +246,7 @@ class GraphBuildState {
     id: string,
     spec: ParallelStepSpec<Record<string, ScopeCallback>, ParallelStrategy>,
   ): NodeRef<any> {
-    this.nodes.push(buildParallelNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    this.nodes.push(buildParallelNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
@@ -264,7 +264,7 @@ class GraphBuildState {
     id: string,
     spec: FanoutStepSpec<ResolvableArray<any>, any, FanoutStrategy>,
   ): NodeRef<any> {
-    this.nodes.push(buildFanoutNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    this.nodes.push(buildFanoutNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 
@@ -272,7 +272,7 @@ class GraphBuildState {
     id: string,
     spec: LoopStepSpec<Initial, Transition>,
   ): NodeRef<WidenRuntimeValue<RuntimeValueOf<Initial>>> {
-    this.nodes.push(buildLoopNode(id, spec, this.context.diagnostics, this.buildImplicitScope));
+    this.nodes.push(buildLoopNode(id, spec, this.buildImplicitScope));
     return makeNodeRef(id);
   }
 

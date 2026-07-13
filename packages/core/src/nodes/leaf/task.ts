@@ -1,6 +1,6 @@
 import { TASK } from "../../internal/symbols.js";
 import type { Simplify } from "../../internal/type-utils.js";
-import { envToIR, bindingsToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { envToIR, bindingsToIR, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { z } from "zod";
 import { type Schema } from "../../schema/index.js";
@@ -114,7 +114,6 @@ export function buildTaskNode<const Input extends StepInput>(
   spec: TaskStepSpec<Input>,
   diagnostics: DiagnosticIR[],
 ): TaskNodeIR {
-  assertStableId(id, diagnostics);
   const parsed = taskSpecParts(spec);
   if (!parsed) {
     diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { input, exec } or reusable { input, task }.` });

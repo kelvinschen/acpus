@@ -1,8 +1,8 @@
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { Resolvable } from "@acpus/expression";
 import type { Simplify, ValueOf } from "../../internal/type-utils.js";
-import type { DiagnosticIR, ParallelNodeIR, ScopeIR } from "../../ir/types.js";
+import type { ParallelNodeIR, ScopeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, ParallelStrategy, RuntimeValueOf, ScopeCallback, ScopeOutput } from "./shared.js";
 
 type CheckedBranches<Branches extends Record<string, ScopeCallback>> = {
@@ -39,10 +39,8 @@ export function buildParallelNode<
 >(
   id: string,
   spec: ParallelStepSpec<Branches, Strategy>,
-  diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): ParallelNodeIR {
-  assertStableId(id, diagnostics);
   const branches: Record<string, ScopeIR> = {};
   for (const [key, branch] of Object.entries(spec.branches) as Array<[string, ScopeCallback]>) {
     branches[key] = buildScope(branch);

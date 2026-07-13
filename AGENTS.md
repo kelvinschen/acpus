@@ -1,8 +1,6 @@
-# Agent Instructions — Acpus
+# Acpus Codes of Conduct
 
-Maintenance rules for agents and humans working on this codebase.
-
-> The codebase is being rebuilt around the TypeScript-first core (`@acpus/core` in `packages/core`). The previous YAML Workflow-Spec implementation and its docs, including old `CONTEXT.md` terminology, are archived under `legacy/`. They are read-only history. Because the TypeScript core has not been published yet, do not add compatibility shims unless explicitly requested.
+> The codebase is being rebuilt around the TypeScript-first core (`@acpus/core` in `packages/core`). The previous version archived under `legacy/`. They are read-only history. Because the TypeScript core has not been published yet, **NEVER add compatibility shims unless explicitly requested**.
 
 ## Specification Maintenance
 
@@ -55,4 +53,5 @@ Detailed guidance lives in `docs/development-testing.md`.
 ## Build Maintenance
 - After fully completing any feature implementation, MUST run the relevant build/test command so checked-in generated artifacts stay current.
 - Prefer the narrow command while developing (`pnpm test:unit`, `pnpm test:contract`, `pnpm test:integration`, `pnpm test:e2e`) and broader checks before handoff (`pnpm test`, `pnpm typecheck`).
+- After material test changes, MUST benchmark `pnpm test` against the ~10s baseline; investigate regressions over 500ms as test-design overhead or unavoidable cost, and report the conclusion.
 - If a command could not be run, the final response MUST state that clearly.

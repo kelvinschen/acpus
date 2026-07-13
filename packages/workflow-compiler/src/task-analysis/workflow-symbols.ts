@@ -57,6 +57,26 @@ export function hasInnerBinding(identifier: ts.Identifier): boolean {
   return found;
 }
 
+export function findVisibleVariableDeclaration(identifier: ts.Identifier): ts.VariableDeclaration | undefined {
+  const sourceFile = identifier.getSourceFile();
+  const position = identifier.getStart(sourceFile);
+  const candidates: Array<{ declaration: ts.VariableDeclaration; scope: ts.Node }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text) {
+      const scope = bindingScope(node.name, sourceFile);
+      if (scope.getStart(sourceFile) <= position && position < scope.end) candidates.push({ declaration: node, scope });
+    }
+    node.forEachChild(visit);
+  };
+  visit(sourceFile);
+  candidates.sort((left, right) => {
+    const leftWidth = left.scope.end - left.scope.getStart(sourceFile);
+    const rightWidth = right.scope.end - right.scope.getStart(sourceFile);
+    return leftWidth - rightWidth || right.declaration.getStart(sourceFile) - left.declaration.getStart(sourceFile);
+  });
+  return candidates[0]?.declaration;
+}
+
 export function collectWorkflowTaskExports(sourceFile: ts.SourceFile): Map<string, WorkflowTaskExport> {
   const initializers = collectTopLevelInitializers(sourceFile);
   const exportedNames = collectLocalNamedExports(sourceFile);

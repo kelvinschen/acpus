@@ -22,6 +22,23 @@ const normalizePackage = task.define({
 });
 
 describe("workflow compilation", () => {
+  it("emits one validator-owned ID001 and lets validate:false opt out", () => {
+    const definition = defineWorkflow({ name: "invalid_id" }).build(({ step }) => {
+      step("bad id").assert({ condition: true });
+      return { ok: true };
+    });
+
+    expect(compileWorkflowDefinition(definition).diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ID001",
+        path: "root.nodes.bad id",
+        message: expect.stringContaining("/^[A-Za-z_][A-Za-z0-9_-]*$/"),
+        hint: expect.stringContaining("compile-time string literal"),
+      }),
+    ]);
+    expect(compileWorkflowDefinition(definition, { validate: false }).diagnostics).toEqual([]);
+  });
+
   it("compiles leaf nodes, asserts, task descriptors, and outputs into WorkflowIR", () => {
     const definition = defineWorkflow({
       name: "release_review",

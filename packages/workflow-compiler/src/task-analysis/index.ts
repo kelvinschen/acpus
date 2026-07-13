@@ -6,10 +6,10 @@ import * as ts from "typescript/unstable/ast";
 import type { SourceFile } from "typescript/unstable/ast";
 import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "../typescript/native.js";
 import { execFunction, isTaskDefineCall, objectProperty, taskFactoryLocalName } from "./ast.js";
-import { findTaskCallsites } from "./callsites.js";
+import { findTaskCallsites, type TaskCallsiteSemanticContext } from "./callsites.js";
 import { collectFreeIdentifiers } from "./inline-capture.js";
 import type { ImportBinding, TaskAuthoringIssue, TaskReferenceMetadata, TaskCallsite, WorkflowTaskExport } from "./types.js";
-import { collectImportBindings, collectLocalValueNames, collectWorkflowTaskExports, hasInnerBinding } from "./workflow-symbols.js";
+import { collectImportBindings, collectWorkflowTaskExports, findVisibleVariableDeclaration, hasInnerBinding } from "./workflow-symbols.js";
 
 // Static task analysis parses workflow modules with the TypeScript parser only.
 // It produces facts and reusable reference metadata, not
@@ -28,7 +28,6 @@ import type { AnalyzedTask, TaskAnalysisFact, WorkflowTaskAnalysis } from "./typ
 type AnalyzeContext = {
   workflowFile: string;
   imports: Map<string, ImportBinding>;
-  locals: Set<string>;
   localExports: Map<string, WorkflowTaskExport>;
 };
 
@@ -72,13 +71,16 @@ export async function analyzeWorkflowTasks(
   return result;
 }
 
-export function analyzeWorkflowTasksFromSourceFile(workflowFile: string, sourceFile: SourceFile): WorkflowTaskAnalysis {
+export function analyzeWorkflowTasksFromSourceFile(
+  workflowFile: string,
+  sourceFile: SourceFile,
+  semantic?: TaskCallsiteSemanticContext,
+): WorkflowTaskAnalysis {
   const imports = collectImportBindings(sourceFile);
-  const locals = collectLocalValueNames(sourceFile);
   const localExports = collectWorkflowTaskExports(sourceFile);
   const analysis: WorkflowTaskAnalysis = new Map();
-  for (const callsite of findTaskCallsites(sourceFile)) {
-    setAnalyzedCallsite(analysis, callsite, analyzeCallsite(callsite, { workflowFile, imports, locals, localExports }));
+  for (const callsite of findTaskCallsites(sourceFile, semantic)) {
+    setAnalyzedCallsite(analysis, callsite, analyzeCallsite(callsite, { workflowFile, imports, localExports }));
   }
   return analysis;
 }
@@ -102,10 +104,10 @@ export function resolveTaskReferenceMetadata(analysis: WorkflowTaskAnalysis): Ma
 
 function analyzeCallsite(callsite: TaskCallsite, ctx: AnalyzeContext): AnalyzedTask {
   const taskValue = objectProperty(callsite.options, "task");
-  if (taskValue) return withIssueSource(analyzeReusable(taskValue, ctx), callsite);
+  if (taskValue) return withSource(analyzeReusable(taskValue, ctx), callsite);
   const exec = execFunction(callsite.options);
-  if (exec) return withIssueSource(analyzeInline(exec), callsite);
-  return { inline: true };
+  if (exec) return withSource(analyzeInline(exec), callsite);
+  return { inline: true, source: callsite.source };
 }
 
 function analyzeReusable(taskValue: ts.Expression, ctx: AnalyzeContext): AnalyzedTask {
@@ -124,13 +126,15 @@ function analyzeReusable(taskValue: ts.Expression, ctx: AnalyzeContext): Analyze
 
 function analyzeLocalReusable(taskValue: ts.Identifier, ctx: AnalyzeContext): AnalyzedTask | undefined {
   const name = taskValue.text;
-  if (hasInnerBinding(taskValue)) {
-    return reusableIssue({ kind: "workflow-local-reusable-task", name });
-  }
-  const localExport = ctx.localExports.get(name);
+  const declaration = findVisibleVariableDeclaration(taskValue);
+  if (!declaration) return undefined;
+  const topLevel = ts.isVariableDeclarationList(declaration.parent)
+    && ts.isVariableStatement(declaration.parent.parent)
+    && declaration.parent.parent.parent === taskValue.getSourceFile();
+  const localExport = topLevel ? ctx.localExports.get(name) : undefined;
   if (localExport) {
     const taskFactory = taskFactoryLocalName(taskValue.getSourceFile());
-    if (!localExport.initializer || !isTaskDefineCall(localExport.initializer, taskFactory)) {
+    if (!localExport.initializer || !isOfficialTaskDefineSyntax(localExport.initializer, taskFactory)) {
       return reusableIssue({ kind: "invalid-reusable-task-export", importedName: localExport.exportName, file: ctx.workflowFile, reason: "not-task-define" });
     }
     return {
@@ -141,10 +145,17 @@ function analyzeLocalReusable(taskValue: ts.Identifier, ctx: AnalyzeContext): An
       },
     };
   }
-  if (ctx.locals.has(name) && !ctx.imports.has(name)) {
+  const taskFactory = taskFactoryLocalName(taskValue.getSourceFile());
+  if (declaration.initializer && isOfficialTaskDefineSyntax(declaration.initializer, taskFactory)) {
     return reusableIssue({ kind: "workflow-local-reusable-task", name });
   }
-  return undefined;
+  return reusableIssue({ kind: "invalid-reusable-task-reference", name });
+}
+
+function isOfficialTaskDefineSyntax(expression: ts.Expression, taskFactory: string | undefined): boolean {
+  if (!isTaskDefineCall(expression, taskFactory) || !ts.isCallExpression(expression)) return false;
+  const callee = expression.expression;
+  return ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && !hasInnerBinding(callee.expression);
 }
 
 function reusableMetadata(specifier: string, exportName: string): AnalyzedTask {
@@ -172,16 +183,21 @@ function reusableIssue(issue: TaskAuthoringIssue): AnalyzedTask {
   return { inline: false, issue };
 }
 
-function withIssueSource(analyzed: AnalyzedTask, callsite: TaskCallsite): AnalyzedTask {
-  if (!analyzed.issue) return analyzed;
+function withSource(analyzed: AnalyzedTask, callsite: TaskCallsite): AnalyzedTask {
   return { ...analyzed, source: callsite.source };
 }
 
 function setAnalyzedCallsite(analysis: WorkflowTaskAnalysis, callsite: TaskCallsite, analyzed: AnalyzedTask): void {
-  if (analysis.has(callsite.stepId)) {
+  const existing = analysis.get(callsite.stepId);
+  if (existing) {
     analysis.set(callsite.stepId, {
       inline: false,
-      issue: { kind: "ambiguous-task-callsite" },
+      issue: {
+        kind: "ambiguous-task-callsite",
+        firstSource: existing.issue?.kind === "ambiguous-task-callsite"
+          ? existing.issue.firstSource
+          : existing.source ?? callsite.source,
+      },
       source: callsite.source,
     });
     return;

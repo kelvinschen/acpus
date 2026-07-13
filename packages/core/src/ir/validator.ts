@@ -118,7 +118,15 @@ function validateNode(node: NodeIR, diagnostics: DiagnosticIR[], ctx: IrScopeCon
   if (!requireRecord(node, diagnostics, `${ctx.path}.nodes`, "IR002", "Node must be an object.")) return;
   const id = typeof node.id === "string" ? node.id : "<unknown>";
   const path = `${ctx.path}.nodes.${id}`;
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) addError(diagnostics, "ID001", `Invalid node id '${id}'.`, path);
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {
+    diagnostics.push({
+      code: "ID001",
+      severity: "error",
+      message: `Invalid node id '${id}'. Expected /^[A-Za-z_][A-Za-z0-9_-]*$/.`,
+      path,
+      hint: "Use a compile-time string literal for the step id; runtime Expr values are not allowed in node ids.",
+    });
+  }
   if (ctx.ids.has(id)) addError(diagnostics, "ID002", `Duplicate node id '${id}'.`, path);
   ctx.ids.add(id);
 

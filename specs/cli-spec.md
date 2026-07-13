@@ -309,7 +309,7 @@ failures to stable CLI phases and exit codes.
   source when available, hook validation/list details when available, and
   doctor checks when available, and the Doctor authoring authority projection
   when authoring resolution succeeds.
-- JSON diagnostic output MUST preserve `hint` and `source` fields when present.
+- JSON diagnostic output MUST preserve the sorted `DiagnosticIR` objects exactly, including absolute source paths and `hint`/`source` fields when present. Package-private compiler origin, offset, ownership, and sequence metadata MUST NOT be serialized.
 - Supported JSON `phase` values MUST be `usage`, `check`, `compile`,
   `validate`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and
   `skill`.
@@ -446,7 +446,10 @@ failures to stable CLI phases and exit codes.
 - Text and JSON inspection artifact records MUST expose the artifact's absolute `path` and MUST NOT expose an internal `relativePath` field.
 - Interactive run picker output MUST render on stderr and MUST leave stdout for
   the selected command output.
-- Text diagnostic output MUST render `source` and `hint` when present.
+- A sourced text diagnostic MUST render as `workflow.ts:10:5 [error AL002] message`; a source-less diagnostic MUST render as `[error ID001] message`.
+- Text diagnostic paths, hints, and message/hint continuation lines MUST use two-space indentation. The diagnostic `path` MUST render on its own `path:` line and the hint MUST render on its own `hint:` line.
+- An absolute diagnostic source path inside the CLI `cwd` MUST render relative to `cwd`. An already-relative source path MUST remain unchanged, and an absolute source path outside `cwd` MUST remain absolute. This presentation rule MUST NOT mutate JSON output.
+- A failed check result with diagnostics and no workflow summary MUST render `Diagnostics: N errors, N warnings, N infos.` before the diagnostic list. A workflow summary already containing diagnostic counts MUST NOT render a second count line.
 - Delete JSON output MUST include `deletedRuns` and `skippedRuns` arrays for
   aggregate delete results. Explicit single-run delete MAY also include `run`
   for the deleted run summary.
@@ -493,8 +496,7 @@ failures to stable CLI phases and exit codes.
   run, and runs fork; case-insensitive `.json` detection; cwd-relative paths;
   JSON strings ending in `.json`; and file read, empty-file, and parse failures
   before workflow preparation or runtime mutation.
-- Tests MUST cover diagnostic hint rendering in text output and hint
-  preservation in JSON output.
+- Tests MUST cover sourced, source-less, relative, and outside-workspace diagnostic paths; multiline message/path/hint indentation; failed-check counts without duplicate workflow summary counts; and exact JSON diagnostic preservation.
 - Tests MUST cover read-only run inspect status surface output.
 - Tests MUST cover run inspect hook history rendering only for terminal runs
   with hook journal rows.

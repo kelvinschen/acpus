@@ -48,29 +48,31 @@
 - Published installs MUST rely on normal package resolution for non-Acpus
   dependencies.
 - The check phase MUST run only the TypeScript compiler and Acpus-owned checks; it MUST NOT load user or editor lint configuration or third-party rule presets.
-- Public TypeScript types MUST own every authoring constraint expressible by the type system. Acpus AST authoring rules MUST NOT duplicate those constraints or remap native TypeScript diagnostics to Acpus codes.
+- Public TypeScript types MUST own every authoring constraint expressible by the type system. When TypeScript rejects an Acpus-specific source form, the check phase MUST retain the native `TS####` diagnostic and MAY add a high-confidence Acpus repair hint; it MUST NOT emit a duplicate AL diagnostic for the same owned source range. When TypeScript accepts an unsupported Expr operator or control form, the Acpus AST rule MUST emit the corresponding AL diagnostic.
 - The check phase MUST report one `AL007` error for every TypeScript `AnyKeyword` in the workflow entry source file, including annotations, assertions, arrays, generic arguments/defaults, return types, `keyof any`, rest parameters, and nested inline Task or expression callback bodies.
 - `AL007` MUST use message `Explicit 'any' is not allowed in Acpus workflow authoring.` and hint `Use a precise type, or use unknown and narrow it before crossing an Acpus boundary.`
 - `AL007` MUST NOT scan imported helper modules, read lint configuration, support suppression/configuration/autofix, or invoke ESLint.
-- Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, logical operators, TypeScript-accepted equality operators, untagged template interpolation containing `Expr`, string-typed node ids derived from Expr values, invalid callback source forms, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
-- Expr condition hints MUST distinguish graph `if` control from ternary value computation. Negation and boolean logical hints MUST name `not`, `and`, or `or`; non-boolean logical fallback hints MUST name unary or binary `lift`; equality hints MUST name `eq` or `ne` according to the authored operator.
-- `AL005` MUST explain that loop and fanout instance paths derive distinct runtime `nodeKey` values from one static step id. An Expr-derived template string used directly as a step id MUST produce `AL005` without a duplicate untagged-template `AL004` or non-literal-id `TB004`; other untagged templates and non-literal Task ids MUST retain their owning diagnostics.
-- Expr array properties and methods, relational operators, direct non-string node ids, callback output types, and other type-expressible failures MUST be left to TypeScript diagnostics.
+- Acpus authoring rules MUST reject `Expr` values in JavaScript truthiness positions, JavaScript `switch`, `!`, `&&`, `||`, `??`, TypeScript-accepted equality and relational operators, untagged template interpolation containing `Expr`, string-typed node ids derived from Expr values, invalid callback source forms, invalid task authoring shapes, and task callsites that cannot be joined to task metadata.
+- Expr condition hints MUST distinguish graph `if` control from ternary value computation. JavaScript `switch` hints MUST name graph `switch`; negation and boolean logical hints MUST name `not`, `and`, or `or`; nullish and non-boolean logical fallback hints MUST name `lift`; equality hints MUST name `eq` or `ne`; relational hints MUST name `lt`, `lte`, `gt`, or `gte` according to the authored operator.
+- `AL005` in a loop or fanout callback MUST explain that runtime instance paths derive distinct `nodeKey` values from one static step id. Outside those callbacks it MUST ask for a compile-time literal id without introducing runtime `nodeKey` terminology. An Expr-derived template string used directly as a step id MUST produce `AL005` without a duplicate untagged-template `AL004` or non-literal-id `TB004`; other untagged templates and non-literal Task ids MUST retain their owning diagnostics.
+- Expr array properties and methods, direct non-string node ids, callback output types, and other type-expressible failures MUST remain native TypeScript diagnostics, with an Acpus hint only when declaration provenance and AST/type context identify one unambiguous repair.
+- TypeScript hint enrichment MUST cover Expr arithmetic through `lift`, equality and relational operators through their predicate helpers, JavaScript switch through graph switch, NodeRef property access through `.output`, Expr array operations through `lift`, heterogeneous branch fields through `lift` narrowing, NodeRef graph callback outputs through named `.output` fields, and non-WorkflowData `lift` or Task callback outputs through JSON-compatible data guidance. An ordinary TypeScript diagnostic with the same code MUST remain unchanged when those predicates do not hold.
+- Expr, NodeRef, StepFactory, StepDeclaration, and `task.define` identity MUST be established from resolved declaration provenance under the realpath-aware official core or expression package root supplied by `@acpus/loader`. A structural `__ir` property, an alias name, a same-name user type, or an unrelated `step`/`.task` member MUST NOT establish Acpus identity. Supported facade aliases, namespaces, and shadowed-binding behavior MUST remain symbol-aware.
 - Acpus authoring rules MUST inspect only `lift` calls imported from the supported `acpus/expression` facade, including named aliases, namespace property access, and string-literal namespace element access; transparent parentheses, type assertions, non-null assertions, and `satisfies` expressions around those callees or namespace receivers MUST NOT bypass inspection, while imports from internal implementation packages and shadowed bindings MUST NOT be treated as facade calls.
-- For legal two-, three-, and four-argument `lift` calls, Acpus authoring rules MUST locate the final argument as the callback and MUST reject callbacks with fewer parameters than preceding dependencies; a named object is one structured dependency and therefore has one destructured callback parameter. Excess callback parameters remain owned by TypeScript.
+- For legal two-, three-, and four-argument `lift` calls, Acpus authoring rules MUST locate the final argument as the callback and MUST report both the explicit dependency count and declared callback parameter count when they differ; a named object is one structured dependency and therefore has one destructured callback parameter.
 - Acpus authoring rules MUST accept expression-body and block-body arrows, including nested block-body arrows, and MUST reject spread call arguments, callable references, normal or generator functions, callback arity that TypeScript permits but the serialized operator cannot execute, default/rest/computed bindings, `this`, non-arrow nested functions, and references to workflow/module lexical bindings outside callback parameters, local declarations, and nested callback parameters.
-- Missing or non-callable callbacks, excess callback parameters, async callbacks, and non-`WorkflowData` callback returns MUST be reported only by TypeScript.
+- Missing or non-callable callbacks, unsupported call arity, async callbacks, and non-`WorkflowData` callback returns MUST be reported only by TypeScript.
 - Acpus authoring rules MUST allow ordinary synchronous JavaScript syntax inside expression callbacks when it does not introduce external lexical captures, including ordinary methods, nested arrows, local declarations, control flow, runtime globals such as `Math`, `JSON`, `Date`, and `undefined`, assignments, `new`, and dynamic imports. TypeScript owns callback return-type admissibility, including rejection of durable `undefined` outputs.
 - Expression callback capture checks and inline task self-contained checks MUST share runtime-global detection, including rejection of workflow/module bindings that shadow globals such as `Math`, `JSON`, and `Date`.
-- Acpus authoring rules MUST ignore unrelated property calls that merely share names such as `.task(...)` or `.loop(...)` unless the receiver is a direct `step("id")` call or is typed as an Acpus `StepDeclaration`.
+- Acpus authoring rules MUST ignore unrelated property calls that merely share names such as `.task(...)` or `.loop(...)`; a direct call MUST resolve from the official StepFactory and a saved receiver MUST resolve to the official StepDeclaration.
 - Graph output aliases, spreads, computed keys, callback variables, and heterogeneous branch or root returns MUST NOT be rejected solely because of source shape.
 - The complete Acpus authoring diagnostic set MUST be contiguous and limited to the following current codes:
 
 | Code | Meaning |
 | --- | --- |
-| `AL001` | Expr used as a JavaScript condition or with `!` |
-| `AL002` | Expr used with `&&` or `||` |
-| `AL003` | TypeScript-accepted Expr equality |
+| `AL001` | Expr used as JavaScript condition/switch control or with `!` |
+| `AL002` | Expr used with `&&`, `||`, or `??` |
+| `AL003` | TypeScript-accepted Expr equality or relational operator |
 | `AL004` | Expr interpolated into an untagged template literal |
 | `AL005` | String-typed node id derived from Expr |
 | `AL006` | Expression callback source, parameter, or capture is not serializable |
@@ -79,6 +81,10 @@
 | `TB002` | Reusable task reference or export is not a `task.define(...)` token |
 | `TB003` | Inline task captures an external binding |
 | `TB004` | Task callsite cannot be joined uniquely to metadata |
+
+- Diagnostic origin, source offsets, ownership, and original sequence MUST remain package-private candidate metadata and MUST NOT be added to `DiagnosticIR`, preparation JSON, worker JSON, or CLI JSON.
+- Diagnostic normalization MUST order config, program, global, and syntactic TypeScript categories first; then entry-file semantic TypeScript and AL/TB diagnostics by source position; then imported semantic diagnostics by lexical file name and source position. A raw non-empty TypeScript span that contains another same-file diagnostic MUST follow the contained diagnostic, while a standalone raw diagnostic MUST retain normal source order.
+- Exact deduplication MUST compare all user-visible diagnostic fields: code, severity, message, path, source file/line/column, and hint. Diagnostics at different source locations MUST NOT be merged, and ordering or cascade classification MUST NOT depend on diagnostic message text, `never`, `CheckedBuildFn`, or another internal type name.
 
 - Full preparation MUST compile through a worker/import path that loads
   TypeScript workflow modules and supported official `acpus/*` authoring
@@ -121,6 +127,9 @@
 - Inline task source MUST be preserved as a self-contained function source in the serialized IR.
 - Inline task source analysis MUST read the Task step's top-level `exec` and treat its output as TypeScript-inferred, not as schema-declared metadata.
 - Inline tasks that capture workflow-module scope MUST produce check diagnostics during preparation.
+- Reusable Task reference classification MUST resolve the nearest visible value declaration. A non-exported or nested official `task.define(...)` value MUST produce `TB001`; an ordinary local value, shadowed fake `task.define`, or non-Task token MUST produce `TB002`.
+- Inline Task capture diagnostics MUST be emitted once per Task from semantic capture analysis. Captured names MUST be deduplicated and sorted, the diagnostic source MUST identify the earliest offending identifier, and the hint MUST show how to pass values through the Task's top-level `input`.
+- Duplicate Task ids MUST retain the first and repeated callsite positions internally. `TB004` MUST point at the repeated declaration and include the first declaration's line and column in its hint without extending `DiagnosticIR`.
 - Internal module compilation MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
 - The task authoring diagnostic set MUST use `TB001` through `TB004` exactly as defined by the current authoring diagnostic table.
 
@@ -141,11 +150,14 @@
 - Integration tests MUST cover compiling TypeScript workflow modules with reusable module references, inline embedded source, and package-imported reusable tasks.
 - Tests MUST cover check failure before compile, including TypeScript diagnostics converted to `DiagnosticIR` and Acpus authoring-rule diagnostics.
 - Tests MUST cover TypeScript 7 native lifecycle cleanup, diagnostic-chain flattening, source locations, default-library globals, source overlays, repeated and concurrent checks, and `WF002` infrastructure failures.
-- Tests MUST cover accepted unary, binary, ternary, and named-object `lift` callbacks with expression and block bodies, aliases, namespaces, globals, and ordinary methods, plus rejected captures, spread arguments, callable references, insufficient callback parameters, invalid bindings, and function expressions.
+- Tests MUST cover accepted unary, binary, ternary, and named-object `lift` callbacks with expression and block bodies, aliases, namespaces, globals, and ordinary methods, plus rejected captures, spread arguments, callable references, dependency/parameter count mismatches, invalid bindings, and function expressions.
 - Type tests MUST cover durable workflow, Task, and composite outputs, heterogeneous branch/root unions, loop consistency, `JsonValue`/`JsonObject`, and `unknown`/`any` rejection.
 - Authoring-rule tests MUST cover only source-level invariants, MUST assert the
   exact contiguous `AL001`-`AL007` and `TB001`-`TB004` sets, and MUST verify
-  that type-owned diagnostics are not emitted as Acpus authoring diagnostics.
+  TS-accepted and TS-rejected forms have one owner, official declaration
+  provenance rejects lookalikes, and ordinary TypeScript errors are not
+  enriched.
+- Tests MUST cover diagnostic category/source ordering, imported-file ordering, containing-boundary demotion, standalone raw retention, exact visible-field deduplication, and absence of candidate metadata from returned diagnostics and JSON.
 - Tests MUST cover validation failure after compile.
 - Tests MUST cover task analysis facts and metadata for imported reusable tasks, exported same-file reusable tasks, package imports, re-exported reusable tasks, unsupported task callsite forms, and inline tasks that capture workflow-module scope.
 - Tests MUST cover stable reusable task reference metadata across compiles.

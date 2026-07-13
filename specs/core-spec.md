@@ -134,6 +134,8 @@
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
 - `validateWorkflowIR(ir)` MUST diagnose unknown fields, malformed agent definitions, malformed node runs, invalid expressions/templates/schemas, missing required composite branches/defaults, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
+- Node builders MUST NOT emit `ID001`. `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation; the default compilation path MUST append validator diagnostics once.
 - `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
 - Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
@@ -163,7 +165,7 @@
 - Tests MUST cover schema lowering acceptance and rejection for graph-boundary schemas.
 - Tests MUST cover authoring type contracts for workflow input, agents, outputs, composites, fanout, loop, and boolean conditions.
 - Tests MUST cover `compileWorkflowDefinition(...)` lowering authoring graphs to valid `WorkflowIR`.
-- Tests MUST cover `validateWorkflowIR(...)` diagnostics for closed IR shapes, malformed agents, malformed nodes, malformed task execution targets, and composite output requirements.
+- Tests MUST cover `validateWorkflowIR(...)` diagnostics for closed IR shapes, malformed agents, malformed nodes, malformed task execution targets, composite output requirements, and the exact single `ID001` contract with default validation and `validate: false`.
 - Tests MUST cover duration parsing units, omitted units, zero, invalid syntax, out-of-range millisecond results, and validator rejection of out-of-range duration literals.
 - Tests MUST cover traversal across all nine node kinds and every composite child scope, including exact depth-first pre-order, switch case-before-default order, parallel authored order, and outermost-first ancestry.
 - Public API type tests MUST cover the complete `NodeChildScope` union and the `NodeVisit`, `childScopes`, and `walkNodes` signatures.

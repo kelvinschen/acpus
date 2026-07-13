@@ -1,4 +1,5 @@
 import type { Writable } from "node:stream";
+import { isAbsolute, relative } from "node:path";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { WorkflowCatalogEntry } from "./catalog.js";
@@ -92,7 +93,12 @@ export type SkillCommandResult = {
 
 export type OutputFormat = "text" | "json";
 
-export function writeResult(result: CliResult, format: OutputFormat, streams: { stdout: Writable; stderr: Writable }, exitCode: number): number {
+export function writeResult(
+  result: CliResult,
+  format: OutputFormat,
+  streams: { stdout: Writable; stderr: Writable; cwd?: string },
+  exitCode: number,
+): number {
   if (format === "json") {
     streams.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return exitCode;
@@ -135,13 +141,38 @@ export function writeResult(result: CliResult, format: OutputFormat, streams: { 
   if (result.hooks) writeHooks(stream, result.hooks);
   if (result.skill) writeSkillResult(stream, result.skill);
   if (result.diagnostics?.length) {
+    if (!result.ok && result.phase === "check" && !result.workflow) {
+      const errors = result.diagnostics.filter(diagnostic => diagnostic.severity === "error").length;
+      const warnings = result.diagnostics.filter(diagnostic => diagnostic.severity === "warning").length;
+      const infos = result.diagnostics.filter(diagnostic => diagnostic.severity === "info").length;
+      stream.write(`Diagnostics: ${errors} errors, ${warnings} warnings, ${infos} infos.\n`);
+    }
     for (const diagnostic of result.diagnostics) {
-      stream.write(`[${diagnostic.severity}] ${diagnostic.code}${diagnostic.path ? ` ${diagnostic.path}` : ""}: ${diagnostic.message}\n`);
-      if (diagnostic.source) stream.write(`  source: ${diagnostic.source.file}:${diagnostic.source.line}:${diagnostic.source.column}\n`);
-      if (diagnostic.hint) stream.write(`  hint: ${diagnostic.hint}\n`);
+      writeDiagnostic(stream, diagnostic, streams.cwd);
     }
   }
   return exitCode;
+}
+
+function writeDiagnostic(stream: Writable, diagnostic: DiagnosticIR, cwd: string | undefined): void {
+  const [message, ...continuation] = diagnostic.message.split("\n");
+  const source = diagnostic.source?.file
+    ? `${textSourcePath(diagnostic.source.file, cwd)}:${diagnostic.source.line ?? 1}:${diagnostic.source.column ?? 1} `
+    : "";
+  stream.write(`${source}[${diagnostic.severity} ${diagnostic.code}] ${message}\n`);
+  for (const line of continuation) stream.write(`  ${line}\n`);
+  if (diagnostic.path) stream.write(`  path: ${diagnostic.path}\n`);
+  if (diagnostic.hint) {
+    const [hint, ...hintContinuation] = diagnostic.hint.split("\n");
+    stream.write(`  hint: ${hint}\n`);
+    for (const line of hintContinuation) stream.write(`  ${line}\n`);
+  }
+}
+
+function textSourcePath(file: string, cwd: string | undefined): string {
+  if (!cwd || !isAbsolute(file)) return file;
+  const local = relative(cwd, file);
+  return local !== "" && !local.startsWith("..") && !isAbsolute(local) ? local : file;
 }
 
 function writeRun(stream: Writable, run: RunRecord, control: CliControl | undefined): void {

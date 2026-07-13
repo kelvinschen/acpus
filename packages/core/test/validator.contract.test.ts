@@ -24,6 +24,20 @@ function taskNode(id: string, input: Record<string, any> = {}) {
 }
 
 describe("WorkflowIR diagnostics contract", () => {
+  it("owns the complete ID001 diagnostic contract", () => {
+    expect(validateWorkflowIR(minimalWorkflow({
+      root: {
+        nodes: [{ id: "bad id", kind: "assert", condition: { kind: "literal", value: true } }],
+      },
+    }))).toEqual([{
+      code: "ID001",
+      severity: "error",
+      message: "Invalid node id 'bad id'. Expected /^[A-Za-z_][A-Za-z0-9_-]*$/.",
+      path: "root.nodes.bad id",
+      hint: "Use a compile-time string literal for the step id; runtime Expr values are not allowed in node ids.",
+    }]);
+  });
+
   it("accepts optional workflow description metadata", () => {
     expect(validateWorkflowIR(minimalWorkflow({
       description: "Summarize workflow intent for operators.",

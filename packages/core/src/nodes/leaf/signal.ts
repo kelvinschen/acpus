@@ -1,8 +1,8 @@
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { Resolvable } from "@acpus/expression";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
-import type { DiagnosticIR, SignalNodeIR } from "../../ir/types.js";
+import type { SignalNodeIR } from "../../ir/types.js";
 
 type SignalStepBase = {
   prompt: Resolvable<string>;
@@ -25,9 +25,7 @@ export type SignalStepSpec<OutSchema extends Schema<any> | undefined = Schema<an
 export function buildSignalNode<OutSchema extends Schema<any> | undefined>(
   id: string,
   spec: SignalStepSpec<OutSchema>,
-  diagnostics: DiagnosticIR[],
 ): SignalNodeIR {
-  assertStableId(id, diagnostics);
   return stripUndefined({
     id,
     kind: "signal",

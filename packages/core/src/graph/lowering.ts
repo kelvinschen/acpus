@@ -1,6 +1,6 @@
 import { isExpr, valueToExprIR } from "@acpus/expression/ir";
 import { NODE_REF } from "../internal/symbols.js";
-import type { DiagnosticIR, ExprIR } from "../ir/types.js";
+import type { ExprIR } from "../ir/types.js";
 import type { EnvInput, StaticEnvInput } from "../nodes/leaf/shared.js";
 
 export function bindingsToIR(bindings: Record<string, unknown>): Record<string, ExprIR> {
@@ -64,15 +64,4 @@ function assertNoNodeRef(value: unknown): void {
 
 function isNodeRef(value: object): boolean {
   return Boolean((value as { [NODE_REF]?: unknown })[NODE_REF]);
-}
-
-export function assertStableId(id: string, diagnostics: DiagnosticIR[]): void {
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {
-    diagnostics.push({
-      code: "ID001",
-      severity: "error",
-      message: `Invalid node id '${id}'. Use /^[A-Za-z_][A-Za-z0-9_-]*$/.`,
-      hint: "Node ids must be compile-time stable strings. Runtime Expr values are not allowed in node ids.",
-    });
-  }
 }

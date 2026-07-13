@@ -218,7 +218,7 @@ describe("CLI result output contracts", () => {
     expect(failedStderr.text).toBe("Bad input.\n");
   });
 
-  it("renders diagnostic hints in text output and preserves them in JSON", () => {
+  it("renders relative sourced diagnostics with indented path, continuation, and hint", () => {
     const result: CliResult = {
       ok: false,
       phase: "validate",
@@ -226,40 +226,93 @@ describe("CLI result output contracts", () => {
       diagnostics: [{
         code: "ID001",
         severity: "error",
-        message: "Invalid node id.",
+        message: "Invalid node id.\nUse a stable graph identity.",
         path: "root.nodes.bad id",
         source: {
-          file: "/tmp/workflow.ts",
+          file: "/workspace/src/workflow.ts",
           line: 7,
           column: 11,
         },
-        hint: "Use a compile-time stable node id.",
+        hint: "Use a compile-time stable node id.\nFor example: step(\"review\").",
       }],
     };
     const textStdout = new CaptureStream();
     const textStderr = new CaptureStream();
 
-    expect(writeResult(result, "text", { stdout: textStdout, stderr: textStderr }, 1)).toBe(1);
+    expect(writeResult(result, "text", { stdout: textStdout, stderr: textStderr, cwd: "/workspace" }, 1)).toBe(1);
     expect(textStdout.text).toBe("");
-    expect(textStderr.text).toContain("[error] ID001 root.nodes.bad id: Invalid node id.");
-    expect(textStderr.text).toContain("source: /tmp/workflow.ts:7:11");
-    expect(textStderr.text).toContain("hint: Use a compile-time stable node id.");
+    expect(textStderr.text).toBe([
+      "Workflow validation failed.",
+      "src/workflow.ts:7:11 [error ID001] Invalid node id.",
+      "  Use a stable graph identity.",
+      "  path: root.nodes.bad id",
+      "  hint: Use a compile-time stable node id.",
+      "  For example: step(\"review\").",
+      "",
+    ].join("\n"));
 
     const jsonStdout = new CaptureStream();
     const jsonStderr = new CaptureStream();
 
-    expect(writeResult(result, "json", { stdout: jsonStdout, stderr: jsonStderr }, 1)).toBe(1);
-    expect(JSON.parse(jsonStdout.text)).toMatchObject({
-      diagnostics: [expect.objectContaining({
-        hint: "Use a compile-time stable node id.",
-        source: {
-          file: "/tmp/workflow.ts",
-          line: 7,
-          column: 11,
-        },
-      })],
-    });
+    expect(writeResult(result, "json", { stdout: jsonStdout, stderr: jsonStderr, cwd: "/workspace" }, 1)).toBe(1);
+    expect(JSON.parse(jsonStdout.text)).toEqual(result);
+    expect(JSON.parse(jsonStdout.text).diagnostics[0].source.file).toBe("/workspace/src/workflow.ts");
     expect(jsonStderr.text).toBe("");
+  });
+
+  it("keeps outside absolute paths and renders source-less diagnostics without a prefix", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const result: CliResult = {
+      ok: false,
+      phase: "validate",
+      message: "Workflow validation failed.",
+      diagnostics: [{
+        code: "TS2322",
+        severity: "error",
+        message: "Outside source.",
+        source: { file: "/outside/helper.ts", line: 2, column: 4 },
+      }, {
+        code: "ID001",
+        severity: "error",
+        message: "No source.",
+      }, {
+        code: "AL001",
+        severity: "error",
+        message: "Already relative.",
+        source: { file: "workflow.ts", line: 1, column: 2 },
+      }],
+    };
+
+    writeResult(result, "text", { stdout, stderr, cwd: "/workspace" }, 1);
+
+    expect(stderr.text).toContain("/outside/helper.ts:2:4 [error TS2322] Outside source.");
+    expect(stderr.text).toContain("[error ID001] No source.");
+    expect(stderr.text).toContain("workflow.ts:1:2 [error AL001] Already relative.");
+  });
+
+  it("prints failed-check counts once and does not duplicate workflow summary counts", () => {
+    const failedStdout = new CaptureStream();
+    const failedStderr = new CaptureStream();
+    writeResult({
+      ok: false,
+      phase: "check",
+      message: "Workflow check failed.",
+      diagnostics: [
+        { code: "AL001", severity: "error", message: "error" },
+        { code: "W", severity: "warning", message: "warning" },
+        { code: "I", severity: "info", message: "info" },
+      ],
+    }, "text", { stdout: failedStdout, stderr: failedStderr }, 1);
+    expect(failedStderr.text.match(/Diagnostics:/g)).toHaveLength(1);
+    expect(failedStderr.text).toContain("Diagnostics: 1 errors, 1 warnings, 1 infos.");
+
+    const summaryStdout = new CaptureStream();
+    const summaryStderr = new CaptureStream();
+    const summary = checkResult();
+    summary.diagnostics = [{ code: "I", severity: "info", message: "info" }];
+    writeResult(summary, "text", { stdout: summaryStdout, stderr: summaryStderr }, 0);
+    expect(summaryStdout.text.match(/Diagnostics:/g)).toHaveLength(1);
   });
 });
 

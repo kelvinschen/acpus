@@ -23,7 +23,7 @@ describe("workflow preparation", () => {
       expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
         code: "TB003",
         source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
-        hint: expect.stringContaining("top-level input"),
+        hint: expect.stringContaining("through input"),
       }));
     });
   });
@@ -34,7 +34,13 @@ describe("workflow preparation", () => {
       const failure = await expectPreparationFailure(workflow, cwd);
       expect(failure.phase).toBe("validate");
       if (failure.phase !== "validate") throw new Error("expected validate failure");
-      expect(failure.diagnostics).toContainEqual(expect.objectContaining({ code: "ID001", severity: "error" }));
+      expect(failure.diagnostics.filter(diagnostic => diagnostic.code === "ID001")).toEqual([{
+        code: "ID001",
+        severity: "error",
+        message: "Invalid node id 'bad id'. Expected /^[A-Za-z_][A-Za-z0-9_-]*$/.",
+        path: "root.nodes.bad id",
+        hint: "Use a compile-time string literal for the step id; runtime Expr values are not allowed in node ids.",
+      }]);
     });
   });
 });

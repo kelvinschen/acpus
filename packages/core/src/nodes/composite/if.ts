@@ -1,7 +1,7 @@
 import { valueToExprIR } from "@acpus/expression/ir";
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import type { Resolvable } from "@acpus/expression";
-import type { DiagnosticIR, IfNodeIR } from "../../ir/types.js";
+import type { IfNodeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback, ScopeOutput } from "./shared.js";
 
 /** Authoring spec for a graph-level conditional branch. */
@@ -18,10 +18,8 @@ export type IfNodeRefOutput<Then extends ScopeCallback, Else extends ScopeCallba
 export function buildIfNode<Then extends ScopeCallback, Else extends ScopeCallback>(
   id: string,
   spec: IfStepSpec<Then, Else>,
-  diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): IfNodeIR {
-  assertStableId(id, diagnostics);
   return stripUndefined({
     id,
     kind: "if",

@@ -1,9 +1,9 @@
-import { envToIR, staticEnvToIR, assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { envToIR, staticEnvToIR, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import { AGENT_TOKEN } from "../../internal/symbols.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
 import type { Resolvable } from "@acpus/expression";
-import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR } from "../../ir/types.js";
+import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR } from "../../ir/types.js";
 import type { EnvInput, StaticEnvInput } from "./shared.js";
 
 /** Permission modes accepted by Acpus agent definitions and Agent node runs. */
@@ -99,9 +99,7 @@ function agentSpecToRunIR(spec: AgentStepBase): AgentRunIR {
 export function buildAgentNode<OutSchema extends Schema<any> | undefined>(
   id: string,
   spec: AgentStepSpec<OutSchema>,
-  diagnostics: DiagnosticIR[],
 ): AgentNodeIR {
-  assertStableId(id, diagnostics);
   return stripUndefined({
     id,
     kind: "agent",

@@ -1,9 +1,9 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import { refExpr } from "../../graph/refs.js";
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import type { Resolvable } from "@acpus/expression";
 import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
-import type { DiagnosticIR, LoopNodeIR } from "../../ir/types.js";
+import type { LoopNodeIR } from "../../ir/types.js";
 import type { BuildScope, LoopScopeContext, OutputObject, RuntimeValueOf, WidenRuntimeValue } from "./shared.js";
 
 type LoopState<Initial extends OutputObject> =
@@ -34,10 +34,8 @@ export type LoopStepSpec<
 export function buildLoopNode<Initial extends OutputObject, Transition extends LoopTransitionOutput<Initial> = LoopTransitionOutput<Initial>>(
   id: string,
   spec: LoopStepSpec<Initial, Transition>,
-  diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): LoopNodeIR {
-  assertStableId(id, diagnostics);
   const index = refExpr<number>(["loop", id, "index"]);
   const round = refExpr<number>(["loop", id, "round"]);
   const state = refExpr<LoopState<Initial>>(["loop", id, "state"]);

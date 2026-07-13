@@ -1,15 +1,22 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { expressionCallbackLayout, expressionCallbackOperatorNames, type ExpressionCallbackOperatorName } from "@acpus/expression/ir";
 import * as ts from "typescript/unstable/ast";
-import { SignatureKind, type Checker, type Project, type Symbol, type Type } from "typescript/unstable/sync";
+import { SignatureKind, type Checker, type Project, type Symbol } from "typescript/unstable/sync";
 import { execFunction } from "../../task-analysis/ast.js";
 import { findTaskCallsites, type TaskCallsiteIssueReason, unjoinableTaskCallsiteReason } from "../../task-analysis/callsites.js";
 import {
   collectFreeIdentifierNodes,
-  isRuntimeGlobalName,
   type SemanticCaptureContext,
 } from "../../task-analysis/capture-analysis.js";
 import { analyzeTaskAuthoring, type TaskAuthoringIssue, type WorkflowTaskAnalysis } from "../../task-analysis/index.js";
+import { type AuthoringOwnership, type DiagnosticCandidate } from "../diagnostics.js";
+import {
+  isOfficialExpr,
+  isOfficialStepDeclaration,
+  isOfficialStepFactory,
+  officialAuthoringRoots,
+  type OfficialAuthoringRoots,
+} from "../official-types.js";
 
 // Acpus authoring rules are the product check rules used by
 // checkWorkflow(...) and prepareWorkflow(...). They intentionally do not invoke
@@ -19,23 +26,34 @@ export type AuthoringRulesInput = {
   project: Project;
   sourceFile: ts.SourceFile;
   taskAnalysis: WorkflowTaskAnalysis;
+  roots?: OfficialAuthoringRoots;
 };
 
 export function checkWorkflowAuthoring(input: AuthoringRulesInput): DiagnosticIR[] {
-  const diagnostics: DiagnosticIR[] = [];
+  return collectWorkflowAuthoringCandidates(input).map(candidate => candidate.diagnostic);
+}
+
+export function collectWorkflowAuthoringCandidates(input: AuthoringRulesInput): DiagnosticCandidate[] {
+  const diagnostics: DiagnosticCandidate[] = [];
   const semantic = {
     checker: input.project.checker,
     program: input.project.program,
     project: input.project,
+    roots: input.roots ?? officialAuthoringRoots(),
   };
   checkExplicitAny(input.sourceFile, diagnostics);
   checkExprAuthoring(input.sourceFile, semantic, diagnostics);
-  checkTaskAuthoring(input.taskAnalysis, diagnostics);
-  checkInlineTaskShadowedGlobalCapture(input.sourceFile, semantic, diagnostics);
+  checkTaskAuthoring(input.sourceFile, input.taskAnalysis, diagnostics);
+  checkInlineTaskCaptures(input.sourceFile, semantic, diagnostics);
+  diagnostics.forEach((candidate, sequence) => {
+    candidate.sequence = sequence;
+  });
   return diagnostics;
 }
 
-function checkExplicitAny(sourceFile: ts.SourceFile, diagnostics: DiagnosticIR[]): void {
+type AuthoringSemanticContext = SemanticCaptureContext & { roots: OfficialAuthoringRoots };
+
+function checkExplicitAny(sourceFile: ts.SourceFile, diagnostics: DiagnosticCandidate[]): void {
   const visit = (node: ts.Node): void => {
     if (node.kind === ts.SyntaxKind.AnyKeyword) {
       diagnostics.push(diagnostic(
@@ -57,41 +75,61 @@ const EQUALITY_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.ExclamationEqualsEqualsToken,
 ]);
 
-function checkExprAuthoring(sourceFile: ts.SourceFile, semantic: SemanticCaptureContext, diagnostics: DiagnosticIR[]): void {
+const RELATIONAL_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+function checkExprAuthoring(sourceFile: ts.SourceFile, semantic: AuthoringSemanticContext, diagnostics: DiagnosticCandidate[]): void {
   const checker = semantic.checker;
   const callbackImports = collectExpressionCallbackImports(sourceFile, checker);
   const visit = (node: ts.Node): void => {
-    if (isConditionExpression(node) && isExpr(checker, node)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, conditionHint(node)));
+    if (isConditionExpression(node) && isExpr(semantic, node)) {
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be used as JavaScript conditions.", node, conditionHint(node), "expr-condition"));
     }
-    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken && isExpr(checker, node.operand)) {
-      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use not(value) for a boolean predicate, or lift(value, value => !value) to compute a value."));
+    if (node.parent && ts.isSwitchStatement(node.parent) && node.parent.expression === node && isExpr(semantic, node)) {
+      diagnostics.push(diagnostic("AL001", "Expr values cannot control a JavaScript switch.", node, "Use step(\"id\").switch({ cases, default }) for graph control, with eq/ne or other predicates in each case.", "expr-switch"));
+    }
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken && isExpr(semantic, node.operand)) {
+      diagnostics.push(diagnostic("AL001", "Expr values cannot be negated with JavaScript !.", node, "Use not(value) for a boolean predicate, or lift(value, value => !value) to compute a value.", "expr-negation"));
     }
     if (ts.isBinaryExpression(node)) {
       if ((node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-        && (isExpr(checker, node.left) || isExpr(checker, node.right))) {
+        && (isExpr(semantic, node.left) || isExpr(semantic, node.right))) {
         diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript logical operators at workflow authoring time.", node, logicalHint(checker, node)));
       }
+      if (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        && (isExpr(semantic, node.left) || isExpr(semantic, node.right))) {
+        diagnostics.push(diagnostic("AL002", "Expr values cannot use JavaScript nullish coalescing at workflow authoring time.", node, "Use lift(value, value => value ?? fallback) for a literal fallback, or pass both runtime values as lift dependencies.", "expr-nullish"));
+      }
       if (EQUALITY_OPERATORS.has(node.operatorToken.kind)
-        && (isExpr(checker, node.left) || isExpr(checker, node.right))
-        && typesOverlap(checker, node.left, node.right)) {
-        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, equalityHint(node.operatorToken.kind)));
+        && (isExpr(semantic, node.left) || isExpr(semantic, node.right))) {
+        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript equality operators at workflow authoring time.", node, equalityHint(node.operatorToken.kind), "expr-equality"));
+      }
+      if (RELATIONAL_OPERATORS.has(node.operatorToken.kind)
+        && (isExpr(semantic, node.left) || isExpr(semantic, node.right))) {
+        diagnostics.push(diagnostic("AL003", "Expr values cannot use JavaScript relational operators at workflow authoring time.", node, relationalHint(node.operatorToken.kind), "expr-relational"));
       }
     }
     if (ts.isTemplateExpression(node)
       && !ts.isTaggedTemplateExpression(node.parent)
       && !isDirectStepId(node)
-      && node.templateSpans.some(span => isExpr(checker, span.expression))) {
+      && node.templateSpans.some(span => isExpr(semantic, span.expression))) {
       diagnostics.push(diagnostic("AL004", "Expr values cannot be interpolated with untagged template literals.", node, "Use template or md from acpus/expression."));
     }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "step") {
+    if (ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === "step"
+      && isOfficialStepFactory(checker, semantic.project, semantic.roots, node.expression)) {
       const id = node.arguments[0];
-      if (id && isStringAssignable(checker, id) && isExprDerived(checker, id)) {
-        diagnostics.push(diagnostic("AL005", "Node ids cannot be derived from runtime Expr values.", id, "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey."));
+      if (id && isStringAssignable(checker, id) && isExprDerived(semantic, id)) {
+        diagnostics.push(diagnostic("AL005", "Node ids cannot be derived from runtime Expr values.", id, stepIdHint(id, semantic)));
       }
     }
-    const unjoinableReason = unjoinableTaskCallsiteReason(node, checker);
-    if (unjoinableReason && !(unjoinableReason === "non-literal-task-id" && hasExprDerivedStringTaskId(node, checker))) {
+    const unjoinableReason = unjoinableTaskCallsiteReason(node, semantic);
+    if (unjoinableReason && !(unjoinableReason === "non-literal-task-id" && hasExprDerivedStringTaskId(node, semantic))) {
       diagnostics.push(taskCallsiteDiagnostic(unjoinableReason, node));
     }
     if (ts.isCallExpression(node)) {
@@ -143,12 +181,46 @@ function equalityHint(operator: ts.SyntaxKind): string {
     : "Use eq(left, right) for equality over runtime values.";
 }
 
-function hasExprDerivedStringTaskId(node: ts.Node, checker: Checker): boolean {
+function relationalHint(operator: ts.SyntaxKind): string {
+  const helper = operator === ts.SyntaxKind.LessThanToken
+    ? "lt"
+    : operator === ts.SyntaxKind.LessThanEqualsToken
+      ? "lte"
+      : operator === ts.SyntaxKind.GreaterThanToken
+        ? "gt"
+        : "gte";
+  return `Use ${helper}(left, right) for this comparison over runtime values.`;
+}
+
+function hasExprDerivedStringTaskId(node: ts.Node, semantic: AuthoringSemanticContext): boolean {
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "task") return false;
   const stepCall = node.expression.expression;
   if (!ts.isCallExpression(stepCall) || !ts.isIdentifier(stepCall.expression) || stepCall.expression.text !== "step") return false;
+  if (!isOfficialStepFactory(semantic.checker, semantic.project, semantic.roots, stepCall.expression)) return false;
   const id = stepCall.arguments[0];
-  return Boolean(id && isStringAssignable(checker, id) && isExprDerived(checker, id));
+  return Boolean(id && isStringAssignable(semantic.checker, id) && isExprDerived(semantic, id));
+}
+
+function stepIdHint(node: ts.Node, semantic: AuthoringSemanticContext): string {
+  return isLoopOrFanoutCallback(node, semantic)
+    ? "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey."
+    : "Use a compile-time string literal such as step(\"review\"); node ids are static graph identity.";
+}
+
+function isLoopOrFanoutCallback(node: ts.Node, semantic: AuthoringSemanticContext): boolean {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (!ts.isFunctionLikeDeclaration(current)) continue;
+    const member = ts.isMethodDeclaration(current) ? current : current.parent;
+    if (!ts.isPropertyAssignment(member) && !ts.isMethodDeclaration(member)) continue;
+    const name = ts.isIdentifier(member.name) || ts.isStringLiteral(member.name) ? member.name.text : undefined;
+    if (name !== "do") continue;
+    const object = member.parent;
+    const call = ts.isObjectLiteralExpression(object) ? object.parent : undefined;
+    if (!call || !ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) continue;
+    return (call.expression.name.text === "loop" || call.expression.name.text === "fanout")
+      && isOfficialStepDeclaration(semantic.checker, semantic.project, semantic.roots, call.expression.expression);
+  }
+  return false;
 }
 
 function isDirectStepId(node: ts.Expression): boolean {
@@ -276,7 +348,7 @@ function expressionCallbackIssue(call: ts.CallExpression, helper: ExpressionCall
   }
   const parameterIssue = callbackParameterIssue(node, layout.callbackParamCount);
   if (parameterIssue) {
-    return callbackIssue(`${helper}(...) callback parameters must match its dependencies and use simple identifiers or binding patterns.`, parameterIssue, callbackHint());
+    return callbackIssue(`${helper}(...) callback ${parameterIssue.message}`, parameterIssue.node, callbackHint());
   }
   return callbackBodyIssue(node, semantic);
 }
@@ -303,7 +375,7 @@ function callbackBodyIssue(callback: ts.ArrowFunction, semantic: SemanticCapture
     if (ts.isArrowFunction(node)) {
       const parameterIssue = callbackParameterIssue(node, node.parameters.length);
       if (parameterIssue) {
-        issue = callbackIssue("lift(...) nested callback parameters must be simple identifiers or binding patterns.", parameterIssue, "Use item => expression or item => { return expression; }.");
+        issue = callbackIssue(`lift(...) nested callback ${parameterIssue.message}`, parameterIssue.node, "Use item => expression or item => { return expression; }.");
         return;
       }
     }
@@ -317,23 +389,39 @@ function callbackBodyIssue(callback: ts.ArrowFunction, semantic: SemanticCapture
     : undefined;
 }
 
-function callbackParameterIssue(node: ts.ArrowFunction, expectedCount: number): ts.Node | undefined {
-  if (node.parameters.length < expectedCount) return node;
-  if (node.parameters.length > expectedCount) return undefined;
-  for (const parameter of node.parameters) {
-    if (parameter.dotDotDotToken || parameter.initializer) return parameter;
-    if (!isSimpleBindingName(parameter.name)) return parameter.name;
+type CallbackParameterIssue = { node: ts.Node; message: string };
+
+function callbackParameterIssue(node: ts.ArrowFunction, expectedCount: number): CallbackParameterIssue | undefined {
+  if (node.parameters.length !== expectedCount) {
+    return {
+      node,
+      message: `declares ${node.parameters.length} parameter(s) for ${expectedCount} explicit dependency value(s).`,
+    };
+  }
+  for (const [index, parameter] of node.parameters.entries()) {
+    if (parameter.dotDotDotToken) {
+      return { node: parameter, message: `parameter ${index + 1} cannot be a rest parameter.` };
+    }
+    if (parameter.initializer) {
+      return { node: parameter, message: `parameter ${index + 1} cannot use a default value.` };
+    }
+    const issue = bindingNameIssue(parameter.name);
+    if (issue) return { node: issue.node, message: `parameter ${index + 1} ${issue.message}` };
   }
 }
 
-function isSimpleBindingName(name: ts.BindingName): boolean {
-  if (ts.isIdentifier(name)) return true;
+function bindingNameIssue(name: ts.BindingName): { node: ts.Node; message: string } | undefined {
+  if (ts.isIdentifier(name)) return undefined;
   for (const element of name.elements) {
-    if (ts.isOmittedExpression(element) || !element.name || element.dotDotDotToken || element.initializer) return false;
-    if (element.propertyName && ts.isComputedPropertyName(element.propertyName)) return false;
-    if (!isSimpleBindingName(element.name)) return false;
+    if (ts.isOmittedExpression(element) || !element.name) return { node: element, message: "cannot contain an omitted binding." };
+    if (element.dotDotDotToken) return { node: element, message: "cannot contain a rest binding." };
+    if (element.initializer) return { node: element, message: "cannot contain a default value." };
+    if (element.propertyName && ts.isComputedPropertyName(element.propertyName)) {
+      return { node: element.propertyName, message: "cannot use a computed binding name." };
+    }
+    const nested = bindingNameIssue(element.name);
+    if (nested) return nested;
   }
-  return true;
 }
 
 function callbackHint(): string {
@@ -358,12 +446,12 @@ function isConditionExpression(node: ts.Node): node is ts.Expression {
     || (ts.isConditionalExpression(parent) && parent.condition === node);
 }
 
-function isExprDerived(checker: Checker, node: ts.Node): boolean {
-  if (isExpr(checker, node)) return true;
+function isExprDerived(semantic: AuthoringSemanticContext, node: ts.Node): boolean {
+  if (isExpr(semantic, node)) return true;
   let found = false;
   const visit = (child: ts.Node): void => {
     if (found) return;
-    if (ts.isExpression(child) && isExpr(checker, child)) {
+    if (ts.isExpression(child) && isExpr(semantic, child)) {
       found = true;
       return;
     }
@@ -373,23 +461,8 @@ function isExprDerived(checker: Checker, node: ts.Node): boolean {
   return found;
 }
 
-function isExpr(checker: Checker, node: ts.Node): boolean {
-  const type = checker.getTypeAtLocation(node);
-  return type ? hasExprMarker(checker, type) : false;
-}
-
-function hasExprMarker(checker: Checker, type: Type): boolean {
-  if (type.isUnionType() || type.isIntersectionType()) {
-    return type.getTypes()?.some(member => hasExprMarker(checker, member)) ?? false;
-  }
-  return Boolean(checker.getPropertyOfType(type, "__ir"));
-}
-
-function typesOverlap(checker: Checker, left: ts.Expression, right: ts.Expression): boolean {
-  const leftType = checker.getTypeAtLocation(left);
-  const rightType = checker.getTypeAtLocation(right);
-  if (!leftType || !rightType || leftType.isErrorType() || rightType.isErrorType()) return false;
-  return checker.isTypeAssignableTo(leftType, rightType) || checker.isTypeAssignableTo(rightType, leftType);
+function isExpr(semantic: AuthoringSemanticContext, node: ts.Node): boolean {
+  return isOfficialExpr(semantic.checker, semantic.project, semantic.roots, node);
 }
 
 function isStringAssignable(checker: Checker, node: ts.Expression): boolean {
@@ -397,41 +470,55 @@ function isStringAssignable(checker: Checker, node: ts.Expression): boolean {
   return Boolean(type && !type.isErrorType() && checker.isTypeAssignableTo(type, checker.getStringType()));
 }
 
-function checkInlineTaskShadowedGlobalCapture(sourceFile: ts.SourceFile, semantic: SemanticCaptureContext, diagnostics: DiagnosticIR[]): void {
-  for (const callsite of findTaskCallsites(sourceFile)) {
+function checkInlineTaskCaptures(sourceFile: ts.SourceFile, semantic: AuthoringSemanticContext, diagnostics: DiagnosticCandidate[]): void {
+  for (const callsite of findTaskCallsites(sourceFile, semantic)) {
     const exec = execFunction(callsite.options);
     if (!exec) continue;
-    const shadowedGlobals = collectFreeIdentifierNodes(exec, semantic)
-      .map(identifier => identifier.name)
-      .filter(isRuntimeGlobalName);
-    if (shadowedGlobals.length === 0) continue;
-    diagnostics.push(taskDiagnostic(callsite.stepId, { kind: "inline-task-capture", names: shadowedGlobals }, callsite.source));
+    const identifiers = collectFreeIdentifierNodes(exec, semantic);
+    if (identifiers.length === 0) continue;
+    const names = [...new Set(identifiers.map(identifier => identifier.name))].sort((left, right) => left.localeCompare(right));
+    const earliest = identifiers.reduce((left, right) => left.node.getStart(sourceFile) <= right.node.getStart(sourceFile) ? left : right);
+    diagnostics.push(taskDiagnostic(
+      sourceFile,
+      callsite.stepId,
+      { kind: "inline-task-capture", names },
+      sourceLocation(earliest.node),
+      earliest.node,
+    ));
   }
 }
 
-function checkTaskAuthoring(taskAnalysis: WorkflowTaskAnalysis, diagnostics: DiagnosticIR[]): void {
+function checkTaskAuthoring(sourceFile: ts.SourceFile, taskAnalysis: WorkflowTaskAnalysis, diagnostics: DiagnosticCandidate[]): void {
   for (const fact of analyzeTaskAuthoring(taskAnalysis)) {
-    if (!fact.issue) continue;
-    diagnostics.push(taskDiagnostic(fact.stepId, fact.issue, fact.source));
+    if (!fact.issue || fact.issue.kind === "inline-task-capture") continue;
+    diagnostics.push(taskDiagnostic(sourceFile, fact.stepId, fact.issue, fact.source));
   }
 }
 
-function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: DiagnosticIR["source"]): DiagnosticIR {
+function taskDiagnostic(
+  sourceFile: ts.SourceFile,
+  stepId: string,
+  issue: TaskAuthoringIssue,
+  source: DiagnosticIR["source"],
+  node?: ts.Node,
+): DiagnosticCandidate {
   const base = {
     severity: "error" as const,
     path: taskIssuePath(stepId, issue),
     ...(source ? { source } : {}),
   };
+  let diagnostic: DiagnosticIR;
   switch (issue.kind) {
     case "workflow-local-reusable-task":
-      return {
+      diagnostic = {
         ...base,
         code: "TB001",
         message: `Reusable task '${issue.name}' is not exported from a loadable task module.`,
         hint: "Export the top-level task.define(...) value from the workflow module, move it to an exported task module, or use an inline self-contained task.",
       };
+      break;
     case "invalid-reusable-task-reference":
-      return {
+      diagnostic = {
         ...base,
         code: "TB002",
         message: issue.name
@@ -439,28 +526,43 @@ function taskDiagnostic(stepId: string, issue: TaskAuthoringIssue, source: Diagn
           : "Reusable task must reference a task.define(...) export.",
         hint: "Pass an imported or same-file exported task.define(...) token through the top-level task field.",
       };
+      break;
     case "invalid-reusable-task-export":
-      return {
+      diagnostic = {
         ...base,
         code: "TB002",
         message: `Reusable task export '${issue.importedName}' must be initialized with task.define(...).`,
         hint: "Export a task.define(...) token from the task module and pass it through the top-level task field.",
       };
+      break;
     case "inline-task-capture":
-      return {
+      diagnostic = {
         ...base,
         code: "TB003",
         message: `Inline task is not self-contained; it references ${issue.names.map(name => `'${name}'`).join(", ")}.`,
-        hint: "Move captured logic into a reusable task.define(...) module or pass data through the top-level input field.",
+        hint: `Pass captured values through input: { ${issue.names.join(", ")} } and read them from exec's ({ input }) parameter, for example exec: async ({ input }) => ({ value: input.${issue.names[0]} }).`,
       };
+      break;
     case "ambiguous-task-callsite":
-      return {
+      const firstSource = issue.firstSource;
+      diagnostic = {
         ...base,
         code: "TB004",
-        message: `Task callsite '${stepId}' cannot be joined to task metadata because the task step id is used multiple times.`,
-        hint: "Use unique task step ids so task metadata can be joined unambiguously.",
+        message: `Task step id '${stepId}' is declared more than once, so Acpus cannot identify one Task definition.`,
+        hint: firstSource
+          ? `Use a unique literal id in step(\"${stepId}\").task({...}); the first declaration is at ${firstSource.line}:${firstSource.column}.`
+          : `Use a unique literal id in step(\"${stepId}\").task({...}).`,
       };
+      break;
   }
+  const start = node?.getStart(sourceFile) ?? sourceOffset(sourceFile, source);
+  return {
+    diagnostic,
+    origin: "authoring",
+    sequence: 0,
+    ...(source?.file ? { file: source.file } : {}),
+    ...(start === undefined ? {} : { start, end: node?.end ?? start }),
+  };
 }
 
 function taskIssuePath(stepId: string, issue: TaskAuthoringIssue): string {
@@ -468,25 +570,47 @@ function taskIssuePath(stepId: string, issue: TaskAuthoringIssue): string {
   return `tasks.${stepId}${suffix}`;
 }
 
-function diagnostic(code: string, message: string, node: ts.Node, hint: string): DiagnosticIR {
+function diagnostic(
+  code: string,
+  message: string,
+  node: ts.Node,
+  hint: string,
+  ownership?: AuthoringOwnership,
+): DiagnosticCandidate {
   return {
-    code,
-    severity: "error",
-    message,
-    hint,
-    source: sourceLocation(node),
+    diagnostic: {
+      code,
+      severity: "error",
+      message,
+      hint,
+      source: sourceLocation(node),
+    },
+    origin: "authoring",
+    file: node.getSourceFile().fileName,
+    start: node.getStart(node.getSourceFile()),
+    end: node.end,
+    sequence: 0,
+    ...(ownership ? { ownership } : {}),
   };
 }
 
-function taskCallsiteDiagnostic(reason: TaskCallsiteIssueReason, node: ts.Node): DiagnosticIR {
+function taskCallsiteDiagnostic(reason: TaskCallsiteIssueReason, node: ts.Node): DiagnosticCandidate {
   switch (reason) {
     case "saved-step-declaration":
-      return diagnostic("TB004", "Task callsite cannot be joined to task metadata through a saved step declaration.", node, "Inline the task call as step(\"id\").task({...}).");
+      return diagnostic("TB004", "A Task must be declared directly from a literal step id.", node, "Use step(\"literal\").task({...}) instead of saving the step declaration.");
     case "non-object-task-spec":
-      return diagnostic("TB004", "Task callsite cannot be joined to task metadata because the task spec is not an object literal.", node, "Pass the task spec as an object literal directly to .task(...).");
+      return diagnostic("TB004", "A Task specification must be written directly at its step declaration.", node, "Use step(\"literal\").task({ input, exec }) or step(\"literal\").task({ input, task }).");
     case "non-literal-task-id":
-      return diagnostic("TB004", "Task callsite cannot be joined to task metadata because the task step id is not a literal string.", node, "Use a literal task step id for task metadata checks.");
+      return diagnostic("TB004", "A Task step id must be a literal string.", node, "Use step(\"literal\").task({...}) so the Task has one static graph identity.");
   }
+}
+
+function sourceOffset(sourceFile: ts.SourceFile, source: DiagnosticIR["source"]): number | undefined {
+  if (!source || source.file !== sourceFile.fileName || source.line === undefined || source.column === undefined) return undefined;
+  const lines = sourceFile.text.split("\n");
+  let offset = 0;
+  for (let line = 1; line < source.line; line++) offset += (lines[line - 1]?.length ?? 0) + 1;
+  return offset + Math.max(0, source.column - 1);
 }
 
 function sourceLocation(node: ts.Node): NonNullable<DiagnosticIR["source"]> {

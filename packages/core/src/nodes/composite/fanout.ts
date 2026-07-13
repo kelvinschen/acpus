@@ -1,10 +1,10 @@
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { Resolvable } from "@acpus/expression";
 import { refExpr } from "../../graph/refs.js";
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import type { Simplify } from "../../internal/type-utils.js";
 import type { GraphOutputCheck, OutputValues } from "../../graph/scope.js";
-import type { DiagnosticIR, FanoutNodeIR } from "../../ir/types.js";
+import type { FanoutNodeIR } from "../../ir/types.js";
 import type { ArrayItem, BuildScope, FanoutScopeContext, FanoutStrategy, OutputObject, ResolvableArray, RuntimeValueOf } from "./shared.js";
 
 type BaseFanoutStepSpec<Over extends ResolvableArray<any>, Output extends OutputObject> = {
@@ -32,10 +32,8 @@ export function buildFanoutNode<
 >(
   id: string,
   spec: FanoutStepSpec<Over, Output, Strategy>,
-  diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): FanoutNodeIR {
-  assertStableId(id, diagnostics);
   const item = refExpr<ArrayItem<Over>>(["fanout", id, "item"]);
   const itemIndex = refExpr<number>(["fanout", id, "itemIndex"]);
   return stripUndefined({

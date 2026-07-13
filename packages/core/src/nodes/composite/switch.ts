@@ -1,7 +1,7 @@
 import { valueToExprIR } from "@acpus/expression/ir";
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
+import { stripUndefined } from "../../graph/lowering.js";
 import type { Resolvable } from "@acpus/expression";
-import type { DiagnosticIR, SwitchNodeIR } from "../../ir/types.js";
+import type { SwitchNodeIR } from "../../ir/types.js";
 import type { BuildScope, CheckedScopeCallback, RuntimeValueOf, ScopeCallback, ScopeOutput } from "./shared.js";
 
 type SwitchCase = { when: Resolvable<boolean>; then: ScopeCallback };
@@ -29,10 +29,8 @@ export type SwitchNodeRefOutput<Cases extends ReadonlyArray<SwitchCase>, Default
 export function buildSwitchNode<Cases extends ReadonlyArray<SwitchCase>, Default extends ScopeCallback>(
   id: string,
   spec: SwitchStepSpec<Cases, Default>,
-  diagnostics: DiagnosticIR[],
   buildScope: BuildScope,
 ): SwitchNodeIR {
-  assertStableId(id, diagnostics);
   return stripUndefined({
     id,
     kind: "switch",

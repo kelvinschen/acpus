@@ -15,10 +15,18 @@ const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 describe("workflow authoring rules", () => {
   it("reports Expr authoring diagnostics without running the full check pipeline", async () => {
     const diagnostics = await checkAuthoring(`
-      import type { Expr } from "acpus/expression";
-      declare const expr: Expr<boolean>;
-      declare const items: Expr<string[]>;
-      declare const step: (id: string) => { assert(spec: { condition: boolean }): void };
+      import type { Expr as RuntimeExpr } from "acpus/expression";
+      import type { StepFactory as DeclareStep } from "acpus/core";
+      declare const expr: RuntimeExpr<boolean>;
+      declare const items: RuntimeExpr<string[]>;
+      declare const step: DeclareStep;
+      type ExprLookalike = { __ir: object; __type: boolean };
+      type StepDeclaration = { task(spec: object): void };
+      declare const fakeExpr: ExprLookalike;
+      declare const fakeStep: (id: string) => StepDeclaration;
+      declare const saved: StepDeclaration;
+      const task = { define: (value: unknown) => value };
+      const local = task.define({ exec: async () => ({ ok: true }) });
       if (expr) {}
       const negated = !expr;
       const logical = expr && true;
@@ -26,16 +34,20 @@ describe("workflow authoring rules", () => {
       const prompt = \`\${expr}\`;
       const mapped = items.map((item) => item);
       step(String(expr)).assert({ condition: true });
+      if (fakeExpr) {}
+      fakeStep(String(fakeExpr)).task({ task: local });
+      saved.task({});
       void [negated, logical, compared, prompt, mapped];
     `);
 
-    expect(codes(diagnostics)).toEqual(expect.arrayContaining([
+    expect(codes(diagnostics)).toEqual([
+      "AL001",
       "AL001",
       "AL002",
       "AL003",
       "AL004",
       "AL005",
-    ]));
+    ]);
     expect(diagnostics.filter(diagnostic => diagnostic.code.startsWith("AL"))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -85,12 +97,10 @@ describe("workflow authoring rules", () => {
   it("reports one primary diagnostic for Expr-derived Task ids", async () => {
     const diagnostics = await checkAuthoring(`
       import type { Expr } from "acpus/expression";
+      import type { StepFactory } from "acpus/core";
       declare const round: Expr<number>;
       declare const dynamic: string;
-      declare const step: (id: string) => {
-        agent(spec: object): void;
-        task(spec: object): void;
-      };
+      declare const step: StepFactory;
       step(\`agent_\${round}\`).agent({});
       step((\`asserted_\${round}\` as string)).agent({});
       step(\`task_\${round}\`).task({});
@@ -100,19 +110,19 @@ describe("workflow authoring rules", () => {
     expect(diagnostics.filter(diagnostic => diagnostic.code === "AL005")).toEqual([
       expect.objectContaining({
         code: "AL005",
-        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+        hint: "Use a compile-time string literal such as step(\"review\"); node ids are static graph identity.",
       }),
       expect.objectContaining({
         code: "AL005",
-        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+        hint: "Use a compile-time string literal such as step(\"review\"); node ids are static graph identity.",
       }),
       expect.objectContaining({
         code: "AL005",
-        hint: "Use one static step id inside loop and fanout callbacks; runtime instance paths already give each execution a distinct nodeKey.",
+        hint: "Use a compile-time string literal such as step(\"review\"); node ids are static graph identity.",
       }),
     ]);
     expect(diagnostics.filter(diagnostic => diagnostic.code === "TB004")).toEqual([
-      expect.objectContaining({ hint: expect.stringContaining("literal task step id") }),
+      expect.objectContaining({ hint: expect.stringContaining('step("literal").task') }),
     ]);
   });
 
@@ -128,30 +138,45 @@ describe("workflow authoring rules", () => {
     expect(diagnostics).toEqual([]);
   });
 
-  it("reports shadowed runtime globals captured by inline tasks", async () => {
-    const diagnostics = await checkAuthoringWithProgram(`
-      export {};
-      const Math = { max: (..._values: number[]) => 1 };
-      declare const step: (id: string) => { task(spec: { exec: () => unknown }): void };
-      step("inline").task({
-        exec: async () => ({ value: Math.max(1, 2) }),
+  it("merges captures once per Task while preserving separate same-name Task diagnostics", async () => {
+    const source = `
+      import type { StepFactory } from "acpus/core";
+      declare const step: StepFactory;
+      const prefix = "x";
+      const Math = { max: (...values: number[]) => values[0] ?? 0 };
+      step("merged").task({
+        input: {},
+        exec: async () => ({ value: prefix + Math.max(1, 2) }),
       });
-    `);
+      step("one").task({ input: {}, exec: async () => ({ value: prefix }) });
+      step("two").task({ input: {}, exec: async () => ({ value: prefix }) });
+    `;
+    const diagnostics = await checkAuthoringWithProgram(source);
+    const captures = diagnostics.filter(diagnostic => diagnostic.code === "TB003");
 
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "TB003",
-      message: expect.stringContaining("'Math'"),
-      path: "tasks.inline.source",
-    }));
+    expect(captures[0]).toEqual(
+      expectedDiagnostic(
+        source,
+        "TB003",
+        "prefix + Math",
+        "Pass captured values through input: { Math, prefix } and read them from exec's ({ input }) parameter, for example exec: async ({ input }) => ({ value: input.Math }).",
+      ),
+    );
+    expect(captures[0]?.message).toContain("'Math', 'prefix'");
+    expect(captures.map(diagnostic => diagnostic.path)).toEqual([
+      "tasks.merged.source",
+      "tasks.one.source",
+      "tasks.two.source",
+    ]);
   });
 
   it("reports reason-specific TB004 diagnostics for unjoinable task callsites", async () => {
     const diagnostics = await checkAuthoring(`
-      declare const step: (id: string) => { task(spec: object): void };
+      import type { StepDeclaration, StepFactory } from "acpus/core";
+      declare const step: StepFactory;
       declare const dynamic: string;
       declare const spec: object;
-      import type { StepDeclaration } from "acpus/core";
-      declare const s: (id: string) => StepDeclaration;
+      declare const s: StepFactory;
       step(dynamic).task({});
       step("non_object").task(spec);
       declare const saved: StepDeclaration;
@@ -160,9 +185,9 @@ describe("workflow authoring rules", () => {
     `);
 
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "TB004", hint: expect.stringContaining("literal task step id") }),
-      expect.objectContaining({ code: "TB004", hint: expect.stringContaining("object literal") }),
-      expect.objectContaining({ code: "TB004", hint: expect.stringContaining('step("id").task') }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining('step("literal").task') }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining("{ input, exec }") }),
+      expect.objectContaining({ code: "TB004", hint: expect.stringContaining('step("literal").task') }),
     ]));
   });
 
@@ -172,23 +197,24 @@ describe("workflow authoring rules", () => {
         ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
         ["invalid_export", analyzedIssue({ kind: "invalid-reusable-task-export", importedName: "default", reason: "not-task-define" })],
         ["inline_capture", analyzedIssue({ kind: "inline-task-capture", names: ["PREFIX"] })],
-        ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite" })],
+        ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite", firstSource: { file: "workflow.ts", line: 3, column: 5 } })],
       ]),
     });
 
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "TB001", path: "tasks.local.reference", hint: expect.any(String) }),
-      expect.objectContaining({ code: "TB002", path: "tasks.invalid_export.reference", hint: expect.stringContaining("top-level task") }),
-      expect.objectContaining({ code: "TB003", path: "tasks.inline_capture.source", hint: expect.stringContaining("top-level input") }),
-      expect.objectContaining({ code: "TB004", path: "tasks.duplicate.reference", hint: expect.stringContaining("unique task step ids") }),
+      expect.objectContaining({ code: "TB002", path: "tasks.invalid_export.reference", hint: expect.stringContaining("task.define") }),
+      expect.objectContaining({ code: "TB004", path: "tasks.duplicate.reference", hint: expect.stringContaining("3:5") }),
     ]));
+    expect(diagnostics.some(diagnostic => diagnostic.code === "TB003")).toBe(false);
   });
 
   it("uses contiguous AL and TB diagnostic families", async () => {
     const exprDiagnostics = await checkAuthoring(`
       import { lift, type Expr } from "acpus/expression";
+      import type { StepFactory } from "acpus/core";
       declare const expr: Expr<boolean>;
-      declare const step: (id: string) => { assert(spec: { condition: boolean }): void };
+      declare const step: StepFactory;
       declare const value: unknown;
       declare const taskStep: (id: string) => { task(spec: unknown): unknown };
       let annotated: any;
@@ -209,6 +235,8 @@ describe("workflow authoring rules", () => {
       void (expr === expr);
       void \`value: \${expr}\`;
       step(String(expr)).assert({ condition: true });
+      const prefix = "x";
+      step("capture").task({ input: {}, exec: async () => ({ value: prefix }) });
       void [asserted, array, generic, returnsAny, rest, anything];
     `);
     const callbackDiagnostics = await checkAuthoringWithProgram(`
@@ -232,27 +260,26 @@ describe("workflow authoring rules", () => {
         ["local", analyzedIssue({ kind: "workflow-local-reusable-task", name: "localTask" })],
         ["invalid", analyzedIssue({ kind: "invalid-reusable-task-reference" })],
         ["capture", analyzedIssue({ kind: "inline-task-capture", names: ["PREFIX"] })],
-        ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite" })],
+        ["duplicate", analyzedIssue({ kind: "ambiguous-task-callsite", firstSource: { file: "workflow.ts", line: 1, column: 1 } })],
       ]),
     });
-
     const anyDiagnostics = exprDiagnostics.filter(diagnostic => diagnostic.code === "AL007");
     expect(anyDiagnostics).toHaveLength(11);
     expect(anyDiagnostics.map(diagnostic => ({
       line: diagnostic.source?.line,
       column: diagnostic.source?.column,
     }))).toEqual([
-      { line: 7, column: 22 },
-      { line: 8, column: 33 },
-      { line: 9, column: 20 },
-      { line: 10, column: 28 },
-      { line: 11, column: 24 },
-      { line: 12, column: 25 },
-      { line: 13, column: 30 },
-      { line: 14, column: 32 },
-      { line: 15, column: 26 },
-      { line: 16, column: 51 },
-      { line: 16, column: 65 },
+      { line: 8, column: 22 },
+      { line: 9, column: 33 },
+      { line: 10, column: 20 },
+      { line: 11, column: 28 },
+      { line: 12, column: 24 },
+      { line: 13, column: 25 },
+      { line: 14, column: 30 },
+      { line: 15, column: 32 },
+      { line: 16, column: 26 },
+      { line: 17, column: 51 },
+      { line: 17, column: 65 },
     ]);
     expect(anyDiagnostics).toEqual(anyDiagnostics.map(() => expect.objectContaining({
       code: "AL007",
@@ -377,10 +404,10 @@ describe("workflow authoring rules", () => {
   it("rejects invalid callback forms in one checked program", async () => {
     const callbackCases = [
       ["function expression", "lift(issue, function (value) { return value.title; })", "lift(...) callback must be an inline arrow function."],
-      ["missing unary parameter", "lift(issue, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
-      ["missing binary parameter", "lift(issue, issue, value => value.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
-      ["missing ternary parameter", "lift(issue, issue, issue, (a, b) => a.title + b.title)", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
-      ["missing named parameter", "lift({ issue }, () => \"title\")", "lift(...) callback parameters must match its dependencies and use simple identifiers or binding patterns."],
+      ["missing unary parameter", "lift(issue, () => \"title\")", "lift(...) callback declares 0 parameter(s) for 1 explicit dependency value(s)."],
+      ["missing binary parameter", "lift(issue, issue, value => value.title)", "lift(...) callback declares 1 parameter(s) for 2 explicit dependency value(s)."],
+      ["missing ternary parameter", "lift(issue, issue, issue, (a, b) => a.title + b.title)", "lift(...) callback declares 2 parameter(s) for 3 explicit dependency value(s)."],
+      ["missing named parameter", "lift({ issue }, () => \"title\")", "lift(...) callback declares 0 parameter(s) for 1 explicit dependency value(s)."],
       ["spread arguments", "lift(...[issue, (value: { title: string }) => value.title] as const)", "lift(...) dependencies and callback must be passed as direct arguments."],
       ["callable reference", "lift(issue, helper)", "lift(...) callback must be an inline arrow function."],
       ["capture", "lift(issue, value => value.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
@@ -392,8 +419,8 @@ describe("workflow authoring rules", () => {
       ["shadowed undefined", "const undefined = \"missing\"; lift(issue, value => value.title || undefined)", "lift(...) callback cannot reference external binding 'undefined'."],
       ["aliased import capture", "combine(issue, issue, (left, right) => left.title + right.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
       ["namespace capture", "expr.lift(issue, issue, issue, (a, b, c) => a.title + b.title + c.title + suffix)", "lift(...) callback cannot reference external binding 'suffix'."],
-      ["nested default parameter", "lift(issue, value => value.labels.map((label = suffix) => label))", "lift(...) nested callback parameters must be simple identifiers or binding patterns."],
-      ["nested rest parameter", "lift(issue, value => value.labels.map((...label) => label[0]))", "lift(...) nested callback parameters must be simple identifiers or binding patterns."],
+      ["nested default parameter", "lift(issue, value => value.labels.map((label = suffix) => label))", "lift(...) nested callback parameter 1 cannot use a default value."],
+      ["nested rest parameter", "lift(issue, value => value.labels.map((...label) => label[0]))", "lift(...) nested callback parameter 1 cannot be a rest parameter."],
       ["nested capture", "lift(issue, value => value.labels.map(label => label + suffix))", "lift(...) callback cannot reference external binding 'suffix'."],
       ["nested block capture", "lift(issue, value => value.labels.map(label => { const title = label.trim(); return title + suffix; }))", "lift(...) callback cannot reference external binding 'suffix'."],
       ["nested shadow before capture", "lift(issue, value => { value.labels.map(suffix => suffix); return value.title + suffix; })", "lift(...) callback cannot reference external binding 'suffix'."],
@@ -435,7 +462,11 @@ describe("workflow authoring rules", () => {
 
     const callbackDiagnostics = diagnostics.filter(diagnostic => diagnostic.code === "AL006");
     expect(callbackDiagnostics).toHaveLength(3);
-    expect(callbackDiagnostics.every(diagnostic => diagnostic.message.includes("simple identifiers or binding patterns"))).toBe(true);
+    expect(callbackDiagnostics.map(diagnostic => diagnostic.message)).toEqual([
+      "lift(...) callback parameter 1 cannot use a default value.",
+      "lift(...) callback parameter 1 cannot be a rest parameter.",
+      "lift(...) callback parameter 1 cannot use a computed binding name.",
+    ]);
   });
 
   it("inspects lift calls through every supported transparent callee form", async () => {
@@ -492,7 +523,7 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it("leaves type-expressible lift constraints to TypeScript", async () => {
+  it("reports callback parameter count while leaving return types to TypeScript", async () => {
     const diagnostics = await checkAuthoringWithProgram(`
       import { lift } from "acpus/expression";
       declare const issue: { title: string };
@@ -504,7 +535,11 @@ describe("workflow authoring rules", () => {
       lift(issue, issue, issue, issue, (a, b, c, d) => a.title + b.title + c.title + d.title);
     `);
 
-    expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([]);
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([
+      expect.objectContaining({
+        message: "lift(...) callback declares 2 parameter(s) for 1 explicit dependency value(s).",
+      }),
+    ]);
   });
 });
 

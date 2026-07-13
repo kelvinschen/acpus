@@ -91,6 +91,17 @@ describe("task analysis", () => {
     expectTaskIssue(analysis, { kind: "workflow-local-reusable-task" });
   });
 
+  it("classifies a shadowed fake task.define result as TB002", async () => {
+    const analysis = await analyze(
+      `const task = { define: (value: object) => value };
+       const local = task.define({ exec: async () => ({ ok: true }) });
+       declare const step: any;
+       step("run").task({ task: local, input: {} });`,
+    );
+
+    expectTaskIssue(analysis, { kind: "invalid-reusable-task-reference" });
+  });
+
   it("rejects a nested reusable task defined inside workflow scope (TB001)", async () => {
     const analysis = await analyze(
       `import { defineWorkflow, task, z } from "acpus/core";
@@ -365,6 +376,10 @@ describe("task analysis", () => {
 
     expectTaskIssue(analysis, { kind: "ambiguous-task-callsite" });
     expect(analysis.get("run")?.metadata).toBeUndefined();
+    expect(analysis.get("run")?.source).toMatchObject({ line: 3 });
+    expect(analysis.get("run")?.issue).toMatchObject({
+      firstSource: expect.objectContaining({ line: 2 }),
+    });
   });
 });
 

@@ -1,7 +1,7 @@
 import { type Resolvable } from "@acpus/expression";
 import { valueToExprIR } from "@acpus/expression/ir";
-import { assertStableId, stripUndefined } from "../../graph/lowering.js";
-import type { AssertNodeIR, DiagnosticIR } from "../../ir/types.js";
+import { stripUndefined } from "../../graph/lowering.js";
+import type { AssertNodeIR } from "../../ir/types.js";
 
 /** Authoring spec for an Assert node that fails when `condition` is false. */
 export type AssertSpec = {
@@ -9,8 +9,7 @@ export type AssertSpec = {
   message?: Resolvable<string>;
 };
 
-export function buildAssertNode(id: string, spec: AssertSpec, diagnostics: DiagnosticIR[]): AssertNodeIR {
-  assertStableId(id, diagnostics);
+export function buildAssertNode(id: string, spec: AssertSpec): AssertNodeIR {
   return stripUndefined({
     id,
     kind: "assert",
