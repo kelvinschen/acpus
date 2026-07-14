@@ -12,7 +12,7 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - Every package MUST provide a `tsconfig.build.json` that extends its development configuration, enables `composite`, disables custom export conditions, and stores incremental state at `./tsconfig.build.tsbuildinfo`.
 - Build configurations MUST resolve workspace dependencies through their published `types` exports and MUST NOT consume another package's source tree.
 - The Web build configuration MUST compile only `src/index.ts` and `src/server/**/*.ts`.
-- The repository MUST use exactly `typescript@7.0.2`; `@typescript/native-preview`, `@typescript/typescript6`, and TypeScript fallback implementations MUST NOT be declared.
+- The repository MUST use `typescript@7.0.2` as its sole TypeScript implementation.
 - Every workspace and publishable package MUST require Node.js 22.12 or newer.
 
 ### Project Graph
@@ -39,12 +39,5 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 
 ## Verification
 
-- `pnpm check:build-toolchain` MUST verify tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of Turbo and Nx configuration.
-- CI and publish workflows MUST run `pnpm check:build-toolchain`.
-- `pnpm test:dist` MUST reject packages containing `.tsbuildinfo` files.
-- Build verification MUST cover a clean build and repeated no-change builds without imposing wall-clock thresholds in CI.
-- The package-version workflow MUST synchronize the bundled Acpus skill's
-  `metadata.acpus-version` after Changesets updates the CLI package version and
-  before lockfile and publish artifact verification.
-- Build-toolchain verification MUST reject a repository whose bundled Acpus
-  skill version differs from the CLI package version.
+- `pnpm check:build-toolchain`: verifies tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership and publishable artifacts without build caches.

@@ -2,17 +2,14 @@
 
 ## Purpose
 
-`@acpus/expression` owns the Acpus expression language: typed authoring helpers, serializable `ExprIR` and `TemplateIR`, expression validation, and generic expression/template evaluation. Workflow packages consume this language; they do not own expression semantics.
+`@acpus/expression` owns the Acpus expression language: typed authoring helpers, serializable `ExprIR` and `TemplateIR`, expression validation, and generic expression/template evaluation. The [Core](core-spec.md) and [Workflow Compiler](workflow-compiler-spec.md) consume this language; they do not own expression semantics.
 
 ## Requirements
 
 ### Public API
 
-- The root `@acpus/expression` entrypoint authoring value surface MUST be
-  `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`,
-  `and`, `or`, `template`, and `md`.
-- The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`,
-  `ExprValue`, `WorkflowData`, and `Resolvable`.
+- The root `@acpus/expression` entrypoint authoring value surface MUST be `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`, `and`, `or`, `template`, and `md`.
+- The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
@@ -55,7 +52,8 @@
 - Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
 - `template` MUST accept `Resolvable` interpolations and lower tagged template strings to a flat `ExprIR.kind: "template"` node with `parts` while preserving authored whitespace exactly.
-- `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged. Authors SHOULD use `md` for multiline Markdown prompts and messages.
+- `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged.
+- Authors SHOULD use `md` for multiline Markdown prompts and messages; they MAY use `template` instead when exact authored whitespace is required.
 
 ### Operators
 
@@ -78,12 +76,9 @@
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
 - The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, and non-primitive literal values.
 - The validator MUST reject malformed callback helper calls whose callback source argument is not a string literal expression.
-- The validator/evaluator callback-source checks are IR backstops for synchronous arrow source shape and arity. Source-level callback complexity and lexical capture diagnostics belong to the workflow compiler authoring rules.
+- Validator/evaluator callback-source checks MUST remain IR backstops for synchronous arrow source shape and arity; source-level callback complexity and lexical capture diagnostics belong to the [Workflow Compiler](workflow-compiler-spec.md).
 
 ## Verification
 
-- Tests MUST cover root and subpath public exports.
-- Tests MUST cover authoring type inference and type-level rejection for every `lift` overload, structured dependencies, predicate helpers, and accessors.
-- Tests MUST cover lowering for values, templates, every `lift` overload, predicate helpers, and `access`.
-- Tests MUST cover evaluator semantics for templates, refs, expression-body and block-body `lift` callbacks at each supported arity, predicate helpers, `access`, runtime globals, thenable rejection, non-WorkflowData rejection, and dependency clone behavior.
-- Tests MUST cover validator diagnostic codes and paths for malformed expression IR.
+- Contract and type tests cover public exports, `lift` inference/rejection, structured dependencies, predicates, templates, and accessors.
+- Lowering, evaluator, and validator tests cover every IR kind and operator, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.

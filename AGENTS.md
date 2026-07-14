@@ -4,11 +4,19 @@
 
 ## Specification Maintenance
 
-- Current product/design truth MUST live in `specs/`, not `docs/`.
-- The codebase is under active iteration; treat feature changes as greenfield current behavior. Do not add migration warnings, legacy-field diagnostics, compatibility shims, or backward-compatibility behavior unless explicitly requested.
-- Future plans, backlog, and capability gaps MUST live in `docs/roadmap/`, not `specs/`.
-- SPEC files MUST use the template and RFC 2119 language defined in `specs/INDEX.md`.
-- After a breaking change, specs and tests MUST describe and validate only the new current behavior. Do not add assertions or wording whose only purpose is to document or reject removed behavior.
+- Follow the [specification maintenance guide](docs/specification-maintenance.md)
+  before adding or reorganizing specs.
+- Current behavior belongs in `specs/`; future work belongs in `docs/roadmap/`;
+  completed TypeScript plans belong in `docs/roadmap/archive/`; the previous
+  YAML product remains read-only under `legacy/`.
+- Read the owning spec before changing behavior. Update the canonical spec and
+  verification in the same change; behavior-preserving refactors do not add
+  normative requirements.
+- Specs use the template and RFC 2119 language in `specs/INDEX.md`. Keep each
+  behavior canonical in one owner spec and link from delegating specs.
+- Treat feature changes as greenfield current behavior. Do not add migration
+  warnings, legacy-field diagnostics, compatibility shims, or removed-behavior
+  tests unless explicitly requested.
 
 ## Development Practice
 

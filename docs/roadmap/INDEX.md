@@ -2,8 +2,10 @@
 
 This directory tracks Acpus plans, goal records, backlog, and capability gaps.
 Current implemented behavior lives in `specs/` and is not repeated here.
-Completed roadmap records live under `archive/` as implementation context;
-pre-TypeScript history remains under `legacy/`.
+Completed TypeScript-rewrite roadmap records live under `archive/` as
+implementation context. The previous YAML implementation and its documentation
+remain separately archived under `legacy/`. Neither archive defines current
+behavior.
 
 ## Writing Conventions
 
@@ -14,9 +16,10 @@ pre-TypeScript history remains under `legacy/`.
 
 ## Active
 
-- [Agent Authoring Ergonomics Batch Roadmap](agent-authoring-ergonomics-batch-roadmap.md)
-  — turns the 66 pitfalls reported by two 30-case agent-authoring benchmarks
-  into prioritized, module-owned batches with deterministic and benchmark
-  exit gates.
+- [Post-evaluation Optimization Backlog](after_eval_optimization.md) — active
+  runtime, CLI, authoring, and skill follow-ups found after agent evaluation.
 
 ## Completed
+
+- [Archived Roadmap Records](archive/INDEX.md) — completed plans, implementation
+  goals, audits, and design context for the TypeScript rewrite.

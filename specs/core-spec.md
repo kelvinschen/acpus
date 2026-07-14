@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/core` is the TypeScript-first workflow authoring and IR construction package for Acpus. It provides the workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR` types, and structural IR validation. Expression and template authoring belongs to `@acpus/expression`. Core compiles in-memory workflow definitions with `compileWorkflowDefinition`; TypeScript module loading, workflow static checks, task callsite analysis, and reusable task reference preparation belong to `@acpus/workflow-compiler`.
+`@acpus/core` owns the TypeScript workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR`, and structural IR validation. [Expression](expression-spec.md) owns expression and template semantics; the [Workflow Compiler](workflow-compiler-spec.md) owns TypeScript module checks, task callsite analysis, and reusable task preparation.
 
 ## Requirements
 
@@ -23,17 +23,14 @@
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
 - During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
 - Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
-- `{ use, model?, ... }` MUST define a named acpx agent token and
-  `{ command, ... }` MUST define a custom acpx `--agent <command>` ACP server.
+- `{ use, model?, ... }` MUST define a named Agent and `{ command, ... }` MUST define a custom command Agent.
 - Agent definition `use` and `command` MUST be mutually exclusive.
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
 - Named and custom command agent definitions MAY declare `model`.
-- Named and custom command agent definitions MAY declare `trace?: boolean`.
-  `trace` MUST be accepted only on the top-level Agent definition, MUST default
-  to disabled when absent or false, and MUST NOT be accepted on Agent nodes.
+- Named and custom command agent definitions MAY declare `trace?: boolean`; it is valid only at the top-level Agent definition, defaults to disabled, and is absent from Agent nodes.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
 - Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
-- When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`.
+- When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`; otherwise TypeScript MAY widen the keys and lose per-Agent inference.
 
 ### Schema Layer
 
@@ -41,9 +38,7 @@
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
 - `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
-- `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from
-  `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure
-  message.
+- `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
 - The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, and default schemas.
 - The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
@@ -62,7 +57,8 @@
 
 - Schema-valued authoring fields MUST use the `Schema` suffix. Workflow `inputSchema` and Agent/Signal `outputSchema` are runtime schema boundaries; reusable Task `inputSchema` is a config-time TypeScript type witness.
 - Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their single `output` by returning a durable workflow value, not by calling an output helper.
-- Agent, Task, and Signal authoring specs MUST use flat kind-specific objects. Lowering MUST group their execution fields under the frozen node's `run` field. TypeScript-owned task outputs MUST be inferred from `exec`; they MUST NOT declare author-facing `outputSchema`.
+- Agent, Task, and Signal authoring specs MUST use flat kind-specific objects whose execution fields lower under the frozen node's `run` field.
+- TypeScript-owned Task outputs MUST be inferred from `exec` without an author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
 - Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"`, `agentMode?: string`, and `trace?: boolean`.
@@ -89,7 +85,9 @@
 - A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST be rejected both as a direct scope return and when nested at any depth. A direct `Expr` such as `task.output` MUST remain valid.
 - TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
 - Workflow root and composite callback return types MUST use a position-sensitive recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, and unions while rejecting raw `undefined`, `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
-- A scope output MUST NOT be raw `undefined` or an `Expr<T | undefined>` at the top level. An object field MAY be an `Expr<T | undefined>` and MUST remain optional to downstream projection; an array element MUST NOT be raw `undefined` or an `Expr<T | undefined>`.
+- A scope output MUST NOT be raw `undefined` or an `Expr<T | undefined>` at the top level.
+- An object field MAY be an `Expr<T | undefined>` and remains optional to downstream projection.
+- An array element MUST NOT be raw `undefined` or an `Expr<T | undefined>`.
 - Workflow, composite, loop-state, and Task output seams MUST reduce `any`, including `any` inherited from imported helpers, to `never`; they MUST NOT provide a usable author-facing `any` escape hatch.
 - The recursive output constraint MUST preserve exact inferred output types and MUST remain an internal type implementation detail rather than a required author import.
 - Ordinary authored literals MUST follow TypeScript widening. Authors MUST use `as const` or an explicit literal union when a narrow literal result is required.
@@ -99,7 +97,7 @@
 - Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
 - If and switch results MUST permit direct projection only of fields common to every possible branch. Authors MUST use `lift` to narrow a branch union before reading branch-specific fields.
 - Parallel nodes MUST express static named branches and support declaration-time `strategy?: "all" | "race"`, defaulting to `"all"`, plus runtime `maxConcurrency?: Resolvable<number | undefined>`.
-- Parallel `all` output MUST remain a record keyed by branch name; parallel `race` output MUST remain `{ winner, result }`; fanout output MUST remain the accepted item-output array; loop output MUST remain the final state.
+- Composite outputs MUST preserve these shapes: parallel `all` is a record keyed by branch name, parallel `race` is `{ winner, result }`, fanout is the accepted item-output array, and loop is the final state.
 - Fanout nodes MUST express runtime array expansion through `over: Resolvable<readonly Item[]>`, support declaration-time `strategy?: "all" | "quorum"`, and accept runtime `count: Resolvable<number>` for quorum and `maxConcurrency?: Resolvable<number | undefined>`.
 - Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
 - Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
@@ -136,15 +134,16 @@
 - Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
 - `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `AgentDefinitionIR` MUST retain optional boolean `trace` in IR version 5.
-  Agent node and Agent run IR MUST remain closed shapes without a `trace` field.
-- `childScopes(node)` MUST return every direct child scope of a composite node and no child scopes for leaf nodes. If branches MUST be ordered `then` before `else`; switch cases MUST retain their authored index order before `default`; parallel branches MUST retain their authored key order; fanout and loop bodies MUST each expose their body scope.
+- `AgentDefinitionIR` MUST retain optional boolean `trace` in IR version 5. Agent node and Agent run IR MUST remain closed shapes without a `trace` field.
+- `childScopes(node)` MUST return every direct composite child scope and none for leaf nodes, ordered as `then` before `else`, authored switch cases before `default`, authored parallel keys, then fanout or loop body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
 - `validateWorkflowIR(ir)` MUST require IR version 5 and diagnose unknown fields, malformed agent definitions, malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
-- Node builders MUST NOT emit `ID001`. `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation; the default compilation path MUST append validator diagnostics once.
+- Node builders MUST NOT emit `ID001`.
+- `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation.
+- The default compilation path MUST append validator diagnostics once.
 - `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
 - Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
 - Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
@@ -169,12 +168,6 @@
 
 ## Verification
 
-- Tests MUST cover root and subpath public exports.
-- Tests MUST prove root and schema entrypoints expose the native Zod `z` object and support `z.infer` type authoring.
-- Tests MUST cover schema lowering acceptance and rejection for graph-boundary schemas.
-- Tests MUST cover authoring type contracts for workflow input, agents, outputs, composites, fanout, loop, and boolean conditions.
-- Tests MUST cover `compileWorkflowDefinition(...)` lowering authoring graphs to valid `WorkflowIR`.
-- Tests MUST cover `validateWorkflowIR(...)` diagnostics for closed IR shapes, malformed agents, malformed nodes, malformed task execution targets, composite output requirements, and the exact single `ID001` contract with default validation and `validate: false`.
-- Tests MUST cover duration parsing units, omitted units, zero, invalid syntax, out-of-range millisecond results, and validator rejection of out-of-range duration literals.
-- Tests MUST cover traversal across all nine node kinds and every composite child scope, including exact depth-first pre-order, switch case-before-default order, parallel authored order, and outermost-first ancestry.
-- Public API type tests MUST cover the complete `NodeChildScope` union and the `NodeVisit`, `childScopes`, and `walkNodes` signatures.
+- Contract and type tests cover public exports, native Zod authoring, graph-boundary schema lowering, and every workflow/node authoring shape.
+- Lowering and validation tests cover deterministic closed `WorkflowIR`, duration rules, task targets, output/ref legality, and single-owner diagnostics.
+- Traversal tests cover every node kind, child-scope order, ancestry, and the public traversal type unions.

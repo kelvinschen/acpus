@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/web` provides the local browser operator console for inspecting durable runs, workflow catalog entries, workspace workflow files, static workflow visualizations, runtime graph state, node details, artifacts, and runtime controls through public runtime APIs.
+`@acpus/web` owns the local browser operator console for inspecting workflows and durable runs through the [Runtime](runtime-spec.md) public APIs. [WebUI Design](webui-design-spec.md) owns the shared visual and interaction language.
 
 ## Requirements
 
@@ -10,19 +10,14 @@
 - The run graph UI MUST NOT expose a Runtime/Static mode toggle.
 - Runtime graph rendering MUST keep untaken or not-yet-reached branches visible as dimmed graph structure.
 - Runtime graph rendering MUST visually distinguish node runtime states using exactly the display statuses `queued`, `running`, `awaiting`, `paused`, `completed`, `failed`, `canceled`, and `skipped`; internal `not_started` remains a weak dimmed state and MUST NOT render as a prominent status marker.
-- Runtime graph rendering MUST preserve node kind identity as a separate visual layer from runtime status. Node kind color MUST remain on kind badges and kind borders; runtime status MUST use a single clear status glyph per graph node plus subtle motion/glow where appropriate. Status glyph color MUST come from a status palette, not from the node kind palette: success green, failed red, running blue, awaiting amber, paused indigo, canceled gray, skipped ochre, queued neutral.
-- Runtime graph rendering MUST NOT render status glyphs on branch or scope containers. Containers express structure only.
 - Runtime graph rendering MUST derive `skipped` as a WebUI display state for terminal completed or canceled runs where a branch or descendant was not materialized because control flow chose another path. Failed-run downstream nodes that were merely never reached MUST remain not-started unless runtime data proves a skipped/canceled state.
-- Runtime graph rendering SHOULD highlight active running or awaiting control-flow paths through subtle edge and ancestor-container emphasis.
+- Runtime graph rendering SHOULD highlight active running or awaiting control-flow paths through subtle edge and ancestor-container emphasis when that emphasis preserves kind, status, and containment contrast; otherwise the base status presentation remains sufficient.
 - Run-level running or awaiting status MUST use motion-aware living indicators in the runtime header and graph shell.
 - Runtime graph status motion MUST respect `prefers-reduced-motion` while preserving non-motion color, glyph, label, and border affordances.
 - Static workflow visualizations MUST render the full canonical `WorkflowIR` structure and MUST NOT expose runtime fanout item counts, loop iteration counts, dynamic statuses, attempts, frames, or signal waits as graph state.
 - The WebUI MUST NOT expose Preflights or Settings navigation.
 - The WebUI MUST expose Runtime and Workflows navigation. Run selection MUST remain inside Runtime.
 - The React WebUI client MUST use shadcn/Radix primitives for standard interactive controls where a matching component exists, including dialogs, popovers, selects, tabs, buttons, and textareas. Hand-written interaction logic MAY remain only for Acpus-specific graph viewport gestures and renderer internals.
-- The WebUI visual system MUST use a Sera-inspired high-contrast black/white card style: neutral canvas, white surfaces, black text, square corners, strong borders, soft elevation shadows, and crisp editorial spacing.
-- Standard WebUI cards, panels, buttons, inputs, popovers, dialogs, lists, tabs, and inspectors SHOULD use square corners and soft Sera-style shadows.
-- Graph node kind identity MUST use a muted Morandi-functional palette: subdued enough to avoid candy-color saturation, but still distinguishable from neutral Sera chrome and from each other. Non-graph application chrome MUST remain primarily black/white.
 - Runtime status information for daemon, server access, workspace, and health MUST be available from the sidebar footer through a compact status affordance that opens an animated dialog-semantics popover.
 - The WebUI shell MUST keep the sidebar fixed to the viewport height while page content scrolls inside the workspace area.
 - The Workflows page MUST use the full available workspace width, with workflow source selection and graph visualization laid out as sibling columns on desktop viewports.
@@ -57,13 +52,11 @@
 - Parallel branch container labels MUST include `branch:`.
 - Composite strategy MUST render as metadata adjacent to the node kind and MUST NOT replace the node name or kind badge.
 - Graph node type identity MUST remain legible at fit-view through kind-colored full borders, kind badges, and kind icons.
-- Leaf graph nodes SHOULD read as lightweight cards with subtle surface and shadow treatment.
-- Composite graph nodes SHOULD read as lighter scoped sections than leaf nodes.
+- Leaf graph nodes SHOULD read as lightweight cards with subtle surface and shadow treatment; selection and status treatments MAY temporarily dominate that base styling.
+- Composite graph nodes SHOULD read as lighter scoped sections than leaf nodes; dense nesting MAY use a stronger boundary when required to keep containment legible.
 - Branch and scope containers MUST remain neutral structural boxes and MUST NOT use node kind colors or strong card shadows.
 - Graph node hover states SHOULD create a clear elevation affordance for inspectable leaf and composite nodes; branch and scope containers MUST NOT use hover elevation, hover shadow, or hover border strengthening.
 - Branch and scope containers MUST visually enclose their rendered descendants with structural padding; nested composites MUST NOT appear to touch or escape their owning container boundary. Scope containers such as fanout/loop `do` bodies MUST reserve enough padding for wide nested composites to read as contained structure, not as peer blocks.
-- Leaf node kind identity MUST use the node kind full border, kind badge, and kind icon. Leaf nodes MUST NOT use thick one-side accent strips as type markers.
-- Runtime status MUST NOT override graph node kind border colors; status MAY render through a separate accent or marker.
 - The browser graph MUST fit the complete workflow into the viewport by default, using only enough padding to keep the graph readable while maximizing canvas occupancy, and MUST support local pan and zoom without mutating runtime state or persisted graph data.
 - The browser graph wheel or trackpad zoom MUST use small continuous increments.
 - The browser graph MUST consume wheel and trackpad pinch gestures over the graph shell, including when already at zoom bounds, so those gestures do not trigger browser page zoom.
@@ -71,21 +64,16 @@
 - The browser graph MUST avoid parent-level CSS `scale(...)` for zoom-in rendering at scale `>= 1`; zoom-in MUST render nodes and edges from projected screen-space coordinates so text is not blurred by ancestor transforms.
 - The browser graph MUST support pan gestures that start on graph nodes and containers, except when the gesture starts on interactive controls such as selectors, toolbar buttons, inputs, or links.
 - Graph node backgrounds MUST NOT carry node kind or runtime status semantics; transparent node backgrounds are acceptable when text remains readable.
-- The browser graph SHOULD avoid background dot grids or other visual noise that reduce graph text readability.
+- The browser graph SHOULD avoid background dot grids or other visual noise that reduce graph text readability. A spatial guide MAY appear only when it improves orientation without reducing text contrast.
 - The browser graph MUST render arrows only for semantic control-flow between sibling endpoints. It MUST NOT render containment arrows from composite blocks or containers into their descendants.
 - Runtime graph selector choices MUST remain local UI state; changing selector choices MUST NOT mutate runtime state. Closed fanout and loop selectors MUST NOT render additional status dots beside the select control.
 - Runtime page header, controls, and graph MUST consume the same runtime snapshot response for a run so displayed run status and graph node status cannot drift across independently polled API versions.
 - WebUI code MUST use `@acpus/runtime` public read/control APIs and MUST NOT query runtime SQLite tables directly.
-- WebUI runtime controls MUST ensure the workspace daemon is ready, then submit one `DaemonControlIntent` through
-  `requestDaemonControl`. WebUI server code MUST NOT apply runtime controls
-  directly.
+- WebUI runtime controls MUST ensure the workspace daemon is ready, then submit one `DaemonControlIntent` through `requestDaemonControl`. WebUI server code MUST NOT apply runtime controls directly.
 - WebUI control request bodies MUST be closed shapes: Pause and Resume contain only `type`; Retry contains `type` and a non-empty `target`; Cancel contains `type` and an optional non-empty `target`; Signal contains `type`, a non-empty `target`, and `payload`. A successful control response MUST contain only `{ ok: true }`.
-- WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404
-  and error code `run_not_found`. Other `DaemonRequestError` failures MUST map
-  to HTTP 400 with the daemon code normalized to lowercase snake case. The
-  daemon error message MUST be preserved.
+- WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404 and error code `run_not_found`. Other `DaemonRequestError` failures MUST map to HTTP 400 with the daemon code normalized to lowercase snake case. The daemon error message MUST be preserved.
 - WebUI runtime controls MUST NOT expose fork; fork remains a CLI/runtime control because replacement workflow, input, and agent overrides require explicit parameters.
-- WebUI Pause and Resume controls MUST be mutually exclusive: non-terminal active runs MAY show Pause, paused runs MAY show Resume, and terminal runs MUST NOT allow either action.
+- WebUI Pause and Resume controls MUST be mutually exclusive: active runs show Pause, paused runs show Resume, and terminal runs show neither.
 - WebUI Retry MUST be target-first for failed runs. It MUST submit a failed dynamic retry target and MUST NOT default to run-level retry.
 - WebUI terminal run controls MUST render disabled or absent and MUST NOT submit controls for completed or canceled runs.
 - WebUI runtime operation buttons MUST require an explicit confirmation dialog before submitting pause, resume, retry, or cancel controls.
@@ -96,37 +84,22 @@
 - When a graph node is selected and the inspector opens or the graph viewport resizes, the selected node MUST remain visible in the graph viewport with reasonable margin.
 - Graph pages MUST expose a workflow-level Input/Output inspection target from the graph toolbar. Workflow inspection MUST be distinct from node inspection and MUST NOT be inferred from the root composite node.
 - Runtime workflow inspection MUST show actual `RunDetails.input` and final `RunDetails.output` when recorded. It MUST NOT derive partial workflow output from top-level node outputs while a run is active.
-- Static workflow inspection MUST show workflow contract data: input schema when declared, the raw workflow `output: ExprIR`, and its `outputShape`. It MUST label the authored value as `Output Expression`, MUST NOT call it an output mapping, and MUST NOT show fake runtime values.
+- Static workflow inspection MUST show declared input schema, raw `output: ExprIR`, and `outputShape`, label the authored value `Output Expression`, and omit invented runtime values or output-mapping terminology.
 - Workflow-level Input/Output inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - Runtime node inspection MUST resolve node instances, attempts, artifacts, and execution metadata against the current graph fanout/loop selector context. It MUST NOT show runtime output from another selected item or iteration.
 - Runtime node inspection context MUST identify each fanout selection with a non-negative integer `itemIndex` and each loop selection with a non-negative integer iteration. The WebUI API MUST reject incomplete or malformed selector context.
-- Runtime node inspection APIs MUST consume the shared runtime target inspection
-  projection rather than independently resolving static nodes, dynamic
-  instances, frames, attempts, signals, progress, execution metadata, or
-  artifact references in the Web server.
-- Runtime node Overview inspection MUST refresh once per second while the run
-  is non-terminal and MUST stop periodic refresh after terminal state.
-- Runtime Agent Overview data MUST use the authored Agent key and normalized
-  compact Agent state supplied by runtime target inspection, including current
-  activity, turn, context/token counters, and bounded recent tool commands.
-  The Web server MUST NOT re-resolve the effective Agent or re-parse tool input
-  previews for Overview.
-- Node inspection MUST present a low-noise Overview with identity, status,
-  prompt, input, output, and the shared structured failure where relevant. It
-  MUST preserve upstream acpx/RPC cause fields without independently parsing
-  provider error text, and MUST NOT expose generic raw `Instances`, `Frames`,
-  `Signals`, or `Metadata` tabs.
-- Artifact content MUST be shown in a conditional `Artifacts` tab for leaf nodes with artifacts, and artifact preview requests MUST be lazy-loaded from that tab. Artifact rows MUST truncate long artifact titles while exposing the full title on hover or keyboard focus, and artifact previews MUST stay inside the Inspector width without page-level horizontal overflow.
-- Artifact rows and runtime inspection responses MUST expose the absolute `path`; they MUST NOT expose the runtime store's internal relative path.
+- Runtime node inspection APIs MUST consume the shared runtime target inspection projection rather than independently resolving static nodes, dynamic instances, frames, attempts, signals, progress, execution metadata, or artifact references in the Web server.
+- Runtime node Overview inspection MUST refresh once per second while the run is non-terminal and MUST stop periodic refresh after terminal state.
+- Runtime Agent Overview data MUST use the authored Agent key and normalized compact Agent state supplied by runtime target inspection, including current activity, turn, context/token counters, and bounded recent tool commands. The Web server MUST NOT re-resolve the effective Agent or re-parse tool input previews for Overview.
+- Node inspection MUST present a low-noise Overview with identity, status, prompt, input, output, and the shared structured failure where relevant. It MUST preserve upstream acpx/RPC cause fields without independently parsing provider error text, and MUST NOT expose generic raw `Instances`, `Frames`, `Signals`, or `Metadata` tabs.
+- Artifact content MUST appear in a lazy-loaded `Artifacts` tab only for leaf nodes with artifacts; rows truncate long titles with hover/focus disclosure, and previews stay within the Inspector width.
+- WebUI artifact rows MUST project the public `path` from the [Runtime-owned artifact record](runtime-spec.md#read-apis-and-daemon-lifecycle) and MUST omit internal storage coordinates.
 - Artifact preview responses MUST cap the body at 128 KiB and MUST expose the preview media type through `Content-Type`.
-- Agent execution details MUST be shown in a conditional `Execution` tab for agent nodes. The tab MUST use semantic `agent_attempt` execution metadata and MUST refresh only while active.
-- Canonical turn artifact bodies MUST NOT be embedded by runtime target
-  inspection. The Web server MUST load complete tool summaries only through the
-  active Execution-tab path.
-- An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be
-  resolved by the Web server through the existing JSON artifact loader and
-  rendered as exact Markdown text. This field read MUST NOT use the 128 KiB
-  generic artifact preview limit.
+- Agent execution details MUST be shown in a conditional `Execution` tab for Agent nodes.
+- The Agent Execution tab MUST use semantic `agent_attempt` execution metadata.
+- The Agent Execution tab MUST refresh only while active.
+- The Web server MUST load complete tool summaries only through the active Execution-tab path.
+- An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be resolved through the existing JSON artifact loader and rendered as exact Markdown text. This field read MUST NOT use the 128 KiB generic artifact preview limit.
 - Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw turn JSON as the primary UI.
 - Agent execution responses MUST contain only availability/reason, summary, last-active time, context-window usage, input/output/total token usage with source, streamed-output summary, tool-call count, and the recent tool-call fields rendered by the Execution tab.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
@@ -140,25 +113,7 @@
 
 ## Verification
 
-- Tests MUST cover static graph output without dynamic cardinality or runtime states.
-- Tests MUST cover runtime graph containers, semantic edge endpoint validity, fanout item selector options, loop iteration selector options, nested occurrence isolation, and selected-runtime-state resolution.
-- Tests MUST cover unified run graph API behavior, browser-read run/health/config projections, and the absence of a user-selectable runtime/static mode.
-- Tests MUST cover workflow catalog listing, workspace file browsing safety, explicit static visualization, and self-contained HTML rendering with workflow metadata and contract data.
-- Tests MUST cover nested composite graph rendering for `parallel`, `if`, `switch`, `fanout`, and `loop` with all branches visible.
-- Tests MUST cover layout invariants for nested containers: every node placed, no overlapping leaves, and children contained by their parent.
-- Tests MUST cover default fit-view math and rendered-edge filtering for containment edges.
-- Tests MUST cover precise graph wheel zoom, wheel event consumption, inspector dock/undock animation hooks, and selected-node visibility after viewport resize.
-- Tests MUST cover workflow-level Input/Output inspection for runtime run values and static workflow contract data.
-- Tests MUST cover runtime node Overview delegation to the shared target
-  projection, exact fanout/loop context forwarding, one-second non-terminal
-  refresh, and terminal refresh cessation.
-- Tests MUST prove artifact previews and Agent turn artifact reads for
-  Execution remain lazy after adopting the shared target projection, while
-  Prompt loads the exact `turnArtifact.prompt` field beyond preview size limits.
-- Tests MUST cover WebUI control visibility, disabled terminal controls,
-  target-first retry behavior, absence of WebUI fork control, closed request
-  shapes, daemon readiness before submission, daemon intent mapping, and daemon
-  error mapping.
-- Tests MUST cover WebUI control confirmation text and command payloads before controls are submitted.
-- Manual browser smoke SHOULD capture runtime and workflow static graph screenshots before handoff.
-- Tests MUST cover open-by-default network host binding and explicit token-enabled access.
+- Graph tests cover static/runtime separation, nested containment, semantic edges, dynamic selectors, deterministic layout, fit/pan/zoom, and selected-node visibility.
+- API and page tests cover catalog browsing, safe source selection, static HTML, unified runtime snapshots, inspection context, lazy artifacts, and refresh cessation.
+- Control tests cover visibility, confirmation, target-first retry, closed daemon intents, error mapping, and terminal-state refusal.
+- Access tests cover open-by-default and token-enabled binding; browser smoke covers representative graph and inspector states.

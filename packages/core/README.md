@@ -128,4 +128,8 @@ Implemented:
 - compile to WorkflowIR
 - zx/core-backed `$` wrapper shape
 
-See [`specs/core-spec.md`](../../specs/core-spec.md) and [`docs/roadmap/core-roadmap.md`](../../docs/roadmap/core-roadmap.md).
+See the current [`Core Spec`](../../specs/core-spec.md) and
+[`Specs Index`](../../specs/INDEX.md). Future gaps belong in the
+[`Active Roadmap Index`](../../docs/roadmap/INDEX.md); the
+[`historical Core Roadmap`](../../docs/roadmap/archive/core-roadmap.md) is
+completed TypeScript-rewrite context, not the current contract.

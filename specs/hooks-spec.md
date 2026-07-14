@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Runtime hooks let users run configured shell commands as workflow side effects when durable runtime events are committed. Hooks are non-interfering: they observe runtime progress and write hook execution history, but they do not change workflow state or workflow outputs.
+Runtime hooks let users run configured shell commands when durable [Runtime](runtime-spec.md) events are committed. Hooks observe progress and write execution history without changing workflow state or outputs; the [CLI](cli-spec.md) only adapts configuration and inspection commands.
 
 ## Requirements
 
@@ -22,35 +22,20 @@ Runtime hooks let users run configured shell commands as workflow side effects w
 - The hook runner MUST execute command hooks asynchronously with shell spawning and a default timeout of 30 seconds.
 - Hook timeout strings MUST use the `@acpus/core/ir` duration grammar, MUST resolve to safe-integer milliseconds, and MUST interpret an omitted unit as milliseconds.
 - Hook timeout scheduling MUST preserve accepted durations above Node's single-timer limit by using cancellable chunks and MUST cancel the active timeout when the hook settles.
-- A hook timeout budget MUST begin before synchronous process startup. Process
-  close and error settlement MUST recheck monotonic elapsed time so a delayed
-  timer callback cannot accept an overdue hook result.
-- A synchronous hook process spawn failure MUST produce one terminal `failed`
-  journal entry, or `timed_out` when startup already exhausted the timeout; it
-  MUST NOT disappear through the runner's non-interference boundary.
+- A hook timeout budget MUST begin before synchronous process startup. Process close and error settlement MUST recheck monotonic elapsed time so a delayed timer callback cannot accept an overdue hook result.
+- A synchronous hook process spawn failure MUST produce one terminal `failed` journal entry, or `timed_out` when startup already exhausted the timeout; it MUST NOT disappear through the runner's non-interference boundary.
 - The hook journal MUST be stored outside the scheduler event stream in a `hook_journal` SQLite table.
 - The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
-- Hook journal rows MUST include `eventSequence` and `triggerOrder`. `runs inspect` MUST order hook history by `eventSequence`, then `triggerOrder`, then journal row id.
+- Hook journal rows MUST include `eventSequence` and `triggerOrder`. Hook-history reads MUST order rows by `eventSequence`, then `triggerOrder`, then journal row id.
 - Hook context `run.status` and `node.status` MUST describe the hook event time, not a later scheduler projection state.
 - Hook node prompt/input fields MUST use persisted effective attempt values and MUST NOT re-evaluate authored expressions. When an attempt has no effective value because configuration resolution failed, the hook MUST still run with that optional field omitted.
 - The hook journal MUST NOT create a `running` row and MUST NOT synthesize a failure row after a hook process or daemon crash.
 - Hook stdout and stderr stored in the journal MUST be bounded.
 - Hook journal retention MUST default to 7 days. Read-only APIs MUST NOT prune hook journal rows.
-- `runs inspect` MUST expose hook history only for terminal runs. Text output MUST omit the `Hooks:` section when there are no hook journal rows.
-- `acpus hooks list` MUST list configured hooks grouped by project and global scope, including the relevant hooks file paths.
-- `acpus hooks validate` MUST validate hook configuration and report configuration errors.
-- The first runtime hooks implementation MUST NOT include a hook trust, review, allowlist, blocking, retry, TypeScript module, glob matcher, expression matcher, CRUD CLI, path CLI, init CLI, or logs CLI feature.
+- Runtime read APIs MUST expose hook history only for terminal runs.
+- Hook configuration reads MUST expose project/global groups and their configuration paths; validation MUST return configuration errors.
 
 ## Verification
 
-- Tests MUST cover hook config validation, NUL command rejection, missing files, invalid JSON, invalid regex, top-level `hooks` rejection, direct project/global union, and duplicate id preservation.
-- Tests MUST cover hook event mapping from newly committed runtime event rows and non-mapping for unrelated scheduler events.
-- Tests MUST cover hook context construction for run, node, and signal-awaiting events.
-- Tests MUST cover hook runner matching, stdin context, timeout, synchronous
-  startup accounting, deadline-first close/error arbitration, safe-duration
-  overflow scheduling and cleanup, synchronous spawn failure journaling, failed
-  exit, trigger order metadata, drain behavior, output truncation, and
-  non-interference.
-- Tests MUST cover hook journal writes, idempotent duplicate writes, reads ordered by `eventSequence` and `triggerOrder`, 7-day pruning, and read-only APIs not pruning.
-- Tests MUST cover daemon-owned foreground and background runtime execution triggering hooks only from new committed rows.
-- Tests MUST cover `acpus hooks validate`, `acpus hooks list`, and `runs inspect` hook history output in text and JSON modes.
+- Runtime tests cover configuration, event mapping, context, matching, deadlines, bounded output, journaling, retention, and non-interference.
+- Integration and CLI tests cover daemon-owned dispatch, exact-once committed-row observation, validation/list commands, and terminal inspection history.

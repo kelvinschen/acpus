@@ -57,15 +57,22 @@ live in `packages/cli`.
 
 ## Documentation
 
-Current design truth lives in `specs/`; future plans and known gaps live in `docs/roadmap/`.
+Current design truth for the TypeScript rewrite lives in `specs/`; future plans
+and known gaps live in `docs/roadmap/`.
 
 - [Specs Index](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
 - [CLI Spec](specs/cli-spec.md)
-- [Roadmap Index](docs/roadmap/INDEX.md) · [Core Roadmap](docs/roadmap/core-roadmap.md)
+- [Acpus Next User Guide](docs/acpus-next-user-guide.md)
+- [Specification Maintenance Guide](docs/specification-maintenance.md)
+- [Active Roadmap Index](docs/roadmap/INDEX.md)
+- [Archived TypeScript Roadmap Records](docs/roadmap/archive/INDEX.md)
 
-The previous implementation and its documentation are archived under [`legacy/`](legacy/README.md).
+The roadmap archive is historical context for completed work on the TypeScript
+rewrite; it is not current behavior truth. The previous YAML implementation is
+a separate read-only codebase with its own documentation under
+[`legacy/`](legacy/README.md).
 
 ## License
 

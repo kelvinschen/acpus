@@ -52,10 +52,11 @@ export default defineWorkflow({
 ## Core Rules
 
 - **Treat `input`, `meta`, and node outputs as `Expr<T>` runtime tokens.**
-- **Never use JS operators or control flow over `Expr`.** Use graph nodes, predicates, templates, or `lift`.
-- **Never capture outer vars or functions in `lift`.** Pass every dependency explicitly.
-- **Never capture outer vars or functions in inline Task `exec`.**  Inline task **MUST** self-contained, bind top-level Task `input`; read Task context.
+- **NEVER use JS operators or control flow over `Expr`.** Use graph nodes, predicates, templates, or `lift`.
+- **NEVER capture outer vars or functions in `lift`.** Pass every dependency explicitly.
+- **NEVER capture outer vars or functions in inline Task `exec`.**  Inline task **MUST** self-contained, bind top-level Task `input`; read Task context.
 - **Inline Task first.** Define reusable Task only for reused logic or third-party package imports.
+- **Never define a reusable function**. Instead, define reusable task
 - **Static step IDs only.** Loop/fanout instance paths create distinct runtime `nodeKey` values.
 - **Read node results once through `.output`.** `NodeRef` is a control handle; never return it directly or nested.
 - **Keep durable data JSON-compatible.** Use explicit `null`, not raw `undefined`, for authored absence.

@@ -293,17 +293,17 @@ Dagu 甚至已有 edit-retry：用户可编辑失败 run 的历史 YAML、预览
 
 ### Acpus 当前仓库
 
-- [Repository README](../../README.md)
-- [Core Spec](../../specs/core-spec.md)
-- [Expression Spec](../../specs/expression-spec.md)
-- [Workflow Compiler Spec](../../specs/workflow-compiler-spec.md)
-- [Runtime Spec](../../specs/runtime-spec.md)
-- [CLI Spec](../../specs/cli-spec.md)
-- [WebUI Spec](../../specs/webui-spec.md)
-- [Hooks Spec](../../specs/hooks-spec.md)
-- [Acpus skill](../../packages/cli/skills/acpus/SKILL.md)
-- [Skill eval summary](../../eval/acpus-skill-eval-20260709-011153/final-summary.md)
-- [Previous YAML README](../../legacy/README.zh.md)
+- [Repository README](../README.md)
+- [Core Spec](../specs/core-spec.md)
+- [Expression Spec](../specs/expression-spec.md)
+- [Workflow Compiler Spec](../specs/workflow-compiler-spec.md)
+- [Runtime Spec](../specs/runtime-spec.md)
+- [CLI Spec](../specs/cli-spec.md)
+- [WebUI Spec](../specs/webui-spec.md)
+- [Hooks Spec](../specs/hooks-spec.md)
+- [Acpus skill](../packages/cli/skills/acpus/SKILL.md)
+- [Skill eval summary](../eval/acpus-skill-eval-20260709-011153/final-summary.md)
+- [Previous YAML README](../legacy/README.zh.md)
 
 ### 外部项目一手资料
 
