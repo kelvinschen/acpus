@@ -12,7 +12,7 @@ Use this reference to inspect and consume persisted Agent behavior. Authored con
 | `turn-<NNN>.raw-acp.jsonl` | Exact ACP prompt stdout when daemon raw-debug capture is enabled. |
 | `turn-<NNN>.stderr.log` | Non-empty provider stderr kept separately from the canonical turn record. |
 
-The canonical turn summary contains context/token usage and complete folded tool-call summaries, but no thought/message content or tool output. Tool input uses a bounded preview. `timing.elapsedMs` uses a monotonic clock and excludes artifact writing, output conformance, and work between response-repair turns.
+The canonical turn summary contains context/token usage availability and complete folded tool-call summaries, but no thought/message content or tool output. `availability.context` is `available` only when ACP supplied usable context. `availability.tokenUsage` is `available` with `totalTokens`, `partial` with component counters only, and `unavailable` with no counters; missing values are not zero and Acpus does not estimate them. Tool input uses a bounded preview. `timing.elapsedMs` uses a monotonic clock and excludes artifact writing, output conformance, and work between response-repair turns.
 
 Each response-repair turn gets its own turn record and, when enabled, its own normalized trace. Response repair remains inside one scheduler attempt; `acpus runs retry` creates a new attempt.
 

@@ -286,6 +286,128 @@ describe("run inspection follow output", () => {
     expect(stdout.text.match(/"result": "ok"/g)).toHaveLength(1);
   });
 
+  it("emits the first omission immediately, coalesces by context, and flushes after thirty seconds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-11T00:00:00.000Z");
+    let release!: () => void;
+    const released = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    runtime.followRunInspection.mockImplementation(async function* () {
+      yield okResult({ schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: snapshot("running") } as const);
+      yield okResult({
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(26),
+        run: runSummary("running"),
+        changes: fanoutChanges(25).filter(change => change.action === "completed"),
+        patch: { upsertItems: [], removeItemKeys: [] },
+      } as const);
+      vi.setSystemTime("2026-07-11T00:00:01.000Z");
+      yield okResult({
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(31),
+        run: runSummary("running"),
+        changes: fanoutChanges(5, 20).filter(change => change.action === "ready"),
+        patch: { upsertItems: [], removeItemKeys: [] },
+      } as const);
+      await released;
+      yield okResult({ schemaVersion: 1, kind: "done", cursor: cursor(32), run: runSummary("completed"), output: {} } as const);
+    });
+    const stdout = new CaptureStream();
+
+    try {
+      const followed = followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      });
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(stdout.text.match(/contexts omitted/g)).toHaveLength(1);
+      expect(stdout.text).toContain("… 5 contexts omitted (completed=5)");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(stdout.text.match(/contexts omitted/g)).toHaveLength(2);
+      expect(stdout.text).toContain("… 5 contexts omitted (ready=5)");
+
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await followed;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushes a pending omission before terminal output", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-11T00:00:00.000Z");
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: snapshot("running") },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(26),
+        run: runSummary("running"),
+        changes: fanoutChanges(25).filter(change => change.action === "completed"),
+        patch: { upsertItems: [], removeItemKeys: [] },
+      },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(31),
+        run: runSummary("running"),
+        changes: fanoutChanges(5, 20).filter(change => change.action === "started"),
+        patch: { upsertItems: [], removeItemKeys: [] },
+      },
+      { schemaVersion: 1, kind: "done", cursor: cursor(32), run: runSummary("completed"), output: {} },
+    ]));
+    const stdout = new CaptureStream();
+
+    try {
+      await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      });
+      expect(stdout.text.match(/contexts omitted/g)).toHaveLength(2);
+      expect(stdout.text).toContain("… 5 contexts omitted (running=5)");
+      expect(stdout.text.indexOf("running=5")).toBeLessThan(stdout.text.lastIndexOf("Run run_1  workflow  completed"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a pending omission when the same context emits a protected change", async () => {
+    const initial = snapshot("running");
+    initial.items = Array.from({ length: 20 }, (_, index) => ({
+      key: `instance:work~${index}`,
+      role: "instance" as const,
+      path: [`batch[${index}]`, "work"],
+      label: "work",
+      kind: "task",
+      status: "running" as const,
+      nodeId: "work",
+      nodeKey: `work~${index}`,
+    }));
+    const transitions = fanoutChanges(1, 20);
+    const completed = transitions.find(change => change.action === "completed")!;
+    const running = transitions.find(change => change.action === "started")!;
+    const failed: RunInspectionChange = { ...completed, sequence: 9, action: "failed", status: "failed" };
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: initial },
+      { schemaVersion: 1, kind: "update", cursor: cursor(2), run: runSummary("running"), changes: [completed], patch: { upsertItems: [], removeItemKeys: [] } },
+      { schemaVersion: 1, kind: "update", cursor: cursor(3), run: runSummary("running"), changes: [running], patch: { upsertItems: [], removeItemKeys: [] } },
+      { schemaVersion: 1, kind: "update", cursor: cursor(4), run: runSummary("running"), changes: [failed], patch: { upsertItems: [], removeItemKeys: [] } },
+      { schemaVersion: 1, kind: "done", cursor: cursor(5), run: runSummary("completed"), output: {} },
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text).toContain("batch[20] › work  failed");
+    expect(stdout.text.match(/contexts omitted/g)).toHaveLength(1);
+    expect(stdout.text).not.toContain("contexts omitted (running=1)");
+  });
+
   it("counts dynamic contexts already shown in the compact baseline", async () => {
     const initial = snapshot("running");
     initial.items = Array.from({ length: 20 }, (_, index) => ({
@@ -644,7 +766,7 @@ function snapshot(status: "running" | "completed"): RunInspectionSnapshot {
   };
 }
 
-function agentSnapshot(agent: Omit<NonNullable<RunInspectionSnapshot["items"][number]["agent"]>, "key" | "backend">): RunInspectionSnapshot {
+function agentSnapshot(agent: Omit<NonNullable<RunInspectionSnapshot["items"][number]["agent"]>, "key" | "backend" | "availability">): RunInspectionSnapshot {
   return {
     ...snapshot("running"),
     items: [{
@@ -659,6 +781,10 @@ function agentSnapshot(agent: Omit<NonNullable<RunInspectionSnapshot["items"][nu
       agent: {
         key: "observer",
         backend: { kind: "use", name: "claude" },
+        availability: {
+          context: agent.context ? "available" : "unavailable",
+          tokenUsage: agent.tokenUsage?.totalTokens !== undefined ? "available" : agent.tokenUsage ? "partial" : "unavailable",
+        },
         ...agent,
       },
     }],

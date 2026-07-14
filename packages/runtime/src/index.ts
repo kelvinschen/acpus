@@ -118,6 +118,7 @@ export {
   type RunNodeProgress,
   type RunDynamicSignalWait,
   type RunDetails,
+  type RunForkInfo,
   type RunRecord,
   type RunStatus,
   type RunWorkflowLockArtifact,

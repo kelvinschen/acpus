@@ -131,6 +131,7 @@ describe("Inspector primitives", () => {
       agent: {
         key: "observer",
         backend: { kind: "command" },
+        availability: { context: "available", tokenUsage: "available" },
         model: "opus",
         turnCount: 2,
         lastActivityAt: "2026-07-01T00:00:04.000Z",

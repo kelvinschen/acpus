@@ -82,6 +82,11 @@ export type AgentTokenUsageSummary = {
   totalTokens?: number;
 };
 
+export type AgentTelemetryAvailability = {
+  context: "available" | "unavailable";
+  tokenUsage: "available" | "partial" | "unavailable";
+};
+
 export type AgentToolCallSummary = {
   toolCallId: string;
   title?: string;
@@ -101,6 +106,7 @@ export type AgentToolsSummary = {
 
 export type AgentTurnSummary = {
   eventCount: number;
+  availability: AgentTelemetryAvailability;
   stopReason?: string;
   context?: AgentContextSummary;
   tokenUsage?: AgentTokenUsageSummary;
@@ -791,6 +797,7 @@ function jsonField(value: Record<string, any> | undefined, key: string): AgentJs
 function turnSummaryFromAccumulator(accumulator: PromptAccumulator): AgentTurnSummary {
   return {
     eventCount: accumulator.eventCount,
+    availability: telemetryAvailability(accumulator.context, accumulator.tokenUsage),
     ...(accumulator.stopReason ? { stopReason: accumulator.stopReason } : {}),
     ...(accumulator.context ? { context: accumulator.context } : {}),
     ...(accumulator.tokenUsage ? { tokenUsage: accumulator.tokenUsage } : {}),
@@ -799,6 +806,16 @@ function turnSummaryFromAccumulator(accumulator: PromptAccumulator): AgentTurnSu
       cwd: accumulator.options.cwd,
       ...(accumulator.options.acpxRecordId ? { acpxRecordId: accumulator.options.acpxRecordId } : {}),
     } : {}),
+  };
+}
+
+function telemetryAvailability(
+  context: AgentContextSummary | undefined,
+  tokenUsage: AgentTokenUsageSummary | undefined,
+): AgentTelemetryAvailability {
+  return {
+    context: context ? "available" : "unavailable",
+    tokenUsage: tokenUsage?.totalTokens !== undefined ? "available" : tokenUsage ? "partial" : "unavailable",
   };
 }
 
@@ -930,7 +947,11 @@ function truncatedPreview(value: string, edgeBytes: number): AgentToolInputPrevi
 }
 
 function emptySummary(): AgentTurnSummary {
-  return { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } };
+  return {
+    eventCount: 0,
+    availability: { context: "unavailable", tokenUsage: "unavailable" },
+    tools: { totalToolCallCount: 0, calls: [] },
+  };
 }
 
 function failedControlResult(

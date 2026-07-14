@@ -1,14 +1,16 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import type { AgentBackendFailure, AgentBackendFailureKind, AgentContextSummary, AgentTokenUsageSummary, AgentToolCallSummary, AgentToolsSummary, AgentTraceEvent, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult, AgentTurnSummary, AgentTurnTiming, AgentTurnTrace } from "@acpus/agent-executor";
+import type { AgentBackendFailure, AgentBackendFailureKind, AgentContextSummary, AgentTelemetryAvailability, AgentTokenUsageSummary, AgentToolCallSummary, AgentToolsSummary, AgentTraceEvent, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult, AgentTurnSummary, AgentTurnTiming, AgentTurnTrace } from "@acpus/agent-executor";
 import { executeAgentTurn } from "@acpus/agent-executor";
 
-const summary = { eventCount: 1, tools: { totalToolCallCount: 0, calls: [] } };
+const availability = { context: "unavailable", tokenUsage: "unavailable" } as const;
+const summary = { eventCount: 1, availability, tools: { totalToolCallCount: 0, calls: [] } };
 const timing = { startedAt: "2026-07-01T00:00:00.000Z", finishedAt: "2026-07-01T00:00:00.001Z", elapsedMs: 1 };
 
 test("@acpus/agent-executor public types accept only resolved execution requests", () => {
   expectTypeOf(executeAgentTurn).toEqualTypeOf<(request: AgentTurnRequest) => Promise<AgentTurnResult>>();
   expectTypeOf<AgentTurnSummary>().toMatchTypeOf<{
     eventCount: number;
+    availability: AgentTelemetryAvailability;
     context?: AgentContextSummary;
     tokenUsage?: AgentTokenUsageSummary;
     tools: AgentToolsSummary;
@@ -29,8 +31,8 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   assertType<AgentTurnTrace>({ startedAt: "2026-07-01T00:00:00.000Z", elapsedMs: 1, events: [] });
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", summary, timing, rawDebug: { stdout: "{}\n" } });
   assertType<AgentBackendFailure>({ kind: "provider_exit", message: "bad config", upstream: { source: "acpx", operation: "sessions.ensure", code: "RUNTIME", protocol: { name: "json-rpc", code: -32603 }, data: { details: "bad config" } } });
-  assertType<AgentTurnResult>({ status: "failed", failure: { kind: "config", message: "bad mode" }, responseText: "", stderr: "", summary: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } }, timing });
-  assertType<AgentTurnResult>({ status: "cancelled", message: "cancelled", responseText: "", stderr: "", summary: { eventCount: 0, tools: { totalToolCallCount: 0, calls: [] } }, timing });
+  assertType<AgentTurnResult>({ status: "failed", failure: { kind: "config", message: "bad mode" }, responseText: "", stderr: "", summary: { eventCount: 0, availability, tools: { totalToolCallCount: 0, calls: [] } }, timing });
+  assertType<AgentTurnResult>({ status: "cancelled", message: "cancelled", responseText: "", stderr: "", summary: { eventCount: 0, availability, tools: { totalToolCallCount: 0, calls: [] } }, timing });
   assertType<AgentTurnRequest>({
     agent: { kind: "named", name: "codex" },
     prompt: "review this",

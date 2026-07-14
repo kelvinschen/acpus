@@ -117,6 +117,7 @@ describe("node execution inspection", () => {
       agent: {
         key: "observer",
         backend: { kind: "command" },
+        availability: { context: "available", tokenUsage: "available" },
         turnCount: 2,
         lastActivityAt: "2026-07-01T00:00:04.000Z",
         context: { used: 3_000, size: 12_000 },

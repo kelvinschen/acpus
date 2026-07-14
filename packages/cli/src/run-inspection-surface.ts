@@ -141,6 +141,10 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
   const current = currentTargetItem(document);
   const nodeStatus = current?.status ?? summary.nodeStatus;
   const lines = [formatHeader(document.run, nowMs), `Target ${document.target.id}  [${document.target.kind}]${nodeStatus ? `  ${nodeStatus}` : ""}`];
+  if (summary.counts) {
+    const statuses = formatCounts(summary.counts);
+    lines.push(`  Aggregate: total=${summary.counts.total}${statuses ? `  ${statuses}` : ""}`);
+  }
   if (summary.nodeId && summary.nodeId !== document.target.id) lines.push(`  Static node: ${summary.nodeId}${summary.staticKind ? ` [${summary.staticKind}]` : ""}`);
   if (summary.nodeKey && summary.nodeKey !== document.target.id) lines.push(`  Node key: ${summary.nodeKey}`);
   if (summary.frameKey && summary.frameKey !== document.target.id) lines.push(`  Frame key: ${summary.frameKey}`);
@@ -305,7 +309,14 @@ function formatSignal(signal: NonNullable<RunInspectionItem["signal"]>, runId: s
 
 function formatHeader(run: RunInspectionRunSummary, nowMs: number): string {
   const duration = run.durationMs === undefined ? Math.max(0, nowMs - Date.parse(run.createdAt)) : run.durationMs;
-  return `Run ${run.id}  ${run.name}  ${executionStatus(run)}  ${formatDurationMs(duration)}`;
+  const lines = [`Run ${run.id}  ${run.name}  ${executionStatus(run)}  ${formatDurationMs(duration)}`];
+  if (run.fork) {
+    lines.push(`Fork: source=${run.fork.sourceRunId}${run.fork.target ? `  target=${run.fork.target}` : ""}${run.fork.unsafeReuse ? "  unsafe-reuse" : ""}`);
+  }
+  if (run.agentUsage) {
+    lines.push(`Agent usage: instances=${run.agentUsage.instances}  attempts=${run.agentUsage.attempts}  turns=${run.agentUsage.turns}`);
+  }
+  return lines.join("\n");
 }
 
 function executionStatus(run: RunInspectionRunSummary): string {
@@ -433,6 +444,7 @@ function actionableItems(items: readonly RunInspectionItem[]): RunInspectionItem
 
 function currentTargetItem(document: RunInspectionTargetDocument): RunInspectionItem | undefined {
   const { summary } = document;
+  if (document.target.kind === "static-node" && summary.counts) return undefined;
   return document.items.find(item => item.key === document.target.id
     || summary.nodeKey !== undefined && (item.key === summary.nodeKey || item.nodeKey === summary.nodeKey)
     || summary.nodeId !== undefined && item.nodeId === summary.nodeId);

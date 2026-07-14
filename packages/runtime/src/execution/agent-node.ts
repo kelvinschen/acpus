@@ -127,7 +127,7 @@ export type AgentTraceRecord = AgentTraceRecordBase & (
   | WithoutTraceBase<AgentTraceEvent>
 );
 
-type AgentTurnSummaryProjection = Pick<AgentTurnSummary, "eventCount" | "stopReason" | "context" | "tokenUsage"> & {
+type AgentTurnSummaryProjection = Pick<AgentTurnSummary, "eventCount" | "availability" | "stopReason" | "context" | "tokenUsage"> & {
   tools: { totalToolCallCount: number };
   cwd?: string;
   acpxRecordId?: string;
@@ -554,6 +554,7 @@ function serializeAgentTrace(
 function summaryProjection(summary: AgentTurnSummary): AgentTurnSummaryProjection {
   return pruneUndefined({
     eventCount: summary.eventCount,
+    availability: summary.availability,
     stopReason: summary.stopReason,
     context: summary.context,
     tokenUsage: summary.tokenUsage,

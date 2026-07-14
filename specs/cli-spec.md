@@ -95,9 +95,12 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Foreground run and JSON follow MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
+- Non-TTY overview follow MUST emit its first dynamic-context omission summary immediately, retain only the latest omitted status per context during each subsequent 30-second window, and flush at the window, checkpoint, or terminal boundary; failures, timeouts, awaits, retries, and requeues remain immediate. TTY, JSON/NDJSON, `--all`, and `--target` follow MUST remain uncoalesced by this rule.
 - Non-TTY semantic lines MUST use only `+<elapsed>` as their leading marker and preserve intermediate transition order.
 - Default text inspection MUST preserve the authored tree while folding completed repetition and bounding ordinary expanded dynamic contexts to 20; failures, timeouts, awaits, and retries remain visible.
 - Text inspection MUST use compact node/status/duration presentation without embedding full prompts, responses, scheduler events, or artifact bodies.
+- Compact run headers MUST show direct fork source with optional target/unsafe-reuse and one `instances`/`attempts`/`turns` Agent usage line when present; unavailable Agent telemetry MUST remain explicit in JSON and MUST NOT add text lines or inferred values.
+- Static target text with multiple matching contexts MUST show aggregate total/status counts and MUST NOT select the first same-node item for details.
 - Text inspection MUST append a `Hooks:` section only for terminal runs with hook history and MUST omit it when no hook rows exist.
 - Agent detail MUST show the authored Agent key, compact counters/activity, and at most three runtime-normalized intent-only tool commands without arguments or payloads.
 - Awaiting Signal text MUST include a bounded prompt, payload guidance, and copyable signal command; a timed-out wait instead shows its deadline/failure and retry/fork actions.

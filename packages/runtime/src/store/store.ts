@@ -182,11 +182,18 @@ export type RunDetails = RunRecord & {
   input: JsonValue;
   output?: JsonValue;
   agentOverrides?: AgentOverrideMap;
+  fork?: RunForkInfo;
   hooks: HookJournalEntry[];
   eventCount: number;
   nodeCount: number;
   execution: RunExecutionState;
   dynamic?: RunDynamicDetails;
+};
+
+export type RunForkInfo = {
+  sourceRunId: string;
+  target?: string;
+  unsafeReuse?: true;
 };
 
 type RunExecutionState = {
@@ -1345,16 +1352,38 @@ class SqliteRuntimeStore implements RuntimeStore {
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
     const dynamic = this.getRunDynamicDetails(runId);
+    const fork = this.getRunFork(runId);
     return {
       ...run,
       input: JSON.parse(input.input_json) as JsonValue,
       ...(input.output_json ? { output: JSON.parse(input.output_json) as JsonValue } : {}),
       ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
+      ...(fork ? { fork } : {}),
       hooks: isTerminalRunStatus(run.status) ? this.getHookJournal(runId) : [],
       eventCount,
       nodeCount,
       execution: this.getRunExecutionState(run),
       ...(dynamic ? { dynamic } : {}),
+    };
+  }
+
+  private getRunFork(runId: string): RunForkInfo | undefined {
+    const row = this.db.prepare(`
+      SELECT payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'run.forked'
+      ORDER BY sequence ASC
+      LIMIT 1
+    `).get(runId) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    if (typeof payload.sourceRunId !== "string") throw new Error(`Fork event for run '${runId}' is missing sourceRunId.`);
+    if (payload.target !== undefined && typeof payload.target !== "string") throw new Error(`Fork event for run '${runId}' has an invalid target.`);
+    if (payload.unsafeReuse !== undefined && payload.unsafeReuse !== true) throw new Error(`Fork event for run '${runId}' has an invalid unsafeReuse flag.`);
+    return {
+      sourceRunId: payload.sourceRunId,
+      ...(payload.target === undefined ? {} : { target: payload.target }),
+      ...(payload.unsafeReuse === true ? { unsafeReuse: true } : {}),
     };
   }
 

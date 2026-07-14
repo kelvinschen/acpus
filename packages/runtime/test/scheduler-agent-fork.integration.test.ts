@@ -220,11 +220,13 @@ describe("scheduler agent overrides and forks", () => {
           expect(sourceProjection.instances[failedTarget]).toMatchObject({ status: "failed" });
 
           const implicit = await store.forkRun(source.id, { prepared: replacementPrepared, unsafeReuse: true });
+          expect(store.getRun(implicit.id)?.fork).toEqual({ sourceRunId: source.id, unsafeReuse: true });
           assertUnsafeLoopForkSeed(store, implicit.id, inherited, failedTarget);
           await expect(driveFrozenRunToTerminal(workspace, store, implicit.id, "unsafe-loop-implicit")).resolves.toMatchObject({ status: "completed" });
           assertUnsafeLoopForkCompleted(store, implicit.id, inherited, failedTarget);
 
           const explicit = await store.forkRun(source.id, { prepared: replacementPrepared, target: failedTarget, unsafeReuse: true });
+          expect(store.getRun(explicit.id)?.fork).toEqual({ sourceRunId: source.id, target: failedTarget, unsafeReuse: true });
           assertUnsafeLoopForkSeed(store, explicit.id, inherited, failedTarget);
           await expect(driveFrozenRunToTerminal(workspace, store, explicit.id, "unsafe-loop-explicit")).resolves.toMatchObject({ status: "completed" });
           assertUnsafeLoopForkCompleted(store, explicit.id, inherited, failedTarget);

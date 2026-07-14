@@ -300,7 +300,7 @@ function projectSnapshot(
     schemaVersion: 1,
     kind: "snapshot",
     cursor,
-    run: runSummary(run),
+    run: runSummary(ir, run),
     counts: statusCounts(executionStatuses),
     items,
     actions,
@@ -565,7 +565,11 @@ function projectTarget(
   const signalStatus = node?.kind === "signal" && (latestWait?.status === "awaiting" || latestWait?.status === "timed_out")
     ? latestWait.status
     : undefined;
-  const status = signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
+  const staticStatuses = target.kind === "static-node" ? staticTargetStatuses(node, run, instances, frames, attempts) : [];
+  const staticAggregate = staticStatuses.length > 1;
+  const status = staticAggregate
+    ? aggregateStatus(staticStatuses)
+    : signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
   const agent = node?.kind === "agent" ? agentDetails(ir, run, node, metadata, currentProgress) : undefined;
   const signal = node?.kind === "signal" ? {
     target: latestWait?.nodeKey ?? latestInstance?.nodeKey ?? targetId,
@@ -583,7 +587,7 @@ function projectTarget(
     schemaVersion: 1,
     kind: "target",
     cursor,
-    run: runSummary(run),
+    run: runSummary(ir, run),
     target,
     ...(resolvedStatic ? { staticNode: resolvedStatic } : {}),
     summary: {
@@ -593,20 +597,21 @@ function projectTarget(
       runStartedAt: run.createdAt,
       ...(terminalRun(run.status) ? { runFinishedAt: run.updatedAt, runDurationMs: durationMs(run.createdAt, run.updatedAt) } : {}),
       ...(resolvedStatic ? { nodeId: resolvedStatic.nodeId, staticKind: resolvedStatic.kind, staticOrder: resolvedStatic.order } : {}),
-      ...(latestInstance?.nodeKey ? { nodeKey: latestInstance.nodeKey } : latestAttempt?.nodeKey ? { nodeKey: latestAttempt.nodeKey } : {}),
-      ...(latestFrame?.frameKey ? { frameKey: latestFrame.frameKey } : {}),
+      ...(!staticAggregate && latestInstance?.nodeKey ? { nodeKey: latestInstance.nodeKey } : !staticAggregate && latestAttempt?.nodeKey ? { nodeKey: latestAttempt.nodeKey } : {}),
+      ...(!staticAggregate && latestFrame?.frameKey ? { frameKey: latestFrame.frameKey } : {}),
       nodeStatus: status,
-      ...(runtimeInput !== undefined ? { input: { kind: "runtime", value: runtimeInput } } : authoredInput !== undefined ? { input: { kind: "authored", value: authoredInput } } : {}),
-      ...(latestInstance?.output !== undefined ? { output: latestInstance.output } : latestAttempt?.result !== undefined ? { output: latestAttempt.result } : latestFrame?.result !== undefined ? { output: latestFrame.result } : {}),
-      ...(targetFailure ? { failure: targetFailure } : {}),
-      ...(latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
-        : turnArtifact ? { prompt: { kind: "artifact", artifactId: turnArtifact.id, path: turnArtifact.path, ...(turnArtifact.mediaType ? { mediaType: turnArtifact.mediaType } : {}), field: "prompt" } }
-          : node?.kind === "agent" || node?.kind === "signal" ? { prompt: { kind: node.kind === "signal" ? "signal" : "authored", text: renderPromptExpr(node.run.prompt) } } : {}),
-      ...(latestAttempt ? { latestAttempt: { attemptId: latestAttempt.attemptId, attemptNo: latestAttempt.attemptNo, status: latestAttempt.status, startedAt: latestAttempt.startedAt, ...(latestAttempt.finishedAt ? { finishedAt: latestAttempt.finishedAt } : {}), ...(latestAttempt.error !== undefined ? { error: latestAttempt.error } : {}), ...(latestAttempt.result !== undefined ? { result: latestAttempt.result } : {}) } } : {}),
-      ...(loopProgress ? { loopProgress } : {}),
-      ...(agent ? { agent } : {}),
-      ...(node?.kind === "agent" && ir.agents[node.run.agent] ? { agentDefinition: ir.agents[node.run.agent] } : {}),
-      ...(signal ? { signal } : {}),
+      ...(staticAggregate ? { counts: statusCounts(staticStatuses) } : {}),
+      ...(!staticAggregate && runtimeInput !== undefined ? { input: { kind: "runtime", value: runtimeInput } } : !staticAggregate && authoredInput !== undefined ? { input: { kind: "authored", value: authoredInput } } : {}),
+      ...(!staticAggregate && latestInstance?.output !== undefined ? { output: latestInstance.output } : !staticAggregate && latestAttempt?.result !== undefined ? { output: latestAttempt.result } : !staticAggregate && latestFrame?.result !== undefined ? { output: latestFrame.result } : {}),
+      ...(!staticAggregate && targetFailure ? { failure: targetFailure } : {}),
+      ...(!staticAggregate && latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
+        : !staticAggregate && turnArtifact ? { prompt: { kind: "artifact", artifactId: turnArtifact.id, path: turnArtifact.path, ...(turnArtifact.mediaType ? { mediaType: turnArtifact.mediaType } : {}), field: "prompt" } }
+          : !staticAggregate && (node?.kind === "agent" || node?.kind === "signal") ? { prompt: { kind: node.kind === "signal" ? "signal" : "authored", text: renderPromptExpr(node.run.prompt) } } : {}),
+      ...(!staticAggregate && latestAttempt ? { latestAttempt: { attemptId: latestAttempt.attemptId, attemptNo: latestAttempt.attemptNo, status: latestAttempt.status, startedAt: latestAttempt.startedAt, ...(latestAttempt.finishedAt ? { finishedAt: latestAttempt.finishedAt } : {}), ...(latestAttempt.error !== undefined ? { error: latestAttempt.error } : {}), ...(latestAttempt.result !== undefined ? { result: latestAttempt.result } : {}) } } : {}),
+      ...(!staticAggregate && loopProgress ? { loopProgress } : {}),
+      ...(!staticAggregate && agent ? { agent } : {}),
+      ...(!staticAggregate && node?.kind === "agent" && ir.agents[node.run.agent] ? { agentDefinition: ir.agents[node.run.agent] } : {}),
+      ...(!staticAggregate && signal ? { signal } : {}),
       artifacts: targetArtifacts,
     },
     items,
@@ -618,6 +623,20 @@ function projectTarget(
     progress,
     artifacts: targetArtifacts,
   };
+}
+
+function staticTargetStatuses(
+  node: NodeIR | undefined,
+  run: RunDetails,
+  instances: RunDynamicNodeInstance[],
+  frames: RunDynamicFrame[],
+  attempts: RunDynamicAttempt[],
+): RunInspectionStatus[] {
+  if (!node) return [];
+  if (instances.length > 0) return instances.map(item => instanceInspectionState(run, item, attempts).status);
+  return frames
+    .filter(item => item.nodeId === node.id && (item.frameKind === "node" || item.frameKind === "loop"))
+    .map(item => normalizeStatus(item.status));
 }
 
 function targetInspectionItems(
@@ -671,7 +690,8 @@ function targetInspectionItems(
   }];
 }
 
-function runSummary(run: RunDetails): RunInspectionRunSummary {
+function runSummary(ir: WorkflowIR, run: RunDetails): RunInspectionRunSummary {
+  const agentUsage = runAgentUsage(ir, run);
   return {
     id: run.id,
     name: run.name,
@@ -681,7 +701,30 @@ function runSummary(run: RunDetails): RunInspectionRunSummary {
     updatedAt: run.updatedAt,
     ...(terminalRun(run.status) ? { durationMs: durationMs(run.createdAt, run.updatedAt) } : {}),
     execution: run.execution,
+    ...(run.fork ? { fork: run.fork } : {}),
+    ...(agentUsage ? { agentUsage } : {}),
   };
+}
+
+function runAgentUsage(ir: WorkflowIR, run: RunDetails): NonNullable<RunInspectionRunSummary["agentUsage"]> | undefined {
+  const agentNodeIds = new Set(Array.from(walkNodes(ir.root), ({ node }) => node.kind === "agent" ? node.id : undefined)
+    .filter((nodeId): nodeId is string => nodeId !== undefined));
+  if (agentNodeIds.size === 0) return undefined;
+  const instances = run.dynamic?.nodeInstances.filter(item => agentNodeIds.has(item.nodeId)) ?? [];
+  const attempts = run.dynamic?.attempts.filter(item => agentNodeIds.has(item.nodeId)) ?? [];
+  const metadataByAttempt = new Map<string, RunExecutionMetadata>();
+  for (const item of run.dynamic?.executionMetadata ?? []) {
+    if (item.kind === "agent_attempt" && item.attemptId) metadataByAttempt.set(item.attemptId, item);
+  }
+  const progressByAttempt = new Map((run.dynamic?.progress ?? [])
+    .filter(item => item.kind === "agent" && item.attemptId)
+    .map(item => [item.attemptId!, item]));
+  const turns = attempts.reduce((total, attempt) => {
+    const metadata = record(metadataByAttempt.get(attempt.attemptId)?.metadata);
+    const tools = record(progressByAttempt.get(attempt.attemptId)?.tools);
+    return total + Math.max(number(metadata?.turnCount) ?? 0, number(tools?.turn) ?? 0);
+  }, 0);
+  return { instances: instances.length, attempts: attempts.length, turns };
 }
 
 function relatedStatuses(run: RunDetails, nodeId: string): RunInspectionStatus[] {
@@ -756,11 +799,21 @@ function agentInspectionState(
   const stopReason = string(data?.stopReason) ?? string(turnSummary?.stopReason);
   const context = inspectionContext(progress?.context) ?? inspectionContext(turnSummary?.context);
   const tokenUsage = inspectionTokenUsage(progress?.tokenUsage) ?? inspectionTokenUsage(turnSummary?.tokenUsage);
+  const persistedAvailability = inspectionAvailability(turnSummary?.availability);
+  const availability = {
+    context: context ? "available" as const : persistedAvailability?.context ?? "unavailable" as const,
+    tokenUsage: tokenUsage?.totalTokens !== undefined
+      ? "available" as const
+      : tokenUsage
+        ? "partial" as const
+        : persistedAvailability?.tokenUsage ?? "unavailable" as const,
+  };
   const lastActivityAt = [progress?.updatedAt, string(metadataContext?.updatedAt), metadata?.createdAt]
     .filter((value): value is string => value !== undefined)
     .sort()
     .at(-1);
   return {
+    availability,
     ...(turnCount === undefined ? {} : { turnCount }),
     ...(lastActivityAt ? { lastActivityAt } : {}),
     ...(context ? { context } : {}),
@@ -768,6 +821,15 @@ function agentInspectionState(
     ...(toolCallCount === undefined && recentTools.length === 0 ? {} : { tools: { totalCallCount: toolCallCount ?? recentTools.length, recent: recentTools } }),
     ...(stopReason ? { stopReason } : {}),
   };
+}
+
+function inspectionAvailability(value: unknown): AgentInspectionState["availability"] | undefined {
+  const data = record(value);
+  const context = data?.context;
+  const tokenUsage = data?.tokenUsage;
+  if (context !== "available" && context !== "unavailable") return undefined;
+  if (tokenUsage !== "available" && tokenUsage !== "partial" && tokenUsage !== "unavailable") return undefined;
+  return { context, tokenUsage };
 }
 
 function inspectionContext(value: unknown): NonNullable<NonNullable<RunInspectionItem["agent"]>["context"]> | undefined {

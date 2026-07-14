@@ -1,7 +1,11 @@
 import type { AgentTurnResult } from "@acpus/agent-executor";
 
 export function agentSummary(eventCount: number): AgentTurnResult["summary"] {
-  return { eventCount, tools: { totalToolCallCount: 0, calls: [] } };
+  return {
+    eventCount,
+    availability: { context: "unavailable", tokenUsage: "unavailable" },
+    tools: { totalToolCallCount: 0, calls: [] },
+  };
 }
 
 export function agentTiming(elapsedMs = 1): AgentTurnResult["timing"] {

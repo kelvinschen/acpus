@@ -52,18 +52,37 @@ acpus runs retry <run-id> --target <nodeKey-or-frameKey-or-static-alias>
 
 Targeted retry can reopen a failed dynamic leaf, composite/control frame, or a static alias that resolves unambiguously to one failed dynamic target.
 
-Use fork when the workflow source, input, or agent mapping must change:
+A retry target belongs to the source run's frozen workflow. Exact dynamic keys shown by source inspection are appropriate here because retry continues that same admitted graph.
+
+Use fork when the workflow source, input, or agent mapping must change. After fixing workflow source, default to root completion with no copied source target:
 
 ```sh
 acpus runs fork <run-id> --workflow fixed.workflow.ts
-acpus runs fork <run-id> --input '{"repoPath":"/repo","ready":true}'
-acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
-acpus runs fork <run-id> --target <target> --workflow fixed.workflow.ts --unsafe-reuse
 ```
 
-Fork creates a new run from frozen source run data and may freeze replacement prepared workflow/input/agents. It should not read live workflow source except where the CLI explicitly prepares a replacement `--workflow`.
+This prepares the fixed replacement workflow, inherits unchanged input and Agent overrides, seeds compatible completed prerequisites, and resumes from the replacement graph's root completion frontier. Do not repeat unchanged `--input` or `--agents`; an explicit input override intentionally disables normal safe completed-output reuse even when its JSON text happens to be equal.
+
+Replacement-fork targets belong to the replacement workflow. A source `nodeKey` or `frameKey` copied from `runs inspect` is not automatically meaningful there. Omit `--target` unless there is a deliberate recovery point in the replacement graph. A static replacement target is convenient when it resolves unambiguously; under a fanout or loop, an exact replacement dynamic identity may be required after materialization:
+
+```sh
+# Agent configuration changes; source input remains inherited.
+acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
+
+# Deliberate input change; safe output reuse is disabled.
+acpus runs fork <run-id> --input '{"repoPath":"/repo","ready":true}'
+
+# Explicit recovery point in the replacement workflow.
+acpus runs fork <run-id> --workflow fixed.workflow.ts --target validate
+
+# Intentional compatibility override, not a target-resolution workaround.
+acpus runs fork <run-id> --workflow fixed.workflow.ts --target validate --unsafe-reuse
+```
+
+Fork creates a new run from frozen source data and may freeze replacement prepared workflow/input/agents. It does not read live workflow source except where the CLI explicitly prepares `--workflow`. Starting `workflow run fixed.workflow.ts` instead creates an unrelated run and cannot reuse compatible source completion.
 
 Use `--unsafe-reuse` when the user clearly wants to reuse earlier completed nodes and accepts the side effects of doing so. Typical cases include a failed node inside one loop iteration where rerunning the whole loop is undesirable, or a fork that changes agent definitions mid-run while keeping already-completed prerequisites.
+
+`--unsafe-reuse` relaxes compatibility checks; it does not make a source target valid in a replacement graph. If control reports `not materialized in the replacement workflow` or `resolved to 0 dynamic replacement instances`, first retry without `--target`. If an explicit target is essential, inspect the replacement workflow's authored/static identity and choose its unambiguous recovery point rather than copying the source dynamic key.
 
 ## Signal
 

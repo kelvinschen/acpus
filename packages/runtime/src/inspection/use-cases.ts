@@ -176,7 +176,7 @@ function meaningfulAgentState(state: NormalizedAgentProgressState | undefined): 
 }
 
 function structuralAgentState(state: NormalizedAgentProgressState): string {
-  const { context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...agentState } = state.agentState;
+  const { availability: _availability, context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...agentState } = state.agentState;
   return JSON.stringify({
     attemptId: state.attemptId,
     attemptNo: state.attemptNo,
@@ -292,7 +292,7 @@ function coalescedDocument(
 
 function agentStructuralState(item: RunInspectionItem): string {
   if (!item.agent) return "";
-  const { context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...agent } = item.agent;
+  const { availability: _availability, context: _context, tokenUsage: _tokenUsage, lastActivityAt: _lastActivityAt, ...agent } = item.agent;
   return JSON.stringify({ status: item.status, attemptNo: item.attemptNo, failure: item.failure, agent });
 }
 

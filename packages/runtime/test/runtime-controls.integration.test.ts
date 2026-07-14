@@ -98,12 +98,16 @@ describe.concurrent("runtime controls and recovery", () => {
 
       expect(fork?.run.status).toBe("completed");
       expect(fork?.run.id).not.toBe(source.run.id);
+      expect(source.run.fork).toBeUndefined();
+      expect(fork?.run.fork).toEqual({ sourceRunId: source.run.id });
       const sourceArtifacts = runtimeRows(workspace, "SELECT id, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", source.run.id);
       const forkArtifacts = runtimeRows(workspace, "SELECT id, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", fork!.run.id);
       expect(forkArtifacts).toHaveLength(sourceArtifacts.length);
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
+      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
+      const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
+      expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({ sourceRunId: source.run.id });
     });
   });
 

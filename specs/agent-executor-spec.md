@@ -35,7 +35,8 @@
 - Completed results MUST contain response, stderr, and normalized summary; failed results add one structured actionable failure and normalized acpx cause.
 - Failure classification MUST use execution boundaries and protocol codes rather than provider text; JSON-RPC `-32602` is `config`, other prompt/session protocol failures are `provider_exit` absent timeout/spawn handling.
 - JSON-RPC causes MUST preserve code, message, data, `acpxCode`, and origin; non-empty `data.details` supplies the actionable message.
-- Summary MUST contain event count, optional stop reason/context/token usage, complete tool-call list/count, cwd, and optional acpx record id without prompt, response, thought/message content, tool output, or complete protocol events.
+- Summary MUST contain event count, telemetry availability, optional stop reason/context/token usage, complete tool-call list/count, cwd, and optional acpx record id without prompt, response, thought/message content, tool output, or complete protocol events.
+- Telemetry availability MUST mark context as `available` only when normalized context exists, and token usage as `available` when `totalTokens` exists, `partial` when another normalized token counter exists, or `unavailable` when no normalized token counter exists; it MUST NOT infer missing values.
 - Context MUST derive from `usage_update` while retaining the latest non-zero used value across later zero reports.
 - Token usage MUST accept camelCase/snake_case input, output, cache, thought, and total counts; final result usage replaces provisional event-derived usage.
 - Tool summaries MUST fold call/update events, retain identity/status/timestamps, and store only a bounded 4 KiB head/tail `rawInput` preview without raw output/results.
@@ -50,7 +51,7 @@
 - Trace tools MUST preserve full provider-emitted `rawInput`, `rawOutput`, `content`, and `locations` without broadening summary/progress payloads.
 - Prompt stdout MUST be decoded and parsed once while streaming; response, summary, progress, and optional trace derive from that pass and retain event-arrival timing.
 - Progress callbacks MUST fire for valid non-text prompt activity, including thought and tool events.
-- Progress MUST include response-so-far, the same normalized summary shape, and update time; parsing is byte-safe across arbitrary chunks and incomplete lines wait for a boundary/close.
+- Progress MUST include response-so-far, the same normalized summary shape including telemetry availability, and update time; parsing is byte-safe across arbitrary chunks and incomplete lines wait for a boundary/close.
 
 ## Verification
 

@@ -30,6 +30,7 @@ describe("run inspection projection", () => {
     if (overview?.kind !== "snapshot" || all?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(overview.counts).toEqual({ total: 25, ready: 25 });
     expect(all.counts).toEqual({ total: 25, ready: 25 });
+    expect(overview.run.agentUsage).toEqual({ instances: 25, attempts: 25, turns: 4 });
     expect(overview.items.filter(item => item.role === "instance")).toHaveLength(20);
     expect(all.items.filter(item => item.role === "instance")).toHaveLength(25);
     for (const document of [overview, all]) {
@@ -44,6 +45,7 @@ describe("run inspection projection", () => {
         nodeKey: "review~0",
         agent: expect.objectContaining({
           key: "reviewer",
+          availability: { context: "available", tokenUsage: "available" },
           backend: { kind: "use", name: "claude" },
           model: "sonnet",
           turnCount: 4,
@@ -76,9 +78,59 @@ describe("run inspection projection", () => {
 
     if (initial?.kind !== "snapshot" || folded?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(initial.counts).toEqual({ total: 1, notStarted: 1 });
+    expect(initial.run.agentUsage).toEqual({ instances: 0, attempts: 0, turns: 0 });
     expect(folded.counts).toEqual({ total: 25, completed: 25 });
     expect(folded.items.filter(item => item.role === "instance")).toHaveLength(0);
     expect(folded.items.find(item => item.role === "fold")?.fold).toEqual({ count: 25, counts: { total: 25, completed: 25 } });
+  });
+
+  it("counts retry attempts, response-repair turns, and newer active turn progress", () => {
+    const run = repeatedAgentRun(1);
+    run.dynamic!.attempts.push({
+      attemptId: "attempt-retry",
+      nodeKey: "review~0",
+      nodeId: "review",
+      attemptNo: 2,
+      status: "started",
+      startedAt: "2026-07-01T00:00:03.000Z",
+    });
+    run.dynamic!.executionMetadata.push({
+      id: 2,
+      attemptId: "attempt-retry",
+      kind: "agent_attempt",
+      metadata: { turnCount: 2 },
+      createdAt: "2026-07-01T00:00:04.000Z",
+    });
+    run.dynamic!.progress[0] = {
+      ...run.dynamic!.progress[0]!,
+      attemptId: "attempt-retry",
+      attemptNo: 2,
+      tools: { ...run.dynamic!.progress[0]!.tools as Record<string, unknown>, turn: 3 },
+    };
+
+    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], cursor: { eventSequence: 80, progressVersion: 2 }, query: { runId: run.id, mode: "overview" } });
+    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
+    expect(document.run.agentUsage).toEqual({ instances: 1, attempts: 2, turns: 5 });
+  });
+
+  it("marks unavailable Agent telemetry in inspection JSON", () => {
+    const run = repeatedAgentRun(1);
+    run.dynamic!.progress = [];
+    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
+    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
+    expect(document.items.find(item => item.nodeKey === "review~0")?.agent?.availability).toEqual({
+      context: "unavailable",
+      tokenUsage: "unavailable",
+    });
+  });
+
+  it("projects only direct fork lineage into inspection summaries", () => {
+    const run = repeatedAgentRun(0);
+    run.fork = { sourceRunId: "run_source", target: "review~failed", unsafeReuse: true };
+    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], cursor: { eventSequence: 1, progressVersion: 0 }, query: { runId: run.id, mode: "overview" } });
+    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
+
+    expect(document.run.fork).toEqual({ sourceRunId: "run_source", target: "review~failed", unsafeReuse: true });
   });
 
   it("counts every repeated Assert frame as a distinct execution context", () => {
@@ -181,19 +233,39 @@ describe("run inspection projection", () => {
     if (target?.kind !== "target" || raw?.kind !== "raw") throw new Error("expected target and raw");
     expect(target.instances).toHaveLength(25);
     expect(target.attempts).toHaveLength(25);
-    expect(target.summary.prompt).toEqual({
-      kind: "artifact",
-      artifactId: artifact.id,
-      path: artifact.path,
-      mediaType: "application/json",
-      field: "prompt",
-    });
+    expect(target.summary).toMatchObject({ nodeStatus: "ready", counts: { total: 25, ready: 25 } });
+    for (const field of ["nodeKey", "frameKey", "input", "output", "failure", "prompt", "latestAttempt", "loopProgress", "agent", "signal"] as const) {
+      expect(target.summary[field]).toBeUndefined();
+    }
     expect(target.artifacts).toEqual([artifact]);
     expect(isAbsolute(target.artifacts[0]!.path)).toBe(true);
     expect(JSON.stringify(target.artifacts)).not.toContain("relativePath");
     expect(raw.run.dynamic?.nodeInstances).toHaveLength(25);
     expect(JSON.stringify(overview)).not.toContain('"dynamic"');
     expect(JSON.stringify(overview).length).toBeLessThan(JSON.stringify(raw).length * 0.25);
+  });
+
+  it("keeps repeated static targets aggregate and preserves single-instance detail", () => {
+    const repeated = repeatedAgentRun(2);
+    repeated.dynamic!.nodeInstances[0]!.status = "completed";
+    repeated.dynamic!.nodeInstances[0]!.output = { old: true };
+    repeated.dynamic!.nodeInstances[0]!.updatedAt = "2026-07-01T00:00:01.000Z";
+    repeated.dynamic!.nodeInstances[1]!.status = "running";
+    delete repeated.dynamic!.nodeInstances[1]!.output;
+    repeated.dynamic!.nodeInstances[1]!.updatedAt = "2026-07-01T00:00:03.000Z";
+    const aggregate = projectRunInspection({ ir: compositeWorkflow(), run: repeated, artifacts: [], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: repeated.id, mode: "target", target: "review" } });
+    if (aggregate?.kind !== "target") throw new Error("expected aggregate target");
+
+    expect(aggregate.summary).toMatchObject({ nodeStatus: "running", counts: { total: 2, running: 1, completed: 1 } });
+    expect(aggregate.summary.nodeKey).toBeUndefined();
+    expect(aggregate.summary.output).toBeUndefined();
+    expect(aggregate.summary.agent).toBeUndefined();
+
+    const single = repeatedAgentRun(1);
+    const detailed = projectRunInspection({ ir: compositeWorkflow(), run: single, artifacts: [], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: single.id, mode: "target", target: "review" } });
+    if (detailed?.kind !== "target") throw new Error("expected detailed target");
+    expect(detailed.summary).toMatchObject({ nodeStatus: "ready", nodeKey: "review~0", latestAttempt: { attemptId: "attempt-0" }, agent: { key: "reviewer" } });
+    expect(detailed.summary.counts).toBeUndefined();
   });
 
   it("preserves every durable transition between polls in event order", () => {
@@ -449,6 +521,58 @@ describe("run inspection projection", () => {
     expect(target.summary.signal?.promptPreview).toBe(prompt);
     expect(target.summary.signal?.outputSchema).toEqual(outputSchema);
     expect(raw.workflow).toEqual(ir);
+  });
+
+  it("aggregates repeated Signal targets from normalized wait status", () => {
+    const ir: WorkflowIR = {
+      irVersion: 5,
+      name: "repeated-signal-inspection",
+      agents: {},
+      root: {
+        output: { kind: "object", fields: {} },
+        nodes: [{ id: "approve", kind: "signal", run: { prompt: { kind: "literal", value: "Approve?" } } }],
+      },
+      diagnostics: [],
+    };
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+    run.dynamic = {
+      version: 4,
+      progressVersion: 0,
+      frames: [],
+      nodeInstances: ["a", "b"].map((suffix, itemIndex) => ({
+        nodeKey: `approve~${suffix}`,
+        nodeId: "approve",
+        instancePath: [{ kind: "fanout" as const, nodeId: "batch", itemIndex }, { kind: "node" as const, nodeId: "approve" }],
+        status: "running",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      })),
+      attempts: [],
+      groups: [],
+      groupMembers: [],
+      signalWaits: ["a", "b"].map(suffix => ({
+        nodeKey: `approve~${suffix}`,
+        nodeId: "approve",
+        status: "awaiting",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      })),
+      executionMetadata: [],
+      progress: [],
+    };
+
+    const awaiting = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 4, progressVersion: 0 }, query: { runId: run.id, mode: "target", target: "approve" } });
+    if (awaiting?.kind !== "target") throw new Error("expected target");
+    expect(awaiting.summary).toMatchObject({ nodeStatus: "awaiting", counts: { total: 2, awaiting: 2 } });
+    expect(awaiting.items.filter(item => item.role === "instance").map(item => item.status)).toEqual(["awaiting", "awaiting"]);
+
+    for (const instance of run.dynamic.nodeInstances) instance.status = "failed";
+    for (const wait of run.dynamic.signalWaits) wait.status = "timed_out";
+    const timedOut = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 6, progressVersion: 0 }, query: { runId: run.id, mode: "target", target: "approve" } });
+    if (timedOut?.kind !== "target") throw new Error("expected target");
+    expect(timedOut.summary).toMatchObject({ nodeStatus: "timed_out", counts: { total: 2, timedOut: 2 } });
+    expect(timedOut.items.filter(item => item.role === "instance").map(item => item.status)).toEqual(["timed_out", "timed_out"]);
   });
 
   it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {

@@ -1,5 +1,6 @@
 import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type {
   ArtifactRecord,
   RunDetails,
@@ -8,6 +9,7 @@ import type {
   RunDynamicNodeInstance,
   RunDynamicSignalWait,
   RunExecutionMetadata,
+  RunForkInfo,
   RunNodeProgress,
   RunStatus,
 } from "../store/store.js";
@@ -45,6 +47,12 @@ export type RunInspectionRunSummary = {
   updatedAt: string;
   durationMs?: number;
   execution: RunDetails["execution"];
+  fork?: RunForkInfo;
+  agentUsage?: {
+    instances: number;
+    attempts: number;
+    turns: number;
+  };
 };
 
 export type RunInspectionStatus =
@@ -101,6 +109,7 @@ export type RunInspectionDetailedFailure = RunInspectionFailure & {
 
 export type AgentInspectionState = {
   key: string;
+  availability: AgentTelemetryAvailability;
   backend?: { kind: "use"; name: string } | { kind: "command" };
   model?: string;
   turnCount?: number;
@@ -230,6 +239,7 @@ export type RunInspectionTargetSummary = {
   nodeKey?: string;
   frameKey?: string;
   nodeStatus?: string;
+  counts?: RunInspectionStatusCounts;
   staticKind?: string;
   staticOrder?: number;
   input?: { kind: "runtime" | "authored"; value: unknown };

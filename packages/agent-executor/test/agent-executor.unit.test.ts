@@ -798,6 +798,7 @@ describe("executeAgentTurn", () => {
         responseText: "hello",
         summary: {
           eventCount: 4,
+          availability: { context: "available", tokenUsage: "available" },
           stopReason: "end_turn",
           context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
           tokenUsage: {
@@ -819,6 +820,37 @@ describe("executeAgentTurn", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("marks missing and non-total token telemetry without inventing totals", async () => {
+    fake.state.scenarios.push(
+      fake.scenario.success,
+      fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",\"result\":{\"stopReason\":\"end_turn\"}}\n"),
+      fake.scenario.success,
+      fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"id\":\"req-2\",\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":10,\"outputTokens\":2}}}\n"),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const request = {
+      agent: { kind: "named" as const, name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all" as const,
+    };
+
+    const unavailable = await executeAgentTurn(request);
+    const partial = await executeAgentTurn(request);
+
+    expect(unavailable.summary).toMatchObject({
+      availability: { context: "unavailable", tokenUsage: "unavailable" },
+    });
+    expect(unavailable.summary).not.toHaveProperty("tokenUsage");
+    expect(partial.summary).toMatchObject({
+      availability: { context: "unavailable", tokenUsage: "partial" },
+      tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2 },
+    });
+    expect(partial.summary.tokenUsage).not.toHaveProperty("totalTokens");
   });
 
   it("reports normalized progress while prompt stdout is still streaming", async () => {
@@ -857,6 +889,7 @@ describe("executeAgentTurn", () => {
           responseText: "",
           summary: {
             eventCount: 1,
+            availability: { context: "available", tokenUsage: "available" },
             context: { used: 80, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
             tokenUsage: {
               source: "usage_update",

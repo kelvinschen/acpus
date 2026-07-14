@@ -116,10 +116,10 @@ Default tree keeps authored nesting and dynamic loop/fanout identity. Actionable
 Follow text:
 
 - TTY: redraw in place.
-- Pipe: initial tree, state changes, compact Agent progress, 30-second silent liveness checkpoint.
+- Pipe: initial tree, state changes, compact Agent progress, 30-second silent liveness checkpoint. For a long run observed by an Agent, prefer a non-TTY pipe such as `acpus runs inspect <run-id> --follow | tee run-follow.log` so terminal redraws do not become repeated transcript text.
 - Agent progress: Agent key. When available: turn, activity, context/token counts, up to three tool intents. No tool arguments or output.
 - Transcript: `+<elapsed>` prefix. Matching terminal state/progress in same update merge into one row.
-- Bounded: 20 ordinary dynamic contexts. Failure, timeout, await, retry always kept. Use `--all --follow` for all.
+- Bounded: 20 ordinary dynamic contexts. The first omission summary is immediate; later omitted updates retain the latest state per context and flush at most once per 30 seconds or at a terminal/checkpoint boundary. Failure, timeout, await, retry, and requeue always remain immediate. Use `--all --follow` for all.
 - Paused, awaiting, inactive, stale: stays attached. `Ctrl-C`: detach, never cancel.
 
 Need exact replay order and cursors:
@@ -131,7 +131,16 @@ acpus runs inspect <run-id> --follow --json |
 
 Sparse NDJSON. No clock-only records. No text presentation merge.
 
+For an Agent that only needs durable state changes, use filtered NDJSON instead of a PTY:
+
+```sh
+acpus runs inspect <run-id> --follow --json |
+  jq -c 'select(.kind == "update" or .kind == "done") | {kind, run: .run.status, changes, output}'
+```
+
 Default JSON stays compact: normalized `.items`, exact omitted counts. Failed Agent item has stable `failure.origin`, optional `failure.code`, actionable message, bounded `failure.upstream`. Target JSON adds parsed upstream error data when available. Raw ACP lines stay outside normal inspection.
+
+Agent JSON also carries `availability.context` and `availability.tokenUsage`. Token availability is `available` with a reported total, `partial` with only component counters, and `unavailable` with no reported counters. Text simply omits unavailable context/token lines and never estimates them. The run header summarizes only `instances`, `attempts`, and `turns`; a forked run also names its direct source and this fork's target/unsafe-reuse option.
 
 Common queries need no raw mode:
 

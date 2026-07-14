@@ -27,6 +27,7 @@ import {
 const defaultFollowIntervalMs = 1_000;
 const minimumFollowIntervalMs = 250;
 const overviewTranscriptContextLimit = 20;
+const transcriptOmissionIntervalMs = 30_000;
 
 export function parseFollowInterval(value: string | undefined): number {
   if (value === undefined) return defaultFollowIntervalMs;
@@ -117,6 +118,8 @@ class RunFollowPresenter {
   private outputWritten = false;
   private readonly transcriptContextAliases = new Set<string>();
   private transcriptContextCount = 0;
+  private readonly pendingTranscriptOmissions = new Map<string, RunInspectionChange>();
+  private lastTranscriptOmissionAt: number | undefined;
 
   constructor(
     private readonly options: FollowOptions,
@@ -144,12 +147,12 @@ class RunFollowPresenter {
       const items = this.document?.items ?? emission.patch.upsertItems;
       const textChanges = coalesceTerminalAgentChanges(emission.changes, items);
       const transcript = this.budgetOverviewTranscript && !isTty(this.options.stdout)
-        ? this.limitTranscriptChanges(textChanges, items, emission.run.id)
-        : { changes: textChanges, omitted: "" };
+        ? this.limitTranscriptChanges(textChanges, items)
+        : { changes: textChanges, omitted: [], shownContextKeys: [] };
       const changes = formatRunInspectionChanges(transcript.changes, {
         run: emission.run,
         items,
-      }) + transcript.omitted;
+      }) + this.recordTranscriptOmissions(transcript.omitted, transcript.shownContextKeys, emission.run.id);
       if (isTty(this.options.stdout)) {
         if (changes) this.targetChanges = [...this.targetChanges, ...changes.trimEnd().split("\n")].slice(-20);
         if (this.document) this.renderedLines = redraw(this.options.stdout, this.currentText(), this.renderedLines);
@@ -161,6 +164,10 @@ class RunFollowPresenter {
     }
 
     if (!this.options.wantsJson) {
+      if (!isTty(this.options.stdout)) {
+        const omitted = this.flushTranscriptOmissions(emission.run.id);
+        if (omitted) this.options.stdout.write(omitted);
+      }
       if (this.document && isTty(this.options.stdout)) {
         this.document = { ...this.document, run: emission.run };
         this.renderedLines = redraw(this.options.stdout, this.currentText(), this.renderedLines);
@@ -178,6 +185,12 @@ class RunFollowPresenter {
     if (this.options.wantsJson || !this.document) return;
     if (isTty(this.options.stdout)) {
       this.renderedLines = redraw(this.options.stdout, this.currentText(nowMs), this.renderedLines);
+      return;
+    }
+    const omitted = this.flushTranscriptOmissionsIfDue(this.document.run.id, nowMs);
+    if (omitted) {
+      this.options.stdout.write(omitted);
+      this.lastAppendAt = nowMs;
       return;
     }
     if (nowMs - this.lastAppendAt < 30_000) return;
@@ -208,6 +221,8 @@ class RunFollowPresenter {
   private resetTranscriptBudget(items: readonly RunInspectionItem[]): void {
     this.transcriptContextAliases.clear();
     this.transcriptContextCount = 0;
+    this.pendingTranscriptOmissions.clear();
+    this.lastTranscriptOmissionAt = undefined;
     for (const item of items) {
       if (item.role !== "instance" && item.role !== "frame") continue;
       for (const alias of itemContextAliases(item)) this.transcriptContextAliases.add(alias);
@@ -218,8 +233,7 @@ class RunFollowPresenter {
   private limitTranscriptChanges(
     changes: readonly RunInspectionChange[],
     items: readonly RunInspectionItem[],
-    runId: string,
-  ): { changes: RunInspectionChange[]; omitted: string } {
+  ): { changes: RunInspectionChange[]; omitted: RunInspectionChange[]; shownContextKeys: string[] } {
     const itemsByKey = new Map(items.map(item => [item.key, item]));
     const groups = new Map<string, TranscriptContextGroup>();
     for (const change of changes) {
@@ -258,8 +272,36 @@ class RunFollowPresenter {
         const item = change.itemKey ? itemsByKey.get(change.itemKey) : undefined;
         return !dynamicTranscriptChange(change, item) || selected.has(transcriptContextKey(change));
       }),
-      omitted: formatTranscriptOmission(omitted.map(([, group]) => group.last), runId),
+      omitted: omitted.map(([, group]) => group.last),
+      shownContextKeys: [...selected],
     };
+  }
+
+  private recordTranscriptOmissions(
+    changes: readonly RunInspectionChange[],
+    shownContextKeys: readonly string[],
+    runId: string,
+    nowMs = Date.now(),
+  ): string {
+    for (const key of shownContextKeys) this.pendingTranscriptOmissions.delete(key);
+    for (const change of changes) this.pendingTranscriptOmissions.set(transcriptContextKey(change), change);
+    if (this.pendingTranscriptOmissions.size === 0) return "";
+    if (this.lastTranscriptOmissionAt !== undefined && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
+    return this.flushTranscriptOmissions(runId, nowMs);
+  }
+
+  private flushTranscriptOmissionsIfDue(runId: string, nowMs: number): string {
+    if (this.pendingTranscriptOmissions.size === 0) return "";
+    if (this.lastTranscriptOmissionAt !== undefined && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
+    return this.flushTranscriptOmissions(runId, nowMs);
+  }
+
+  private flushTranscriptOmissions(runId: string, nowMs = Date.now()): string {
+    if (this.pendingTranscriptOmissions.size === 0) return "";
+    const text = formatTranscriptOmission([...this.pendingTranscriptOmissions.values()], runId);
+    this.pendingTranscriptOmissions.clear();
+    this.lastTranscriptOmissionAt = nowMs;
+    return text;
   }
 }
 

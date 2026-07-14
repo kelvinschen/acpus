@@ -79,6 +79,7 @@ describe("agent node execution", () => {
                   turns.length === 2 ? "stderr detail\n" : "",
                   turns.length === 1 ? {
                     eventCount: 5,
+                    availability: { context: "available", tokenUsage: "available" },
                     stopReason: "end_turn",
                     context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
                     tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
@@ -145,6 +146,7 @@ describe("agent node execution", () => {
                   outputProcessing: { recovery: "direct", conformance: "rejected", projectionChanged: true },
                   summary: {
                     eventCount: 5,
+                    availability: { context: "available", tokenUsage: "available" },
                     stopReason: "end_turn",
                     context: { used: 120, size: 240, updatedAt: "2026-07-01T00:00:00.000Z" },
                     tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
@@ -185,6 +187,7 @@ describe("agent node execution", () => {
               response: "{\"attempt\":1,\"extra\":\"drop\"}",
               summary: {
                 eventCount: 5,
+                availability: { context: "available", tokenUsage: "available" },
                 context: { used: 120, size: 240 },
                 tokenUsage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
                 tools: {
@@ -368,6 +371,7 @@ describe("agent node execution", () => {
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: {
                     eventCount: 3,
+                    availability: { context: "available", tokenUsage: "available" },
                     context: { used: 90, size: 200, updatedAt: "2026-07-01T00:00:00.000Z" },
                     tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
                     tools: {
@@ -461,6 +465,7 @@ describe("agent node execution", () => {
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: {
                     eventCount: 1,
+                    availability: { context: "unavailable" as const, tokenUsage: "unavailable" as const },
                     tools: { totalToolCallCount: 0, calls: [] },
                   },
                 };
@@ -484,6 +489,7 @@ describe("agent node execution", () => {
                   responseText: "three",
                   summary: {
                     eventCount: 2,
+                    availability: { context: "unavailable", tokenUsage: "unavailable" },
                     tools: { totalToolCallCount: 1, calls: [{
                       toolCallId: "tool-1",
                       status: "running",
@@ -548,6 +554,7 @@ describe("agent node execution", () => {
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: {
                     eventCount: 1,
+                    availability: { context: "unavailable", tokenUsage: "unavailable" },
                     tools: { totalToolCallCount: 0, calls: [] },
                   },
                 });

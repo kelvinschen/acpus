@@ -18,8 +18,10 @@ import type {
   RunInspectionItem,
   RunInspectionPatch,
   RunInspectionRaw,
+  RunInspectionRunSummary,
   RunDynamicSignalWait,
   RunDetails,
+  RunForkInfo,
   RunRecord,
   RunStatus,
   RunWorkflowLockArtifact,
@@ -83,6 +85,8 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
+  expectTypeOf<RunDetails["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
+  expectTypeOf<RunForkInfo>().toEqualTypeOf<{ sourceRunId: string; target?: string; unsafeReuse?: true }>();
   expectTypeOf<DaemonStatus>().toMatchTypeOf<{ status: "ok"; pid: number; generation: number; protocolVersion: number; packageVersion: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{ requestId: string; type: "pause" | "resume"; runId: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{ requestId: string; type: "retry" | "cancel"; runId: string; target?: string }>();
@@ -129,9 +133,12 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   }>();
   expectTypeOf<AgentInspectionState>().toMatchTypeOf<{
     key: string;
+    availability: { context: "available" | "unavailable"; tokenUsage: "available" | "partial" | "unavailable" };
     backend?: { kind: "use"; name: string } | { kind: "command" };
     tools?: { totalCallCount: number; recent: Array<{ command: string; status?: string }> };
   }>();
+  expectTypeOf<RunInspectionRunSummary["agentUsage"]>().toEqualTypeOf<{ instances: number; attempts: number; turns: number } | undefined>();
+  expectTypeOf<RunInspectionRunSummary["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
   expectTypeOf<RunInspectionPatch>().toMatchTypeOf<{
     upsertItems: RunInspectionItem[];
     removeItemKeys: string[];

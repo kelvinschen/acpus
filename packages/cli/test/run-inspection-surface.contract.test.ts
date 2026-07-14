@@ -3,6 +3,73 @@ import type { RunInspectionSnapshot, RunInspectionTargetDocument } from "@acpus/
 import { applyRunInspectionUpdate, formatRunInspectionChanges, formatRunInspectionCheckpoint, formatRunInspectionDocument, formatTerminalOutput } from "../src/run-inspection-surface.js";
 
 describe("compact run inspection surface", () => {
+  it("renders direct fork lineage and aggregate Agent usage in the run header", () => {
+    const document = snapshot();
+    document.run.fork = { sourceRunId: "run_source", target: "review~abc", unsafeReuse: true };
+    document.run.agentUsage = { instances: 3, attempts: 4, turns: 9 };
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("Fork: source=run_source  target=review~abc  unsafe-reuse");
+    expect(output).toContain("Agent usage: instances=3  attempts=4  turns=9");
+  });
+
+  it("renders a static multi-instance target only as an aggregate plus discoverable instances", () => {
+    const base = snapshot();
+    const document: RunInspectionTargetDocument = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: base.cursor,
+      run: base.run,
+      target: { kind: "static-node", id: "review" },
+      summary: {
+        targetKind: "static-node",
+        targetId: "review",
+        runStatus: "running",
+        runStartedAt: base.run.createdAt,
+        nodeId: "review",
+        nodeStatus: "mixed",
+        counts: { total: 2, running: 1, failed: 1 },
+        artifacts: [],
+      },
+      items: [{ ...base.items[2]!, status: "running" }, { ...base.items[2]!, key: "review~def", nodeKey: "review~def", status: "failed" }],
+      instances: [
+        { nodeKey: "review~abc", nodeId: "review", parentFrameKey: "frame~a", status: "running", createdAt: base.run.createdAt, updatedAt: base.run.updatedAt },
+        { nodeKey: "review~def", nodeId: "review", parentFrameKey: "frame~b", status: "failed", createdAt: base.run.createdAt, updatedAt: base.run.updatedAt },
+      ],
+      frames: [],
+      attempts: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [],
+    };
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("Target review  [static-node]  mixed");
+    expect(output).toContain("Aggregate: total=2  running=1  failed=1");
+    expect(output).toContain("review~abc  running");
+    expect(output).toContain("review~def  failed");
+    expect(output).not.toContain("Agent: observer");
+  });
+
+  it("does not add compact text for explicitly unavailable Agent telemetry", () => {
+    const document = snapshot();
+    document.items[2]!.agent = {
+      key: "observer",
+      backend: { kind: "use", name: "claude" },
+      availability: { context: "unavailable", tokenUsage: "unavailable" },
+    };
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("Agent: observer");
+    expect(output).not.toContain("unavailable");
+    expect(output).not.toContain("Context:");
+    expect(output).not.toContain("Tokens:");
+  });
+
   it("renders normalized nested structure, folded counts, agent status, and full terminal output", () => {
     const document = snapshot();
     const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
@@ -353,6 +420,7 @@ function snapshot(): RunInspectionSnapshot {
       agent: {
         key: "observer",
         backend: { kind: "use", name: "claude" },
+        availability: { context: "available", tokenUsage: "available" },
         model: "codex",
         turnCount: 2,
         context: { used: 12_500, size: 200_000 },

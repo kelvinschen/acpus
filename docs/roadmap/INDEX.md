@@ -16,6 +16,9 @@ behavior.
 
 ## Active
 
+- [Skill Evolution Workflow Optimization](skill-evolution-workflow-optimization.md) —
+  workflow-local correctness, evidence, gating, and reporting improvements
+  found during an Acpus Skill study.
 - [Post-evaluation Optimization Backlog](after_eval_optimization.md) — active
   runtime, CLI, authoring, and skill follow-ups found after agent evaluation.
 
