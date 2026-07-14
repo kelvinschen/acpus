@@ -2,7 +2,7 @@
 name: acpus
 description: Author, validate, run, inspect, recover, and explain Acpus TypeScript workflows and durable runs. Use for workflow modules, Agent/Task/Signal nodes, WorkflowIR, catalogs, hooks.json, runtime controls, task.define, acpus/core, acpus/expression, acpus/tasks/git, and retry/fork/signal/pause/resume/cancel operations.
 metadata:
-  acpus-version: 0.6.0-alpha.5
+  acpus-version: 0.6.0-alpha.6
 ---
 
 # Acpus

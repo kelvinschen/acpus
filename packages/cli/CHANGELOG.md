@@ -1,5 +1,78 @@
 # acpus
 
+## 0.6.0-alpha.6
+
+### Minor Changes
+
+- e3a75f4: Model every executable scope as one arbitrary WorkflowData output expression in
+  IR v5, preserve composite aggregation envelopes, and expose syntax-derived
+  output shape across runtime, CLI, and Web inspection.
+- c1f09ae: Add strict scalar comparison, numeric comparison, and boolean predicate helpers over the existing expression callback primitives.
+- c162856: Expose honest Agent telemetry availability, direct fork lineage, compact run-level Agent usage, aggregate repeated targets, and rate-limited non-TTY follow omissions for long-running workflow operation.
+- 7f3f186: Unify run inspection behind a compact runtime projection with structural text views, target and raw modes, durable follow updates, shared CLI/Web semantics, live Agent telemetry summaries, and lossless structured acpx failure causes.
+- 958779b: Flatten Agent, Task, and Signal workflow authoring specs by moving execution
+  fields out of the author-facing `run` wrapper. Keep the frozen WorkflowIR
+  `node.run` envelopes unchanged while updating task source analysis, bundled
+  examples, and authoring guidance to the single flat syntax.
+- 85b3b7d: Make the running CLI's resolved authoring packages the single declaration
+  authority, expose their absolute paths through Doctor, version bundled and
+  installed Acpus skills with the CLI, and verify the complete packed-install
+  authoring environment.
+- d6dbf96: Remove the workflow init commands and bundled starter. Author workflows directly from the closest bundled example, where import comments expose every public runtime authoring helper, then validate with `acpus workflow check`.
+- 3df9b55: Allow optional runtime expressions to configure Parallel and Fanout concurrency,
+  and treat missing or zero limits as no authored local cap while keeping quorum
+  counts and invalid concurrency values strict.
+- 684b2d0: Allow `--input` to read strict JSON from `.json` file paths for workflow check, run, and fork commands.
+- d92f9f9: Require named durable workflow and composite outputs, reject NodeRef handles and
+  explicit any authoring, preserve existing composite result envelopes, and leave
+  type-expressible output failures to native TypeScript diagnostics.
+
+### Patch Changes
+
+- 61bbf86: Make authoring diagnostics source-ordered, single-owned, and repair-oriented;
+  recognize Acpus types by official declaration provenance; enrich high-confidence
+  TypeScript errors; render concise CLI locations; and emit node-id validation once.
+- bf959b0: Give Expr authoring failures context-specific repair hints, avoid duplicate
+  dynamic Task id diagnostics, distinguish runtime `undefined` from serialized
+  closure captures, and document static loop and fanout step identity.
+- aae74a6: Exclude TypeScript build caches from published tarballs and remove package file
+  declarations for README and LICENSE documents that do not exist.
+- c5b897b: Move the workspace build to incremental TypeScript 7 project references,
+  upgrade the web bundle to Vite 8, and run workflow checks through the pinned
+  TypeScript 7 native analysis API.
+- c14e800: Unify expression callbacks behind overloaded `lift`, replacing the separate `fmap`, `lift2`, and `lift3` helpers and their IR operators.
+- Updated dependencies [e3a75f4]
+- Updated dependencies [61bbf86]
+- Updated dependencies [bf959b0]
+- Updated dependencies [c1f09ae]
+- Updated dependencies [aae74a6]
+- Updated dependencies [c162856]
+- Updated dependencies [7f3f186]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [958779b]
+- Updated dependencies [85b3b7d]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [c5b897b]
+- Updated dependencies [aae74a6]
+- Updated dependencies [3df9b55]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [d92f9f9]
+- Updated dependencies [c14e800]
+- Updated dependencies [aae74a6]
+  - @acpus/expression@0.1.0-alpha.5
+  - @acpus/core@0.7.0-alpha.5
+  - @acpus/runtime@0.9.0-alpha.5
+  - @acpus/workflow-compiler@0.1.0-alpha.5
+  - @acpus/web@0.1.0-alpha.6
+  - @acpus/loader@0.1.0-alpha.5
+  - @acpus/tasks@0.1.0-alpha.5
+
 ## 0.6.0-alpha.5
 
 ### Patch Changes

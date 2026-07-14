@@ -1,6 +1,6 @@
 {
   "name": "@acpus/tasks",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "type": "module",
   "description": "Reusable Acpus task package.",
   "license": "MIT",
