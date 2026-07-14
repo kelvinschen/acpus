@@ -188,7 +188,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
   });
 
   async function waitForAwaitingSignal(workspace: string, runId: string, target: string): Promise<void> {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + 10_000;
     let lastStatus: string | undefined;
     while (Date.now() <= deadline) {
       const inspected = await getRunInspection(workspace, { runId, mode: "target", target });

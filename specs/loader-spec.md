@@ -35,6 +35,7 @@
 - The synchronous `module.registerHooks` hook MUST be optional and MUST NOT raise on Node versions that do not provide it.
 - `importAuthoringModule(specifier, { parentURL })` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the referrer.
 - Relative `.js` source-level specifiers MUST continue to load matching TypeScript source files through the authoring loader.
+- TypeScript authoring modules MUST load when their workspace has no nearest `package.json` or its package type is CommonJS.
 - Bare package specifiers SHOULD use ESM import resolution semantics, including package `import` export conditions. CommonJS-transformed paths MAY use the registered CommonJS fallback.
 - When normal package resolution fails for a package export whose normal import/default target is missing, the loader MUST attempt the package `development` export target for that subpath.
 - The loader MUST NOT use the `development` export fallback to mask errors thrown while an existing normal import/default target is evaluating.

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { createRequire, register } from "node:module";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { register as registerTsx, tsImport } from "tsx/esm/api";
 
@@ -179,10 +179,31 @@ export async function resolve(specifier, context, nextResolve) {
 }
 
 async function importDefaultTarget(specifier: string, parentURL: string): Promise<Record<string, unknown>> {
+  const commonJsPath = await commonJsAuthoringPath(specifier, parentURL);
+  if (commonJsPath) return normalizeModule(createRequire(parentURL)(commonJsPath) as Record<string, unknown>);
   const mod = isBareSpecifier(specifier)
     ? await tsImport(specifier, { parentURL }) as Record<string, unknown>
     : await import(moduleURL(specifier, parentURL)) as Record<string, unknown>;
   return normalizeModule(mod);
+}
+
+async function commonJsAuthoringPath(specifier: string, parentURL: string): Promise<string | undefined> {
+  if (isBareSpecifier(specifier) || specifier.startsWith("data:") || specifier.startsWith("node:")) return undefined;
+  const url = moduleURL(specifier, parentURL);
+  if (!url.startsWith("file:")) return undefined;
+  let path = fileURLToPath(url);
+  const extension = extname(path);
+  if (extension === ".mjs" || extension === ".mts") return undefined;
+  if (extension === ".cjs" || extension === ".cts") return path;
+  if (!/\.[jt]sx?$/.test(extension)) return undefined;
+  if (extension === ".js" && !await exists(path)) {
+    const sourcePath = `${path.slice(0, -extension.length)}.ts`;
+    if (await exists(sourcePath)) path = sourcePath;
+  }
+  const packageJson = await findNearestPackageJson(dirname(path));
+  if (!packageJson) return path;
+  const pkg = JSON.parse(await readFile(packageJson, "utf8")) as { type?: unknown };
+  return pkg.type === "module" ? undefined : path;
 }
 
 function moduleURL(specifier: string, parentURL: string): string {
@@ -236,6 +257,17 @@ async function findPackageJson(name: string, fromDir: string): Promise<string | 
       if (parent === current) return undefined;
       current = parent;
     }
+  }
+}
+
+async function findNearestPackageJson(fromDir: string): Promise<string | undefined> {
+  let current = resolve(fromDir);
+  while (true) {
+    const candidate = resolve(current, "package.json");
+    if (await exists(candidate)) return candidate;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
   }
 }
 

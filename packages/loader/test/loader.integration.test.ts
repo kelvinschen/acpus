@@ -180,7 +180,7 @@ try {
     }
   });
 
-  it("registers TypeScript loading from the built package without ambient tsx", async () => {
+  it("loads TypeScript from the built package without ambient tsx or a module package boundary", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-no-ambient-"));
     const buildDir = await mkdtemp(join(packageRoot, ".test-loader-dist-"));
     try {
@@ -193,7 +193,6 @@ try {
         buildDir,
       ], { cwd: repoRoot });
       const workflow = join(cwd, "index.workflow.ts");
-      await writeFile(join(cwd, "package.json"), JSON.stringify({ type: "module" }));
       await writeFile(workflow, "");
       await mkdir(join(cwd, "tasks"));
       await writeFile(join(cwd, "tasks", "normalize.task.ts"), `import { task, z } from "acpus/core";

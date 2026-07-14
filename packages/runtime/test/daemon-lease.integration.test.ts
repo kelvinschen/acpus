@@ -10,7 +10,6 @@ import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWo
 
 let dir: string;
 let store: RuntimeStore;
-const ACTIVE_TASK_FALLBACK_MS = 250;
 
 type StoreWithDb = RuntimeStore & {
   db: {
@@ -127,7 +126,7 @@ describe("daemon lease", () => {
     });
     try {
       const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
-      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "started");
 
       await expect(requestDaemonControl(dir, { requestId: "test-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
@@ -145,13 +144,14 @@ describe("daemon lease", () => {
   it("aborts only the targeted active Task while a parallel sibling completes", async () => {
     const leftMarker = join(dir, "targeted-parallel-left.marker");
     const rightMarker = join(dir, "targeted-parallel-right.marker");
+    const rightRelease = join(dir, "targeted-parallel-right.release");
     const prepared = await prepareSyntheticWorkflow(dir, targetedParallelTaskWorkflow());
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 10,
       packageVersion: "0.0.0-test",
     });
     try {
-      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { leftMarker, rightMarker } });
+      const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { leftMarker, rightMarker, rightRelease } });
       await waitUntil(async () =>
         await readFile(leftMarker, "utf8").catch(() => undefined) === "started"
         && await readFile(rightMarker, "utf8").catch(() => undefined) === "started");
@@ -165,11 +165,12 @@ describe("daemon lease", () => {
         runId: admitted.id,
         target: left.node_key,
       })).resolves.toMatchObject({ type: "cancel", state: "applied", target: left.node_key, run: { id: admitted.id, status: "running" } });
+      await writeFile(rightRelease, "release");
       await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
         status: "completed",
         run: { status: "completed", output: { winner: "right", value: "right" } },
       });
-      await expect(readFile(leftMarker, "utf8")).resolves.toBe("aborted");
+      await waitUntil(async () => await readFile(leftMarker, "utf8").catch(() => undefined) === "aborted");
       await expect(readFile(rightMarker, "utf8")).resolves.toBe("completed");
       expect(runtimeRows(dir, "SELECT node_id, status, cancel_reason FROM node_attempts WHERE run_id = ? ORDER BY node_id", admitted.id)).toEqual([
         { node_id: "left_task", status: "cancelled", cancel_reason: "operator_cancelled" },
@@ -385,7 +386,7 @@ describe("daemon lease", () => {
     });
     try {
       const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
-      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "started");
       await expect(requestDaemonShutdown(dir)).rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
       await expect(requestDaemonControl(dir, { requestId: "test-shutdown-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
@@ -406,7 +407,7 @@ describe("daemon lease", () => {
     });
     try {
       const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
-      await waitUntil(() => runtimeRows(dir, "SELECT status FROM node_attempts WHERE run_id = ? AND status = 'started'", admitted.id).length > 0);
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "started");
 
       await loop.shutdown();
 
@@ -429,7 +430,9 @@ describe("daemon lease", () => {
     });
     try {
       const admitted = await requestDaemonAdmitRun(dir, { prepared, input: { markerPath } });
-      await new Promise(resolve => setTimeout(resolve, 50));
+      const idleCheckAt = Date.now() + 50;
+      await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "started");
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, idleCheckAt - Date.now())));
       await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });
       await expect(requestDaemonControl(dir, { requestId: "test-idle-active-cancel", type: "cancel", runId: admitted.id })).resolves.toMatchObject({
         run: { id: admitted.id, status: "canceled" },
@@ -544,24 +547,18 @@ function activeTaskWorkflow() {
     inputSchema: z.object({ markerPath: z.string().optional() }),
   }).build(({ input, step }) => {
     const task = step("slow_task").task({
-      input: { markerPath: input.markerPath, fallbackMs: ACTIVE_TASK_FALLBACK_MS },
+      input: { markerPath: input.markerPath },
       exec: async ({ input, abortSignal }) => await new Promise<{ ok: boolean }>(resolve => {
         let settled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const finish = (marker: string) => {
+        const finish = () => {
           if (settled) return;
           settled = true;
-          if (timer) clearTimeout(timer);
-          if (input.markerPath) process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, marker);
+          if (input.markerPath) process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, "aborted");
           resolve({ ok: false });
         };
-        timer = setTimeout(() => {
-          finish("fallback");
-        }, input.fallbackMs);
-        abortSignal.addEventListener("abort", () => {
-          finish("aborted");
-        }, { once: true });
-        if (abortSignal.aborted) finish("aborted");
+        abortSignal.addEventListener("abort", finish, { once: true });
+        if (abortSignal.aborted) finish();
+        else if (input.markerPath) process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, "started");
       }),
     });
     return { ok: task.output.ok };
@@ -571,20 +568,20 @@ function activeTaskWorkflow() {
 function targetedParallelTaskWorkflow() {
   return defineWorkflow({
     name: "daemon-targeted-active-cancel",
-    inputSchema: z.object({ leftMarker: z.string(), rightMarker: z.string() }),
+    inputSchema: z.object({ leftMarker: z.string(), rightMarker: z.string(), rightRelease: z.string() }),
   }).build(({ input, step }) => {
     const race = step("race").parallel({
       strategy: "race",
       branches: {
         left() {
           const task = step("left_task").task({
-            input: { markerPath: input.leftMarker, value: "left", delayMs: 5_000 }, exec: cancellableMarkerTask,
+            input: { markerPath: input.leftMarker, value: "left" }, exec: cancellableMarkerTask,
           });
           return { value: task.output.value };
         },
         right() {
           const task = step("right_task").task({
-            input: { markerPath: input.rightMarker, value: "right", delayMs: 500 }, exec: cancellableMarkerTask,
+            input: { markerPath: input.rightMarker, releasePath: input.rightRelease, value: "right" }, exec: cancellableMarkerTask,
           });
           return { value: task.output.value };
         },
@@ -594,25 +591,31 @@ function targetedParallelTaskWorkflow() {
   });
 }
 
-async function cancellableMarkerTask({ input, abortSignal }: { input: { markerPath: string; value: string; delayMs: number }; abortSignal: AbortSignal }): Promise<{ value: string }> {
-  process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, "started");
+async function cancellableMarkerTask({ input, abortSignal }: { input: { markerPath: string; value: string; releasePath?: string }; abortSignal: AbortSignal }): Promise<{ value: string }> {
   return await new Promise(resolve => {
     let settled = false;
+    let releasePoll: ReturnType<typeof setInterval> | undefined;
     const finish = (marker: string) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (releasePoll) clearInterval(releasePoll);
       process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, marker);
       resolve({ value: input.value });
     };
-    const timer = setTimeout(() => finish("completed"), input.delayMs);
+    const releasePath = input.releasePath;
+    if (releasePath) {
+      releasePoll = setInterval(() => {
+        if (process.getBuiltinModule("node:fs").existsSync(releasePath)) finish("completed");
+      }, 10);
+    }
     abortSignal.addEventListener("abort", () => finish("aborted"), { once: true });
     if (abortSignal.aborted) finish("aborted");
+    else process.getBuiltinModule("node:fs").writeFileSync(input.markerPath, "started");
   });
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
     if (await predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
