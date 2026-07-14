@@ -12,9 +12,10 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 ## Route the request
 
 - **Author or adapt:** Read `references/authoring.md` completely before editing. For new workflows, choose the closest file under `examples/workflows/` by its `Pattern` and `Nodes` header, then write the target workflow module directly.
-- **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cancellation handling, or Agent tracing configuration.
-- **Check, run, import, list, or show:** Read `references/cli-operations.md` and use `acpus <cmd> --help` for exact syntax.
-- **Inspect, query artifacts, or control a run:** Read `references/runtime-recovery.md`; inspect before retry, fork, signal, cancel, pause, resume, or delete. Use `runs artifacts` when the task needs artifact paths rather than run state.
+- **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cooperative Task cancellation, or Agent tracing configuration.
+- **Check, run, observe, or routine controls:** Read `references/cli-operations.md` for inspect, Agent overrides, signal, pause, resume, or cancel; use `acpus <cmd> --help` for exact syntax.
+- **Advanced CLI operations:** **DO NOT read `references/advanced-cli-operations.md` by default.** Read it only when the requirement needs catalogs, import, static visualization, WebUI, bundled-skill management, standalone artifact lookup, run deletion, version lookup, or structured CLI automation.
+- **Recover a run:** Read `references/runtime-recovery.md` for failed, timed-out, or stale execution, retry/fork decisions, attempt artifacts, or deep diagnostics. Inspect before recovery;
 - **Trace Agent execution:** Read `references/agent-tracing.md` for turn records, normalized traces, raw ACP diagnostics, and trace consumption.
 - **Configure hooks:** Read `references/hooks-json.md`.
 - **Choose an agent:** Read `references/acpx-agents.md` when built-in or local agent availability matters.

@@ -1,6 +1,6 @@
 # Advanced Authoring
 
-Use it only for reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, cancellation handling, or Agent tracing configuration. Ordinary Task logic belongs in inline `exec`.
+Use it only for reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, cooperative Task cancellation, or Agent tracing configuration. Ordinary Task logic belongs in inline `exec`.
 
 Contents:
 
@@ -88,13 +88,14 @@ Direct Agent-prompt interpolation of `ArtifactRef` renders its absolute local pa
 
 Each Task attempt runs in a fresh Node process. Context contains only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 
-Task `cwd` sets initial `process.cwd()`, relative filesystem access, and default `$` commands. Relative paths resolve from workflow workspace. Task `env` overlays host environment. Later commands follow `process.chdir()` and `process.env` changes.
+An authored relative Task `cwd` resolves from the workflow workspace and becomes initial `process.cwd()`; Task file access and `$` commands then resolve from that process cwd. Later commands follow `process.chdir()` and `process.env` changes. Task `env` is a string-only host-environment overlay and cannot unset inherited variables.
 
 ```ts
 const inspect = step("inspect").task({
   input: { repo: input.repoPath },
   cwd: input.repoPath,
   env: { MODE: "audit" },
+  timeout: "5m",
   execution: { defaultCommandTimeout: "2m" },
   exec: async ({ input, $, abortSignal }) => {
     abortSignal.throwIfAborted();
@@ -105,7 +106,7 @@ const inspect = step("inspect").task({
 });
 ```
 
-`$` supports tagged commands, config calls, `.allowExitCode(...)`, `.nothrow()`, `.timeout(...)`, `.json<T>()`, `.text()`, and `.lines()`. Interpolate argument arrays instead of assembling shell strings. Use `abortSignal` for cooperative cancellation in non-command async work.
+Task `timeout` aborts and terminates the whole attempt; `execution.defaultCommandTimeout` is only the default for individual `$` commands. `$` also supports per-command timeout, `.allowExitCode(...)`, `.nothrow()`, `.json<T>()`, `.text()`, and `.lines()`. Interpolate argument arrays instead of assembling shell strings. Use `abortSignal` for cooperative cancellation in non-command async work.
 
 ## Agent Tracing
 

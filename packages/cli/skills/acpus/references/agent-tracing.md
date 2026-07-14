@@ -109,7 +109,7 @@ Trace schema v1 starts with `turn_start` at sequence 0 and ends with `turn_end`.
 
 `sequence` is continuous, `observedAt` is the event-arrival UTC time, and `elapsedMs` is monotonic. The terminal trace timestamp and elapsed time exactly match the canonical turn timing.
 
-Normalized trace does not copy the prompt and excludes echoed client-to-Agent initialization, session setup, prompt, cancellation, and other control frames. It is not exact wire data; use raw ACP debug when protocol-level frames are required. Raw ACP capture is controlled independently by `ACPUS_AGENT_RAW_ACP_DEBUG=1` at daemon startup.
+Normalized trace does not copy the prompt and excludes echoed client-to-Agent initialization, session setup, prompt, cancellation, and other control frames. Raw ACP debug, enabled independently by `ACPUS_AGENT_RAW_ACP_DEBUG=1` at daemon startup, preserves only exact stdout from the acpx prompt invocation; setup, mode, and cancel command streams are not captured.
 
 ## Build A Consumer
 

@@ -57,13 +57,15 @@ Each hook entry must contain a non-empty `command`. It may contain `id`, `timeou
 
 ## Runtime behavior
 
-- Hook commands receive JSON context on stdin, not workflow state through environment variables.
+- Hook config is loaded once at daemon startup. Editing or validating files does not activate changes; they take effect on the next daemon start.
+- Hook commands start asynchronously with no ordering guarantee. Terminal run state may be visible before its hook journal entry; shutdown waits for active hooks.
+- Commands receive JSON on stdin with `event`, `eventSequence`, `run`, and optional `node`, `output`, `error`, `cancellation`, or `signal`. `run` includes id, workflow name/path, workspace, and status; `node` includes id/key/kind/status plus event-specific result/input/prompt. Agent prompts, Task inputs, and outputs may be sensitive.
 - Hooks trigger only for newly committed `run_events` rows, not from inspect commands, projection rebuilds, read APIs, or idempotent duplicate controls that commit no new row.
 - Hook failure, timeout, output, or journal failure must not change workflow status, output, IR, runtime scope, or public run event payloads.
 - Invalid hook configuration fails daemon startup with an invalid hooks config error instead of silently disabling hooks.
 - Default hook timeout is 30 seconds.
 - Hook journal rows are terminal only: `completed`, `failed`, or `timed_out`.
-- `runs inspect` shows hook history only for terminal runs and omits the `Hooks:` section when no hook history exists.
+- `runs inspect` shows available hook history only for terminal runs and omits the `Hooks:` section when no history exists.
 
 ## CLI
 

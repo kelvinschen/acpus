@@ -66,4 +66,4 @@ If the agent appears in that command list, or is configured under `~/.acpx/confi
 
 ## Claude User Settings
 
-Upstream `acpx claude` isolates Claude user settings by default. Setting `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` lets the spawned Claude session load user settings when those settings are needed and do not conflict with ACP-spawned sessions.
+Acpus sets `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` for `claude`, so user settings load by default. Set the Agent `env` value to `"0"` to retain upstream isolation when user explicitly asked.

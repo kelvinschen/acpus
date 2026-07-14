@@ -8,24 +8,16 @@
    acpus runs inspect <run-id>
    ```
 
-   Keep the view attached while the run is changing:
-
-   ```sh
-   acpus runs inspect <run-id> --follow
-   ```
-
 2. Identify:
    - durable run status and derived execution state
-   - failed, timed-out, canceled, paused, or awaiting node/frame
-   - dynamic `nodeKey` or `frameKey` when targeting a control
-   - rendered signal prompt and expected payload, if awaiting
+   - failed, timed-out, canceled, or stale node/frame
+   - dynamic `nodeKey` or `frameKey` when targeting recovery
    - agent attempt metadata and artifact refs, if available
    - whether the workflow source changed after admission
 
 3. Choose the smallest safe action.
 
-Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when the compact tree identifies the relevant execution. Use `--all` only when every repeated fanout or loop context is needed. These views stay normalized and status-first; 
-`--raw --json` is the explicit unbounded diagnostic fallback.
+Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when recovery needs one execution. Use focused target JSON only after text inspection; `--raw --json` is the unbounded last resort. `runs artifacts` lists registry paths without reading bodies.
 
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Compact text shows the actionable upstream detail and bounded acpx code;
 use target JSON for the complete parsed JSON-RPC error data. Do not infer an authentication, model, or quota category from provider error wording.
@@ -38,7 +30,7 @@ use target JSON for the complete parsed JSON-RPC error data. Do not infer an aut
 | TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Edit workflow TypeScript, then run `workflow check` again. |
 | module import failed, default export invalid, build callback throws | `compile` | Fix module exports/imports or build-time code. |
 | unknown IR fields, malformed task target, invalid schema/expression IR | `validate` | Fix authoring shape or Acpus package mismatch. |
-| task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry/fork/signal depending on cause. |
+| task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |
 | control target not found, run terminal, conflict | `control` | Re-inspect and target the dynamic nodeKey/frameKey or static alias that currently exists. |
 
 ## Retry vs fork
@@ -82,43 +74,9 @@ Fork creates a new run from frozen source data and may freeze replacement prepar
 
 Use `--unsafe-reuse` when the user clearly wants to reuse earlier completed nodes and accepts the side effects of doing so. Typical cases include a failed node inside one loop iteration where rerunning the whole loop is undesirable, or a fork that changes agent definitions mid-run while keeping already-completed prerequisites.
 
-`--unsafe-reuse` relaxes compatibility checks; it does not make a source target valid in a replacement graph. If control reports `not materialized in the replacement workflow` or `resolved to 0 dynamic replacement instances`, first retry without `--target`. If an explicit target is essential, inspect the replacement workflow's authored/static identity and choose its unambiguous recovery point rather than copying the source dynamic key.
+`--unsafe-reuse` relaxes compatibility checks; it does not make a source target valid in a replacement graph. If control reports `not materialized in the replacement workflow` or `resolved to 0 dynamic replacement instances`, reissue the fork without `--target`. If an explicit target is essential, inspect the replacement workflow's authored/static identity and choose its unambiguous recovery point rather than copying the source dynamic key.
 
-## Signal
-
-Compact inspection gives a copyable command; target inspection exposes the complete persisted prompt and schema. General form:
-
-```sh
-acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json-or-string>'
-```
-
-Rules:
-
-- Schema-backed signals expect JSON that validates against the signal output schema.
-- Schema-less signals receive raw string payloads.
-- Static signal aliases are accepted only when they resolve to exactly one open signal wait.
-- A dynamic `nodeKey` target is safest when fanout/loop instances create multiple waits.
-- Invalid schema-backed payloads are rejected without consuming the wait. The control may surface as `RUN_NOT_CONTROLLABLE` with a schema path message; re-inspect and send a corrected payload to the same awaiting dynamic target.
-- Successful signal control means the payload was validated and consumed, not
-  that downstream work is terminal. The receipt shows the requested target,
-  resolved dynamic node key, and schema summary or raw-string validation; use
-  its follow command until the run reaches terminal state.
-- A timed-out Signal wait is closed. Inspection shows its persisted deadline
-  and timeout failure, then offers targeted retry and run fork commands. Do not
-  send another signal to the closed wait.
-
-## Pause, resume, and cancel
-
-```sh
-acpus runs pause <run-id>
-acpus runs resume <run-id>
-acpus runs cancel <run-id>
-acpus runs cancel <run-id> --target <nodeKey-or-frameKey-or-static-alias>
-```
-
-Pause records a durable pause gate and best-effort aborts active attempts so eligible work can resume later. Resume clears that gate and re-drives runnable work. Cancel terminalizes the run or the selected scheduler subtree.
-
-Ask before canceling unless the user already clearly requested cancellation.
+A timed-out Signal wait is closed; inspection preserves its deadline and timeout failure. Use its dynamic target for retry, or fork when the workflow/input/Agent mapping must change; do not signal the closed wait again.
 
 ## Stale non-terminal execution
 

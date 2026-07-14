@@ -2,16 +2,6 @@
 
 ## Start
 
-Choose the closest `examples/workflows/` file by node coverage or pattern:
-
-| Example | Nodes | Pattern |
-| --- | --- | --- |
-| [`adversarial-review`](../examples/workflows/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
-| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, iteratively refine, optionally approve, and enforce a change plan. |
-| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Fan out issue triage, run branch work in parallel, and route by switch, with reusable task |
-| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel agent perspectives in a bounded synthesis loop. |
-| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Create parallel worktree implementations and have an agent judge them. |
-
 Write the workflow, then check it:
 
 ```sh
@@ -122,7 +112,7 @@ Use native Zod 4 through `z` from `acpus/core`. Keep workflow input, Agent/Signa
 
 ### Leaves
 
-Use `{ use: "<agent>" }` for configured agents. Read `acpx-agents.md` before using raw `{ command: "..." }` or choosing models. Omit `outputSchema` when natural-language text is enough. Omit `sessionKey` unless a multi-turn loop must reuse one agent session.
+Use `{ use: "<agent>" }` for configured agents. Read `acpx-agents.md` before using raw `{ command: "..." }` or choosing models. Omit `outputSchema` when natural-language text is enough. Omit `sessionKey` unless a multi-turn loop must reuse one agent session. Agent and Task `timeout` bound the whole node attempt.
 
 ```ts
 const review = step("review").agent({
@@ -181,13 +171,27 @@ const retry = step("retry").loop({
 
 Callbacks declare one static subgraph. Reuse inner static step IDs across loop rounds and fanout items.
 
-Default `parallel` returns the branch record.  Race returns `{ winner, result }`. Fanout returns an array; quorum returns accepted items.
+Default `parallel` returns the branch record. Race returns `{ winner, result }` for the first successful branch, cancels the rest, and fails if none succeeds. Fanout returns input-order results; quorum returns the first `count` successful completions in completion order, cancels the rest, and fails when quorum becomes impossible.
+
+`parallel` and `fanout` accept `maxConcurrency`; its runtime value must be a positive integer.
 
 Loop is do-while and returns final state (access with `output`). Loop `index` starts at 0; `round` starts at 1. Give empty state arrays an explicit element type.
 
 Heterogeneous if/switch/race outputs remain unions. Project common fields directly; 
 
 use `lift` to narrow before branch-specific access.
+
+## Choose An Example
+
+After understanding the authoring rules above, choose the closest `examples/workflows/` file by node coverage or pattern:
+
+| Example | Nodes | Pattern |
+| --- | --- | --- |
+| [`adversarial-review`](../examples/workflows/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
+| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, iteratively refine, optionally approve, and enforce a change plan. |
+| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Fan out issue triage, run branch work in parallel, and route by switch, with reusable task |
+| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel agent perspectives in a bounded synthesis loop. |
+| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Create parallel worktree implementations and have an agent judge them. |
 
 ## Check And Lookup
 
