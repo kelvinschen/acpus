@@ -1,17 +1,18 @@
 import { readFile } from "node:fs/promises";
-import * as core from "acpus/core";
-import * as expression from "acpus/expression";
-import * as gitTasks from "acpus/tasks/git";
 import { describe, expect, it } from "vitest";
-import { skillWorkflowExamples, skillWorkflowPath, workflowNodeKinds } from "./support/skill-workflow-examples.js";
+import { skillFilePath, skillReferencePath, skillWorkflowExamples, skillWorkflowPath, workflowNodeKinds } from "./support/skill-workflow-examples.js";
 
-const authoringFacades = {
-  "acpus/core": core,
-  "acpus/expression": expression,
-  "acpus/tasks/git": gitTasks,
-} as const;
+const defaultRouteByteBudget = 12_367;
 
 describe("skill workflow source contracts", () => {
+  it("keeps the default authoring route within its fixed context budget", async () => {
+    const sources = await Promise.all([
+      readFile(skillFilePath("SKILL.md"), "utf8"),
+      readFile(skillReferencePath("authoring"), "utf8"),
+    ]);
+    expect(sources.reduce((bytes, source) => bytes + Buffer.byteLength(source), 0)).toBeLessThanOrEqual(defaultRouteByteBudget);
+  });
+
   it("labels all checked scenario examples and covers every workflow node kind", async () => {
     const covered = new Set<string>();
 
@@ -25,25 +26,20 @@ describe("skill workflow source contracts", () => {
     expect([...covered].sort()).toEqual([...workflowNodeKinds].sort());
   });
 
-  it("makes every runtime authoring helper discoverable from each example", async () => {
+  it("routes each example from exactly one disclosure layer", async () => {
+    const references = await Promise.all(
+      ["authoring", "advanced-authoring", "signal-authoring"].map(async name => ({
+        name,
+        source: await readFile(skillReferencePath(name), "utf8"),
+      })),
+    );
     for (const example of skillWorkflowExamples) {
-      const source = await readFile(skillWorkflowPath(example.directory), "utf8");
-      for (const [specifier, facade] of Object.entries(authoringFacades)) {
-        expect(discoverableHelpers(source, specifier), `${example.name}: ${specifier}`).toEqual(Object.keys(facade).sort());
-      }
+      const link = `../examples/workflows/${example.directory}/workflow.ts`;
+      const routes = references.filter(reference => reference.source.includes(link)).map(reference => reference.name);
+      expect(routes, example.name).toEqual([example.reference]);
     }
   });
+
 });
 
-function discoverableHelpers(source: string, specifier: string): string[] {
-  const imports = source.matchAll(/^(?:\/\/ )?import\s+\{([^}]*)\}\s+from\s+"([^"]+)";$/gm);
-  const names = [...imports].find(match => match[2] === specifier)?.[1];
-  if (!names) return [];
-  return names
-    .replaceAll("/*", "")
-    .replaceAll("*/", "")
-    .split(",")
-    .map(name => name.trim())
-    .filter(Boolean)
-    .sort();
-}
+

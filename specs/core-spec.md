@@ -150,7 +150,9 @@
 - `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout body and nested descendants.
 - `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
 - Agent, Task, and Signal `timeout`, Task `execution.defaultCommandTimeout`, Parallel/Fanout `maxConcurrency`, Fanout quorum `count`, prompts, session keys, assert/signal messages, conditions, fanout `over`, loop state, task input/cwd/env, and other runtime values MUST be stored as `ExprIR`.
-- Literal duration expressions MUST contain strings matching `^\d+(ms|s|m|h)?$`; omitted units MUST mean milliseconds and zero MUST be accepted.
+- `tryParseDurationMs(value)` syntax MUST match exactly `^\d+(ms|s|m|h|d)?$`; syntactically valid values remain subject to the range rule below.
+- Literal duration expressions MUST use the shared `tryParseDurationMs` grammar.
+- Duration units `ms`, `s`, `m`, `h`, and `d` MUST resolve to `1`, `1_000`, `60_000`, `3_600_000`, and `86_400_000` milliseconds respectively; omitted units MUST mean milliseconds and zero MUST be accepted.
 - `DurationParseError` MUST be `{ type: "invalid-duration-syntax"; value: string } | { type: "duration-out-of-range"; value: string }`; both variants MUST preserve the original input in `value`.
 - `tryParseDurationMs(value)` MUST return the resolved integer milliseconds in a `Result`; invalid syntax MUST return `invalid-duration-syntax`, and any non-finite or non-safe-integer resolved value MUST return `duration-out-of-range`.
 - Literal quorum counts MUST be positive integers. Literal concurrency limits MUST be positive integers or zero, where zero means no authored local concurrency cap.

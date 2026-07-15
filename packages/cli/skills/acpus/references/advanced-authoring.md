@@ -12,7 +12,7 @@ Contents:
 
 ## Choose Task Form
 
-**Inline Task first.** Define reusable Task only when logic is shared across authoring sites/workflows or must import a third-party package. Fanout/loop runtime instances do not count as authoring reuse.
+**Inline Task first.** Upgrade at the second authored call site or when the implementation requires module/third-party imports. Fanout/loop runtime instances do not count as authoring reuse.
 
 Inline Tasks may dynamically import Node built-ins inside `exec`:
 
@@ -36,9 +36,16 @@ Export `task.define` from a loadable module, then bind graph values at the call 
 // tasks/normalize-name.ts
 import { task, z } from "acpus/core";
 
+const NormalizeInput = z.object({ name: z.string() });
+type NormalizeInput = z.infer<typeof NormalizeInput>;
+type NormalizeResult = { slug: string };
+
 export const normalizeName = task.define({
-  inputSchema: z.object({ name: z.string() }),
-  exec: async ({ input }) => ({ slug: input.name.toLowerCase() }),
+  inputSchema: NormalizeInput,
+  exec: async ({ input }): Promise<NormalizeResult> => {
+    const value: NormalizeInput = input;
+    return { slug: value.name.toLowerCase() };
+  },
 });
 
 // workflow.ts
@@ -50,7 +57,7 @@ const normalized = step("normalize").task({
 });
 ```
 
-`inputSchema` is a TypeScript input witness, not runtime parsing/defaulting. Output is inferred from `exec`; never add `outputSchema`. Third-party imports must be installed with the workflow package. Each attempt loads the live module in a fresh Node process.
+`inputSchema` is a TypeScript input witness, not runtime parsing/defaulting. `z.infer` keeps schema and input annotations aligned. For reusable Tasks, an explicit `Promise<Result>` return and typed local values prevent output inference from drifting across branches; output remains inferred from `exec`, so never add `outputSchema`. Third-party imports must be installed with the workflow package. Each attempt loads the live module in a fresh Node process.
 
 Use an existing reusable Task when the requirement needs its capability:
 
@@ -62,6 +69,8 @@ const worktree = step("create_worktree").task({
   input: { repo: input.repoPath, path: input.worktreePath },
 });
 ```
+
+For a checked reusable Task with a stable result type and artifact output, use [`reusable-task-artifact`](../examples/workflows/reusable-task-artifact/workflow.ts).
 
 ## Artifacts
 

@@ -11,7 +11,7 @@ import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "
 import { collectWorkflowAuthoringCandidates } from "./authoring-rules/index.js";
 import type { DiagnosticCandidate, DiagnosticOrigin } from "./diagnostics.js";
 import { officialAuthoringRoots } from "./official-types.js";
-import { enrichTypeScriptDiagnostic } from "./typescript-enrichment.js";
+import { enrichTypeScriptDiagnostic, suppressCausalMissingLiftDiagnostics } from "./typescript-enrichment.js";
 
 export type TypeScriptCheck = {
   diagnostics: DiagnosticIR[];
@@ -47,7 +47,7 @@ export async function checkTypeScript(
     append("program", program.getProgramDiagnostics());
     append("global", program.getGlobalDiagnostics());
     append("syntactic", program.getSyntacticDiagnostics());
-    append("semantic", program.getSemanticDiagnostics());
+    append("semantic", suppressCausalMissingLiftDiagnostics(program.getSemanticDiagnostics(), program));
     const semantic = { checker: project.checker, project, roots };
     const taskAnalysis = analyzeWorkflowTasksFromSourceFile(entry, sourceFile, semantic);
     for (const candidate of collectWorkflowAuthoringCandidates({ project, sourceFile, taskAnalysis, roots })) {

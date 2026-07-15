@@ -22,12 +22,33 @@ export function isOfficialExpr(checker: Checker, project: Project, roots: Offici
   return Boolean(type && typeHasOfficialProperty(checker, project, type, "__ir", roots.expression));
 }
 
+export function officialExprPayloadType(
+  checker: Checker,
+  project: Project,
+  roots: OfficialAuthoringRoots,
+  type: Type,
+  location: ts.Node,
+): Type | undefined {
+  const marker = officialPropertySymbol(checker, project, type, "__type", roots.expression);
+  return marker ? checker.getTypeOfSymbolAtLocation(marker, location) : undefined;
+}
+
 export function isOfficialNodeRef(checker: Checker, project: Project, roots: OfficialAuthoringRoots, node: ts.Node): boolean {
   const type = checker.getTypeAtLocation(node);
   return Boolean(type && (
     typeHasOfficialAlias(project, type, "NodeRef", roots.core)
     || typeHasOfficialProperty(checker, project, type, "output", roots.core)
   ));
+}
+
+export function isOfficialPoisonedNodeOutput(
+  checker: Checker,
+  project: Project,
+  roots: OfficialAuthoringRoots,
+  node: ts.Node,
+): boolean {
+  const type = checker.getTypeAtLocation(node);
+  return Boolean(type && typeHasOfficialComputedBrand(checker, project, type, "POISONED_OUTPUT", roots.core));
 }
 
 export function isOfficialStepFactory(checker: Checker, project: Project, roots: OfficialAuthoringRoots, node: ts.Node): boolean {
@@ -63,11 +84,38 @@ function typeHasOfficialAlias(project: Project, type: Type, name: string, root: 
 }
 
 function typeHasOfficialProperty(checker: Checker, project: Project, type: Type, property: string, root: string): boolean {
+  return Boolean(officialPropertySymbol(checker, project, type, property, root));
+}
+
+function officialPropertySymbol(checker: Checker, project: Project, type: Type, property: string, root: string): Symbol | undefined {
   if (type.isUnionType() || type.isIntersectionType()) {
-    return type.getTypes()?.some(member => typeHasOfficialProperty(checker, project, member, property, root)) ?? false;
+    for (const member of type.getTypes() ?? []) {
+      const symbol = officialPropertySymbol(checker, project, member, property, root);
+      if (symbol) return symbol;
+    }
+    return undefined;
   }
   const symbol = checker.getPropertyOfType(type, property);
-  return Boolean(symbol && symbolComesFrom(project, symbol, root));
+  return symbol && symbolComesFrom(project, symbol, root) ? symbol : undefined;
+}
+
+function typeHasOfficialComputedBrand(
+  checker: Checker,
+  project: Project,
+  type: Type,
+  brand: string,
+  root: string,
+): boolean {
+  if (type.isUnionType() || type.isIntersectionType()) {
+    return type.getTypes()?.some(member => typeHasOfficialComputedBrand(checker, project, member, brand, root)) ?? false;
+  }
+  return checker.getPropertiesOfType(type).some(symbol => symbol.declarations.some(handle => {
+    const declaration = handle.resolve(project);
+    if (!declaration || !pathIsInside(canonicalPath(declaration.getSourceFile().fileName), root)) return false;
+    if (!ts.isPropertySignatureDeclaration(declaration) && !ts.isPropertyDeclaration(declaration)) return false;
+    const name = declaration.name;
+    return ts.isComputedPropertyName(name) && ts.isIdentifier(name.expression) && name.expression.text === brand;
+  }));
 }
 
 function symbolComesFrom(project: Project, symbol: Symbol, root: string): boolean {

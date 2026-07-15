@@ -2,11 +2,8 @@
  * Pattern: Create parallel worktree implementations and have an agent judge them.
  * Nodes: agent, task, parallel
  */
-import { defineWorkflow, z, /* task */ } from "acpus/core";
-import {
-  md,
-  /* lift, eq, ne, lt, lte, gt, gte, not, and, or, template */
-} from "acpus/expression";
+import { defineWorkflow, z } from "acpus/core";
+import { md } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
 
 export default defineWorkflow({

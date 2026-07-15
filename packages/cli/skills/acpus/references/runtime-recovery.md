@@ -17,7 +17,7 @@
 
 3. Choose the smallest safe action.
 
-Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when recovery needs one execution. Use focused target JSON only after text inspection; `--raw --json` is the unbounded last resort. `runs artifacts` lists registry paths without reading bodies.
+Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when recovery needs one execution. Use focused target JSON only after text inspection; `--raw --json` is the unbounded last resort.
 
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Compact text shows the actionable upstream detail and bounded acpx code;
 use target JSON for the complete parsed JSON-RPC error data. Do not infer an authentication, model, or quota category from provider error wording.
@@ -83,16 +83,6 @@ A timed-out Signal wait is closed; inspection preserves its deadline and timeout
 `runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. Do not mutate state just because a run is stale.
 An attached `--follow` view remains read-only and continues waiting through a stale state. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
 
-## Artifact reading
-
-List registry metadata and absolute paths without loading bodies:
-
-```sh
-acpus runs artifacts <run-id>
-acpus runs artifacts <run-id> --target <target>
-```
-
-Use target inspection when artifact paths need surrounding attempt state. Do not guess at run-local paths unless inspection or `runs artifacts` exposes them.
-Typical run-local data is under `.acpus/.local/runs/<run-id>/`; durable runtime state is under `.acpus/.local/state/runtime.db`.
+For standalone artifact registry lookup, read `advanced-cli-operations.md`; use target inspection when paths need surrounding recovery state. Do not guess at run-local paths.
 
 Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.

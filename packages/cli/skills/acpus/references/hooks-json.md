@@ -63,7 +63,7 @@ Each hook entry must contain a non-empty `command`. It may contain `id`, `timeou
 - Hooks trigger only for newly committed `run_events` rows, not from inspect commands, projection rebuilds, read APIs, or idempotent duplicate controls that commit no new row.
 - Hook failure, timeout, output, or journal failure must not change workflow status, output, IR, runtime scope, or public run event payloads.
 - Invalid hook configuration fails daemon startup with an invalid hooks config error instead of silently disabling hooks.
-- Default hook timeout is 30 seconds.
+- Hook `timeout` uses the shared duration units `ms`, `s`, `m`, `h`, and `d`; `w` is not supported. The default is 30 seconds.
 - Hook journal rows are terminal only: `completed`, `failed`, or `timed_out`.
 - `runs inspect` shows available hook history only for terminal runs and omits the `Hooks:` section when no history exists.
 

@@ -7,6 +7,7 @@ live in `legacy/`, not in this directory.
 
 ## Records
 
+- [2026-07-15 Authoring Optimization](2026-07-15-authoring-optimization.md) — progressive authoring guidance, diagnostics, examples, Signal contracts, and evaluation-harness implementation; the comparison benchmark was deliberately deferred.
 - [Acpus Long-running Workflow Operability](acpus-long-running-workflow-operability.md) — long-run inspection, telemetry availability, target aggregation, lineage, and recovery-documentation improvements.
 - [Acpus Agent Authoring Ergonomics Batch Roadmap](agent-authoring-ergonomics-batch-roadmap.md) — archived remediation batches from agent-authoring benchmarks.
 - [Acpx-backed Agent Executor Implementation Goal](agent-executor-acpx-implementation-goal.md) — acpx-backed agent execution migration.

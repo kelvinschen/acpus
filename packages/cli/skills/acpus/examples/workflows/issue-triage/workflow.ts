@@ -2,13 +2,8 @@
  * Pattern: Fan out issue triage, run branch work in parallel, and route by switch.
  * Nodes: agent, task, switch, parallel, fanout
  */
-import { defineWorkflow, z, /* task */ } from "acpus/core";
-import {
-  eq, lift, md,
-  /* ne, lt, lte, gt, gte, not, and, or, template */
-} from "acpus/expression";
-// import { createWorktree } from "acpus/tasks/git";
-import { summarizeIssue } from "./tasks.js";
+import { defineWorkflow, z } from "acpus/core";
+import { eq, lift, md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "issue-triage",
@@ -34,9 +29,11 @@ export default defineWorkflow({
         branches: {
           metadata() {
             const metadata = step("summarize_issue").task({
-              task: summarizeIssue,
               input: { id: item.id, title: item.title, labels: item.labels },
-              cwd: input.repoPath,
+              exec: async ({ input }) => ({
+                labelCount: input.labels.length,
+                titleLine: `${input.id}: ${input.title}`,
+              }),
             });
             return metadata.output;
           },

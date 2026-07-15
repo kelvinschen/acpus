@@ -2,12 +2,8 @@
  * Pattern: Draft, iteratively refine, optionally approve, and enforce a change plan.
  * Nodes: agent, task, signal, assert, if, loop
  */
-import { defineWorkflow, z, /* task */ } from "acpus/core";
-import {
-  gte, md, or, template,
-  /* lift, eq, ne, lt, lte, gt, not, and */
-} from "acpus/expression";
-// import { createWorktree } from "acpus/tasks/git";
+import { defineWorkflow, z } from "acpus/core";
+import { gte, md, or, template } from "acpus/expression";
 
 const PlanOut = z.object({
   ready: z.boolean(),

@@ -1,11 +1,13 @@
 import * as ts from "typescript/unstable/ast";
-import type { Diagnostic, Program, Project, Type } from "typescript/unstable/sync";
+import { TypeFlags, type Diagnostic, type Program, type Project, type Type } from "typescript/unstable/sync";
 import type { AuthoringOwnership } from "./diagnostics.js";
 import {
   isOfficialExpr,
   isOfficialNodeRef,
+  isOfficialPoisonedNodeOutput,
   isOfficialStepDeclaration,
   isOfficialTaskDefine,
+  officialExprPayloadType,
   type OfficialAuthoringRoots,
 } from "./official-types.js";
 
@@ -45,6 +47,9 @@ const ARRAY_MEMBERS = new Set([
   "sort", "toReversed", "toSorted", "toSpliced", "values", "with",
 ]);
 
+const LOOP_TYPE_MAX_DEPTH = 8;
+const LOOP_TYPE_MAX_PAIRS = 32;
+
 export function enrichTypeScriptDiagnostic(
   diagnostic: Diagnostic,
   program: Program,
@@ -56,6 +61,10 @@ export function enrichTypeScriptDiagnostic(
   if (!sourceFile) return undefined;
   const node = nodeAtSpan(sourceFile, diagnostic.pos, diagnostic.end > diagnostic.pos ? diagnostic.end : diagnostic.pos + 1);
   const checker = project.checker;
+
+  if (diagnostic.code === 2304 && missingLiftCall(node)) {
+    return { hint: 'Import the helper with import { lift } from "acpus/expression".' };
+  }
 
   if (diagnostic.code === 2362 || diagnostic.code === 2363 || diagnostic.code === 2365 || diagnostic.code === 2367) {
     const binary = ancestor(node, ts.isBinaryExpression);
@@ -93,11 +102,27 @@ export function enrichTypeScriptDiagnostic(
       return { hint: `Read the node result through .output before accessing '${access.name.text}', for example node.output.${access.name.text}${suffix}.` };
     }
     if (access && isOfficialExpr(checker, project, roots, access.expression)) {
+      const expressionType = checker.getTypeAtLocation(access.expression);
+      const valueType = expressionType && officialExprPayloadType(checker, project, roots, expressionType, access.expression);
+      if (valueType
+        && (valueType.flags & TypeFlags.Unknown) !== 0
+        && isOfficialPoisonedNodeOutput(checker, project, roots, access.expression)) {
+        return { hint: `This producer's output type is unavailable; fix the producer's earlier authoring or type error before reading '${access.name.text}'.` };
+      }
       const usage = isCalledAccess(access) ? `${access.name.text}(...)` : access.name.text;
-      return ARRAY_MEMBERS.has(access.name.text)
-        ? { hint: `Expr arrays are runtime values; use lift(items, items => items.${usage}) for this operation.` }
-        : { hint: `This field is not common to every runtime branch; use lift(value, value => /* narrow */ value.${access.name.text}) to narrow before reading it.` };
+      if (valueType && ARRAY_MEMBERS.has(access.name.text) && checker.isArrayLikeType(valueType)) {
+        return { hint: `Expr arrays are runtime values; use lift(items, items => items.${usage}) for this operation.` };
+      }
+      if (valueType && isHeterogeneousObjectField(valueType, access.name.text, checker)) {
+        return { hint: `This field is not common to every runtime branch; use lift(value, value => /* narrow */ value.${access.name.text}) to narrow before reading it.` };
+      }
     }
+  }
+
+  if (diagnostic.code === 2322 && hasNarrowLoopStateMismatch(diagnostic, node, checker, project, roots)) {
+    return {
+      hint: "Annotate the initial loop state with a State type that covers every transition value; literal assertions, null, and empty arrays can infer too narrowly.",
+    };
   }
 
   if (diagnostic.code === 2345) {
@@ -126,8 +151,195 @@ export function enrichTypeScriptDiagnostic(
   }
 }
 
+export function suppressCausalMissingLiftDiagnostics(
+  diagnostics: readonly Diagnostic[],
+  program: Program,
+): Diagnostic[] {
+  const callbacks = diagnostics.flatMap(diagnostic => missingLiftCallback(diagnostic, program) ?? []);
+  if (callbacks.length === 0) return [...diagnostics];
+  return diagnostics.filter(diagnostic => diagnostic.code !== 7006
+    || !callbacks.some(callback => isDirectCallbackParameterDiagnostic(diagnostic, callback, program)));
+}
+
+function isMissingLiftIdentifier(node: ts.Node): node is ts.Identifier {
+  return ts.isIdentifier(node) && node.text === "lift";
+}
+
+function missingLiftCall(node: ts.Node): ts.CallExpression | undefined {
+  if (!isMissingLiftIdentifier(node)) return undefined;
+  const call = ancestor(node, ts.isCallExpression);
+  return call && unwrapTransparentExpression(call.expression) === node ? call : undefined;
+}
+
+function missingLiftCallback(diagnostic: Diagnostic, program: Program): ts.ArrowFunction | undefined {
+  if (diagnostic.code !== 2304 || !diagnostic.fileName || diagnostic.pos < 0) return undefined;
+  const sourceFile = program.getSourceFile(diagnostic.fileName);
+  if (!sourceFile) return undefined;
+  const node = nodeAtSpan(sourceFile, diagnostic.pos, diagnostic.end > diagnostic.pos ? diagnostic.end : diagnostic.pos + 1);
+  const call = missingLiftCall(node);
+  if (!call || call.arguments.length < 2 || call.arguments.length > 4
+    || call.arguments.some(ts.isSpreadElement)) return undefined;
+  const callback = call.arguments.at(-1);
+  if (!callback) return undefined;
+  const unwrapped = unwrapTransparentExpression(callback);
+  return ts.isArrowFunction(unwrapped) && unwrapped.parameters.length === call.arguments.length - 1
+    ? unwrapped
+    : undefined;
+}
+
+function isDirectCallbackParameterDiagnostic(
+  diagnostic: Diagnostic,
+  callback: ts.ArrowFunction,
+  program: Program,
+): boolean {
+  if (!diagnostic.fileName || diagnostic.pos < 0) return false;
+  const sourceFile = program.getSourceFile(diagnostic.fileName);
+  if (!sourceFile || sourceFile !== callback.getSourceFile()) return false;
+  const node = nodeAtSpan(sourceFile, diagnostic.pos, diagnostic.end > diagnostic.pos ? diagnostic.end : diagnostic.pos + 1);
+  const parameter = ancestor(node, ts.isParameterDeclaration);
+  return Boolean(parameter && parameter.parent === callback);
+}
+
 function isCalledAccess(access: ts.PropertyAccessExpression): boolean {
   return Boolean(access.parent && ts.isCallExpression(access.parent) && access.parent.expression === access);
+}
+
+function isHeterogeneousObjectField(
+  type: Type,
+  field: string,
+  checker: Project["checker"],
+): boolean {
+  if (!type.isUnionType()) return false;
+  const variants = type.getTypes();
+  if (variants.length < 2 || variants.some(variant => !variant.isObjectType())) return false;
+  const present = variants.filter(variant => checker.getPropertyOfType(variant, field));
+  return present.length > 0 && present.length < variants.length;
+}
+
+function hasNarrowLoopStateMismatch(
+  diagnostic: Diagnostic,
+  node: ts.Node,
+  checker: Project["checker"],
+  project: Project,
+  roots: OfficialAuthoringRoots,
+): boolean {
+  const spec = enclosingOfficialLoopSpec(node, checker, project, roots);
+  if (!spec) return false;
+  const callback = objectFunction(spec, "do");
+  const initial = objectPropertyInitializer(spec, "state");
+  if (!callback || !initial || !isLoopTransitionMismatchSpan(diagnostic, node, callback)) return false;
+  const signature = checker.getSignatureFromDeclaration(callback);
+  const returned = signature && checker.getReturnTypeOfSignature(signature);
+  if (!returned) return false;
+  const state = checker.getPropertyOfType(returned, "state");
+  if (!state) return false;
+  const initialType = checker.getTypeAtLocation(initial);
+  const transitionType = checker.getTypeOfSymbolAtLocation(state, callback);
+  return Boolean(initialType && hasNarrowTypeMismatch(
+    initialType,
+    transitionType,
+    checker,
+    project,
+    roots,
+    callback,
+    new Set(),
+    0,
+  ));
+}
+
+function isLoopTransitionMismatchSpan(
+  diagnostic: Diagnostic,
+  node: ts.Node,
+  callback: ts.FunctionLikeDeclaration,
+): boolean {
+  const member = ts.isMethodDeclaration(callback)
+    ? callback
+    : callback.parent && ts.isPropertyAssignment(callback.parent) ? callback.parent : undefined;
+  const name = member?.name;
+  const end = diagnostic.end > diagnostic.pos ? diagnostic.end : diagnostic.pos + 1;
+  return node === callback
+    || node === member
+    || Boolean(name && diagnostic.pos >= name.getStart(name.getSourceFile()) && end <= name.end);
+}
+
+function enclosingOfficialLoopSpec(
+  node: ts.Node,
+  checker: Project["checker"],
+  project: Project,
+  roots: OfficialAuthoringRoots,
+): ts.ObjectLiteralExpression | undefined {
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (!ts.isObjectLiteralExpression(current)) continue;
+    const call: ts.Node | undefined = current.parent;
+    if (!call || !ts.isCallExpression(call) || call.arguments[0] !== current) continue;
+    const callee = unwrapTransparentExpression(call.expression);
+    if (ts.isPropertyAccessExpression(callee)
+      && callee.name.text === "loop"
+      && isOfficialStepDeclaration(checker, project, roots, callee.expression)) return current;
+  }
+}
+
+function objectFunction(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): ts.FunctionLikeDeclaration | undefined {
+  for (const property of object.properties) {
+    if (ts.isMethodDeclaration(property) && propertyName(property.name) === name) return property;
+    if (ts.isPropertyAssignment(property)
+      && propertyName(property.name) === name
+      && (ts.isArrowFunction(property.initializer) || ts.isFunctionExpression(property.initializer))) return property.initializer;
+  }
+}
+
+function objectPropertyInitializer(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property) && propertyName(property.name) === name) return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property)
+      && ts.isIdentifier(property.name)
+      && property.name.text === name) return property.name;
+  }
+}
+
+function hasNarrowTypeMismatch(
+  initial: Type,
+  transition: Type,
+  checker: Project["checker"],
+  project: Project,
+  roots: OfficialAuthoringRoots,
+  location: ts.Node,
+  seen: Set<string>,
+  depth: number,
+): boolean {
+  if (depth > LOOP_TYPE_MAX_DEPTH || seen.size >= LOOP_TYPE_MAX_PAIRS) return false;
+  const payload = officialExprPayloadType(checker, project, roots, transition, location);
+  if (payload && payload.id !== transition.id) {
+    return hasNarrowTypeMismatch(initial, payload, checker, project, roots, location, seen, depth + 1);
+  }
+  if (checker.isTypeAssignableTo(transition, initial)) return false;
+  if ((initial.flags & (TypeFlags.Null | TypeFlags.Never)) !== 0 || initial.isLiteralType()) return true;
+  const pair = `${initial.id}:${transition.id}`;
+  if (seen.has(pair)) return false;
+  seen.add(pair);
+
+  if (!initial.isObjectType() || !transition.isObjectType()) return false;
+
+  if (initial.isTypeReference() && transition.isTypeReference()
+    && checker.isArrayLikeType(initial) && checker.isArrayLikeType(transition)) {
+    const initialItem = checker.getTypeArguments(initial)[0];
+    const transitionItem = checker.getTypeArguments(transition)[0];
+    if (initialItem && transitionItem
+      && hasNarrowTypeMismatch(initialItem, transitionItem, checker, project, roots, location, seen, depth + 1)) return true;
+  }
+
+  for (const property of checker.getPropertiesOfType(initial)) {
+    const other = checker.getPropertyOfType(transition, property.name);
+    if (!other) continue;
+    const initialProperty = checker.getTypeOfSymbol(property);
+    const transitionProperty = checker.getTypeOfSymbol(other);
+    if (initialProperty && transitionProperty
+      && hasNarrowTypeMismatch(initialProperty, transitionProperty, checker, project, roots, location, seen, depth + 1)) return true;
+  }
+  return false;
 }
 
 function owned(node: ts.Node, enrichment: TypeScriptEnrichment): TypeScriptEnrichment {

@@ -2,12 +2,8 @@
  * Pattern: Run parallel agent perspectives in a bounded synthesis loop.
  * Nodes: agent, parallel, loop
  */
-import { defineWorkflow, z, /* task */ } from "acpus/core";
-import {
-  gte, md,
-  /* lift, eq, ne, lt, lte, gt, not, and, or, template */
-} from "acpus/expression";
-// import { createWorktree } from "acpus/tasks/git";
+import { defineWorkflow, z } from "acpus/core";
+import { gte, md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "multi-aspect-brainstorm",

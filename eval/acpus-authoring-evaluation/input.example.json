@@ -1,0 +1,5 @@
+{
+  "workspaceRoot": "/tmp/acpus-authoring-evaluation",
+  "skillSourcePath": "packages/cli/skills/acpus",
+  "maxConcurrentRequirements": 1
+}

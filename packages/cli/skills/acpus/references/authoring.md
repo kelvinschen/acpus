@@ -1,21 +1,21 @@
 # Authoring Workflows
 
+Contents:
+
+- Mental model and core rules
+- Expressions and durable shapes
+- Nodes, composites, and loop state
+- Late example selection and exact lookup
+
 ## Start
 
-Write the workflow, then check it:
+Write the workflow, then check it without creating a run:
 
 ```sh
 acpus workflow check <workflow.ts-or-catalog>
 ```
 
-Use public facades:
-
-```ts
-import { defineWorkflow, z } from "acpus/core";
-import { template, md, eq, lte, gte, and, or, lift } from "acpus/expression";
-```
-
-Minimal workflow:
+Import only the symbols the workflow uses:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -23,185 +23,148 @@ import { template } from "acpus/expression";
 
 export default defineWorkflow({
   name: "my-workflow",
-  inputSchema: z.object({ repoPath: z.string(), topic: z.string() }),
-  agents: { worker: { use: "codex", model: "gpt-5.5" } },
-}).build(({ input, agents, meta, step }) => {
+  description: "demo",
+  inputSchema: z.object({ topic: z.string() }),
+  agents: { worker: { use: "codex" } },
+}).build(({ input, agents, step }) => {
   const result = step("work").agent({
-    outputSchema: z.object({ ok: z.boolean(), summary: z.string() }),
     agent: agents.worker,
-    prompt: template`Analyze ${input.topic} in ${input.repoPath}.`,
+    prompt: template`Analyze ${input.topic}.`,
   });
-  return { runId: meta.runId, ok: result.output.ok, summary: result.output.summary };
+  return { result: result.output };
 });
 ```
 
 ## Mental Model
 
-`build` declares a static graph; it does not execute the workflow. Graph values such as `input`, `meta`, and node outputs are opaque `Expr<T>` tokens resolved later. Treat `Expr` like a functor: project fields/indexes directly; map or combine with `lift`. Use graph nodes for control flow. Composite callbacks declare static subgraphs instantiated by loop rounds, fanout items, or branches.
+`build` declares a static graph; it does not execute it. `input`, `meta`, composite locals, and node outputs are opaque `Expr<T>` values resolved during a run. Composite callbacks declare static subgraphs that runtime loop rounds, fanout items, or branches instantiate.
+
+Choose the operation by intent:
+
+| Intent | Use |
+| --- | --- |
+| Render text | `template` for compact strings; `md` for dedented multiline Markdown. |
+| Transform or combine values | `lift`; pass every runtime dependency explicitly. |
+| Predicate or graph control | `eq`/`lte`/`and`-style helpers, or `if`/`switch`/`loop`/`fanout`. |
+| Read a node result | Exactly one `.output`; `NodeRef` itself is only a control handle. |
+| Stabilize a shape or state | `z.infer`, an explicit type, complete loop transitions, and `lift` narrowing for unions. |
 
 ## Core Rules
 
-- **Treat `input`, `meta`, and node outputs as `Expr<T>` runtime tokens.**
-- **NEVER use JS operators or control flow over `Expr`.** Use graph nodes, predicates, templates, or `lift`.
-- **NEVER capture outer vars or functions in `lift`.** Pass every dependency explicitly.
-- **NEVER capture outer vars or functions in inline Task `exec`.**  Inline task **MUST** self-contained, bind top-level Task `input`; read Task context.
-- **Inline Task first.** Define reusable Task only for reused logic or third-party package imports.
-- **Never define a reusable function**. Instead, define reusable task
-- **Static step IDs only.** Loop/fanout instance paths create distinct runtime `nodeKey` values.
-- **Read node results once through `.output`.** `NodeRef` is a control handle; never return it directly or nested.
-- **Keep durable data JSON-compatible.** Use explicit `null`, not raw `undefined`, for authored absence.
-- **Always check after editing.** Fix every diagnostic before running.
-- **NEVER add `outputSchema` for composite and task.**
+- Never use JavaScript operators, array methods, or control flow directly on `Expr` values.
+- `lift` callbacks must be inline synchronous arrows. Never capture workflow values or outer functions; pass all dependencies as arguments.
+- Inline Task `exec` must be self-contained. Bind data through Task `input` and use only its context.
+- Use an inline Task first. Upgrade at the second authored call site or when module/third-party imports are required; loop/fanout runtime instances do not count.
+- Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+- Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`.
+- Never add `outputSchema` to Task or composite nodes; their outputs are TypeScript-inferred.
+- Check after every meaningful edit and fix all diagnostics before running.
 
-Static config includes node IDs, strategies, schemas, Task targets, agent selectors/models/modes, and permission modes.
+## Expressions And Shapes
 
-## Expressions And Data
-
-Project fields and array indexes directly: `review.output.ready`, `items[0]`.
-For other work:
-
-- Graph branches/repetition: `if`, `switch`, `loop`, `fanout`.
-- Scalar predicates: `eq`/`ne`, `lt`/`lte`/`gt`/`gte`, `not`/`and`/`or`.
-- Value transforms, fallbacks, arithmetic, array summaries: `lift`.
-- Rendered strings: `template` or `md`.
-
-`eq`/`ne` use strict equality. Boolean helpers evaluate all operands; no short-circuit guarantee. Use unary, positional, or named-object `lift`:
+Project fields and indexes directly, such as `review.output.ready` or `items[0]`. Use helpers for everything else:
 
 ```ts
-// lift 1
-const title = lift(input.issue, issue => issue.title.trim());
-// lift 2
-const status = lift(input.kind, input.ready,
+import { and, eq, gte, lift, md } from "acpus/expression";
+
+const label = lift(input.kind, input.ready,
   (kind, ready) => `${kind}: ${ready ? "ready" : "blocked"}`);
-// lift 3
-const overLimit = lift(
-  input.count, input.limit, input.urgent,
-  (count, limit, urgent) => urgent || count > limit,
-);
-// More than 3 Expr dependencies MUST use named-object lift.
 const summary = lift(
-  { kind: input.kind, ready: input.ready, count: input.count, limit: input.limit },
-  ({ kind, ready, count, limit }) =>
-    `${kind}: ${ready ? "ready" : "blocked"} (${count}/${limit})`,
+  { kind: input.kind, count: input.count, limit: input.limit },
+  ({ kind, count, limit }) => ({ kind, overLimit: count > limit }),
 );
 const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
+const prompt = md`Review ${label}: ${summary}`;
 ```
 
-`lift` callbacks must be inline synchronous arrows. Block bodies may use local declarations and control flow. Return `WorkflowData`: finite primitives, arrays, or plain objects.
+Unary, two-value, and three-value positional `lift` forms are supported; use the named-object form for more dependencies. Return only durable data.
+
+Use native Zod 4 for runtime boundaries and `z.infer` when a TypeScript annotation must stabilize the same shape:
 
 ```ts
-// Informal overloads of lift (one dependency):
-lift :: Expr<A> -> (A -> B) -> Expr<B>
+const StateSchema = z.object({
+  items: z.array(z.string()),
+  note: z.string().nullable(),
+});
+type State = z.infer<typeof StateSchema>;
+const initialState: State = { items: [], note: null };
 ```
 
-Use unary `lift` for one dependency
+Keep authored data JSON-compatible. A top-level scope value or array element must not be `undefined`; an optional object field is omitted when missing. Never write explicit `any`; use `unknown` and narrow it.
 
-Use `template` for compact strings and `md` for multiline text. Interpolation renders scalars as strings and arrays/objects as compact JSON. Compute custom formatting first:
+## Nodes And Composites
 
-```ts
-const lines = lift(items, xs => xs.map(x => `- ${x.id}`).join("\n"));
-const prompt = md`Review:\n${lines}`;
-```
-
-Use native Zod 4 through `z` from `acpus/core`. Keep workflow input, Agent/Signal output, Task input, workflow output, and composite output durable. Exclude transforms, functions, promises, dates, maps, sets, bigint, symbols, class instances, non-finite numbers, sparse arrays, cycles, and raw `undefined`. A scope's top-level value and array elements must never resolve to `undefined`; an object field typed as `Expr<T | undefined>` is optional and is omitted when missing.
-
-**Never write explicit `any`** in workflow entries;  Use `unknown` and narrow.
-
-
-## Nodes
-
-### Leaves
-
-Use `{ use: "<agent>" }` for configured agents. Read `acpx-agents.md` before using raw `{ command: "..." }` or choosing models. Omit `outputSchema` when natural-language text is enough. Omit `sessionKey` unless a multi-turn loop must reuse one agent session. Agent and Task `timeout` bound the whole node attempt.
+Leaves use the enclosing `step` dispatcher:
 
 ```ts
 const review = step("review").agent({
   agent: agents.reviewer,
-  prompt: template`Review ${input.topic}`,
+  prompt: template`Review ${input.topic}.`,
 });
 const facts = step("facts").task({
-  input: { repoPath: input.repoPath },
-  exec: async ({ input }) => ({ repoPath: input.repoPath, ok: true }),
+  input: { topic: input.topic },
+  exec: async ({ input }) => ({ normalized: input.topic.trim() }),
 });
 const approval = step("approval").signal({
   outputSchema: z.object({ approved: z.boolean() }),
   prompt: template`Approve ${review.output}?`,
 });
-step("require_approval").assert({
-  condition: approval.output.approved,
-  message: "Approval denied.",
-});
+step("require_approval").assert({ condition: approval.output.approved });
 ```
 
-**Do not read `advanced-authoring.md` by default.** Read it only when the requirement needs one of its gated topics.
+Read `acpx-agents.md` before choosing agent backends/models or using raw `{ command: "..." }`. Read `advanced-authoring.md` only for reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing. Read `signal-authoring.md` for parallel waits, payload, or timeout semantics.
 
-### Composites And Control
-
-Composite callbacks receive only node-specific values such as fanout `item`/`itemIndex` and loop `state`/`index`/`round`. Use enclosing `step` for nested nodes. Return any durable workflow value; return `{}` explicitly for a control-only scope.
+Composite callbacks return one durable value; return `{}` for control-only scopes:
 
 ```ts
 const gate = step("gate").if({
   condition: input.ready,
-  then() { return { status: "ready" }; },
-  else() { return { status: "blocked" }; },
+  then() { return { status: "ready" as const, detail: "go" }; },
+  else() { return { status: "blocked" as const, reason: "not ready" }; },
 });
-const route = step("route").switch({
-  cases: [{ when: eq(input.kind, "bug"), then() { return { owner: "oncall" }; } }],
-  default() { return { owner: "backlog" }; },
-});
-const checks = step("checks").parallel({
-  branches: {
-    lint() { return { ok: true }; },
-    test() { return { ok: true }; },
-  },
-});
-const items = step("items").fanout({
-  over: input.items,
-  do({ item, itemIndex }) { return item; },
-});
-
-// access loop's output via `retry.output` instead of `retry.state`
-const retry = step("retry").loop({
-  state: { summary: "" },
-  do({ state, round }) {
-    return { state: { summary: state.summary }, stop: gte(round, 3) };
-  },
-});
+const status = gate.output.status;
+const detail = lift(gate.output, result =>
+  result.status === "ready" ? result.detail : result.reason);
 ```
 
-Callbacks declare one static subgraph. Reuse inner static step IDs across loop rounds and fanout items.
+`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access. Default parallel returns a branch-keyed record. Race returns `{ winner, result }` for the first successful branch and cancels the rest. Fanout `all` returns input-order results; quorum returns accepted successes in completion order.
 
-Default `parallel` returns the branch record. Race returns `{ winner, result }` for the first successful branch, cancels the rest, and fails if none succeeds. Fanout returns input-order results; quorum returns the first `count` successful completions in completion order, cancels the rest, and fails when quorum becomes impossible.
+Loop is do-while and returns its final state through `.output`. Its transition replaces the complete state; it never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
 
-`parallel` and `fanout` accept `maxConcurrency`; its runtime value must be a positive integer.
+```ts
+const initial: State = { items: [], note: null };
+const rounds = step("rounds").loop({
+  state: initial,
+  do({ state, round }) {
+    return {
+      state: lift(state, current => ({ ...current, items: [...current.items, "done"] })),
+      stop: gte(round, 3),
+    };
+  },
+});
+return rounds.output;
+```
 
-Loop is do-while and returns final state (access with `output`). Loop `index` starts at 0; `round` starts at 1. Give empty state arrays an explicit element type.
-
-Heterogeneous if/switch/race outputs remain unions. Project common fields directly; 
-
-use `lift` to narrow before branch-specific access.
+`parallel` and `fanout` accept runtime `maxConcurrency`: use a positive integer to cap work, or `0`/`undefined` for no authored local cap.
 
 ## Choose An Example
 
-After understanding the authoring rules above, choose the closest `examples/workflows/` file by node coverage or pattern:
+Only after applying the rules above, choose the closest example by pattern and node coverage:
 
 | Example | Nodes | Pattern |
 | --- | --- | --- |
+| [`typed-loop-state`](../examples/workflows/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
 | [`adversarial-review`](../examples/workflows/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
-| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, iteratively refine, optionally approve, and enforce a change plan. |
-| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Fan out issue triage, run branch work in parallel, and route by switch, with reusable task |
-| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel agent perspectives in a bounded synthesis loop. |
-| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Create parallel worktree implementations and have an agent judge them. |
+| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
+| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
+| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel perspectives in a bounded synthesis loop. |
+| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Build parallel worktree candidates and judge them. |
 
-## Check And Lookup
+## Declaration Lookup
 
-`workflow check` runs TypeScript plus Acpus authoring checks without admitting a run. Output-shape errors, unsafe union access, arithmetic over `Expr`, and array methods on `Expr` may remain native TypeScript diagnostics.
+When these rules and examples do not answer exact usage:
 
-### Declaration Lookup
+1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
+2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
-Inspect declarations only when examples do not answer exact usage:
-
-1. Run `acpus doctor --json | jq ".authoring.imports"` with the current CLI.
-2. Read the relevant `typesPath` symbol and nearby signature only.
-
-For retry or run control, read `runtime-recovery.md`.
+For check/run/control commands read `cli-operations.md`; for retry/fork read `runtime-recovery.md`.

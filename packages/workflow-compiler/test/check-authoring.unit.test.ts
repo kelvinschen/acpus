@@ -99,6 +99,7 @@ describe("workflow check authoring diagnostics", () => {
         expect.objectContaining({
           code: "TS2339",
           message: expect.stringContaining("Property 'value' does not exist on type 'Expr<unknown>"),
+          hint: expect.stringContaining("fix the producer"),
         }),
       ]));
       expect(result.diagnostics.filter(diagnostic => diagnostic.code === "AL007")).toHaveLength(1);
@@ -145,6 +146,58 @@ describe("workflow check authoring diagnostics", () => {
     });
   });
 
+  it("hints a missing lift import and suppresses only its direct callback TS7006", async () => {
+    await withCheckWorkspace("workflow-missing-lift", async cwd => {
+      const source = `
+        import { defineWorkflow, z } from "acpus/core";
+
+        export default defineWorkflow({
+          name: "missing_lift",
+          inputSchema: z.object({ count: z.number() }),
+        }).build(({ input }) => {
+          void lift(input.count, value => value + 1);
+          void lift(input.count, input.count, (left, right) => left + right);
+          void lift(input.count, input.count, input.count, (first, second, third) => first + second + third);
+          void lift(value => value);
+          void lift(input.count, (value, extra) => value);
+          void lift(input.count, input.count, input.count, input.count, (one, two, three, four) => one + two + three + four);
+          void lift(...[input.count], value => value);
+          void lift(input.count, function (value) { return value; });
+          void transform(input.count, value => value + 1);
+          return { ok: true };
+        });
+      `;
+      const result = await runCheck(cwd, source);
+
+      for (const needle of [
+        "void lift(input.count, value",
+        "void lift(input.count, input.count, (left",
+        "void lift(input.count, input.count, input.count, (first",
+      ]) {
+        expect(result.diagnostics.filter(diagnostic => diagnostic.source?.line === sourceLine(source, needle))).toEqual([
+          expect.objectContaining({
+            code: "TS2304",
+            hint: 'Import the helper with import { lift } from "acpus/expression".',
+          }),
+        ]);
+      }
+      for (const [needle, expected] of [
+        ["void lift(value", ["TS2304", "TS7006"]],
+        ["void lift(input.count, (value", ["TS2304", "TS7006", "TS7006"]],
+        ["void lift(input.count, input.count, input.count, input.count", ["TS2304", "TS7006", "TS7006", "TS7006", "TS7006"]],
+        ["void lift(...", ["TS2304", "TS7006"]],
+        ["void lift(input.count, function", ["TS2304", "TS7006"]],
+      ] as const) {
+        expect(result.diagnostics
+          .filter(diagnostic => diagnostic.source?.line === sourceLine(source, needle))
+          .map(diagnostic => diagnostic.code)).toEqual(expected);
+      }
+      const other = result.diagnostics.filter(diagnostic => diagnostic.source?.line === sourceLine(source, "void transform"));
+      expect(other.map(diagnostic => diagnostic.code)).toEqual(["TS2304", "TS7006"]);
+      expect(other.every(diagnostic => diagnostic.hint === undefined)).toBe(true);
+    });
+  });
+
   it("covers Expr ownership, replacements, and native hints in one checked program", async () => {
     await withCheckWorkspace("workflow-native-expr-errors", async cwd => {
       const source = `
@@ -154,13 +207,15 @@ describe("workflow check authoring diagnostics", () => {
 
         export default defineWorkflow({
           name: "native_expr_errors",
+          agents: { worker: { use: "codex" } },
           inputSchema: z.object({
             count: z.number(),
             limit: z.number(),
             items: z.array(z.string()),
             note: z.string().optional(),
+            record: z.object({ present: z.string() }),
           }),
-        }).build(({ input, step }) => {
+        }).build(({ agents, input, step }) => {
           const incremented = input.count + 1;
           const itemCount = input.items.length;
           void (input.note ?? "fallback");
@@ -185,6 +240,10 @@ describe("workflow check authoring diagnostics", () => {
           switch (input.count) { case 1: break; }
           const missing = map(input.note, note => note || undefined);
           const dated = expression.lift(input.note, note => new Date(note ?? ""));
+          const unknownOutput = step("unknown").agent({ agent: agents.worker, prompt: "respond", outputSchema: z.unknown() });
+          void unknownOutput.output.value;
+          void input.note.missing;
+          void input.record.missing;
           return { incremented, itemCount, missing, dated };
         });
         const ordinary = 1;
@@ -241,6 +300,12 @@ describe("workflow check authoring diagnostics", () => {
       expect(at("const dated = expression.lift")).toEqual([
         expect.objectContaining({ code: "TS2769", hint: expect.stringContaining("convert Date") }),
       ]);
+      expect(at("void unknownOutput.output.value").map(diagnostic => diagnostic.code)).toEqual(["TS2339"]);
+      expect(at("void unknownOutput.output.value")[0]?.hint).toBeUndefined();
+      expect(at("void input.note.missing").map(diagnostic => diagnostic.code)).toEqual(["TS2339"]);
+      expect(at("void input.note.missing")[0]?.hint).toBeUndefined();
+      expect(at("void input.record.missing").map(diagnostic => diagnostic.code)).toEqual(["TS2339"]);
+      expect(at("void input.record.missing")[0]?.hint).toBeUndefined();
 
       for (const [needle, code] of [
         ["ordinary.missing", "TS2339"],
@@ -332,6 +397,72 @@ describe("workflow check authoring diagnostics", () => {
       expect(result.diagnostics).toEqual([]);
     });
   });
+
+  it("hints when a narrow initial loop state rejects later transition values", async () => {
+    await withCheckWorkspace("workflow-loop-state-widening", async cwd => {
+      const source = `
+        import { defineWorkflow, z } from "acpus/core";
+
+        type Grow<T> = { value: T; next: Grow<[T]> };
+        const recursiveInitial = null as unknown as Grow<string>;
+        const recursiveTransition = null as unknown as Grow<number>;
+
+        export default defineWorkflow({
+          name: "loop_state_widening",
+          inputSchema: z.object({ items: z.array(z.string()) }),
+        }).build(({ input, step }) => {
+          step("literal").loop({
+            state: { phase: "draft" as const },
+            do() {
+              const unrelated: string = 1;
+              void unrelated;
+              return { state: { phase: "done" }, stop: true };
+            },
+          });
+          step("nullable").loop({
+            state: { result: null },
+            do() { return { state: { result: "done" }, stop: true }; },
+          });
+          step("empty").loop({
+            state: { items: [] },
+            do() { return { state: { items: ["done"] }, stop: true }; },
+          });
+          step("expr_root").loop({
+            state: [],
+            do() { return { state: input.items, stop: true }; },
+          });
+          step("expr_nested").loop({
+            state: { items: [] },
+            do() { return { state: { items: input.items }, stop: true }; },
+          });
+          step("recursive").loop({
+            state: recursiveInitial,
+            do() { return { state: recursiveTransition, stop: true }; },
+          });
+          return { ok: true };
+        });
+      `;
+      const result = await runCheck(cwd, source);
+
+      for (const needle of [
+        "do() {",
+        'do() { return { state: { result: "done" }',
+        'do() { return { state: { items: ["done"] }',
+        "do() { return { state: input.items",
+        "do() { return { state: { items: input.items }",
+      ]) {
+        expect(result.diagnostics.filter(diagnostic => diagnostic.source?.line === sourceLine(source, needle))).toEqual([
+          expect.objectContaining({ code: "TS2322", hint: expect.stringContaining("State type") }),
+        ]);
+      }
+      const unrelated = result.diagnostics.filter(diagnostic => diagnostic.source?.line === sourceLine(source, "const unrelated"));
+      expect(unrelated.map(diagnostic => diagnostic.code)).toEqual(["TS2322"]);
+      expect(unrelated[0]?.hint).toBeUndefined();
+      const recursive = result.diagnostics.filter(diagnostic => diagnostic.source?.line === sourceLine(source, "do() { return { state: recursiveTransition"));
+      expect(recursive.map(diagnostic => diagnostic.code)).toEqual(["TS2322"]);
+      expect(recursive[0]?.hint).toBeUndefined();
+    });
+  }, 5_000);
 
   it("accepts aliases, spreads, computed keys, callback variables, and heterogeneous branches", async () => {
     await withCheckWorkspace("workflow-output-source-shapes", async cwd => {

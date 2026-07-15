@@ -523,10 +523,10 @@ describe("WorkflowIR diagnostics contract", () => {
             timeout: { kind: "literal", value: "1h" },
           },
           {
-            id: "signal_zero",
+            id: "signal_days",
             kind: "signal",
             run: { prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "0" },
+            timeout: { kind: "literal", value: "1d" },
           },
         ],
       },

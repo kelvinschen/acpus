@@ -11,12 +11,14 @@ describe("duration parsing", () => {
     ["30s", 30_000],
     ["5m", 300_000],
     ["1h", 3_600_000],
+    ["1d", 86_400_000],
+    ["104249991d", 9_007_199_222_400_000],
     [String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
   ] as const)("parses %s as %i milliseconds", (value, durationMs) => {
     expect(tryParseDurationMs(value)).toEqual(ok(durationMs));
   });
 
-  it.each(["", "ms", "-1s", "+1s", "1.5s", "5 m", "1m30s", "1d"])(
+  it.each(["", "ms", "-1s", "+1s", "1.5s", "5 m", "1m30s", "1w"])(
     "rejects invalid syntax %j",
     value => {
       expect(tryParseDurationMs(value)).toEqual(err({ type: "invalid-duration-syntax", value }));
@@ -26,6 +28,7 @@ describe("duration parsing", () => {
   it.each([
     "9007199254740992",
     "9007199254741s",
+    "104249992d",
     `${"9".repeat(309)}h`,
   ])("rejects out-of-range duration %j", value => {
     expect(tryParseDurationMs(value)).toEqual(err({ type: "duration-out-of-range", value }));

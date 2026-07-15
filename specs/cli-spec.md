@@ -116,5 +116,5 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - Cover command grammar, option conflicts, phase/exit-code mapping, text output, JSON envelopes, and NDJSON ordering with CLI contract tests.
 - Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, hooks, Doctor, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime state.
-- Typecheck and check official workflow examples across every node kind and authoring-facade helper.
+- Typecheck and apply native authoring checks to official workflow examples across every node kind and disclosure route; one representative CLI E2E covers full preparation, and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, collisions, and mutation-free failures.
