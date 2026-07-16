@@ -85,6 +85,28 @@ test("agent step specs require agent tokens", () => {
   void tracedStepSpec;
 });
 
+test("schema-backed nodes preserve native Zod tuple output types", () => {
+  const ChoiceSchema = z.object({ label: z.string() });
+  const ChoicesSchema = z.tuple([ChoiceSchema, ChoiceSchema, ChoiceSchema]);
+  type Choice = z.output<typeof ChoiceSchema>;
+  type Choices = [Choice, Choice, Choice];
+
+  defineWorkflow({ name: "typed-tuple-output", agents: { worker: { use: "codex" } } }).build(({ agents, step }) => {
+    const choices = step("choices").agent({
+      outputSchema: ChoicesSchema,
+      agent: agents.worker,
+      prompt: "Return three choices.",
+    });
+    assertType<Expr<Choices>>(choices.output);
+    const thirdLabel = lift(choices.output, output => {
+      expectTypeOf(output).toEqualTypeOf<Choices>();
+      return output[2].label;
+    });
+    expectTypeOf(thirdLabel).toEqualTypeOf<Expr<string>>();
+    return { thirdLabel };
+  });
+});
+
 test("task outputs are inferred from inline and reusable exec", () => {
   // @ts-expect-error reusable task token references must spell out input and output when they are manually annotated.
   type BareReusableTaskToken = ReusableTaskToken;

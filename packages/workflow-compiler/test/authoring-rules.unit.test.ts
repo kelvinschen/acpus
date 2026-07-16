@@ -159,7 +159,7 @@ describe("workflow authoring rules", () => {
         source,
         "TB003",
         "prefix + Math",
-        "Pass captured values through input: { Math, prefix } and read them from exec's ({ input }) parameter, for example exec: async ({ input }) => ({ value: input.Math }).",
+        "Pass captured data through Task input. Move helper logic inside exec, dynamically import dependencies there, or use a reusable Task when module imports are required.",
       ),
     );
     expect(captures[0]?.message).toContain("'Math', 'prefix'");
@@ -384,19 +384,18 @@ describe("workflow authoring rules", () => {
     expect(codes(diagnostics)).not.toContain("AL006");
   });
 
-  it("distinguishes runtime undefined from an external lift capture", async () => {
+  it("distinguishes runtime undefined from an external lift helper", async () => {
     const diagnostics = await checkAuthoringWithProgram(`
-      import { lift } from "acpus/expression";
+      import { lift, md } from "acpus/expression";
       declare const value: string | undefined;
-      const suffix = "!";
       lift(value, current => current === undefined ? null : current);
-      lift(value, current => (current ?? "") + suffix);
+      lift(value, current => md\`Value: \${current}\`);
     `);
 
     expect(diagnostics.filter(diagnostic => diagnostic.code === "AL006")).toEqual([
       expect.objectContaining({
-        message: "lift(...) callback cannot reference external binding 'suffix'.",
-        hint: "Add the value to lift's explicit dependency list and read it from the matching callback parameter; use a named object dependency when names matter.",
+        message: "lift(...) callback cannot reference external binding 'md'.",
+        hint: "Pass runtime values through lift's explicit dependencies, using a named object when useful. Do not pass helpers or functions; return plain data and apply md or template outside lift.",
       }),
     ]);
   });

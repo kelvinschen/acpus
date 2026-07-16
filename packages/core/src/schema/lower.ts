@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import * as zod from "zod";
 import { err, ok, type Result } from "neverthrow";
 import type { JsonPrimitive, JsonValue, SchemaIR } from "../ir/types.js";
@@ -69,6 +70,22 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
       return ok({ kind: "enum", values });
     }
     case "array": return tryToSchemaIR(def.element, `${path}[]`).map(item => ({ kind: "array", item }));
+    case "tuple": {
+      if (def.rest) return unsupported(path, kind, "Zod tuple rest items are not supported as an Acpus graph-boundary schema");
+      const items = Array.isArray(def.items) ? def.items as Schema<any>[] : [];
+      if (items.length === 0) return unsupported(path, kind, "Zod tuple must contain at least one item to lower as an Acpus array");
+      const lowered: SchemaIR[] = [];
+      for (const [index, item] of items.entries()) {
+        const itemIR = tryToSchemaIR(item, `${path}[${index}]`);
+        if (itemIR.isErr()) return itemIR;
+        lowered.push(itemIR.value);
+      }
+      const item = lowered[0]!;
+      if (lowered.some(candidate => !isDeepStrictEqual(candidate, item))) {
+        return unsupported(path, kind, "Zod tuple items must lower to the same Acpus array item schema");
+      }
+      return ok({ kind: "array", item });
+    }
     case "object": return objectToSchemaIR(schema, path);
     case "record": return tryToSchemaIR(def.valueType, `${path}.<value>`).map(value => ({ kind: "record", value }));
     case "union": {

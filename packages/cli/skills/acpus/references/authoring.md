@@ -51,8 +51,8 @@ Choose the operation by intent:
 
 ## Core Rules
 
-- Never use JavaScript operators, array methods, or control flow directly on `Expr` values.
-- `lift` callbacks must be inline synchronous arrows. Never capture workflow values or outer functions; pass all dependencies as arguments.
+- Project fields and indexes directly; **MUST use `lift` or predicate helpers for JavaScript operators, `.length`, array methods, and control flow over `Expr` values**.
+- `lift` callbacks must be inline synchronous arrows. Pass runtime data as dependencies; never capture workflow values or helpers such as `md`. Return plain data, then render outside `lift`.
 - Inline Task `exec` must be self-contained. Bind data through Task `input` and use only its context.
 - Use an inline Task first. Upgrade at the second authored call site or when module/third-party imports are required; loop/fanout runtime instances do not count.
 - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
@@ -79,7 +79,7 @@ const prompt = md`Review ${label}: ${summary}`;
 
 Unary, two-value, and three-value positional `lift` forms are supported; use the named-object form for more dependencies. Return only durable data.
 
-Use native Zod 4 for runtime boundaries and `z.infer` when a TypeScript annotation must stabilize the same shape:
+Graph boundaries support the documented Zod 4 subset; Use `z.infer` when a TypeScript annotation must stabilize the same shape:
 
 ```ts
 const StateSchema = z.object({
@@ -127,9 +127,9 @@ const detail = lift(gate.output, result =>
   result.status === "ready" ? result.detail : result.reason);
 ```
 
-`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access. Default parallel returns a branch-keyed record. Race returns `{ winner, result }` for the first successful branch and cancels the rest. Fanout `all` returns input-order results; quorum returns accepted successes in completion order.
+`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access. Default parallel returns a branch-keyed record. Race returns `{ winner, result }` for the first successful branch and cancels the rest. Fanout uses `over` with `do({ item, itemIndex })`; `all` returns input-order results, while quorum returns accepted successes in completion order.
 
-Loop is do-while and returns its final state through `.output`. Its transition replaces the complete state; it never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
+**Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
 
 ```ts
 const initial: State = { items: [], note: null };

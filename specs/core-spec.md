@@ -39,7 +39,9 @@
 - `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
-- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, and default schemas.
+- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and non-empty homogeneous tuple schemas without rest items.
+- A supported tuple schema MUST lower to array `SchemaIR` using its shared lowered item schema without retaining tuple arity.
+- Graph-boundary schema lowering MUST reject empty, heterogeneous, and rest tuple schemas as unsupported.
 - The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
 - `SchemaIR` MUST be a core-owned recursive schema union rather than duplicating or overloading the expression value model.

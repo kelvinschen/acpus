@@ -23,7 +23,7 @@ describe("workflow preparation", () => {
       expect(result.error.diagnostics).toContainEqual(expect.objectContaining({
         code: "TB003",
         source: expect.objectContaining({ file: expect.stringContaining("inline-capture.workflow.ts") }),
-        hint: expect.stringContaining("through input"),
+        hint: expect.stringContaining("through Task input"),
       }));
     });
   });

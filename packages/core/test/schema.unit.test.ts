@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
+import { schemaToJsonSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
 import { err } from "neverthrow";
 
 describe("schema boundary lowering", () => {
@@ -44,6 +44,50 @@ describe("schema boundary lowering", () => {
         notes: { kind: "string", optional: true, default: "", description: "Optional notes." },
       },
     });
+  });
+
+  it("lowers non-empty homogeneous Zod tuples to unbounded array schemas", () => {
+    const Choice = z.object({ label: z.string(), risk: z.string() });
+    const tuple = z.tuple([Choice, Choice, Choice]).describe("Three choices.");
+
+    expect(toSchemaIR(tuple)).toEqual({
+      kind: "array",
+      item: {
+        kind: "object",
+        fields: {
+          label: { kind: "string" },
+          risk: { kind: "string" },
+        },
+        required: ["label", "risk"],
+        additionalProperties: false,
+      },
+      description: "Three choices.",
+    });
+    expect(toSchemaIR(z.tuple([z.string(), z.string()]))).toEqual({
+      kind: "array",
+      item: { kind: "string" },
+    });
+    expect(schemaToJsonSchema(toSchemaIR(tuple))).toEqual({
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          risk: { type: "string" },
+        },
+        required: ["label", "risk"],
+        additionalProperties: false,
+      },
+    });
+  });
+
+  it("preserves the failing index path inside a homogeneous tuple candidate", () => {
+    expect(tryToSchemaIR(z.object({ values: z.tuple([z.string(), z.date()]) }))).toEqual(err({
+      type: "unsupported-schema",
+      path: "$schema.values[1]",
+      schemaKind: "date",
+      message: "$schema.values[1]: Zod 'date' is not supported as an Acpus graph-boundary schema",
+    }));
   });
 
   it("rejects unsupported graph-boundary schemas with the failing path", () => {

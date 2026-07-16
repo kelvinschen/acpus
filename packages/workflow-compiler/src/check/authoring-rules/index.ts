@@ -429,7 +429,7 @@ function callbackHint(): string {
 }
 
 function dependencyHint(): string {
-  return "Add the value to lift's explicit dependency list and read it from the matching callback parameter; use a named object dependency when names matter.";
+  return "Pass runtime values through lift's explicit dependencies, using a named object when useful. Do not pass helpers or functions; return plain data and apply md or template outside lift.";
 }
 
 function callbackIssue(message: string, node: ts.Node, hint: string): ExpressionCallbackIssue {
@@ -540,7 +540,7 @@ function taskDiagnostic(
         ...base,
         code: "TB003",
         message: `Inline task is not self-contained; it references ${issue.names.map(name => `'${name}'`).join(", ")}.`,
-        hint: `Pass captured values through input: { ${issue.names.join(", ")} } and read them from exec's ({ input }) parameter, for example exec: async ({ input }) => ({ value: input.${issue.names[0]} }).`,
+        hint: "Pass captured data through Task input. Move helper logic inside exec, dynamically import dependencies there, or use a reusable Task when module imports are required.",
       };
       break;
     case "ambiguous-task-callsite":
