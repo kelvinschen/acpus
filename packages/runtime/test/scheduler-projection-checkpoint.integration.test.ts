@@ -186,6 +186,48 @@ describe("scheduler projection checkpoint", () => {
     });
   });
 
+  it("drops completed checkpoints and recovers completed state from events", async () => {
+    await withRuntimeWorkspace("scheduler-projection-checkpoint-completed", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      let runId = "";
+      let completedVersion = 0;
+      try {
+        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        runId = run.id;
+        const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
+        const completed = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "complete-without-checkpoint",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.completed", payload: { frameKey: "root", result: { ok: true }, terminalReason: "root_completed" } },
+          ],
+        }));
+        completedVersion = completed.version;
+
+        expect(checkpointSequence(workspace, run.id)).toBeUndefined();
+        expect(store.scheduler.releaseRun(claim)).toBe(true);
+        expect(checkpointSequence(workspace, run.id)).toBeUndefined();
+      } finally {
+        store.close();
+      }
+
+      const reopened = await openExistingRuntimeStore(workspace);
+      try {
+        const recovered = throwSchedulerStoreResult(reopened!.scheduler.tryLoadRunSnapshot(runId));
+        expect(recovered.version).toBe(completedVersion);
+        expect(recovered.projection.run).toMatchObject({ status: "completed", paused: false });
+        expect(recovered.projection.frames.root).toMatchObject({ status: "completed", result: { ok: true } });
+        expect(reopened!.getRun(runId)).toMatchObject({ status: "completed", output: { ok: true } });
+      } finally {
+        reopened?.close();
+      }
+    });
+  });
+
   it("rolls back events and projection rows when checkpoint persistence fails", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-atomic", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

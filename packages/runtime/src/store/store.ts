@@ -971,10 +971,12 @@ class SqliteRuntimeStore implements RuntimeStore {
           VALUES (?, 2, 'run.completed', NULL, ?, ?, ?)
         `).run(forkId, stableJsonLine({ output: JSON.parse(forkOutputJson) as JsonValue }), now, `complete:${forkId}`);
       }
-      this.db.prepare(`
-        INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
-        VALUES (?, ?, ?, ?)
-      `).run(forkId, forkStatus === "completed" ? 2 : 1, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
+      if (forkStatus !== "completed") {
+        this.db.prepare(`
+          INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+          VALUES (?, 1, ?, ?)
+        `).run(forkId, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
+      }
       if (targetedReplacement && seedPlan) {
         this.schedulerStore().insertForkSeedEventsInTransaction({
           runId: forkId,
@@ -2684,9 +2686,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private maybePersistSchedulerCheckpoint(runId: string, eventSequence: number, projection: SchedulerProjection, now: string, release = false): void {
+    if (projection.run.status === "completed") {
+      this.db.prepare("DELETE FROM scheduler_projection_checkpoints WHERE run_id = ?").run(runId);
+      return;
+    }
     const existing = this.db.prepare("SELECT event_sequence FROM scheduler_projection_checkpoints WHERE run_id = ?").get(runId) as { event_sequence: number } | undefined;
     if (existing?.event_sequence === eventSequence) return;
-    const force = release || projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "canceled" || projection.run.status === "paused";
+    const force = release || projection.run.status === "failed" || projection.run.status === "canceled" || projection.run.status === "paused";
     if (existing && !force && eventSequence - existing.event_sequence < 256) return;
     this.db.prepare(`
       INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)

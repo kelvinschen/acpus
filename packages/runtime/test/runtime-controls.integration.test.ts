@@ -108,6 +108,12 @@ describe.concurrent("runtime controls and recovery", () => {
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
       const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
       expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({ sourceRunId: source.run.id });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_projection_checkpoints WHERE run_id = ?", fork!.run.id)).toEqual({ count: 0 });
+
+      const forkOfFork = await forkRun(workspace, fork!.run.id);
+      expect(forkOfFork?.run).toMatchObject({ status: "completed", fork: { sourceRunId: fork!.run.id } });
+      await expect(getRun(workspace, forkOfFork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_projection_checkpoints WHERE run_id = ?", forkOfFork!.run.id)).toEqual({ count: 0 });
     });
   });
 
