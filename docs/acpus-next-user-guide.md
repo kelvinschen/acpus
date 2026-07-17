@@ -79,9 +79,11 @@ const triaged = step("triage_issues").fanout({
       branches: {
         metadata() {
           const metadata = step("summarize_issue").task({
-            task: summarizeIssue,
             input: { id: item.id, title: item.title, labels: item.labels },
-            cwd: input.repoPath,
+            exec: async ({ input }) => ({
+              labelCount: input.labels.length,
+              titleLine: `${input.id}: ${input.title}`,
+            }),
           });
           return metadata.output;
         },
@@ -174,16 +176,21 @@ Acpus Next 的 AI-oriented 设计分布在三个 surface：
 2. **Operating surface**：compact text tree、incremental follow、copyable recovery commands、Last Active、intent-only tool calls、bounded output。
 3. **API surface**：默认返回 normalized compact projection；只有显式 target/raw 查询才扩大数据范围，减少 agent 在海量内部状态中迷路。
 
-当前 Acpus skill 还经过了一轮专门的 agent eval：
+仓库还内置了一套受控的 Acpus authoring evaluation harness。它把评估协议放在 bundled
+skill 之外，避免把测试答案复制进被测 workspace；当前固定设计是：
 
 | 维度 | 规模 |
 | --- | ---: |
-| workflow goals | 30 |
-| models | 3（gpt-5.5 / gpt-5.4 / gpt-5.4-mini） |
-| blank-agent runs | 90 |
-| 评估类别 | API ergonomics / skill gap / runtime error / runtime bug |
+| implementation-neutral requirements | 10 |
+| named Agents | 3（pi / claude / local traex） |
+| trials per requirement-Agent pair | 3 |
+| independent authoring sessions | 90 |
+| Agent node executions | 180（authoring + retrospective） |
 
-评估不是一个“准确率分数”。它保存了每轮 workflow、输入、trace、run state 与 agent debrief，把重复失败模式回写到 skill，同时把不应靠堆文档掩盖的问题保留为 API/runtime 待办。换句话说，skill 被当作产品接口来测试，而不是一次性写完的 README。
+这套 harness 不是一个“准确率分数”，也不是生产成熟度证明。authoring session 可以运行
+`workflow check`，但不会执行生成的 workflow；retrospective 是定性证据，不参与正式
+check metrics。benchmark rerun 需要显式授权。它的作用是让 skill 可以像产品接口一样被
+重复测试，而不是把一次性 debrief 包装成采用证据。
 
 ## 五种方案的总览
 
@@ -286,7 +293,7 @@ Dagu 甚至已有 edit-retry：用户可编辑失败 run 的历史 YAML、预览
 - Next 仍处于 alpha / foundation rewrite；在正式采用前应以当前 `specs/`、`acpus --help` 与实际 `workflow check` 为准。
 - TypeScript 并不意味着 workflow body 是普通运行时程序；`Expr<T>` 与普通 `T` 的边界是最重要的学习点。
 - fork reuse 不是无条件 memoization。Task 本身不保证确定性；副作用、输入变化、节点签名与 artifact provenance 仍需审查。Reusable Task 使用 live module reference，run 冻结的是引用与 IR，并不封存模块源码及依赖。
-- eval 证明了反馈闭环存在，也暴露了 digest、CLI discoverability、status projection 等问题；它不是生产成熟度认证。
+- authoring evaluation harness 证明项目具备可重复评估 skill 的机制；引用具体发现或 metrics 前仍需核对一次已授权 run 的分析产物，它本身不是生产成熟度认证。
 - 对新 workflow，优先从当前 skill 的同 Pattern 示例开始，并在每次 authoring 后运行 `acpus workflow check`。
 
 ## 资料来源
@@ -302,8 +309,8 @@ Dagu 甚至已有 edit-retry：用户可编辑失败 run 的历史 YAML、预览
 - [WebUI Spec](../specs/webui-spec.md)
 - [Hooks Spec](../specs/hooks-spec.md)
 - [Acpus skill](../packages/cli/skills/acpus/SKILL.md)
-- [Skill eval summary](../eval/acpus-skill-eval-20260709-011153/final-summary.md)
-- [Previous YAML README](../legacy/README.zh.md)
+- [Authoring evaluation harness](../eval/acpus-authoring-evaluation/README.md)
+- [Previous YAML README at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.zh.md)
 
 ### 外部项目一手资料
 

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Acpus — Let agents orchestrate agents</title>
+    <meta
+      name="description"
+      content="Give an agent a task. It writes a TypeScript workflow to coordinate any mix of ACP-compatible agents. Acpus executes the graph and tracks every run." />
+    <link rel="icon" href="./logo/logo-favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Google+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      rel="stylesheet" />
+    <link rel="stylesheet" href="./page.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#instrument">Skip to the demonstration</a>
+
+    <!-- ======================= top bar ======================= -->
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Acpus — back to top">
+        <img class="brand-mark" src="./logo/logo-opus-mark.svg" alt="" width="34" height="34" />
+        <span class="brand-word">Acpus</span>
+      </a>
+      <nav class="topnav" aria-label="Page">
+        <a href="#m-artifact">the file</a>
+        <a href="#m-cast">the cast</a>
+        <a href="#m-control">control</a>
+        <a href="#m-after">afterlife</a>
+        <a class="topnav-gh" href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub&nbsp;↗</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <!-- ======================= hero: the task ======================= -->
+      <section class="hero" aria-labelledby="hero-eyebrow">
+        <p class="eyebrow" id="hero-eyebrow">A workflow language &amp; runtime for agents orchestrating agents</p>
+
+        <p class="thesis">Describe the task. Let agents orchestrate agents.</p>
+        <p class="thesis-sub">
+          <span>your agent writes <code>workflow.ts</code></span>
+          <span>that carries any mix of ACP agents, </span>
+          <span>acpus keeps the run</span>
+        </p>
+
+        <div class="task-card plate-deep" id="taskCard">
+          <div class="task-head">
+            <span class="task-label">The task — your words</span>
+            <span class="task-corner" aria-hidden="true">✦</span>
+          </div>
+          <p class="task-text" id="taskText">
+            Verify every technical claim in this article against the code and the primary
+            documentation. Have independent agents check each claim, let another agent attack
+            the weak verdicts, and wait for my approval before writing the cited report.
+          </p>
+          <div class="task-foot">
+            <span class="task-hint">one sentence is the whole assignment</span>
+            <button class="btn btn-delegate" id="delegateBtn" type="button">
+              Delegate <span aria-hidden="true">⟶</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= the instrument ======================= -->
+      <section class="instrument" id="instrument" aria-label="Interactive demonstration">
+        <div class="stage-meta">
+          <span class="stage-tag">a scripted simulation — the commands, states &amp; semantics are real</span>
+          <span class="stage-live" id="runStatus" role="status" aria-live="polite">idle — awaiting a task</span>
+        </div>
+
+        <div class="stage" id="stage">
+          <!-- stage head: file tab + controls -->
+          <div class="stage-head">
+            <button class="filetab" id="fileTab" type="button" aria-expanded="false" aria-controls="codeOverlay" hidden>
+              <span class="filetab-arrow" aria-hidden="true">▸</span>
+              <span class="filetab-name">workflow.ts</span>
+              <span class="filetab-meta">5 steps · 3 agents · 1 signal</span>
+            </button>
+            <span class="stage-authoring" id="authoringStatus" hidden></span>
+            <span class="stage-controls">
+              <button class="ctl" id="skipBtn" type="button" hidden>skip ⏭</button>
+              <button class="ctl" id="pauseBtn" type="button" hidden>pause ⏸</button>
+              <button class="ctl" id="resumeBtn" type="button" hidden>resume ▶</button>
+              <button class="ctl" id="replayBtn" type="button" hidden>replay ↻</button>
+            </span>
+          </div>
+
+          <!-- stage body: code during authoring, code+graph while lowering, graph during run -->
+          <div class="stage-body" id="stageBody">
+            <div class="stage-idle" id="stageIdle">
+              <p>the stage is empty — delegate the task above</p>
+              <noscript><p>this demonstration needs JavaScript; the commands below are the real ones either way.</p></noscript>
+            </div>
+            <pre class="code" id="codePanel" hidden aria-label="workflow.ts, being authored"></pre>
+            <div class="graph-col" id="graphCol" hidden>
+              <div class="graph-viewport" id="graphViewport">
+                <div class="graph-zoom" id="graphZoom">
+                  <div class="graph" id="graph" aria-label="Run graph"></div>
+                </div>
+              </div>
+              <span class="graph-hint" id="graphHint" aria-hidden="true" hidden>⟵ the graph scrolls ⟶</span>
+            </div>
+            <div class="artifact-tray" id="artifactTray" hidden>
+              <span class="tray-label">artifacts</span>
+              <span class="tray-items" id="trayItems"></span>
+            </div>
+          </div>
+
+          <!-- terminal echo strip — always part of the stage, empty until check -->
+          <div class="term" id="term" aria-label="CLI echo"></div>
+        </div>
+
+        <!-- completion plate -->
+        <div class="complete-plate" id="completePlate" hidden>
+          <p class="complete-kicker">run 20260717143052A91F3E7C42D08B6E5F · completed</p>
+          <dl class="complete-stats">
+            <div><dt>nodes</dt><dd>5</dd></div>
+            <div><dt>agents</dt><dd>3</dd></div>
+            <div><dt>signal</dt><dd>yours</dd></div>
+            <div><dt>retries</dt><dd>1</dd></div>
+            <div><dt>artifacts</dt><dd>4</dd></div>
+          </dl>
+          <p class="complete-question">The run is durable fact. What happens to <code>workflow.ts</code>?</p>
+          <div class="complete-endings" role="group" aria-label="Choose an ending">
+            <button class="ending" data-ending="delete" type="button"><code>rm</code><span>delete it</span></button>
+            <button class="ending" data-ending="commit" type="button"><code>git commit</code><span>keep it</span></button>
+            <button class="ending" data-ending="catalog" type="button"><code>catalog</code><span>re-run it</span></button>
+          </div>
+          <p class="complete-note" id="endingNote" hidden></p>
+        </div>
+      </section>
+
+      <!-- ======================= I · the file is real ======================= -->
+      <section class="movement" id="m-artifact">
+        <header class="movement-head reveal">
+          <p class="movement-no">I</p>
+          <h2 class="movement-title">The file is real</h2>
+          <p class="movement-pull">Agent-authored. Human-reviewable.</p>
+        </header>
+        <div class="movement-body">
+          <p class="prose reveal">
+            The authoring agent's output is not a plan trapped inside a chat window — it is a
+            TypeScript module your project owns. Read it, diff it, review it in a pull request.
+            Before anything executes, <code>acpus workflow check</code> covers type diagnostics,
+            authoring rules and value flow, then lowers the module into a frozen, serializable
+            WorkflowIR — the same graph you just watched, inspectable before a single node runs.
+          </p>
+          <div class="duo">
+            <figure class="mini-term reveal">
+              <figcaption>check — before admission</figcaption>
+              <pre><code><span class="t-cmd">$ acpus workflow check workflow.ts</span>
+<span class="t-ok">✓</span> typescript            <span class="t-dim">0 problems</span>
+<span class="t-ok">✓</span> authoring rules       <span class="t-dim">0 problems</span>
+<span class="t-ok">✓</span> value flow            <span class="t-dim">0 problems</span>
+<span class="t-ok">✓</span> WorkflowIR frozen     <span class="t-dim">5 steps · 7 edges</span></code></pre>
+            </figure>
+            <figure class="mini-term reveal">
+              <figcaption>viz — the graph, pre-run</figcaption>
+              <pre><code><span class="t-cmd">$ acpus workflow viz workflow.ts --out graph.html</span>
+<span class="t-ok">✓</span> graph.html <span class="t-dim">— self-contained</span>
+  <span class="t-dim">the complete authored structure,</span>
+  <span class="t-dim">before a single node runs</span></code></pre>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= II · any ACP agent, one run ======================= -->
+      <section class="movement" id="m-cast">
+        <header class="movement-head reveal">
+          <p class="movement-no">II</p>
+          <h2 class="movement-title">Any ACP agent, one run</h2>
+          <p class="movement-pull">The graph is stable. The cast is a choice.</p>
+        </header>
+        <div class="movement-body">
+          <p class="prose reveal">
+            An Acpus workflow does not bind you to the agent that wrote it, nor to a single model
+            vendor. Through the <code>acpx</code> / ACP boundary one run can cast
+            <em>claude</em> to extract, <em>pi</em> to verify and <em>codex</em> to attack — and
+            recasting is a configuration change, not a rewrite. Fork the run with a new mapping
+            and compatible completed work is reused inside dependency boundaries, not re-done.
+          </p>
+          <ul class="roster reveal" aria-label="Built-in named agents">
+            <li>codex</li><li>claude</li><li>pi</li><li>trae</li><li>opencode</li>
+            <li>gemini</li><li>cursor</li><li>copilot</li><li>qwen</li>
+            <li class="roster-more">+ any raw ACP command</li>
+          </ul>
+
+          <div class="toy reveal" id="recastToy">
+            <p class="toy-head">recast a node — watch the fork</p>
+            <div class="toy-chain" id="toyChain"></div>
+            <div class="toy-picker" id="toyPicker" hidden></div>
+            <p class="toy-echo" id="toyEcho">click a node's agent badge to recast it</p>
+            <p class="toy-result" id="toyResult" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= III · control is durable ======================= -->
+      <section class="movement" id="m-control">
+        <header class="movement-head reveal">
+          <p class="movement-no">III</p>
+          <h2 class="movement-title">Control is durable</h2>
+          <p class="movement-pull">The agents do the work. Acpus keeps the run on track.</p>
+        </header>
+        <div class="movement-body">
+          <p class="prose reveal">
+            Every run is held in workspace-local SQLite with frozen run files; the CLI tree and
+            the web graph are two projections of the same durable state. Pause writes a durable
+            gate. A signal is a durable input. A retry targets exactly one node. A fork opens a
+            new run that reuses compatible completed facts instead of starting over.
+          </p>
+          <div class="keys">
+            <div class="key reveal">
+              <code>acpus runs inspect {run_id} --follow</code>
+              <p>Watch the same state the web graph draws — compact, incremental, scriptable.</p>
+            </div>
+            <div class="key reveal">
+              <code>acpus runs pause {run_id}</code>
+              <p>Write a durable pause gate; active attempts wind down. <span class="key-note">you tried this mid-run</span></p>
+            </div>
+            <div class="key reveal">
+              <code>acpus runs resume {run_id}</code>
+              <p>Clear the gate; the scheduler drives on.</p>
+            </div>
+            <div class="key reveal">
+              <code>acpus runs retry {run_id} --target {node_key}</code>
+              <p>Re-run exactly one failed node, never the whole graph. <span class="key-note">fired once in your run</span></p>
+            </div>
+            <div class="key reveal">
+              <code>acpus runs signal {run_id} --target publish_gate --payload '{"approved":true}'</code>
+              <p>Feed a waiting signal; the run continues. <span class="key-note">you were this signal</span></p>
+            </div>
+            <div class="key reveal">
+              <code>acpus runs fork {run_id} --agents review=codex</code>
+              <p>Open a new run with a new cast; compatible facts carry over.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= IV · run once, or keep it ======================= -->
+      <section class="movement" id="m-after">
+        <header class="movement-head reveal">
+          <p class="movement-no">IV</p>
+          <h2 class="movement-title">Run once — or keep it</h2>
+          <p class="movement-pull">Disposable for the task. Durable when retained.</p>
+        </header>
+        <div class="movement-body">
+          <p class="prose reveal">
+            Not every workflow deserves permanence, and none needs a second format to earn it.
+            The same <code>workflow.ts</code> serves a one-off afternoon and a team's recurring
+            machinery — the difference is only what you do with the file afterwards.
+          </p>
+          <div class="endings-grid">
+            <div class="ending-plate reveal" id="plate-delete">
+              <code class="ending-cmd">rm workflow.ts</code>
+              <p class="ending-pull">Disposable for the task.</p>
+              <p class="prose-small">One-off research or triage ends here. The run record stays in the workspace; the file goes.</p>
+            </div>
+            <div class="ending-plate reveal" id="plate-commit">
+              <code class="ending-cmd">git commit workflow.ts</code>
+              <p class="ending-pull">Durable when retained.</p>
+              <p class="prose-small">An orchestration that solved a recurring problem becomes a reviewed, versioned asset.</p>
+            </div>
+            <div class="ending-plate reveal" id="plate-catalog">
+              <code class="ending-cmd">.acpus/workflows/fact-check/</code>
+              <p class="ending-pull">Ready to re-run.</p>
+              <p class="prose-small">Keep it in the catalog — or let it travel with a skill — and run it again with new input.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================= coda ======================= -->
+      <section class="coda">
+        <p class="coda-line reveal">Your agent writes the workflow. Any mix of ACP agents can carry it out.</p>
+        <p class="coda-line reveal">Acpus runs and tracks the work.</p>
+        <a class="btn btn-coda reveal" href="https://github.com/kelvinschen/acpus" rel="noopener">Ask my agent to build a workflow&nbsp;↗</a>
+      </section>
+    </main>
+
+    <!-- ======================= footer ======================= -->
+    <footer class="footer">
+      <p class="footer-note">
+        This page is a scripted simulation; the commands, states and semantics are the real ones.
+      </p>
+      <nav class="footer-nav" aria-label="Footer">
+        <a href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub ↗</a>
+      </nav>
+    </footer>
+
+    <script src="./page.js" defer></script>
+  </body>
+</html>

@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "legacy/page/**"
+      - "page/**"
+      - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +25,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: legacy/page
+          path: page
 
   deploy:
     needs: build
