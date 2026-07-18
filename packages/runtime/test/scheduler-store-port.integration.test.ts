@@ -34,26 +34,36 @@ describe("scheduler store port", () => {
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
           ],
         });
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+          runId: run.id,
+          nodeKey: "require_ready~1",
+          nodeId: "require_ready",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "inspection-read:attempt",
+        });
 
         const advanced = store.readRunInspection(run.id, admitted.cursor.eventSequence);
-        expect(advanced.events.map(event => event.sequence)).toEqual([2, 3]);
-        expect(advanced.cursor).toEqual({ eventSequence: 3, progressVersion: 0 });
-        expect(advanced.run?.dynamic?.version).toBe(3);
+        expect(advanced.events.map(event => event.sequence)).toEqual([2, 3, 4, 5]);
+        expect(advanced.cursor).toEqual({ eventSequence: 5, progressVersion: 0 });
+        expect(advanced.run?.dynamic?.version).toBe(5);
         expect(advanced.run?.dynamic?.nodeInstances).toEqual(expect.arrayContaining([
-          expect.objectContaining({ nodeKey: "require_ready~1", status: "ready" }),
+          expect.objectContaining({ nodeKey: "require_ready~1", status: "running" }),
         ]));
 
         store.writeNodeProgress({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           context: { used: 10, size: 100 },
         });
         const progressed = store.readRunInspection(run.id, advanced.cursor.eventSequence);
         expect(progressed.events).toEqual([]);
-        expect(progressed.cursor).toEqual({ eventSequence: 3, progressVersion: 1 });
+        expect(progressed.cursor).toEqual({ eventSequence: 5, progressVersion: 1 });
         expect(progressed.run?.dynamic?.progress).toEqual(expect.arrayContaining([
           expect.objectContaining({ nodeKey: "require_ready~1", context: { used: 10, size: 100 } }),
         ]));
@@ -229,6 +239,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           output: { tail: "hel", totalBytes: 3, truncated: false },
@@ -242,6 +253,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           message: "still running",
@@ -293,6 +305,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: "attempt_missing",
           attemptNo: 1,
+          ownerEpoch: 1,
           kind: "agent",
           status: "running",
           message: "late",
@@ -328,6 +341,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: first.attemptId,
           attemptNo: first.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           message: "first",
@@ -361,6 +375,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: second.attemptId,
           attemptNo: second.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           message: "second",
@@ -373,6 +388,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: first.attemptId,
           attemptNo: first.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           message: "late first",
@@ -413,6 +429,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "completed",
           message: "done",
@@ -425,6 +442,7 @@ describe("scheduler store port", () => {
           nodeId: "require_ready",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           kind: "agent",
           status: "running",
           message: "late running",
@@ -528,18 +546,20 @@ describe("scheduler store port", () => {
           nodeKey: "other~1",
           nodeId: "other",
           ownerEpoch: claim.ownerEpoch,
+          expectedVersion: attempt.snapshot.version,
           idempotencyKey: "typed:attempt:start",
         });
         expect(startConflict.isErr()).toBe(true);
         if (startConflict.isOk()) throw new Error("expected attempt start idempotency conflict");
         expect(startConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:attempt:start", runId: run.id });
 
-        throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
+        const paused = throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
         const pausedStart = store.scheduler.tryStartAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: claim.ownerEpoch,
+          expectedVersion: paused.version,
           idempotencyKey: "typed:attempt:paused",
         });
         expect(pausedStart.isErr()).toBe(true);
@@ -1254,30 +1274,45 @@ describe("scheduler store port", () => {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const first = store.scheduler.claimRun(run.id, "owner-a", 60_000);
         readyNode(store, run.id, first!, "attempt-ready-node");
+        const admissionVersion = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: first!.ownerEpoch,
+          expectedVersion: admissionVersion,
           idempotencyKey: "attempt:start",
         });
         expect(attempt).toMatchObject({ attemptNo: 1 });
-        expect(throwingSchedulerStore(store.scheduler).startAttempt({
+        const replay = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: first!.ownerEpoch,
+          expectedVersion: admissionVersion,
           idempotencyKey: "attempt:start",
-        })).toEqual(attempt);
+        });
+        expect(replay).toMatchObject({
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          disposition: "existing",
+        });
+        expect(replay.snapshot).toEqual(attempt.snapshot);
         expect(() => throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "other~1",
           nodeId: "other",
           ownerEpoch: first!.ownerEpoch,
+          expectedVersion: admissionVersion,
           idempotencyKey: "attempt:start",
         })).toThrow("conflicts");
         expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("started");
-        expect(() => throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch)).toThrow("still active");
+        expect(() => throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded({
+          runId: run.id,
+          currentOwnerEpoch: first!.ownerEpoch,
+          expiredOwnerEpoch: first!.ownerEpoch,
+          expectedVersion: attempt.snapshot.version,
+        })).toThrow("still active");
 
         const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
         try {
@@ -1296,7 +1331,12 @@ describe("scheduler store port", () => {
           idempotencyKey: "attempt:late",
         })).toThrow("owner epoch is not active");
 
-        const superseded = throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded(run.id, first!.ownerEpoch);
+        const superseded = throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded({
+          runId: run.id,
+          currentOwnerEpoch: second!.ownerEpoch,
+          expiredOwnerEpoch: first!.ownerEpoch,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
+        });
         expect(superseded.projection.attempts[attempt.attemptId]).toMatchObject({ status: "superseded" });
         expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("superseded");
       } finally {
@@ -1390,7 +1430,7 @@ describe("scheduler store port", () => {
         expect(paused.projection.run).toMatchObject({ status: "paused", paused: true });
         expect(paused.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "paused" });
         expect(paused.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", readinessSequence: 1, statusReason: "paused" });
-        expect(paused.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "ready", readinessSequence: 1 });
+        expect(paused.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "running", readinessSequence: 1 });
         expect(throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,

@@ -159,13 +159,7 @@ describe("scheduler agent overrides and forks", () => {
             runId: source.id,
             ownerId: "source-owner",
             store,
-          })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-          await expect(advanceFrozenRun({
-            cwd: workspace,
-            runId: source.id,
-            ownerId: "source-owner",
-            store,
-          })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+          })).resolves.toMatchObject({ status: "failed", started: 2, completed: 1, failed: 1 });
 
           const firstKey = deriveInstanceKey(appendNode([], "first"));
           expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(source.id).projection.instances[firstKey]).toMatchObject({
@@ -247,13 +241,7 @@ describe("scheduler agent overrides and forks", () => {
             runId: source.id,
             ownerId: "source-owner",
             store,
-          })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-          await expect(advanceFrozenRun({
-            cwd: workspace,
-            runId: source.id,
-            ownerId: "source-owner",
-            store,
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
           const fork = await store.forkRun(source.id, { target: "second" });
           const firstKey = deriveInstanceKey(appendNode([], "first"));
@@ -289,13 +277,7 @@ describe("scheduler agent overrides and forks", () => {
             runId: source.id,
             ownerId: "source-owner",
             store,
-          })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-          await expect(advanceFrozenRun({
-            cwd: workspace,
-            runId: source.id,
-            ownerId: "source-owner",
-            store,
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
           const fork = await store.forkRun(source.id, { agentOverrides: {} });
 

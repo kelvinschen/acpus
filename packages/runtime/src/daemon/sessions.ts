@@ -1,34 +1,48 @@
-import { advanceRuntimeRun } from "../runs/advance-runtime.js";
-import type { ActiveAttempt, AdvanceRunSummary } from "../scheduler/advance.js";
 import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect } from "../scheduler/control.js";
-import type { RunOwnerClaim } from "../scheduler/store-port.js";
+import {
+  createRuntimeRunScheduler,
+  triggerHooksForCommittedRowsForRun,
+  type RunExecution,
+  type RunExecutionExit,
+  type RuntimeHookCursor,
+  type RuntimeRunScheduler,
+} from "../scheduler/runtime-runner.js";
 import type { HookRunner } from "../hooks/runner.js";
-import { triggerHooksForCommittedRowsForRun, type RuntimeHookCursor } from "../scheduler/runtime-runner.js";
 import type { RunDetails, RuntimeStore } from "../store/store.js";
 import { DaemonRequestError, type DaemonControlIntent, type DaemonControlResult } from "./socket.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
 
 type ActiveRunSession = {
-  promise?: Promise<AdvanceRunSummary>;
-  claim?: RunOwnerClaim;
-  ownerEpoch?: number;
-  ownerEpochWaiters: Array<() => void>;
-  activeAttempts: Map<string, AbortController>;
-  hookCursor: RuntimeHookCursor;
+  execution: RunExecution;
+  promise: Promise<RunExecutionExit>;
+};
+
+type ExecutionFailure = {
+  eventCount: number;
 };
 
 export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
+  private readonly failures = new Map<string, ExecutionFailure>();
   private readonly progressWriter: CoalescingNodeProgressWriter;
+  private readonly scheduler: RuntimeRunScheduler;
 
   constructor(
     private readonly cwd: string,
     private readonly store: RuntimeStore,
     private readonly hookRunner: HookRunner | undefined,
-    private readonly runtimeConfiguration: RuntimeConfiguration,
+    runtimeConfiguration: RuntimeConfiguration,
   ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
+    this.scheduler = createRuntimeRunScheduler({
+      cwd,
+      store,
+      maxLeafConcurrency: runtimeConfiguration.runMaxLeafConcurrency,
+      agentHostPolicy: runtimeConfiguration.agentHostPolicy,
+      ...(hookRunner === undefined ? {} : { hookRunner }),
+      progressWriter: this.progressWriter,
+    });
   }
 
   activeCount(): number {
@@ -44,13 +58,10 @@ export class RunExecutionSessions {
   }
 
   async stopExecutors(timeoutMs: number): Promise<void> {
-    for (const session of this.sessions.values()) {
-      if (session.claim) this.store.scheduler.releaseRun(session.claim);
-      for (const controller of session.activeAttempts.values()) controller.abort();
-    }
+    for (const session of this.sessions.values()) session.execution.stop();
     let timeout: NodeJS.Timeout | undefined;
     await Promise.race([
-      Promise.allSettled([...this.sessions.values()].flatMap(session => session.promise ? [session.promise] : [])),
+      Promise.allSettled([...this.sessions.values()].map(session => session.promise)),
       new Promise<void>(resolve => {
         timeout = setTimeout(resolve, timeoutMs);
       }),
@@ -61,34 +72,52 @@ export class RunExecutionSessions {
   start(runId: string): RunDetails {
     const existing = this.store.getRun(runId);
     if (!existing) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${runId}' was not found.`);
-    if (!this.sessions.has(runId) && !isTerminal(existing.status)) {
-      const session = createSession(this.store.getLastRunEventSequence(runId));
-      this.sessions.set(runId, session);
-      session.promise = this.run(runId);
+    if (isTerminal(existing.status)) {
+      this.failures.delete(runId);
+      return existing;
     }
+    const failure = this.failures.get(runId);
+    if (failure?.eventCount === existing.eventCount) return existing;
+    if (failure) this.failures.delete(runId);
+    if (!this.sessions.has(runId)) this.startExecution(runId);
     return existing;
   }
 
   async control(intent: DaemonControlIntent): Promise<DaemonControlResult | undefined> {
     const session = this.sessions.get(intent.runId);
     if (!session) return this.controlWithShortSession(intent);
-    if (intent.type === "fork") return await this.fork(intent);
-    if (!session.ownerEpoch) {
-      await Promise.race([waitForOwnerEpoch(session), session.promise]);
-      if (!session.ownerEpoch) return undefined;
-    }
-    const { snapshot, effect } = applySchedulerControlIntent(this.store, controlIntent(intent), session.ownerEpoch);
-    this.triggerHooks(intent.runId, session.hookCursor);
-    if (intent.type === "pause" || intent.type === "cancel" && intent.target === undefined) {
-      for (const controller of session.activeAttempts.values()) controller.abort();
-    } else if (intent.type === "cancel") {
-      for (const [attemptId, controller] of session.activeAttempts) {
-        if (snapshot.projection.attempts[attemptId]?.status !== "started") controller.abort();
-      }
-    }
+    if (intent.type === "fork") return this.fork(intent);
+
+    const ownerEpoch = await session.execution.ownerEpoch;
+    if (ownerEpoch === undefined) return undefined;
+    const { effect, reopened } = applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch);
+    session.execution.wake();
+
+    const restartsSession = reopened;
+    const endsSession = intent.type === "pause" || intent.type === "cancel" && intent.target === undefined;
+    if (restartsSession) session.execution.stop();
+    if (restartsSession || endsSession) await Promise.allSettled([session.promise]);
+
     const run = this.store.getRun(intent.runId);
     if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
+    if (restartsSession && !this.sessions.has(intent.runId)) this.startExecution(intent.runId);
     return controlResult(effect, run);
+  }
+
+  private startExecution(runId: string): void {
+    this.failures.delete(runId);
+    const execution = this.scheduler.start({ runId, ownerId: `daemon:${process.pid}:${runId}` });
+    const session: ActiveRunSession = { execution, promise: execution.result };
+    session.promise = session.promise.finally(() => {
+      this.progressWriter.flushMatching(progress => progress.runId === runId);
+      if (this.sessions.get(runId) === session) this.sessions.delete(runId);
+    });
+    this.sessions.set(runId, session);
+    void session.promise.catch(() => {
+      if (this.sessions.has(runId)) return;
+      const run = this.store.getRun(runId);
+      if (run) this.failures.set(runId, { eventCount: run.eventCount });
+    });
   }
 
   private async controlWithShortSession(intent: DaemonControlIntent): Promise<DaemonControlResult> {
@@ -96,21 +125,26 @@ export class RunExecutionSessions {
     if (!existing) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
     const claim = this.store.scheduler.claimRun(intent.runId, `daemon:${process.pid}:${intent.runId}:control`, 30_000);
     if (!claim) throw new DaemonRequestError("CONTROL_CONFLICT", `Run '${intent.runId}' is currently controlled by another owner.`);
-    const session = createSession(this.store.getLastRunEventSequence(intent.runId));
-    session.claim = claim;
-    session.ownerEpoch = claim.ownerEpoch;
-    this.sessions.set(intent.runId, session);
+    const hookCursor = { sequence: this.store.getLastRunEventSequence(intent.runId) };
+    let result: DaemonControlResult;
+    let reopened = false;
     try {
       if (intent.type === "fork") return await this.fork(intent);
-      const { effect } = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
-      this.triggerHooks(intent.runId, session.hookCursor);
+      const control = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
+      reopened = control.reopened;
+      this.triggerHooks(intent.runId, hookCursor);
       const run = this.store.getRun(intent.runId);
       if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-      return controlResult(effect, run);
+      result = controlResult(control.effect, run);
     } finally {
       this.store.scheduler.releaseRun(claim);
-      if (this.sessions.get(intent.runId) === session) this.sessions.delete(intent.runId);
     }
+    if ((continuesAfterShortControl(intent) || reopened)
+      && !this.sessions.has(intent.runId)
+      && !isTerminal(result.run.status)) {
+      this.start(intent.runId);
+    }
+    return result;
   }
 
   private async fork(intent: Extract<DaemonControlIntent, { type: "fork" }>): Promise<DaemonControlResult> {
@@ -137,65 +171,11 @@ export class RunExecutionSessions {
       hookCursor,
     });
   }
-
-  private async run(runId: string): Promise<AdvanceRunSummary> {
-    const session = this.sessions.get(runId);
-    try {
-      return await advanceRuntimeRun(this.cwd, this.store, runId, `daemon:${process.pid}:${runId}`, {
-        maxLeafConcurrency: this.runtimeConfiguration.runMaxLeafConcurrency,
-        agentHostPolicy: this.runtimeConfiguration.agentHostPolicy,
-        onClaim: claim => {
-          if (claim.runId === runId && session) {
-            session.claim = claim;
-            session.ownerEpoch = claim.ownerEpoch;
-            resolveOwnerEpochWaiters(session);
-          }
-        },
-        onRelease: claim => {
-          if (claim.runId === runId && session?.ownerEpoch === claim.ownerEpoch) {
-            delete session.claim;
-            delete session.ownerEpoch;
-          }
-        },
-        onActiveAttempt: attempt => {
-          if (attempt.runId !== runId || !session) return undefined;
-          const dispose = trackActiveAttempt(session, attempt);
-          return () => {
-            this.progressWriter.flushMatching(progress => progress.runId === attempt.runId && progress.nodeKey === attempt.nodeKey);
-            dispose();
-          };
-        },
-        ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
-        ...(session === undefined ? {} : { hookCursor: session.hookCursor }),
-        progressWriter: this.progressWriter,
-      });
-    } finally {
-      this.progressWriter.flushMatching(progress => progress.runId === runId);
-      if (session) resolveOwnerEpochWaiters(session);
-      if (this.sessions.get(runId) === session) this.sessions.delete(runId);
-    }
-  }
 }
 
-function createSession(sequence: number): ActiveRunSession {
-  return { ownerEpochWaiters: [], activeAttempts: new Map(), hookCursor: { sequence } };
-}
-
-function waitForOwnerEpoch(session: ActiveRunSession): Promise<void> {
-  if (session.ownerEpoch) return Promise.resolve();
-  return new Promise(resolve => session.ownerEpochWaiters.push(resolve));
-}
-
-function resolveOwnerEpochWaiters(session: ActiveRunSession): void {
-  const waiters = session.ownerEpochWaiters.splice(0);
-  for (const resolve of waiters) resolve();
-}
-
-function trackActiveAttempt(session: ActiveRunSession, attempt: ActiveAttempt): () => void {
-  session.activeAttempts.set(attempt.attemptId, attempt.controller);
-  return () => {
-    if (session.activeAttempts.get(attempt.attemptId) === attempt.controller) session.activeAttempts.delete(attempt.attemptId);
-  };
+function continuesAfterShortControl(intent: DaemonControlIntent): boolean {
+  return intent.type === "signal"
+    || intent.type === "cancel" && intent.target !== undefined;
 }
 
 function controlIntent(intent: DaemonControlIntent): RunControlIntent {

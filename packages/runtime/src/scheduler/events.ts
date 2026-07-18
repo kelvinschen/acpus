@@ -37,7 +37,7 @@ export type SchedulerEvent =
   | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>
   // Tracks one scheduler-visible leaf attempt; executor-internal sub-attempts are not events here.
-  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; deadlineAt?: string }>
+  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; deadlineAt?: string }>
   | BaseEvent<"attempt.completed", { attemptId: string; result?: JsonValue }>
   | BaseEvent<"attempt.failed", { attemptId: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"attempt.timed_out", { attemptId: string; error?: JsonObject }>

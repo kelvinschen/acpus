@@ -5,7 +5,9 @@ export type TaskArtifactRegistration = {
   id: string;
   runId: string;
   nodeKey: string;
+  attemptId: string;
   attempt: number;
+  ownerEpoch: number;
   mediaType?: string;
   digest: string;
   size: number;
@@ -22,7 +24,9 @@ export type TaskProcessRequest = {
   artifact: {
     runId: string;
     nodeKey: string;
+    attemptId: string;
     attempt: number;
+    ownerEpoch: number;
     runDir: string;
     paths: Record<string, string>;
   };

@@ -1,11 +1,20 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { ok, type Result } from "neverthrow";
-import type { SchedulerEvent } from "./events.js";
-import { ancestorGroupMembersForNode } from "./membership.js";
-import { throwSchedulerStoreResult, type AttemptCommitInput, type RunOwnerClaim, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "./store-port.js";
-import type { GroupMember, NodeInstance, SchedulerProjection } from "./types.js";
-import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
+import { selectNextAdmission } from "./admission.js";
+import type { SchedulerEvent } from "./events.js";
+import {
+  throwSchedulerStoreResult,
+  type AttemptCommitInput,
+  type RunOwnerClaim,
+  type SchedulerSnapshot,
+  type SchedulerStoreError,
+  type SchedulerStorePort,
+  type SchedulerStoreResult,
+} from "./store-port.js";
+import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
+import type { NodeInstance, SchedulerProjection } from "./types.js";
+import { createVersionedWakeup, type VersionedWakeup } from "./wakeup.js";
 
 export type NodeAttemptContext = {
   runId: string;
@@ -32,18 +41,20 @@ export type AdvanceRunInput = {
   executor: NodeExecutor;
   leaseMs?: number;
   maxLeafConcurrency?: number;
-  localConcurrencyLimitFor?: (groupKey: string, projection: SchedulerProjection) => number | undefined;
+  signalNodeIds?: ReadonlySet<string>;
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
+  wakeup?: VersionedWakeup;
+  shouldStop?: () => boolean;
   onClaim?: (claim: RunOwnerClaim) => void;
   onRelease?: (claim: RunOwnerClaim) => void;
-  onActiveAttempt?: (attempt: ActiveAttempt) => void | (() => void);
+  onCheckpoint?: (snapshot: SchedulerSnapshot) => void;
   now?: () => Date;
 };
 
-export type ActiveAttempt = {
+type ActiveAttempt = {
   runId: string;
   nodeKey: string;
   nodeId: string;
@@ -64,126 +75,227 @@ export type AdvanceRunSummary = {
   active: number;
 };
 
+type Counters = {
+  started: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+};
+
+type ActiveExecution = {
+  attempt: ActiveAttempt;
+  instance: NodeInstance;
+  settlement?: Promise<void>;
+  result?: AttemptCommitInput["result"];
+};
+
+type SchedulerStepResult =
+  | { status: "quiescent"; snapshot: SchedulerSnapshot }
+  | { status: "lease_lost"; snapshot: SchedulerSnapshot };
+
+type DerivedTransitionDrainResult = SchedulerStepResult
+  | { status: "stopped"; snapshot: SchedulerSnapshot };
+
 const DEFAULT_LEASE_MS = 30_000;
+const UNCOORDINATED_CONTROL_POLL_MS = 250;
+const COOPERATIVE_YIELD_QUANTUM = 256;
 export const DEFAULT_MAX_LEAF_CONCURRENCY = 32;
 
 export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSummary> {
   const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
   const claim = input.store.claimRun(input.runId, input.ownerId, leaseMs);
   if (!claim) return summary(input.runId, "lease_lost");
-  input.onClaim?.(claim);
+
+  const wakeup = input.wakeup ?? createVersionedWakeup();
+  const coordinatedWakeup = input.wakeup !== undefined;
+  const now = input.now ?? (() => new Date());
+  const counters: Counters = { started: 0, completed: 0, failed: 0, cancelled: 0 };
+  const active = new Map<string, ActiveExecution>();
+  const settledAttemptIds: string[] = [];
+  let leaseLost = false;
+  const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, active, () => {
+    leaseLost = true;
+    wakeup.wake();
+  });
+
   try {
-    const now = input.now ?? (() => new Date());
-    const alreadyTerminal = terminalSummary(unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)).projection, claim);
-    if (alreadyTerminal) return alreadyTerminal;
+    safeObserver(() => input.onClaim?.(claim));
+    const bootstrap = appendBootstrapEvents(input, claim);
+    if (bootstrap === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
 
-    appendBootstrapEvents(input, claim);
-    const deadlineDrain = await drainDerivedTransitions(input.store, input.runId, claim, leaseMs, now, input.materialize);
-    if (deadlineDrain.status === "lease_lost") return summary(input.runId, "lease_lost");
-    const deadlineRecovered = deadlineDrain.snapshot;
-    const recovered = unwrapStoreResult(input.store.tryLoadRunSnapshot(deadlineRecovered.runId));
-    const expiredOwnerEpochs = [...new Set(Object.values(recovered.projection.attempts)
-      .filter(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)
-      .map(attempt => attempt.ownerEpoch))];
-    for (const ownerEpoch of expiredOwnerEpochs) unwrapStoreResult(input.store.tryMarkExpiredOwnerAttemptsSuperseded(input.runId, ownerEpoch));
-
-    let initial = deadlineRecovered;
-    if (expiredOwnerEpochs.length > 0) {
-      const initialDrain = await drainDerivedTransitions(input.store, input.runId, claim, leaseMs, now, input.materialize);
-      if (initialDrain.status === "lease_lost") return summary(input.runId, "lease_lost");
-      initial = initialDrain.snapshot;
+    let drained = await drainDerivedTransitions(input, claim, leaseMs, now);
+    if (drained.status === "stopped") {
+      await stopLocalExecutions(active);
+      return withCounters(summary(input.runId, "lease_lost"), claim, counters);
     }
-    const terminal = terminalSummary(initial.projection, claim);
-    if (terminal) return terminal;
+    if (drained.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+    checkpoint(input, drained.snapshot);
+    let recovered = await recoverExpiredOwnerAttempts(input, claim, drained.snapshot);
+    if (recovered.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
 
-    const maxLeafConcurrency = input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY;
-    const ready = selectReadyInstances(initial.projection, maxLeafConcurrency, input.localConcurrencyLimitFor);
-    if (ready.length === 0) return idleSummary(initial.projection, claim);
+    let pumpTurns = 0;
+    for (;;) {
+      if (leaseLost) {
+        abortAll(active);
+        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      }
+      if (input.shouldStop?.()) {
+        await stopLocalExecutions(active);
+        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      }
+      pumpTurns += 1;
+      if (pumpTurns % COOPERATIVE_YIELD_QUANTUM === 0) {
+        if (!input.store.heartbeatRun(claim, leaseMs)) {
+          leaseLost = true;
+          continue;
+        }
+        await yieldToEventLoop();
+        continue;
+      }
+      const observedWakeVersion = wakeup.current();
 
-    const waitNow = now();
-    const waitEvents = ready.flatMap(instance => input.awaitableEventsFor?.(instance, initial.projection, waitNow) ?? []);
-    if (waitEvents.length > 0) {
-      unwrapStoreResult(input.store.tryAppendSchedulerEvents({
-        runId: input.runId,
-        expectedVersion: initial.version,
-        ownerEpoch: claim.ownerEpoch,
-        idempotencyKey: `scheduler:await:${input.runId}:${initial.version}`,
-        events: waitEvents,
-      }));
-    }
-    const afterWait = waitEvents.length === 0
-      ? { status: "quiescent" as const, snapshot: initial }
-      : await drainDerivedTransitions(input.store, input.runId, claim, leaseMs, now, input.materialize);
-    if (afterWait.status === "lease_lost") return summary(input.runId, "lease_lost");
-    const executable = waitEvents.length === 0
-      ? ready
-      : selectReadyInstances(afterWait.snapshot.projection, maxLeafConcurrency, input.localConcurrencyLimitFor);
-    if (executable.length === 0) {
-      const latest = afterWait.snapshot;
-      return terminalSummary(latest.projection, claim) ?? idleSummary(latest.projection, claim);
-    }
+      drained = await drainDerivedTransitions(input, claim, leaseMs, now);
+      if (drained.status === "stopped") {
+        await stopLocalExecutions(active);
+        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      }
+      if (drained.status === "lease_lost") {
+        leaseLost = true;
+        continue;
+      }
+      let snapshot = drained.snapshot;
+      checkpoint(input, snapshot);
+      if (input.shouldStop?.()) {
+        await stopLocalExecutions(active);
+        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      }
+      abortDurablyInterruptedExecutions(snapshot.projection, active);
 
-    const counters = { started: 0, completed: 0, failed: 0, cancelled: 0, leaseLost: false };
-    const active = new Map<string, AbortController>();
-    const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, counters, active);
-    let derivedQueue = Promise.resolve();
-    try {
-      await Promise.all(executable.map(async instance => {
-        if (counters.leaseLost) return;
-        await runInstance(input, claim, now, instance, counters, active);
-        if (counters.leaseLost) return;
-        await (derivedQueue = derivedQueue.then(async () => {
-          if (counters.leaseLost) return;
-          const drained = await drainDerivedTransitions(input.store, input.runId, claim, leaseMs, now, input.materialize);
-          if (drained.status === "lease_lost") {
-            counters.leaseLost = true;
-            for (const controller of active.values()) controller.abort();
-            return;
+      const settledAttemptId = settledAttemptIds.shift();
+      if (settledAttemptId !== undefined) {
+        const execution = active.get(settledAttemptId);
+        if (!execution?.result) continue;
+        const commit = commitExecutionResult(input, claim, execution, counters);
+        active.delete(settledAttemptId);
+        if (commit.status === "lease_lost") {
+          leaseLost = true;
+          continue;
+        }
+        snapshot = commit.snapshot;
+        checkpoint(input, snapshot);
+        continue;
+      }
+
+      const terminal = terminalSummary(snapshot.projection, claim);
+      if (terminal) {
+        abortAll(active);
+        if (active.size > 0) {
+          await waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, now, coordinatedWakeup });
+          continue;
+        }
+        if (wakeup.current() !== observedWakeVersion) continue;
+        return withCounters(terminal, claim, counters);
+      }
+
+      const admission = selectNextAdmission({
+        projection: snapshot.projection,
+        maxLeafConcurrency: input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY,
+        ownerLocalUnsettled: unresolvedExecutionCount(active),
+        signalNodeIds: input.signalNodeIds ?? new Set(),
+      });
+      if (admission?.kind === "signal") {
+        const events = input.awaitableEventsFor?.(admission.instance, snapshot.projection, now()) ?? [];
+        if (events.length === 0) throw new Error(`Signal instance '${admission.instance.nodeKey}' produced no awaiting transition.`);
+        const appended = input.store.tryAppendSchedulerEvents({
+          runId: input.runId,
+          expectedVersion: snapshot.version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: `scheduler:await:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
+          events,
+        });
+        if (appended.isErr()) {
+          if (isVersionMismatchError(appended.error)) continue;
+          if (isLeaseLostError(appended.error)) {
+            leaseLost = true;
+            continue;
           }
-          abortInterruptedActiveAttempts(input.store, input.runId, active);
-        }));
-      }));
-    } finally {
-      stopHeartbeat();
-    }
+          unwrapStoreResult(appended);
+        } else {
+          checkpoint(input, appended.value);
+        }
+        continue;
+      }
 
-    if (counters.leaseLost) {
-      return {
-        status: "lease_lost",
-        runId: input.runId,
-        ownerEpoch: claim.ownerEpoch,
-        started: counters.started,
-        completed: counters.completed,
-        failed: counters.failed,
-        cancelled: counters.cancelled,
-        active: 0,
-      };
-    }
+      if (admission?.kind === "executor") {
+        const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now()) ?? ok(undefined);
+        const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
+        const started = input.store.tryStartAttempt({
+          runId: input.runId,
+          nodeKey: admission.instance.nodeKey,
+          nodeId: admission.instance.nodeId,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: snapshot.version,
+          ...(deadlineAt === undefined ? {} : { deadlineAt }),
+          idempotencyKey: `scheduler:start:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
+        });
+        if (started.isErr()) {
+          if (isVersionMismatchError(started.error) || isInstanceNotReadyError(started.error) || isPausedError(started.error)) continue;
+          if (isLeaseLostError(started.error)) {
+            leaseLost = true;
+            continue;
+          }
+          unwrapStoreResult(started);
+        } else {
+          if (started.value.disposition === "existing") continue;
+          counters.started += 1;
+          if (deadline.isErr()) {
+            const committed = commitImmediateResult(input, claim, started.value.attemptId, deadline.error, counters);
+            if (committed.status === "lease_lost") leaseLost = true;
+            else checkpoint(input, committed.snapshot);
+            continue;
+          }
+          launchExecution({
+            input,
+            claim,
+            instance: admission.instance,
+            attemptId: started.value.attemptId,
+            attemptNo: started.value.attemptNo,
+            deadlineAt,
+            active,
+            settledAttemptIds,
+            wakeup,
+          });
+        }
+        continue;
+      }
 
-    const latestDrain = await drainDerivedTransitions(input.store, input.runId, claim, leaseMs, now, input.materialize);
-    if (latestDrain.status === "lease_lost") return { ...summary(input.runId, "lease_lost"), ownerEpoch: claim.ownerEpoch };
-    const latest = latestDrain.snapshot;
-    const terminalAfterWork = terminalSummary(latest.projection, claim);
-    if (terminalAfterWork) {
-      return { ...terminalAfterWork, started: counters.started, completed: counters.completed, failed: counters.failed, cancelled: counters.cancelled };
+      if (active.size > 0) {
+        await waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, now, coordinatedWakeup });
+        continue;
+      }
+
+      if (wakeup.current() !== observedWakeVersion) continue;
+      const idle = idleSummary(snapshot.projection, claim);
+      return withCounters(idle, claim, counters);
     }
-    const idle = idleSummary(latest.projection, claim);
-    return { ...idle, started: counters.started, completed: counters.completed, failed: counters.failed, cancelled: counters.cancelled };
   } finally {
+    if (leaseLost) abortAll(active);
+    else await stopLocalExecutions(active);
+    stopHeartbeat();
     try {
       input.store.releaseRun(claim);
     } finally {
-      input.onRelease?.(claim);
+      safeObserver(() => input.onRelease?.(claim));
     }
   }
 }
 
-function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): void {
-  if (!input.bootstrap) return;
-  let snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-  for (let attempts = 0; attempts < 2; attempts += 1) {
+function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): "appended" | "quiescent" | "lease_lost" {
+  if (!input.bootstrap) return "quiescent";
+  for (;;) {
+    const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
     const events = input.bootstrap(snapshot);
-    if (events.length === 0) return;
+    if (events.length === 0) return "quiescent";
     const appended = input.store.tryAppendSchedulerEvents({
       runId: input.runId,
       expectedVersion: snapshot.version,
@@ -192,227 +304,264 @@ function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): vo
       events,
     });
     if (appended.isOk()) {
-      return;
+      checkpoint(input, appended.value);
+      return "appended";
     }
-    if (!isVersionMismatchError(appended.error) || attempts === 1) unwrapStoreResult(appended);
-    snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
+    if (isLeaseLostError(appended.error)) return "lease_lost";
+    if (!isVersionMismatchError(appended.error)) unwrapStoreResult(appended);
   }
 }
 
-function selectReadyInstances(
-  projection: SchedulerProjection,
-  maxLeafConcurrency: number,
-  localConcurrencyLimitFor: AdvanceRunInput["localConcurrencyLimitFor"],
-): NodeInstance[] {
-  const active = Object.values(projection.attempts).filter(attempt => attempt.status === "started").length;
-  const available = Math.max(0, maxLeafConcurrency - active);
-  if (available === 0) return [];
-
-  const localActive = new Map<string, number>();
-  for (const member of Object.values(projection.groupMembers)) {
-    if (member.status !== "running") continue;
-    const limit = localConcurrencyLimitFor?.(member.groupKey, projection);
-    if (limit !== undefined) localActive.set(member.groupKey, (localActive.get(member.groupKey) ?? 0) + 1);
+async function recoverExpiredOwnerAttempts(
+  input: AdvanceRunInput,
+  claim: RunOwnerClaim,
+  initial: SchedulerSnapshot,
+): Promise<SchedulerStepResult> {
+  let snapshot = initial;
+  for (;;) {
+    const expiredOwnerEpoch = Object.values(snapshot.projection.attempts)
+      .find(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)?.ownerEpoch;
+    if (expiredOwnerEpoch === undefined) return { status: "quiescent", snapshot };
+    const superseded = input.store.tryMarkExpiredOwnerAttemptsSuperseded({
+      runId: input.runId,
+      currentOwnerEpoch: claim.ownerEpoch,
+      expiredOwnerEpoch,
+      expectedVersion: snapshot.version,
+    });
+    if (superseded.isOk()) {
+      snapshot = superseded.value;
+      checkpoint(input, snapshot);
+      continue;
+    }
+    if (isLeaseLostError(superseded.error)) return { status: "lease_lost", snapshot };
+    if (isVersionMismatchError(superseded.error)) {
+      snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
+      continue;
+    }
+    snapshot = unwrapStoreResult(superseded);
   }
-
-  const selected: NodeInstance[] = [];
-  for (const instance of Object.values(projection.instances).filter(instance => instance.status === "ready").sort(byReadiness)) {
-    if (selected.length >= available) break;
-    const members = ancestorGroupMembersForNode(projection, instance.nodeKey);
-    if (members.some(member => member.status !== "ready" && member.status !== "running")) continue;
-    if (!reserveGroupCapacity(members, projection, localActive, localConcurrencyLimitFor)) continue;
-    selected.push(instance);
-  }
-  return selected;
 }
-
-function reserveGroupCapacity(
-  members: readonly GroupMember[],
-  projection: SchedulerProjection,
-  localActive: Map<string, number>,
-  localConcurrencyLimitFor: AdvanceRunInput["localConcurrencyLimitFor"],
-): boolean {
-  const reservations: string[] = [];
-  for (const member of members) {
-    if (member.status === "running") continue;
-    const limit = localConcurrencyLimitFor?.(member.groupKey, projection);
-    const used = localActive.get(member.groupKey) ?? 0;
-    const pending = reservations.filter(groupKey => groupKey === member.groupKey).length;
-    if (limit !== undefined && used + pending >= limit) return false;
-    reservations.push(member.groupKey);
-  }
-  for (const groupKey of reservations) localActive.set(groupKey, (localActive.get(groupKey) ?? 0) + 1);
-  return true;
-}
-
-type DerivedTransitionDrainResult =
-  | { status: "quiescent"; snapshot: SchedulerSnapshot }
-  | { status: "lease_lost"; snapshot: SchedulerSnapshot };
 
 async function drainDerivedTransitions(
-  store: SchedulerStorePort,
-  runId: string,
+  input: AdvanceRunInput,
   claim: RunOwnerClaim,
   leaseMs: number,
   now: () => Date,
-  materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[],
 ): Promise<DerivedTransitionDrainResult> {
-  let snapshot = unwrapStoreResult(store.tryLoadRunSnapshot(runId));
-  for (let batches = 0; batches < 1_000; batches += 1) {
-    if (!store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
+  let snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
+  let progressedBatches = 0;
+  for (;;) {
+    if (input.shouldStop?.()) return { status: "stopped", snapshot };
     const events = Object.keys(snapshot.projection.groups).flatMap(groupKey => groupCompletionEvents(snapshot.projection, groupKey));
-    if (events.length === 0) events.push(...(materialize?.(snapshot) ?? []));
+    if (events.length === 0) events.push(...(input.materialize?.(snapshot) ?? []));
     if (events.length === 0) events.push(...attemptTimeoutEvents(snapshot.projection, now()));
     if (events.length === 0) events.push(...signalTimeoutEvents(snapshot.projection, now()));
     if (events.length === 0) return { status: "quiescent", snapshot };
-    const appended = store.tryAppendSchedulerEvents({
-      runId,
+    if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
+
+    const beforeVersion = snapshot.version;
+    const appended = input.store.tryAppendSchedulerEvents({
+      runId: input.runId,
       expectedVersion: snapshot.version,
       ownerEpoch: claim.ownerEpoch,
-      idempotencyKey: `scheduler:derived:${runId}:${snapshot.version}`,
+      idempotencyKey: `scheduler:derived:${input.runId}:${snapshot.version}`,
       events,
     });
     if (appended.isErr()) {
       if (isLeaseLostError(appended.error)) return { status: "lease_lost", snapshot };
       if (isVersionMismatchError(appended.error)) {
-        snapshot = unwrapStoreResult(store.tryLoadRunSnapshot(runId));
-        await new Promise<void>(resolve => setImmediate(resolve));
+        snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
         continue;
       }
       snapshot = unwrapStoreResult(appended);
     } else {
       snapshot = appended.value;
+      if (snapshot.version <= beforeVersion) throw new Error(`Run '${input.runId}' appended derived transitions without advancing its durable version.`);
+      checkpoint(input, snapshot);
     }
-    await new Promise<void>(resolve => setImmediate(resolve));
+
+    progressedBatches += 1;
+    if (progressedBatches % COOPERATIVE_YIELD_QUANTUM === 0) {
+      if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
+      await yieldToEventLoop();
+    }
   }
-  throw new Error(`Run '${runId}' did not quiesce after 1000 derived transition batches.`);
 }
 
-async function runInstance(
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+function launchExecution(input: {
+  input: AdvanceRunInput;
+  claim: RunOwnerClaim;
+  instance: NodeInstance;
+  attemptId: string;
+  attemptNo: number;
+  deadlineAt: string | undefined;
+  active: Map<string, ActiveExecution>;
+  settledAttemptIds: string[];
+  wakeup: VersionedWakeup;
+}): void {
+  const controller = new AbortController();
+  const attempt: ActiveAttempt = {
+    runId: input.input.runId,
+    nodeKey: input.instance.nodeKey,
+    nodeId: input.instance.nodeId,
+    attemptId: input.attemptId,
+    attemptNo: input.attemptNo,
+    ownerEpoch: input.claim.ownerEpoch,
+    controller,
+  };
+  const execution: ActiveExecution = {
+    attempt,
+    instance: input.instance,
+  };
+  input.active.set(input.attemptId, execution);
+  const startReason = attemptStartReason(input.instance);
+  execution.settlement = Promise.resolve()
+    .then(() => input.input.executor.execute({
+      runId: input.input.runId,
+      nodeKey: input.instance.nodeKey,
+      nodeId: input.instance.nodeId,
+      attemptId: input.attemptId,
+      attemptNo: input.attemptNo,
+      ownerEpoch: input.claim.ownerEpoch,
+      ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
+      ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
+      signal: controller.signal,
+    }))
+    .then(
+      result => {
+        execution.result = result;
+      },
+      error => {
+        execution.result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+      },
+    )
+    .finally(() => {
+      input.settledAttemptIds.push(input.attemptId);
+      input.wakeup.wake();
+    });
+}
+
+function commitExecutionResult(
   input: AdvanceRunInput,
   claim: RunOwnerClaim,
-  now: () => Date,
-  instance: NodeInstance,
-  counters: { started: number; completed: number; failed: number; cancelled: number; leaseLost: boolean },
-  active: Map<string, AbortController>,
-): Promise<void> {
-  let attempt: { attemptId: string; attemptNo: number };
-  const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-  const deadline = input.deadlineAtFor?.(instance, snapshot.projection, now()) ?? ok(undefined);
-  const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
-  const started = input.store.tryStartAttempt({
-    runId: input.runId,
-    nodeKey: instance.nodeKey,
-    nodeId: instance.nodeId,
-    ownerEpoch: claim.ownerEpoch,
-    ...(deadlineAt === undefined ? {} : { deadlineAt }),
-    idempotencyKey: `scheduler:start:${input.runId}:${instance.nodeKey}:${claim.ownerEpoch}`,
-  });
-  if (started.isOk()) {
-    attempt = started.value;
-  } else {
-    if (isPausedError(started.error)) {
-      counters.cancelled += 1;
-      return;
-    }
-    attempt = unwrapStoreResult(started);
-  }
-  counters.started += 1;
-
-  let result: AttemptCommitInput["result"];
-  let controller: AbortController | undefined;
-  if (deadline.isErr()) {
-    result = deadline.error;
-  } else {
-    controller = new AbortController();
-    active.set(instance.nodeKey, controller);
-    const unregister = input.onActiveAttempt?.({
-      runId: input.runId,
-      nodeKey: instance.nodeKey,
-      nodeId: instance.nodeId,
-      attemptId: attempt.attemptId,
-      attemptNo: attempt.attemptNo,
-      ownerEpoch: claim.ownerEpoch,
-      controller,
-    });
-    let monitor: NodeJS.Timeout;
-    const pollInterruption = () => {
-      abortInterruptedActiveAttempts(input.store, input.runId, active);
-      monitor = setTimeout(pollInterruption, 250);
-      monitor.unref?.();
-    };
-    monitor = setTimeout(pollInterruption, 250);
-    monitor.unref?.();
-    const startReason = attemptStartReason(instance);
+  execution: ActiveExecution,
+  counters: Counters,
+): SchedulerStepResult {
+  let result = execution.result!;
+  if (result.status === "completed" && result.output !== undefined) {
     try {
-      result = await input.executor.execute({
-        runId: input.runId,
-        nodeKey: instance.nodeKey,
-        nodeId: instance.nodeId,
-        attemptId: attempt.attemptId,
-        attemptNo: attempt.attemptNo,
-        ownerEpoch: claim.ownerEpoch,
-        ...(deadlineAt === undefined ? {} : { deadlineAt }),
-        ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
-    } finally {
-      clearTimeout(monitor);
-      unregister?.();
-      active.delete(instance.nodeKey);
-    }
-  }
-  if (counters.leaseLost) return;
-  if (result.status === "completed") {
-    try {
-      if (result.output !== undefined) {
-        result = { ...result, output: normalizeWorkflowData(result.output, `Node '${instance.nodeId}' output`) as JsonValue };
-      }
+      result = { ...result, output: normalizeWorkflowData(result.output, `Node '${execution.instance.nodeId}' output`) as JsonValue };
     } catch (error) {
       result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
     }
   }
+  return commitImmediateResult(input, claim, execution.attempt.attemptId, result, counters);
+}
 
+function commitImmediateResult(
+  input: AdvanceRunInput,
+  claim: RunOwnerClaim,
+  attemptId: string,
+  result: AttemptCommitInput["result"],
+  counters: Counters,
+): SchedulerStepResult {
   const committed = input.store.tryCommitAttemptResult({
     runId: input.runId,
-    attemptId: attempt.attemptId,
+    attemptId,
     ownerEpoch: claim.ownerEpoch,
     result,
-    idempotencyKey: `scheduler:commit:${input.runId}:${attempt.attemptId}`,
+    idempotencyKey: `scheduler:commit:${input.runId}:${attemptId}`,
   });
   if (committed.isErr()) {
     if (isLeaseLostError(committed.error)) {
-      counters.leaseLost = true;
-      controller?.abort();
-      return;
+      return { status: "lease_lost", snapshot: unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)) };
     }
     const staleTerminal = staleTerminalStatus(committed.error);
     if (staleTerminal) {
       if (staleTerminal === "failed") counters.failed += 1;
       else counters.cancelled += 1;
-      return;
+      return { status: "quiescent", snapshot: unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)) };
     }
-    unwrapStoreResult(committed);
+    return { status: "quiescent", snapshot: unwrapStoreResult(committed) };
   }
-
   if (result.status === "completed") counters.completed += 1;
   else if (result.status === "cancelled") counters.cancelled += 1;
   else counters.failed += 1;
+  return { status: "quiescent", snapshot: committed.value };
+}
+
+async function waitForPump(input: {
+  wakeup: VersionedWakeup;
+  observedWakeVersion: number;
+  active: ReadonlyMap<string, ActiveExecution>;
+  projection: SchedulerProjection;
+  now: () => Date;
+  coordinatedWakeup: boolean;
+}): Promise<void> {
+  const waits: Promise<unknown>[] = [input.wakeup.waitForChange(input.observedWakeVersion)];
+  for (const execution of input.active.values()) {
+    if (execution.result === undefined && execution.settlement) waits.push(execution.settlement);
+  }
+
+  const nearestDeadline = nearestWakeDeadline(input.projection, input.active);
+  const deadlineDelay = nearestDeadline === undefined ? undefined : Math.max(0, nearestDeadline - input.now().getTime());
+  const fallbackDelay = input.coordinatedWakeup ? undefined : UNCOORDINATED_CONTROL_POLL_MS;
+  const delay = minimumDefined(deadlineDelay, fallbackDelay);
+  let timer: NodeJS.Timeout | undefined;
+  if (delay !== undefined) {
+    waits.push(new Promise<void>(resolve => {
+      timer = setTimeout(resolve, Math.min(delay, 2_147_483_647));
+      timer.unref?.();
+    }));
+  }
+  try {
+    await Promise.race(waits);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function nearestWakeDeadline(projection: SchedulerProjection, active: ReadonlyMap<string, ActiveExecution>): number | undefined {
+  let nearest: number | undefined;
+  for (const attemptId of active.keys()) {
+    const deadlineAt = projection.attempts[attemptId]?.deadlineAt;
+    if (deadlineAt === undefined) continue;
+    nearest = minimumTimestamp(nearest, deadlineAt, `Attempt '${attemptId}'`);
+  }
+  for (const wait of Object.values(projection.signalWaits)) {
+    if (wait.status !== "awaiting" || wait.deadlineAt === undefined) continue;
+    nearest = minimumTimestamp(nearest, wait.deadlineAt, `Signal wait '${wait.nodeKey}'`);
+  }
+  return nearest;
+}
+
+function minimumTimestamp(current: number | undefined, deadlineAt: string, subject: string): number {
+  const value = Date.parse(deadlineAt);
+  if (!Number.isFinite(value)) throw new Error(`${subject} has an invalid durable deadline.`);
+  return current === undefined ? value : Math.min(current, value);
+}
+
+function minimumDefined(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.min(left, right);
 }
 
 function startRunHeartbeat(
   store: SchedulerStorePort,
   claim: RunOwnerClaim,
   leaseMs: number,
-  counters: { leaseLost: boolean },
-  active: Map<string, AbortController>,
+  active: ReadonlyMap<string, ActiveExecution>,
+  onLeaseLost: () => void,
 ): () => void {
   const heartbeat = setInterval(() => {
     if (store.heartbeatRun(claim, leaseMs)) return;
-    counters.leaseLost = true;
-    for (const controller of active.values()) controller.abort();
+    abortAll(active);
+    onLeaseLost();
   }, heartbeatIntervalMs(leaseMs));
   heartbeat.unref?.();
   return () => clearInterval(heartbeat);
@@ -422,36 +571,48 @@ function heartbeatIntervalMs(leaseMs: number): number {
   return Math.max(1, Math.floor(leaseMs / 3));
 }
 
+function abortDurablyInterruptedExecutions(projection: SchedulerProjection, active: ReadonlyMap<string, ActiveExecution>): void {
+  for (const [attemptId, execution] of active) {
+    if (projection.attempts[attemptId]?.status !== "started") execution.attempt.controller.abort();
+  }
+}
+
+function abortAll(active: ReadonlyMap<string, ActiveExecution>): void {
+  for (const execution of active.values()) execution.attempt.controller.abort();
+}
+
+async function stopLocalExecutions(active: Map<string, ActiveExecution>): Promise<void> {
+  abortAll(active);
+  await Promise.all([...active.values()].flatMap(execution => execution.settlement ? [execution.settlement] : []));
+  active.clear();
+}
+
+function unresolvedExecutionCount(active: ReadonlyMap<string, ActiveExecution>): number {
+  let count = 0;
+  for (const execution of active.values()) {
+    if (execution.result === undefined) count += 1;
+  }
+  return count;
+}
+
 function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attemptStartReason"] | undefined {
   if (instance.statusReason === "retry") return "control_retry";
   if (instance.statusReason === "paused") return "pause_resume";
   return undefined;
 }
 
-function abortInterruptedActiveAttempts(store: SchedulerStorePort, runId: string, active: Map<string, AbortController>): void {
-  const projection = unwrapStoreResult(store.tryLoadRunSnapshot(runId)).projection;
-  for (const [nodeKey, controller] of active) {
-    const instance = projection.instances[nodeKey];
-    if (projection.run.status === "paused" || instance?.status === "failed" || instance?.status === "cancelled" || (instance?.status === "ready" && instance.statusReason === "paused")) {
-      controller.abort();
-    }
-  }
-}
-
 function terminalSummary(projection: SchedulerProjection, claim: RunOwnerClaim): AdvanceRunSummary | undefined {
-  if (projection.run.status === "completed" || projection.run.status === "failed" || projection.run.status === "canceled" || projection.run.status === "paused") {
-    return {
-      status: projection.run.status,
-      runId: projection.run.runId,
-      ownerEpoch: claim.ownerEpoch,
-      started: 0,
-      completed: 0,
-      failed: 0,
-      cancelled: 0,
-      active: activeAttemptCount(projection),
-    };
-  }
-  return undefined;
+  if (projection.run.status !== "completed" && projection.run.status !== "failed" && projection.run.status !== "canceled" && projection.run.status !== "paused") return undefined;
+  return {
+    status: projection.run.status,
+    runId: projection.run.runId,
+    ownerEpoch: claim.ownerEpoch,
+    started: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    active: activeAttemptCount(projection),
+  };
 }
 
 function idleSummary(projection: SchedulerProjection, claim: RunOwnerClaim): AdvanceRunSummary {
@@ -471,18 +632,28 @@ function summary(runId: string, status: AdvanceRunSummary["status"]): AdvanceRun
   return { status, runId, started: 0, completed: 0, failed: 0, cancelled: 0, active: 0 };
 }
 
+function withCounters(base: AdvanceRunSummary, claim: RunOwnerClaim, counters: Counters): AdvanceRunSummary {
+  return { ...base, ownerEpoch: claim.ownerEpoch, ...counters };
+}
+
 function activeAttemptCount(projection: SchedulerProjection): number {
   return Object.values(projection.attempts).filter(attempt => attempt.status === "started").length;
 }
 
 function hasAwaitingWork(projection: SchedulerProjection): boolean {
-  return Object.values(projection.instances).some(instance => instance.status === "awaiting")
-    || Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
+  return Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
 }
 
-function byReadiness(left: NodeInstance, right: NodeInstance): number {
-  return (left.readinessSequence ?? Number.MAX_SAFE_INTEGER) - (right.readinessSequence ?? Number.MAX_SAFE_INTEGER)
-    || left.nodeKey.localeCompare(right.nodeKey);
+function checkpoint(input: AdvanceRunInput, snapshot: SchedulerSnapshot): void {
+  safeObserver(() => input.onCheckpoint?.(snapshot));
+}
+
+function safeObserver(observer: () => void): void {
+  try {
+    observer();
+  } catch {
+    // Owner-local observers cannot alter durable scheduling outcomes.
+  }
 }
 
 function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
@@ -499,6 +670,10 @@ function isPausedError(error: SchedulerStoreError): boolean {
 
 function isVersionMismatchError(error: SchedulerStoreError): boolean {
   return error.type === "version-mismatch";
+}
+
+function isInstanceNotReadyError(error: SchedulerStoreError): boolean {
+  return error.type === "instance-not-ready";
 }
 
 function staleTerminalStatus(error: SchedulerStoreError): "cancelled" | "failed" | undefined {

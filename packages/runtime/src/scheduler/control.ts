@@ -29,6 +29,7 @@ export type SchedulerControlEffect =
 export type SchedulerControlResult = {
   snapshot: SchedulerSnapshot;
   effect: SchedulerControlEffect;
+  reopened: boolean;
 };
 
 export function applySchedulerControlIntent(
@@ -38,17 +39,27 @@ export function applySchedulerControlIntent(
 ): SchedulerControlResult {
   const runId = intent.runId;
   const idempotencyKey = `scheduler:control:${intent.requestId}`;
-  const snapshot = settleFrozenRunTransitions({ store, runId, ownerEpoch });
   if (intent.type === "pause") {
     return {
       snapshot: unwrapStoreResult(store.scheduler.tryPauseRun({ runId, ownerEpoch, idempotencyKey })),
       effect: { type: "pause", state: "applied" },
+      reopened: false,
     };
   }
-  if (intent.type === "resume") {
+  if (intent.type === "cancel" && intent.target === undefined) {
     return {
-      snapshot: unwrapStoreResult(store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey })),
+      snapshot: unwrapStoreResult(store.scheduler.tryCancel({ runId, ownerEpoch, idempotencyKey })),
+      effect: { type: "cancel", state: "applied" },
+      reopened: false,
+    };
+  }
+  const snapshot = settleFrozenRunTransitions({ store, runId, ownerEpoch });
+  if (intent.type === "resume") {
+    const resumed = unwrapStoreResult(store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey }));
+    return {
+      snapshot: resumed,
       effect: { type: "resume", state: "applied" },
+      reopened: resumed.version > snapshot.version,
     };
   }
   if (intent.type === "retry") {
@@ -59,6 +70,7 @@ export function applySchedulerControlIntent(
     return {
       snapshot: applied,
       effect: { type: "retry", state: "applied", ...(target === undefined ? {} : { target }) },
+      reopened: applied.version > snapshot.version,
     };
   }
   if (intent.type === "cancel") {
@@ -71,6 +83,7 @@ export function applySchedulerControlIntent(
         ...(target === undefined ? {} : { target }),
       })),
       effect: { type: "cancel", state: "applied", ...(target === undefined ? {} : { target }) },
+      reopened: false,
     };
   }
   if (intent.type === "signal") {
@@ -107,6 +120,7 @@ export function applySchedulerControlIntent(
         target: signal.nodeKey,
         validation,
       },
+      reopened: false,
     };
   }
   return assertNever(intent);

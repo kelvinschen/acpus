@@ -31,7 +31,47 @@
 - Scheduler recovery MUST produce the same state from persisted facts, reject corrupt/ahead checkpoints, and keep projection drift from changing decisions; checkpoint/cache/write strategy remains internal.
 - Recoverable store operations MUST return tagged `SchedulerStoreError` results; invariant or store failures may throw from `advanceRun(input): Promise<AdvanceRunSummary>`.
 - The daemon MUST capture `ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY` at startup, default it to 32, and reject non-canonical positive safe integers before creating store or socket state.
-- Effective leaf concurrency MUST be the minimum daemon ceiling and applicable durable group caps; the host ceiling is neither frozen into IR nor persisted as a scheduler fact.
+- A Parallel or Fanout local concurrency cap MUST count distinct direct active members by `(groupKey, memberKey)` identity.
+- Multiple ready or running descendant leaves of one direct member MUST consume one local slot in that member's group.
+- Each nested Parallel or Fanout group MUST apply its local concurrency cap independently of every ancestor and descendant group.
+- The scheduler MUST order ready leaf instances by ascending durable readiness sequence, using ascending ordinal code-unit `nodeKey` order as the tie-breaker.
+- When multiple ready leaves exist, the scheduler MUST start the oldest leaf that satisfies the run gate and every applicable group cap.
+- A ready leaf blocked by an applicable group cap MUST NOT prevent a later ready leaf that satisfies every applicable cap from starting.
+- A ready Signal instance MUST satisfy every applicable group cap before entering `awaiting`.
+- An awaiting Signal member MUST continue to occupy its direct-member slot in every applicable group.
+- A ready or awaiting Signal instance MUST NOT count toward the run-wide logical leaf cap.
+- A Signal instance MUST NOT acquire an owner-local physical executor slot.
+- The logical run-wide leaf cap MUST count every durable attempt whose status is `started`.
+- The current owner MUST limit its physical leaf count to executor invocations that it has launched and that have not settled.
+- The scheduler MUST start a Task or Agent leaf only while both the logical run-wide cap and the current owner's physical leaf cap have capacity.
+- The daemon ceiling MUST remain owner configuration rather than frozen IR or a persisted scheduler fact.
+- The production run-execution seam MUST be `createRuntimeRunScheduler(...).start({runId,ownerId})`.
+- `start({runId,ownerId})` MUST return a `RunExecution` exposing `ownerEpoch`, `result`, `wake()`, and `stop()`.
+- `RunExecution.ownerEpoch` MUST resolve to the claimed scheduler owner epoch, or to `undefined` if execution ends before claiming the run.
+- `RunExecutionExit.status` MUST use the closed set `completed`, `failed`, `canceled`, `paused`, `awaiting`, and `lease_lost`; this set excludes `idle`.
+- Calling `RunExecution.wake()` MUST make the execution reconsider durable scheduler state.
+- Calling `RunExecution.stop()` MUST request owner-local executor cleanup and wake the execution.
+- A progressing `RunExecution` MUST observe a stop request at its next cooperative scheduling checkpoint before appending further derived transitions or admitting another leaf.
+- After an attempt settles durably, the scheduler MUST reconsider ready work without waiting for unrelated active attempts to settle.
+- After a durable control mutation changes scheduler state, an active run session MUST reconsider ready work without waiting for an unrelated active attempt to settle.
+- Pause and untargeted run cancel MUST commit their durable fence without first draining unrelated derived transitions.
+- After a successful durable control mutation commits against an active `RunExecution`, the daemon MUST increment that execution's owner-local monotonic wakeup version.
+- Before sleeping, an active `RunExecution` MUST compare its previously observed owner-local wakeup version with the current owner-local wakeup version.
+- An active `RunExecution` MUST continue scheduling instead of sleeping when the current owner-local wakeup version is newer than its previously observed wakeup version.
+- Before resolving `RunExecution.result`, an active execution MUST reload durable state when its owner-local wakeup version changed after the snapshot being considered.
+- A production `RunExecution` MUST stop admitting new leaves after observing terminal, paused, or lease-lost state.
+- `RunExecution.result` MUST resolve with `awaiting` only when the execution has no owner-local physical leaf, has no admissible ready work, and durable progress is blocked by an open Signal wait.
+- A non-terminal production execution with no owner-local active executor and no durable wake source MUST reject `RunExecution.result` as an invariant failure.
+- A production `RunExecution` MUST release any held run lease before settling `RunExecution.result`.
+- When a production execution fails while its owner lease remains active, it MUST finish owner-local executor abort cleanup before releasing that lease.
+- After a production execution rejects, the daemon process that observed the rejection MUST NOT automatically restart the same unchanged durable scheduler state.
+- One run's rejected production execution MUST NOT stop or prevent the daemon from advancing other runs.
+- An attempt-start mutation MUST compare against the scheduler snapshot version from which its admission decision was made.
+- Attempt-start replay identity MUST include the scheduler snapshot version that produced the original admission.
+- On an attempt-start version mismatch, the scheduler MUST reload durable state and recompute admission before starting that leaf.
+- A progressing scheduler MUST NOT fail a run solely because the number of scheduler drives or derived-transition batches reaches an internal count.
+- A long progressing production `RunExecution` transition drain MUST yield cooperatively.
+- After a production `RunExecution` transition drain yields, it MUST recheck run ownership before appending more events.
 - Scheduler intent keys MUST be run-scoped and replay only the same control identity; successful no-op controls record identity atomically, while conflicting reuse returns `idempotency-conflict`.
 - Dynamic execution MUST use a recursive frame model, frozen static `nodeId`, derived `nodeKey`, structured instance paths, owner epochs, attempts, groups, members, and Signal waits.
 - Public status MUST distinguish `pending` admission from `running` materialization and preserve terminal/awaiting/paused states from durable projection.
@@ -60,6 +100,16 @@
 - Runtime output normalization MUST treat Task top-level `undefined` as no output, reject scope/array `undefined`, omit undefined object properties, and reject non-WorkflowData values without adding business schemas.
 - Attempt deadlines MUST be persisted once; Task and Agent executors consume remaining budgets without re-evaluating authored timeout expressions.
 - Timeout and cancellation MUST remain authoritative across startup/result races, reject late output/artifacts, propagate Task `abortSignal`, and terminate the isolated process tree after bounded cooperative cleanup.
+- An attempt result commit MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
+- An exact attempt-result idempotency replay by the original still-active owner MAY return the current snapshot without creating a new result commit.
+- Attempt-scoped artifact registration MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
+- Attempt-scoped progress writes MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
+- A rejected stale attempt result MUST NOT change durable scheduler state.
+- A rejected stale artifact registration MUST NOT add an artifact registry row.
+- A rejected stale progress write MUST NOT change node progress.
+- A rejected stale progress write MUST NOT advance the progress version.
+- Execution metadata MUST remain append-only attempt history outside scheduler admission, attempt-result acceptance, and authoritative public attempt status.
+- Inspection MUST derive authoritative attempt status and accepted output from durable scheduler projection rather than execution metadata.
 - Artifact writes MUST use attempt-local run paths while the runtime parent exclusively registers SQLite records and rejects registration after timeout/cancellation.
 - ArtifactRef resolution MUST verify current-run canonical regular files, reject malformed/cross-run/escaping/symlink refs, and pass only bound absolute paths to Task code.
 - Signal prompt, timeout message, and deadline MUST resolve once on awaiting entry; the persisted wait resumes durably from normalized input or fails ancestors with `signal_timeout` on expiry.
@@ -91,6 +141,10 @@
 - The daemon MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
 - Pause/cancel MUST durably fence their effect and abort only applicable active attempt controllers; late executor results cannot overwrite control state.
 - Pause and resume MUST be idempotent, with pause requeueing eligible canceled work and resume clearing the durable gate.
+- A paused run session MUST finish bounded executor cleanup before returning `paused`.
+- Resume MUST advance a run only through a new session with a newly claimed `ownerEpoch`.
+- Retry MUST advance a run only through a new session with a newly claimed `ownerEpoch`.
+- A no-op or idempotently replayed Resume or Retry MUST NOT stop the active execution, start another session, or claim another `ownerEpoch`.
 - Retry MUST support run-level reset or an unambiguous failed `nodeKey`, `frameKey`, or static alias; omitted target is run-level while explicit `root` remains a normal alias.
 - Cancel MUST support run-level or unambiguous non-terminal dynamic/static targeting; run cancel yields `canceled`, targeted cancel yields `operator_cancelled`, and repeated run cancel is idempotent.
 - Fork MUST create an idempotently identified child from verified frozen source data, optionally replacing prepared workflow, input, Agent overrides, or target without reading live source.
@@ -130,8 +184,17 @@
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
 - Paused runs and untimed Signal waits MUST not keep the daemon resident; timed waits do until durably settled, and startup recovery is targeted rather than a whole-store repair sweep.
+- A recovered owner MUST settle already-due attempt deadlines before superseding remaining expired-owner `started` attempts.
+- A recovered owner MUST durably supersede expired-owner `started` attempts before admitting replacement leaf work.
+- Superseded attempts MUST NOT consume logical leaf capacity after their superseding transition commits.
+- The physical leaf cap MUST apply independently to each owner epoch.
+- Lease failover MUST NOT require proof that a stale external process has stopped before the recovered owner admits replacement work.
+
 ## Verification
 
+- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, daemon session wiring, and progress beyond internal count limits.
+- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry session epochs and replay behavior, rejection of non-terminal execution without a durable wake source, attempt/artifact/progress fences, due-Signal scale, execution-metadata authority, and lease recovery ordering.
+- `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Cover schema initialization, frozen-file integrity, prepared-workflow consistency, atomic admission, normalization, and mutation-free rejection.
 - Prove deterministic scheduler recovery and every node/composite strategy, identity, resource, deadline, cancellation, retry, and projection rule.
 - Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, canonical turn records, and optional captures.

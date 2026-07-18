@@ -19,6 +19,7 @@ import type { SchedulerSnapshot } from "./store-port.js";
 import { applySchedulerEvents, attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 import type { SchedulerProjection } from "./types.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
+import { createVersionedWakeup } from "./wakeup.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -29,7 +30,8 @@ export type AdvanceFrozenRunInput = {
   agentHostPolicy?: AgentHostPolicy;
   onClaim?: AdvanceRunInput["onClaim"];
   onRelease?: AdvanceRunInput["onRelease"];
-  onActiveAttempt?: AdvanceRunInput["onActiveAttempt"];
+  wakeup?: AdvanceRunInput["wakeup"];
+  shouldStop?: AdvanceRunInput["shouldStop"];
   hookRunner?: HookRunner;
   hookCursor?: RuntimeHookCursor;
   progressWriter?: NodeProgressWriter;
@@ -37,11 +39,97 @@ export type AdvanceFrozenRunInput = {
 
 export type RuntimeHookCursor = { sequence: number };
 
+type RunExecutionExitStatus = "completed" | "failed" | "canceled" | "paused" | "awaiting" | "lease_lost";
+
+export type RunExecutionExit = Omit<AdvanceRunSummary, "status"> & {
+  status: RunExecutionExitStatus;
+};
+
+export type RunExecution = {
+  ownerEpoch: Promise<number | undefined>;
+  result: Promise<RunExecutionExit>;
+  wake(): void;
+  stop(): void;
+};
+
+export type RuntimeRunScheduler = {
+  start(input: { runId: string; ownerId: string }): RunExecution;
+};
+
+export function createRuntimeRunScheduler(input: {
+  cwd: string;
+  store: RuntimeStore;
+  maxLeafConcurrency: number;
+  agentHostPolicy: AgentHostPolicy;
+  hookRunner?: HookRunner;
+  progressWriter?: NodeProgressWriter;
+}): RuntimeRunScheduler {
+  return {
+    start: identity => {
+      const wakeup = createVersionedWakeup();
+      const ownerEpoch = deferred<number | undefined>();
+      const hookCursor = { sequence: input.store.getLastRunEventSequence(identity.runId) };
+      let ownerResolved = false;
+      let stopped = false;
+      const settleOwner = (value: number | undefined) => {
+        if (ownerResolved) return;
+        ownerResolved = true;
+        ownerEpoch.resolve(value);
+      };
+      const result = (async (): Promise<RunExecutionExit> => {
+        try {
+          const advanced = await advanceFrozenRun({
+            cwd: input.cwd,
+            store: input.store,
+            runId: identity.runId,
+            ownerId: identity.ownerId,
+            maxLeafConcurrency: input.maxLeafConcurrency,
+            agentHostPolicy: input.agentHostPolicy,
+            wakeup,
+            shouldStop: () => stopped,
+            onClaim: claim => settleOwner(claim.ownerEpoch),
+            ...(input.hookRunner === undefined ? {} : { hookRunner: input.hookRunner }),
+            hookCursor,
+            ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
+          });
+          return runExecutionExit(identity.runId, advanced);
+        } finally {
+          settleOwner(undefined);
+        }
+      })();
+      return {
+        ownerEpoch: ownerEpoch.promise,
+        result,
+        wake: () => wakeup.wake(),
+        stop: () => {
+          stopped = true;
+          wakeup.wake();
+        },
+      };
+    },
+  };
+}
+
+function runExecutionExit(runId: string, summary: AdvanceRunSummary): RunExecutionExit {
+  switch (summary.status) {
+    case "completed":
+    case "failed":
+    case "canceled":
+    case "paused":
+    case "awaiting":
+    case "lease_lost":
+      return { ...summary, status: summary.status };
+    case "idle":
+      throw new Error(`Run '${runId}' became non-terminal without active work or a durable wake source.`);
+  }
+}
+
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
   const scope = rootScope(frozen);
   const nodes = indexNodes(frozen.ir.root);
+  const signalNodeIds = new Set([...nodes.values()].filter(node => node.kind === "signal").map(node => node.id));
   const hookCursor = input.hookCursor ?? { sequence: input.store.getLastRunEventSequence(input.runId) };
   const agentHostPolicy = input.agentHostPolicy ?? loadAgentHostPolicy(process.env);
   const summary = await advanceRun({
@@ -49,7 +137,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ownerId: input.ownerId,
     store: input.store.scheduler,
     ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
-    localConcurrencyLimitFor: (_groupKey, projection) => projection.groups[_groupKey]?.maxConcurrency,
+    signalNodeIds,
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
       const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);
@@ -102,7 +190,9 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
     ...(input.onClaim === undefined ? {} : { onClaim: input.onClaim }),
     ...(input.onRelease === undefined ? {} : { onRelease: input.onRelease }),
-    ...(input.onActiveAttempt === undefined ? {} : { onActiveAttempt: input.onActiveAttempt }),
+    ...(input.wakeup === undefined ? {} : { wakeup: input.wakeup }),
+    ...(input.shouldStop === undefined ? {} : { shouldStop: input.shouldStop }),
+    onCheckpoint: () => triggerHooksForCommittedRows({ ...input, frozen, hookCursor }),
     executor: createRuntimeNodeExecutor({
       cwd: input.cwd,
       ir: frozen.ir,
@@ -114,6 +204,14 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
   });
   triggerHooksForCommittedRows({ ...input, frozen, hookCursor });
   return summary;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(settle => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function triggerHooksForCommittedRows(input: {
@@ -223,7 +321,7 @@ export function settleFrozenRunTransitions(input: {
   const current = throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId));
   let projection = current.projection;
   const events = [];
-  for (let batches = 0; batches < 1_000; batches += 1) {
+  for (;;) {
     const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
     if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
     if (derived.length === 0) derived.push(...attemptTimeoutEvents(projection, input.now ?? new Date()));
@@ -241,7 +339,6 @@ export function settleFrozenRunTransitions(input: {
     events.push(...derived);
     projection = applySchedulerEvents(projection, derived);
   }
-  throw new Error(`Run '${input.runId}' did not quiesce after 1000 control-settlement transition batches.`);
 }
 
 function isSchedulerRetryLeaf(node: NodeIR): node is Extract<NodeIR, { kind: "task" | "agent" }> {

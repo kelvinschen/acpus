@@ -59,5 +59,5 @@ export class CoalescingNodeProgressWriter implements NodeProgressWriter {
 }
 
 function progressKey(input: WriteNodeProgressInput): string {
-  return `${input.runId}\0${input.nodeKey}`;
+  return `${input.runId}\0${input.nodeKey}\0${input.attemptId}\0${input.ownerEpoch}`;
 }

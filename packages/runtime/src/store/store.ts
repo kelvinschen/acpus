@@ -16,7 +16,7 @@ import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsFor
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerControlInputError, SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerControlInputError, SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
@@ -92,7 +92,7 @@ export type RuntimeStore = {
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
-  registerArtifact(input: RegisterArtifactInput): void;
+  registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void>;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
@@ -427,7 +427,9 @@ export type RegisterArtifactInput = {
   id: string;
   runId: string;
   nodeKey: string;
+  attemptId: string;
   attempt: number;
+  ownerEpoch: number;
   mediaType?: string;
   digest: string;
   size: number;
@@ -455,8 +457,9 @@ export type WriteNodeProgressInput = {
   runId: string;
   nodeKey: string;
   nodeId: string;
-  attemptId?: string;
+  attemptId: string;
   attemptNo?: number;
+  ownerEpoch: number;
   kind: string;
   status: string;
   message?: string;
@@ -1188,21 +1191,47 @@ class SqliteRuntimeStore implements RuntimeStore {
     return row?.run_dir;
   }
 
-  registerArtifact(input: RegisterArtifactInput): void {
-    this.db.prepare(`
-      INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      input.id,
-      input.runId,
-      input.nodeKey,
-      input.attempt,
-      input.mediaType ?? null,
-      input.digest,
-      input.size,
-      input.relativePath,
-      new Date().toISOString(),
-    );
+  registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void> {
+    return schedulerStoreResult(() => this.insertArtifact(input));
+  }
+
+  private insertArtifact(input: RegisterArtifactInput): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const attempt = this.db.prepare(`
+        SELECT run_id, node_key, attempt_no, owner_epoch, status
+        FROM node_attempts
+        WHERE attempt_id = ?
+      `).get(input.attemptId) as { run_id: string; node_key: string; attempt_no: number; owner_epoch: number; status: string } | undefined;
+      if (!attempt || attempt.run_id !== input.runId || attempt.node_key !== input.nodeKey || attempt.attempt_no !== input.attempt) {
+        throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' does not match artifact '${input.id}'.` });
+      }
+      if (attempt.owner_epoch !== input.ownerEpoch) {
+        throwSchedulerStoreError({ type: "owner-epoch-stale", runId: input.runId, attemptId: input.attemptId, ownerEpoch: input.ownerEpoch, message: `Attempt '${input.attemptId}' owner epoch is stale.` });
+      }
+      requireActiveOwnerEpoch(this.db, input.runId, input.ownerEpoch);
+      if (attempt.status !== "started") {
+        throwSchedulerStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
+      }
+      this.db.prepare(`
+        INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.id,
+        input.runId,
+        input.nodeKey,
+        input.attempt,
+        input.mediaType ?? null,
+        input.digest,
+        input.size,
+        input.relativePath,
+        new Date().toISOString(),
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined {
@@ -1270,23 +1299,41 @@ class SqliteRuntimeStore implements RuntimeStore {
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      if (input.attemptId) {
-        const started = this.db.prepare(`
-          SELECT 1
-          FROM node_attempts
-          WHERE attempt_id = ? AND run_id = ? AND node_key = ? AND status = 'started'
-        `).get(input.attemptId, input.runId, input.nodeKey);
-        if (!started) {
-          this.db.exec("COMMIT");
-          return;
-        }
+      const started = this.db.prepare(`
+        SELECT 1
+        FROM node_attempts
+        JOIN run_leases ON run_leases.run_id = node_attempts.run_id
+        WHERE node_attempts.attempt_id = ?
+          AND node_attempts.run_id = ?
+          AND node_attempts.node_key = ?
+          AND node_attempts.node_id = ?
+          AND node_attempts.owner_epoch = ?
+          AND node_attempts.status = 'started'
+          AND (? IS NULL OR node_attempts.attempt_no = ?)
+          AND run_leases.owner_epoch = ?
+          AND run_leases.released_at IS NULL
+          AND run_leases.lease_expires_at > ?
+      `).get(
+        input.attemptId,
+        input.runId,
+        input.nodeKey,
+        input.nodeId,
+        input.ownerEpoch,
+        input.attemptNo ?? null,
+        input.attemptNo ?? null,
+        input.ownerEpoch,
+        now,
+      );
+      if (!started) {
+        this.db.exec("COMMIT");
+        return;
       }
       const existingTerminal = this.db.prepare(`
         SELECT 1
         FROM node_progress
         WHERE run_id = ? AND node_key = ? AND attempt_id = ?
           AND status IN ('completed', 'failed', 'cancelled', 'timed_out')
-      `).get(input.runId, input.nodeKey, input.attemptId ?? null);
+      `).get(input.runId, input.nodeKey, input.attemptId);
       if (existingTerminal && !["completed", "failed", "cancelled", "timed_out"].includes(input.status)) {
         this.db.exec("COMMIT");
         return;
@@ -1316,7 +1363,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         input.runId,
         input.nodeKey,
         input.nodeId,
-        input.attemptId ?? null,
+        input.attemptId,
         input.attemptNo ?? null,
         input.kind,
         input.status,
@@ -1722,27 +1769,68 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }> {
+  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
     return schedulerStoreResult(() => this.startAttempt(input));
   }
 
-  private startAttempt(input: AttemptStartInput): { attemptId: string; attemptNo: number } {
-    const existing = this.eventByIdempotencyKey(input.idempotencyKey);
-    if (existing && existing.type === "attempt.started") {
-      const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
-      if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.` });
-      if (!matchesAttemptStartInput(input, payload)) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.` });
-      if (typeof payload.attemptId === "string" && typeof payload.attemptNo === "number") return { attemptId: payload.attemptId, attemptNo: payload.attemptNo };
-      throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid payload.`);
-    }
-    if (existing) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with ${existing.type}.` });
+  private startAttempt(input: AttemptStartInput): AttemptStartResult {
     const now = new Date().toISOString();
     const attemptId = `attempt_${randomUUID()}`;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const existing = this.eventByIdempotencyKey(input.idempotencyKey);
+      if (existing && existing.type === "attempt.started") {
+        const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
+        if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.` });
+        if (!matchesAttemptStartInput(input, payload)) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.` });
+        this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+        if (typeof payload.attemptId !== "string" || typeof payload.attemptNo !== "number") {
+          throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid payload.`);
+        }
+        const replay = {
+          attemptId: payload.attemptId,
+          attemptNo: payload.attemptNo,
+          snapshot: this.loadRunSnapshot(input.runId),
+          disposition: "existing" as const,
+        };
+        this.db.exec("COMMIT");
+        return replay;
+      }
+      if (existing) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with ${existing.type}.` });
+      const currentVersion = this.currentVersion(input.runId);
+      if (currentVersion !== input.expectedVersion) {
+        throwSchedulerStoreError({
+          type: "version-mismatch",
+          runId: input.runId,
+          expectedVersion: input.expectedVersion,
+          actualVersion: currentVersion,
+          message: `Run '${input.runId}' scheduler version mismatch.`,
+        });
+      }
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
       const current = this.loadRunSnapshot(input.runId);
       if (current.projection.run.status === "paused") throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
+      const instance = current.projection.instances[input.nodeKey];
+      if (!instance || instance.status !== "ready" || instance.nodeId !== input.nodeId) {
+        throwSchedulerStoreError({
+          type: "instance-not-ready",
+          runId: input.runId,
+          nodeKey: input.nodeKey,
+          status: instance?.status ?? "missing",
+          message: `Node instance '${input.nodeKey}' is not ready.`,
+        });
+      }
+      const blockedMember = ancestorGroupMembersForNode(current.projection, input.nodeKey)
+        .find(member => member.status !== "ready" && member.status !== "running");
+      if (blockedMember) {
+        throwSchedulerStoreError({
+          type: "instance-not-ready",
+          runId: input.runId,
+          nodeKey: input.nodeKey,
+          status: `member_${blockedMember.status}`,
+          message: `Node instance '${input.nodeKey}' has ${blockedMember.status} ancestor member '${blockedMember.memberKey}'.`,
+        });
+      }
       const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
       const attemptNo = row?.count ?? 1;
       const payload = {
@@ -1752,6 +1840,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         nodeId: input.nodeId,
         attemptNo,
         ownerEpoch: input.ownerEpoch,
+        admissionVersion: input.expectedVersion,
         ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       };
       const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey } };
@@ -1780,7 +1869,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       });
       this.db.exec("COMMIT");
       this.snapshotCache.set(input.runId, snapshot);
-      return { attemptId, attemptNo };
+      return { attemptId, attemptNo, snapshot, disposition: "started" };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -1792,20 +1881,24 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
-    const existing = this.eventByIdempotencyKey(input.idempotencyKey);
-    if (existing) {
-      if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.` });
-      const attempt = this.db.prepare("SELECT node_key FROM node_attempts WHERE run_id = ? AND attempt_id = ?").get(input.runId, input.attemptId) as { node_key: string } | undefined;
-      if (!attempt) throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
-      const event = attemptResultEvent(input, attempt.node_key);
-      if (existing.type !== event.type || stableJsonLine(existing.payload) !== stableJsonLine(event.payload)) {
-        throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with different input.` });
-      }
-      return this.loadRunSnapshot(input.runId);
-    }
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const existing = this.eventByIdempotencyKey(input.idempotencyKey);
+      if (existing) {
+        if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with another run.` });
+        const attempt = this.db.prepare("SELECT node_key, owner_epoch FROM node_attempts WHERE run_id = ? AND attempt_id = ?").get(input.runId, input.attemptId) as { node_key: string; owner_epoch: number } | undefined;
+        if (!attempt) throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
+        if (attempt.owner_epoch !== input.ownerEpoch) throwSchedulerStoreError({ type: "owner-epoch-stale", runId: input.runId, attemptId: input.attemptId, ownerEpoch: input.ownerEpoch, message: `Attempt '${input.attemptId}' owner epoch is stale.` });
+        this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+        const event = attemptResultEvent(input, attempt.node_key);
+        if (existing.type !== event.type || stableJsonLine(existing.payload) !== stableJsonLine(event.payload)) {
+          throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt commit idempotency key '${input.idempotencyKey}' conflicts with different input.` });
+        }
+        const replay = this.loadRunSnapshot(input.runId);
+        this.db.exec("COMMIT");
+        return replay;
+      }
       const attempt = this.db.prepare("SELECT run_id, node_key, owner_epoch, status FROM node_attempts WHERE attempt_id = ?").get(input.attemptId) as { run_id: string; node_key: string; owner_epoch: number; status: string } | undefined;
       if (!attempt || attempt.run_id !== input.runId) throwSchedulerStoreError({ type: "attempt-not-found", attemptId: input.attemptId, message: `Attempt '${input.attemptId}' was not found.` });
       if (attempt.owner_epoch !== input.ownerEpoch) throwSchedulerStoreError({ type: "owner-epoch-stale", runId: input.runId, attemptId: input.attemptId, ownerEpoch: input.ownerEpoch, message: `Attempt '${input.attemptId}' owner epoch is stale.` });
@@ -1929,7 +2022,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         },
       });
     }
-    const requeuedMemberKeys = new Set<string>();
     for (const attempt of Object.values(snapshot.projection.attempts).filter(attempt => attempt.status === "started")) {
       const instance = snapshot.projection.instances[attempt.nodeKey];
       events.push({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason: "paused" } });
@@ -1940,18 +2032,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
             nodeKey: instance.nodeKey,
             reason: "paused",
             ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
-          },
-        });
-      }
-      for (const member of ancestorGroupMembersForNode(snapshot.projection, attempt.nodeKey)) {
-        if (member.status !== "running" || requeuedMemberKeys.has(member.memberKey)) continue;
-        requeuedMemberKeys.add(member.memberKey);
-        events.push({
-          type: "group.member_requeued",
-          payload: {
-            memberKey: member.memberKey,
-            reason: "paused",
-            readinessSequence: member.readinessSequence,
           },
         });
       }
@@ -2163,41 +2243,50 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryMarkExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(runId, ownerEpoch));
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {
+    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(input));
   }
 
-  private markExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerSnapshot {
+  private markExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.assertOwnerEpochExpired(runId, ownerEpoch);
-      const attempts = this.db.prepare("SELECT attempt_id, node_key FROM node_attempts WHERE run_id = ? AND owner_epoch = ? AND status = 'started'").all(runId, ownerEpoch) as Array<{ attempt_id: string; node_key: string }>;
-      const current = this.loadRunSnapshot(runId);
+      const currentVersion = this.currentVersion(input.runId);
+      if (currentVersion !== input.expectedVersion) {
+        throwSchedulerStoreError({
+          type: "version-mismatch",
+          runId: input.runId,
+          expectedVersion: input.expectedVersion,
+          actualVersion: currentVersion,
+          message: `Run '${input.runId}' scheduler version mismatch.`,
+        });
+      }
+      this.requireOwnerEpoch(input.runId, input.currentOwnerEpoch);
+      this.assertOwnerEpochExpired(input.runId, input.expiredOwnerEpoch);
+      const attempts = this.db.prepare("SELECT attempt_id, node_key FROM node_attempts WHERE run_id = ? AND owner_epoch = ? AND status = 'started'").all(input.runId, input.expiredOwnerEpoch) as Array<{ attempt_id: string; node_key: string }>;
+      const current = this.loadRunSnapshot(input.runId);
       let projection = current.projection;
       const recoveryEvents: SchedulerEvent[] = [];
       const idempotencyKeys: string[] = [];
       const nodeKeys: string[] = [];
       for (const attempt of attempts) {
         const instance = projection.instances[attempt.node_key];
-        const members = ancestorGroupMembersForNode(projection, attempt.node_key).filter(member => member.status === "running");
         const events: SchedulerEvent[] = [
           { type: "attempt.superseded", payload: { attemptId: attempt.attempt_id, cancelReason: "superseded" } },
           ...(instance && (instance.status === "running" || instance.status === "awaiting")
             ? [{ type: "instance.requeued", payload: { nodeKey: instance.nodeKey, reason: "superseded", ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }) } } satisfies SchedulerEvent]
             : []),
-          ...members.map(member => ({ type: "group.member_requeued", payload: { memberKey: member.memberKey, reason: "superseded", readinessSequence: member.readinessSequence } }) satisfies SchedulerEvent),
         ];
         projection = applySchedulerEvents(projection, events);
         for (const [index, event] of events.entries()) {
           recoveryEvents.push(event);
-          idempotencyKeys.push(`supersede:${runId}:${attempt.attempt_id}:${index}`);
+          idempotencyKeys.push(`supersede:${input.runId}:${attempt.attempt_id}:${index}`);
           nodeKeys.push(eventNodeKey(event) ?? attempt.node_key);
         }
       }
-      const snapshot = this.commitProjectionEventsInTransaction({ runId, current, events: recoveryEvents, now, idempotencyKeys, nodeKeys });
+      const snapshot = this.commitProjectionEventsInTransaction({ runId: input.runId, current, events: recoveryEvents, now, idempotencyKeys, nodeKeys });
       this.db.exec("COMMIT");
-      this.snapshotCache.set(runId, snapshot);
+      this.snapshotCache.set(input.runId, snapshot);
       return snapshot;
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -2249,11 +2338,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private requireOwnerEpoch(runId: string, ownerEpoch: number): void {
-    const row = this.db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
-    const now = new Date().toISOString();
-    if (!row || row.owner_epoch !== ownerEpoch || row.released_at !== null || row.lease_expires_at <= now) {
-      throwSchedulerStoreError({ type: "owner-epoch-inactive", runId, ownerEpoch, message: `Run '${runId}' scheduler owner epoch is not active.` });
-    }
+    requireActiveOwnerEpoch(this.db, runId, ownerEpoch);
   }
 
   private drainDueSignalTimeouts(runId: string, ownerEpoch: number, now: Date): SchedulerSnapshot {
@@ -2263,7 +2348,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const frozen = this.loadFrozenRun(runId);
     const scope = rootScope(frozen);
     let projection = applySchedulerEvents(snapshot.projection, events);
-    for (let batches = 0; batches < 1_000; batches += 1) {
+    for (;;) {
       const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
       if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
       if (derived.length === 0) {
@@ -2278,7 +2363,6 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       events.push(...derived);
       projection = applySchedulerEvents(projection, derived);
     }
-    throw new Error(`Run '${runId}' did not quiesce after 1000 signal-timeout transition batches.`);
   }
 
   private loadFrozenRun(runId: string): FrozenRun {
@@ -3194,6 +3278,7 @@ function matchesAttemptStartInput(input: AttemptStartInput, payload: Record<stri
     && payload.nodeKey === input.nodeKey
     && payload.nodeId === input.nodeId
     && payload.ownerEpoch === input.ownerEpoch
+    && payload.admissionVersion === input.expectedVersion
     && (payload.deadlineAt ?? undefined) === input.deadlineAt;
 }
 
@@ -3998,6 +4083,14 @@ function rootScope(frozen: FrozenRun): EvaluationScope {
 
 function throwSchedulerStoreError(error: SchedulerStoreError): never {
   throw new SchedulerStoreException(error);
+}
+
+function requireActiveOwnerEpoch(db: DatabaseSync, runId: string, ownerEpoch: number): void {
+  const row = db.prepare("SELECT owner_epoch, lease_expires_at, released_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_epoch: number; lease_expires_at: string; released_at: string | null } | undefined;
+  const now = new Date().toISOString();
+  if (!row || row.owner_epoch !== ownerEpoch || row.released_at !== null || row.lease_expires_at <= now) {
+    throwSchedulerStoreError({ type: "owner-epoch-inactive", runId, ownerEpoch, message: `Run '${runId}' scheduler owner epoch is not active.` });
+  }
 }
 
 function digest(bytes: Uint8Array): string {

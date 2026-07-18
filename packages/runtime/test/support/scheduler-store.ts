@@ -8,6 +8,7 @@ import {
   type SchedulerResumeInput,
   type SchedulerRetryInput,
   type SchedulerRunRetryInput,
+  type SchedulerRecoveryInput,
   type SchedulerStorePort,
   type SignalConsumeInput,
 } from "../../src/scheduler/store-port.js";
@@ -16,7 +17,10 @@ export function throwingSchedulerStore(store: SchedulerStorePort) {
   return {
     loadRunSnapshot: (runId: string) => throwSchedulerStoreResult(store.tryLoadRunSnapshot(runId)),
     appendSchedulerEvents: (input: SchedulerCommit) => throwSchedulerStoreResult(store.tryAppendSchedulerEvents(input)),
-    startAttempt: (input: AttemptStartInput) => throwSchedulerStoreResult(store.tryStartAttempt(input)),
+    startAttempt: (input: Omit<AttemptStartInput, "expectedVersion"> & { expectedVersion?: number }) => throwSchedulerStoreResult(store.tryStartAttempt({
+      ...input,
+      expectedVersion: input.expectedVersion ?? throwSchedulerStoreResult(store.tryLoadRunSnapshot(input.runId)).version,
+    })),
     commitAttemptResult: (input: AttemptCommitInput) => throwSchedulerStoreResult(store.tryCommitAttemptResult(input)),
     consumeSignal: (input: SignalConsumeInput) => throwSchedulerStoreResult(store.tryConsumeSignal(input)),
     pauseRun: (input: SchedulerPauseInput) => throwSchedulerStoreResult(store.tryPauseRun(input)),
@@ -24,6 +28,6 @@ export function throwingSchedulerStore(store: SchedulerStorePort) {
     retryRun: (input: SchedulerRunRetryInput) => throwSchedulerStoreResult(store.tryRetryRun(input)),
     retry: (input: SchedulerRetryInput) => throwSchedulerStoreResult(store.tryRetry(input)),
     cancel: (input: SchedulerCancelInput) => throwSchedulerStoreResult(store.tryCancel(input)),
-    markExpiredOwnerAttemptsSuperseded: (runId: string, ownerEpoch: number) => throwSchedulerStoreResult(store.tryMarkExpiredOwnerAttemptsSuperseded(runId, ownerEpoch)),
+    markExpiredOwnerAttemptsSuperseded: (input: SchedulerRecoveryInput) => throwSchedulerStoreResult(store.tryMarkExpiredOwnerAttemptsSuperseded(input)),
   };
 }

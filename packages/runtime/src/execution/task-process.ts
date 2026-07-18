@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { rm } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ResultAsync } from "neverthrow";
 import type { JsonValue } from "@acpus/expression/ir";
@@ -148,16 +150,23 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       const message = raw;
       if (message.type === "artifact_register") {
         let error: string | undefined;
+        let identityAccepted = false;
         try {
-          if (enforceTimeout() || termination || terminal) throw new Error("Task attempt is no longer accepting artifacts.");
           assertArtifactIdentity(input.request, message.artifact);
+          identityAccepted = true;
+          if (enforceTimeout() || termination || terminal) throw new Error("Task attempt is no longer accepting artifacts.");
           input.registerArtifact(message.artifact);
         } catch (cause) {
           error = cause instanceof Error ? cause.message : String(cause);
         }
-        send(error === undefined
-          ? { type: "artifact_result", requestId: message.requestId, ok: true }
-          : { type: "artifact_result", requestId: message.requestId, ok: false, error });
+        if (error === undefined) {
+          send({ type: "artifact_result", requestId: message.requestId, ok: true });
+        } else if (identityAccepted) {
+          void removeRejectedArtifact(input.request, message.artifact)
+            .finally(() => send({ type: "artifact_result", requestId: message.requestId, ok: false, error }));
+        } else {
+          send({ type: "artifact_result", requestId: message.requestId, ok: false, error });
+        }
         return;
       }
       if (enforceTimeout() || terminal || termination) return;
@@ -261,9 +270,21 @@ function spawnFailure(input: RunTaskAttemptInput, error: unknown): TaskAttemptFa
 }
 
 function assertArtifactIdentity(request: TaskProcessRequest, artifact: TaskArtifactRegistration): void {
-  if (artifact.runId !== request.artifact.runId || artifact.nodeKey !== request.artifact.nodeKey || artifact.attempt !== request.artifact.attempt) {
+  if (artifact.runId !== request.artifact.runId
+    || artifact.nodeKey !== request.artifact.nodeKey
+    || artifact.attemptId !== request.artifact.attemptId
+    || artifact.attempt !== request.artifact.attempt
+    || artifact.ownerEpoch !== request.artifact.ownerEpoch) {
     throw new Error("Task process artifact identity does not match its attempt.");
   }
+}
+
+async function removeRejectedArtifact(request: TaskProcessRequest, artifact: TaskArtifactRegistration): Promise<void> {
+  const runDir = resolve(request.artifact.runDir);
+  const path = resolve(runDir, artifact.relativePath);
+  const fromRun = relative(runDir, path);
+  if (fromRun === "" || fromRun === ".." || fromRun.startsWith(`..${sep}`) || isAbsolute(fromRun)) return;
+  await rm(path, { force: true }).catch(() => undefined);
 }
 
 function appendTail(previous: string, chunk: unknown): string {

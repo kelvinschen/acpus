@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
@@ -8,6 +8,7 @@ import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
 import { executeAgentNode as executeAgentNodeProduction } from "../src/execution/agent-node.js";
+import { throwSchedulerStoreResult, type RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
@@ -16,6 +17,7 @@ import type { HookContext } from "../src/hooks/context.js";
 import type { HookRunner } from "../src/hooks/runner.js";
 import { agentSummary, agentTiming, completedAgentTurn } from "./support/agent-turn.js";
 import { listArtifacts as listRunArtifacts } from "../src/runs/use-cases.js";
+import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
 
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -29,6 +31,7 @@ declare global {
   var __acpusTimeoutResolutionCount: number | undefined;
 }
 const initialResponseRepairMax = process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX;
+const testRunClaims = new WeakMap<RuntimeStore, Map<string, RunOwnerClaim>>();
 beforeEach(() => {
   restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", undefined);
   agentMocks.executeAgentTurn.mockReset();
@@ -49,13 +52,94 @@ type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProductio
 function executeAgentNode(node: Parameters<typeof executeAgentNodeProduction>[0], scope: Parameters<typeof executeAgentNodeProduction>[1], options: TestAgentExecutorOptions) {
   const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), ...productionOptions } = options;
   if (executeTurn) agentMocks.executeAgentTurn.mockImplementation(executeTurn);
-  return executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy });
+  if (!productionOptions.store || !productionOptions.runId) {
+    return executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy });
+  }
+  const attempt = ensureTestAttempt(
+    productionOptions.store,
+    productionOptions.runId,
+    productionOptions.nodeKey ?? node.id,
+    node.id,
+    productionOptions.attemptId,
+  );
+  return executeAgentNodeProduction(node, scope, { ...productionOptions, ...attempt, hostPolicy });
 }
 type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), ...productionInput } = input;
   if (executeAgentTurn) agentMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
-  return createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy });
+  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy });
+  return {
+    execute(context: Parameters<typeof executor.execute>[0]) {
+      const attempt = ensureTestAttempt(input.store, context.runId, context.nodeKey, context.nodeId, context.attemptId);
+      return executor.execute({ ...context, ...attempt });
+    },
+  };
+}
+
+function ensureTestAttempt(store: RuntimeStore, runId: string, nodeKey: string, nodeId: string, requestedAttemptId?: string) {
+  const scheduler = throwingSchedulerStore(store.scheduler);
+  let snapshot = scheduler.loadRunSnapshot(runId);
+  const existing = Object.values(snapshot.projection.attempts).find(attempt =>
+    attempt.status === "started"
+    && attempt.nodeKey === nodeKey
+    && (requestedAttemptId === undefined || attempt.attemptId === requestedAttemptId),
+  );
+  if (existing) {
+    return {
+      attemptId: existing.attemptId,
+      attemptNo: existing.attemptNo,
+      ownerEpoch: existing.ownerEpoch,
+    };
+  }
+
+  let claims = testRunClaims.get(store);
+  if (!claims) {
+    claims = new Map();
+    testRunClaims.set(store, claims);
+  }
+  let claim = claims.get(runId);
+  if (!claim) {
+    claim = store.scheduler.claimRun(runId, `agent-test-${runId}`, 60_000);
+    if (!claim) throw new Error(`expected test claim for run '${runId}'`);
+    claims.set(runId, claim);
+  }
+
+  const instance = snapshot.projection.instances[nodeKey];
+  if (!instance) {
+    snapshot = scheduler.appendSchedulerEvents({
+      runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `agent-test:${runId}:${nodeKey}:ready:${snapshot.version}`,
+      events: [{
+        type: "instance.ready",
+        payload: {
+          runId,
+          nodeKey,
+          nodeId,
+          instancePath: [{ kind: "node", nodeId }],
+          readinessSequence: Object.keys(snapshot.projection.instances).length + 1,
+        },
+      }],
+    });
+  } else if (instance.status !== "ready") {
+    throw new Error(`expected test instance '${nodeKey}' to be ready, received '${instance.status}'`);
+  }
+
+  const started = scheduler.startAttempt({
+    runId,
+    nodeKey,
+    nodeId,
+    ownerEpoch: claim.ownerEpoch,
+    expectedVersion: snapshot.version,
+    idempotencyKey: `agent-test:${runId}:${nodeKey}:start:${snapshot.version}`,
+  });
+  return {
+    attemptId: started.attemptId,
+    attemptNo: started.attemptNo,
+    ownerEpoch: claim.ownerEpoch,
+  };
 }
 
 describe("agent node execution", () => {
@@ -129,7 +213,7 @@ describe("agent node execution", () => {
             ]);
             expect(artifactRows.some(row => row.relative_path.endsWith(".trace.jsonl"))).toBe(false);
             const metadataEntry = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
-            expect(metadataEntry).toMatchObject({ attemptId: "attempt_1", kind: "agent_attempt" });
+            expect(metadataEntry).toMatchObject({ attemptId: expect.any(String), kind: "agent_attempt" });
             const metadata = metadataEntry?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
               nodeId: "review",
@@ -329,7 +413,7 @@ describe("agent node execution", () => {
           const registerArtifact = store.registerArtifact.bind(store);
           const registration = vi.spyOn(store, "registerArtifact").mockImplementation(input => {
             if (input.relativePath.endsWith(".trace.jsonl")) throw new Error("trace registry unavailable");
-            registerArtifact(input);
+            return registerArtifact(input);
           });
           try {
             const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
@@ -346,6 +430,10 @@ describe("agent node execution", () => {
               expect.objectContaining({ traceCaptureError: "trace registry unavailable" }),
             ]);
             expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".trace.jsonl"))).toBe(false);
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const files = await readdir(join(workspace, runDir), { recursive: true });
+            expect(files.some(path => path.endsWith(".trace.jsonl"))).toBe(false);
           } finally {
             registration.mockRestore();
             store.close();
@@ -903,7 +991,7 @@ describe("agent node execution", () => {
                 runId: run.id,
                 nodeId: "inspect_agent",
                 nodeKey: "inspect_agent.dynamic",
-                schedulerAttempt: "7",
+                schedulerAttempt: "1",
               },
             });
             expect(turns[0]).toMatchObject({
@@ -1105,16 +1193,19 @@ describe("agent node execution", () => {
             const artifactPath = join(workspace, runDir, relativePath);
             await mkdir(dirname(artifactPath), { recursive: true });
             await writeFile(artifactPath, "diff\n");
-            store.registerArtifact({
+            const producerAttempt = ensureTestAttempt(store, run.id, "produce", "produce");
+            throwSchedulerStoreResult(store.registerArtifact({
               id: artifactId,
               runId: run.id,
               nodeKey: "produce",
+              attemptId: producerAttempt.attemptId,
               attempt: 1,
+              ownerEpoch: producerAttempt.ownerEpoch,
               mediaType: "text/plain",
               digest: "sha256:test",
               size: 5,
               relativePath,
-            });
+            }));
             const ref = { kind: "artifact", uri: `artifact://${run.id}/${artifactId}`, mediaType: "text/plain" } as const;
             const node = prepared.ir.root.nodes.find(item => item.id === "review");
             if (!node || node.kind !== "agent") throw new Error("expected review agent node");
@@ -1660,11 +1751,12 @@ describe("agent node execution", () => {
     });
 
     describe("session, retry, timeout, and cancellation", () => {
-    it("cancels active agent turns on pause and keeps partial turn artifacts", async () => {
+    it("cancels active agent turns on pause and removes unfenced partial artifacts", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-active-pause-artifacts", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const store = await openRuntimeStore(workspace);
           const turns: AgentTurnRequest[] = [];
+          const wakeup = createVersionedWakeup();
           let cooperativeAbort = false;
           try {
             const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
@@ -1675,6 +1767,7 @@ describe("agent node execution", () => {
               runId: run.id,
               ownerId: "owner-a",
               store,
+              wakeup,
               executeAgentTurn: async request => {
                 turns.push(request);
                 setTimeout(() => {
@@ -1683,6 +1776,7 @@ describe("agent node execution", () => {
                     ownerEpoch: 1,
                     idempotencyKey: "pause-active-agent",
                   });
+                  wakeup.wake();
                 }, 0);
                 return new Promise(resolve => {
                   request.signal?.addEventListener("abort", () => {
@@ -1707,31 +1801,20 @@ describe("agent node execution", () => {
             const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", run.id, nodeKey) as RuntimeArtifactRow[];
             const turnPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.json`;
             const stderrPath = `artifacts/${nodeKey}/attempt-1/agent/turn-001.stderr.log`;
-            expect(artifactRows).toEqual([
-              expect.objectContaining({ media_type: "application/json", relative_path: turnPath }),
-              expect.objectContaining({ media_type: "text/plain", relative_path: stderrPath }),
-            ]);
+            expect(artifactRows).toEqual([]);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
-            await expect(readFile(join(workspace, runDir, stderrPath), "utf8")).resolves.toBe("partial stderr\n");
-            await expect(readJsonFile(join(workspace, runDir, turnPath))).resolves.toMatchObject({
-              status: "cancelled",
-              prompt: turns[0]!.prompt,
-              response: "partial response\n",
-              summary: agentSummary(1),
-              timing: agentTiming(),
-              message: "paused by operator",
-            });
+            const files = await readdir(join(workspace, runDir), { recursive: true });
+            expect(files).not.toContain(turnPath);
+            expect(files).not.toContain(stderrPath);
 
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
-              status: "cancelled",
-              turnCount: 1,
-              message: "paused by operator",
-              turns: [expect.objectContaining({ status: "cancelled", message: "paused by operator" })],
+              status: "failed",
+              turnCount: 0,
+              message: expect.stringContaining("already cancelled"),
+              turns: [],
             });
-            expectAgentArtifactRef(metadata?.turns?.[0]?.turnArtifact, turnPath, "application/json", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[0]?.stderrArtifact, stderrPath, "text/plain", artifactRows);
 
             const claim = store.scheduler.claimRun(run.id, "resume-owner", 60_000);
             if (!claim) throw new Error("expected resume claim");
@@ -1760,7 +1843,7 @@ describe("agent node execution", () => {
             expect(turns[1]!.prompt).not.toContain("# OUTPUT SCHEMA");
             const metadataEntries = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
             expect(metadataEntries).toEqual([
-              expect.objectContaining({ status: "cancelled", sessionName: turns[0]!.sessionName, turnCount: 1 }),
+              expect.objectContaining({ status: "failed", sessionName: turns[0]!.sessionName, turnCount: 0 }),
               expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, turnCount: 1 }),
             ]);
           } finally {

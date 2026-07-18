@@ -74,7 +74,6 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         try {
           const result = await sessions.control(intent);
           if (!result) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-          if (intent.type === "resume" || intent.type === "retry" || intent.type === "signal") sessions.start(intent.runId);
           return result;
         } catch (error) {
           const code = daemonControlCode(error);

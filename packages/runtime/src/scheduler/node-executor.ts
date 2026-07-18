@@ -74,6 +74,7 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
     store: input.store,
     nodeKey: context.nodeKey,
     attemptNo: context.attemptNo,
+    ownerEpoch: context.ownerEpoch,
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     signal: context.signal,
   });
@@ -88,6 +89,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     nodeKey: context.nodeKey,
     attemptId: context.attemptId,
     attemptNo: context.attemptNo,
+    ownerEpoch: context.ownerEpoch,
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     store: input.store,
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),

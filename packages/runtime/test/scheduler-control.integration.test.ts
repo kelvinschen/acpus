@@ -29,11 +29,20 @@ describe("scheduler control intents", () => {
           requestId: `resume:${run.id}`,
           runId: run.id,
           type: "resume",
-        }, { ownerId: "owner-b" });
+        }, { ownerId: "owner-b", advance: false });
+
+        const replayed = await applySchedulerControlIntent(workspace, store, {
+          requestId: `resume:${run.id}`,
+          runId: run.id,
+          type: "resume",
+        }, { ownerId: "owner-c", advance: false });
+        const advanced = await advanceFrozenRun({ cwd: workspace, store, runId: run.id, ownerId: "owner-d" });
 
         const nodeKey = deriveInstanceKey(appendNode([], "root_task"));
         expect(resumed.effect).toEqual({ type: "resume", state: "applied" });
-        expect(resumed.advanced).toMatchObject({ status: "completed", started: 1, completed: 1 });
+        expect(resumed.reopened).toBe(true);
+        expect(replayed.reopened).toBe(false);
+        expect(advanced).toMatchObject({ status: "completed", started: 1, completed: 1 });
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[nodeKey]).toMatchObject({ status: "completed", output: { ok: true } });
       } finally {
         store.close();

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { schemaToJsonSchema } from "@acpus/core/schema";
@@ -15,6 +15,7 @@ import { ResolutionException, resolveOrThrow, tryResolveString } from "../evalua
 import { normalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
+import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
@@ -55,6 +56,7 @@ export type AgentExecutorOptions = {
   nodeKey?: string;
   attemptId?: string;
   attemptNo?: number;
+  ownerEpoch?: number;
   deadlineAt?: string;
   store?: RuntimeStore;
   progressWriter?: NodeProgressWriter;
@@ -566,7 +568,7 @@ function summaryProjection(summary: AgentTurnSummary): AgentTurnSummaryProjectio
 
 function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOptions, turn: number): ((progress: AgentTurnProgress) => void) | undefined {
   const writer = progressTarget(options);
-  if (!writer || !options.runId || !options.nodeKey) return undefined;
+  if (!writer || !options.runId || !options.nodeKey || !options.attemptId || options.ownerEpoch === undefined) return undefined;
   let lastFlushAt: number | undefined;
   let lastSignature = "";
   return progress => {
@@ -582,7 +584,7 @@ function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOp
 
 function writeAgentTerminalProgress(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, result: AgentTurnResult, status: "completed" | "failed" | "cancelled" | "timed_out", message?: string): void {
   const writer = progressTarget(options);
-  if (!writer || !options.runId || !options.nodeKey) return;
+  if (!writer || !options.runId || !options.nodeKey || !options.attemptId || options.ownerEpoch === undefined) return;
   writer.writeNodeProgress(progressSnapshot(node, options, turn, {
     responseText: result.responseText,
     summary: result.summary,
@@ -602,6 +604,7 @@ function progressSnapshot(
   status = "running",
   message = `turn ${turn}`,
 ): WriteNodeProgressInput {
+  if (!options.attemptId || options.ownerEpoch === undefined) throw new Error("Agent progress requires scheduler attempt ownership.");
   const output = outputTail(progress.responseText);
   return pruneUndefined({
     runId: options.runId,
@@ -609,6 +612,7 @@ function progressSnapshot(
     nodeId: node.id,
     attemptId: options.attemptId,
     attemptNo: options.attemptNo ?? 1,
+    ownerEpoch: options.ownerEpoch,
     kind: "agent",
     status,
     message,
@@ -663,25 +667,34 @@ function progressToolCall(call: AgentToolCallSummary): JsonValue {
 
 async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, name: string, content: string, mediaType: string): Promise<AgentArtifactRef> {
   if (!options.store || !options.runId) throw new Error("Agent artifact storage requires runtime store and run id.");
+  if (!options.attemptId || options.ownerEpoch === undefined) throw new Error("Agent artifact storage requires scheduler attempt ownership.");
   const runDir = options.store.getRunDir(options.runId);
   if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
   const nodeKey = options.nodeKey ?? "agent";
   const attempt = options.attemptNo ?? 1;
   const id = `artifact_${randomUUID()}`;
   const relativePath = join("artifacts", nodeKey, `attempt-${attempt}`, "agent", `turn-${String(turn).padStart(3, "0")}.${name}`);
+  const absolutePath = join(options.cwd, runDir, relativePath);
   const bytes = Buffer.from(content, "utf8");
   await mkdir(join(options.cwd, runDir, "artifacts", nodeKey, `attempt-${attempt}`, "agent"), { recursive: true });
-  await writeFile(join(options.cwd, runDir, relativePath), bytes);
-  options.store.registerArtifact({
-    id,
-    runId: options.runId,
-    nodeKey,
-    attempt,
-    mediaType,
-    digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-    size: bytes.byteLength,
-    relativePath,
-  });
+  await writeFile(absolutePath, bytes);
+  try {
+    throwSchedulerStoreResult(options.store.registerArtifact({
+      id,
+      runId: options.runId,
+      nodeKey,
+      attemptId: options.attemptId,
+      attempt,
+      ownerEpoch: options.ownerEpoch,
+      mediaType,
+      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      size: bytes.byteLength,
+      relativePath,
+    }));
+  } catch (error) {
+    await rm(absolutePath, { force: true });
+    throw error;
+  }
   return { artifactId: id, mediaType };
 }
 

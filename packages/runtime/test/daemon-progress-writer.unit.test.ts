@@ -3,7 +3,7 @@ import { CoalescingNodeProgressWriter } from "../src/progress/writer.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../src/store/store.js";
 
 describe("coalescing node progress writer", () => {
-  it("coalesces active progress by run and node", () => {
+  it("coalesces active progress by owned attempt", () => {
     vi.useFakeTimers();
     try {
       const writes: WriteNodeProgressInput[] = [];
@@ -15,6 +15,22 @@ describe("coalescing node progress writer", () => {
 
       vi.advanceTimersByTime(1_000);
       expect(writes).toMatchObject([{ message: "second" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let stale ownership replace a pending current-attempt update", () => {
+    vi.useFakeTimers();
+    try {
+      const writes: WriteNodeProgressInput[] = [];
+      const writer = new CoalescingNodeProgressWriter(progressStore(writes), 1_000);
+
+      writer.writeNodeProgress(progress("current"));
+      writer.writeNodeProgress({ ...progress("stale"), attemptId: "attempt_old", ownerEpoch: 1 });
+      vi.advanceTimersByTime(1_000);
+
+      expect(writes.map(write => write.message)).toEqual(["current", "stale"]);
     } finally {
       vi.useRealTimers();
     }
@@ -82,6 +98,8 @@ function progress(message: string, status = "running"): WriteNodeProgressInput {
     runId: "run_1",
     nodeKey: "node_1",
     nodeId: "node_1",
+    attemptId: "attempt_current",
+    ownerEpoch: 2,
     kind: "agent",
     status,
     message,

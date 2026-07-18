@@ -7,6 +7,7 @@ import { tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { ResolutionException, resolveOrThrow, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
+import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { runTaskAttempt, taskAttemptFailureMessage, type TaskAttemptFailure } from "./task-process.js";
 
 export type TaskExecutorOptions = {
@@ -14,8 +15,9 @@ export type TaskExecutorOptions = {
   runId: string;
   store: RuntimeStore;
   nodeKey?: string;
-  attemptId?: string;
-  attemptNo?: number;
+  attemptId: string;
+  attemptNo: number;
+  ownerEpoch: number;
   deadlineAt?: string;
   signal?: AbortSignal;
 };
@@ -44,10 +46,10 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
     : resolveOrThrow(tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`));
   const execution = defaultCommandTimeout === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.value };
   const metadataTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
-  const visibleAttempt = options.attemptNo ?? 1;
+  const visibleAttempt = options.attemptNo;
   options.store.writeExecutionMetadata({
     runId: options.runId,
-    ...(options.attemptId ? { attemptId: options.attemptId } : {}),
+    attemptId: options.attemptId,
     kind: "task_attempt",
     metadata: {
       nodeId: node.id,
@@ -73,11 +75,11 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
       input,
       workspaceDir,
       ...(execution === undefined ? {} : { execution }),
-      artifact: { runId: options.runId, nodeKey, attempt: visibleAttempt, runDir: absoluteRunDir, paths: artifactPaths },
+      artifact: { runId: options.runId, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, runDir: absoluteRunDir, paths: artifactPaths },
     },
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-    registerArtifact: artifact => options.store.registerArtifact(artifact),
+    registerArtifact: artifact => throwSchedulerStoreResult(options.store.registerArtifact(artifact)),
   });
   if (result.isErr()) throw new TaskAttemptExecutionError(result.error);
   return result.value;

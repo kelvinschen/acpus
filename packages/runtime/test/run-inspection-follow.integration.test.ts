@@ -38,6 +38,7 @@ describe("run inspection follow", () => {
           nodeId: "observe",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: attempt.ownerEpoch,
           kind: "agent",
           status: "running",
           context: { used: 1_000, size: 200_000 },
@@ -72,6 +73,7 @@ describe("run inspection follow", () => {
           nodeId: "observe",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: attempt.ownerEpoch,
           kind: "agent",
           status: "running",
           context: { used: 1_100, size: 200_000 },
@@ -104,6 +106,7 @@ describe("run inspection follow", () => {
         nodeId: "observe",
         attemptId: attempt.attemptId,
         attemptNo: attempt.attemptNo,
+        ownerEpoch: attempt.ownerEpoch,
         kind: "agent",
         status: "running",
         tools: { turn: 1, totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "running", inputPreview: "{\"command\":\"rg -n TODO packages\"}" }] },
@@ -125,6 +128,7 @@ describe("run inspection follow", () => {
           nodeId: "observe",
           attemptId: attempt.attemptId,
           attemptNo: attempt.attemptNo,
+          ownerEpoch: attempt.ownerEpoch,
           kind: "agent",
           status: "running",
           tools: { turn: 1, totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "completed", inputPreview: "{\"command\":\"rg -n TODO packages\"}" }] },
@@ -154,7 +158,7 @@ describe("run inspection follow", () => {
     await withRuntimeWorkspace("run-inspection-follow-omitted-progress", async workspace => {
       const store = await admittedAgentStore(workspace);
       const run = store.listRuns()[0]!;
-      readyAgents(store, run.id, 21);
+      const attempts = startAgents(store, run.id, 21);
       const controller = new AbortController();
       const iterator = followRunInspection(workspace, {
         runId: run.id,
@@ -168,10 +172,15 @@ describe("run inspection follow", () => {
         const visible = new Set(initial.document.items.flatMap(item => item.nodeKey ? [item.nodeKey] : []));
         const hiddenNodeKey = Array.from({ length: 21 }, (_, index) => `observe~${index}`).find(nodeKey => !visible.has(nodeKey));
         expect(hiddenNodeKey).toBeDefined();
+        const attempt = attempts.get(hiddenNodeKey!);
+        if (!attempt) throw new Error(`expected attempt for '${hiddenNodeKey}'`);
         store.writeNodeProgress({
           runId: run.id,
           nodeKey: hiddenNodeKey!,
           nodeId: "observe",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch: attempt.ownerEpoch,
           kind: "agent",
           status: "running",
           context: { used: 1_000, size: 200_000 },
@@ -305,16 +314,17 @@ function startAgent(store: RuntimeStore, runId: string) {
       },
     }],
   });
-  return throwingSchedulerStore(store.scheduler).startAttempt({
+  const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
     runId,
     nodeKey: "observe~1",
     nodeId: "observe",
     ownerEpoch: claim.ownerEpoch,
     idempotencyKey: "inspection-agent:attempt",
   });
+  return { ...attempt, ownerEpoch: claim.ownerEpoch };
 }
 
-function readyAgents(store: RuntimeStore, runId: string, count: number): void {
+function startAgents(store: RuntimeStore, runId: string, count: number) {
   const claim = store.scheduler.claimRun(runId, "inspection-budget-test", 60_000)!;
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -333,6 +343,17 @@ function readyAgents(store: RuntimeStore, runId: string, count: number): void {
       },
     })),
   });
+  return new Map(Array.from({ length: count }, (_, index) => {
+    const nodeKey = `observe~${index}`;
+    const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+      runId,
+      nodeKey,
+      nodeId: "observe",
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `inspection-agent:budget:attempt:${index}`,
+    });
+    return [nodeKey, { ...attempt, ownerEpoch: claim.ownerEpoch }] as const;
+  }));
 }
 
 async function nextEmission(iterator: AsyncIterator<Result<RunInspectionEmission, RunInspectionError>>): Promise<RunInspectionEmission> {

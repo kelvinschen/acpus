@@ -150,6 +150,9 @@ describe("durable scheduler advance with store", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       const calls: string[] = [];
+      const oldAttemptStatusesAtExecution: string[] = [];
+      let activeExecutors = 0;
+      let peakExecutors = 0;
       try {
         const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
         const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -176,10 +179,21 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
+          maxLeafConcurrency: 1,
           executor: {
-            execute: context => {
+            execute: async context => {
               calls.push(context.nodeKey);
-              return Promise.resolve(completed());
+              activeExecutors += 1;
+              peakExecutors = Math.max(peakExecutors, activeExecutors);
+              try {
+                oldAttemptStatusesAtExecution.push(
+                  throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts[oldAttempt.attemptId]?.status ?? "missing",
+                );
+                await Promise.resolve();
+                return completed();
+              } finally {
+                activeExecutors -= 1;
+              }
             },
           },
         });
@@ -187,7 +201,32 @@ describe("durable scheduler advance with store", () => {
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
         expect(projection.attempts[oldAttempt.attemptId]).toMatchObject({ status: "superseded" });
         expect(calls).toEqual(["old", "new"]);
+        expect(oldAttemptStatusesAtExecution).toEqual(["superseded", "superseded"]);
+        expect(peakExecutors).toBe(1);
         expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === "old").map(attempt => attempt.attemptNo).sort()).toEqual([1, 2]);
+
+        const eventsDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        try {
+          const attemptEvents = eventsDb.prepare(`
+            SELECT sequence, type, payload_json
+            FROM run_events
+            WHERE run_id = ? AND type IN ('attempt.started', 'attempt.superseded')
+            ORDER BY sequence
+          `).all(run.id) as Array<{ sequence: number; type: string; payload_json: string }>;
+          const supersededSequence = attemptEvents.find(event =>
+            event.type === "attempt.superseded"
+            && (JSON.parse(event.payload_json) as { payload: { attemptId?: string } }).payload.attemptId === oldAttempt.attemptId
+          )?.sequence;
+          const replacementSequence = attemptEvents.find(event => {
+            if (event.type !== "attempt.started") return false;
+            const { payload } = JSON.parse(event.payload_json) as { payload: { nodeKey?: string; attemptNo?: number } };
+            return payload.nodeKey === "old" && payload.attemptNo === 2;
+          })?.sequence;
+          expect(supersededSequence).toBeDefined();
+          expect(replacementSequence).toBeGreaterThan(supersededSequence!);
+        } finally {
+          eventsDb.close();
+        }
         expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: oldAttempt.attemptId,

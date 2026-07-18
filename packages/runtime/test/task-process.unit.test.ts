@@ -71,6 +71,9 @@ const fake = vi.hoisted(() => {
 
 vi.mock("node:child_process", () => ({ spawn: fake.spawn }));
 
+const removeRejectedArtifact = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("node:fs/promises", () => ({ rm: removeRejectedArtifact }));
+
 import { runTaskAttempt } from "../src/execution/task-process.js";
 
 describe("task process timeout budget", () => {
@@ -82,6 +85,7 @@ describe("task process timeout budget", () => {
     fake.state.child = undefined;
     fake.state.afterSpawn = undefined;
     fake.spawn.mockClear();
+    removeRejectedArtifact.mockClear();
     vi.spyOn(globalThis.performance, "now").mockImplementation(() => fake.state.now);
   });
 
@@ -113,7 +117,9 @@ describe("task process timeout budget", () => {
         id: "artifact_1",
         runId: "run_1",
         nodeKey: "late_message",
+        attemptId: "attempt_1",
         attempt: 1,
+        ownerEpoch: 1,
         digest: "sha256:late",
         size: 1,
         relativePath: "artifacts/late.txt",
@@ -124,6 +130,7 @@ describe("task process timeout budget", () => {
 
     expect((await result)._unsafeUnwrapErr()).toMatchObject({ type: "timed_out" });
     expect(registerArtifact).not.toHaveBeenCalled();
+    expect(removeRejectedArtifact).toHaveBeenCalledWith("/repo/.acpus/run_1/artifacts/late.txt", { force: true });
     expect(child.sent).toContainEqual(expect.objectContaining({ type: "artifact_result", requestId: "artifact_1", ok: false }));
     expect(child.sent).toContainEqual({ type: "abort" });
   });
@@ -186,7 +193,7 @@ function taskInput(
       target: { kind: "inline", source: "async () => undefined" },
       input: {},
       workspaceDir: "/repo",
-      artifact: { runId: "run_1", nodeKey: nodeId, attempt: 1, runDir: "/repo/.acpus/run_1", paths: {} },
+      artifact: { runId: "run_1", nodeKey: nodeId, attemptId: "attempt_1", attempt: 1, ownerEpoch: 1, runDir: "/repo/.acpus/run_1", paths: {} },
     },
     timeoutMs: 10,
     registerArtifact: vi.fn(),

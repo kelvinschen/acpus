@@ -96,6 +96,32 @@ describe("runtime scheduler task process", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000);
+        if (!claim) throw new Error("expected run claim");
+        const ready = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "dynamic-task:ready",
+          events: [{
+            type: "instance.ready",
+            payload: {
+              runId: run.id,
+              nodeKey: "context_task.dynamic",
+              nodeId: "context_task",
+              instancePath: [{ kind: "node", nodeId: "context_task" }],
+              readinessSequence: 1,
+            },
+          }],
+        });
+        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+          runId: run.id,
+          nodeId: "context_task",
+          nodeKey: "context_task.dynamic",
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: ready.version,
+          idempotencyKey: "dynamic-task:start",
+        });
         const executor = createRuntimeNodeExecutor({
           cwd: workspace,
           ir: prepared.ir,
@@ -108,9 +134,9 @@ describe("runtime scheduler task process", () => {
           runId: run.id,
           nodeId: "context_task",
           nodeKey: "context_task.dynamic",
-          attemptId: "attempt_7",
-          attemptNo: 7,
-          ownerEpoch: 1,
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch: claim.ownerEpoch,
           signal: new AbortController().signal,
         });
 
@@ -121,18 +147,18 @@ describe("runtime scheduler task process", () => {
           },
         });
         const artifact = runtimeRow(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, "context_task.dynamic");
-        expect(artifact).toMatchObject({ attempt: 7 });
-        expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-7/");
+        expect(artifact).toMatchObject({ attempt: 1 });
+        expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-1/");
         const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", run.id, String(artifact?.relative_path)));
         expect(bytes.toString("utf8")).toBe("dynamic artifact\n");
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt");
         expect(metadata).toMatchObject({
-          attemptId: "attempt_7",
+          attemptId: attempt.attemptId,
           kind: "task_attempt",
           metadata: expect.objectContaining({
             nodeId: "context_task",
             nodeKey: "context_task.dynamic",
-            attemptNo: 7,
+            attemptNo: 1,
             input: {},
             cwd: workspace,
           }),

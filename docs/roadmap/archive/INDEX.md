@@ -31,6 +31,7 @@ live in `legacy/`, not in this directory.
 - [Repository Maintenance Cleanup Roadmap](repository-maintenance-cleanup-roadmap.md) — repository-wide cleanup implementation record.
 - [Runtime Control Abstraction Refactor Roadmap](runtime-control-abstraction-refactor-roadmap.md) — runtime control authority and transport refactor record.
 - [Runtime Hooks Implementation Roadmap](runtime-hooks-implementation.md) — runtime hook observer implementation record.
+- [Scheduler Work Conservation And Nested Concurrency](scheduler-work-conservation-and-nested-concurrency.md) — work-conserving owner-local completion pump, direct-member nested concurrency, versioned wakeup, stale-attempt fences, and count-unbounded durable progress.
 - [单工作区并发运行 Runtime Roadmap](single-workspace-concurrency-runtime-roadmap.md) — single-workspace concurrent-run roadmap.
 - [Spec Gap Audit](spec-gap-audit.md) — audit of current spec coverage and gaps at the time of completion.
 - [Targeted Replacement Fork Goal](targeted-replacement-fork-goal.md) — targeted fork compatibility and reuse implementation record.

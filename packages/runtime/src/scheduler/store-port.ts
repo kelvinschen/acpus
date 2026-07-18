@@ -22,6 +22,7 @@ export type SchedulerStoreError =
   | { type: "owner-epoch-inactive"; runId: string; ownerEpoch: number; message: string }
   | { type: "owner-epoch-still-active"; runId: string; ownerEpoch: number; message: string }
   | { type: "run-paused"; runId: string; message: string }
+  | { type: "instance-not-ready"; runId: string; nodeKey: string; status: string; message: string }
   | { type: "terminal-attempt"; attemptId: string; status: string; message: string }
   | { type: "attempt-not-found"; attemptId: string; message: string }
   | { type: "owner-epoch-stale"; runId: string; attemptId: string; ownerEpoch: number; message: string }
@@ -81,8 +82,23 @@ export type AttemptStartInput = {
   nodeKey: string;
   nodeId: string;
   ownerEpoch: number;
+  expectedVersion: number;
   deadlineAt?: string;
   idempotencyKey: string;
+};
+
+export type AttemptStartResult = {
+  attemptId: string;
+  attemptNo: number;
+  snapshot: SchedulerSnapshot;
+  disposition: "started" | "existing";
+};
+
+export type SchedulerRecoveryInput = {
+  runId: string;
+  currentOwnerEpoch: number;
+  expiredOwnerEpoch: number;
+  expectedVersion: number;
 };
 
 export type AttemptCommitInput = {
@@ -143,7 +159,7 @@ export type SchedulerStorePort = {
   releaseRun(claim: RunOwnerClaim): boolean;
   tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot>;
   tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot>;
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<{ attemptId: string; attemptNo: number }>;
+  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult>;
   tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot>;
@@ -151,5 +167,5 @@ export type SchedulerStorePort = {
   tryRetryRun(input: SchedulerRunRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryMarkExpiredOwnerAttemptsSuperseded(runId: string, ownerEpoch: number): SchedulerStoreResult<SchedulerSnapshot>;
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot>;
 };

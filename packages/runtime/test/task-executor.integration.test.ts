@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { okAsync } from "neverthrow";
+import { err, ok, okAsync } from "neverthrow";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import type { TaskAttemptRunner } from "../src/execution/task-process.js";
@@ -55,9 +55,12 @@ describe("task executor", () => {
     await expect(executeTaskNode(node, {}, {
       cwd: workspace,
       runId: "run_1",
+      attemptId: "attempt_1",
+      attemptNo: 1,
+      ownerEpoch: 1,
       store: {
         getRunDir: () => ".acpus/.local/runs/run_1",
-        registerArtifact: () => {},
+        registerArtifact: () => ok(undefined),
         writeExecutionMetadata: (input: unknown) => metadata.push(input),
       } as unknown as RuntimeStore,
     })).resolves.toEqual({ value: "ok" });
@@ -161,10 +164,13 @@ describe("task executor", () => {
     await expect(executeTaskNode(node, {}, {
       cwd: workspace,
       runId,
+      attemptId: "attempt_input_path",
+      attemptNo: 1,
+      ownerEpoch: 1,
       store: {
         getRunDir: () => runDir,
         getArtifact: (_runId: string, id: string) => id === artifactId ? artifact : undefined,
-        registerArtifact: () => {},
+        registerArtifact: () => ok(undefined),
         writeExecutionMetadata: () => {},
       } as unknown as RuntimeStore,
     })).resolves.toEqual({ before: path, after: path });
@@ -341,6 +347,24 @@ describe("task executor", () => {
     expect(artifacts[0]!.relativePath).toContain("before.txt");
     expect(artifacts[0]!.mediaType).toBe("text/plain");
   });
+
+  it("removes an artifact file when the durable attempt fence rejects registration", async () => {
+    const node = inlineTask("fenced_artifact", "async ({ artifact }) => artifact.write('late.txt', 'late')");
+    const options = taskOptions("run_fenced_artifact");
+    options.store.registerArtifact = input => err({
+      type: "terminal-attempt",
+      attemptId: input.attemptId,
+      status: "cancelled",
+      message: "attempt is already cancelled",
+    });
+
+    await expect(executeTaskNode(node, {}, options)).rejects.toMatchObject({
+      failure: { type: "task", message: "attempt is already cancelled" },
+    });
+
+    const artifactDir = join(workspace, ".acpus/.local/runs/run_fenced_artifact", "artifacts", "fenced_artifact", "attempt-1");
+    await expect(readdir(artifactDir)).resolves.toEqual([]);
+  });
 });
 
 function inlineTask(id: string, source: string, invocation: Partial<Pick<TaskNodeIR["run"], "input" | "cwd" | "env" | "execution">> = {}): TaskNodeIR {
@@ -359,9 +383,15 @@ function taskOptions(runId: string, registerArtifact: (artifact: RegisterArtifac
   return {
     cwd: workspace,
     runId,
+    attemptId: `attempt_${runId}`,
+    attemptNo: 1,
+    ownerEpoch: 1,
     store: {
       getRunDir: () => `.acpus/.local/runs/${runId}`,
-      registerArtifact,
+      registerArtifact: (input: RegisterArtifactInput) => {
+        registerArtifact(input);
+        return ok(undefined);
+      },
       writeExecutionMetadata: () => {},
     } as unknown as RuntimeStore,
   };
