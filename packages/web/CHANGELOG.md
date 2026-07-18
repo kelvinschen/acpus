@@ -1,5 +1,14 @@
 # @acpus/web
 
+## 0.1.0-alpha.7
+
+### Patch Changes
+
+- Updated dependencies [c902db5]
+  - @acpus/core@0.7.0-alpha.6
+  - @acpus/runtime@0.9.0-alpha.6
+  - @acpus/workflow-compiler@0.1.0-alpha.6
+
 ## 0.1.0-alpha.6
 
 ### Minor Changes

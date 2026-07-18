@@ -1,5 +1,12 @@
 # @acpus/core
 
+## 0.7.0-alpha.6
+
+### Minor Changes
+
+- c902db5: Allow non-empty homogeneous Zod tuples at graph boundaries by lowering them to
+  arrays while preserving native TypeScript tuple inference.
+
 ## 0.7.0-alpha.5
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @acpus/tasks
 
+## 0.1.0-alpha.6
+
+### Patch Changes
+
+- Updated dependencies [c902db5]
+  - @acpus/core@0.7.0-alpha.6
+
 ## 0.1.0-alpha.5
 
 ### Minor Changes

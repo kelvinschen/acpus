@@ -31,6 +31,7 @@
     "installed-facade-types",
     "intentional-package-contents",
     "internal-eslint-default-only",
+    "light-tuple-arrays",
     "narrow-tasks-entrypoint",
     "native-ts7-builds",
     "numeric-agent-turn-timeouts",
