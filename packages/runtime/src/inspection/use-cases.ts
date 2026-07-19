@@ -29,7 +29,7 @@ const agentCounterEmissionIntervalMs = 10_000;
 type FollowDocument = RunInspectionSnapshot | RunInspectionTargetDocument;
 
 export function getRunInspection(cwd: string, query: RunInspectionQuery): ResultAsync<RunInspectionDocument, RunInspectionError> {
-  return ResultAsync.fromPromise(readInspection(cwd, query), error => inspectionError(query.runId, error));
+  return new ResultAsync(readInspection(cwd, query));
 }
 
 export async function* followRunInspection(queryCwd: string, query: FollowRunInspectionQuery): AsyncIterable<Result<RunInspectionEmission, RunInspectionError>> {
@@ -192,13 +192,17 @@ function durableRunSummaryChanged(previous: FollowDocument["run"], current: Foll
   return JSON.stringify(previousDurable) !== JSON.stringify(currentDurable);
 }
 
-async function readInspection(cwd: string, query: RunInspectionQuery): Promise<RunInspectionDocument> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) throw failure({ type: "runtime-store-not-found", message: "Runtime store was not found." });
+async function readInspection(cwd: string, query: RunInspectionQuery): Promise<Result<RunInspectionDocument, RunInspectionError>> {
   try {
-    return projectFromRead(store.readRunInspection(query.runId), query);
-  } finally {
-    store.close();
+    const store = await openExistingRuntimeStore(cwd);
+    if (!store) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
+    try {
+      return projectFromRead(store.readRunInspection(query.runId), query);
+    } finally {
+      store.close();
+    }
+  } catch (error) {
+    return err(inspectionError(query.runId, error));
   }
 }
 
@@ -208,8 +212,10 @@ async function readFollowCycle(cwd: string, query: FollowRunInspectionQuery, aft
     if (!store) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
     try {
       const read = store.readRunInspection(query.runId, after);
+      const document = projectFromRead(read, query);
+      if (document.isErr()) return err(document.error);
       return ok({
-        document: projectFromRead(read, query),
+        document: document.value,
         events: read.events,
         run: read.run!,
         ...(read.run?.output === undefined ? {} : { output: read.run.output }),
@@ -230,13 +236,13 @@ type FollowCycle = {
 };
 type ResultAsyncValue = Result<FollowCycle, RunInspectionError>;
 
-function projectFromRead(read: RunInspectionStoreRead, query: RunInspectionQuery): RunInspectionDocument {
-  if (!read.run) throw failure({ type: "run-not-found", runId: query.runId, message: `Run '${query.runId}' was not found.` });
-  if (!read.frozen) throw failure({ type: "inspection-read-failed", runId: query.runId, message: `Frozen workflow for run '${query.runId}' was not found.` });
+function projectFromRead(read: RunInspectionStoreRead, query: RunInspectionQuery): Result<RunInspectionDocument, RunInspectionError> {
+  if (!read.run) return err({ type: "run-not-found", runId: query.runId, message: `Run '${query.runId}' was not found.` });
+  if (!read.frozen) throw new Error(`Frozen workflow for run '${query.runId}' was not found.`);
   const document = projectRunInspection({ ir: read.frozen.ir, run: read.run, artifacts: read.artifacts, cursor: read.cursor, query });
-  if (!document && query.mode === "target") throw failure({ type: "target-not-found", runId: query.runId, target: query.target, message: `Run target '${query.target}' was not found.` });
-  if (!document) throw failure({ type: "inspection-read-failed", runId: query.runId, message: "Run inspection projection failed." });
-  return document;
+  if (!document && query.mode === "target") return err({ type: "target-not-found", runId: query.runId, target: query.target, message: `Run target '${query.target}' was not found.` });
+  if (!document) throw new Error("Run inspection projection failed.");
+  return ok(document);
 }
 
 function withoutWorkflowOutput<T extends FollowDocument>(document: T): T {
@@ -388,18 +394,7 @@ function hasCursorGap(previous: number, current: number, events: RunInspectionSt
 }
 
 function inspectionError(runId: string, error: unknown): RunInspectionError {
-  if (error instanceof InspectionFailure) return error.detail;
   return { type: "inspection-read-failed", runId, message: error instanceof Error ? error.message : String(error), cause: error };
-}
-
-class InspectionFailure extends Error {
-  constructor(readonly detail: RunInspectionError) {
-    super(detail.message);
-  }
-}
-
-function failure(detail: RunInspectionError): InspectionFailure {
-  return new InspectionFailure(detail);
 }
 
 function okEmission(value: RunInspectionEmission): Result<RunInspectionEmission, RunInspectionError> {

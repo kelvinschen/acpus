@@ -1,65 +1,88 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import type { SchemaIR } from "@acpus/core/ir";
+import { err, ok, type Result } from "neverthrow";
 
 type RuntimeSchema = SchemaIR;
 
-export function normalizeValue(schema: SchemaIR | undefined, value: JsonValue, label: string): JsonValue {
-  if (!schema) return value;
+export type SchemaNormalizationFailure = {
+  type: "schema-mismatch";
+  label: string;
+  path: string;
+  expected: string;
+  actual?: string;
+  message: string;
+};
+
+type SchemaIssue = Omit<SchemaNormalizationFailure, "type" | "label" | "message"> & { detail: string };
+
+export function tryNormalizeValue(schema: SchemaIR | undefined, value: JsonValue, label: string): Result<JsonValue, SchemaNormalizationFailure> {
+  if (!schema) return ok(value);
   const issue = firstSchemaIssue(schema, value, "$");
-  if (issue) throw new Error(`${label} does not match schema: ${issue}.`);
-  return applyDefaults(schema, value) as JsonValue;
+  if (issue) return err({
+    type: "schema-mismatch",
+    label,
+    path: issue.path,
+    expected: issue.expected,
+    ...(issue.actual === undefined ? {} : { actual: issue.actual }),
+    message: `${label} does not match schema: ${issue.detail}.`,
+  });
+  return ok(applyDefaults(schema, value) as JsonValue);
 }
 
-function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string): string | undefined {
-  if (value === null) return schema.nullable || schema.kind === "null" ? undefined : `${path} expected ${schema.kind}, got null`;
+function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string): SchemaIssue | undefined {
+  if (value === null) return schema.nullable || schema.kind === "null" ? undefined : issue(path, schema.kind, "null");
 
   switch (schema.kind) {
     case "unknown":
       return undefined;
     case "string":
-      return typeof value === "string" ? undefined : `${path} expected string, got ${jsonType(value)}`;
+      return typeof value === "string" ? undefined : issue(path, "string", jsonType(value));
     case "number":
-      return typeof value === "number" ? undefined : `${path} expected number, got ${jsonType(value)}`;
+      return typeof value === "number" ? undefined : issue(path, "number", jsonType(value));
     case "boolean":
-      return typeof value === "boolean" ? undefined : `${path} expected boolean, got ${jsonType(value)}`;
+      return typeof value === "boolean" ? undefined : issue(path, "boolean", jsonType(value));
     case "null":
-      return value === null ? undefined : `${path} expected null, got ${jsonType(value)}`;
+      return issue(path, "null", jsonType(value));
     case "literal":
-      return Object.is(value, schema.value) ? undefined : `${path} expected literal ${JSON.stringify(schema.value)}`;
+      return Object.is(value, schema.value) ? undefined : customIssue(path, `literal ${JSON.stringify(schema.value)}`);
     case "enum":
-      return schema.values.some(item => Object.is(item, value)) ? undefined : `${path} expected one of ${schema.values.map(item => JSON.stringify(item)).join(", ")}`;
+      return schema.values.some(item => Object.is(item, value))
+        ? undefined
+        : customIssue(path, `one of ${schema.values.map(item => JSON.stringify(item)).join(", ")}`);
     case "array":
-      if (!Array.isArray(value)) return `${path} expected array, got ${jsonType(value)}`;
+      if (!Array.isArray(value)) return issue(path, "array", jsonType(value));
       for (const [index, item] of value.entries()) {
-        const issue = firstSchemaIssue(schema.item, item, `${path}[${index}]`);
-        if (issue) return issue;
+        const child = firstSchemaIssue(schema.item, item, `${path}[${index}]`);
+        if (child) return child;
       }
       return undefined;
     case "object": {
-      if (!isJsonObject(value)) return `${path} expected object, got ${jsonType(value)}`;
+      if (!isJsonObject(value)) return issue(path, "object", jsonType(value));
       for (const key of schema.required) {
-        if (!(key in value)) return `${path}.${key} is required`;
+        if (!(key in value)) return customIssue(`${path}.${key}`, "required field", "missing", `${path}.${key} is required`);
       }
       for (const [key, item] of Object.entries(value)) {
         const field = schema.fields[key];
         if (!field) {
-          if (!schema.additionalProperties) return `${path}.${key} is not allowed`;
+          if (!schema.additionalProperties) return customIssue(`${path}.${key}`, "declared field", "additional property", `${path}.${key} is not allowed`);
           continue;
         }
-        const issue = firstSchemaIssue(field as RuntimeSchema, item, `${path}.${key}`);
-        if (issue) return issue;
+        const child = firstSchemaIssue(field as RuntimeSchema, item, `${path}.${key}`);
+        if (child) return child;
       }
       return undefined;
     }
     case "record":
-      if (!isJsonObject(value)) return `${path} expected object, got ${jsonType(value)}`;
+      if (!isJsonObject(value)) return issue(path, "object", jsonType(value));
       for (const [key, item] of Object.entries(value)) {
-        const valueIssue = firstSchemaIssue(schema.value as RuntimeSchema, item, `${path}.${key}`);
-        if (valueIssue) return valueIssue;
+        const child = firstSchemaIssue(schema.value as RuntimeSchema, item, `${path}.${key}`);
+        if (child) return child;
       }
       return undefined;
     case "union":
-      return schema.variants.some(variant => !firstSchemaIssue(variant as RuntimeSchema, value, path)) ? undefined : `${path} did not match any union variant`;
+      return schema.variants.some(variant => !firstSchemaIssue(variant as RuntimeSchema, value, path))
+        ? undefined
+        : customIssue(path, "one union variant", jsonType(value), `${path} did not match any union variant`);
   }
 }
 
@@ -75,6 +98,14 @@ function applyDefaults(schema: RuntimeSchema, value: JsonValue | undefined): Jso
   }
   if (schema.kind === "array" && Array.isArray(value)) return value.map(item => applyDefaults(schema.item as RuntimeSchema, item) ?? item);
   return value;
+}
+
+function issue(path: string, expected: string, actual: string): SchemaIssue {
+  return customIssue(path, expected, actual, `${path} expected ${expected}, got ${actual}`);
+}
+
+function customIssue(path: string, expected: string, actual?: string, detail = `${path} expected ${expected}`): SchemaIssue {
+  return { path, expected, ...(actual === undefined ? {} : { actual }), detail };
 }
 
 function isJsonObject(value: unknown): value is { [key: string]: JsonValue } {

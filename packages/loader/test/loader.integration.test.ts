@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -60,7 +60,7 @@ console.log(JSON.stringify({ token: task.isToken(mod.default) }));
     }
   });
 
-  it("falls back to a package development export when the default target is missing", async () => {
+  it("falls back to a nested package development export when the normal target is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-development-export-"));
     try {
       const packageDir = join(cwd, "node_modules", "sample-task-package");
@@ -71,8 +71,8 @@ console.log(JSON.stringify({ token: task.isToken(mod.default) }));
         type: "module",
         exports: {
           "./task": {
-            development: "./src/task.ts",
-            default: "./dist/task.js",
+            development: { import: "./src/task.ts" },
+            node: { import: "./dist/task.js" },
           },
         },
       }));
@@ -134,7 +134,7 @@ console.log(JSON.stringify({ selected: mod.selected }));
     }
   });
 
-  it("does not fallback when the default target exists but its dependency is missing", async () => {
+  it("does not fallback when a nested normal target exists but its dependency is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-transitive-miss-"));
     try {
       const packageDir = join(cwd, "node_modules", "broken-default-package");
@@ -147,7 +147,7 @@ console.log(JSON.stringify({ selected: mod.selected }));
         exports: {
           "./task": {
             development: "./src/task.ts",
-            default: "./dist/task.js",
+            node: { import: "./dist/task.js" },
           },
         },
       }));
@@ -175,6 +175,83 @@ try {
       expect(result.loaded).toBe(false);
       expect(result.code).toBe("ERR_MODULE_NOT_FOUND");
       expect(result.message).toContain("missing-transitive-dependency");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fallback when the default target is a directory", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-default-directory-"));
+    try {
+      const packageDir = join(cwd, "node_modules", "directory-default-package");
+      await mkdir(join(packageDir, "src"), { recursive: true });
+      await mkdir(join(packageDir, "dist", "task.js"), { recursive: true });
+      await writeFile(join(cwd, "workflow.ts"), "");
+      await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        name: "directory-default-package",
+        type: "module",
+        exports: {
+          "./task": {
+            development: "./src/task.ts",
+            default: "./dist/task.js",
+          },
+        },
+      }));
+      await writeFile(join(packageDir, "src", "task.ts"), "export const selected = 'development';\n");
+
+      const stdout = await runNodeLoaderScript(`
+import { importAuthoringModule } from ${JSON.stringify(loaderEntry)};
+
+try {
+  const mod = await importAuthoringModule("directory-default-package/task", {
+    parentURL: ${JSON.stringify(pathToFileURL(join(cwd, "workflow.ts")).href)},
+  });
+  console.log(JSON.stringify({ loaded: true, selected: mod.selected }));
+} catch (error) {
+  console.log(JSON.stringify({ loaded: false, code: error && typeof error === "object" && "code" in error ? error.code : undefined }));
+}
+`);
+
+      expect(JSON.parse(stdout)).toMatchObject({ loaded: false });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fallback when inspecting the default target hits a symlink loop", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-default-loop-"));
+    try {
+      const packageDir = join(cwd, "node_modules", "loop-default-package");
+      await mkdir(join(packageDir, "src"), { recursive: true });
+      await mkdir(join(packageDir, "dist"), { recursive: true });
+      await writeFile(join(cwd, "workflow.ts"), "");
+      await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        name: "loop-default-package",
+        type: "module",
+        exports: {
+          "./task": {
+            development: "./src/task.ts",
+            default: "./dist/task.js",
+          },
+        },
+      }));
+      await writeFile(join(packageDir, "src", "task.ts"), "export const selected = 'development';\n");
+      await symlink("task.js", join(packageDir, "dist", "task.js"));
+
+      const stdout = await runNodeLoaderScript(`
+import { importAuthoringModule } from ${JSON.stringify(loaderEntry)};
+
+try {
+  const mod = await importAuthoringModule("loop-default-package/task", {
+    parentURL: ${JSON.stringify(pathToFileURL(join(cwd, "workflow.ts")).href)},
+  });
+  console.log(JSON.stringify({ loaded: true, selected: mod.selected }));
+} catch (error) {
+  console.log(JSON.stringify({ loaded: false, code: error && typeof error === "object" && "code" in error ? error.code : undefined }));
+}
+`);
+
+      expect(JSON.parse(stdout)).toEqual({ loaded: false, code: "ELOOP" });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

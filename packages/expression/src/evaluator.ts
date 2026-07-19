@@ -103,7 +103,7 @@ function loadCallback(source: string, operator: string, expectedParams: number):
     return fn as (...args: unknown[]) => unknown;
   } catch (error) {
     if (error instanceof ExpressionEvaluationError) throw error;
-    throw new ExpressionEvaluationError(`${operator}(...) source could not be loaded: ${(error as Error).message}`);
+    throw new ExpressionEvaluationError(`${operator}(...) source could not be loaded: ${causeMessage(error)}`);
   }
 }
 
@@ -115,8 +115,12 @@ function runCallback(operator: string, callback: (...args: unknown[]) => unknown
     return output;
   } catch (error) {
     if (error instanceof ExpressionEvaluationError) throw error;
-    throw new ExpressionEvaluationError(`${operator}(...) callback threw: ${(error as Error).message}`);
+    throw new ExpressionEvaluationError(`${operator}(...) callback threw: ${causeMessage(error)}`);
   }
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function cloneCallbackInput(operator: string, value: unknown): unknown {

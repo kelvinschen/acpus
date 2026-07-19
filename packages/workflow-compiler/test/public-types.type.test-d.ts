@@ -1,6 +1,8 @@
 import { expectTypeOf, test } from "vitest";
 import type {
   PreparedWorkflow,
+  CompileWorkerFailure,
+  PackageLockFailure,
   WorkflowPreparationLock,
   WorkflowPreparationOptions,
   WorkflowPreparationFailure,
@@ -15,10 +17,15 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   expectTypeOf(tryPrepareWorkflow).toEqualTypeOf<(options: WorkflowPreparationOptions) => ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>>();
   expectTypeOf(extractWorkflowMetadata).toEqualTypeOf<(source: string, fileName: string) => ResultAsync<WorkflowMetadata, WorkflowMetadataError>>();
 
-  expectTypeOf<WorkflowPreparationFailure["type"]>().toEqualTypeOf<"check-failed" | "compile-failed" | "validate-failed">();
-  expectTypeOf<WorkflowPreparationFailure["phase"]>().toEqualTypeOf<"check" | "compile" | "validate">();
+  expectTypeOf<WorkflowPreparationFailure["type"]>().toEqualTypeOf<"check-failed" | "compile-failed" | "package-lock-read-failed" | "validate-failed">();
+  expectTypeOf<WorkflowPreparationFailure["phase"]>().toEqualTypeOf<"check" | "compile" | "lock" | "validate">();
   expectTypeOf<PreparedWorkflow["lock"]>().toEqualTypeOf<WorkflowPreparationLock>();
+  expectTypeOf<PackageLockFailure["type"]>().toEqualTypeOf<"package-lock-read-failed">();
+  expectTypeOf<Extract<CompileWorkerFailure, { type: "worker-spawn-failed" }>[
+    "stdoutTail"
+  ]>().toEqualTypeOf<string>();
 
-  const error = new WorkflowPreparationError({ type: "compile-failed", phase: "compile", message: "failed" });
+  const failure = { type: "worker-system-failed", message: "failed" } satisfies CompileWorkerFailure;
+  const error = new WorkflowPreparationError({ type: "compile-failed", phase: "compile", message: "failed", failure });
   expectTypeOf(error.failure).toEqualTypeOf<WorkflowPreparationFailure>();
 });

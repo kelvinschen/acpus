@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { checkWorkflow } from "../check/runner.js";
-import { compileWorkflow } from "../compiler/worker.js";
+import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
 import { createScratchDir } from "./temp.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
@@ -38,8 +38,15 @@ export type PreparedWorkflow = {
 
 export type WorkflowPreparationFailure =
   | { type: "check-failed"; phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
-  | { type: "compile-failed"; phase: "compile"; message: string }
+  | { type: "compile-failed"; phase: "compile"; message: string; failure: CompileWorkerFailure }
+  | (PackageLockFailure & { phase: "lock" })
   | { type: "validate-failed"; phase: "validate"; message: string; diagnostics: WorkflowIR["diagnostics"]; ir: WorkflowIR };
+
+export type PackageLockFailure = {
+  type: "package-lock-read-failed";
+  path: string;
+  message: string;
+};
 
 export class WorkflowPreparationError extends Error {
   constructor(readonly failure: WorkflowPreparationFailure) {
@@ -59,14 +66,7 @@ export async function prepareWorkflow(options: WorkflowPreparationOptions): Prom
 
 export function tryPrepareWorkflow(options: WorkflowPreparationOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
   const workflowPath = resolve(options.cwd, options.workflow);
-  return ResultAsync.fromPromise(
-    prepareWorkflowResult(options, workflowPath),
-    cause => ({
-      type: "compile-failed",
-      phase: "compile",
-      message: `Workflow preparation failed: ${causeMessage(cause)}`,
-    } satisfies WorkflowPreparationFailure),
-  ).andThen(result => result);
+  return new ResultAsync(prepareWorkflowResult(options, workflowPath));
 }
 
 async function prepareWorkflowResult(options: WorkflowPreparationOptions, workflowPath: string): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
@@ -83,39 +83,42 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
     }
 
     const compiled = await compileWorkflow(workflowPath, options.cwd, scratchDir);
-    if (!compiled.ok) {
+    if (compiled.isErr()) {
       return err({
         type: "compile-failed",
         phase: "compile",
-        message: compiled.message,
+        message: compiled.error.message,
+        failure: compiled.error,
       });
     }
 
-    if (compiled.ir.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
+    if (compiled.value.ir.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
       return err({
         type: "validate-failed",
         phase: "validate",
         message: "Workflow validation failed.",
-        diagnostics: compiled.ir.diagnostics,
-        ir: compiled.ir,
+        diagnostics: compiled.value.ir.diagnostics,
+        ir: compiled.value.ir,
       });
     }
 
-    const irJson = `${JSON.stringify(compiled.ir, null, 2)}\n`;
+    const irJson = `${JSON.stringify(compiled.value.ir, null, 2)}\n`;
     const irFileDigest = digest(irJson);
-    const packageLock = await packageLockDigest(options.cwd);
+    const packageLockResult = await tryReadPackageLockDigest(options.cwd);
+    if (packageLockResult.isErr()) return err({ ...packageLockResult.error, phase: "lock" });
+    const packageLock = packageLockResult.value;
     const sourceGraphDigest = digest([
-      compiled.sourceDigest,
+      compiled.value.sourceDigest,
       packageLock ?? "",
     ].join("\n"));
 
     return ok({
       workflowPath,
-      ir: compiled.ir,
+      ir: compiled.value.ir,
       irJson,
       sourceGraphDigest,
       ...(packageLock ? { packageLockDigest: packageLock } : {}),
-      lock: buildLock(workflowPath, options.cwd, compiled.sourceDigest, irFileDigest, sourceGraphDigest, packageLock),
+      lock: buildLock(workflowPath, options.cwd, compiled.value.sourceDigest, irFileDigest, sourceGraphDigest, packageLock),
     });
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
@@ -139,15 +142,25 @@ function buildLock(workflowPath: string, cwd: string, sourceDigest: string, irFi
   };
 }
 
-async function packageLockDigest(cwd: string): Promise<string | undefined> {
+export function tryReadPackageLockDigest(cwd: string): ResultAsync<string | undefined, PackageLockFailure> {
+  return new ResultAsync(readPackageLockDigest(cwd));
+}
+
+async function readPackageLockDigest(cwd: string): Promise<Result<string | undefined, PackageLockFailure>> {
   for (const name of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
+    const path = join(cwd, name);
     try {
-      return digest(await readFile(join(cwd, name), "utf8"));
-    } catch {
-      // Try the next common lockfile name.
+      return ok(digest(await readFile(path, "utf8")));
+    } catch (error) {
+      if (isMissingPathError(error)) continue;
+      return err({
+        type: "package-lock-read-failed",
+        path,
+        message: `Package lock '${path}' could not be read: ${causeMessage(error)}`,
+      });
     }
   }
-  return undefined;
+  return ok(undefined);
 }
 
 function digest(value: string): string {
@@ -156,4 +169,9 @@ function digest(value: string): string {
 
 function causeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { createRequire, register } from "node:module";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
@@ -115,21 +115,21 @@ function resolveOfficialImport(specifier: string): { url: string; usesSource: bo
 
 function sourceURL(target: ImplementationSpecifier): string | undefined {
   const candidate = new URL(sourceTargets[target], import.meta.url);
-  return existsSync(fileURLToPath(candidate)) ? candidate.href : undefined;
+  return pathExistsSync(fileURLToPath(candidate)) ? candidate.href : undefined;
 }
 
 function typecheckImportPath(resolved: { url: string; usesSource: boolean }): string {
   const path = fileURLToPath(resolved.url);
   if (resolved.usesSource || !path.endsWith(".js")) return path;
   const declarations = `${path.slice(0, -3)}.d.ts`;
-  return existsSync(declarations) ? declarations : path;
+  return pathExistsSync(declarations) ? declarations : path;
 }
 
 function implementationPackageRoot(entry: string, expectedName: string): string {
   let current = dirname(entry);
   while (true) {
     const manifestPath = resolve(current, "package.json");
-    if (existsSync(manifestPath)) {
+    if (pathExistsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
       if (manifest.name === expectedName) return realpathSync(current);
     }
@@ -228,11 +228,11 @@ async function developmentExportURL(specifier: string, parentURL: string): Promi
   if (!packageJson) return undefined;
   const pkg = JSON.parse(await readFile(packageJson, "utf8")) as { exports?: unknown };
   const entry = exportEntry(pkg.exports, parts.subpath);
-  const development = conditionTarget(entry, "development");
-  if (!development) return undefined;
+  const development = resolveImportTarget(entry, true);
+  if (!development?.usedDevelopment) return undefined;
   const normal = normalImportTarget(entry);
   if (normal && await exists(resolve(dirname(packageJson), normal))) return undefined;
-  return pathToFileURL(resolve(dirname(packageJson), development)).href;
+  return pathToFileURL(resolve(dirname(packageJson), development.target)).href;
 }
 
 function packageSpecifierParts(specifier: string): { name: string; subpath: string } | undefined {
@@ -252,7 +252,8 @@ async function findPackageJson(name: string, fromDir: string): Promise<string | 
     try {
       await readFile(candidate, "utf8");
       return candidate;
-    } catch {
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
       const parent = dirname(current);
       if (parent === current) return undefined;
       current = parent;
@@ -276,15 +277,38 @@ function exportEntry(exports: unknown, subpath: string): unknown {
 }
 
 function normalImportTarget(entry: unknown): string | undefined {
-  return conditionTarget(entry, "node") ?? conditionTarget(entry, "import") ?? conditionTarget(entry, "default");
+  return resolveImportTarget(entry, false)?.target;
 }
 
-function conditionTarget(entry: unknown, condition: string): string | undefined {
-  if (typeof entry === "string") return condition === "default" ? entry : undefined;
+const nodeImportConditions = new Set(["node-addons", "node", "import", "module-sync"]);
+
+function resolveImportTarget(
+  entry: unknown,
+  enableDevelopment: boolean,
+  usedDevelopment = false,
+): { target: string; usedDevelopment: boolean } | undefined {
+  if (typeof entry === "string") return { target: entry, usedDevelopment };
+  if (Array.isArray(entry)) {
+    for (const candidate of entry) {
+      const resolved = resolveImportTarget(candidate, enableDevelopment, usedDevelopment);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
   if (!isRecord(entry)) return undefined;
-  const target = entry[condition];
-  if (typeof target === "string") return target;
-  if (isRecord(target) && typeof target.default === "string") return target.default;
+  for (const [condition, target] of Object.entries(entry)) {
+    if (condition !== "default"
+      && !nodeImportConditions.has(condition)
+      && !(enableDevelopment && condition === "development")) {
+      continue;
+    }
+    const resolved = resolveImportTarget(
+      target,
+      enableDevelopment,
+      usedDevelopment || condition === "development",
+    );
+    if (resolved) return resolved;
+  }
   return undefined;
 }
 
@@ -292,9 +316,25 @@ async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch {
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
     return false;
   }
+}
+
+function pathExistsSync(path: string): boolean {
+  try {
+    statSync(path);
+    return true;
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+    return false;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 function isResolutionError(error: unknown): boolean {
@@ -302,8 +342,7 @@ function isResolutionError(error: unknown): boolean {
   return code === "MODULE_NOT_FOUND"
     || code === "ERR_MODULE_NOT_FOUND"
     || code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
-    || code === "ERR_PACKAGE_IMPORT_NOT_DEFINED"
-    || code === "ERR_UNSUPPORTED_DIR_IMPORT";
+    || code === "ERR_PACKAGE_IMPORT_NOT_DEFINED";
 }
 
 function normalizeModule(mod: Record<string, unknown>): Record<string, unknown> {

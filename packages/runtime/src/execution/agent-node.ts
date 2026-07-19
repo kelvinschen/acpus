@@ -7,12 +7,13 @@ import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpu
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallSummary, type AgentTraceEvent, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
-import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { isArtifactRefCandidate, tryResolveArtifactPath, type ArtifactPathError } from "../artifacts/path.js";
 import type { AgentHostPolicy } from "../configuration.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
-import { ResolutionException, resolveOrThrow, tryResolveString } from "../evaluation/resolvable.js";
-import { normalizeValue } from "../evaluation/schema.js";
+import { tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
+import { tryNormalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
@@ -22,18 +23,6 @@ const DEFAULT_REPAIR_DELAY_MS = 5_000;
 const PROGRESS_FLUSH_INTERVAL_MS = 1_000;
 const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
 const PROGRESS_TOOL_LIMIT = 3;
-
-export class AgentNodeCancelledError extends Error {}
-export class AgentNodeExecutionError extends Error {
-  constructor(readonly failure: AgentNodeFailure) {
-    super(`${failure.code}: ${failure.message}`);
-  }
-}
-export class AgentNodeTimeoutError extends AgentNodeExecutionError {
-  constructor(failure: AgentNodeFailure | string) {
-    super(typeof failure === "string" ? { origin: "provider", code: "timeout", message: failure } : failure);
-  }
-}
 
 export type AgentNodeFailure =
   | {
@@ -47,6 +36,12 @@ export type AgentNodeFailure =
       code: "invalid_agent_response_repair_max";
       message: string;
     };
+
+export type AgentAttemptFailure =
+  | { type: "resolution"; error: ResolutionError; message: string }
+  | { type: "cancelled"; message: string }
+  | { type: "timed_out"; failure: AgentNodeFailure; message: string }
+  | { type: "failed"; failure: AgentNodeFailure; message: string };
 
 export type AgentExecutorOptions = {
   cwd: string;
@@ -72,7 +67,6 @@ type AgentTurnRecord = {
   stderrArtifact?: AgentArtifactRef;
   rawAcpDebugArtifact?: AgentArtifactRef;
   traceArtifact?: AgentArtifactRef;
-  traceCaptureError?: string;
   outputProcessing?: AgentOutputProcessing;
   failure?: { kind: string; message: string; upstream?: AgentBackendFailure["upstream"] };
   message?: string;
@@ -140,13 +134,16 @@ type AgentArtifactRef = {
   mediaType: string;
 };
 
-export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Promise<unknown> {
+export function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): ResultAsync<JsonValue, AgentAttemptFailure> {
+  return new ResultAsync(executeAgentNodeResult(node, scope, options));
+}
+
+async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Promise<Result<JsonValue, AgentAttemptFailure>> {
   const turns: AgentTurnRecord[] = [];
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
   let responseRepairMax: number | null | undefined;
   let renderedPrompt: string | undefined;
-  let metadataWritten = false;
   const writeTerminalState = async (
     status: "completed" | "failed" | "cancelled" | "timed_out",
     message?: string,
@@ -154,11 +151,22 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     turn?: number,
   ): Promise<void> => {
     if (result && turn !== undefined) writeAgentTerminalProgress(node, options, turn, result, status, message);
-    metadataWritten = true;
     await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, responseRepairMax, status, turns, message);
   };
+  const finishFailure = async (
+    failure: AgentAttemptFailure,
+    result?: AgentTurnResult,
+    turn?: number,
+  ): Promise<Result<never, AgentAttemptFailure>> => {
+    const status = failure.type === "cancelled" ? "cancelled" : failure.type === "timed_out" ? "timed_out" : "failed";
+    try {
+      await writeTerminalState(status, failure.message, result, turn);
+    } catch (metadataError) {
+      throw new AggregateError([failure, metadataError], `Agent node '${node.id}' failed and its terminal metadata could not be persisted.`);
+    }
+    return err(failure);
+  };
 
-  try {
     const definition = options.agents[node.run.agent];
     if (!definition) throw new Error(`Agent '${node.run.agent}' is not declared.`);
     if (node.outputSchema) {
@@ -169,28 +177,30 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
           message: options.hostPolicy.responseRepair.failure.message,
         };
         responseRepairMax = null;
-        await writeTerminalState("failed", failure.message);
-        throw new AgentNodeExecutionError(failure);
+        return finishFailure({ type: "failed", failure, message: failure.message });
       }
       responseRepairMax = options.hostPolicy.responseRepair.max;
     } else {
       responseRepairMax = 0;
     }
-    const cwd = node.run.cwd
-      ? resolveOrThrow(tryResolveString(node.run.cwd, scope, "agent cwd"))
-      : definition.cwd ?? options.cwd;
+    const cwd = node.run.cwd ? tryResolveString(node.run.cwd, scope, "agent cwd") : ok(definition.cwd ?? options.cwd);
+    if (cwd.isErr()) return finishFailure(resolutionFailure(cwd.error));
+    const dynamic = dynamicEnv(node.run.env, scope);
+    if (dynamic.isErr()) return finishFailure(resolutionFailure(dynamic.error));
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...staticEnv(definition.env),
-      ...dynamicEnv(node.run.env, scope),
+      ...dynamic.value,
     };
     applyRuntimeAgentEnv(env, node.id, options);
     const deadline = options.deadlineAt === undefined ? undefined : persistedDeadline(options.deadlineAt, node.id);
-    explicitSessionKey = renderSessionKey(node, scope);
+    const resolvedSessionKey = renderSessionKey(node, scope);
+    if (resolvedSessionKey.isErr()) return finishFailure(resolutionFailure(resolvedSessionKey.error));
+    explicitSessionKey = resolvedSessionKey.value;
     sessionNameForMetadata = sessionName(options.runId, options.nodeKey ?? node.id, explicitSessionKey);
     const turnBase = {
       agent: agentSelector(definition),
-      cwd,
+      cwd: cwd.value,
       env,
       sessionName: sessionNameForMetadata,
       permissionMode: node.run.permissionMode ?? definition.permissionMode ?? "approve-all",
@@ -200,74 +210,63 @@ export async function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope
     } satisfies Omit<AgentTurnRequest, "prompt" | "agentMode">;
     const maxRepairTurns = responseRepairMax;
     const plainContinuation = options.initialPromptKind === "plain_continuation";
-    renderedPrompt = plainContinuation
-      ? CONTINUATION_PROMPT
-      : resolveOrThrow(tryResolveString(node.run.prompt, scope, `Agent node '${node.id}' prompt`, {
-          formatTemplateValue: value => {
-            if (!isArtifactRefCandidate(value)) return undefined;
-            if (!options.store || !options.runId) throw new Error("Agent ArtifactRef interpolation requires runtime store and run id.");
-            const resolved = tryResolveArtifactPath(value, { cwd: options.cwd, runId: options.runId, store: options.store });
-            if (resolved.isErr()) throw new Error(resolved.error.message);
-            return resolved.value;
-          },
-        }));
+    const resolvedPrompt = plainContinuation
+      ? ok(CONTINUATION_PROMPT)
+      : renderAgentPrompt(node, scope, options);
+    if (resolvedPrompt.isErr()) return finishFailure(resolutionFailure(resolvedPrompt.error));
+    renderedPrompt = resolvedPrompt.value;
     let prompt = plainContinuation
       ? renderedPrompt
       : buildAgentPrompt(renderedPrompt, node.outputSchema);
     const captureRawDebug = options.hostPolicy.captureRawAcpDebug;
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
+      if (remaining.isErr()) return finishFailure(remaining.error);
       const onProgress = createAgentProgressReporter(node, options, turn + 1);
       const request = {
         ...turnBase,
         prompt,
-        ...(remaining === undefined ? {} : { timeoutMs: remaining }),
+        ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
         ...(turn === 0 && !plainContinuation && definition.agentMode ? { agentMode: definition.agentMode } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(onProgress ? { onProgress } : {}),
       } satisfies AgentTurnRequest;
       const result = await executeAgentTurn(request);
+      if (result.status === "cancelled" && options.signal?.aborted) {
+        return finishFailure({ type: "cancelled", message: result.message });
+      }
       turns.push(await writeAgentTurnArtifacts(node, options, turn + 1, request, result, captureRawDebug));
       if (result.status === "cancelled") {
-        await writeTerminalState("cancelled", result.message, result, turn + 1);
-        throw new AgentNodeCancelledError(result.message);
+        return finishFailure({ type: "cancelled", message: result.message }, result, turn + 1);
       }
       if (result.status === "failed" && result.failure.kind === "timeout") {
         const failure = agentNodeFailure(result.failure);
-        await writeTerminalState("timed_out", failure.message, result, turn + 1);
-        throw new AgentNodeTimeoutError(failure);
+        return finishFailure({ type: "timed_out", failure, message: failure.message }, result, turn + 1);
       }
       if (result.status === "failed") {
         const failure = agentNodeFailure(result.failure);
-        await writeTerminalState("failed", failure.message, result, turn + 1);
-        throw new AgentNodeExecutionError(failure);
+        return finishFailure({ type: "failed", failure, message: failure.message }, result, turn + 1);
       }
       if (!node.outputSchema) {
         await writeTerminalState("completed", undefined, result, turn + 1);
-        return result.responseText;
+        return ok(result.responseText);
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
       turns[turn] = { ...turns[turn]!, outputProcessing: conformed.outputProcessing };
       if (conformed.ok) {
         await writeTerminalState("completed", undefined, result, turn + 1);
-        return conformed.output;
+        return ok(conformed.output);
       }
       turns[turn] = { ...turns[turn]!, failure: { kind: conformed.kind, message: conformed.message } };
       if (turn === maxRepairTurns) {
         const failure: AgentNodeFailure = { origin: "provider", code: conformed.kind, message: conformed.message };
-        await writeTerminalState("failed", failure.message, result, turn + 1);
-        throw new AgentNodeExecutionError(failure);
+        return finishFailure({ type: "failed", failure, message: failure.message }, result, turn + 1);
       }
-      await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
+      const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
+      if (delayed.isErr()) return finishFailure(delayed.error);
       prompt = buildAgentPrompt(CONTINUATION_PROMPT, node.outputSchema);
     }
     throw new Error(`Agent node '${node.id}' exhausted response repair.`);
-  } catch (error) {
-    if (!metadataWritten) {
-      await writeTerminalState(error instanceof AgentNodeCancelledError ? "cancelled" : error instanceof AgentNodeTimeoutError ? "timed_out" : "failed", error instanceof Error ? error.message : String(error));
-    }
-    throw error;
-  }
 }
 
 function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
@@ -277,6 +276,38 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
     message: failure.message,
     ...(failure.upstream ? { upstream: failure.upstream } : {}),
   };
+}
+
+function resolutionFailure(error: ResolutionError): AgentAttemptFailure {
+  return { type: "resolution", error, message: error.message };
+}
+
+function renderAgentPrompt(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Result<string, ResolutionError> {
+  const field = `Agent node '${node.id}' prompt`;
+  try {
+    return tryResolveString(node.run.prompt, scope, field, {
+      formatTemplateValue: value => {
+        if (!isArtifactRefCandidate(value)) return undefined;
+        if (!options.store || !options.runId) throw new Error("Agent ArtifactRef interpolation requires runtime store and run id.");
+        const resolved = tryResolveArtifactPath(value, { cwd: options.cwd, runId: options.runId, store: options.store });
+        if (resolved.isErr()) throw resolved.error;
+        return resolved.value;
+      },
+    });
+  } catch (error) {
+    if (!isArtifactPathError(error)) throw error;
+    return err({ type: "evaluation", field, message: error.message });
+  }
+}
+
+function isArtifactPathError(error: unknown): error is ArtifactPathError {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { type?: unknown; message?: unknown };
+  return typeof candidate.message === "string"
+    && (candidate.type === "invalid-artifact-ref"
+      || candidate.type === "artifact-run-mismatch"
+      || candidate.type === "artifact-not-found"
+      || candidate.type === "artifact-path-invalid");
 }
 
 function applyRuntimeAgentEnv(env: NodeJS.ProcessEnv, nodeId: string, options: AgentExecutorOptions): void {
@@ -291,10 +322,15 @@ function setOptionalEnv(env: NodeJS.ProcessEnv, key: string, value: string | und
   else env[key] = value;
 }
 
-function dynamicEnv(env: AgentNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
-  if (!env) return {};
-  return Object.fromEntries(Object.entries(env).map(([key, value]) =>
-    [key, resolveOrThrow(tryResolveString(value, scope, `Agent env '${key}'`))]));
+function dynamicEnv(env: AgentNodeIR["run"]["env"], scope: EvaluationScope): Result<Record<string, string>, ResolutionError> {
+  if (!env) return ok({});
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const item = tryResolveString(value, scope, `Agent env '${key}'`);
+    if (item.isErr()) return err(item.error);
+    resolved[key] = item.value;
+  }
+  return ok(resolved);
 }
 
 function staticEnv(env: AgentDefinitionIR["env"]): Record<string, string> {
@@ -307,19 +343,20 @@ function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"]
     : { kind: "named", name: definition.use };
 }
 
-function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): string | undefined {
-  if (!node.run.sessionKey) return undefined;
+function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result<string | undefined, ResolutionError> {
+  if (!node.run.sessionKey) return ok(undefined);
   const field = `Agent node '${node.id}' sessionKey`;
-  const rendered = resolveOrThrow(tryResolveString(node.run.sessionKey, scope, field));
-  if (rendered.trim().length === 0) {
-    throw new ResolutionException({
+  const rendered = tryResolveString(node.run.sessionKey, scope, field);
+  if (rendered.isErr()) return err(rendered.error);
+  if (rendered.value.trim().length === 0) {
+    return err({
       type: "constraint",
       field,
       expected: "non-empty string",
       message: `${field} must render to a non-empty string.`,
     });
   }
-  return rendered;
+  return ok(rendered.value);
 }
 
 function sessionName(runId: string | undefined, nodeKey: string, explicitKey: string | undefined): string {
@@ -359,20 +396,19 @@ export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: strin
   };
   const projected = projectToSchema(schema, recovered.value);
   const projectionChanged = !isDeepStrictEqual(recovered.value, projected);
-  try {
-    return {
-      ok: true,
-      output: normalizeValue(schema, projected, `Node '${nodeId}' output`),
-      outputProcessing: { recovery: recovered.recovery, conformance: "accepted", projectionChanged },
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      kind: "output_conformance",
-      message: error instanceof Error ? error.message : String(error),
-      outputProcessing: { recovery: recovered.recovery, conformance: "rejected", projectionChanged },
-    };
-  }
+  const normalized = tryNormalizeValue(schema, projected, `Node '${nodeId}' output`);
+  return normalized.isOk()
+    ? {
+        ok: true,
+        output: normalized.value,
+        outputProcessing: { recovery: recovered.recovery, conformance: "accepted", projectionChanged },
+      }
+    : {
+        ok: false,
+        kind: "output_conformance",
+        message: normalized.error.message,
+        outputProcessing: { recovery: recovered.recovery, conformance: "rejected", projectionChanged },
+      };
 }
 
 function recoverJson(text: string): RecoveredJson | undefined {
@@ -444,10 +480,7 @@ function projectToSchema(schema: SchemaIR, value: JsonValue): JsonValue {
   if (schema.kind === "union") {
     for (const variant of schema.variants) {
       const projected = projectToSchema(variant as SchemaIR, value);
-      try {
-        normalizeValue(variant as SchemaIR, projected, "Agent union variant");
-        return projected;
-      } catch {}
+      if (tryNormalizeValue(variant as SchemaIR, projected, "Agent union variant").isOk()) return projected;
     }
     return value;
   }
@@ -511,17 +544,13 @@ async function writeAgentTurnArtifacts(
     ...(captureRawDebug && result.rawDebug ? { rawAcpDebugArtifact: await writeAgentArtifact(options, turn, "raw-acp.jsonl", result.rawDebug.stdout, "application/x-ndjson") } : {}),
   };
   if (request.captureTrace) {
-    try {
-      record.traceArtifact = await writeAgentArtifact(
-        options,
-        turn,
-        "trace.jsonl",
-        serializeAgentTrace(node, options, turn, request, result),
-        "application/x-ndjson",
-      );
-    } catch (error) {
-      record.traceCaptureError = error instanceof Error ? error.message : String(error);
-    }
+    record.traceArtifact = await writeAgentArtifact(
+      options,
+      turn,
+      "trace.jsonl",
+      serializeAgentTrace(node, options, turn, request, result),
+      "application/x-ndjson",
+    );
   }
   return record;
 }
@@ -692,7 +721,11 @@ async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, n
       relativePath,
     }));
   } catch (error) {
-    await rm(absolutePath, { force: true });
+    try {
+      await rm(absolutePath, { force: true });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], `Agent artifact '${id}' registration failed and its unregistered file could not be removed.`);
+    }
     throw error;
   }
   return { artifactId: id, mediaType };
@@ -737,31 +770,46 @@ function pruneUndefined(value: unknown): unknown {
   return value;
 }
 
-function delay(ms: number, signal: AbortSignal | undefined, deadline: number | undefined): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
+function delay(ms: number, signal: AbortSignal | undefined, deadline: number | undefined): Promise<Result<void, AgentAttemptFailure>> {
+  if (ms <= 0) return Promise.resolve(ok(undefined));
   const remaining = remainingTimeout(deadline, "response repair");
-  const delayMs = remaining === undefined ? ms : Math.min(ms, remaining);
-  return new Promise((resolve, reject) => {
+  if (remaining.isErr()) return Promise.resolve(err(remaining.error));
+  const delayMs = remaining.value === undefined ? ms : Math.min(ms, remaining.value);
+  return new Promise(resolve => {
     if (signal?.aborted) {
-      reject(new AgentNodeCancelledError("Agent response repair was aborted."));
+      resolve(err({ type: "cancelled", message: "Agent response repair was aborted." }));
       return;
     }
-    const timeout = setTimeout(() => {
-      if (remaining !== undefined && remaining <= ms) reject(new AgentNodeTimeoutError("Agent response repair timed out."));
-      else resolve();
-    }, delayMs);
-    signal?.addEventListener("abort", () => {
+    const abort = () => {
       clearTimeout(timeout);
-      reject(new AgentNodeCancelledError("Agent response repair was aborted."));
-    }, { once: true });
+      resolve(err({ type: "cancelled", message: "Agent response repair was aborted." }));
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      if (remaining.value !== undefined && remaining.value <= ms) {
+        resolve(err(timeoutFailure("Agent response repair timed out.")));
+      } else {
+        resolve(ok(undefined));
+      }
+    }, delayMs);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
-function remainingTimeout(deadline: number | undefined, nodeId: string): number | undefined {
-  if (deadline === undefined) return undefined;
+function remainingTimeout(deadline: number | undefined, nodeId: string): Result<number | undefined, AgentAttemptFailure> {
+  if (deadline === undefined) return ok(undefined);
   const remaining = deadline - Date.now();
-  if (remaining <= 0) throw new AgentNodeTimeoutError(`Agent node '${nodeId}' timed out.`);
-  return remaining;
+  return remaining <= 0
+    ? err(timeoutFailure(`Agent node '${nodeId}' timed out.`))
+    : ok(remaining);
+}
+
+function timeoutFailure(message: string): AgentAttemptFailure {
+  return {
+    type: "timed_out",
+    failure: { origin: "provider", code: "timeout", message },
+    message,
+  };
 }
 
 function persistedDeadline(value: string, nodeId: string): number {

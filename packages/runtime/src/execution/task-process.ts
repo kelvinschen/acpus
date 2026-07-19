@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ResultAsync } from "neverthrow";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { JsonValue } from "@acpus/expression/ir";
 import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
@@ -11,14 +11,12 @@ const COOPERATIVE_ABORT_GRACE_MS = 1_000;
 const FORCE_KILL_GRACE_MS = 5_000;
 const OUTPUT_TAIL_LIMIT = 8 * 1024;
 
-export type TaskAttemptFailure =
-  | { type: "spawn"; cwd: string; message: string; code?: string }
-  | { type: "task"; message: string; name?: string; stack?: string }
-  | { type: "cancelled"; message: string }
-  | { type: "timed_out"; message: string }
-  | { type: "unexpected_exit"; message: string; exitCode?: number; signal?: string };
+export type TaskAttemptFailure = {
+  type: "failed" | "cancelled" | "timed_out";
+  message: string;
+};
 
-export type RunTaskAttemptInput = {
+type RunTaskAttemptInput = {
   nodeId: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -28,27 +26,11 @@ export type RunTaskAttemptInput = {
   registerArtifact(artifact: TaskArtifactRegistration): void;
 };
 
-export type TaskAttemptRunner = (input: RunTaskAttemptInput) => ResultAsync<JsonValue | undefined, TaskAttemptFailure>;
-
 export function runTaskAttempt(input: RunTaskAttemptInput): ResultAsync<JsonValue | undefined, TaskAttemptFailure> {
-  return ResultAsync.fromPromise(runTaskProcess(input), error =>
-    error instanceof TaskAttemptRejected
-      ? error.failure
-      : { type: "unexpected_exit", message: error instanceof Error ? error.message : String(error) },
-  );
+  return new ResultAsync(runTaskProcess(input));
 }
 
-export function taskAttemptFailureMessage(failure: TaskAttemptFailure): string {
-  return failure.message;
-}
-
-class TaskAttemptRejected extends Error {
-  constructor(readonly failure: TaskAttemptFailure) {
-    super(taskAttemptFailureMessage(failure));
-  }
-}
-
-function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefined> {
+function runTaskProcess(input: RunTaskAttemptInput): Promise<Result<JsonValue | undefined, TaskAttemptFailure>> {
   const timeoutStartedAt = input.timeoutMs === undefined ? undefined : globalThis.performance.now();
   const timeoutExpired = () => timeoutStartedAt !== undefined
     && input.timeoutMs !== undefined
@@ -61,7 +43,7 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
     type: "cancelled",
     message: `Task node '${input.nodeId}' was cancelled.`,
   });
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveResult, reject) => {
     let child: ChildProcess;
     try {
       child = spawn(process.execPath, taskProcessEntryArgs(), {
@@ -74,14 +56,18 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       const failure = input.signal?.aborted
         ? cancellationFailure()
         : timeoutExpired() ? timeoutFailure() : spawnFailure(input, error);
-      reject(new TaskAttemptRejected(failure));
+      resolveResult(err(failure));
       return;
     }
 
     let stdout = "";
     let stderr = "";
     let spawnError: NodeJS.ErrnoException | undefined;
-    let terminal: { ok: true; output?: JsonValue } | { ok: false; failure: TaskAttemptFailure } | undefined;
+    let terminal:
+      | { type: "completed"; output?: JsonValue }
+      | { type: "failed"; failure: TaskAttemptFailure }
+      | { type: "system_rejected"; error: Error }
+      | undefined;
     let termination: "cancelled" | "timed_out" | undefined;
     let settled = false;
     let cancelTimeout: (() => void) | undefined;
@@ -89,6 +75,7 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
     let forceKillTimer: NodeJS.Timeout | undefined;
     let spawned = false;
     let abortSent = false;
+    let artifactFailurePending = false;
 
     const cleanup = () => {
       cancelTimeout?.();
@@ -107,7 +94,7 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       child.send(message, error => {
         if (!error || settled || termination) return;
         if (enforceTimeout()) return;
-        terminal = { ok: false, failure: { type: "unexpected_exit", message: `Task process IPC failed: ${error.message}` } };
+        terminal = { type: "system_rejected", error: taskProcessSystemError({ message: `Task process IPC failed: ${error.message}` }) };
         killProcessTree(child.pid, "SIGTERM");
       });
     };
@@ -137,13 +124,13 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
     child.once("spawn", () => {
       spawned = true;
       enforceTimeout();
-      if (termination !== "timed_out") send({ type: "start", request: input.request });
       if (termination) sendAbort();
+      else send({ type: "start", request: input.request });
     });
     child.on("message", raw => {
       if (!isChildMessage(raw)) {
         if (enforceTimeout() || termination) return;
-        terminal = { ok: false, failure: { type: "unexpected_exit", message: "Task process sent an invalid IPC message." } };
+        terminal = { type: "failed", failure: { type: "failed", message: "Task process sent an invalid IPC message." } };
         killProcessTree(child.pid, "SIGTERM");
         return;
       }
@@ -155,15 +142,40 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
           assertArtifactIdentity(input.request, message.artifact);
           identityAccepted = true;
           if (enforceTimeout() || termination || terminal) throw new Error("Task attempt is no longer accepting artifacts.");
-          input.registerArtifact(message.artifact);
         } catch (cause) {
           error = cause instanceof Error ? cause.message : String(cause);
+        }
+        if (error === undefined) {
+          try {
+            input.registerArtifact(message.artifact);
+          } catch (cause) {
+            artifactFailurePending = true;
+            const messageText = cause instanceof Error ? cause.message : String(cause);
+            void removeRejectedArtifact(input.request, message.artifact).then(
+              () => cause,
+              cleanupError => new AggregateError([cause, cleanupError], "Artifact registration failed and its unregistered file could not be removed."),
+            ).then(failure => {
+              send({ type: "artifact_result", requestId: message.requestId, ok: false, error: messageText });
+              killProcessTree(child.pid, "SIGTERM");
+              settle(() => reject(failure));
+            });
+            return;
+          }
         }
         if (error === undefined) {
           send({ type: "artifact_result", requestId: message.requestId, ok: true });
         } else if (identityAccepted) {
           void removeRejectedArtifact(input.request, message.artifact)
-            .finally(() => send({ type: "artifact_result", requestId: message.requestId, ok: false, error }));
+            .then(
+              () => send({ type: "artifact_result", requestId: message.requestId, ok: false, error }),
+              cleanupError => {
+                killProcessTree(child.pid, "SIGTERM");
+                settle(() => reject(new AggregateError([
+                  new Error(error),
+                  cleanupError,
+                ], "Artifact rejection and cleanup both failed.")));
+              },
+            );
         } else {
           send({ type: "artifact_result", requestId: message.requestId, ok: false, error });
         }
@@ -171,17 +183,17 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
       }
       if (enforceTimeout() || terminal || termination) return;
       if (message.type === "completed") {
-        terminal = message.hasOutput ? { ok: true, output: message.output } : { ok: true };
-      } else {
+        terminal = message.hasOutput ? { type: "completed", output: message.output } : { type: "completed" };
+      } else if (message.type === "failed") {
         terminal = {
-          ok: false,
+          type: "failed",
           failure: {
-            type: "task",
-            message: message.error.message,
-            ...(message.error.name ? { name: message.error.name } : {}),
-            ...(message.error.stack ? { stack: message.error.stack } : {}),
+            type: "failed",
+            message: message.message,
           },
         };
+      } else {
+        terminal = { type: "system_rejected", error: taskProcessSystemError(message.error) };
       }
     });
     child.once("error", error => {
@@ -189,34 +201,38 @@ function runTaskProcess(input: RunTaskAttemptInput): Promise<JsonValue | undefin
     });
     child.once("close", (exitCode, signal) => {
       enforceTimeout();
+      if (artifactFailurePending) return;
       if (termination) {
         const failure = termination === "timed_out"
           ? timeoutFailure()
           : cancellationFailure();
-        settle(() => reject(new TaskAttemptRejected(failure)));
+        settle(() => resolveResult(err(failure)));
         return;
       }
       if (spawnError) {
-        settle(() => reject(new TaskAttemptRejected(spawnFailure(input, spawnError!))));
+        settle(() => resolveResult(err(spawnFailure(input, spawnError!))));
         return;
       }
-      if (terminal?.ok) {
+      if (terminal?.type === "completed") {
         const output = terminal.output;
-        settle(() => resolve(output));
+        settle(() => resolveResult(ok(output)));
         return;
       }
-      if (terminal && !terminal.ok) {
+      if (terminal?.type === "failed") {
         const failure = terminal.failure;
-        settle(() => reject(new TaskAttemptRejected(failure)));
+        settle(() => resolveResult(err(failure)));
+        return;
+      }
+      if (terminal?.type === "system_rejected") {
+        const error = terminal.error;
+        settle(() => reject(error));
         return;
       }
       const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
       const message = `Task process for node '${input.nodeId}' exited without a result${exitCode === null ? "" : ` (code ${exitCode})`}${signal ? ` (${signal})` : ""}.${detail ? ` ${detail}` : ""}`;
-      settle(() => reject(new TaskAttemptRejected({
-        type: "unexpected_exit",
+      settle(() => resolveResult(err({
+        type: "failed",
         message,
-        ...(exitCode === null ? {} : { exitCode }),
-        ...(signal === null ? {} : { signal }),
       })));
     });
 
@@ -261,11 +277,10 @@ export function resolve(specifier, context, nextResolve) {
 function spawnFailure(input: RunTaskAttemptInput, error: unknown): TaskAttemptFailure {
   const nodeError = error as NodeJS.ErrnoException;
   const detail = error instanceof Error ? error.message : String(error);
+  const code = typeof nodeError.code === "string" && !detail.includes(nodeError.code) ? ` (${nodeError.code})` : "";
   return {
-    type: "spawn",
-    cwd: input.cwd,
-    message: `Task process for node '${input.nodeId}' could not start in '${input.cwd}': ${detail}`,
-    ...(typeof nodeError.code === "string" ? { code: nodeError.code } : {}),
+    type: "failed",
+    message: `Task process for node '${input.nodeId}' could not start in '${input.cwd}': ${detail}${code}`,
   };
 }
 
@@ -284,7 +299,7 @@ async function removeRejectedArtifact(request: TaskProcessRequest, artifact: Tas
   const path = resolve(runDir, artifact.relativePath);
   const fromRun = relative(runDir, path);
   if (fromRun === "" || fromRun === ".." || fromRun.startsWith(`..${sep}`) || isAbsolute(fromRun)) return;
-  await rm(path, { force: true }).catch(() => undefined);
+  await rm(path, { force: true });
 }
 
 function appendTail(previous: string, chunk: unknown): string {
@@ -294,8 +309,20 @@ function appendTail(previous: string, chunk: unknown): string {
 
 function isChildMessage(value: unknown): value is TaskProcessChildMessage {
   if (!value || typeof value !== "object" || !("type" in value)) return false;
-  const type = (value as { type?: unknown }).type;
-  return type === "artifact_register" || type === "completed" || type === "failed";
+  const message = value as Record<string, unknown>;
+  if (message.type === "artifact_register") return typeof message.requestId === "string" && Boolean(message.artifact) && typeof message.artifact === "object";
+  if (message.type === "completed") return typeof message.hasOutput === "boolean" && (!message.hasOutput || "output" in message);
+  if (message.type === "failed") return typeof message.message === "string";
+  if (message.type !== "system_rejected" || !message.error || typeof message.error !== "object") return false;
+  const error = message.error as Record<string, unknown>;
+  return typeof error.message === "string" && (error.code === undefined || typeof error.code === "string");
+}
+
+function taskProcessSystemError(input: { message: string; code?: string }): Error {
+  const error = new Error(input.message);
+  error.name = "TaskProcessSystemError";
+  if (input.code !== undefined) Object.assign(error, { code: input.code });
+  return error;
 }
 
 function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {

@@ -4,8 +4,6 @@ import * as runtime from "@acpus/runtime";
 describe("@acpus/runtime public API", () => {
   it("exports durable runtime use cases and testable pure runtime helpers", () => {
     expect(Object.keys(runtime).sort()).toEqual([
-      "DaemonRequestError",
-      "RuntimeUseCaseException",
       "createWorkflowVisualizationOverlay",
       "daemonEndpoint",
       "deleteRun",
@@ -22,8 +20,6 @@ describe("@acpus/runtime public API", () => {
       "listRuns",
       "loadHooksConfigScope",
       "loadHooksConfigScopes",
-      "normalizeForkInput",
-      "normalizeWorkflowInput",
       "projectHooksPath",
       "requestDaemonAdmitRun",
       "requestDaemonControl",
@@ -31,7 +27,9 @@ describe("@acpus/runtime public API", () => {
       "requestDaemonStatus",
       "startDaemonLoop",
       "tryLoadRuntimeConfiguration",
-      "validateAgentOverrides",
+      "tryNormalizeForkInput",
+      "tryNormalizeWorkflowInput",
+      "tryValidateAgentOverrides",
       "validateHooksFile",
     ]);
   });

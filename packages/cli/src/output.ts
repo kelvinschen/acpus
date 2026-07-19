@@ -6,7 +6,7 @@ import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck }
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
+export type ResultPhase = "usage" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
 export type WorkflowSummary = {
   name: string;

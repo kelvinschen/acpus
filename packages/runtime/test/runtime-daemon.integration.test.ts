@@ -1,16 +1,48 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { access, mkdir, utimes, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "@acpus/runtime";
+import type { Result } from "neverthrow";
+import {
+  daemonEndpoint,
+  getRun,
+  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
+  requestDaemonControl as requestDaemonControlResult,
+  requestDaemonShutdown as requestDaemonShutdownResult,
+  requestDaemonStatus as requestDaemonStatusResult,
+  startDaemonLoop,
+  type DaemonClientFailure,
+} from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
-import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
-import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { advanceRuntimeRun } from "./support/scheduler.js";
+
+async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
+  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
+}
+
+async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
+  return unwrapDaemon(await requestDaemonControlResult(...args));
+}
+
+async function requestDaemonShutdown(...args: Parameters<typeof requestDaemonShutdownResult>) {
+  return unwrapDaemon(await requestDaemonShutdownResult(...args));
+}
+
+async function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusResult>) {
+  return unwrapDaemon(await requestDaemonStatusResult(...args));
+}
+
+function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
+  if (result.isOk()) return result.value;
+  throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
+}
 
 describe.concurrent("runtime daemon ticks", () => {
   it("admits runs only after registering daemon-owned execution", async () => {
@@ -248,7 +280,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const store = await openRuntimeStore(workspace);
       let runId: string;
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         runId = run.id;
         appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
       } finally {
@@ -306,31 +338,48 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 
-  it("cleans stale staged directories but preserves admitted runs", async () => {
+  it("cleans stale staging once at startup and preserves all other run directories", async () => {
     await withRuntimeWorkspace("runtime-daemon-cleanup", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const staged = join(workspace, ".acpus", ".local", "runs", ".staging-old");
-      const orphan = join(workspace, ".acpus", ".local", "runs", "20990101000000F2CF49A02B2A537F5E8A");
-      await mkdir(staged, { recursive: true });
+      const runsRoot = join(workspace, ".acpus", ".local", "runs");
+      const stale = join(runsRoot, ".staging-old");
+      const fresh = join(runsRoot, ".staging-fresh");
+      const late = join(runsRoot, ".staging-late");
+      const orphan = join(runsRoot, "20990101000000F2CF49A02B2A537F5E8A");
+      await mkdir(stale, { recursive: true });
+      await mkdir(fresh, { recursive: true });
       await mkdir(orphan, { recursive: true });
-      await writeFile(join(staged, "leftover.txt"), "staged");
+      await writeFile(join(stale, "leftover.txt"), "staged");
       const old = new Date(Date.now() - 120_000);
-      await utimes(staged, old, old);
+      await utimes(stale, old, old);
       await utimes(orphan, old, old);
 
-      const store = await openExistingWritableRuntimeStore(workspace);
-      expect(store).toBeDefined();
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 1_000,
+        packageVersion: "test",
+      });
       try {
-        await expect(runDaemonTick(store!, { startSession: () => {
-          throw new Error("no run should start");
-        } })).resolves.toMatchObject({ runs: 0 });
+        await expect(access(stale)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(access(fresh)).resolves.toBeUndefined();
+        await expect(access(orphan)).resolves.toBeUndefined();
+        await expect(access(join(runsRoot, completed.run.id))).resolves.toBeUndefined();
+
+        await mkdir(late);
+        await utimes(late, old, old);
+        const probeStore = await openRuntimeStore(workspace);
+        try {
+          probeStore.writeHookJournal(hookJournalEntry(completed.run.id, "startup-cleanup-probe", "2000-01-01T00:00:00.000Z"));
+        } finally {
+          probeStore.close();
+        }
+        await waitUntil(() => runtimeRows(workspace, "SELECT definition_hash FROM hook_journal WHERE definition_hash = ?", "startup-cleanup-probe").length === 0);
+        await expect(access(late)).resolves.toBeUndefined();
       } finally {
-        store?.close();
+        await loop.shutdown();
       }
 
       expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([{ id: completed.run.id }]);
-      await expect(access(staged)).rejects.toThrow();
-      await expect(access(orphan)).resolves.toBeUndefined();
     });
   });
 
@@ -339,7 +388,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         await expect(advanceRuntimeRun(workspace, store, run.id, "hook-prune-owner")).resolves.toMatchObject({ status: "completed" });
         store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
         store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
@@ -360,18 +409,21 @@ describe.concurrent("runtime daemon ticks", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
 
         expect(store.listDaemonWork(new Date("2026-07-01T00:00:00.000Z"))).toMatchObject({
           startableRuns: [],
-          idleBlockers: 1,
+          idleBlockers: 2,
         });
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startSession: runId => started.push(runId) })).resolves.toMatchObject({
+        await expect(runDaemonTick(store, { startSession: runId => {
+          started.push(runId);
+          return "started";
+        } })).resolves.toMatchObject({
           runs: 0,
-          idleBlockers: 1,
+          idleBlockers: 2,
         });
         expect(started).toEqual([]);
       } finally {
@@ -385,13 +437,16 @@ describe.concurrent("runtime daemon ticks", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         appendTimedSignalWait(store, run.id, "2000-01-01T00:00:00.000Z");
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startSession: runId => started.push(runId) })).resolves.toMatchObject({
+        await expect(runDaemonTick(store, { startSession: runId => {
+          started.push(runId);
+          return "started";
+        } })).resolves.toMatchObject({
           runs: 1,
-          idleBlockers: 1,
+          idleBlockers: 2,
         });
         expect(started).toEqual([run.id]);
       } finally {

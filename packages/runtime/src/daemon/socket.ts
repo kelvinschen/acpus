@@ -4,7 +4,8 @@ import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { JsonValue } from "@acpus/expression/ir";
-import { isRuntimeStoreBusyError, openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
 
 export type DaemonStatus = {
   status: "ok";
@@ -64,11 +65,12 @@ export type DaemonShutdownResult = {
   status: "shutdown";
 };
 
-export class DaemonRequestError extends Error {
-  constructor(readonly code: DaemonErrorCode, message: string) {
-    super(message);
-  }
-}
+export type DaemonHandlerFailure = { code: DaemonErrorCode; message: string };
+
+export type DaemonClientFailure =
+  | { type: "rejected"; code: DaemonErrorCode; message: string }
+  | { type: "transport"; reason: "not-found" | "refused" | "timeout" | "io"; method: DaemonRequest["method"]; errno?: string; message: string }
+  | { type: "protocol"; stage: "envelope" | "result"; method: DaemonRequest["method"]; message: string };
 
 export type DaemonServerHandle = {
   activeConnections(): number;
@@ -171,70 +173,74 @@ async function listen(server: ReturnType<typeof createServer>, endpoint: string)
   });
 }
 
-export async function requestDaemonStatus(cwd: string): Promise<DaemonStatus> {
-  const response = await requestDaemon(cwd, { method: "status" });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (!isDaemonStatus(response.result)) throw new Error("Daemon returned an invalid status response.");
-  return response.result;
+export function requestDaemonStatus(cwd: string): ResultAsync<DaemonStatus, DaemonClientFailure> {
+  const request = { method: "status" } as const;
+  return requestDaemon(cwd, request).andThen(response => daemonResult(request, response, isDaemonStatus));
 }
 
-export async function requestDaemonControl(cwd: string, control: DaemonControlIntent): Promise<DaemonControlResult> {
-  const response = await requestDaemon(cwd, { method: "control", control });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (!isDaemonControlResult(response.result)) throw new Error("Daemon returned an invalid control response.");
-  return response.result;
+export function requestDaemonControl(cwd: string, control: DaemonControlIntent): ResultAsync<DaemonControlResult, DaemonClientFailure> {
+  const request = { method: "control", control } as const;
+  return requestDaemon(cwd, request).andThen(response => daemonResult(
+    request,
+    response,
+    value => isDaemonControlResult(value, control.type),
+  ));
 }
 
-export async function requestDaemonAdmitRun(cwd: string, input: DaemonAdmitRunInput): Promise<RunDetails> {
-  const response = await requestDaemon(cwd, { ...input, method: "admitRun" });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (!isRunDetails(response.result)) throw new Error("Daemon returned an invalid admitRun response.");
-  return response.result;
+export function requestDaemonAdmitRun(cwd: string, input: DaemonAdmitRunInput): ResultAsync<RunDetails, DaemonClientFailure> {
+  const request = { ...input, method: "admitRun" } as const;
+  return requestDaemon(cwd, request).andThen(response => daemonResult(request, response, isRunDetails));
 }
 
-export async function requestDaemonShutdown(cwd: string): Promise<DaemonShutdownResult> {
-  const response = await requestDaemon(cwd, { method: "shutdown" });
-  if (!response.ok) throw new DaemonRequestError(response.error.code, response.error.message);
-  if (!isDaemonShutdownResult(response.result)) throw new Error("Daemon returned an invalid shutdown response.");
-  return response.result;
+export function requestDaemonShutdown(cwd: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+  const request = { method: "shutdown" } as const;
+  return requestDaemon(cwd, request).andThen(response => daemonResult(request, response, isDaemonShutdownResult));
 }
 
-async function requestDaemon(cwd: string, request: DaemonRequest): Promise<DaemonResponse> {
+function requestDaemon(cwd: string, request: DaemonRequest): ResultAsync<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>> {
   const endpoint = daemonEndpoint(cwd);
-  return new Promise<DaemonResponse>((resolveRequest, rejectRequest) => {
+  return new ResultAsync(new Promise(resolveRequest => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "admitRun" ? undefined : request.method === "control" ? 30_000 : 1_000;
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+    const timeoutMs = request.method === "admitRun" || request.method === "control" ? 30_000 : 1_000;
+    const timeout = setTimeout(() => {
       socket.destroy();
-      rejectRequest(new DaemonRequestError("EXECUTION_UNAVAILABLE", `Timed out waiting for daemon ${describeRequest(request)} response.`));
+      resolveRequest(err({
+        type: "transport",
+        reason: "timeout",
+        method: request.method,
+        message: `Timed out waiting for daemon ${describeRequest(request)} response.`,
+      }));
     }, timeoutMs);
     socket.once("error", error => {
-      if (timeout) clearTimeout(timeout);
-      rejectRequest(error);
+      clearTimeout(timeout);
+      resolveRequest(err(daemonTransportFailure(request, error)));
     });
     socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
     socket.once("end", () => {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
       try {
         const response = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-        if (!isDaemonResponse(response)) throw new Error("Daemon returned an invalid response.");
-        resolveRequest(response);
-      } catch (error) {
-        rejectRequest(error);
+        if (!isDaemonResponse(response)) {
+          resolveRequest(err({ type: "protocol", stage: "envelope", method: request.method, message: "Daemon returned an invalid response." }));
+          return;
+        }
+        resolveRequest(ok(response));
+      } catch {
+        resolveRequest(err({ type: "protocol", stage: "envelope", method: request.method, message: "Daemon returned invalid response JSON." }));
       }
     });
     socket.once("connect", () => {
       socket.end(JSON.stringify(request));
     });
-  });
+  }));
 }
 
 type DaemonHandlers = {
-  status(): DaemonStatus;
-  admitRun(input: DaemonAdmitRunInput): Promise<RunDetails> | RunDetails;
-  control(intent: DaemonControlIntent): Promise<DaemonControlResult>;
-  shutdown(): Promise<DaemonShutdownResult> | DaemonShutdownResult;
+  status(): Result<DaemonStatus, DaemonHandlerFailure> | ResultAsync<DaemonStatus, DaemonHandlerFailure>;
+  admitRun(input: DaemonAdmitRunInput): Result<RunDetails, DaemonHandlerFailure> | ResultAsync<RunDetails, DaemonHandlerFailure>;
+  control(intent: DaemonControlIntent): Result<DaemonControlResult, DaemonHandlerFailure> | ResultAsync<DaemonControlResult, DaemonHandlerFailure>;
+  shutdown(): Result<DaemonShutdownResult, DaemonHandlerFailure> | ResultAsync<DaemonShutdownResult, DaemonHandlerFailure>;
 };
 
 async function handleSocket(socket: Socket, handlers: DaemonHandlers): Promise<void> {
@@ -275,13 +281,16 @@ function parseRequest(raw: string): { ok: true; value: DaemonRequest } | { ok: f
 
 async function dispatchRequest(request: DaemonRequest, handlers: DaemonHandlers): Promise<DaemonResponse> {
   try {
-    if (request.method === "admitRun") return appliedResponse(await handlers.admitRun(request));
-    if (request.method === "control") return appliedResponse(await handlers.control(request.control));
-    if (request.method === "shutdown") return appliedResponse(await handlers.shutdown());
-    return appliedResponse(handlers.status());
-  } catch (error) {
-    const code = daemonRequestErrorCode(request, error);
-    return failedResponse(code, error instanceof DaemonRequestError ? error.message : daemonFailureMessage(request, code));
+    const result = request.method === "admitRun"
+      ? await handlers.admitRun(request)
+      : request.method === "control"
+        ? await handlers.control(request.control)
+        : request.method === "shutdown"
+          ? await handlers.shutdown()
+          : await handlers.status();
+    return result.match(appliedResponse, failure => failedResponse(failure.code, failure.message));
+  } catch {
+    return failedResponse("INTERNAL_ERROR", daemonFailureMessage(request, "INTERNAL_ERROR"));
   }
 }
 
@@ -299,25 +308,30 @@ function describeRequest(request: DaemonRequest): string {
   return request.method;
 }
 
-function daemonControlErrorCode(error: unknown): DaemonErrorCode {
-  if (error instanceof DaemonRequestError) return error.code;
-  if (isRuntimeStoreBusyError(error)) return "STORE_BUSY";
-  return "RUN_NOT_CONTROLLABLE";
-}
-
-function daemonRequestErrorCode(request: DaemonRequest, error: unknown): DaemonErrorCode {
-  if (error instanceof DaemonRequestError) return error.code;
-  if (request.method === "status") return "INTERNAL_ERROR";
-  if (request.method === "admitRun") return isRuntimeStoreBusyError(error) ? "STORE_BUSY" : "STORE_ERROR";
-  return daemonControlErrorCode(error);
-}
-
 function daemonFailureMessage(request: DaemonRequest, code: DaemonErrorCode): string {
   if (code === "STORE_BUSY") return "Runtime store is busy. Retry the request.";
   if (request.method === "status") return "Daemon status is unavailable.";
   if (request.method === "admitRun") return "Run admission failed.";
   if (request.method === "control") return `Control '${request.control.type}' could not be applied to run '${request.control.runId}'.`;
   return "Daemon shutdown failed.";
+}
+
+function daemonResult<T>(request: DaemonRequest, response: DaemonResponse, validate: (value: unknown) => value is T): Result<T, DaemonClientFailure> {
+  if (!response.ok) return err({ type: "rejected", code: response.error.code, message: response.error.message });
+  return validate(response.result)
+    ? ok(response.result)
+    : err({ type: "protocol", stage: "result", method: request.method, message: `Daemon returned an invalid ${describeRequest(request)} result.` });
+}
+
+function daemonTransportFailure(request: DaemonRequest, error: NodeJS.ErrnoException): Extract<DaemonClientFailure, { type: "transport" }> {
+  const reason = error.code === "ENOENT" || error.code === "ENOTDIR" ? "not-found" : error.code === "ECONNREFUSED" ? "refused" : "io";
+  return {
+    type: "transport",
+    reason,
+    method: request.method,
+    ...(error.code === undefined ? {} : { errno: error.code }),
+    message: error.message,
+  };
 }
 
 function isFilesystemSocket(endpoint: string): boolean {
@@ -339,11 +353,52 @@ function isDaemonShutdownResult(value: unknown): value is DaemonShutdownResult {
 }
 
 function isRunDetails(value: unknown): value is RunDetails {
-  return typeof value === "object" && value !== null && typeof (value as { id?: unknown }).id === "string" && typeof (value as { status?: unknown }).status === "string";
+  if (!isPlainRecord(value)
+    || !hasExactKeys(
+      value,
+      [
+        "id",
+        "name",
+        "status",
+        "workflowEntry",
+        "sourceGraphDigest",
+        "createdAt",
+        "updatedAt",
+        "progressVersion",
+        "input",
+        "hooks",
+        "eventCount",
+        "nodeCount",
+        "execution",
+      ],
+      ["progressUpdatedAt", "output", "agentOverrides", "fork", "dynamic"],
+    )
+    || typeof value.id !== "string"
+    || typeof value.name !== "string"
+    || !isRunStatus(value.status)
+    || typeof value.workflowEntry !== "string"
+    || typeof value.sourceGraphDigest !== "string"
+    || typeof value.createdAt !== "string"
+    || typeof value.updatedAt !== "string"
+    || !isNonNegativeInteger(value.progressVersion)
+    || (value.progressUpdatedAt !== undefined && typeof value.progressUpdatedAt !== "string")
+    || !isJsonValue(value.input)
+    || (value.output !== undefined && !isJsonValue(value.output))
+    || (value.agentOverrides !== undefined && (!isPlainRecord(value.agentOverrides) || !isJsonValue(value.agentOverrides)))
+    || (value.fork !== undefined && !isRunForkInfo(value.fork))
+    || !Array.isArray(value.hooks)
+    || !isJsonValue(value.hooks)
+    || !isNonNegativeInteger(value.eventCount)
+    || !isNonNegativeInteger(value.nodeCount)
+    || !isRunExecutionState(value.execution)
+    || (value.dynamic !== undefined && (!isPlainRecord(value.dynamic) || !isJsonValue(value.dynamic)))) {
+    return false;
+  }
+  return true;
 }
 
-function isDaemonControlResult(value: unknown): value is DaemonControlResult {
-  if (!isPlainRecord(value) || typeof value.type !== "string" || !isRunDetails(value.run)) return false;
+function isDaemonControlResult(value: unknown, expectedType: DaemonControlIntent["type"]): value is DaemonControlResult {
+  if (!isPlainRecord(value) || value.type !== expectedType || !isRunDetails(value.run)) return false;
   if (value.type === "pause" || value.type === "resume") {
     return hasExactKeys(value, ["type", "state", "run"]) && value.state === "applied";
   }
@@ -363,6 +418,53 @@ function isDaemonControlResult(value: unknown): value is DaemonControlResult {
     && typeof value.requestedTarget === "string"
     && typeof value.target === "string"
     && isSignalValidation(value.validation);
+}
+
+function isRunStatus(value: unknown): value is RunDetails["status"] {
+  return value === "pending"
+    || value === "running"
+    || value === "paused"
+    || value === "awaiting"
+    || value === "failed"
+    || value === "completed"
+    || value === "canceled";
+}
+
+function isRunExecutionState(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || !hasExactKeys(
+      value,
+      ["state", "lastStatus"],
+      ["reason", "daemonHeartbeatAt", "ownerId", "leaseExpiresAt"],
+    )
+    || typeof value.state !== "string"
+    || !["active", "inactive", "stale", "terminal", "unknown"].includes(value.state)
+    || !isRunStatus(value.lastStatus)
+    || (value.reason !== undefined && (typeof value.reason !== "string" || ![
+        "terminal",
+        "daemon_heartbeat_expired",
+        "daemon_pid_dead",
+        "run_lease_expired",
+        "run_lease_active",
+        "daemon_alive",
+        "no_liveness_evidence",
+      ].includes(value.reason)))) {
+    return false;
+  }
+  return [value.daemonHeartbeatAt, value.ownerId, value.leaseExpiresAt]
+    .every(field => field === undefined || typeof field === "string");
+}
+
+function isRunForkInfo(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["sourceRunId"], ["target", "unsafeReuse"])
+    && typeof value.sourceRunId === "string"
+    && (value.target === undefined || typeof value.target === "string")
+    && (value.unsafeReuse === undefined || value.unsafeReuse === true);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
 }
 
 function isSignalValidation(value: unknown): value is Extract<DaemonControlResult, { type: "signal" }>["validation"] {
@@ -468,12 +570,7 @@ function hasExactKeys(value: Record<string, unknown>, required: string[], option
 }
 
 async function hasLiveDaemon(cwd: string): Promise<boolean> {
-  try {
-    await requestDaemon(cwd, { method: "status" });
-    return true;
-  } catch {
-    return false;
-  }
+  return (await requestDaemon(cwd, { method: "status" })).isOk();
 }
 
 function isAddressInUse(error: unknown): boolean {

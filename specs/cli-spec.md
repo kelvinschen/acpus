@@ -27,6 +27,7 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 | `doctor` | Read-only runtime and authoring health. |
 | `skill install`, `skill uninstall` | `--project`, `--global`, and `--dry-run`. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
+| `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Global `--json` MUST work before or after command names and appear in root and subcommand help; help remains on `-h`/`--help` without an `acpus help` command.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
@@ -85,13 +86,14 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
 - Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with scoped remediation, while a simply missing installed copy remains structured `missing` without a warning.
 - Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill in existing selected roots, never symlinks or unrelated user content.
+- Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
 - Project skill scope MUST use `<cwd>/.agents/skills` and `<cwd>/.claude/skills`; global scope uses the configured/default Codex and Claude skill roots. Missing roots are skipped, but no selected root is an error.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 
 ### Output And Exit Codes
 
-- JSON `CliResult.phase` MUST use the closed exported [`ResultPhase`](../packages/cli/src/output.ts) union, including `import`; non-streaming commands emit one JSON object.
+- JSON `CliResult.phase` MUST use the closed exported [`ResultPhase`](../packages/cli/src/output.ts) union, including distinct `lock` and `import` phases; non-streaming commands emit one JSON object.
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Foreground run and JSON follow MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
@@ -109,6 +111,7 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Catalog JSON MUST preserve the catalog projections and stable ordering by available name/scope then invalid absolute package path; duplicate project/global names set `requiresScope: true`.
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
+- A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
 - Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; foreground run instead maps completed to 0 and failed/canceled to 1, while successful Ctrl-C detach exits 0.
 
 ## Verification

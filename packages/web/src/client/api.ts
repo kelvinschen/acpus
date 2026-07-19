@@ -1,5 +1,6 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
 import type { ExprIR, StaticExprShape } from "@acpus/expression/ir";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 
 export type RunRecord = {
   id: string;
@@ -202,7 +203,7 @@ export type WorkflowVisualizationResult =
   }
   | {
     status: "failed";
-    phase: "check" | "compile" | "validate";
+    phase: "check" | "compile" | "lock" | "validate";
     message: string;
   };
 
@@ -224,36 +225,101 @@ export type RunRuntimeSnapshot = {
   graph: WebGraph;
 };
 
-async function unwrap<T>(response: Response): Promise<T> {
-  const body = await response.json() as Record<string, any>;
-  if (!response.ok || !body.ok) throw new Error(body.error?.message ?? `Request failed with ${response.status}.`);
-  return body as T;
+export type WebApiFailure =
+  | { type: "network-failed"; message: string }
+  | { type: "response-invalid-json"; status: number; message: string }
+  | { type: "response-invalid-envelope"; status: number; message: string }
+  | { type: "request-failed"; status: number; code: string; message: string };
+
+export class WebApiError extends Error {
+  constructor(readonly failure: WebApiFailure) {
+    super(failure.message);
+  }
 }
 
-export async function getHealth(): Promise<HealthReport> {
-  return unwrap<{ health: HealthReport }>(await fetch("/api/health")).then(v => v.health);
+type JsonRecord = Record<string, unknown>;
+
+function requestJson<T>(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  validate: (body: JsonRecord) => boolean,
+): ResultAsync<T, WebApiFailure> {
+  return ResultAsync.fromPromise(fetch(input, init), cause => ({
+    type: "network-failed" as const,
+    message: errorMessage(cause, "Network request failed."),
+  })).andThen(response => ResultAsync.fromPromise(response.text(), cause => ({
+    type: "network-failed" as const,
+    message: errorMessage(cause, "Response body could not be read."),
+  })).andThen(text => {
+    let body: unknown;
+    try {
+      body = JSON.parse(text) as unknown;
+    } catch {
+      return err({
+        type: "response-invalid-json" as const,
+        status: response.status,
+        message: `Response from ${requestLabel(input)} was not valid JSON.`,
+      });
+    }
+    if (!isRecord(body)) {
+      return err({
+        type: "response-invalid-envelope" as const,
+        status: response.status,
+        message: `Response from ${requestLabel(input)} was not an object envelope.`,
+      });
+    }
+    if (!response.ok || body.ok !== true) {
+      const failure = isRecord(body.error) ? body.error : undefined;
+      if (body.ok === false && typeof failure?.code === "string" && typeof failure.message === "string") {
+        return err({ type: "request-failed" as const, status: response.status, code: failure.code, message: failure.message });
+      }
+      return err({
+        type: "response-invalid-envelope" as const,
+        status: response.status,
+        message: `Response from ${requestLabel(input)} did not contain a valid error envelope.`,
+      });
+    }
+    return validate(body)
+      ? ok(body as T)
+      : err({
+          type: "response-invalid-envelope" as const,
+          status: response.status,
+          message: `Response from ${requestLabel(input)} did not contain the expected result.`,
+        });
+  }));
 }
 
-export async function listRuns(): Promise<RunRecord[]> {
-  return unwrap<{ runs: RunRecord[] }>(await fetch("/api/runs")).then(v => v.runs);
-}
-
-export async function getRunRuntimeSnapshot(runId: string): Promise<RunRuntimeSnapshot> {
-  return unwrap<RunRuntimeSnapshot>(
-    await fetch(`/api/runs/${encodeURIComponent(runId)}/runtime-snapshot`),
+function queryPromise<T>(result: ResultAsync<T, WebApiFailure>): Promise<T> {
+  return result.match(
+    value => value,
+    failure => { throw new WebApiError(failure); },
   );
 }
 
+export async function getHealth(): Promise<HealthReport> {
+  return queryPromise(requestJson<{ health: HealthReport }>("/api/health", undefined, hasField("health", isRecord))).then(value => value.health);
+}
+
+export async function listRuns(): Promise<RunRecord[]> {
+  return queryPromise(requestJson<{ runs: RunRecord[] }>("/api/runs", undefined, hasField("runs", Array.isArray))).then(value => value.runs);
+}
+
+export async function getRunRuntimeSnapshot(runId: string): Promise<RunRuntimeSnapshot> {
+  return queryPromise(requestJson<RunRuntimeSnapshot>(
+    `/api/runs/${encodeURIComponent(runId)}/runtime-snapshot`,
+    undefined,
+    body => isRecord(body.run) && isRecord(body.graph),
+  ));
+}
+
 export async function getNodeInspection(runId: string, target: string, context?: WebGraphSelection[]): Promise<NodeInspection> {
-  return unwrap<{ inspection: NodeInspection }>(
-    await fetch(nodeInspectionUrl(runId, target, context)),
-  ).then(v => v.inspection);
+  return queryPromise(requestJson<{ inspection: NodeInspection }>(nodeInspectionUrl(runId, target, context), undefined, hasField("inspection", isRecord)))
+    .then(value => value.inspection);
 }
 
 export async function getNodeExecutionInspection(runId: string, target: string, context?: WebGraphSelection[]): Promise<NodeExecutionInspection> {
-  return unwrap<{ execution: NodeExecutionInspection }>(
-    await fetch(nodeInspectionUrl(runId, target, context, "/execution")),
-  ).then(v => v.execution);
+  return queryPromise(requestJson<{ execution: NodeExecutionInspection }>(nodeInspectionUrl(runId, target, context, "/execution"), undefined, hasField("execution", isRecord)))
+    .then(value => value.execution);
 }
 
 function nodeInspectionUrl(runId: string, target: string, context?: WebGraphSelection[], suffix = ""): string {
@@ -271,43 +337,86 @@ function encodeContext(context: WebGraphSelection[]): string {
 }
 
 export async function getArtifactPreview(runId: string, artifactId: string): Promise<ArtifactPreview> {
-  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/preview`);
-  if (!response.ok) throw new Error(`Artifact preview failed with ${response.status}.`);
-  return {
-    text: await response.text(),
-    mediaType: response.headers.get("content-type") ?? "text/plain",
-  };
+  const url = `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/preview`;
+  return queryPromise(new ResultAsync((async (): Promise<Result<ArtifactPreview, WebApiFailure>> => {
+    let response: Response;
+    try {
+      response = await fetch(url);
+    } catch (cause) {
+      return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview request failed.") });
+    }
+    if (!response.ok) {
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (cause) {
+        return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview error body could not be read.") });
+      }
+      let body: unknown;
+      try {
+        body = JSON.parse(text) as unknown;
+      } catch {
+        return err({ type: "response-invalid-json", status: response.status, message: "Artifact preview error response was not valid JSON." });
+      }
+      const failure = isRecord(body) && body.ok === false && isRecord(body.error) ? body.error : undefined;
+      if (typeof failure?.code === "string" && typeof failure.message === "string") {
+        return err({ type: "request-failed", status: response.status, code: failure.code, message: failure.message });
+      }
+      return err({ type: "response-invalid-envelope", status: response.status, message: "Artifact preview error response did not contain a valid error envelope." });
+    }
+    try {
+      return ok({ text: await response.text(), mediaType: response.headers.get("content-type") ?? "text/plain" });
+    } catch (cause) {
+      return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview body could not be read.") });
+    }
+  })()));
 }
 
 export async function submitRunCommand(
   runId: string,
   command: Record<string, unknown>,
 ): Promise<void> {
-  await unwrap(await fetch(`/api/runs/${encodeURIComponent(runId)}/controls`, {
+  await queryPromise(requestJson<{ ok: true }>(`/api/runs/${encodeURIComponent(runId)}/controls`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(command),
-  }));
+  }, body => body.ok === true));
 }
 
 export async function listWorkflowCatalog(): Promise<ProjectWorkflowCatalogEntry[]> {
-  return unwrap<{ catalog: ProjectWorkflowCatalogEntry[] }>(await fetch("/api/workflows/catalog")).then(v => v.catalog);
+  return queryPromise(requestJson<{ catalog: ProjectWorkflowCatalogEntry[] }>("/api/workflows/catalog", undefined, hasField("catalog", Array.isArray)))
+    .then(value => value.catalog);
 }
 
 export async function listWorkflowFiles(dir = ""): Promise<WorkflowFiles> {
-  return unwrap<{ files: WorkflowFiles }>(
-    await fetch(`/api/workflows/files?dir=${encodeURIComponent(dir)}`),
-  ).then(v => v.files);
+  return queryPromise(requestJson<{ files: WorkflowFiles }>(`/api/workflows/files?dir=${encodeURIComponent(dir)}`, undefined, hasField("files", isRecord)))
+    .then(value => value.files);
 }
 
 export async function visualizeWorkflow(source: WorkflowVisualizationSource): Promise<WorkflowVisualizationResult> {
-  return unwrap<{ result: WorkflowVisualizationResult }>(await fetch("/api/workflows/visualize", {
+  return queryPromise(requestJson<{ result: WorkflowVisualizationResult }>("/api/workflows/visualize", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ source }),
-  })).then(v => v.result);
+  }, hasField("result", isRecord))).then(value => value.result);
 }
 
 export async function getConfig(): Promise<ServerConfig> {
-  return unwrap<{ config: ServerConfig }>(await fetch("/api/config")).then(v => v.config);
+  return queryPromise(requestJson<{ config: ServerConfig }>("/api/config", undefined, hasField("config", isRecord))).then(value => value.config);
+}
+
+function hasField(key: string, predicate: (value: unknown) => boolean): (body: JsonRecord) => boolean {
+  return body => Object.hasOwn(body, key) && predicate(body[key]);
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requestLabel(input: RequestInfo | URL): string {
+  return typeof input === "string" ? input : input.toString();
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }

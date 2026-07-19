@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { admitRunForTest } from "./support/runtime-store.js";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -29,6 +30,7 @@ describe("scheduler store schema", () => {
         "execution_metadata",
         "group_members",
         "hook_journal",
+        "hook_dispatch_cursors",
         "node_attempts",
         "node_instances",
         "node_progress",
@@ -144,6 +146,7 @@ describe("scheduler store schema", () => {
         "status",
         "triggered_at",
       ]));
+      expect(columns(db, "hook_dispatch_cursors")).toEqual(["run_id", "event_sequence"]);
       expect(columnConstraints(db, "run_inputs", [
         "workflow_ir_path", "workflow_ir_digest", "lock_path", "lock_digest", "run_dir",
       ])).toEqual([
@@ -182,7 +185,7 @@ describe("scheduler store schema", () => {
     const databasePath = join(dir, ".acpus", ".local", "state", "runtime.db");
     if (!store) throw new Error("expected fresh runtime store");
     const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
-    const run = await store.admitRun({ prepared, input: { ready: true }, cwd: dir });
+    const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: dir });
     const before = schemaVersion(databasePath);
     store.close();
     store = await openExistingWritableRuntimeStore(dir);
@@ -208,6 +211,50 @@ describe("scheduler store schema", () => {
 
     expect(await readFile(databasePath)).toEqual(before);
   });
+
+  it.skipIf(process.platform === "win32")("only treats ENOENT and ENOTDIR store paths as absent", async () => {
+    store?.close();
+    store = undefined;
+    const localRoot = join(dir, ".acpus");
+    await rm(localRoot, { recursive: true, force: true });
+    await writeFile(localRoot, "not a directory");
+    await expect(openExistingRuntimeStore(dir)).resolves.toBeUndefined();
+
+    await rm(localRoot);
+    await symlink(".acpus", localRoot);
+    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({ code: "ELOOP" });
+  });
+
+  it("creates durable hook cursors, backfills them only on writable open, and cascades deletion", async () => {
+    const databasePath = join(dir, ".acpus", ".local", "state", "runtime.db");
+    if (!store) throw new Error("expected fresh runtime store");
+    const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
+    const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: dir });
+    expect(store.getHookDispatchCursor(run.id)).toBe(0);
+    store.close();
+    store = undefined;
+
+    const db = new DatabaseSync(databasePath);
+    try {
+      db.prepare("DELETE FROM hook_dispatch_cursors WHERE run_id = ?").run(run.id);
+    } finally {
+      db.close();
+    }
+
+    const readOnly = await openExistingRuntimeStore(dir);
+    try {
+      expect(() => readOnly!.getHookDispatchCursor(run.id)).toThrow("has no hook dispatch cursor");
+    } finally {
+      readOnly?.close();
+    }
+    expect(rowCount(databasePath, "hook_dispatch_cursors", run.id)).toBe(0);
+
+    store = await openExistingWritableRuntimeStore(dir);
+    if (!store) throw new Error("expected writable runtime store");
+    expect(store.getHookDispatchCursor(run.id)).toBe(store.getLastRunEventSequence(run.id));
+    await store.deleteRun(run.id);
+    expect(rowCount(databasePath, "hook_dispatch_cursors", run.id)).toBe(0);
+  });
 });
 
 function sqliteNames(db: DatabaseSync, type: "table" | "index"): string[] {
@@ -229,6 +276,15 @@ function schemaVersion(path: string): number {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     return Number((db.prepare("PRAGMA schema_version").get() as { schema_version: number }).schema_version);
+  } finally {
+    db.close();
+  }
+}
+
+function rowCount(path: string, table: string, runId: string): number {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return Number((db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`).get(runId) as { count: number }).count);
   } finally {
     db.close();
   }

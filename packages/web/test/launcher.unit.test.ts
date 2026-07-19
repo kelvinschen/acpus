@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { startWebServer } from "../src/server/launcher.js";
+import { startWebServer, type WebServerStartFailure } from "../src/index.js";
 
 const daemonReady = () => {};
 
 describe("startWebServer access policy", () => {
   it("does not generate a token for network hosts by default", async () => {
-    const server = await startWebServer({ cwd: process.cwd(), host: "0.0.0.0", ensureDaemonRunning: daemonReady });
+    const server = await startedServer({ cwd: process.cwd(), host: "0.0.0.0", ensureDaemonRunning: daemonReady });
     try {
       expect(server.token).toBeUndefined();
       expect(server.url).not.toContain("token=");
@@ -15,7 +15,7 @@ describe("startWebServer access policy", () => {
   });
 
   it("generates a token only when requested", async () => {
-    const server = await startWebServer({ cwd: process.cwd(), token: true, ensureDaemonRunning: daemonReady });
+    const server = await startedServer({ cwd: process.cwd(), token: true, ensureDaemonRunning: daemonReady });
     try {
       expect(server.token).toBeDefined();
       expect(server.url).toContain(`token=${encodeURIComponent(server.token!)}`);
@@ -25,7 +25,7 @@ describe("startWebServer access policy", () => {
   });
 
   it("allows repeated close calls", async () => {
-    const server = await startWebServer({ cwd: process.cwd(), ensureDaemonRunning: daemonReady });
+    const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning: daemonReady });
 
     await Promise.all([server.close(), server.close(), server.close()]);
     await server.close();
@@ -35,7 +35,7 @@ describe("startWebServer access policy", () => {
     const ensureDaemonRunning = vi.fn(async () => {
       throw new Error("daemon readiness failed");
     });
-    const server = await startWebServer({ cwd: process.cwd(), ensureDaemonRunning });
+    const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning });
     try {
       const response = await fetch(`${server.url}/api/runs/run_1/controls`, {
         method: "POST",
@@ -49,4 +49,25 @@ describe("startWebServer access policy", () => {
       await server.close();
     }
   });
+
+  it("returns a tagged failure when the requested port is occupied", async () => {
+    const first = await startedServer({ cwd: process.cwd(), host: "127.0.0.1", ensureDaemonRunning: daemonReady });
+    try {
+      const port = Number(new URL(first.url).port);
+      const second = await startWebServer({ cwd: process.cwd(), host: "127.0.0.1", port, ensureDaemonRunning: daemonReady });
+      expect(second.isErr()).toBe(true);
+      if (second.isErr()) {
+        const failure: WebServerStartFailure = second.error;
+        expect(failure).toMatchObject({ type: "listen-failed", host: "127.0.0.1", port });
+      }
+    } finally {
+      await first.close();
+    }
+  });
 });
+
+async function startedServer(options: Parameters<typeof startWebServer>[0]) {
+  const result = await startWebServer(options);
+  if (result.isErr()) throw new Error(result.error.message);
+  return result.value;
+}

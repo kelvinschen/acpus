@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -291,7 +292,7 @@ async function admittedAgentStore(workspace: string): Promise<RuntimeStore> {
     return { observed: observed.output };
   }));
   const store = await openRuntimeStore(workspace);
-  await store.admitRun({ prepared, input: {}, cwd: workspace });
+  await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
   return store;
 }
 

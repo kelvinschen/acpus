@@ -421,8 +421,9 @@ async function checkStagedWorkflow(cwd: string, scope: WorkflowCatalogScope, sta
 async function isRegularFile(path: string): Promise<boolean> {
   try {
     return (await lstat(path)).isFile();
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
   }
 }
 
@@ -461,7 +462,7 @@ function abortImport(errorCode: string, message: string): never {
 }
 
 function isMissingPath(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+  return Boolean(error && typeof error === "object" && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR"));
 }
 
 function causeMessage(cause: unknown): string {

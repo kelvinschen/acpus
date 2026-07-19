@@ -1,9 +1,12 @@
 import type { Dollar, TaskContext } from "@acpus/core/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { ResultAsync } from "neverthrow";
-import { normalizeWorkflowData } from "../../src/evaluation/admissible.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { tryNormalizeWorkflowData } from "../../src/evaluation/admissible.js";
 import { loadInlineTaskFunction } from "../../src/execution/inline-task.js";
-import type { RunTaskAttemptInput, TaskAttemptFailure, TaskAttemptRunner } from "../../src/execution/task-process.js";
+import type { runTaskAttempt, TaskAttemptFailure } from "../../src/execution/task-process.js";
+
+export type TaskAttemptRunner = typeof runTaskAttempt;
+type RunTaskAttemptInput = Parameters<TaskAttemptRunner>[0];
 
 export type InlineTaskAttemptCall = {
   nodeId: string;
@@ -33,15 +36,18 @@ export function createInlineTaskAttemptHarness(): {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     assertHarnessTarget(input);
-    return ResultAsync.fromPromise(executeInlineTask(input), error => {
-      if (error instanceof InlineTaskAttemptHarnessMisuseError) throw error;
-      return input.signal?.aborted ? cancelledFailure(input.nodeId) : taskFailure(error);
-    });
+    return new ResultAsync(executeInlineTask(input).then(
+      result => result,
+      error => {
+        if (error instanceof InlineTaskAttemptHarnessMisuseError) throw error;
+        return err(input.signal?.aborted ? cancelledFailure(input.nodeId) : taskFailure(error));
+      },
+    ));
   };
   return { runAttempt, calls };
 }
 
-async function executeInlineTask(input: RunTaskAttemptInput): Promise<JsonValue | undefined> {
+async function executeInlineTask(input: RunTaskAttemptInput): Promise<Result<JsonValue | undefined, TaskAttemptFailure>> {
   assertNotAborted(input);
   const target = input.request.target;
   if (target.kind !== "inline") throw new InlineTaskAttemptHarnessMisuseError("module task targets");
@@ -55,9 +61,9 @@ async function executeInlineTask(input: RunTaskAttemptInput): Promise<JsonValue 
     abortSignal: input.signal ?? new AbortController().signal,
   } satisfies TaskContext<typeof input.request.input>);
   assertNotAborted(input);
-  const normalized = normalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
+  const normalized = tryNormalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
   assertNotAborted(input);
-  return normalized;
+  return normalized.isErr() ? err(taskFailure(normalized.error.message)) : ok(normalized.value);
 }
 
 function assertHarnessTarget(input: RunTaskAttemptInput): void {
@@ -80,13 +86,7 @@ function cancelledFailure(nodeId: string): TaskAttemptFailure {
 }
 
 function taskFailure(error: unknown): TaskAttemptFailure {
-  if (!(error instanceof Error)) return { type: "task", name: "Error", message: String(error) };
-  return {
-    type: "task",
-    name: error.name,
-    message: error.message,
-    ...(error.stack === undefined ? {} : { stack: error.stack }),
-  };
+  return { type: "failed", message: error instanceof Error ? error.message : String(error) };
 }
 
 class InlineTaskAttemptHarnessMisuseError extends Error {

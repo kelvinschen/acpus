@@ -27,11 +27,17 @@ describe("workflow visualization helpers", () => {
     await writeFile(join(cwd, "src", "flow.workflow.ts"), "export default {};\n");
     await writeFile(join(cwd, "src", "notes.md"), "# nope\n");
 
-    await expect(listWorkflowFiles(cwd, "src")).resolves.toMatchObject({
+    const listed = await listWorkflowFiles(cwd, "src");
+    expect(listed.isOk() && listed.value).toMatchObject({
       dir: "src",
       entries: [{ name: "flow.workflow.ts", path: "src/flow.workflow.ts", kind: "workflow" }],
     });
-    await expect(listWorkflowFiles(cwd, "..")).rejects.toThrow("Path escapes workspace.");
+    const escaped = await listWorkflowFiles(cwd, "..");
+    expect(escaped.isErr() && escaped.error).toMatchObject({
+      type: "workflow-browse-invalid",
+      reason: "outside-workspace",
+      message: "Path escapes workspace.",
+    });
   });
 
   it("returns static workflow input and output contract", async () => {

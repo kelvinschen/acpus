@@ -1,14 +1,15 @@
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
-import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
-import { ResolutionException, resolveOrThrow, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
+import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
+import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { tryResolveDuration, tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
-import { runTaskAttempt, taskAttemptFailureMessage, type TaskAttemptFailure } from "./task-process.js";
+import { runTaskAttempt, type TaskAttemptFailure } from "./task-process.js";
 
 export type TaskExecutorOptions = {
   cwd: string;
@@ -22,30 +23,39 @@ export type TaskExecutorOptions = {
   signal?: AbortSignal;
 };
 
-export class TaskAttemptExecutionError extends Error {
-  constructor(readonly failure: TaskAttemptFailure) {
-    super(taskAttemptFailureMessage(failure));
-  }
+export type TaskNodeFailure = TaskAttemptFailure | {
+  type: "resolution";
+  error: ResolutionError;
+  message: string;
+};
+
+export function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): ResultAsync<JsonValue | undefined, TaskNodeFailure> {
+  return new ResultAsync(executeTaskNodeResult(node, scope, options));
 }
 
-export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<unknown> {
+async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<Result<JsonValue | undefined, TaskNodeFailure>> {
   const runDir = options.store.getRunDir(options.runId);
   if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
   const workspaceDir = resolve(options.cwd);
   const absoluteRunDir = resolve(workspaceDir, runDir);
-  const input = Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, evaluateExpr(expr, scope)])) as Record<string, JsonValue>;
-  const artifactPaths = resolveTaskArtifactPaths(input, node.id, workspaceDir, options);
+  const input = evaluateTaskInput(node, scope);
+  if (input.isErr()) return err(input.error);
+  const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, workspaceDir, options);
+  if (artifactPaths.isErr()) return resolutionFailure(artifactPaths.error);
   const nodeKey = options.nodeKey ?? node.id;
-  const authoredCwd = node.run.cwd
-    ? resolveOrThrow(tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`))
-    : workspaceDir;
-  const cwd = isAbsolute(authoredCwd) ? authoredCwd : resolve(workspaceDir, authoredCwd);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...evaluateEnv(node.run.env, scope) };
+  const authoredCwd = node.run.cwd ? tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`) : ok(workspaceDir);
+  if (authoredCwd.isErr()) return resolutionFailure(authoredCwd.error);
+  const cwd = isAbsolute(authoredCwd.value) ? authoredCwd.value : resolve(workspaceDir, authoredCwd.value);
+  const evaluatedEnv = evaluateEnv(node.run.env, scope);
+  if (evaluatedEnv.isErr()) return resolutionFailure(evaluatedEnv.error);
+  const env: NodeJS.ProcessEnv = { ...process.env, ...evaluatedEnv.value };
   const defaultCommandTimeout = node.run.execution?.defaultCommandTimeout === undefined
-    ? undefined
-    : resolveOrThrow(tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`));
-  const execution = defaultCommandTimeout === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.value };
-  const metadataTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
+    ? ok(undefined)
+    : tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`);
+  if (defaultCommandTimeout.isErr()) return resolutionFailure(defaultCommandTimeout.error);
+  const execution = defaultCommandTimeout.value === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.value.value };
+  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
+  if (timeoutMs.isErr()) return err(timeoutMs.error);
   const visibleAttempt = options.attemptNo;
   options.store.writeExecutionMetadata({
     runId: options.runId,
@@ -55,34 +65,49 @@ export async function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, 
       nodeId: node.id,
       nodeKey,
       attemptNo: visibleAttempt,
-      input,
+      input: input.value,
       cwd,
-      ...(metadataTimeoutMs === undefined ? {} : { timeoutMs: metadataTimeoutMs }),
-      ...(defaultCommandTimeout === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value }),
+      ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
+      ...(defaultCommandTimeout.value === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value.value }),
     },
   });
-  const attemptDir = `attempt-${visibleAttempt}`;
-  await mkdir(join(absoluteRunDir, "outputs", nodeKey, attemptDir), { recursive: true });
-  await mkdir(join(absoluteRunDir, "work", nodeKey, attemptDir), { recursive: true });
-  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
+  const runnerTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
+  if (runnerTimeoutMs.isErr()) return err(runnerTimeoutMs.error);
 
-  const result = await runTaskAttempt({
+  return runTaskAttempt({
     nodeId: node.id,
     cwd,
     env,
     request: {
       target: node.run.target,
-      input,
+      input: input.value,
       workspaceDir,
       ...(execution === undefined ? {} : { execution }),
-      artifact: { runId: options.runId, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, runDir: absoluteRunDir, paths: artifactPaths },
+      artifact: { runId: options.runId, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, runDir: absoluteRunDir, paths: artifactPaths.value },
     },
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(runnerTimeoutMs.value === undefined ? {} : { timeoutMs: runnerTimeoutMs.value }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     registerArtifact: artifact => throwSchedulerStoreResult(options.store.registerArtifact(artifact)),
   });
-  if (result.isErr()) throw new TaskAttemptExecutionError(result.error);
-  return result.value;
+}
+
+function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<Record<string, JsonValue>, TaskNodeFailure> {
+  const input: Record<string, unknown> = {};
+  for (const [key, expression] of Object.entries(node.run.input)) {
+    const evaluated = tryEvaluateExpr(expression, scope);
+    if (evaluated.isErr()) {
+      return resolutionFailure({
+        type: "evaluation",
+        field: `Task node '${node.id}' input '${key}'`,
+        message: evaluated.error.message,
+      });
+    }
+    input[key] = evaluated.value;
+  }
+  const normalized = tryNormalizeWorkflowData(input, `Task node '${node.id}' input`);
+  return normalized.isErr()
+    ? resolutionFailure({ type: "evaluation", field: `Task node '${node.id}' input`, message: normalized.error.message })
+    : ok(normalized.value as Record<string, JsonValue>);
 }
 
 function resolveTaskArtifactPaths(
@@ -90,47 +115,64 @@ function resolveTaskArtifactPaths(
   nodeId: string,
   cwd: string,
   options: TaskExecutorOptions,
-): Record<string, string> {
+): Result<Record<string, string>, ResolutionError> {
   const paths: Record<string, string> = {};
-  const visit = (value: unknown): void => {
+  const visit = (value: unknown): Result<void, ResolutionError> => {
     if (isArtifactRefCandidate(value)) {
       const resolved = tryResolveArtifactPath(value, { cwd, runId: options.runId, store: options.store });
       if (resolved.isErr()) {
-        throw new ResolutionException({
+        return err({
           type: "evaluation",
           field: `Task node '${nodeId}' input`,
           message: resolved.error.message,
         });
       }
       paths[value.uri as string] = resolved.value;
-      return;
+      return ok(undefined);
     }
     if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
+      for (const item of value) {
+        const visited = visit(item);
+        if (visited.isErr()) return visited;
+      }
+      return ok(undefined);
     }
     if (value && typeof value === "object") {
-      for (const item of Object.values(value)) visit(item);
+      for (const item of Object.values(value)) {
+        const visited = visit(item);
+        if (visited.isErr()) return visited;
+      }
     }
+    return ok(undefined);
   };
-  visit(input);
-  return paths;
+  const visited = visit(input);
+  return visited.isErr() ? err(visited.error) : ok(paths);
 }
 
-function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Record<string, string> {
-  if (!env) return {};
-  return Object.fromEntries(Object.entries(env).map(([key, value]) =>
-    [key, resolveOrThrow(tryResolveString(value, scope, `Task env '${key}'`))]));
+function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Result<Record<string, string>, ResolutionError> {
+  if (!env) return ok({});
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const item = tryResolveString(value, scope, `Task env '${key}'`);
+    if (item.isErr()) return err(item.error);
+    resolved[key] = item.value;
+  }
+  return ok(resolved);
 }
 
-function remainingTimeout(deadlineAt: string | undefined, nodeId: string): number | undefined {
-  if (deadlineAt === undefined) return undefined;
+function remainingTimeout(deadlineAt: string | undefined, nodeId: string): Result<number | undefined, TaskAttemptFailure> {
+  if (deadlineAt === undefined) return ok(undefined);
   const deadline = tryParsePersistedDeadline(deadlineAt);
   if (deadline.isErr()) {
     throw new Error(`Task node '${nodeId}' has invalid persisted deadline ${JSON.stringify(deadlineAt)}.`);
   }
   const remaining = deadline.value.getTime() - Date.now();
   if (!Number.isSafeInteger(remaining)) throw new Error(`Task node '${nodeId}' has an invalid remaining timeout.`);
-  if (remaining <= 0) throw new TaskAttemptExecutionError({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` });
-  return remaining;
+  return remaining <= 0
+    ? err({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` })
+    : ok(remaining);
+}
+
+function resolutionFailure(error: ResolutionError): Result<never, TaskNodeFailure> {
+  return err({ type: "resolution", error, message: error.message });
 }

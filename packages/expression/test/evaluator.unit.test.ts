@@ -183,6 +183,8 @@ describe("expression evaluator", () => {
     }
     expect(() => evaluateSource("_value => (() => { throw new Error('boom'); })()"))
       .toThrow("lift(...) callback threw: boom");
+    expect(() => evaluateSource("_value => { throw 'string failure'; }"))
+      .toThrow("lift(...) callback threw: string failure");
     expect(() => evaluateSource("_value => (() => { throw new Error('boom'); })()"))
       .toThrow(ExpressionEvaluationError);
   });

@@ -1,30 +1,47 @@
-import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect } from "../scheduler/control.js";
+import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect, type SchedulerControlFailure } from "../scheduler/control.js";
 import {
   createRuntimeRunScheduler,
-  triggerHooksForCommittedRowsForRun,
+  dispatchCommittedHooksForRun,
   type RunExecution,
   type RunExecutionExit,
-  type RuntimeHookCursor,
+  type RunExecutionFailure,
   type RuntimeRunScheduler,
 } from "../scheduler/runtime-runner.js";
 import type { HookRunner } from "../hooks/runner.js";
-import type { RunDetails, RuntimeStore } from "../store/store.js";
-import { DaemonRequestError, type DaemonControlIntent, type DaemonControlResult } from "./socket.js";
+import type { ForkRunFailure, RunDetails, RuntimeStore } from "../store/store.js";
+import type { DaemonControlIntent, DaemonControlResult } from "./socket.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 
 type ActiveRunSession = {
   execution: RunExecution;
-  promise: Promise<RunExecutionExit>;
+  promise: Promise<Result<RunExecutionExit, RunExecutionFailure>>;
 };
 
-type ExecutionFailure = {
-  eventCount: number;
+type IncidentFence = {
+  eventVersion: number;
 };
+
+export type RunSessionStart = {
+  disposition: "started" | "already-active" | "terminal" | "quarantined";
+  run: RunDetails;
+};
+
+export type RunIncident = {
+  runId: string;
+  source: "execution" | "hook";
+  error: unknown;
+};
+
+export type RunSessionControlFailure = SchedulerControlFailure
+  | ForkRunFailure
+  | { type: "run-not-controllable"; runId: string; message: string };
 
 export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
-  private readonly failures = new Map<string, ExecutionFailure>();
+  private readonly failures = new Map<string, IncidentFence>();
+  private readonly hookFailures = new Map<string, IncidentFence>();
   private readonly progressWriter: CoalescingNodeProgressWriter;
   private readonly scheduler: RuntimeRunScheduler;
 
@@ -33,6 +50,7 @@ export class RunExecutionSessions {
     private readonly store: RuntimeStore,
     private readonly hookRunner: HookRunner | undefined,
     runtimeConfiguration: RuntimeConfiguration,
+    private readonly onRunIncident: (incident: RunIncident) => void = () => undefined,
   ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
     this.scheduler = createRuntimeRunScheduler({
@@ -41,6 +59,8 @@ export class RunExecutionSessions {
       maxLeafConcurrency: runtimeConfiguration.runMaxLeafConcurrency,
       agentHostPolicy: runtimeConfiguration.agentHostPolicy,
       ...(hookRunner === undefined ? {} : { hookRunner }),
+      shouldDispatchHooks: runId => this.shouldDispatchHooks(runId),
+      onHookIncident: (runId, error) => this.recordHookIncident(runId, error),
       progressWriter: this.progressWriter,
     });
   }
@@ -57,6 +77,22 @@ export class RunExecutionSessions {
     await this.hookRunner?.drain();
   }
 
+  dispatchHooks(runId: string): "dispatched" | "retry" | "quarantined" {
+    if (!this.shouldDispatchHooks(runId)) return "quarantined";
+    try {
+      const result = dispatchCommittedHooksForRun({
+        cwd: this.cwd,
+        store: this.store,
+        runId,
+        ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
+      });
+      return result.isErr() ? "retry" : "dispatched";
+    } catch (error) {
+      this.recordHookIncident(runId, error);
+      return "quarantined";
+    }
+  }
+
   async stopExecutors(timeoutMs: number): Promise<void> {
     for (const session of this.sessions.values()) session.execution.stop();
     let timeout: NodeJS.Timeout | undefined;
@@ -69,28 +105,40 @@ export class RunExecutionSessions {
     if (timeout) clearTimeout(timeout);
   }
 
-  start(runId: string): RunDetails {
+  start(runId: string): RunSessionStart {
     const existing = this.store.getRun(runId);
-    if (!existing) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${runId}' was not found.`);
+    if (!existing) throw new Error(`Run '${runId}' was not found.`);
     if (isTerminal(existing.status)) {
       this.failures.delete(runId);
-      return existing;
+      return { disposition: "terminal", run: existing };
     }
+    const eventVersion = this.store.getRunEventVersion(runId);
+    if (eventVersion === undefined) throw new Error(`Run '${runId}' was not found.`);
     const failure = this.failures.get(runId);
-    if (failure?.eventCount === existing.eventCount) return existing;
+    if (failure?.eventVersion === eventVersion) return { disposition: "quarantined", run: existing };
     if (failure) this.failures.delete(runId);
-    if (!this.sessions.has(runId)) this.startExecution(runId);
-    return existing;
+    if (this.sessions.has(runId)) return { disposition: "already-active", run: existing };
+    this.startExecution(runId);
+    return { disposition: "started", run: existing };
   }
 
-  async control(intent: DaemonControlIntent): Promise<DaemonControlResult | undefined> {
+  control(intent: DaemonControlIntent): ResultAsync<DaemonControlResult, RunSessionControlFailure> {
+    return new ResultAsync(this.controlResult(intent));
+  }
+
+  private async controlResult(intent: DaemonControlIntent): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
     const session = this.sessions.get(intent.runId);
     if (!session) return this.controlWithShortSession(intent);
     if (intent.type === "fork") return this.fork(intent);
 
     const ownerEpoch = await session.execution.ownerEpoch;
-    if (ownerEpoch === undefined) return undefined;
-    const { effect, reopened } = applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch);
+    if (ownerEpoch === undefined) {
+      return err({ type: "run-not-controllable", runId: intent.runId, message: `Control '${intent.type}' could not be applied to run '${intent.runId}'.` });
+    }
+    const applied = applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch);
+    if (applied.isErr()) return err(applied.error);
+    const control = applied.value;
+    const { effect, reopened } = control;
     session.execution.wake();
 
     const restartsSession = reopened;
@@ -99,9 +147,9 @@ export class RunExecutionSessions {
     if (restartsSession || endsSession) await Promise.allSettled([session.promise]);
 
     const run = this.store.getRun(intent.runId);
-    if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
+    if (!run) throw new Error(`Run '${intent.runId}' was not found.`);
     if (restartsSession && !this.sessions.has(intent.runId)) this.startExecution(intent.runId);
-    return controlResult(effect, run);
+    return ok(daemonControlResult(effect, run));
   }
 
   private startExecution(runId: string): void {
@@ -113,29 +161,36 @@ export class RunExecutionSessions {
       if (this.sessions.get(runId) === session) this.sessions.delete(runId);
     });
     this.sessions.set(runId, session);
-    void session.promise.catch(() => {
+    void session.promise.catch(error => {
       if (this.sessions.has(runId)) return;
-      const run = this.store.getRun(runId);
-      if (run) this.failures.set(runId, { eventCount: run.eventCount });
+      const eventVersion = this.store.getRunEventVersion(runId);
+      if (eventVersion === undefined) return;
+      this.failures.set(runId, { eventVersion });
+      try {
+        this.onRunIncident({ runId, source: "execution", error });
+      } catch {}
     });
   }
 
-  private async controlWithShortSession(intent: DaemonControlIntent): Promise<DaemonControlResult> {
+  private async controlWithShortSession(intent: DaemonControlIntent): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
     const existing = this.store.getRun(intent.runId);
-    if (!existing) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
+    if (!existing) return err({ type: "run-not-found", runId: intent.runId, message: `Run '${intent.runId}' was not found.` });
     const claim = this.store.scheduler.claimRun(intent.runId, `daemon:${process.pid}:${intent.runId}:control`, 30_000);
-    if (!claim) throw new DaemonRequestError("CONTROL_CONFLICT", `Run '${intent.runId}' is currently controlled by another owner.`);
-    const hookCursor = { sequence: this.store.getLastRunEventSequence(intent.runId) };
+    if (!claim) {
+      return err({ type: "run-not-controllable", runId: intent.runId, message: `Control '${intent.type}' could not be applied to run '${intent.runId}'.` });
+    }
     let result: DaemonControlResult;
     let reopened = false;
     try {
       if (intent.type === "fork") return await this.fork(intent);
-      const control = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
+      const applied = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
+      if (applied.isErr()) return err(applied.error);
+      const control = applied.value;
       reopened = control.reopened;
-      this.triggerHooks(intent.runId, hookCursor);
+      this.triggerHooks(intent.runId);
       const run = this.store.getRun(intent.runId);
-      if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`);
-      result = controlResult(control.effect, run);
+      if (!run) throw new Error(`Run '${intent.runId}' was not found.`);
+      result = daemonControlResult(control.effect, run);
     } finally {
       this.store.scheduler.releaseRun(claim);
     }
@@ -144,10 +199,10 @@ export class RunExecutionSessions {
       && !isTerminal(result.run.status)) {
       this.start(intent.runId);
     }
-    return result;
+    return ok(result);
   }
 
-  private async fork(intent: Extract<DaemonControlIntent, { type: "fork" }>): Promise<DaemonControlResult> {
+  private async fork(intent: Extract<DaemonControlIntent, { type: "fork" }>): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
     const fork = await this.store.forkRun(intent.runId, {
       requestId: intent.requestId,
       ...(intent.target === undefined ? {} : { target: intent.target }),
@@ -156,20 +211,37 @@ export class RunExecutionSessions {
       ...(intent.agentOverrides === undefined ? {} : { agentOverrides: intent.agentOverrides }),
       ...(intent.unsafeReuse === undefined ? {} : { unsafeReuse: intent.unsafeReuse }),
     });
-    if (fork.forkCreated) this.triggerHooks(fork.id, { sequence: 0 });
-    const run = this.store.getRun(fork.id);
-    if (!run) throw new DaemonRequestError("RUN_NOT_FOUND", `Fork run '${fork.id}' was not found.`);
-    return { type: "fork", state: "applied", sourceRunId: intent.runId, run };
+    if (fork.isErr()) return err(fork.error);
+    if (fork.value.forkCreated) this.triggerHooks(fork.value.id);
+    const run = this.store.getRun(fork.value.id);
+    if (!run) throw new Error(`Fork run '${fork.value.id}' was not found.`);
+    return ok({ type: "fork", state: "applied", sourceRunId: intent.runId, run });
   }
 
-  private triggerHooks(runId: string, hookCursor: RuntimeHookCursor): void {
-    triggerHooksForCommittedRowsForRun({
-      cwd: this.cwd,
-      store: this.store,
-      runId,
-      ...(this.hookRunner === undefined ? {} : { hookRunner: this.hookRunner }),
-      hookCursor,
-    });
+  private triggerHooks(runId: string): void {
+    this.dispatchHooks(runId);
+  }
+
+  private shouldDispatchHooks(runId: string): boolean {
+    const failure = this.hookFailures.get(runId);
+    if (!failure) return true;
+    const eventVersion = this.store.getRunEventVersion(runId);
+    if (eventVersion === undefined) {
+      this.hookFailures.delete(runId);
+      return false;
+    }
+    if (eventVersion === failure.eventVersion) return false;
+    this.hookFailures.delete(runId);
+    return true;
+  }
+
+  private recordHookIncident(runId: string, error: unknown): void {
+    const eventVersion = this.store.getRunEventVersion(runId);
+    if (eventVersion === undefined || this.hookFailures.get(runId)?.eventVersion === eventVersion) return;
+    this.hookFailures.set(runId, { eventVersion });
+    try {
+      this.onRunIncident({ runId, source: "hook", error });
+    } catch {}
   }
 }
 
@@ -196,7 +268,7 @@ function controlIntent(intent: DaemonControlIntent): RunControlIntent {
   throw new Error(`Unsupported active control '${intent.type}'.`);
 }
 
-function controlResult(effect: SchedulerControlEffect, run: RunDetails): DaemonControlResult {
+function daemonControlResult(effect: SchedulerControlEffect, run: RunDetails): DaemonControlResult {
   if (effect.type === "pause") return { ...effect, run };
   if (effect.type === "resume") return { ...effect, run };
   if (effect.type === "retry") return { ...effect, run };

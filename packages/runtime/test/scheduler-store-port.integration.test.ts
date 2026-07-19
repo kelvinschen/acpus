@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -17,7 +18,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const admitted = store.readRunInspection(run.id, 0);
         expect(admitted.cursor).toEqual({ eventSequence: 1, progressVersion: 0 });
         expect(admitted.events.map(event => event.sequence)).toEqual([1]);
@@ -78,7 +79,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const databasePath = join(workspace, ".acpus", ".local", "state", "runtime.db");
         const worker = new Worker(`
           const { parentPort, workerData } = require("node:worker_threads");
@@ -136,7 +137,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000);
         expect(claim).toMatchObject({ runId: run.id, ownerId: "owner-a", ownerEpoch: 1 });
         expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toBeUndefined();
@@ -220,7 +221,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "node-progress:ready");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -298,7 +299,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         store.writeNodeProgress({
           runId: run.id,
           nodeKey: "require_ready~1",
@@ -325,7 +326,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "late-progress:ready");
         const first = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -413,7 +414,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "terminal-progress:ready");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -471,7 +472,7 @@ describe("scheduler store port", () => {
         if (missing.isOk()) throw new Error("expected run-not-found");
         expect(missing.error).toMatchObject({ type: "run-not-found", runId: "run_missing" });
 
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const mismatch = store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
@@ -587,7 +588,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "typed:signal-awaiting");
         const sequence = Number(dbScalar(workspace, "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?", run.id));
@@ -628,7 +629,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const first = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         expect(store.scheduler.releaseRun({ ...first, ownerId: "wrong-owner" })).toBe(false);
@@ -652,7 +653,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const fresh = store.getRun(run.id);
         expect(fresh).toBeDefined();
         expect(fresh).not.toHaveProperty("dynamic");
@@ -674,7 +675,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         writeSchedulerEventPayload(workspace, run.id, eventType, "require_ready~1", { deadlineAt: "not-a-deadline" });
 
         expect(() => throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id))
@@ -690,7 +691,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "corrupted-deadline:ready");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -719,7 +720,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         const first = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -750,7 +751,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const paused = throwingSchedulerStore(store.scheduler).pauseRun({
           runId: run.id,
@@ -784,8 +785,8 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const firstRun = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        const secondRun = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const firstRun = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const secondRun = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const firstClaim = store.scheduler.claimRun(firstRun.id, "owner-a", 60_000)!;
         const secondClaim = store.scheduler.claimRun(secondRun.id, "owner-b", 60_000)!;
         const idempotencyKey = "control:shared-across-runs";
@@ -833,9 +834,9 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const resumeRun = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        const pauseRun = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        const cancelRun = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const resumeRun = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const pauseRun = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const cancelRun = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const resumeClaim = store.scheduler.claimRun(resumeRun.id, "resume-owner", 60_000)!;
         const pauseClaim = store.scheduler.claimRun(pauseRun.id, "pause-owner", 60_000)!;
         const cancelClaim = store.scheduler.claimRun(cancelRun.id, "cancel-owner", 60_000)!;
@@ -938,7 +939,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const version = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
@@ -967,7 +968,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         expect(throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:pause" }).projection.run.status).toBe("paused");
@@ -986,7 +987,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1017,7 +1018,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         const canceled = throwingSchedulerStore(store.scheduler).cancel({
@@ -1040,7 +1041,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         const completed = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1085,7 +1086,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ? AND node_key = 'require_ready'", run.id)).toBe(1);
 
@@ -1114,7 +1115,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1153,7 +1154,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1219,7 +1220,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
 
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1271,7 +1272,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const first = store.scheduler.claimRun(run.id, "owner-a", 60_000);
         readyNode(store, run.id, first!, "attempt-ready-node");
         const admissionVersion = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
@@ -1350,7 +1351,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-timing-ready");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -1388,7 +1389,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
         try {
@@ -1410,7 +1411,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyGroupNode(store, run.id, claim, "pause-ready-group-node");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -1487,7 +1488,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1560,7 +1561,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -1611,7 +1612,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -1651,7 +1652,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -1716,7 +1717,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -1755,7 +1756,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -1784,7 +1785,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-cancel-ready-node");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -1842,7 +1843,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         readyNode(store, run.id, claim, "attempt-cancelled-ready-node");
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
@@ -1884,7 +1885,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-awaiting");
 
@@ -1923,15 +1924,26 @@ describe("scheduler store port", () => {
           idempotencyKey: "signal:consume",
         });
         expect(duplicate.version).toBe(consumed.version);
-        const duplicateWithFreshCommand = throwingSchedulerStore(store.scheduler).consumeSignal({
+        const replayWithFreshRequest = throwingSchedulerStore(store.scheduler).consumeSignal({
+          runId: run.id,
+          nodeKey: "approve~1",
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "signal-command",
+          idempotencyKey: "signal:consume:replay",
+        });
+        expect(replayWithFreshRequest.version).toBe(consumed.version);
+        expect(dbRow(workspace, "SELECT event_count, intent_digest IS NOT NULL AS has_intent FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", run.id, "signal:consume:replay"))
+          .toEqual({ event_count: 0, has_intent: 1 });
+
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
           payload: { ok: true },
           commandIdempotencyKey: "other-command",
           idempotencyKey: "signal:consume:other",
-        });
-        expect(duplicateWithFreshCommand.version).toBe(consumed.version);
+        })).toThrow("already consumed by a different command");
 
         expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
@@ -1940,15 +1952,15 @@ describe("scheduler store port", () => {
           payload: { ok: false },
           commandIdempotencyKey: "signal-command",
           idempotencyKey: "signal:consume",
-        })).toThrow("already consumed a different payload");
+        })).toThrow("conflicts with a different control");
         expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
           payload: { ok: false },
-          commandIdempotencyKey: "other-command",
-          idempotencyKey: "signal:consume:other",
-        })).toThrow("already consumed a different payload");
+          commandIdempotencyKey: "signal-command",
+          idempotencyKey: "signal:consume:replay",
+        })).toThrow("conflicts with a different control");
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
           expectedVersion: duplicate.version,
@@ -1975,7 +1987,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingGroupSignal(store, run.id, claim, "signal-group-awaiting");
 
@@ -2020,7 +2032,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-timeout-awaiting");
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
@@ -2056,7 +2068,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-retry-awaiting");
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -2091,7 +2103,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-paused-awaiting");
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
@@ -2124,7 +2136,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-timeout-pause-awaiting", {
           deadlineAt: "2026-07-01T00:00:05.000Z",
@@ -2167,7 +2179,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         awaitingSignal(store, run.id, claim, "signal-timeout-range-awaiting", {
           deadlineAt: "9999-12-31T23:59:59.999Z",
@@ -2211,7 +2223,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const nodeKey = awaitingRootSignal(store, run.id, claim, "signal-timeout-late-awaiting", {
           deadlineAt: "2026-07-01T00:00:00.000Z",
@@ -2243,7 +2255,7 @@ describe("scheduler store port", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const nodeKey = awaitingRootSignal(store, run.id, claim, "signal-timeout-pause-awaiting", {
           deadlineAt: "2026-07-01T00:00:00.000Z",

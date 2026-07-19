@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { walkNodes } from "@acpus/core/ir";
-import { DaemonRequestError, normalizeWorkflowInput, validateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
+import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import { staticExprShape, type JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError } from "../errors.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -11,7 +11,7 @@ import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogE
 import { summarizeWorkflow, writeJsonLine, writeResult, type OutputFormat } from "../output.js";
 import { prepareWorkflowForCli, workflowPreparationCliError } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
-import { sendDaemonAdmitRun } from "./daemon.js";
+import { sendDaemonAdmitRun, type CliDaemonFailure } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
 import { importWorkflowPackage } from "../workflow-import.js";
 
@@ -173,12 +173,12 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  try {
-    if (input !== undefined) normalizeWorkflowInput(prepared.ir, input);
-    validateAgentOverrides(prepared.ir, agentOverrides);
-  } catch (error) {
-    throw validationError(error instanceof Error ? error.message : String(error));
+  if (input !== undefined) {
+    const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
+    if (normalized.isErr()) throw validationError(normalized.error.message);
   }
+  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
+  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "check",
@@ -197,16 +197,15 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  let admittedInput: JsonValue;
-  try {
-    admittedInput = normalizeWorkflowInput(prepared.ir, input);
-    validateAgentOverrides(prepared.ir, agentOverrides);
-  } catch (error) {
-    throw validationError(error instanceof Error ? error.message : String(error));
-  }
+  const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
+  if (normalizedInput.isErr()) throw validationError(normalizedInput.error.message);
+  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
+  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
+  const admittedInput = normalizedInput.value;
+  const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
 
   if (options.background) {
-    const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
+    const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, admittedOverrides);
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
@@ -221,7 +220,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     return;
   }
 
-  const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, agentOverrides);
+  const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, admittedOverrides);
   if (ctx.wantsJson) writeJsonLine(ctx.stdout, { ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const outcome = await followRun(ctx.cwd, { runId: admitted.id, mode: "overview", intervalMs }, {
     phase: "run",
@@ -237,14 +236,20 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
 }
 
 async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
-  try {
-    return await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
-  } catch (error) {
-    if (error instanceof DaemonRequestError && error.code === "STORE_BUSY") {
-      throw runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
-    }
-    throw error;
+  const admitted = await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
+  if (admitted.isOk()) return admitted.value;
+  if (admitted.error.type === "request-failed"
+    && admitted.error.failure.type === "rejected"
+    && admitted.error.failure.code === "STORE_BUSY") {
+    throw runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
   }
+  throw runError(admitted.error.message, { errorCode: daemonFailureCode(admitted.error) });
+}
+
+function daemonFailureCode(failure: CliDaemonFailure): string {
+  return failure.type === "request-failed" && failure.failure.type === "rejected"
+    ? failure.failure.code
+    : failure.type.replaceAll("-", "_").toUpperCase();
 }
 
 async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {

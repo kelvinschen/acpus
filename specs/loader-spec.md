@@ -36,9 +36,11 @@
 - `importAuthoringModule(specifier, { parentURL })` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the referrer.
 - Relative `.js` source-level specifiers MUST continue to load matching TypeScript source files through the authoring loader.
 - TypeScript authoring modules MUST load when their workspace has no nearest `package.json` or its package type is CommonJS.
-- Bare package specifiers SHOULD use ESM import resolution semantics, including package `import` export conditions. CommonJS-transformed paths MAY use the registered CommonJS fallback.
-- When normal package resolution fails for a package export whose normal import/default target is missing, the loader MUST attempt the package `development` export target for that subpath.
-- The loader MUST NOT use the `development` export fallback to mask errors thrown while an existing normal import/default target is evaluating.
+- Bare package specifiers SHOULD use ESM import resolution semantics, including nested `node`, `node-addons`, `import`, `module-sync`, and `default` export conditions in declaration order. CommonJS-transformed paths MAY use the registered CommonJS fallback.
+- When normal package resolution fails for a package export whose selected normal import target is missing, the loader MUST attempt the selected, possibly nested, package `development` export target for that subpath.
+- Filesystem discovery MUST treat only `ENOENT` and `ENOTDIR` as an absent candidate.
+- Filesystem permission, I/O, symlink-loop, and directory-import failures MUST propagate and MUST NOT select another source or package export target.
+- The loader MUST NOT use the `development` export fallback to mask errors thrown while an existing selected normal import target is evaluating, including transitive `ERR_MODULE_NOT_FOUND` failures.
 - The loader MUST rely on normal Node module caching behind the authoring loader and MUST NOT add Acpus-owned cache busting, dependency graph copying, or generated task source artifacts.
 
 ## Verification

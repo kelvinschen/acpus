@@ -1,6 +1,6 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { ok, type Result } from "neverthrow";
-import { normalizeWorkflowData } from "../evaluation/admissible.js";
+import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { selectNextAdmission } from "./admission.js";
 import type { SchedulerEvent } from "./events.js";
 import {
@@ -86,8 +86,12 @@ type ActiveExecution = {
   attempt: ActiveAttempt;
   instance: NodeInstance;
   settlement?: Promise<void>;
-  result?: AttemptCommitInput["result"];
+  outcome?: ActiveExecutionOutcome;
 };
+
+type ActiveExecutionOutcome =
+  | { type: "result"; value: AttemptCommitInput["result"] }
+  | { type: "rejection"; error: unknown };
 
 type SchedulerStepResult =
   | { status: "quiescent"; snapshot: SchedulerSnapshot }
@@ -113,6 +117,8 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
   const active = new Map<string, ActiveExecution>();
   const settledAttemptIds: string[] = [];
   let leaseLost = false;
+  let executionFailed = false;
+  let executionFailure: unknown;
   const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, active, () => {
     leaseLost = true;
     wakeup.wake();
@@ -174,7 +180,11 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       const settledAttemptId = settledAttemptIds.shift();
       if (settledAttemptId !== undefined) {
         const execution = active.get(settledAttemptId);
-        if (!execution?.result) continue;
+        if (!execution?.outcome) continue;
+        if (execution.outcome.type === "rejection") {
+          active.delete(settledAttemptId);
+          throw execution.outcome.error;
+        }
         const commit = commitExecutionResult(input, claim, execution, counters);
         active.delete(settledAttemptId);
         if (commit.status === "lease_lost") {
@@ -278,14 +288,35 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       const idle = idleSummary(snapshot.projection, claim);
       return withCounters(idle, claim, counters);
     }
+  } catch (error) {
+    executionFailed = true;
+    executionFailure = error;
+    throw error;
   } finally {
-    if (leaseLost) abortAll(active);
-    else await stopLocalExecutions(active);
-    stopHeartbeat();
+    const cleanupFailures: unknown[] = [];
+    try {
+      if (leaseLost) abortAll(active);
+      else await stopLocalExecutions(active);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      stopHeartbeat();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
     try {
       input.store.releaseRun(claim);
-    } finally {
-      safeObserver(() => input.onRelease?.(claim));
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    safeObserver(() => input.onRelease?.(claim));
+    if (cleanupFailures.length > 0) {
+      const failures = executionFailed ? [executionFailure, ...cleanupFailures] : cleanupFailures;
+      if (failures.length === 1) throw failures[0];
+      throw new AggregateError(failures, executionFailed
+        ? `Run '${input.runId}' execution and cleanup both failed.`
+        : `Run '${input.runId}' cleanup failed.`);
     }
   }
 }
@@ -433,10 +464,10 @@ function launchExecution(input: {
     }))
     .then(
       result => {
-        execution.result = result;
+        execution.outcome = { type: "result", value: result };
       },
       error => {
-        execution.result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+        execution.outcome = { type: "rejection", error };
       },
     )
     .finally(() => {
@@ -451,13 +482,13 @@ function commitExecutionResult(
   execution: ActiveExecution,
   counters: Counters,
 ): SchedulerStepResult {
-  let result = execution.result!;
+  if (execution.outcome?.type !== "result") throw new Error(`Attempt '${execution.attempt.attemptId}' has no committable executor result.`);
+  let result = execution.outcome.value;
   if (result.status === "completed" && result.output !== undefined) {
-    try {
-      result = { ...result, output: normalizeWorkflowData(result.output, `Node '${execution.instance.nodeId}' output`) as JsonValue };
-    } catch (error) {
-      result = { status: "failed", reason: error instanceof Error ? error.message : String(error) };
-    }
+    const normalized = tryNormalizeWorkflowData(result.output, `Node '${execution.instance.nodeId}' output`);
+    result = normalized.isErr()
+      ? { status: "failed", reason: normalized.error.message }
+      : { ...result, output: normalized.value as JsonValue };
   }
   return commitImmediateResult(input, claim, execution.attempt.attemptId, result, counters);
 }
@@ -504,7 +535,7 @@ async function waitForPump(input: {
 }): Promise<void> {
   const waits: Promise<unknown>[] = [input.wakeup.waitForChange(input.observedWakeVersion)];
   for (const execution of input.active.values()) {
-    if (execution.result === undefined && execution.settlement) waits.push(execution.settlement);
+    if (execution.outcome === undefined && execution.settlement) waits.push(execution.settlement);
   }
 
   const nearestDeadline = nearestWakeDeadline(input.projection, input.active);
@@ -590,7 +621,7 @@ async function stopLocalExecutions(active: Map<string, ActiveExecution>): Promis
 function unresolvedExecutionCount(active: ReadonlyMap<string, ActiveExecution>): number {
   let count = 0;
   for (const execution of active.values()) {
-    if (execution.result === undefined) count += 1;
+    if (execution.outcome === undefined) count += 1;
   }
   return count;
 }

@@ -1,9 +1,8 @@
 import { Hono } from "hono";
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { extname } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
-  DaemonRequestError,
   getArtifact,
   getRunInspection,
   getRunVisualizationSnapshot,
@@ -11,6 +10,7 @@ import {
   listRuns,
   requestDaemonControl,
   type DaemonControlIntent,
+  type ArtifactRecord,
   type RunInspectionContext,
   type RunInspectionError,
   type RunInspectionTargetDocument,
@@ -109,7 +109,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       ok: true,
       execution: await inspectNodeExecution(
         inspection,
-        artifactRef => readRunJsonArtifact(inspection.artifacts, artifactRef),
+        artifactRef => readRunJsonArtifact(options.cwd, inspection.artifacts, artifactRef),
       ),
     });
   });
@@ -121,7 +121,7 @@ export function createWebApp(options: WebAppOptions): Hono {
       context.req.param("target"),
       inspectionContext(context.req.query("context")),
     );
-    return context.json({ ok: true, inspection: await loadInspectionPrompt(inspection) });
+    return context.json({ ok: true, inspection: await loadInspectionPrompt(options.cwd, inspection) });
   });
 
   app.post("/api/runs/:id/controls", async (context) => {
@@ -137,9 +137,9 @@ export function createWebApp(options: WebAppOptions): Hono {
     const artifactId = context.req.param("artifactId");
     const artifact = await getArtifact(options.cwd, runId, artifactId);
     if (!artifact) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
-    const bytes = await readFile(artifact.path).catch(() => apiError(404, "artifact_read_failed", "Artifact file could not be read."));
+    const bytes = await readRegisteredArtifact(options.cwd, artifact);
     context.header("content-type", mediaType(artifact.path));
-    return context.newResponse(bytes.subarray(0, 128 * 1024));
+    return context.newResponse(Uint8Array.from(bytes.subarray(0, 128 * 1024)));
   });
 
   app.get("/api/workflows/catalog", async (context) => {
@@ -148,11 +148,9 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workflows/files", async (context) => {
     const dir = context.req.query("dir") ?? "";
-    try {
-      return context.json({ ok: true, files: await listWorkflowFiles(options.cwd, dir) });
-    } catch (error) {
-      apiError(400, "invalid_workflow_path", error instanceof Error ? error.message : String(error));
-    }
+    const files = await listWorkflowFiles(options.cwd, dir);
+    if (files.isErr()) apiError(400, "invalid_workflow_path", files.error.message);
+    return context.json({ ok: true, files: files.value });
   });
 
   app.post("/api/workflows/visualize", async (context) => {
@@ -183,10 +181,11 @@ export function createWebApp(options: WebAppOptions): Hono {
       context.status(error.status as any);
       return context.json({ ok: false, error: { code: error.code, message: error.message } });
     }
+    console.error("Acpus WebUI request failed:", error);
     context.status(500);
     return context.json({
       ok: false,
-      error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) },
+      error: { code: "internal_error", message: "Internal server error." },
     });
   });
 
@@ -199,22 +198,21 @@ async function submitControl(
   body: unknown,
 ) {
   const command = parseControlBody(body);
-  try {
-    await options.ensureDaemonRunning(options.cwd);
-    const base = { requestId: `web:${randomUUID()}`, runId };
-    const intent: DaemonControlIntent = command.type === "signal"
+  await options.ensureDaemonRunning(options.cwd);
+  const base = { requestId: `web:${randomUUID()}`, runId };
+  const intent: DaemonControlIntent = command.type === "signal"
       ? { ...base, type: "signal", nodeId: command.target, payload: command.payload as JsonValue }
       : command.type === "pause" || command.type === "resume"
         ? { ...base, type: command.type }
         : command.type === "retry"
           ? { ...base, type: "retry", target: command.target }
           : { ...base, type: "cancel", ...(command.target === undefined ? {} : { target: command.target }) };
-    await requestDaemonControl(options.cwd, intent);
-  } catch (error) {
-    if (error instanceof DaemonRequestError) {
-      apiError(error.code === "RUN_NOT_FOUND" ? 404 : 400, error.code.toLowerCase(), error.message);
+  const controlled = await requestDaemonControl(options.cwd, intent);
+  if (controlled.isErr()) {
+    if (controlled.error.type === "rejected") {
+      apiError(controlled.error.code === "RUN_NOT_FOUND" ? 404 : 400, controlled.error.code.toLowerCase(), controlled.error.message);
     }
-    throw error;
+    throw new Error(controlled.error.message);
   }
 }
 
@@ -269,32 +267,72 @@ function mediaType(path: string): string {
   }
 }
 
-async function readRunJsonArtifact(artifacts: RunInspectionTargetDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
+async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
   if (!artifactRef || typeof artifactRef !== "object" || Array.isArray(artifactRef)) return undefined;
   const artifactId = (artifactRef as Record<string, unknown>).artifactId;
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
   const artifact = artifacts.find(item => item.id === artifactId);
-  if (!artifact) return undefined;
-  const bytes = await readFile(artifact.path).catch(() => undefined);
-  if (!bytes) return undefined;
-  try {
-    return JSON.parse(bytes.toString("utf8")) as unknown;
-  } catch {
-    return undefined;
+  if (!artifact) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the run projection.`);
+  const parsed = JSON.parse((await readRegisteredArtifact(cwd, artifact)).toString("utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Registered Agent artifact '${artifactId}' is not a JSON object.`);
   }
+  return parsed;
 }
 
-async function loadInspectionPrompt(inspection: RunInspectionTargetDocument): Promise<RunInspectionTargetDocument> {
+async function loadInspectionPrompt(cwd: string, inspection: RunInspectionTargetDocument): Promise<RunInspectionTargetDocument> {
   const prompt = inspection.summary.prompt;
   if (prompt?.kind !== "artifact" || prompt.field !== "prompt") return inspection;
-  const artifact = await readRunJsonArtifact(inspection.artifacts, prompt);
-  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return inspection;
+  const artifact = await readRunJsonArtifact(cwd, inspection.artifacts, prompt);
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+    throw new Error(`Registered Agent prompt artifact '${prompt.artifactId}' is unavailable.`);
+  }
   const text = (artifact as Record<string, unknown>)[prompt.field];
-  if (typeof text !== "string") return inspection;
+  if (typeof text !== "string") throw new Error(`Registered Agent prompt artifact '${prompt.artifactId}' has no string prompt.`);
   return {
     ...inspection,
     summary: { ...inspection.summary, prompt: { ...prompt, text } },
   };
+}
+
+async function readRegisteredArtifact(cwd: string, artifact: ArtifactRecord): Promise<Buffer> {
+  const runsRoot = resolve(cwd, ".acpus", ".local", "runs");
+  const runRoot = resolve(runsRoot, artifact.runId);
+  const artifactPath = resolve(artifact.path);
+  if (!isContainedPath(runRoot, artifactPath)) {
+    throw new Error(`Registered artifact '${artifact.id}' escapes run '${artifact.runId}'.`);
+  }
+  const [workspaceReal, runsRootInfo, runsRootReal, runRootInfo, runRootReal, fileInfo, artifactReal] = await Promise.all([
+    realpath(resolve(cwd)),
+    lstat(runsRoot),
+    realpath(runsRoot),
+    lstat(runRoot),
+    realpath(runRoot),
+    lstat(artifactPath),
+    realpath(artifactPath),
+  ]);
+  if (runsRootInfo.isSymbolicLink()
+    || !runsRootInfo.isDirectory()
+    || !isContainedPath(workspaceReal, runsRootReal)
+    || runRootInfo.isSymbolicLink()
+    || !runRootInfo.isDirectory()
+    || dirname(runRootReal) !== runsRootReal
+    || fileInfo.isSymbolicLink()
+    || !fileInfo.isFile()
+    || !isContainedPath(runRootReal, artifactReal)) {
+    throw new Error(`Registered artifact '${artifact.id}' is not a contained regular file.`);
+  }
+  const bytes = await readFile(artifactPath);
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  if (bytes.byteLength !== artifact.size || digest !== artifact.digest) {
+    throw new Error(`Registered artifact '${artifact.id}' failed size or digest verification.`);
+  }
+  return bytes;
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 async function readNodeInspection(
@@ -310,7 +348,7 @@ async function readNodeInspection(
     ...(context.length === 0 ? {} : { context }),
   });
   if (result.isErr()) inspectionError(result.error);
-  if (result.value.kind !== "target") apiError(500, "inspection_read_failed", "Runtime returned a non-target inspection document.");
+  if (result.value.kind !== "target") throw new Error("Runtime returned a non-target inspection document.");
   return result.value;
 }
 
@@ -320,7 +358,7 @@ function inspectionError(error: RunInspectionError): never {
   }
   if (error.type === "target-not-found") apiError(404, "target_not_found", error.message);
   if (error.type === "invalid-query") apiError(400, "invalid_inspection_query", error.message);
-  apiError(500, "inspection_read_failed", error.message);
+  throw error.cause ?? new Error(error.message);
 }
 
 function inspectionContext(value: string | undefined): RunInspectionContext {

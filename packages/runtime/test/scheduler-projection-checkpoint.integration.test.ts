@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ describe("scheduler projection checkpoint", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         seedLargeSchedulerEventStream(workspace, run.id, 10_000);
 
         const first = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
@@ -37,7 +38,7 @@ describe("scheduler projection checkpoint", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         seedLargeSchedulerEventStream(workspace, run.id, 10_000);
         const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
@@ -70,7 +71,7 @@ describe("scheduler projection checkpoint", () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-tail", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
-      const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+      const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       seedLargeSchedulerEventStream(workspace, run.id, 1_000);
       const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
       const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
@@ -104,18 +105,18 @@ describe("scheduler projection checkpoint", () => {
     });
   });
 
-  it("bootstraps a missing checkpoint without mutating a read-only store, then persists it on the next write", async () => {
+  it("treats a missing checkpoint table as corruption while writable initialization repairs the schema", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-bootstrap", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
-      const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+      const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       seedLargeSchedulerEventStream(workspace, run.id, 30);
       store.close();
       mutateDatabase(workspace, db => db.exec("DROP TABLE scheduler_projection_checkpoints"));
 
       const readOnly = await openExistingRuntimeStore(workspace);
       try {
-        expect(throwSchedulerStoreResult(readOnly!.scheduler.tryLoadRunSnapshot(run.id)).projection.frames.root).toMatchObject({ status: "running" });
+        expect(() => throwSchedulerStoreResult(readOnly!.scheduler.tryLoadRunSnapshot(run.id))).toThrow("no such table: scheduler_projection_checkpoints");
       } finally {
         readOnly?.close();
       }
@@ -143,7 +144,7 @@ describe("scheduler projection checkpoint", () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-corrupt", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
-      const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+      const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       store.close();
 
       mutateDatabase(workspace, db => db.prepare("UPDATE scheduler_projection_checkpoints SET projection_json = '{' WHERE run_id = ?").run(run.id));
@@ -167,7 +168,7 @@ describe("scheduler projection checkpoint", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
         const snapshot = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
@@ -193,7 +194,7 @@ describe("scheduler projection checkpoint", () => {
       let runId = "";
       let completedVersion = 0;
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         runId = run.id;
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
         const completed = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
@@ -233,7 +234,7 @@ describe("scheduler projection checkpoint", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
         mutateDatabase(workspace, db => {

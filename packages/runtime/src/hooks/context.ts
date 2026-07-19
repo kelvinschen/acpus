@@ -94,9 +94,10 @@ function buildNodeContext(input: Parameters<typeof buildHookContext>[0], nodeKey
     kind: node.kind,
     status: nodeStatusForEvent(input.hookEvent) ?? instance?.status ?? input.projection.signalWaits[nodeKey]?.status ?? "unknown",
   };
-  const metadata = latestAttemptMetadata(input.executionMetadata, nodeKey, `${node.kind}_attempt`);
+  const attemptId = stringField(input.row.payload, "attemptId") ?? stringField(input.row.payload, "acceptedAttemptId");
+  const metadata = attemptMetadata(input.executionMetadata, nodeKey, `${node.kind}_attempt`, attemptId);
   if (node.kind === "agent") {
-    const agentPrompt = input.agentPrompts?.get(nodeKey);
+    const agentPrompt = attemptId === undefined ? undefined : input.agentPrompts?.get(attemptId);
     return { ...base, ...(agentPrompt === undefined ? {} : { agentPrompt }), ...nodeResultFields(input.hookEvent, input.row.payload) };
   }
   if (node.kind === "task") {
@@ -106,11 +107,12 @@ function buildNodeContext(input: Parameters<typeof buildHookContext>[0], nodeKey
   return { ...base, ...nodeResultFields(input.hookEvent, input.row.payload) };
 }
 
-function latestAttemptMetadata(rows: RunExecutionMetadata[], nodeKey: string, kind: string): Record<string, unknown> {
+function attemptMetadata(rows: RunExecutionMetadata[], nodeKey: string, kind: string, attemptId: string | undefined): Record<string, unknown> {
+  if (attemptId === undefined) return {};
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
     const metadata = recordValue(row.metadata);
-    if (row.kind === kind && metadata.nodeKey === nodeKey) return metadata;
+    if (row.kind === kind && metadata.nodeKey === nodeKey && row.attemptId === attemptId) return metadata;
   }
   return {};
 }

@@ -1,97 +1,71 @@
 # Development and Testing Guide
 
-This guide describes how to change the TypeScript workflow core safely while the project is still in its greenfield phase. Product behavior belongs in `specs/`; this file explains how to work and test.
+This guide describes the testing philosophy for changing the TypeScript Acpus codebase. Product behavior belongs in `specs/`; tests provide focused evidence that the specified behavior remains true.
 
-## Development loop
+## Principles
 
-1. Start from the current spec. If the change modifies current behavior, update the relevant file under `specs/` in the same PR. If it only changes implementation, tests, or docs, say why no spec update is needed.
-2. Keep changes at the lowest useful layer. Prefer changing a pure lowering function before adding another wrapper, option, factory, or compatibility shim.
-3. Treat `legacy/` as read-only history. Do not copy compatibility rules, YAML workflow behavior, or old terminology into the TypeScript core unless explicitly requested.
-4. Preserve the owning package's public API. Core workflow authoring belongs in `packages/core/src/index.ts`; expression authoring belongs in `packages/expression/src/index.ts`; advanced expression construction/evaluation/validation belongs on focused expression subpaths.
-5. Keep IR and preparation locks serializable and deterministic. Do not put live Zod objects, functions, process handles, timestamps, or runtime-only values into either artifact.
+- Start from a concrete risk. Every test should make clear what regression it would catch.
+- Test at the lowest stable boundary that can prove the behavior.
+- Prefer deterministic, hermetic tests over realistic but uncontrollable environments.
+- Assert stable outcomes, not incidental implementation details.
+- Keep setup smaller than the behavior being tested.
+- Make test cost proportional to risk. Filesystem, subprocess, and end-to-end tests must justify their additional time and failure surface.
+- Treat the test suite as maintained product code: readable, fast, and easy to diagnose.
 
-## Test taxonomy
+Tests are not a substitute for design. If behavior is difficult to test without broad setup or extensive mocking, first consider whether the production boundary is too shallow or responsibilities are mixed.
 
-The root Vitest config groups tests by filename. Choose the cheapest project that exercises the risk.
+## Choose the Smallest Useful Layer
 
-| Project | Filename | Use for | Avoid |
-| --- | --- | --- | --- |
-| Unit | `*.unit.test.ts` | Pure functions: schema lowering, expression lowering, template lowering, id validation helpers, env lowering. | Dynamic import, filesystem, subprocesses, real commands. |
-| Contract | `*.contract.test.ts` | Public API exports, stable IR shape, diagnostic codes/paths, compatibility between spec and serialized contracts. | Implementation details and incidental ordering except where the contract requires it. |
-| Type contract | `*.type.test-d.ts` | Public TypeScript authoring contracts: inferred refs, callback return types, expected compile errors, and schema-aware scope output checks. | Runtime behavior, lowering assertions, broad source compilation already covered by `pnpm typecheck`. |
-| Integration | `*.integration.test.ts` | Cross-layer authoring flows such as `defineWorkflow` -> graph builder -> compiler -> validator. Composite node shape, task execution descriptors, inline embedded source, and live reusable task references belong here. | Real agents, external services, shelling out to package managers. |
-| E2E | `*.e2e.test.ts` | Final user-facing command paths in packages that provide commands. | Fine-grained lowering assertions that would make refactors noisy. |
-| Regression | `*.regression.test.ts` | A minimal reproduction for a fixed bug that is likely to return. Include the failure mode in the test name. | Broad feature coverage; move that to unit/integration once generalized. |
+| Layer | Question it should answer |
+| --- | --- |
+| Unit | Does one rule, transformation, or state transition behave correctly? |
+| Type contract | Does the public TypeScript contract accept and reject the intended programs? |
+| Contract | Does a public API, diagnostic, serialized shape, or protocol remain stable? |
+| Integration | Do multiple owned components cooperate correctly across a meaningful boundary? |
+| End-to-end | Can a user complete a high-value workflow through the real product surface? |
+| Regression | Does the smallest reproduction of a previously fixed defect stay fixed? |
 
-## Test design rules
+Use a higher layer only when a lower layer cannot observe the risk. Do not repeat the same assertion at every layer: lower tests should explain detailed rules, while higher tests should prove that the seams are connected.
 
-Every test should answer one concrete question: "what breakage would this catch?" Put that answer in the `it(...)` name or the setup shape.
+## Design Tests Around Behavior
 
-Prefer exact assertions for stable outputs: lowered `ExprIR`, `SchemaIR`, preparation locks, diagnostic `code`/`path`, exit code, node ids, and public output expressions or static shapes. Use partial matchers only for intentionally dynamic values such as source text captured from `Function#toString()` and temp paths.
+Give each test one dominant reason to fail. Its name, setup, and assertion should reveal that reason without requiring the reader to reconstruct the implementation.
 
-Do not snapshot whole `WorkflowIR` objects. Full snapshots couple a test to unrelated graph fields and embedded function source. Instead, assert the stable slices that define the contract. Preparation locks are separate deterministic artifacts and SHOULD be asserted exactly when their shape is the risk under test.
+Prefer exact assertions for stable values such as tagged failures, diagnostics, exit codes, normalized data, and public protocol fields. Use partial matching only for deliberately dynamic data such as generated ids, timestamps, source text, and temporary paths.
 
-Keep tests hermetic. No network. No dependence on local Git state, user config, or installed global binaries. For file tests, create a temp directory with `mkdtemp(...)` and clean it up in `finally`.
+Avoid whole-object snapshots for large IR, projections, or runtime documents. Assert the smallest stable slice that expresses the contract. A broad snapshot often turns unrelated refactors into noisy test changes and can hide the behavior that actually matters.
 
-Drive polling and interval behavior with virtual time at the lowest stable async boundary. Do not make integration or contract tests wait for real timer intervals; advance fake timers deliberately and assert the pending or emitted state after each poll.
+Keep tests hermetic:
 
-Keep each E2E scenario to the minimum subprocesses needed to prove its user-facing chain. Exercise option and output-mode matrices with contract tests, and validate projection contents with unit tests, instead of starting another CLI process for every equivalent mode.
+- Do not depend on network services, user configuration, shared state, or ambient repository state.
+- Isolate filesystem state and always clean it up.
+- Control time explicitly; do not wait for real polling intervals.
+- Use real subprocesses only when process isolation, lifecycle, or wire behavior is the subject of the test.
+- Use fakes at owned boundaries, not to reproduce the internals of the component under test.
 
-Use the public entrypoint for public behavior tests: import from `../src/index.js` in core tests. Import internal modules only when the test is intentionally about a private helper.
+Test public behavior through public entrypoints. Testing an internal helper is appropriate when the helper itself owns a stable rule; it should not be used merely to bypass the public contract.
 
-Use the runtime's internal `TaskAttemptRunner` adapter for scheduler state tests. Process isolation, inline/module loading, `cwd`/`env`, `$`, artifacts, and timeout/kill behavior MUST remain covered by real-process integration tests.
+## Change Workflow
 
-Use Vitest type tests for TypeScript authoring contracts that can regress without changing runtime output. Put these in `*.type.test-d.ts`, import `expectTypeOf` or `assertType` from `vitest`, and use `@ts-expect-error` for negative contracts. These files are statically checked by Vitest's typecheck runner; they are not runtime tests, so keep assertions about IR lowering in integration or contract tests.
+1. Read the owning spec and identify the behavior and failure modes affected by the change.
+2. Change the smallest production layer that owns the behavior.
+3. Add or update the smallest test that would have caught the defect or design gap.
+4. Run narrow checks while iterating, then broaden verification in proportion to the change's reach and risk.
+5. Update the canonical spec in the same change when current behavior changes.
 
-Keep reusable type-level helpers in `packages/core/src/internal/type-utils.ts`. Core does not directly depend on `type-fest`; if a new generic helper is needed, copy or adapt a small type-fest-style definition only after checking license, TypeScript compatibility, public `.d.ts` impact, and whether it changes public authoring semantics.
+Greenfield changes should test the current contract directly. Do not add compatibility tests, migration behavior, or legacy terminology unless they are explicitly part of the requested behavior. `legacy/` remains read-only history.
 
-Put compiler workflow fixtures under `packages/workflow-compiler/test/fixtures/workflows/` as standard `.workflow.ts` modules. Compiler fixtures should import the public package entrypoint (`@acpus/core`) so tests exercise package export resolution rather than source-relative paths. Core tests should use in-memory `defineWorkflow(...)` definitions or pure IR slices, not file module fixtures.
+Use the repository's package scripts rather than duplicating their underlying commands. A typical progression is a focused test project or file, then package typechecking, followed by workspace tests and build checks when the change crosses package or distribution boundaries.
 
-When a spec says a behavior MUST exist, add or update a test in the same change. If implementation and spec disagree, either fix the implementation or update the spec to the new current behavior.
+Documentation-only changes may skip executable checks when they cannot affect behavior. State that decision explicitly. When generated artifacts are checked in, regenerate them through their owning script rather than editing them manually.
 
-## Core coverage map
+## Handoff Standard
 
-The initial core test foundation should cover these chains:
+Before handing off a change, confirm that:
 
-- Schema: supported Zod boundary subset lowers to `SchemaIR`; unsupported boundary features fail with the offending path.
-- Expressions: predicate helpers, overloaded `lift`, templates, ref access, callback-source calls, validation, and evaluation lower to canonical `ExprIR` in `@acpus/expression`.
-- IR validator: invalid workflow names, schemas, duplicate node ids, empty refs, missing agents, and malformed task execution descriptors produce stable diagnostic codes and paths.
-- Workflow compiler: representative workflow-compiler package fixtures compile leaf nodes, assertions, templates, inline task source, reusable task module references, agent definitions, and outputs into validated `WorkflowIR`.
-- Composite nodes: the workflow-compiler orchestration fixture covers `step.if`, `step.switch`, `step.parallel`, `step.fanout`, `step.loop`, and `step.signal` child scopes and projected outputs without invoking any runtime.
-- Type contracts: ref/return-type inference, loop `state`/`index`/`round` access, transition `{ state, stop }` shape, `lift` callback inference, and schema-aware composite scope output checks are covered by `*.type.test-d.ts`.
-- Module compiler: a checked-in workflow module fixture compiles through the internal preparation compiler with `irVersion: 5`, a separate source digest, expected node ids, task execution descriptors, scope output expressions, and module-import diagnostics.
-
-## Commands
-
-Run the narrowest command during development, then run the broader checks before handing off.
-
-```bash
-pnpm test:unit
-pnpm test:contract
-pnpm test:integration
-pnpm test:e2e
-pnpm test:type
-pnpm test
-pnpm typecheck
-pnpm build:clean
-pnpm test:dist
-```
-
-`pnpm test:type` runs only Vitest type-contract tests with `--typecheck.only`. `pnpm test` uses `scripts/test.mjs` to run the type-contract, unit, contract, integration, E2E, and regression projects in parallel, then prints each project's output as one block. Integration receives enough workers to schedule every integration file in one wave; the other projects keep the lower default cap so the combined run stays within the repository's expected CPU budget. Use the matching `pnpm test:<layer> <filter-or-option>` command when passing file filters or other Vitest options. `pnpm typecheck` remains the broader package/source/fixture compilation check.
-
-`pnpm test:dist` is a repository-level release smoke and expects a fresh build. Run it after `pnpm build:clean`. It invokes the built `acpus` CLI without injecting an ambient `tsx` loader or the `development` export condition, then executes a real inline Task through the built authoring facade, compiler, loader, runtime, daemon, and Task subprocess. Keep distribution verification at this user-facing seam rather than adding package-local dist smokes for internal files. It is intentionally separate from the source-oriented `pnpm test` feedback loop.
-
-For changes limited to docs or specs, tests may be skipped only when there is no executable behavior to validate; say that explicitly in the handoff.
-
-For checked-in generated artifacts, run the package script that owns that artifact instead of editing by hand.
-
-## PR checklist
-
-Before opening or handing off a PR, verify:
-
-- Specs reflect current behavior or the handoff explains why no spec changed.
-- Tests live in the right project and assert stable contracts.
-- E2E coverage is limited to high-value user paths.
-- Dynamic fields are not asserted with brittle exact values.
-- `legacy/` was not changed unless the task explicitly asked for archival updates.
-- Relevant test and typecheck commands were run, or the reason they could not be run is stated.
+- the spec and implementation describe the same current behavior;
+- each test protects an identifiable risk at the lowest useful layer;
+- assertions target stable contracts and produce a clear failure signal;
+- expensive tests cover high-value seams rather than duplicating cheaper tests;
+- tests are deterministic and leave no external state behind;
+- relevant tests, typechecks, and build checks were run, with any omissions stated clearly.

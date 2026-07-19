@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errAsync, okAsync } from "neverthrow";
 import { createWebCommand } from "../src/commands/web.js";
+import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 type StartWebServer = typeof import("@acpus/web")["startWebServer"];
@@ -15,9 +17,35 @@ beforeEach(() => {
 });
 
 describe("web command options", () => {
+  it("reports an occupied port as one operational JSON failure", async () => {
+    mocks.startWebServer.mockReturnValue(errAsync({
+      type: "listen-failed",
+      host: "127.0.0.1",
+      port: 4517,
+      message: "listen EADDRINUSE: address already in use 127.0.0.1:4517",
+    }));
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    const exitCode = await runCli(["web", "--host", "127.0.0.1", "--port", "4517", "--json"], {
+      cwd: "/workspace",
+      stdout,
+      stderr,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text)).toEqual({
+      ok: false,
+      phase: "run",
+      message: "listen EADDRINUSE: address already in use 127.0.0.1:4517",
+      errorCode: "LISTEN_FAILED",
+    });
+    expect(stderr.text).toBe("");
+  });
+
   it("does not request token access for network hosts by default", async () => {
     const close = vi.fn(async () => undefined);
-    mocks.startWebServer.mockResolvedValue({ url: "http://0.0.0.0:4517", close });
+    mocks.startWebServer.mockReturnValue(okAsync({ url: "http://0.0.0.0:4517", close }));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const listenerCounts = signalListenerCounts();
@@ -47,11 +75,11 @@ describe("web command options", () => {
 
   it("passes token access when --token is set", async () => {
     const close = vi.fn(async () => undefined);
-    mocks.startWebServer.mockResolvedValue({
+    mocks.startWebServer.mockReturnValue(okAsync({
       url: "http://localhost:4517/?token=generated",
       token: "generated",
       close,
-    });
+    }));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const listenerCounts = signalListenerCounts();
@@ -87,7 +115,7 @@ describe("web command options", () => {
     const close = vi.fn(() => new Promise<void>(resolve => {
       resolveClose = resolve;
     }));
-    mocks.startWebServer.mockResolvedValue({ url: "http://localhost:4517", close });
+    mocks.startWebServer.mockReturnValue(okAsync({ url: "http://localhost:4517", close }));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const listenerCounts = signalListenerCounts();

@@ -18,9 +18,17 @@ async function serveAsset(context: any, staticDir: string, requestPath: string):
     const info = await stat(file);
     if (!info.isFile()) return context.notFound();
     return new Response(await readFile(file), { headers: { "content-type": contentType(file) } });
-  } catch {
-    return context.notFound();
+  } catch (error) {
+    if (isMissingPathError(error)) return context.notFound();
+    throw error;
   }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
 function containedPath(root: string, requestPath: string): string | undefined {

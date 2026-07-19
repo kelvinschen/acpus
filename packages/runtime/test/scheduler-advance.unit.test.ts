@@ -301,6 +301,45 @@ describe("scheduler advance loop", () => {
     });
   });
 
+  it("propagates an unexpected executor rejection without committing a workflow failure", async () => {
+    const store = new MemorySchedulerStore([ready("broken", 1)]);
+    const sentinel = { type: "invariant", message: "executor invariant failed" };
+
+    await expect(advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      executor: { execute: () => Promise.reject(sentinel) },
+    })).rejects.toBe(sentinel);
+
+    expect(store.loadRunSnapshot("run_1").projection.instances.broken).toMatchObject({ status: "running" });
+    expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "started" });
+    expect(store.releaseCount).toBe(1);
+  });
+
+  it("preserves execution and lease-release failures together", async () => {
+    const store = new MemorySchedulerStore([ready("broken", 1)]);
+    const executionFailure = { type: "executor-invariant" };
+    const releaseFailure = { type: "release-invariant" };
+    store.releaseFailure = releaseFailure;
+    let caught: unknown;
+
+    try {
+      await advanceRun({
+        runId: "run_1",
+        ownerId: "owner-a",
+        store,
+        executor: { execute: () => Promise.reject(executionFailure) },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toEqual([executionFailure, releaseFailure]);
+    expect(store.loadRunSnapshot("run_1").projection.instances.broken).toMatchObject({ status: "running" });
+  });
+
   it("respects direct-member local concurrency caps before enqueueing work", async () => {
     const store = new MemorySchedulerStore([
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all", maxConcurrency: 2 } },
@@ -1094,6 +1133,7 @@ class MemorySchedulerStore implements SchedulerStorePort {
   throwTimedOutCommits = false;
   loadCount = 0;
   releaseCount = 0;
+  releaseFailure: unknown = undefined;
   private events: SchedulerEvent[];
   private attemptNo = 0;
   private claim: RunOwnerClaim | undefined;
@@ -1115,6 +1155,7 @@ class MemorySchedulerStore implements SchedulerStorePort {
   }
 
   releaseRun(claim: RunOwnerClaim): boolean {
+    if (this.releaseFailure !== undefined) throw this.releaseFailure;
     if (this.claim?.ownerEpoch !== claim.ownerEpoch) return false;
     this.claim = undefined;
     this.releaseCount += 1;

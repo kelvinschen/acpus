@@ -19,12 +19,6 @@ export type ForkSeedPlan = {
   inheritedNodeKeys: Set<string>;
 };
 
-export class ForkSeedPlanError extends Error {
-  constructor(readonly failure: ForkSeedFailure) {
-    super(failure.message);
-  }
-}
-
 export type ForkSeedInput = {
   forkRunId: string;
   sourceWorkflow: WorkflowIR;

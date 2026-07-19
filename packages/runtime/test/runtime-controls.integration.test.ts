@@ -1,11 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, normalizeForkInput } from "@acpus/runtime";
-import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
+import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
 import { stableJson } from "../src/stable-json.js";
 import { openExistingWritableRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
@@ -29,7 +28,7 @@ import {
   timedSignalWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
-import { applySchedulerControlIntent } from "./support/scheduler.js";
+import { advanceRuntimeRun, applySchedulerControlIntent } from "./support/scheduler.js";
 
 describe.concurrent("runtime controls and recovery", () => {
   it("pauses, resumes, and applies retries to durable runs", async () => {
@@ -117,6 +116,95 @@ describe.concurrent("runtime controls and recovery", () => {
     });
   });
 
+  it("materializes only frozen files and reachable registered artifacts in a fork", async () => {
+    await withRuntimeWorkspace("runtime-fork-files-whitelist", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const sourceRunDir = join(workspace, ".acpus", ".local", "runs", source.run.id);
+      await mkdir(join(sourceRunDir, "outputs", "stale"), { recursive: true });
+      await mkdir(join(sourceRunDir, "work"), { recursive: true });
+      await writeFile(join(sourceRunDir, "outputs", "stale", "result.txt"), "legacy output");
+      await writeFile(join(sourceRunDir, "work", "scratch.txt"), "legacy work");
+      await writeFile(join(sourceRunDir, "artifacts", "unregistered.txt"), "unregistered artifact");
+      await writeFile(join(sourceRunDir, "unknown.txt"), "unregistered");
+      const outside = join(workspace, "outside.txt");
+      await writeFile(outside, "outside");
+      await symlink(outside, join(sourceRunDir, "unknown-link"));
+
+      const fork = await forkRun(workspace, source.run.id);
+      const forkRunDir = join(workspace, ".acpus", ".local", "runs", fork.run.id);
+
+      expect((await readdir(sourceRunDir)).sort()).toEqual([
+        "artifacts",
+        "lock.json",
+        "outputs",
+        "unknown-link",
+        "unknown.txt",
+        "work",
+        "workflow.ir.json",
+      ]);
+      expect((await readdir(forkRunDir)).sort()).toEqual(["artifacts", "lock.json", "workflow.ir.json"]);
+      await expect(access(join(sourceRunDir, "artifacts", "unregistered.txt"))).resolves.toBeUndefined();
+      await expect(access(join(forkRunDir, "artifacts", "unregistered.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("rolls back fork publication when an inherited artifact fails verification", async () => {
+    await withRuntimeWorkspace("runtime-fork-artifact-verification", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const artifact = runtimeRow(workspace, "SELECT id, relative_path FROM artifacts WHERE run_id = ?", source.run.id);
+      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runEntriesBefore = (await readdir(runsDir)).sort();
+      await writeFile(join(runsDir, source.run.id, String(artifact?.relative_path)), "tampered\n");
+
+      await expect(forkRun(workspace, source.run.id)).rejects.toThrow(
+        `Fork artifact '${String(artifact?.id)}' failed source verification.`,
+      );
+
+      expect((await readdir(runsDir)).sort()).toEqual(runEntriesBefore);
+      expect(runtimeRows(workspace, "SELECT id FROM runs ORDER BY id")).toEqual([{ id: source.run.id }]);
+    });
+  });
+
+  it("rejects inherited artifact records outside the physical artifacts tree", async () => {
+    await withRuntimeWorkspace("runtime-fork-artifact-path", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const artifact = runtimeRow(workspace, "SELECT id, relative_path FROM artifacts WHERE run_id = ?", source.run.id);
+      const sourceRunDir = join(workspace, ".acpus", ".local", "runs", source.run.id);
+      const artifactBytes = await readFile(join(sourceRunDir, String(artifact?.relative_path)));
+      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        db.prepare("UPDATE artifacts SET relative_path = 'workflow.ir.json' WHERE id = ?").run(String(artifact?.id));
+      } finally {
+        db.close();
+      }
+      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runEntriesBefore = (await readdir(runsDir)).sort();
+
+      await expect(forkRun(workspace, source.run.id)).rejects.toThrow(
+        `Fork artifact '${String(artifact?.id)}' has invalid relative path.`,
+      );
+
+      expect((await readdir(runsDir)).sort()).toEqual(runEntriesBefore);
+      expect(runtimeRows(workspace, "SELECT id FROM runs ORDER BY id")).toEqual([{ id: source.run.id }]);
+
+      await mkdir(join(sourceRunDir, "work"), { recursive: true });
+      await writeFile(join(sourceRunDir, "work", "linked-artifact"), artifactBytes);
+      await symlink("../work", join(sourceRunDir, "artifacts", "linked"));
+      const linkedDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      try {
+        linkedDb.prepare("UPDATE artifacts SET relative_path = 'artifacts/linked/linked-artifact' WHERE id = ?").run(String(artifact?.id));
+      } finally {
+        linkedDb.close();
+      }
+
+      await expect(forkRun(workspace, source.run.id)).rejects.toThrow(
+        `Fork artifact '${String(artifact?.id)}' has invalid relative path.`,
+      );
+      expect((await readdir(runsDir)).sort()).toEqual(runEntriesBefore);
+      expect(runtimeRows(workspace, "SELECT id FROM runs ORDER BY id")).toEqual([{ id: source.run.id }]);
+    });
+  });
+
   it("preserves scalar workflow output across completed forks", async () => {
     await withRuntimeWorkspace("runtime-fork-scalar-output", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, scalarWorkflow());
@@ -160,8 +248,8 @@ describe.concurrent("runtime controls and recovery", () => {
   it("rejects a reused fork request id with different input", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-conflict", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
-      const firstInput = await normalizeForkInput(workspace, source.run.id, { value: "first" });
-      const secondInput = await normalizeForkInput(workspace, source.run.id, { value: "second" });
+      const firstInput = (await tryNormalizeForkInput(workspace, source.run.id, { value: "first" }))._unsafeUnwrap();
+      const secondInput = (await tryNormalizeForkInput(workspace, source.run.id, { value: "second" }))._unsafeUnwrap();
       if (firstInput === undefined || secondInput === undefined) throw new Error("expected fork input to normalize");
 
       await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: firstInput })).resolves.toMatchObject({
@@ -281,7 +369,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id)).toHaveLength(1);
 
       const inputSource = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
-      const input = await normalizeForkInput(workspace, inputSource.run.id, { value: "new" });
+      const input = (await tryNormalizeForkInput(workspace, inputSource.run.id, { value: "new" }))._unsafeUnwrap();
       if (input === undefined) throw new Error("expected fork input to normalize");
       const inputFork = await forkRun(workspace, inputSource.run.id, { input });
       const store2 = await openExistingWritableRuntimeStore(workspace);
@@ -327,10 +415,11 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "awaiting" }]);
 
       const signalPayload = { ok: true };
-      await expect(signalRun(workspace, runId, "approve", signalPayload)).resolves.toMatchObject({
+      const signalCommandIdempotencyKey = "signal:approve-command";
+      await expect(signalRun(workspace, runId, "approve", signalPayload, signalCommandIdempotencyKey)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
-      await expect(signalRun(workspace, runId, "approve", signalPayload)).resolves.toMatchObject({
+      await expect(signalRun(workspace, runId, "approve", signalPayload, signalCommandIdempotencyKey)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "consumed" }]);
@@ -470,7 +559,13 @@ async function controlRun(
   return await applyControl(workspace, intent);
 }
 
-async function signalRun(workspace: string, runId: string, node: string, payload: JsonValue): Promise<{ run: RunDetails }> {
+async function signalRun(
+  workspace: string,
+  runId: string,
+  node: string,
+  payload: JsonValue,
+  commandIdempotencyKey?: string,
+): Promise<{ run: RunDetails }> {
   const requestId = `signal:${randomUUID()}`;
   return {
     run: await applyControl(workspace, {
@@ -479,7 +574,7 @@ async function signalRun(workspace: string, runId: string, node: string, payload
       type: "signal",
       node,
       payload,
-      commandIdempotencyKey: requestId,
+      commandIdempotencyKey: commandIdempotencyKey ?? requestId,
     }),
   };
 }
@@ -502,7 +597,9 @@ async function forkRun(workspace: string, runId: string, options: ForkOptions = 
   const store = await openExistingWritableRuntimeStore(workspace);
   if (!store) throw new Error("Expected runtime store.");
   try {
-    const fork = await store.forkRun(runId, options);
+    const forkResult = await store.forkRun(runId, options);
+    if (forkResult.isErr()) throw Object.assign(new Error(forkResult.error.message), { failure: forkResult.error });
+    const fork = forkResult.value;
     const run = store.getRun(fork.id);
     if (!run) throw new Error(`Fork run '${fork.id}' was not found.`);
     return { run };

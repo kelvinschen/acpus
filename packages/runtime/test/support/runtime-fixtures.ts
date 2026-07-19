@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./runtime-store.js";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -8,10 +9,10 @@ import { lift } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { normalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
+import { tryNormalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
-import { advanceRuntimeRun } from "../../src/runs/advance-runtime.js";
 import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
+import { advanceRuntimeRun } from "./scheduler.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
@@ -74,13 +75,13 @@ export async function prepareSyntheticWorkflow(workspace: string, definition: Wo
 
 export async function admitSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, input: JsonValue = {}) {
   const prepared = await prepareSyntheticWorkflow(workspace, definition);
-  return admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, input));
+  return admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, input)._unsafeUnwrap());
 }
 
 export async function admitPreparedWorkflowForTest(workspace: string, prepared: PreparedRunWorkflow, input: JsonValue) {
   const store = await openRuntimeStore(workspace);
   try {
-    const admitted = await store.admitRun({ prepared, cwd: workspace, input });
+    const admitted = await admitRunForTest(store, { prepared, cwd: workspace, input });
     const summary = await advanceRuntimeRun(workspace, store, admitted.id, `test:${admitted.id}`);
     const run = store.getRun(admitted.id);
     if (!run) throw new Error(`Admitted run '${admitted.id}' was not found.`);

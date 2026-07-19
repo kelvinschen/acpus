@@ -155,8 +155,19 @@ describe("task process timeout budget", () => {
     expect(result._unsafeUnwrapErr()).toMatchObject({ type: "cancelled" });
   });
 
+  it("does not start a task cancelled before the child spawn event", async () => {
+    const controller = new AbortController();
+    fake.state.duringSpawn = () => controller.abort();
+    fake.state.afterSpawn = child => child.emit("close", null, "SIGTERM");
+
+    const result = await runTaskAttempt(taskInput("cancelled_before_spawn", { signal: controller.signal }));
+
+    expect(result._unsafeUnwrapErr()).toMatchObject({ type: "cancelled" });
+    expect(fake.state.child?.sent).toEqual([{ type: "abort" }]);
+  });
+
   it.each([
-    { name: "task failure", event: "message", value: { type: "failed", error: { message: "late task failure" } } },
+    { name: "task failure", event: "message", value: { type: "failed", message: "late task failure" } },
     { name: "child error", event: "error", value: new Error("late child error") },
   ])("lets an exhausted deadline win over a delayed $name", async ({ event, value }) => {
     const result = runTaskAttempt(taskInput("late_failure"));
@@ -178,6 +189,78 @@ describe("task process timeout budget", () => {
     child.emit("close", 0, null);
 
     expect((await result)._unsafeUnwrapErr()).toMatchObject({ type: "timed_out" });
+  });
+
+  it("reports authored task errors as a single failed message", async () => {
+    const result = runTaskAttempt(taskInput("failed_task"));
+    const child = fake.state.child!;
+    child.emit("spawn");
+    child.emit("message", { type: "failed", message: "task exploded" });
+    child.emit("close", 1, null);
+
+    expect((await result)._unsafeUnwrapErr()).toEqual({ type: "failed", message: "task exploded" });
+  });
+
+  it("rejects child runtime system failures outside TaskAttemptFailure", async () => {
+    const result = runTaskAttempt(taskInput("artifact_filesystem_failure"));
+    const child = fake.state.child!;
+    child.emit("spawn");
+    child.emit("message", {
+      type: "system_rejected",
+      error: { message: "Task artifact write failed: disk unavailable", code: "EIO" },
+    });
+    child.emit("close", 0, null);
+
+    await expect(result).rejects.toMatchObject({
+      name: "TaskProcessSystemError",
+      message: "Task artifact write failed: disk unavailable",
+      code: "EIO",
+    });
+  });
+
+  it("preserves an unexpected artifact registration rejection", async () => {
+    const sentinel = { type: "store-sentinel" };
+    const result = runTaskAttempt(taskInput("artifact_store_failure", {
+      registerArtifact: () => { throw sentinel; },
+    }));
+    const child = fake.state.child!;
+    child.emit("spawn");
+    child.emit("message", {
+      type: "artifact_register",
+      requestId: "artifact_1",
+      artifact: {
+        id: "artifact_1",
+        runId: "run_1",
+        nodeKey: "artifact_store_failure",
+        attemptId: "attempt_1",
+        attempt: 1,
+        ownerEpoch: 1,
+        digest: "sha256:artifact",
+        size: 1,
+        relativePath: "artifacts/output.txt",
+      },
+    });
+
+    await expect(result).rejects.toBe(sentinel);
+    expect(removeRejectedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("keeps exit, signal, and bounded process output diagnostics in the failed message", async () => {
+    const result = runTaskAttempt(taskInput("abrupt_exit"));
+    const child = fake.state.child!;
+    child.emit("spawn");
+    child.stderr.emit("data", Buffer.from(`discarded-stderr-${"e".repeat(9_000)}stderr-tail`));
+    child.stdout.emit("data", Buffer.from(`discarded-stdout-${"o".repeat(9_000)}stdout-tail`));
+    child.emit("close", 23, "SIGTERM");
+
+    const failure = (await result)._unsafeUnwrapErr();
+    expect(failure).toMatchObject({ type: "failed" });
+    expect(failure.message).toContain("code 23");
+    expect(failure.message).toContain("SIGTERM");
+    expect(failure.message).toContain("stderr-tail");
+    expect(failure.message).toContain("stdout-tail");
+    expect(failure.message).not.toContain("discarded-stderr");
+    expect(failure.message).not.toContain("discarded-stdout");
   });
 });
 

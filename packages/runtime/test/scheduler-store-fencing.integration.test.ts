@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
@@ -309,7 +310,7 @@ async function openedStore(workspace: string): Promise<RuntimeStore> {
 
 async function admittedRun(store: RuntimeStore, workspace: string) {
   const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-  return store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+  return admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
 }
 
 function appendReadyInstances(store: SchedulerStorePort, runId: string, ownerEpoch: number, nodeKeys: string[]): SchedulerSnapshot {

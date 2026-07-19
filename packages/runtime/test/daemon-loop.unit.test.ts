@@ -1,8 +1,9 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { daemonEndpoint } from "../src/daemon/socket.js";
 import type { DaemonTickResult } from "../src/daemon/tick.js";
 
 const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
@@ -34,6 +35,26 @@ describe("daemon loop", () => {
       "Environment variable ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY must be a canonical positive decimal safe integer",
     );
     await expect(access(join(dir, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("releases its lease and closes the server when startup cleanup fails", async () => {
+    const localRoot = join(dir, ".acpus", ".local");
+    const actualRuns = join(dir, "actual-runs");
+    await mkdir(localRoot, { recursive: true });
+    await mkdir(actualRuns);
+    await symlink(actualRuns, join(localRoot, "runs"), "dir");
+
+    await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
+      "Run directory root '.acpus/.local/runs' is outside the workspace.",
+    );
+
+    const db = new DatabaseSync(join(localRoot, "state", "runtime.db"), { readOnly: true });
+    try {
+      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+    await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("continues heartbeating while a work tick is still running", async () => {

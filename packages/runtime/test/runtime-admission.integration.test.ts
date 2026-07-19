@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunInspection, listRuns, normalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, getRunInspection, listRuns, tryNormalizeWorkflowInput } from "@acpus/runtime";
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -33,7 +33,7 @@ describe.concurrent("runtime admission use cases", () => {
   it("admits a pure run and exposes read-only inspection", async () => {
     await withRuntimeWorkspace("runtime-admit-pure", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, { ready: true }));
+      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, { ready: true })._unsafeUnwrap());
 
       expect(admitted.status).toBe("completed");
       expect(admitted.run.id).toMatch(runIdPattern);
@@ -81,7 +81,7 @@ describe.concurrent("runtime admission use cases", () => {
   it("inspects frozen static metadata without reading live workflow source", async () => {
     await withRuntimeWorkspace("runtime-inspect-frozen-static", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
-      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, normalizeWorkflowInput(prepared.ir, {}));
+      const admitted = await admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, {})._unsafeUnwrap());
       await writeFile(prepared.workflowPath, "throw new Error('live source should not be read');\n");
 
       await expect(rawInspection(workspace, admitted.run.id)).resolves.toMatchObject({
@@ -309,7 +309,7 @@ describe.concurrent("runtime admission use cases", () => {
       await mkdir(otherCwd);
       setSingleTaskCwd(prepared.ir, otherCwd);
       const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
-      const admitted = await admitPreparedWorkflowForTest(workspace, frozen, normalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" }));
+      const admitted = await admitPreparedWorkflowForTest(workspace, frozen, tryNormalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" })._unsafeUnwrap());
 
       expect(admitted).toMatchObject({
         status: "completed",
@@ -341,7 +341,7 @@ describe.concurrent("runtime admission use cases", () => {
           referrer: { path: `${item.name}.workflow.ts` },
         });
         const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
-        const admitted = await admitPreparedWorkflowForTest(workspace, frozen, normalizeWorkflowInput(frozen.ir, {}));
+        const admitted = await admitPreparedWorkflowForTest(workspace, frozen, tryNormalizeWorkflowInput(frozen.ir, {})._unsafeUnwrap());
 
         expect(admitted.status).toBe("failed");
         if (admitted.status !== "failed") throw new Error("expected failed reusable module load run");
@@ -376,7 +376,7 @@ describe.concurrent("runtime admission use cases", () => {
       const admitted = await admitPreparedWorkflowForTest(
         workspace,
         prepared,
-        normalizeWorkflowInput(prepared.ir, { repo, path: worktree }),
+        tryNormalizeWorkflowInput(prepared.ir, { repo, path: worktree })._unsafeUnwrap(),
       );
 
       expect(admitted.status).toBe("completed");
@@ -430,7 +430,7 @@ describe.concurrent("runtime admission use cases", () => {
         ].join("\\n"));
         await writeFile(join(packageDir, "throwing.js"), "throw new Error('default exploded');\\n");
         await writeFile(join(workspace, "workflow.ts"), "");
-        const output = await executeTaskNode({
+        const execution = await executeTaskNode({
           id: "fallback",
           kind: "task",
           run: {
@@ -449,10 +449,12 @@ describe.concurrent("runtime admission use cases", () => {
           runId: "run_1",
           store: { getRunDir: () => ".acpus/.local/runs/run_1", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
         });
+        if (execution.isErr()) throw new Error(execution.error.message);
+        const output = execution.value;
         if (output.value !== "dev:loaded") throw new Error("development export fallback was not used");
         let masked = false;
         try {
-          await executeTaskNode({
+          const throwingExecution = await executeTaskNode({
             id: "throwing",
             kind: "task",
             run: {
@@ -471,7 +473,11 @@ describe.concurrent("runtime admission use cases", () => {
             runId: "run_2",
             store: { getRunDir: () => ".acpus/.local/runs/run_2", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
           });
-          masked = true;
+          if (throwingExecution.isErr()) {
+            if (!throwingExecution.error.message.includes("default exploded")) throw new Error(throwingExecution.error.message);
+          } else {
+            masked = true;
+          }
         } catch (error) {
           if (!String(error instanceof Error ? error.message : error).includes("default exploded")) throw error;
         }

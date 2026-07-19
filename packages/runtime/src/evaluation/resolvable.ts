@@ -2,7 +2,7 @@ import { isPositiveInteger, tryParseDurationMs } from "@acpus/core/ir";
 import type { ExprIR, JsonObject } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import { tryCreateDeadline as tryCreatePersistedDeadline } from "../deadline.js";
-import { evaluateExpr, type EvaluationOptions, type EvaluationScope } from "./evaluator.js";
+import { tryEvaluateExpr, type EvaluationOptions, type EvaluationScope } from "./evaluator.js";
 
 export type ResolutionError =
   | { type: "evaluation"; field: string; message: string }
@@ -13,17 +13,6 @@ export type ResolvedDuration = {
   value: string;
   milliseconds: number;
 };
-
-export class ResolutionException extends Error {
-  constructor(readonly resolution: ResolutionError) {
-    super(resolution.message);
-  }
-}
-
-export function resolveOrThrow<T>(result: Result<T, ResolutionError>): T {
-  if (result.isErr()) throw new ResolutionException(result.error);
-  return result.value;
-}
 
 export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<string, ResolutionError> {
   const resolved = tryEvaluate(expr, scope, field, options);
@@ -104,15 +93,11 @@ export function resolutionErrorPayload(error: ResolutionError): JsonObject {
 }
 
 function tryEvaluate(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<unknown, ResolutionError> {
-  try {
-    return ok(evaluateExpr(expr, scope, options));
-  } catch (cause) {
-    return err({
+  return tryEvaluateExpr(expr, scope, options).mapErr(failure => ({
       type: "evaluation",
       field,
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  }
+      message: failure.message,
+    }));
 }
 
 function typeError<T>(field: string, expected: string, value: unknown): Result<T, ResolutionError> {

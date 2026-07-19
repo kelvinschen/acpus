@@ -2,8 +2,28 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { getRun, requestDaemonAdmitRun, requestDaemonControl, startDaemonLoop } from "../src/index.js";
+import type { Result } from "neverthrow";
+import {
+  getRun,
+  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
+  requestDaemonControl as requestDaemonControlResult,
+  startDaemonLoop,
+  type DaemonClientFailure,
+} from "../src/index.js";
 import { prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+
+async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
+  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
+}
+
+async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
+  return unwrapDaemon(await requestDaemonControlResult(...args));
+}
+
+function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
+  if (result.isOk()) return result.value;
+  throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
+}
 
 describe("daemon execution owner epochs", () => {
   it.concurrent("releases a paused owner before resume starts a new attempt epoch", async () => {

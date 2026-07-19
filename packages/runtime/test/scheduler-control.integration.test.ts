@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -14,7 +15,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
         await expect(applySchedulerControlIntent(workspace, store, {
           requestId: `pause:${run.id}`,
@@ -55,7 +56,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting" });
 
@@ -98,7 +99,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rawSignalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
         await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting" });
 
@@ -129,7 +130,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 30_000);
         expect(claim).toBeDefined();
 
@@ -153,7 +154,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
         const alreadyResumed = await applySchedulerControlIntent(workspace, store, {
           requestId: `resume:${run.id}:already`,
@@ -190,7 +191,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = seedControlTarget(store, run.id, "root_task", "failed");
         const intent = {
           requestId: `retry-alias:${run.id}`,
@@ -228,7 +229,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = seedControlTarget(store, run.id, "root_task", "ready");
         const intent = {
           requestId: `cancel-alias:${run.id}`,
@@ -265,7 +266,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow("root"));
       const store = await openRuntimeStore(workspace);
       try {
-        const targetedRun = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const targetedRun = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const targetedNodeKey = seedControlTarget(store, targetedRun.id, "root", "failed");
         const targeted = await applySchedulerControlIntent(workspace, store, {
           requestId: `retry-root-alias:${targetedRun.id}`,
@@ -278,7 +279,7 @@ describe("scheduler control intents", () => {
         expect(targeted.snapshot.projection.instances[targetedNodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
         expect(targeted.snapshot.projection.frames.root).toMatchObject({ status: "running" });
 
-        const runRetry = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const runRetry = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         seedControlTarget(store, runRetry.id, "root", "failed");
         const retriedRun = await applySchedulerControlIntent(workspace, store, {
           requestId: `retry-run:${runRetry.id}`,
@@ -299,7 +300,7 @@ describe("scheduler control intents", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow("root"));
       const store = await openRuntimeStore(workspace);
       try {
-        const targetedRun = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const targetedRun = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const targetedNodeKey = seedControlTarget(store, targetedRun.id, "root", "ready");
         const targeted = await applySchedulerControlIntent(workspace, store, {
           requestId: `cancel-root-alias:${targetedRun.id}`,
@@ -313,7 +314,7 @@ describe("scheduler control intents", () => {
         expect(targeted.snapshot.projection.frames.root).toMatchObject({ status: "running" });
         expect(targeted.snapshot.projection.run.status).not.toBe("canceled");
 
-        const runCancel = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const runCancel = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         seedControlTarget(store, runCancel.id, "root", "ready");
         const canceledRun = await applySchedulerControlIntent(workspace, store, {
           requestId: `cancel-run:${runCancel.id}`,

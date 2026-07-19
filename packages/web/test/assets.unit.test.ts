@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
@@ -89,6 +89,15 @@ describe("mountStaticAssets", () => {
     mountStaticAssets(app, staticDir);
     const res = await app.request("/assets/missing.js");
     expect(res.status).toBe(404);
+  });
+
+  it("does not treat a symlink loop as a missing static asset", async () => {
+    await mkdir(assetsDir, { recursive: true });
+    await symlink("loop.js", join(assetsDir, "loop.js"));
+    const app = new Hono();
+    mountStaticAssets(app, staticDir);
+    const res = await app.request("/assets/loop.js");
+    expect(res.status).toBe(500);
   });
 
   it("api routes are not shadowed by catch-all", async () => {

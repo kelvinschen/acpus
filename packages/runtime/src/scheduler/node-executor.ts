@@ -1,10 +1,10 @@
 import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import type { JsonObject } from "@acpus/expression/ir";
-import { AgentNodeCancelledError, AgentNodeExecutionError, AgentNodeTimeoutError, executeAgentNode } from "../execution/agent-node.js";
-import { executeTaskNode, TaskAttemptExecutionError } from "../execution/task-executor.js";
-import { normalizeWorkflowData } from "../evaluation/admissible.js";
+import type { JsonObject, JsonValue } from "@acpus/expression/ir";
+import type { Result } from "neverthrow";
+import { executeAgentNode, type AgentAttemptFailure, type AgentNodeFailure } from "../execution/agent-node.js";
+import { executeTaskNode, type TaskNodeFailure } from "../execution/task-executor.js";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
-import { ResolutionException, resolutionErrorPayload } from "../evaluation/resolvable.js";
+import { resolutionErrorPayload, type ResolutionError } from "../evaluation/resolvable.js";
 import type { RuntimeStore } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import type { NodeAttemptContext, NodeExecutor } from "./advance.js";
@@ -27,46 +27,68 @@ export function createRuntimeNodeExecutor(input: RuntimeNodeExecutorInput): Node
   return {
     async execute(context: NodeAttemptContext): Promise<AttemptCommitInput["result"]> {
       const node = nodes.get(context.nodeId);
-      if (!node) return { status: "failed", reason: `Node '${context.nodeId}' was not found in frozen IR.` };
+      if (!node) throw new Error(`Node '${context.nodeId}' was not found in frozen IR.`);
       const scope = scopeForNodeAttempt(input.scope, throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(context.runId)).projection, context.nodeKey);
       if (node.kind === "task") {
-        try {
-          return completedResult(await executeTask(node, scope, context, input), true);
-        } catch (error) {
-          if (error instanceof ResolutionException) return resolutionFailure(error);
-          if (error instanceof TaskAttemptExecutionError) {
-            if (error.failure.type === "cancelled") return { status: "cancelled", reason: "paused" };
-            if (error.failure.type === "timed_out") return { status: "timed_out", reason: error.message };
-            return { status: "failed", reason: error.message };
-          }
-          throw error;
-        }
+        const executed = await executeTask(node, scope, context, input);
+        return executed.match(
+          output => output === undefined ? { status: "completed" } : { status: "completed", output },
+          taskFailure,
+        );
       }
       if (node.kind === "agent") {
-        try {
-          return completedResult(await executeAgent(node, scope, context, input, input.agentHostPolicy), false);
-        } catch (error) {
-          if (error instanceof ResolutionException) return resolutionFailure(error);
-          if (error instanceof AgentNodeCancelledError) return { status: "cancelled", reason: "paused" };
-          if (error instanceof AgentNodeTimeoutError) return { status: "timed_out", reason: error.failure.code, error: normalizeWorkflowData(error.failure, "Agent failure") as JsonObject };
-          if (error instanceof AgentNodeExecutionError) return { status: "failed", reason: error.failure.code, error: normalizeWorkflowData(error.failure, "Agent failure") as JsonObject };
-          throw error;
-        }
+        const executed = await executeAgent(node, scope, context, input, input.agentHostPolicy);
+        return executed.match(
+          output => ({ status: "completed", output }),
+          agentFailure,
+        );
       }
-      return { status: "failed", reason: `Node '${context.nodeId}' (${node.kind}) is not a scheduler leaf executor target.` };
+      throw new Error(`Node '${context.nodeId}' (${node.kind}) is not a scheduler leaf executor target.`);
     },
   };
 }
 
-function resolutionFailure(error: ResolutionException): AttemptCommitInput["result"] {
+function resolutionFailure(error: ResolutionError): AttemptCommitInput["result"] {
   return {
     status: "failed",
     reason: "expression_resolution_failed",
-    error: resolutionErrorPayload(error.resolution),
+    error: resolutionErrorPayload(error),
   };
 }
 
-async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput): Promise<unknown> {
+function taskFailure(failure: TaskNodeFailure): AttemptCommitInput["result"] {
+  if (failure.type === "resolution") return resolutionFailure(failure.error);
+  if (failure.type === "cancelled") return { status: "cancelled", reason: "paused" };
+  if (failure.type === "timed_out") return { status: "timed_out", reason: failure.message };
+  return { status: "failed", reason: failure.message };
+}
+
+function agentFailure(failure: AgentAttemptFailure): AttemptCommitInput["result"] {
+  if (failure.type === "resolution") return resolutionFailure(failure.error);
+  if (failure.type === "cancelled") return { status: "cancelled", reason: "paused" };
+  const payload = agentFailurePayload(failure.failure);
+  return failure.type === "timed_out"
+    ? { status: "timed_out", reason: failure.failure.code, error: payload }
+    : { status: "failed", reason: failure.failure.code, error: payload };
+}
+
+function agentFailurePayload(failure: AgentNodeFailure): JsonObject {
+  return {
+    origin: failure.origin,
+    code: failure.code,
+    message: failure.message,
+    ...(failure.origin === "provider" && failure.upstream !== undefined
+      ? { upstream: failure.upstream as JsonValue }
+      : {}),
+  };
+}
+
+async function executeTask(
+  node: TaskNodeIR,
+  scope: EvaluationScope,
+  context: NodeAttemptContext,
+  input: RuntimeNodeExecutorInput,
+): Promise<Result<JsonValue | undefined, TaskNodeFailure>> {
   return executeTaskNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
@@ -80,7 +102,7 @@ async function executeTask(node: TaskNodeIR, scope: EvaluationScope, context: No
   });
 }
 
-async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput, agentHostPolicy: AgentHostPolicy): Promise<unknown> {
+async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput, agentHostPolicy: AgentHostPolicy) {
   return executeAgentNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
@@ -96,9 +118,4 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",
     signal: context.signal,
   });
-}
-
-function completedResult(output: unknown, allowTopLevelUndefined: boolean): AttemptCommitInput["result"] {
-  const normalized = normalizeWorkflowData(output, "Node output", { allowTopLevelUndefined });
-  return normalized === undefined ? { status: "completed" } : { status: "completed", output: normalized };
 }

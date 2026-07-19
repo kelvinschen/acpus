@@ -72,6 +72,7 @@
 - `lift` evaluation MUST evaluate only its one to three explicit dependency args, load the trailing callback source, invoke it synchronously with the dependencies as positional arguments, and return only JSON-compatible output.
 - Callback dependency input MAY contain `undefined` from missing projections, including nested object fields. Callback output MUST NOT contain `undefined`.
 - Callback evaluation MUST fail with `ExpressionEvaluationError` when the callback source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, or returns non-WorkflowData output.
+- Callback load and execution diagnostics MUST safely render thrown non-`Error` values.
 - Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope.
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
 - The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, and non-primitive literal values.

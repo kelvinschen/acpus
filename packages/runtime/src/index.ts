@@ -1,11 +1,13 @@
 export {
-  normalizeWorkflowInput,
+  tryNormalizeWorkflowInput,
+  type SchemaNormalizationFailure,
 } from "./admission/input.js";
 export {
   startDaemonLoop,
   type DaemonLoopHandle,
   type DaemonLoopOptions,
 } from "./daemon/loop.js";
+export type { RunIncident } from "./daemon/sessions.js";
 export {
   tryLoadRuntimeConfiguration,
   type AgentHostPolicy,
@@ -24,7 +26,7 @@ export {
   type DaemonShutdownResult,
   type DaemonAdmitRunInput,
   type DaemonControlResult,
-  DaemonRequestError,
+  type DaemonClientFailure,
   type DaemonStatus,
 } from "./daemon/socket.js";
 export {
@@ -35,10 +37,11 @@ export {
   getRunVisualizationSnapshot,
   listArtifacts,
   listRuns,
-  normalizeForkInput,
+  tryNormalizeForkInput,
+  type ForkInputNormalizationFailure,
+  type RunDeleteFailure,
   type RuntimeHealthCheck,
   type RuntimeHealthReport,
-  RuntimeUseCaseException,
   type ArtifactRecord,
 } from "./runs/use-cases.js";
 export type {
@@ -107,7 +110,10 @@ export {
   type WorkflowVisualizationOverlay,
 } from "./visualization/overlay.js";
 export {
-  validateAgentOverrides,
+  tryValidateAgentOverrides,
+  type AdmitRunFailure,
+  type AgentOverrideValidationFailure,
+  type PreparedRunValidationFailure,
   type AgentOverrideMap,
   type PreparedRunWorkflow,
   type RunDynamicAttempt,

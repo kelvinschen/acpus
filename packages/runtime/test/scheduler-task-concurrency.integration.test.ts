@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
@@ -21,7 +22,7 @@ describe("runtime scheduler Task concurrency", () => {
       const store = await openRuntimeStore(workspace);
       let advancing: ReturnType<typeof advanceFrozenRun> | undefined;
       try {
-        const run = await store.admitRun({
+        const run = await admitRunForTest(store, {
           prepared,
           input: { gateDir, items: [0, 1, 2, 3] },
           cwd: workspace,

@@ -19,3 +19,21 @@ export function agentTiming(elapsedMs = 1): AgentTurnResult["timing"] {
 export function completedAgentTurn(responseText: string, stderr = "", summary = agentSummary(1)): AgentTurnResult {
   return { status: "completed", responseText, stderr, summary, timing: agentTiming() };
 }
+
+export function tracedCompletedAgentTurn(responseText: string): AgentTurnResult {
+  return {
+    ...completedAgentTurn(responseText),
+    trace: {
+      startedAt: "2026-07-01T00:00:00.000Z",
+      elapsedMs: 1,
+      events: [{
+        schemaVersion: 1,
+        sequence: 0,
+        observedAt: "2026-07-01T00:00:00.001Z",
+        elapsedMs: 1,
+        type: "turn_end",
+        status: "completed",
+      }],
+    },
+  };
+}

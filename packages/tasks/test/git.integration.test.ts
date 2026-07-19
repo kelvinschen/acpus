@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -73,6 +73,36 @@ describe("createWorktree", () => {
 
       await expect(runCreateWorktree(root, { repo, path: worktree, forceRemove: true })).rejects.toThrow("not a registered worktree");
       await expect(access(join(worktree, "keep.txt"))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a dangling symlink as an occupied unregistered path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-dangling-"));
+    try {
+      const { repo, worktree } = await tinyRepo(root);
+      await symlink("missing-target", worktree);
+
+      await expect(runCreateWorktree(root, { repo, path: worktree, forceRemove: true })).rejects.toThrow("not a registered worktree");
+      expect((await lstat(worktree)).isSymbolicLink()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports path inspection failures without removing the path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-inspection-"));
+    try {
+      const { repo } = await tinyRepo(root);
+      const loop = join(root, "loop");
+      const worktree = join(loop, "worktree");
+      await symlink("loop", loop);
+
+      await expect(runCreateWorktree(root, { repo, path: worktree, forceRemove: true })).rejects.toThrow(
+        `Worktree path '${worktree}' could not be inspected`,
+      );
+      expect((await lstat(loop)).isSymbolicLink()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

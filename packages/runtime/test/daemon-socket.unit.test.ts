@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, DaemonRequestError, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
+import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
+import { err, ok, ResultAsync } from "neverthrow";
 
 describe("daemon socket server", () => {
   it("tracks a connection while its request handler is active", async () => {
@@ -11,18 +12,14 @@ describe("daemon socket server", () => {
     const shutdownStarted = deferred();
     const releaseShutdown = deferred();
     const server = await startDaemonServer(workspace, {
-      status: () => ({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
-      admitRun: () => {
-        throw new Error("not used");
-      },
-      control: () => {
-        throw new Error("not used");
-      },
-      shutdown: async () => {
+      status: () => ok({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
+      admitRun: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+      control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+      shutdown: () => new ResultAsync((async () => {
         shutdownStarted.resolve();
         await releaseShutdown.promise;
-        return { status: "shutdown" };
-      },
+        return ok({ status: "shutdown" as const });
+      })()),
     });
     let request: ReturnType<typeof requestDaemonShutdown> | undefined;
     try {
@@ -30,12 +27,12 @@ describe("daemon socket server", () => {
       await shutdownStarted.promise;
       expect(server.activeConnections()).toBe(1);
       releaseShutdown.resolve();
-      await expect(request).resolves.toEqual({ status: "shutdown" });
+      expect(await request).toEqual(ok({ status: "shutdown" }));
       await waitUntil(() => server.activeConnections() === 0);
       expect(server.activeConnections()).toBe(0);
     } finally {
       releaseShutdown.resolve();
-      await request?.catch(() => undefined);
+      if (request) await request;
       await server.close();
       await rm(workspace, { recursive: true, force: true });
     }
@@ -69,14 +66,48 @@ describe("daemon socket server", () => {
     const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-readiness-"));
     const server = await startDaemonServer(workspace, {
       ...testHandlers(),
-      status: () => {
-        throw new DaemonRequestError("EXECUTION_UNAVAILABLE", "Daemon is still initializing.");
+      status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
+    });
+    try {
+      expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
+    } finally {
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("sanitizes unknown handler failures as internal errors", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-internal-"));
+    const server = await startDaemonServer(workspace, {
+      ...testHandlers(),
+      control: () => {
+        throw new Error("private scheduler invariant");
       },
     });
     try {
-      await expect(requestDaemonStatus(workspace)).rejects.toMatchObject({ code: "EXECUTION_UNAVAILABLE" });
+      expect(await requestDaemonControl(workspace, { requestId: "cancel", type: "cancel", runId: "run_1" })).toEqual(err({
+        type: "rejected",
+        code: "INTERNAL_ERROR",
+        message: "Control 'cancel' could not be applied to run 'run_1'.",
+      }));
     } finally {
       await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("classifies an ENOTDIR socket path as not found", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-enotdir-"));
+    try {
+      await writeFile(join(workspace, ".acpus"), "not a directory");
+      expect(await requestDaemonStatus(workspace)).toEqual(err({
+        type: "transport",
+        reason: "not-found",
+        method: "status",
+        errno: "ENOTDIR",
+        message: expect.any(String),
+      }));
+    } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -85,13 +116,11 @@ describe("daemon socket server", () => {
     const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-prelease-live-"));
     const first = await startDaemonServer(workspace, {
       ...testHandlers(),
-      status: () => {
-        throw new DaemonRequestError("EXECUTION_UNAVAILABLE", "Daemon is still initializing.");
-      },
+      status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
     });
     try {
       await expect(startDaemonServer(workspace, testHandlers())).rejects.toMatchObject({ code: "EADDRINUSE" });
-      await expect(requestDaemonStatus(workspace)).rejects.toMatchObject({ code: "EXECUTION_UNAVAILABLE" });
+      expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
     } finally {
       await first.close();
       await rm(workspace, { recursive: true, force: true });
@@ -136,7 +165,7 @@ describe("daemon socket server", () => {
       extra: true,
     });
     try {
-      await expect(requestDaemonShutdown(workspace)).rejects.toThrow("Daemon returned an invalid response.");
+      expect(await requestDaemonShutdown(workspace)).toEqual(err({ type: "protocol", stage: "envelope", method: "shutdown", message: "Daemon returned an invalid response." }));
     } finally {
       await closeRawResponseServer(server);
       await rm(workspace, { recursive: true, force: true });
@@ -150,14 +179,17 @@ describe("daemon socket server", () => {
       result: { status: "shutdown", extra: true },
     });
     try {
-      await expect(requestDaemonShutdown(shutdownWorkspace)).rejects.toThrow("Daemon returned an invalid shutdown response.");
+      expect(await requestDaemonShutdown(shutdownWorkspace)).toEqual(err({ type: "protocol", stage: "result", method: "shutdown", message: "Daemon returned an invalid shutdown result." }));
     } finally {
       await closeRawResponseServer(shutdownServer);
       await rm(shutdownWorkspace, { recursive: true, force: true });
     }
 
-    const run = { id: "run_1", status: "running" };
+    const run = runDetails();
     const invalidControlResults = [
+      { type: "pause", state: "applied", run: { id: "run_1", status: "running" } },
+      { type: "pause", state: "applied", run: { ...run, status: "unknown" } },
+      { type: "pause", state: "applied", run: { ...run, execution: { state: "active", lastStatus: "unknown" } } },
       { type: "pause", state: "applied", run, extra: true },
       { type: "fork", state: "applied", sourceRunId: "run_source", run, unexpected: true },
       {
@@ -173,12 +205,28 @@ describe("daemon socket server", () => {
       const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-result-"));
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
-        await expect(requestDaemonControl(controlWorkspace, { requestId: "pause", type: "pause", runId: "run_1" }))
-          .rejects.toThrow("Daemon returned an invalid control response.");
+        expect((await requestDaemonControl(controlWorkspace, controlIntent(result.type))).isErr()).toBe(true);
       } finally {
         await closeRawResponseServer(controlServer);
         await rm(controlWorkspace, { recursive: true, force: true });
       }
+    }
+
+    const mismatchedWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-mismatch-"));
+    const mismatchedServer = await startRawResponseServer(mismatchedWorkspace, {
+      ok: true,
+      result: { type: "resume", state: "applied", run },
+    });
+    try {
+      expect(await requestDaemonControl(mismatchedWorkspace, { requestId: "pause", type: "pause", runId: "run_1" })).toEqual(err({
+        type: "protocol",
+        stage: "result",
+        method: "control",
+        message: "Daemon returned an invalid pause control for run 'run_1' result.",
+      }));
+    } finally {
+      await closeRawResponseServer(mismatchedServer);
+      await rm(mismatchedWorkspace, { recursive: true, force: true });
     }
 
     const validControlResults = [
@@ -209,25 +257,41 @@ describe("daemon socket server", () => {
       const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-valid-control-result-"));
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
-        await expect(requestDaemonControl(controlWorkspace, { requestId: "pause", type: "pause", runId: "run_1" })).resolves.toEqual(result);
+        expect(await requestDaemonControl(controlWorkspace, controlIntent(result.type))).toEqual(ok(result));
       } finally {
         await closeRawResponseServer(controlServer);
         await rm(controlWorkspace, { recursive: true, force: true });
       }
+    }
+
+    const admissionWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-admission-result-"));
+    const admissionServer = await startRawResponseServer(admissionWorkspace, {
+      ok: true,
+      result: { id: "run_1", status: "running" },
+    });
+    try {
+      expect(await requestDaemonAdmitRun(admissionWorkspace, {
+        prepared: preparedRunWorkflow() as never,
+        input: {},
+      })).toEqual(err({
+        type: "protocol",
+        stage: "result",
+        method: "admitRun",
+        message: "Daemon returned an invalid run admission result.",
+      }));
+    } finally {
+      await closeRawResponseServer(admissionServer);
+      await rm(admissionWorkspace, { recursive: true, force: true });
     }
   });
 });
 
 function testHandlers(): Parameters<typeof startDaemonServer>[1] {
   return {
-    status: () => ({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
-    admitRun: () => {
-      throw new Error("not used");
-    },
-    control: () => {
-      throw new Error("not used");
-    },
-    shutdown: () => ({ status: "shutdown" }),
+    status: () => ok({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
+    admitRun: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+    control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+    shutdown: () => ok({ status: "shutdown" }),
   };
 }
 
@@ -261,6 +325,33 @@ function preparedRunWorkflow() {
       sourceGraphDigest: "source-digest",
     },
   };
+}
+
+function runDetails() {
+  return {
+    id: "run_1",
+    name: "test",
+    status: "running",
+    workflowEntry: "test.workflow.ts",
+    sourceGraphDigest: `sha256:${"a".repeat(64)}`,
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:01.000Z",
+    progressVersion: 0,
+    input: {},
+    hooks: [],
+    eventCount: 1,
+    nodeCount: 1,
+    execution: { state: "active", lastStatus: "running" },
+  } as const;
+}
+
+function controlIntent(type: string): Parameters<typeof requestDaemonControl>[1] {
+  const base = { requestId: type, runId: "run_1" };
+  if (type === "signal") return { ...base, type, nodeId: "approve", payload: "ok" };
+  if (type === "fork") return { ...base, type };
+  if (type === "retry" || type === "cancel") return { ...base, type };
+  if (type === "pause" || type === "resume") return { ...base, type };
+  throw new Error(`Unsupported control type '${type}'.`);
 }
 
 async function sendRawRequest(endpoint: string, request: unknown): Promise<unknown> {

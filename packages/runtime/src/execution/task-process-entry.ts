@@ -6,13 +6,25 @@ import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskExecutionTargetIR } from "@acpus/core/ir";
-import { normalizeWorkflowData } from "../evaluation/admissible.js";
+import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { loadInlineTaskFunction } from "./inline-task.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
 
 const controller = new AbortController();
 const artifactRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
 let started = false;
+let runtimeSystemFailure: TaskRuntimeSystemError | undefined;
+
+class TaskRuntimeSystemError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, cause: unknown) {
+    super(`${message}: ${errorMessage(cause)}`, { cause });
+    this.name = "TaskRuntimeSystemError";
+    const code = cause && typeof cause === "object" ? (cause as { code?: unknown }).code : undefined;
+    if (typeof code === "string") this.code = code;
+  }
+}
 
 process.on("message", (message: TaskProcessParentMessage) => {
   if (message.type === "abort") {
@@ -42,12 +54,23 @@ async function execute(request: TaskProcessRequest): Promise<void> {
       env: process.env,
       abortSignal: controller.signal,
     } satisfies TaskContext<typeof request.input>);
-    const normalized = normalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
-    await finish(normalized === undefined
+    if (runtimeSystemFailure) {
+      await finish(systemRejection(runtimeSystemFailure));
+      return;
+    }
+    const normalized = tryNormalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
+    if (normalized.isErr()) {
+      await finish({ type: "failed", message: normalized.error.message });
+      return;
+    }
+    await finish(normalized.value === undefined
       ? { type: "completed", hasOutput: false }
-      : { type: "completed", hasOutput: true, output: normalized });
+      : { type: "completed", hasOutput: true, output: normalized.value });
   } catch (error) {
-    await finish({ type: "failed", error: serializedError(error) });
+    const systemFailure = runtimeSystemFailure ?? (error instanceof TaskRuntimeSystemError ? error : undefined);
+    await finish(systemFailure
+      ? systemRejection(systemFailure)
+      : { type: "failed", message: errorMessage(error) });
   }
 }
 
@@ -76,10 +99,18 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
     const id = `artifact_${randomUUID()}`;
     const relativePath = join("artifacts", args.nodeKey, `attempt-${args.attempt}`, `${id}-${safeArtifactName(name)}`);
     const absolutePath = join(args.runDir, relativePath);
-    await mkdir(join(args.runDir, "artifacts", args.nodeKey, `attempt-${args.attempt}`), { recursive: true });
-    await writeFile(absolutePath, bytes);
+    try {
+      await mkdir(join(args.runDir, "artifacts", args.nodeKey, `attempt-${args.attempt}`), { recursive: true });
+      await writeFile(absolutePath, bytes);
+    } catch (cause) {
+      throw rememberSystemFailure(`Task artifact write failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
+    }
     if (signal.aborted) {
-      await rm(absolutePath, { force: true });
+      try {
+        await rm(absolutePath, { force: true });
+      } catch (cause) {
+        throw rememberSystemFailure(`Task artifact cleanup failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
+      }
       throw new Error(`Task node '${args.nodeKey}' attempt ${args.attempt} is aborted.`);
     }
     try {
@@ -95,9 +126,14 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
         size: bytes.byteLength,
         relativePath,
       });
-    } catch (error) {
-      await rm(absolutePath, { force: true });
-      throw error;
+    } catch (cause) {
+      let failure = cause;
+      try {
+        await rm(absolutePath, { force: true });
+      } catch (cleanupError) {
+        failure = new AggregateError([cause, cleanupError], "Task artifact registration and cleanup both failed.");
+      }
+      throw rememberSystemFailure(`Task artifact registration failed for node '${args.nodeKey}' attempt ${args.attempt}`, failure);
     }
     const ref: ArtifactRef = mediaType === undefined
       ? { kind: "artifact", uri: `artifact://${args.runId}/${id}` }
@@ -142,6 +178,26 @@ function safeArtifactName(name: string): string {
   return name.replaceAll(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "artifact";
 }
 
+function rememberSystemFailure(message: string, cause: unknown): TaskRuntimeSystemError {
+  const failure = new TaskRuntimeSystemError(message, cause);
+  runtimeSystemFailure ??= failure;
+  return failure;
+}
+
+function systemRejection(error: TaskRuntimeSystemError): TaskProcessChildMessage {
+  return {
+    type: "system_rejected",
+    error: {
+      message: error.message,
+      ...(error.code === undefined ? {} : { code: error.code }),
+    },
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function finish(message: TaskProcessChildMessage): Promise<void> {
   try {
     await send(message);
@@ -160,9 +216,4 @@ function send(message: TaskProcessChildMessage): Promise<void> {
     }
     process.send(message, error => error ? reject(error) : resolve());
   });
-}
-
-function serializedError(error: unknown): { name: string; message: string; stack?: string } {
-  if (!(error instanceof Error)) return { name: "Error", message: String(error) };
-  return { name: error.name, message: error.message, ...(error.stack ? { stack: error.stack } : {}) };
 }

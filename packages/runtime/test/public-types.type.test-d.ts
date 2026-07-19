@@ -33,21 +33,28 @@ import type {
   AgentHostPolicyFailure,
   DaemonControlIntent,
   DaemonControlResult,
-  DaemonErrorCode,
   DaemonLoopHandle,
   DaemonLoopOptions,
   DaemonShutdownResult,
   DaemonAdmitRunInput,
   DaemonStatus,
+  DaemonClientFailure,
+  RunDeleteFailure,
+  AdmitRunFailure,
+  ForkInputNormalizationFailure,
+  SchemaNormalizationFailure,
+  AgentOverrideValidationFailure,
+  PreparedRunValidationFailure,
+  RunIncident,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { DaemonRequestError, RuntimeUseCaseException, createWorkflowVisualizationOverlay, daemonEndpoint, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, normalizeForkInput, normalizeWorkflowInput, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, validateAgentOverrides } from "@acpus/runtime";
+import { createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
-import type { Result } from "neverthrow";
+import type { Result, ResultAsync } from "neverthrow";
 
 test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
@@ -55,14 +62,17 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<{ run: RunDetails; overlay: WorkflowVisualizationOverlay } | undefined>>();
-  expectTypeOf(normalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Promise<JsonValue | undefined>>();
-  expectTypeOf(normalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => JsonValue>();
-  expectTypeOf(validateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => AgentOverrideMap>();
+  expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure>>();
+  expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>>();
+  expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>>();
+  expectTypeOf<AdmitRunFailure>().toEqualTypeOf<PreparedRunValidationFailure | SchemaNormalizationFailure | AgentOverrideValidationFailure>();
+  expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => ResultAsync<RunRecord | undefined, RunDeleteFailure>>();
   expectTypeOf<DaemonLoopOptions>().toEqualTypeOf<{
     heartbeatMs?: number;
     packageVersion: string;
     idleStopMs?: number;
     onShutdown?: () => void;
+    onRunIncident?: (incident: RunIncident) => void;
   }>();
   expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
   expectTypeOf(tryLoadRuntimeConfiguration).toEqualTypeOf<(env: NodeJS.ProcessEnv) => Result<RuntimeConfiguration, RuntimeConfigurationFailure>>();
@@ -75,12 +85,10 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     | { type: "invalid"; failure: AgentHostPolicyFailure }
   >();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
-  expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Promise<DaemonStatus>>();
-  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: DaemonAdmitRunInput) => Promise<RunDetails>>();
-  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => Promise<DaemonControlResult>>();
-  expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => Promise<DaemonShutdownResult>>();
-  expectTypeOf(new DaemonRequestError("RUN_NOT_CONTROLLABLE", "failed").code).toEqualTypeOf<DaemonErrorCode>();
-  expectTypeOf(new RuntimeUseCaseException({ type: "run-delete-active", runId: "run_1", message: "active" }).failure).toEqualTypeOf<{ type: "run-delete-active"; runId: string; message: string }>();
+  expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
+  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: DaemonAdmitRunInput) => ResultAsync<RunDetails, DaemonClientFailure>>();
+  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>>();
+  expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();

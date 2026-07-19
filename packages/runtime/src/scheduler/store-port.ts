@@ -30,8 +30,10 @@ export type SchedulerStoreError =
   | { type: "signal-wait-terminal"; runId: string; nodeKey: string; status: string; message: string }
   | { type: "idempotency-conflict"; idempotencyKey: string; runId?: string; message: string }
   | { type: "missing-retry-target"; runId: string; targetKey: string; message: string }
+  | { type: "ambiguous-retry-target"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
   | { type: "invalid-retry-target"; runId: string; targetKey?: string; status: string; message: string }
   | { type: "missing-cancel-target"; runId: string; targetKey: string; message: string }
+  | { type: "ambiguous-cancel-target"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
   | { type: "invalid-cancel-target"; runId: string; targetKey?: string; status: string; message: string }
   | { type: "deadline-out-of-range"; runId: string; nodeKey: string; message: string };
 
@@ -42,8 +44,6 @@ export class SchedulerStoreException extends Error {
     super(failure.message);
   }
 }
-
-export class SchedulerControlInputError extends Error {}
 
 export function schedulerStoreError(error: unknown): SchedulerStoreError | undefined {
   return error instanceof SchedulerStoreException ? error.failure : undefined;
@@ -112,6 +112,7 @@ export type AttemptCommitInput = {
 export type SignalConsumeInput = {
   runId: string;
   nodeKey: string;
+  requestedTarget?: string;
   ownerEpoch: number;
   payload: JsonValue;
   commandIdempotencyKey: string;

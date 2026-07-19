@@ -1,12 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { access, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
-import { ArtifactRewriteError, rewriteArtifactValue } from "../artifacts/rewrite.js";
-import { compactUndefined, parseAgentOverrideMap } from "../control/agent-overrides.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
+import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
@@ -14,18 +15,41 @@ import type { HookJournalEntry } from "../hooks/journal.js";
 import { stableJson } from "../stable-json.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, groupCompletionEvents, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
-import { ForkSeedPlanError, planTargetedForkSeed, type ForkSeedPlan } from "../scheduler/fork-seed.js";
+import { planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerControlInputError, SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
 import { continueRootEvents } from "../scheduler/materialize.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
+import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
-export class ForkRequestConflictError extends Error {}
-export class PreparedRunWorkflowValidationError extends Error {}
+export type PreparedRunValidationFailure = {
+  type: "prepared-workflow-invalid";
+  reason: "invalid-ir-json" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "package-lock-mismatch" | "entry-mismatch";
+  message: string;
+};
+
+export type AgentOverrideValidationFailure = AgentOverrideParseFailure;
+
+export type AdmitRunFailure = PreparedRunValidationFailure
+  | SchemaNormalizationFailure
+  | AgentOverrideValidationFailure;
+
+export type ForkRunFailure = PreparedRunValidationFailure
+  | AgentOverrideValidationFailure
+  | SchemaNormalizationFailure
+  | ForkSeedFailure
+  | { type: "run-not-found"; runId: string; message: string }
+  | { type: "fork-request-conflict"; requestId: string; message: string };
+
+export type RunDeleteFailure = {
+  type: "run-delete-active";
+  runId: string;
+  message: string;
+};
 
 const RUNNABLE_RUNS_WHERE = "status = 'pending'";
 
@@ -75,20 +99,24 @@ const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
   close(): void;
-  admitRun(input: AdmitRunInput): Promise<RunRecord>;
+  admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure>;
   getFrozenRun(runId: string): FrozenRun | undefined;
   claimDaemon(input: ClaimDaemonInput): DaemonLease;
   heartbeatDaemon(input: HeartbeatDaemonInput): boolean;
   setDaemonIdleState(input: DaemonIdleStateInput): boolean;
   releaseDaemon(input: HeartbeatDaemonInput): boolean;
   listDaemonWork(now?: Date): DaemonWork;
-  forkRun(runId: string, options?: ControlOptions): Promise<ForkRunRecord>;
-  cleanupRunDirectories(options?: CleanupRunDirectoriesOptions): Promise<CleanupRunDirectoriesResult>;
-  deleteRun(runId: string): Promise<RunRecord | undefined>;
+  forkRun(runId: string, options?: ControlOptions): ResultAsync<ForkRunRecord, ForkRunFailure>;
+  cleanupStagedRunDirectories(): Promise<void>;
+  deleteRun(runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure>;
   writeHookJournal(entry: HookJournalEntry): void;
   getHookJournal(runId: string): HookJournalEntry[];
   pruneHookJournal(cutoff: Date): number;
+  getHookDispatchCursor(runId: string): number;
+  compareAndSetHookDispatchCursor(runId: string, expectedSequence: number, nextSequence: number): boolean;
   getLastRunEventSequence(runId: string): number;
+  getRunEventVersion(runId: string): number | undefined;
+  readHookDispatchEvents(runId: string, afterSequence: number): HookDispatchEventRead;
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
@@ -114,8 +142,14 @@ export type RunInspectionStoreRead = {
   events: CommittedRuntimeEventRow[];
 };
 
+type HookDispatchEventRead = {
+  lastSequence: number;
+  events: CommittedRuntimeEventRow[];
+};
+
 type DaemonWork = {
   startableRuns: RunRecord[];
+  hookDispatchRunIds: string[];
   idleBlockers: number;
 };
 
@@ -413,16 +447,6 @@ type ControlOptions = {
   unsafeReuse?: boolean;
 };
 
-type CleanupRunDirectoriesOptions = {
-  olderThanMs?: number;
-  removeOrphanedRuns?: boolean;
-};
-
-type CleanupRunDirectoriesResult = {
-  staged: number;
-  orphaned: number;
-};
-
 export type RegisterArtifactInput = {
   id: string;
   runId: string;
@@ -554,8 +578,9 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
   const path = join(cwd, localStateRoot, "state", "runtime.db");
   try {
     await access(path);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
   }
   if (readOnly) {
     const db = openDatabase(path, true);
@@ -588,80 +613,87 @@ class SqliteRuntimeStore implements RuntimeStore {
     this.db.close();
   }
 
-  async admitRun(input: AdmitRunInput): Promise<RunRecord> {
-    const prepared = canonicalPreparedRunWorkflow(this.cwd, input.prepared);
+  admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure> {
+    return new ResultAsync(this.admitRunResult(input));
+  }
+
+  private async admitRunResult(input: AdmitRunInput): Promise<Result<RunRecord, AdmitRunFailure>> {
+    const prepared = tryValidatePreparedRunWorkflow(this.cwd, input.prepared);
+    if (prepared.isErr()) return err(prepared.error);
+    const normalizedInput = tryNormalizeWorkflowInput(prepared.value.ir, input.input);
+    if (normalizedInput.isErr()) return err(normalizedInput.error);
+    const agentOverrides = tryValidateAgentOverrides(prepared.value.ir, input.agentOverrides);
+    if (agentOverrides.isErr()) return err(agentOverrides.error);
+    if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(this.cwd))) {
+      throw new Error("Admission workspace does not match the runtime store workspace.");
+    }
     const runId = newRunId();
     const now = new Date().toISOString();
-    const workflowEntry = relative(input.cwd, prepared.workflowPath);
-    const runDir = join(input.cwd, localStateRoot, "runs", runId);
-    const stagedRunDir = join(input.cwd, localStateRoot, "runs", `.staging-${runId}`);
-    const lockJson = stableJsonLine(prepared.lock);
+    const workflowEntry = relative(this.cwd, prepared.value.workflowPath);
+    const runDir = join(this.cwd, localStateRoot, "runs", runId);
+    const stagedRunDir = join(this.cwd, localStateRoot, "runs", `.staging-${runId}`);
+    const lockJson = stableJsonLine(prepared.value.lock);
+    const eventPayload = {
+      workflow: summarizeWorkflowForEvent(prepared.value.ir),
+      input: normalizedInput.value,
+      ...(Object.keys(agentOverrides.value).length > 0 ? { agentOverrides: agentOverrides.value } : {}),
+    };
+    await publishRunDirectory({
+      cwd: this.cwd,
+      stagedRunDir,
+      runDir,
+      populate: async stagingDir => {
+        await writeFrozenRunFiles(stagingDir, prepared.value.irJson, lockJson);
+      },
+    });
+    let transactionStarted = false;
     try {
-      await mkdir(dirname(stagedRunDir), { recursive: true });
-      containedRunsRoot(input.cwd);
-      await rm(stagedRunDir, { recursive: true, force: true });
-      await mkdir(stagedRunDir, { recursive: true });
-      await writeFile(join(stagedRunDir, "workflow.ir.json"), prepared.irJson);
-      await writeFile(join(stagedRunDir, "lock.json"), lockJson);
-      await rm(runDir, { recursive: true, force: true });
-      await rename(stagedRunDir, runDir);
-      const agentOverrides = normalizeAgentOverrides(prepared.ir, input.agentOverrides);
-
-      const eventPayload = {
-        workflow: summarizeWorkflowForEvent(prepared.ir),
-        input: input.input,
-        ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
-      };
       this.db.exec("BEGIN IMMEDIATE");
-      try {
+      transactionStarted = true;
+      this.db.prepare(`
+        INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, ?, ?)
+      `).run(runId, prepared.value.ir.name, workflowEntry, prepared.value.sourceGraphDigest, now, now);
+      this.db.prepare(`
+        INSERT INTO run_inputs (
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, run_dir
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        runId,
+        "workflow.ir.json",
+        digest(Buffer.from(prepared.value.irJson)),
+        stableJsonLine(normalizedInput.value),
+        stableJsonLine(agentOverrides.value),
+        "lock.json",
+        digest(Buffer.from(lockJson)),
+        prepared.value.packageLockDigest ?? null,
+        relative(this.cwd, runDir),
+      );
+      this.db.prepare(`
+        INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
+        VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
+      `).run(runId, stableJsonLine(eventPayload), now, `admit:${runId}`);
+      this.db.prepare(`
+        INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+        VALUES (?, 1, ?, ?)
+      `).run(runId, stableJsonLine(createSchedulerProjection(runId) as unknown as JsonValue), now);
+      this.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(runId);
+      for (const nodeId of collectNodeIds(prepared.value.ir.root)) {
         this.db.prepare(`
-          INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
-          VALUES (?, ?, 'pending', ?, ?, ?, ?)
-        `).run(runId, prepared.ir.name, workflowEntry, prepared.sourceGraphDigest, now, now);
-        this.db.prepare(`
-          INSERT INTO run_inputs (
-            run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, run_dir
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          runId,
-          "workflow.ir.json",
-          digest(Buffer.from(prepared.irJson)),
-          stableJsonLine(input.input),
-          stableJsonLine(agentOverrides),
-          "lock.json",
-          digest(Buffer.from(lockJson)),
-          prepared.packageLockDigest ?? null,
-          relative(input.cwd, runDir),
-        );
-        this.db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
-        `).run(runId, stableJsonLine(eventPayload), now, `admit:${runId}`);
-        this.db.prepare(`
-          INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
-          VALUES (?, 1, ?, ?)
-        `).run(runId, stableJsonLine(createSchedulerProjection(runId) as unknown as JsonValue), now);
-        for (const nodeId of collectNodeIds(prepared.ir.root)) {
-          this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status)
-            VALUES (?, ?, ?, 'pending')
-          `).run(runId, nodeId, nodeId);
-        }
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
+          INSERT INTO node_states (run_id, node_key, node_id, status)
+          VALUES (?, ?, ?, 'pending')
+        `).run(runId, nodeId, nodeId);
       }
+      this.db.exec("COMMIT");
+      transactionStarted = false;
     } catch (error) {
-      await rm(stagedRunDir, { recursive: true, force: true });
-      await rm(runDir, { recursive: true, force: true });
-      throw error;
+      await removeOwnedPathAfterFailure(runDir, rollbackAfterFailure(this.db, transactionStarted, error));
     }
 
     const record = this.getRunRecord(runId);
     if (!record) throw new Error(`Admitted run ${runId} was not persisted.`);
-    return record;
+    return ok(record);
   }
 
   getFrozenRun(runId: string): FrozenRun | undefined {
@@ -671,7 +703,10 @@ class SqliteRuntimeStore implements RuntimeStore {
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
     `).get(runId) as (FrozenWorkflowRow & { id: string; name: string; workflow_entry: string }) | undefined;
-    if (!row) return undefined;
+    if (!row) {
+      if (this.getRunRecord(runId)) throw new Error(`Run '${runId}' has no frozen input.`);
+      return undefined;
+    }
     const workflowIrJson = frozenWorkflowIrJson(this.cwd, row);
     const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
     const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
@@ -772,7 +807,29 @@ class SqliteRuntimeStore implements RuntimeStore {
       FROM runs
       WHERE (${RUNNABLE_RUNS_WHERE}) OR (${TIMED_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
     `).get(nowIso) as CountRow;
-    return { startableRuns, idleBlockers: Number(row.count) };
+    const hookDispatchRows = this.db.prepare(`
+      SELECT runs.id, hook_dispatch_cursors.event_sequence, COALESCE((
+        SELECT MAX(run_events.sequence)
+        FROM run_events
+        WHERE run_events.run_id = runs.id
+      ), 0) AS last_sequence
+      FROM runs
+      JOIN hook_dispatch_cursors ON hook_dispatch_cursors.run_id = runs.id
+      ORDER BY runs.created_at ASC
+    `).all() as Array<{ id: string; event_sequence: number; last_sequence: number }>;
+    const hookDispatchRunIds: string[] = [];
+    for (const hook of hookDispatchRows) {
+      const cursor = Number(hook.event_sequence);
+      const lastSequence = Number(hook.last_sequence);
+      if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(lastSequence) || lastSequence < 0) {
+        throw new Error(`Run '${hook.id}' has an invalid hook dispatch cursor or event sequence.`);
+      }
+      if (cursor > lastSequence) {
+        throw new Error(`Run '${hook.id}' hook dispatch cursor ${cursor} exceeds committed event sequence ${lastSequence}.`);
+      }
+      if (cursor < lastSequence) hookDispatchRunIds.push(hook.id);
+    }
+    return { startableRuns, hookDispatchRunIds, idleBlockers: Number(row.count) + hookDispatchRunIds.length };
   }
 
   private countRunnableRuns(): number {
@@ -785,8 +842,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     return Number(row.count);
   }
 
-  async forkRun(runId: string, options: ControlOptions = {}): Promise<ForkRunRecord> {
-    if (options.prepared) options = { ...options, prepared: canonicalPreparedRunWorkflow(this.cwd, options.prepared) };
+  forkRun(runId: string, options: ControlOptions = {}): ResultAsync<ForkRunRecord, ForkRunFailure> {
+    return new ResultAsync(this.forkRunResult(runId, options));
+  }
+
+  private async forkRunResult(runId: string, options: ControlOptions): Promise<Result<ForkRunRecord, ForkRunFailure>> {
+    if (options.prepared) {
+      const prepared = tryValidatePreparedRunWorkflow(this.cwd, options.prepared);
+      if (prepared.isErr()) return err(prepared.error);
+      options = { ...options, prepared: prepared.value };
+    }
     const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
     const requestFingerprint = forkRequestFingerprint(runId, options);
     if (forkRequestKey) {
@@ -798,9 +863,13 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (existing) {
         const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
         if (payload.requestFingerprint !== requestFingerprint) {
-          throw new ForkRequestConflictError(`Fork request '${options.requestId}' conflicts with a different fork input.`);
+          return err({
+            type: "fork-request-conflict",
+            requestId: options.requestId!,
+            message: `Fork request '${options.requestId}' conflicts with a different fork input.`,
+          });
         }
-        return { ...this.requireRun(existing.run_id), forkCreated: false };
+        return ok({ ...this.requireRun(existing.run_id), forkCreated: false });
       }
     }
     const matchingFork = (this.db.prepare(`
@@ -809,9 +878,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       WHERE type = 'run.forked'
     `).all() as Array<{ run_id: string; payload_json: string }>)
       .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).requestFingerprint === requestFingerprint);
-    if (matchingFork) return { ...this.requireRun(matchingFork.run_id), forkCreated: false };
+    if (matchingFork) return ok({ ...this.requireRun(matchingFork.run_id), forkCreated: false });
     const source = this.getRunRecord(runId);
-    if (!source) throw new Error(`Run '${runId}' was not found.`);
+    if (!source) return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
     const input = this.db.prepare(`
       SELECT workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, output_json, package_lock_digest, run_dir
       FROM run_inputs
@@ -822,12 +891,23 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceLockJson = frozenLockJson(this.cwd, input);
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
+    if (options.agentOverrides !== undefined) {
+      const agentOverrides = tryParseAgentOverrideMap(options.agentOverrides, forkIr.agents);
+      if (agentOverrides.isErr()) return err(agentOverrides.error);
+      options = { ...options, agentOverrides: agentOverrides.value };
+    }
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
     const sourceIr = JSON.parse(sourceWorkflowIrJson) as WorkflowIR;
     const sourceEffectiveIr = withAgentOverrides(sourceIr, sourceAgentOverrides);
     const forkEffectiveIr = withAgentOverrides(forkIr, forkAgentOverrides);
-    const forkInputJson = options.input === undefined ? input.input_json : stableJsonLine(options.input);
+    let forkInput = options.input;
+    if (forkInput !== undefined || options.prepared) {
+      const normalized = tryNormalizeWorkflowInput(forkIr, forkInput ?? JSON.parse(input.input_json) as JsonValue, "Fork input");
+      if (normalized.isErr()) return err(normalized.error);
+      forkInput = normalized.value;
+    }
+    const forkInputJson = forkInput === undefined ? input.input_json : stableJsonLine(forkInput);
     const forkLockJson = options.prepared ? stableJsonLine(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkName = options.prepared ? forkIr.name : source.name;
@@ -858,8 +938,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (forkNodeSignatures.has(nodeKey)) return forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey);
       return !replacement && source.status === "completed";
     }));
-    const seedPlan = targetedReplacement
-      ? planTargetedForkSeed({
+    let seedPlan: ForkSeedPlan | undefined;
+    if (targetedReplacement) {
+      const planned = planTargetedForkSeed({
           forkRunId: forkId,
           sourceWorkflow: sourceEffectiveIr,
           replacementWorkflow: forkEffectiveIr,
@@ -879,13 +960,10 @@ class SqliteRuntimeStore implements RuntimeStore {
           inputChanged: options.input !== undefined,
           unsafeReuse: options.unsafeReuse === true,
           ...(options.target === undefined ? {} : { target: options.target }),
-        }).match(
-          value => value,
-          failure => {
-            throw new ForkSeedPlanError(failure);
-          },
-        )
-      : undefined;
+        });
+      if (planned.isErr()) return err(planned.error);
+      seedPlan = planned.value;
+    }
     const inheritableNodeKeys = seedPlan?.inheritedNodeKeys ?? (options.input !== undefined ? new Set<string>() : source.status === "completed"
       ? knownCompletedNodeKeys
       : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys));
@@ -908,8 +986,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       String(artifact.id),
       `artifact_${randomUUID()}`,
     ]));
-    const forkOutputJson = source.status === "completed" && !replacement && input.output_json
-      ? forkCompletedOutputJson({
+    let forkOutputJson: string | null = null;
+    if (source.status === "completed" && !replacement && input.output_json) {
+      const rewrittenOutput = forkCompletedOutputJson({
           output: forkIr.root.output,
           completedOutputRows,
           inheritableNodeKeys,
@@ -923,22 +1002,36 @@ class SqliteRuntimeStore implements RuntimeStore {
           sourceRunId: runId,
           forkRunId: forkId,
           artifactIdMap,
-        })
-      : null;
-    try {
-      await mkdir(dirname(stagedForkRunPath), { recursive: true });
-      await cp(sourceRunDir, stagedForkRunPath, { recursive: true });
-      await pruneNonInheritedArtifacts(stagedForkRunPath, artifacts);
-      if (options.prepared) await writePreparedRunFiles(stagedForkRunPath, forkIrJson, forkLockJson);
-      await verifyFrozenRunFiles(stagedForkRunPath, forkLockJson, forkIrJson);
-      await verifyCopiedArtifacts(stagedForkRunPath, artifacts);
-      await rm(forkRunPath, { recursive: true, force: true });
-      await rename(stagedForkRunPath, forkRunPath);
-    } catch (error) {
-      await rm(stagedForkRunPath, { recursive: true, force: true });
-      await rm(forkRunPath, { recursive: true, force: true });
-      throw error;
+        });
+      if (rewrittenOutput.isErr()) return err(rewrittenOutput.error);
+      forkOutputJson = rewrittenOutput.value;
     }
+    const rewrittenNodeRows: Array<Record<string, unknown>> = [];
+    for (const row of nodeRows) {
+      if (!inheritableNodeKeys.has(String(row.node_key)) || !row.output_json) {
+        rewrittenNodeRows.push(row);
+        continue;
+      }
+      const output = rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap);
+      if (output.isErr()) return err(output.error);
+      rewrittenNodeRows.push({ ...row, output_json: output.value });
+    }
+    let rewrittenSeedPlan = seedPlan;
+    if (seedPlan) {
+      const rewritten = rewriteForkSeedPlan(seedPlan, runId, forkId, artifactIdMap);
+      if (rewritten.isErr()) return err(rewritten.error);
+      rewrittenSeedPlan = rewritten.value;
+    }
+    await publishRunDirectory({
+      cwd: this.cwd,
+      stagedRunDir: stagedForkRunPath,
+      runDir: forkRunPath,
+      populate: async stagingDir => {
+        await writeFrozenRunFiles(stagingDir, forkIrJson, forkLockJson);
+        await verifyFrozenRunFiles(stagingDir, forkLockJson, forkIrJson);
+        await copyVerifiedArtifacts(sourceRunDir, stagingDir, artifacts);
+      },
+    });
     let transactionStarted = false;
     try {
       this.db.exec("BEGIN IMMEDIATE");
@@ -980,17 +1073,16 @@ class SqliteRuntimeStore implements RuntimeStore {
           VALUES (?, 1, ?, ?)
         `).run(forkId, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
       }
-      if (targetedReplacement && seedPlan) {
+      this.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(forkId);
+      if (targetedReplacement && rewrittenSeedPlan) {
         this.schedulerStore().insertForkSeedEventsInTransaction({
           runId: forkId,
-          sourceRunId: runId,
-          artifactIdMap,
-          plan: seedPlan,
+          plan: rewrittenSeedPlan,
           now,
         });
       } else {
         const insertedNodeKeys = new Set<string>();
-        for (const row of nodeRows) {
+        for (const row of rewrittenNodeRows) {
           const nodeKey = String(row.node_key);
           if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
           insertedNodeKeys.add(nodeKey);
@@ -1002,7 +1094,7 @@ class SqliteRuntimeStore implements RuntimeStore {
             nodeKey,
             String(row.node_id),
             inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
-            inheritableNodeKeys.has(nodeKey) && row.output_json ? rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap) : null,
+            inheritableNodeKeys.has(nodeKey) && row.output_json ? String(row.output_json) : null,
           );
         }
         for (const nodeKey of irNodeKeys) {
@@ -1032,65 +1124,72 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.exec("COMMIT");
       transactionStarted = false;
     } catch (error) {
-      if (transactionStarted) this.db.exec("ROLLBACK");
-      await rm(stagedForkRunPath, { recursive: true, force: true });
-      await rm(forkRunPath, { recursive: true, force: true });
-      if (error instanceof ArtifactRewriteError) {
-        throw new ForkSeedPlanError({
-          type: "artifact-rewrite-failure",
-          artifactId: error.artifactId,
-          message: error.message,
-        });
-      }
-      throw error;
+      await removeOwnedPathAfterFailure(forkRunPath, rollbackAfterFailure(this.db, transactionStarted, error));
     }
-    return { ...this.requireRun(forkId), forkCreated: true };
+    return ok({ ...this.requireRun(forkId), forkCreated: true });
   }
 
-  async cleanupRunDirectories(options: CleanupRunDirectoriesOptions = {}): Promise<CleanupRunDirectoriesResult> {
+  async cleanupStagedRunDirectories(): Promise<void> {
     let runsDir: string;
     try {
       runsDir = containedRunsRoot(this.cwd);
     } catch (error) {
-      if ((error as { code?: unknown }).code === "ENOENT") return { staged: 0, orphaned: 0 };
+      if (isMissingPathError(error)) return;
       throw error;
     }
-    const olderThanMs = options.olderThanMs ?? 60_000;
-    const removeOrphanedRuns = options.removeOrphanedRuns ?? false;
     let entries: string[];
     try {
       entries = await readdir(runsDir);
-    } catch {
-      return { staged: 0, orphaned: 0 };
+    } catch (error) {
+      if (isMissingPathError(error)) return;
+      throw error;
     }
-    const validRunDirs = new Set(this.db.prepare("SELECT run_dir FROM run_inputs").all().map(row => String(row.run_dir)));
-    let staged = 0;
-    let orphaned = 0;
     for (const entry of entries) {
+      if (!entry.startsWith(".staging-")) continue;
       const absolutePath = join(runsDir, entry);
-      if (!(await isStalePath(absolutePath, olderThanMs))) continue;
-      if (entry.startsWith(".staging-")) {
-        await rm(absolutePath, { recursive: true, force: true });
-        staged += 1;
-        continue;
-      }
-      const relativePath = join(localStateRoot, "runs", entry);
-      if (removeOrphanedRuns && runIdPattern.test(entry) && !validRunDirs.has(relativePath)) {
-        await rm(absolutePath, { recursive: true, force: true });
-        orphaned += 1;
-      }
+      if (!(await isStalePath(absolutePath, 60_000))) continue;
+      await rm(absolutePath, { recursive: true, force: true });
     }
-    return { staged, orphaned };
   }
 
-  async deleteRun(runId: string): Promise<RunRecord | undefined> {
-    const run = this.getRunRecord(runId);
-    if (!run) return undefined;
-    const runDir = this.getRunDir(runId);
-    const absoluteRunDir = runDir ? containedRunDir(this.cwd, runDir) : undefined;
-    this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
-    if (absoluteRunDir) await rm(absoluteRunDir, { recursive: true, force: true });
-    return run;
+  deleteRun(runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure> {
+    return new ResultAsync(this.deleteRunResult(runId));
+  }
+
+  private async deleteRunResult(runId: string): Promise<Result<RunRecord | undefined, RunDeleteFailure>> {
+    let transactionStarted = false;
+    let run: RunRecord;
+    let absoluteRunDir: string;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transactionStarted = true;
+      const existing = this.getRunRecord(runId);
+      if (!existing) {
+        this.db.exec("ROLLBACK");
+        transactionStarted = false;
+        return ok(undefined);
+      }
+      if (this.getRunExecutionState(existing).state === "active") {
+        this.db.exec("ROLLBACK");
+        transactionStarted = false;
+        return err({
+          type: "run-delete-active",
+          runId,
+          message: `Run '${runId}' is active and cannot be deleted.`,
+        });
+      }
+      const runDir = this.getRunDir(runId);
+      if (!runDir) throw new Error(`Run '${runId}' has no frozen input.`);
+      absoluteRunDir = containedRunDir(this.cwd, runDir);
+      this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+      this.db.exec("COMMIT");
+      transactionStarted = false;
+      run = existing;
+    } catch (error) {
+      throw rollbackAfterFailure(this.db, transactionStarted, error);
+    }
+    await rm(absoluteRunDir, { recursive: true, force: true });
+    return ok(run);
   }
 
   writeHookJournal(entry: HookJournalEntry): void {
@@ -1136,9 +1235,77 @@ class SqliteRuntimeStore implements RuntimeStore {
     return Number(this.db.prepare("DELETE FROM hook_journal WHERE triggered_at < ?").run(cutoff.toISOString()).changes);
   }
 
+  getHookDispatchCursor(runId: string): number {
+    const row = this.db.prepare("SELECT event_sequence FROM hook_dispatch_cursors WHERE run_id = ?").get(runId) as { event_sequence: number } | undefined;
+    if (!row) {
+      if (this.getRunRecord(runId)) throw new Error(`Run '${runId}' has no hook dispatch cursor.`);
+      throw new Error(`Run '${runId}' was not found.`);
+    }
+    const sequence = Number(row.event_sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error(`Run '${runId}' has an invalid hook dispatch cursor.`);
+    return sequence;
+  }
+
+  compareAndSetHookDispatchCursor(runId: string, expectedSequence: number, nextSequence: number): boolean {
+    if (!Number.isSafeInteger(expectedSequence) || !Number.isSafeInteger(nextSequence) || expectedSequence < 0 || nextSequence <= expectedSequence) {
+      throw new Error(`Run '${runId}' hook dispatch cursor transition is invalid.`);
+    }
+    const result = this.db.prepare(`
+      UPDATE hook_dispatch_cursors
+      SET event_sequence = ?
+      WHERE run_id = ? AND event_sequence = ?
+    `).run(nextSequence, runId, expectedSequence);
+    return result.changes === 1;
+  }
+
   getLastRunEventSequence(runId: string): number {
     const row = this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?").get(runId) as { sequence: number } | undefined;
     return Number(row?.sequence ?? 0);
+  }
+
+  getRunEventVersion(runId: string): number | undefined {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(run_events.sequence), 0) AS sequence
+      FROM runs
+      LEFT JOIN run_events ON run_events.run_id = runs.id
+      WHERE runs.id = ?
+      GROUP BY runs.id
+    `).get(runId) as { sequence: number } | undefined;
+    if (!row) return undefined;
+    const sequence = Number(row.sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error(`Run '${runId}' has an invalid event sequence.`);
+    return sequence;
+  }
+
+  readHookDispatchEvents(runId: string, afterSequence: number): HookDispatchEventRead {
+    let transactionStarted = false;
+    try {
+      this.db.exec("BEGIN");
+      transactionStarted = true;
+      const lastSequence = this.getRunEventVersion(runId);
+      if (lastSequence === undefined) throw new Error(`Run '${runId}' was not found.`);
+      const row = this.db.prepare(`
+        SELECT run_id, sequence, type, node_key, payload_json, created_at, idempotency_key
+        FROM run_events
+        WHERE run_id = ? AND sequence > ?
+        ORDER BY sequence ASC
+        LIMIT 1
+      `).get(runId, afterSequence) as {
+        run_id: string;
+        sequence: number;
+        type: string;
+        node_key: string | null;
+        payload_json: string;
+        created_at: string;
+        idempotency_key: string;
+      } | undefined;
+      const events = row ? [decodeCommittedRuntimeEventRow(row)] : [];
+      this.db.exec("COMMIT");
+      transactionStarted = false;
+      return { lastSequence, events };
+    } catch (error) {
+      throw rollbackAfterFailure(this.db, transactionStarted, error);
+    }
   }
 
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[] {
@@ -1396,7 +1563,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunDetailsInputRow | undefined;
-    if (!input) return undefined;
+    if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
     const agentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
@@ -1744,16 +1911,11 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   insertForkSeedEventsInTransaction(input: {
     runId: string;
-    sourceRunId: string;
-    artifactIdMap: Record<string, string>;
     plan: ForkSeedPlan;
     now: string;
   }): void {
     if (input.plan.events.length === 0) return;
-    const events = input.plan.events.map(event => ({
-      ...event,
-      payload: rewriteArtifactValue(event.payload as JsonValue, input.sourceRunId, input.runId, input.artifactIdMap),
-    }) as SchedulerEvent);
+    const events = input.plan.events;
     const current = this.loadRunSnapshot(input.runId);
     const commitKey = `fork-seed:${input.runId}`;
     this.db.prepare(`
@@ -1843,7 +2005,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         admissionVersion: input.expectedVersion,
         ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       };
-      const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey } };
+      const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey, attemptId } };
       const attemptStartedEvent: SchedulerEvent = { type: "attempt.started", payload };
       const memberStartedEvents = this.groupMemberStartedEventsForNode(input.runId, input.nodeKey, current.projection);
       const events = [instanceStartedEvent, ...memberStartedEvents, attemptStartedEvent];
@@ -1931,12 +2093,31 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
+    const intentDigest = schedulerIntentDigest({
+      type: "signal",
+      requestedTarget: input.requestedTarget ?? input.nodeKey,
+      nodeKey: input.nodeKey,
+      payload: input.payload,
+      commandIdempotencyKey: input.commandIdempotencyKey,
+    });
+    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
+    if (duplicate) return duplicate;
     const now = input.now ?? new Date();
     let snapshot = this.loadRunSnapshot(input.runId);
     let wait = snapshot.projection.signalWaits[input.nodeKey];
     if (!wait) throwSchedulerStoreError({ type: "signal-wait-not-found", runId: input.runId, nodeKey: input.nodeKey, message: `Signal wait '${input.nodeKey}' was not found.` });
     if (wait.status === "consumed" && wait.payload !== undefined && stableJsonLine(wait.payload) === stableJsonLine(input.payload)) {
-      return snapshot;
+      if (wait.commandIdempotencyKey !== input.commandIdempotencyKey) {
+        throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' was already consumed by a different command.` });
+      }
+      return this.appendSchedulerEvents({
+        runId: input.runId,
+        expectedVersion: snapshot.version,
+        ownerEpoch: input.ownerEpoch,
+        idempotencyKey: input.idempotencyKey,
+        intentDigest,
+        events: [],
+      });
     }
     if (wait.status === "consumed") {
       throwSchedulerStoreError({ type: "signal-wait-terminal", runId: input.runId, nodeKey: input.nodeKey, status: wait.status, message: `Signal wait '${input.nodeKey}' has already consumed a different payload.` });
@@ -1984,6 +2165,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       expectedVersion: snapshot.version,
       ownerEpoch: input.ownerEpoch,
       idempotencyKey: input.idempotencyKey,
+      intentDigest,
       events,
     });
   }
@@ -2129,7 +2311,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
-    const targetKey = retryTargetKey(input.target, idempotencyKey, snapshot);
+    const targetKey = retryTargetKey(input.target, snapshot).match(
+      value => value,
+      failure => throwSchedulerStoreError(failure),
+    );
     const instance = snapshot.projection.instances[targetKey];
     const frame = snapshot.projection.frames[targetKey];
     if (!instance && !frame) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey, message: `Retry target '${targetKey}' was not found.` });
@@ -2217,7 +2402,10 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         events: [],
       });
     }
-    const targetKey = input.target === undefined ? "root" : cancelTargetKey(input.target, input.idempotencyKey, snapshot);
+    const targetKey = input.target === undefined ? "root" : cancelTargetKey(input.target, snapshot).match(
+      value => value,
+      failure => throwSchedulerStoreError(failure),
+    );
     const events = targetKey === "root" && !snapshot.projection.frames.root && snapshot.projection.run.status === "pending"
       ? [
         { type: "frame.started", payload: { runId: input.runId, frameKey: "root", frameKind: "root" } },
@@ -2818,16 +3006,11 @@ function parseSchedulerProjection(json: string, runId: string): SchedulerProject
 }
 
 function schedulerProjectionCheckpoint(db: DatabaseSync, runId: string): { event_sequence: number; projection_json: string } | undefined {
-  try {
-    return db.prepare(`
-      SELECT event_sequence, projection_json
-      FROM scheduler_projection_checkpoints
-      WHERE run_id = ?
-    `).get(runId) as { event_sequence: number; projection_json: string } | undefined;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("no such table: scheduler_projection_checkpoints")) return undefined;
-    throw error;
-  }
+  return db.prepare(`
+    SELECT event_sequence, projection_json
+    FROM scheduler_projection_checkpoints
+    WHERE run_id = ?
+  `).get(runId) as { event_sequence: number; projection_json: string } | undefined;
 }
 
 type ProjectionEntityDelta = { upserts: string[]; deletes: string[] };
@@ -3254,6 +3437,7 @@ function instanceResultEvent(
       type: "instance.completed",
       payload: {
         nodeKey,
+        attemptId: input.attemptId,
         acceptedAttemptId: input.attemptId,
         ...(input.result.status === "completed" && input.result.output !== undefined ? { output: input.result.output } : {}),
       },
@@ -3267,6 +3451,7 @@ function instanceResultEvent(
     type: "instance.failed",
     payload: {
       nodeKey,
+      attemptId: input.attemptId,
       error: attemptEvent.payload.error ?? { reason: input.result.status === "failed" || input.result.status === "timed_out" ? input.result.reason : "attempt_failed" },
       ...(statusReason === undefined ? {} : { statusReason }),
     },
@@ -3294,8 +3479,8 @@ function schedulerIntentDigest(intent: JsonValue): string {
   return createHash("sha256").update(stableJson(intent)).digest("hex");
 }
 
-function retryTargetKey(target: string, idempotencyKey: string, snapshot: SchedulerSnapshot): string {
-  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return target;
+function retryTargetKey(target: string, snapshot: SchedulerSnapshot): Result<string, SchedulerStoreError> {
+  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return ok(target);
   const instanceMatches = Object.values(snapshot.projection.instances)
     .filter(instance => instance.nodeId === target && instance.status === "failed")
     .map(instance => instance.nodeKey);
@@ -3303,14 +3488,20 @@ function retryTargetKey(target: string, idempotencyKey: string, snapshot: Schedu
     .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && frame.status === "failed")
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new SchedulerControlInputError(`Scheduler retry intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
-  if (target === "root" && snapshot.projection.frames.root) return "root";
-  return target;
+  if (matches.length === 1) return ok(matches[0]!);
+  if (matches.length > 1) return err({
+    type: "ambiguous-retry-target",
+    runId: snapshot.runId,
+    targetKey: target,
+    candidateKeys: matches,
+    message: `Scheduler retry target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
+  });
+  if (target === "root" && snapshot.projection.frames.root) return ok("root");
+  return ok(target);
 }
 
-function cancelTargetKey(target: string, idempotencyKey: string, snapshot: SchedulerSnapshot): string {
-  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return target;
+function cancelTargetKey(target: string, snapshot: SchedulerSnapshot): Result<string, SchedulerStoreError> {
+  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return ok(target);
   const instanceMatches = Object.values(snapshot.projection.instances)
     .filter(instance => instance.nodeId === target && !isTerminalStatus(instance.status))
     .map(instance => instance.nodeKey);
@@ -3318,10 +3509,16 @@ function cancelTargetKey(target: string, idempotencyKey: string, snapshot: Sched
     .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && !isTerminalStatus(frame.status))
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return matches[0]!;
-  if (matches.length > 1) throw new SchedulerControlInputError(`Scheduler cancel intent '${idempotencyKey}' target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`);
-  if (target === "root" && snapshot.projection.frames.root) return "root";
-  return target;
+  if (matches.length === 1) return ok(matches[0]!);
+  if (matches.length > 1) return err({
+    type: "ambiguous-cancel-target",
+    runId: snapshot.runId,
+    targetKey: target,
+    candidateKeys: matches,
+    message: `Scheduler cancel target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
+  });
+  if (target === "root" && snapshot.projection.frames.root) return ok("root");
+  return ok(target);
 }
 
 function isTerminalStatus(status: string): boolean {
@@ -3341,9 +3538,9 @@ const RUNTIME_STORE_BUSY_TIMEOUT_MS = 5_000;
 
 export function isRuntimeStoreBusyError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { code?: unknown; message?: unknown };
-  return candidate.code === "SQLITE_BUSY"
-    || (typeof candidate.message === "string" && candidate.message.includes("database is locked"));
+  const candidate = error as { code?: unknown; errcode?: unknown };
+  if (candidate.code === "SQLITE_BUSY" || candidate.code === "SQLITE_LOCKED") return true;
+  return candidate.code === "ERR_SQLITE_ERROR" && (candidate.errcode === 5 || candidate.errcode === 6);
 }
 
 function openDatabase(path: string, readOnly = false): DatabaseSync {
@@ -3580,6 +3777,11 @@ function initializeSchema(db: DatabaseSync): void {
       triggered_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS hook_dispatch_cursors (
+      run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      event_sequence INTEGER NOT NULL CHECK (event_sequence >= 0)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_run_leases_expires ON run_leases(lease_expires_at);
     CREATE INDEX IF NOT EXISTS idx_scheduler_frames_parent_status ON scheduler_frames(run_id, parent_frame_key, status);
     CREATE INDEX IF NOT EXISTS idx_node_instances_node_status ON node_instances(run_id, node_id, status);
@@ -3608,14 +3810,24 @@ function initializeSchema(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
   `);
+  db.exec(`
+    INSERT INTO hook_dispatch_cursors (run_id, event_sequence)
+    SELECT runs.id, COALESCE(MAX(run_events.sequence), 0)
+    FROM runs
+    LEFT JOIN run_events ON run_events.run_id = runs.id
+    LEFT JOIN hook_dispatch_cursors ON hook_dispatch_cursors.run_id = runs.id
+    WHERE hook_dispatch_cursors.run_id IS NULL
+    GROUP BY runs.id;
+  `);
 }
 
 function parseAgentOverrides(json: string): AgentOverrideMap {
   return parseAgentOverrideMap(JSON.parse(json) as unknown);
 }
 
-export function validateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined): AgentOverrideMap {
-  return normalizeAgentOverrides(ir, input);
+export function tryValidateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined): Result<AgentOverrideMap, AgentOverrideValidationFailure> {
+  if (input === undefined) return ok({});
+  return tryParseAgentOverrideMap(input, ir.agents).map(parsed => normalizeAgentOverrides(ir, parsed));
 }
 
 function normalizeAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined, inherited: AgentOverrideMap = {}): AgentOverrideMap {
@@ -3726,36 +3938,40 @@ function nodeSignatures(scope: ScopeIR): Map<string, string> {
   return new Map(Array.from(walkNodes(scope), ({ node }) => [node.id, stableJsonLine(node)] as const));
 }
 
-function canonicalPreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): PreparedRunWorkflow {
+export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
   let ir: unknown;
   try {
     ir = JSON.parse(prepared.irJson);
   } catch {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow IR JSON is invalid.");
+    return preparedInvalid("invalid-ir-json", "Prepared workflow IR JSON is invalid.");
   }
   if (stableJsonLine(ir) !== stableJsonLine(prepared.ir)) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow IR JSON does not match prepared IR.");
+    return preparedInvalid("ir-mismatch", "Prepared workflow IR JSON does not match prepared IR.");
   }
   if (digest(Buffer.from(prepared.irJson)) !== prepared.lock.ir.digest) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow lock IR digest does not match IR JSON.");
+    return preparedInvalid("ir-digest-mismatch", "Prepared workflow lock IR digest does not match IR JSON.");
   }
   if (prepared.lock.sourceGraphDigest !== prepared.sourceGraphDigest) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow lock source graph digest does not match prepared source graph digest.");
+    return preparedInvalid("source-graph-mismatch", "Prepared workflow lock source graph digest does not match prepared source graph digest.");
   }
   const hasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared, "packageLockDigest");
   const lockHasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared.lock, "packageLockDigest");
   if (hasPackageLockDigest !== lockHasPackageLockDigest || prepared.packageLockDigest !== prepared.lock.packageLockDigest) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow lock package lock digest does not match prepared package lock digest.");
+    return preparedInvalid("package-lock-mismatch", "Prepared workflow lock package lock digest does not match prepared package lock digest.");
   }
   const sourceGraphDigest = digest(Buffer.from([prepared.lock.workflow.sourceDigest, prepared.packageLockDigest ?? ""].join("\n")));
   if (prepared.sourceGraphDigest !== sourceGraphDigest) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow source graph digest does not match workflow and package lock digests.");
+    return preparedInvalid("source-graph-mismatch", "Prepared workflow source graph digest does not match workflow and package lock digests.");
   }
   const workflowEntry = relative(resolve(cwd), resolve(cwd, prepared.workflowPath));
   if (prepared.lock.workflow.entry !== workflowEntry) {
-    throw new PreparedRunWorkflowValidationError("Prepared workflow lock entry does not match prepared workflow path.");
+    return preparedInvalid("entry-mismatch", "Prepared workflow lock entry does not match prepared workflow path.");
   }
-  return { ...prepared, ir: ir as WorkflowIR };
+  return ok({ ...prepared, ir: ir as WorkflowIR });
+}
+
+function preparedInvalid(reason: PreparedRunValidationFailure["reason"], message: string): Result<never, PreparedRunValidationFailure> {
+  return err({ type: "prepared-workflow-invalid", reason, message });
 }
 
 function stableJsonLine(value: unknown): string {
@@ -3793,13 +4009,15 @@ function forkCompletedOutputJson(args: {
   sourceRunId: string;
   forkRunId: string;
   artifactIdMap: Record<string, string>;
-}): string {
-  const nodes = completedOutputMap(args.completedOutputRows
-    .filter(row => args.inheritableNodeKeys.has(row.nodeKey))
-    .map(row => ({
-      ...row,
-      output: rewriteArtifactValue(assertJsonValue(row.output, `fork node '${row.nodeKey}' output`), args.sourceRunId, args.forkRunId, args.artifactIdMap),
-    })));
+}): Result<string, ArtifactRewriteFailure> {
+  const rows: Array<{ nodeKey: string; nodeId: string; output: JsonValue }> = [];
+  for (const row of args.completedOutputRows) {
+    if (!args.inheritableNodeKeys.has(row.nodeKey)) continue;
+    const rewritten = rewriteArtifactValue(assertJsonValue(row.output, `fork node '${row.nodeKey}' output`), args.sourceRunId, args.forkRunId, args.artifactIdMap);
+    if (rewritten.isErr()) return err(rewritten.error);
+    rows.push({ ...row, output: rewritten.value });
+  }
+  const nodes = completedOutputMap(rows);
   const output = evaluateRecordedOutput(args.output, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
   return rewriteArtifactRefs(stableJsonLine(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
 }
@@ -3843,9 +4061,24 @@ function completedOutputMap(rows: Array<{ nodeKey: string; nodeId: string; outpu
   return byKey;
 }
 
-function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): string {
+function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): Result<string, ArtifactRewriteFailure> {
   const value = JSON.parse(json) as JsonValue;
-  return stableJsonLine(rewriteArtifactValue(value, sourceRunId, forkRunId, artifactIds));
+  return rewriteArtifactValue(value, sourceRunId, forkRunId, artifactIds).map(stableJsonLine);
+}
+
+function rewriteForkSeedPlan(
+  plan: ForkSeedPlan,
+  sourceRunId: string,
+  forkRunId: string,
+  artifactIds: Record<string, string>,
+): Result<ForkSeedPlan, ArtifactRewriteFailure> {
+  const events: SchedulerEvent[] = [];
+  for (const event of plan.events) {
+    const payload = rewriteArtifactValue(event.payload as JsonValue, sourceRunId, forkRunId, artifactIds);
+    if (payload.isErr()) return err(payload.error);
+    events.push({ ...event, payload: payload.value } as SchedulerEvent);
+  }
+  return ok({ ...plan, events });
 }
 
 function requireArtifactId(map: Record<string, string>, sourceId: string): string {
@@ -3881,12 +4114,63 @@ function collectArtifactIds(value: JsonValue, runId: string, out: Set<string>): 
   for (const item of Object.values(value)) collectArtifactIds(item as JsonValue, runId, out);
 }
 
-async function verifyCopiedArtifacts(runDir: string, artifacts: ArtifactRow[]): Promise<void> {
+async function publishRunDirectory(input: {
+  cwd: string;
+  stagedRunDir: string;
+  runDir: string;
+  populate(stagingDir: string): Promise<void>;
+}): Promise<void> {
+  const expectedRunsRoot = resolve(input.cwd, localStateRoot, "runs");
+  await mkdir(expectedRunsRoot, { recursive: true });
+  const runsRoot = containedRunsRoot(input.cwd);
+  if (resolve(dirname(input.stagedRunDir)) !== runsRoot || resolve(dirname(input.runDir)) !== runsRoot) {
+    throw new Error(`Run directory must be inside ${localStateRoot}/runs.`);
+  }
+  await mkdir(input.stagedRunDir);
+  try {
+    await input.populate(input.stagedRunDir);
+    await requireMissingPath(input.runDir);
+    await rename(input.stagedRunDir, input.runDir);
+  } catch (error) {
+    await removeOwnedPathAfterFailure(input.stagedRunDir, error);
+  }
+}
+
+async function requireMissingPath(path: string): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`Run directory '${path}' already exists.`);
+}
+
+async function copyVerifiedArtifacts(sourceRunDir: string, stagingRunDir: string, artifacts: ArtifactRow[]): Promise<void> {
+  const sourceArtifactRoot = resolve(sourceRunDir, "artifacts");
+  if (artifacts.length > 0) {
+    const info = await lstat(sourceArtifactRoot);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(`Fork artifact '${String(artifacts[0]!.id)}' has invalid relative path.`);
+    }
+  }
   for (const artifact of artifacts) {
     const relativePath = String(artifact.relative_path);
+    const sourcePath = resolve(sourceRunDir, relativePath);
+    const stagingArtifactRoot = resolve(stagingRunDir, "artifacts");
+    const destination = resolve(stagingRunDir, relativePath);
+    if (
+      isAbsolute(relativePath)
+      || sourcePath === sourceArtifactRoot
+      || destination === stagingArtifactRoot
+      || !isContainedPath(sourceArtifactRoot, sourcePath)
+      || !isContainedPath(stagingArtifactRoot, destination)
+    ) {
+      throw new Error(`Fork artifact '${String(artifact.id)}' has invalid relative path.`);
+    }
     let bytes: Buffer;
     try {
-      bytes = await readContainedFile(runDir, relativePath);
+      bytes = await readContainedFile(sourceArtifactRoot, relative(sourceArtifactRoot, sourcePath));
     } catch (error) {
       if (error instanceof PathEscapeError) throw new Error(`Fork artifact '${String(artifact.id)}' has invalid relative path.`);
       throw error;
@@ -3895,41 +4179,14 @@ async function verifyCopiedArtifacts(runDir: string, artifacts: ArtifactRow[]): 
     const expectedDigest = String(artifact.digest);
     const actualDigest = digest(bytes);
     if (bytes.byteLength !== expectedSize || actualDigest !== expectedDigest) {
-      throw new Error(`Fork artifact '${String(artifact.id)}' failed copy verification.`);
+      throw new Error(`Fork artifact '${String(artifact.id)}' failed source verification.`);
     }
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, bytes);
   }
 }
 
-async function pruneNonInheritedArtifacts(runDir: string, artifacts: ArtifactRow[]): Promise<void> {
-  const artifactDir = join(runDir, "artifacts");
-  const keep = new Set(artifacts.map(artifact => String(artifact.relative_path)));
-  let entries: string[];
-  try {
-    entries = await readdir(artifactDir);
-  } catch {
-    return;
-  }
-  await Promise.all(entries.map(entry => pruneArtifactEntry(runDir, join("artifacts", entry), keep)));
-}
-
-async function pruneArtifactEntry(runDir: string, relativePath: string, keep: Set<string>): Promise<boolean> {
-  const absolutePath = join(runDir, relativePath);
-  const info = await lstat(absolutePath);
-  if (!info.isDirectory()) {
-    if (keep.has(relativePath)) return false;
-    await rm(absolutePath, { force: true });
-    return true;
-  }
-  const children = await readdir(absolutePath);
-  const removed = await Promise.all(children.map(child => pruneArtifactEntry(runDir, join(relativePath, child), keep)));
-  if (removed.every(Boolean)) {
-    await rm(absolutePath, { recursive: true, force: true });
-    return true;
-  }
-  return false;
-}
-
-async function writePreparedRunFiles(runDir: string, workflowIrJson: string, lockJson: string): Promise<void> {
+async function writeFrozenRunFiles(runDir: string, workflowIrJson: string, lockJson: string): Promise<void> {
   await writeFile(join(runDir, "workflow.ir.json"), workflowIrJson);
   await writeFile(join(runDir, "lock.json"), lockJson);
 }
@@ -4039,9 +4296,37 @@ async function isStalePath(path: string, olderThanMs: number): Promise<boolean> 
   try {
     const info = await stat(path);
     return Date.now() - info.mtimeMs >= olderThanMs;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
   }
+}
+
+async function removeOwnedPathAfterFailure(path: string, failure: unknown): Promise<never> {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch (cleanupError) {
+    throw new AggregateError([failure, cleanupError], `Operation failed and owned path '${path}' could not be removed.`);
+  }
+  throw failure;
+}
+
+function rollbackAfterFailure(db: DatabaseSync, transactionStarted: boolean, failure: unknown): unknown {
+  if (!transactionStarted) return failure;
+  try {
+    db.exec("ROLLBACK");
+    return failure;
+  } catch (rollbackError) {
+    return new AggregateError([failure, rollbackError], "Operation failed and its database transaction could not be rolled back.");
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && "code" in error);
 }
 
 function summarizeWorkflowForEvent(ir: WorkflowIR): {

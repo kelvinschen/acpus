@@ -4,14 +4,20 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok, okAsync } from "neverthrow";
 import type { TaskNodeIR } from "@acpus/core/ir";
-import { executeTaskNode } from "../src/execution/task-executor.js";
-import type { TaskAttemptRunner } from "../src/execution/task-process.js";
+import { executeTaskNode as executeTaskNodeResult } from "../src/execution/task-executor.js";
 import type { ArtifactRecord, RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
+import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";
 
 const taskProcessMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
   actualRunTaskAttempt: undefined as TaskAttemptRunner | undefined,
 }));
+
+async function executeTaskNode(...args: Parameters<typeof executeTaskNodeResult>) {
+  const result = await executeTaskNodeResult(...args);
+  if (result.isErr()) throw Object.assign(new Error(result.error.message), { failure: result.error });
+  return result.value;
+}
 
 vi.mock("../src/execution/task-process.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/execution/task-process.js")>();
@@ -33,6 +39,18 @@ afterEach(async () => {
 });
 
 describe("task executor", () => {
+  it("returns expression resolution failures without rejecting the execution boundary", async () => {
+    const result = await executeTaskNodeResult(inlineTask("bad_cwd", "async () => undefined", {
+      cwd: { kind: "literal", value: 42 },
+    }), {}, taskOptions("run_bad_cwd"));
+
+    expect(result.isErr() && result.error).toMatchObject({
+      type: "resolution",
+      error: { type: "type", field: "Task node 'bad_cwd' cwd", expected: "string", actual: "number" },
+    });
+    expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
+  });
+
   it("executes inline task source that contains esbuild name helpers", async () => {
     const metadata: unknown[] = [];
     const node = {
@@ -80,9 +98,33 @@ describe("task executor", () => {
     ]);
   });
 
+  it("does not create implicit output or work directories", async () => {
+    const runId = "run_plain";
+    const runDir = join(workspace, ".acpus", ".local", "runs", runId);
+    await mkdir(runDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(runDir, "workflow.ir.json"), "{}\n"),
+      writeFile(join(runDir, "lock.json"), "{}\n"),
+    ]);
+
+    await expect(executeTaskNode(
+      inlineTask("plain", "async () => ({ ok: true })"),
+      {},
+      taskOptions(runId),
+    )).resolves.toEqual({ ok: true });
+
+    await expect(readdir(runDir).then(entries => entries.sort())).resolves.toEqual(["lock.json", "workflow.ir.json"]);
+  });
+
   it("gives task code, Node APIs, artifacts, env, and $ one live process context", async () => {
     const workDir = join(workspace, "worktree");
+    const runDir = join(workspace, ".acpus", ".local", "runs", "run_context");
     await mkdir(join(workDir, "nested"), { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(runDir, "workflow.ir.json"), "{}\n"),
+      writeFile(join(runDir, "lock.json"), "{}\n"),
+    ]);
     await writeFile(join(workDir, "marker.txt"), "root-marker\n");
     await writeFile(join(workDir, "nested", "marker.txt"), "nested-marker\n");
     const artifacts: RegisterArtifactInput[] = [];
@@ -119,9 +161,10 @@ describe("task executor", () => {
       inheritedPath: true,
     });
     expect(artifacts).toHaveLength(1);
-    await expect(readFile(join(workspace, ".acpus/.local/runs/run_context", artifacts[0]!.relativePath), "utf8")).resolves.toBe("nested-marker\n");
-    expect(output.artifactPath).toBe(join(workspace, ".acpus/.local/runs/run_context", artifacts[0]!.relativePath));
+    await expect(readFile(join(runDir, artifacts[0]!.relativePath), "utf8")).resolves.toBe("nested-marker\n");
+    expect(output.artifactPath).toBe(join(runDir, artifacts[0]!.relativePath));
     expect(artifacts[0]!.mediaType).toBeUndefined();
+    await expect(readdir(runDir).then(entries => entries.sort())).resolves.toEqual(["artifacts", "lock.json", "workflow.ir.json"]);
   });
 
   it("resolves bound input artifacts to an absolute path that survives process.chdir", async () => {
@@ -179,7 +222,7 @@ describe("task executor", () => {
   it("rejects unbound and cross-run ArtifactRefs", async () => {
     const unbound = inlineTask("unbound", "async ({ artifact }) => artifact.path({ kind: 'artifact', uri: 'artifact://run_unbound/artifact_1' })");
     await expect(executeTaskNode(unbound, {}, taskOptions("run_unbound"))).rejects.toMatchObject({
-      failure: { type: "task", message: expect.stringContaining("is not available to this Task") },
+      failure: { type: "failed", message: expect.stringContaining("is not available to this Task") },
     });
 
     taskProcessMocks.runTaskAttempt.mockClear();
@@ -195,7 +238,7 @@ describe("task executor", () => {
       },
     });
     await expect(executeTaskNode(foreign, {}, taskOptions("run_current"))).rejects.toMatchObject({
-      resolution: { type: "evaluation", field: "Task node 'foreign' input" },
+      failure: { type: "resolution", error: { type: "evaluation", field: "Task node 'foreign' input" } },
     });
     expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
   });
@@ -261,11 +304,11 @@ describe("task executor", () => {
     await expect(executeTaskNode(inlineTask("missing", "async () => ({ ok: true })", {
       cwd: { kind: "literal", value: missing },
     }), {}, taskOptions("run_missing"))).rejects.toMatchObject({
-      failure: { type: "spawn", cwd: missing, code: "ENOENT" },
+      failure: { type: "failed", message: expect.stringMatching(/missing.*ENOENT|ENOENT.*missing/) },
     });
 
     await expect(executeTaskNode(inlineTask("exit", "async () => { process.exit(23); }"), {}, taskOptions("run_exit"))).rejects.toMatchObject({
-      failure: { type: "unexpected_exit", exitCode: 23 },
+      failure: { type: "failed", message: expect.stringContaining("code 23") },
     });
     await expect(executeTaskNode(inlineTask("after", "async () => ({ alive: true })"), {}, taskOptions("run_after"))).resolves.toEqual({ alive: true });
   });
@@ -319,6 +362,31 @@ describe("task executor", () => {
     });
   });
 
+  it("rejects runtime artifact filesystem failures instead of returning a Task failure", async () => {
+    const runId = "run_artifact_filesystem_failure";
+    const runDir = join(workspace, ".acpus", ".local", "runs", runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "artifacts"), "blocks the artifact directory");
+    let caught: unknown;
+
+    try {
+      await executeTaskNodeResult(
+        inlineTask("artifact_filesystem_failure", "async ({ artifact }) => artifact.write('result.txt', 'result')"),
+        {},
+        taskOptions(runId),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      name: "TaskProcessSystemError",
+      message: expect.stringContaining("Task artifact write failed for node 'artifact_filesystem_failure' attempt 1"),
+      code: "ENOTDIR",
+    });
+    expect(caught).not.toHaveProperty("failure");
+  });
+
   it("rejects artifact writes after scheduler cancellation", async () => {
     const controller = new AbortController();
     const artifacts: RegisterArtifactInput[] = [];
@@ -359,7 +427,7 @@ describe("task executor", () => {
     });
 
     await expect(executeTaskNode(node, {}, options)).rejects.toMatchObject({
-      failure: { type: "task", message: "attempt is already cancelled" },
+      failure: { type: "terminal-attempt", message: "attempt is already cancelled" },
     });
 
     const artifactDir = join(workspace, ".acpus/.local/runs/run_fenced_artifact", "artifacts", "fenced_artifact", "attempt-1");

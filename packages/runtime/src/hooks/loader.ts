@@ -97,5 +97,6 @@ function hashDefinition(source: HookSource, sourcePath: string, event: string, d
 }
 
 function isNotFound(error: unknown): boolean {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT";
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
 }

@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,12 +7,11 @@ import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
-import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
+import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { completedAgentTurn } from "./support/agent-turn.js";
+import { tracedCompletedAgentTurn } from "./support/agent-turn.js";
 
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -37,6 +37,16 @@ function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (r
   return advanceFrozenRunProduction(productionInput);
 }
 
+async function forkRuntimeRun(
+  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  runId: string,
+  options?: Parameters<Awaited<ReturnType<typeof openRuntimeStore>>["forkRun"]>[1],
+) {
+  const result = await store.forkRun(runId, options);
+  if (result.isErr()) throw Object.assign(new Error(result.error.message), { failure: result.error });
+  return result.value;
+}
+
 describe("scheduler agent overrides and forks", () => {
   it("executes scheduler-backed agent nodes with submit-time agent overrides", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-submit-override", async workspace => {
@@ -44,7 +54,7 @@ describe("scheduler agent overrides and forks", () => {
         const store = await openRuntimeStore(workspace);
         const turns: AgentTurnRequest[] = [];
         try {
-          const run = await store.admitRun({
+          const run = await admitRunForTest(store, {
             prepared,
             input: {},
             cwd: workspace,
@@ -60,7 +70,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               turns.push(request);
-              return completedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn("{\"ok\":true}");
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
@@ -86,7 +96,7 @@ describe("scheduler agent overrides and forks", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const source = await store.admitRun({
+          const source = await admitRunForTest(store, {
             prepared,
             input: {},
             cwd: workspace,
@@ -101,7 +111,7 @@ describe("scheduler agent overrides and forks", () => {
             },
           });
 
-          const inherited = await store.forkRun(source.id);
+          const inherited = await forkRuntimeRun(store, source.id);
           expect(store.getRun(inherited.id)?.agentOverrides).toEqual({
             reviewer: {
               use: "claude",
@@ -120,7 +130,7 @@ describe("scheduler agent overrides and forks", () => {
             trace: true,
           });
 
-          const replaced = await store.forkRun(source.id, {
+          const replaced = await forkRuntimeRun(store, source.id, {
             agentOverrides: { reviewer: { command: "custom-acp-server" } },
           });
           const effective = store.getFrozenRun(replaced.id)?.ir.agents.reviewer;
@@ -153,7 +163,7 @@ describe("scheduler agent overrides and forks", () => {
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, targetedForkReplacementWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const source = await store.admitRun({ prepared: sourcePrepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: source.id,
@@ -167,7 +177,7 @@ describe("scheduler agent overrides and forks", () => {
             output: { ok: true },
           });
 
-          const fork = await store.forkRun(source.id, { prepared: replacementPrepared });
+          const fork = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared });
           const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
           expect(seeded.instances[firstKey]).toMatchObject({
             status: "completed",
@@ -199,7 +209,7 @@ describe("scheduler agent overrides and forks", () => {
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, unsafeLoopForkWorkflow(true));
         const store = await openRuntimeStore(workspace);
         try {
-          const source = await store.admitRun({ prepared: sourcePrepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
           await expect(driveFrozenRunToTerminal(workspace, store, source.id, "unsafe-loop-source")).resolves.toMatchObject({ status: "failed" });
 
           const iter0Prepare = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "prepare"));
@@ -213,13 +223,13 @@ describe("scheduler agent overrides and forks", () => {
           for (const nodeKey of inherited) expect(sourceProjection.instances[nodeKey]).toMatchObject({ status: "completed" });
           expect(sourceProjection.instances[failedTarget]).toMatchObject({ status: "failed" });
 
-          const implicit = await store.forkRun(source.id, { prepared: replacementPrepared, unsafeReuse: true });
+          const implicit = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared, unsafeReuse: true });
           expect(store.getRun(implicit.id)?.fork).toEqual({ sourceRunId: source.id, unsafeReuse: true });
           assertUnsafeLoopForkSeed(store, implicit.id, inherited, failedTarget);
           await expect(driveFrozenRunToTerminal(workspace, store, implicit.id, "unsafe-loop-implicit")).resolves.toMatchObject({ status: "completed" });
           assertUnsafeLoopForkCompleted(store, implicit.id, inherited, failedTarget);
 
-          const explicit = await store.forkRun(source.id, { prepared: replacementPrepared, target: failedTarget, unsafeReuse: true });
+          const explicit = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared, target: failedTarget, unsafeReuse: true });
           expect(store.getRun(explicit.id)?.fork).toEqual({ sourceRunId: source.id, target: failedTarget, unsafeReuse: true });
           assertUnsafeLoopForkSeed(store, explicit.id, inherited, failedTarget);
           await expect(driveFrozenRunToTerminal(workspace, store, explicit.id, "unsafe-loop-explicit")).resolves.toMatchObject({ status: "completed" });
@@ -235,7 +245,7 @@ describe("scheduler agent overrides and forks", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, targetedForkCompletedSourceWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const source = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: source.id,
@@ -243,7 +253,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
           })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
-          const fork = await store.forkRun(source.id, { target: "second" });
+          const fork = await forkRuntimeRun(store, source.id, { target: "second" });
           const firstKey = deriveInstanceKey(appendNode([], "first"));
           const secondKey = deriveInstanceKey(appendNode([], "second"));
           const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
@@ -271,7 +281,7 @@ describe("scheduler agent overrides and forks", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, targetedForkCompletedSourceWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const source = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: source.id,
@@ -279,7 +289,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
           })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
-          const fork = await store.forkRun(source.id, { agentOverrides: {} });
+          const fork = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
 
           expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", fork.id, `fork-seed:${fork.id}`)).toMatchObject({ count: 1 });
           expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[deriveInstanceKey(appendNode([], "first"))]).toMatchObject({ status: "completed" });
@@ -297,7 +307,7 @@ describe("scheduler agent overrides and forks", () => {
         let sourceId = "";
         const sourceStore = await openRuntimeStore(workspace);
         try {
-          const source = await sourceStore.admitRun({ prepared: sourcePrepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(sourceStore, { prepared: sourcePrepared, input: {}, cwd: workspace });
           sourceId = source.id;
           await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store: sourceStore });
           await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store: sourceStore });
@@ -315,7 +325,7 @@ describe("scheduler agent overrides and forks", () => {
 
         const forkStore = await openRuntimeStore(workspace);
         try {
-          await expect(forkStore.forkRun(sourceId, { prepared: replacementPrepared })).rejects.toMatchObject({
+          await expect(forkRuntimeRun(forkStore, sourceId, { prepared: replacementPrepared })).rejects.toMatchObject({
             failure: {
               type: "artifact-rewrite-failure",
               artifactId: "missing_artifact",
@@ -346,7 +356,7 @@ describe("scheduler agent overrides and forks", () => {
         const sourceTurns: AgentTurnRequest[] = [];
         const forkTurns: AgentTurnRequest[] = [];
         try {
-          const source = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: source.id,
@@ -354,12 +364,12 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               sourceTurns.push(request);
-              return completedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn("{\"ok\":true}");
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
           expect(store.getRun(source.id)).toMatchObject({ status: "completed", output: {} });
 
-          const fork = await store.forkRun(source.id, {
+          const fork = await forkRuntimeRun(store, source.id, {
             agentOverrides: { reviewer: { command: "custom-acp-server" } },
           });
           const forkRun = store.getRun(fork.id);
@@ -373,7 +383,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               forkTurns.push(request);
-              return completedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn("{\"ok\":true}");
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
@@ -391,18 +401,24 @@ describe("scheduler agent overrides and forks", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          await expect(store.admitRun({
+          expect((await store.admitRun({
             prepared,
             input: {},
             cwd: workspace,
             agentOverrides: { reviewer: { options: {} } } as any,
-          })).rejects.toThrow("$.reviewer Unrecognized key");
-          await expect(store.admitRun({
+          }))._unsafeUnwrapErr()).toMatchObject({
+            type: "agent-overrides-invalid",
+            message: expect.stringContaining("$.reviewer Unrecognized key"),
+          });
+          expect((await store.admitRun({
             prepared,
             input: {},
             cwd: workspace,
             agentOverrides: { missing: { use: "codex" } },
-          })).rejects.toThrow("does not reference a declared agent");
+          }))._unsafeUnwrapErr()).toMatchObject({
+            type: "agent-overrides-invalid",
+            message: expect.stringContaining("does not reference a declared agent"),
+          });
           for (const [agentOverrides, message] of [
             [{ reviewer: { policy: "full" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { kind: "agent_definition" } }, "$.reviewer Unrecognized key"],
@@ -412,12 +428,15 @@ describe("scheduler agent overrides and forks", () => {
             [{ reviewer: { cwd: 123 } }, "$.reviewer.cwd"],
             [{ reviewer: { env: { FLAG: true } } }, "$.reviewer.env.FLAG"],
           ] as Array<[any, string]>) {
-            await expect(store.admitRun({
+            expect((await store.admitRun({
               prepared,
               input: {},
               cwd: workspace,
               agentOverrides,
-            })).rejects.toThrow(message);
+            }))._unsafeUnwrapErr()).toMatchObject({
+              type: "agent-overrides-invalid",
+              message: expect.stringContaining(message),
+            });
           }
         } finally {
           store.close();

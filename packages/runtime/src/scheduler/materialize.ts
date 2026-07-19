@@ -1,7 +1,8 @@
 import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { normalizeWorkflowData } from "../evaluation/admissible.js";
-import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { err, ok, type Result } from "neverthrow";
+import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
+import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolutionErrorPayload, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
@@ -48,8 +49,7 @@ export function continueRootEvents(ir: WorkflowIR, projection: SchedulerProjecti
 
 function continueFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): SchedulerEvent[] {
   if (isScopeFrame(frame)) {
-    const input = scopeFrame(ir, projection, frame, baseScope);
-    return input ? continueScopeFrameEvents(input, projection) : [];
+    return continueScopeFrameEvents(scopeFrame(ir, projection, frame, baseScope), projection);
   }
   if (frame.frameKind === "loop") return continueLoopFrameEvents(ir, projection, frame, baseScope);
   return continueNodeFrameEvents(ir, projection, frame);
@@ -78,12 +78,9 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
     scope = scopeWithNodeOutput(scope, node.id, state.output);
   }
 
-  let result: JsonValue;
-  try {
-    result = evaluateOutput(input.scopeIR.output, scope);
-  } catch (error) {
-    return terminalScopeFrameEvents(input, "failed", expressionFailure(error), "expression_failed");
-  }
+  const evaluated = evaluateOutput(input.scopeIR.output, scope);
+  if (evaluated.isErr()) return terminalScopeFrameEvents(input, "failed", expressionFailure(evaluated.error), "expression_failed");
+  const result = evaluated.value;
   const events: SchedulerEvent[] = [
     { type: "frame.completed", payload: { frameKey: input.frame.frameKey, result, terminalReason: completionReason(input, projection) } },
   ];
@@ -101,19 +98,20 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
 }
 
 function continueNodeFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame): SchedulerEvent[] {
-  const node = nodeForFrame(ir, frame);
-  if (!node) return [];
+  const node = requireNodeForFrame(ir, frame);
   if (node.kind === "if" || node.kind === "switch") return continueConditionalFrameEvents(node, projection, frame);
   if (node.kind === "parallel" || node.kind === "fanout") return continueGroupFrameEvents(node, projection, frame);
-  return [];
+  throw new Error(`Running node frame '${frame.frameKey}' resolves to unsupported '${node.kind}' node '${node.id}'.`);
 }
 
 function continueConditionalFrameEvents(node: Extract<NodeIR, { kind: "if" | "switch" }>, projection: SchedulerProjection, frame: SchedulerFrame): SchedulerEvent[] {
   const branchId = projection.branchDecisions[frame.frameKey];
-  if (!branchId || !frame.instancePath) return [];
+  if (!branchId) throw new Error(`Conditional frame '${frame.frameKey}' has no durable branch decision.`);
+  if (!frame.instancePath) throw new Error(`Conditional frame '${frame.frameKey}' has no instance path.`);
+  if (!conditionalBranchById(node, branchId)) throw new Error(`Conditional frame '${frame.frameKey}' selected unknown branch '${branchId}'.`);
   const branchFrameKey = deriveInstanceKey(appendBranch(parentPath(frame.instancePath), node.id, branchId));
   const branch = projection.frames[branchFrameKey];
-  if (!branch) return [];
+  if (!branch) throw new Error(`Conditional frame '${frame.frameKey}' references missing branch frame '${branchFrameKey}'.`);
   if (branch.status === "completed") {
     return [{ type: "frame.completed", payload: { frameKey: frame.frameKey, ...(branch.result === undefined ? {} : { result: branch.result }), terminalReason: "branch_completed" } }];
   }
@@ -123,19 +121,19 @@ function continueConditionalFrameEvents(node: Extract<NodeIR, { kind: "if" | "sw
   if (branch.status === "cancelled") {
     return [{ type: "frame.cancelled", payload: { frameKey: frame.frameKey, cancelReason: cancellationReason(branch.terminalReason ?? "parent_failed") } }];
   }
-  return [];
+  if (branch.status === "running") return [];
+  throw new Error(`Conditional branch frame '${branchFrameKey}' has invalid status '${branch.status}'.`);
 }
 
 function continueGroupFrameEvents(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerProjection, frame: SchedulerFrame): SchedulerEvent[] {
   const group = projection.groups[frame.frameKey];
-  if (!group) return [];
+  if (!group) throw new Error(`Group frame '${frame.frameKey}' has no durable group projection.`);
+  if (group.nodeKey !== frame.frameKey || group.nodeId !== node.id || group.kind !== node.kind || group.strategy !== node.strategy) {
+    throw new Error(`Group frame '${frame.frameKey}' is inconsistent with frozen node '${node.id}'.`);
+  }
   if (group.status === "completed") {
-    try {
-      const result = groupResult(node, projection, frame.frameKey);
-      return [{ type: "frame.completed", payload: { frameKey: frame.frameKey, ...(result === undefined ? {} : { result }), terminalReason: "group_completed" } }];
-    } catch (error) {
-      return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
-    }
+    const result = groupResult(node, projection, frame.frameKey);
+    return [{ type: "frame.completed", payload: { frameKey: frame.frameKey, result, terminalReason: "group_completed" } }];
   }
   if (group.status === "failed") {
     return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: group.error ?? { reason: "group_failed" }, terminalReason: "group_failed" } }];
@@ -147,12 +145,14 @@ function continueGroupFrameEvents(node: ParallelNodeIR | FanoutNodeIR, projectio
 }
 
 function continueLoopFrameEvents(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): SchedulerEvent[] {
-  const loop = nodeForFrame(ir, frame);
-  if (!loop || loop.kind !== "loop" || !frame.instancePath) return [];
+  const loop = requireNodeForFrame(ir, frame);
+  if (loop.kind !== "loop") throw new Error(`Loop frame '${frame.frameKey}' resolves to '${loop.kind}' node '${loop.id}'.`);
+  if (!frame.instancePath) throw new Error(`Loop frame '${frame.frameKey}' has no instance path.`);
   const iter = frame.loop?.iter ?? 0;
   const iterationKey = deriveInstanceKey(appendLoopIteration(parentPath(frame.instancePath), loop.id, iter));
   const iteration = projection.frames[iterationKey];
-  if (!iteration || iteration.status === "running" || iteration.status === "ready" || iteration.status === "awaiting") return [];
+  if (!iteration) throw new Error(`Loop frame '${frame.frameKey}' references missing iteration frame '${iterationKey}'.`);
+  if (iteration.status === "running" || iteration.status === "ready" || iteration.status === "awaiting") return [];
   if (iteration.status === "failed") {
     return [{ type: "frame.failed", payload: { frameKey: frame.frameKey, error: iteration.error ?? { reason: "iteration_failed" }, terminalReason: iteration.terminalReason ?? "iteration_failed" } }];
   }
@@ -229,30 +229,26 @@ function materializeAssertEvents(input: { runId: string; node: Extract<NodeIR, {
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node");
-  try {
-    const passed = evaluateExpr(input.node.condition, input.scope);
-    if (typeof passed !== "boolean") throw new Error(`Assert node '${input.node.id}' condition must evaluate to boolean.`);
-    if (passed) return [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }];
-    if (!input.node.message) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message: `Assert node '${input.node.id}' failed.` }, terminalReason: "assert_failed" } }];
-    return tryResolveString(input.node.message, input.scope, `Assert node '${input.node.id}' message`).match(
-      message => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message }, terminalReason: "assert_failed" } }],
-      error => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(error), terminalReason: "expression_resolution_failed" } }],
-    );
-  } catch (error) {
-    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
+  const evaluated = tryEvaluateExpr(input.node.condition, input.scope);
+  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
+  if (typeof evaluated.value !== "boolean") {
+    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(new Error(`Assert node '${input.node.id}' condition must evaluate to boolean.`)), terminalReason: "expression_failed" } }];
   }
+  if (evaluated.value) return [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }];
+  if (!input.node.message) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message: `Assert node '${input.node.id}' failed.` }, terminalReason: "assert_failed" } }];
+  return tryResolveString(input.node.message, input.scope, `Assert node '${input.node.id}' message`).match(
+    message => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message }, terminalReason: "assert_failed" } }],
+    error => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(error), terminalReason: "expression_resolution_failed" } }],
+  );
 }
 
 function materializeConditionalEvents(input: { runId: string; node: Extract<NodeIR, { kind: "if" | "switch" }>; parentFrameKey: string; basePath: InstancePath; scope: EvaluationScope; readinessSequence: number }): SchedulerEvent[] {
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node");
-  let selected: { branchId: string; scope: ScopeIR };
-  try {
-    selected = selectConditionalBranch(input.node, input.scope);
-  } catch (error) {
-    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
-  }
+  const selectedResult = selectConditionalBranch(input.node, input.scope);
+  if (selectedResult.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(selectedResult.error), terminalReason: "expression_failed" } }];
+  const selected = selectedResult.value;
   const branchPath = appendBranch(input.basePath, input.node.id, selected.branchId);
   const branchFrameKey = deriveInstanceKey(branchPath);
   return [
@@ -331,83 +327,80 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node", input.node.strategy);
-  try {
-    const items = evaluateExpr(input.node.over, input.scope);
-    if (!Array.isArray(items)) {
-      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } }];
-    }
-    let maxConcurrency: number | undefined;
-    if (input.node.maxConcurrency !== undefined) {
-      const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`);
-      if (resolved.isErr()) {
-        return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
-      }
-      maxConcurrency = resolved.value;
-    }
-    let quorumCount: number | undefined;
-    if (input.node.strategy === "quorum") {
-      const resolved = tryResolveInteger(input.node.count, input.scope, `Fanout node '${input.node.id}' quorum count`, 1);
-      if (resolved.isErr()) {
-        return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
-      }
-      quorumCount = resolved.value;
-    }
-    const events: SchedulerEvent[] = [
-      start,
-      input.node.strategy === "quorum"
-        ? { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "quorum", quorumCount: quorumCount!, ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } }
-        : { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "all", ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } },
-    ];
-    for (const [itemIndex, item] of items.entries()) {
-      const itemPath = appendFanoutItem(input.basePath, input.node.id, itemIndex);
-      const itemFrameKey = deriveInstanceKey(itemPath);
-      const itemScope = scopeWithFanoutItem(input.scope, input.node.id, item as JsonValue, itemIndex);
-      events.push(
-        {
-          type: "frame.started",
-          payload: {
-            runId: input.runId,
-            frameKey: itemFrameKey,
-            frameKind: "fanout_item",
-            instancePath: itemPath,
-            parentFrameKey: nodeKey,
-            nodeId: input.node.id,
-            strategy: input.node.strategy,
-            scope: scopeMapForScope(itemPath, input.node.do),
-          },
-        },
-        {
-          type: "group.member_ready",
-          payload: {
-            runId: input.runId,
-            groupKey: nodeKey,
-            memberKey: itemFrameKey,
-            memberKind: "fanout_item",
-            itemIndex,
-            item: item as JsonValue,
-            childFrameKey: itemFrameKey,
-            readinessSequence: input.readinessSequence + itemIndex,
-          },
-        },
-        ...materializeScopeStart(input.runId, itemFrameKey, input.node.do, itemPath, itemScope, input.readinessSequence + itemIndex, itemFrameKey),
-      );
-    }
-    return events;
-  } catch (error) {
-    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
+  const evaluated = tryEvaluateExpr(input.node.over, input.scope);
+  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
+  const items = evaluated.value;
+  if (!Array.isArray(items)) {
+    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } }];
   }
+  let maxConcurrency: number | undefined;
+  if (input.node.maxConcurrency !== undefined) {
+    const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`);
+    if (resolved.isErr()) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    }
+    maxConcurrency = resolved.value;
+  }
+  let quorumCount: number | undefined;
+  if (input.node.strategy === "quorum") {
+    const resolved = tryResolveInteger(input.node.count, input.scope, `Fanout node '${input.node.id}' quorum count`, 1);
+    if (resolved.isErr()) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    }
+    quorumCount = resolved.value;
+  }
+  const events: SchedulerEvent[] = [
+    start,
+    input.node.strategy === "quorum"
+      ? { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "quorum", quorumCount: quorumCount!, ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } }
+      : { type: "group.started", payload: { runId: input.runId, groupKey: nodeKey, nodeKey, nodeId: input.node.id, kind: "fanout", strategy: "all", ...(maxConcurrency === undefined ? {} : { maxConcurrency }) } },
+  ];
+  for (const [itemIndex, item] of items.entries()) {
+    const itemPath = appendFanoutItem(input.basePath, input.node.id, itemIndex);
+    const itemFrameKey = deriveInstanceKey(itemPath);
+    const itemScope = scopeWithFanoutItem(input.scope, input.node.id, item as JsonValue, itemIndex);
+    events.push(
+      {
+        type: "frame.started",
+        payload: {
+          runId: input.runId,
+          frameKey: itemFrameKey,
+          frameKind: "fanout_item",
+          instancePath: itemPath,
+          parentFrameKey: nodeKey,
+          nodeId: input.node.id,
+          strategy: input.node.strategy,
+          scope: scopeMapForScope(itemPath, input.node.do),
+        },
+      },
+      {
+        type: "group.member_ready",
+        payload: {
+          runId: input.runId,
+          groupKey: nodeKey,
+          memberKey: itemFrameKey,
+          memberKind: "fanout_item",
+          itemIndex,
+          item: item as JsonValue,
+          childFrameKey: itemFrameKey,
+          readinessSequence: input.readinessSequence + itemIndex,
+        },
+      },
+      ...materializeScopeStart(input.runId, itemFrameKey, input.node.do, itemPath, itemScope, input.readinessSequence + itemIndex, itemFrameKey),
+    );
+  }
+  return events;
 }
 
 function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentFrameKey: string; basePath: InstancePath; scope: EvaluationScope; readinessSequence: number }): SchedulerEvent[] {
   const nodePath = appendNode(input.basePath, input.node.id);
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
-  let state: JsonValue;
-  try {
-    state = normalizeWorkflowData(evaluateExpr(input.node.state, input.scope), `Loop node '${input.node.id}' initial state`) as JsonValue;
-  } catch (error) {
-    return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(error), terminalReason: "expression_failed" } }];
-  }
+  const evaluated = tryEvaluateExpr(input.node.state, input.scope);
+  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
+  const normalized = tryNormalizeWorkflowData(evaluated.value, `Loop node '${input.node.id}' initial state`);
+  if (normalized.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(normalized.error), terminalReason: "expression_failed" } }];
+  const state = normalized.value as JsonValue;
 
   const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, state } } satisfies SchedulerEvent;
   return [
@@ -448,17 +441,16 @@ function materializeLoopIterationEvents(input: { runId: string; loop: LoopNodeIR
 function materializeScopeStart(runId: string, frameKey: string, scopeIR: ScopeIR, basePath: InstancePath, scope: EvaluationScope, readinessSequence: number, memberKey?: string): SchedulerEvent[] {
   const first = scopeIR.nodes[0];
   if (!first) {
-    let result: JsonValue;
-    try {
-      result = evaluateOutput(scopeIR.output, scope);
-    } catch (error) {
+    const evaluated = evaluateOutput(scopeIR.output, scope);
+    if (evaluated.isErr()) {
       return [
-        { type: "frame.failed", payload: { frameKey, error: expressionFailure(error), terminalReason: "expression_failed" } },
+        { type: "frame.failed", payload: { frameKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } },
         ...(memberKey === undefined
           ? []
-          : [{ type: "group.member_failed", payload: { memberKey, error: expressionFailure(error), terminalReason: "expression_failed" } } satisfies SchedulerEvent]),
+          : [{ type: "group.member_failed", payload: { memberKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } } satisfies SchedulerEvent]),
       ];
     }
+    const result = evaluated.value;
     return [
       { type: "frame.completed", payload: { frameKey, result, terminalReason: "frame_completed" } },
       ...(memberKey === undefined
@@ -541,13 +533,13 @@ function nodeState(node: NodeIR, nodePath: InstancePath, projection: SchedulerPr
   return { status: "running" };
 }
 
-function scopeFrame(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): ScopeFrame | undefined {
+function scopeFrame(ir: WorkflowIR, projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): ScopeFrame {
   if (frame.frameKey === "root") {
     return { frame, scopeIR: ir.root, basePath: [], scope: baseScopeForFrame(projection, frame, baseScope) };
   }
-  if (!frame.instancePath) return undefined;
+  if (!frame.instancePath) throw new Error(`Scope frame '${frame.frameKey}' has no instance path.`);
   const scopeIR = scopeForPath(ir.root, frame.instancePath);
-  if (!scopeIR) return undefined;
+  if (!scopeIR) throw new Error(`Scope frame '${frame.frameKey}' does not resolve in frozen workflow IR.`);
   const member = projection.groupMembers[frame.frameKey];
   return {
     frame,
@@ -562,11 +554,14 @@ function scopeForNodeFrame(projection: SchedulerProjection, frame: SchedulerFram
   return frame.parentFrameKey ? completedScopeForFrame(projection, frame.parentFrameKey, baseScope) : baseScope;
 }
 
-function nodeForFrame(ir: WorkflowIR, frame: SchedulerFrame): NodeIR | undefined {
-  if (!frame.instancePath) return undefined;
+function requireNodeForFrame(ir: WorkflowIR, frame: SchedulerFrame): NodeIR {
+  if (!frame.instancePath) throw new Error(`Scheduler frame '${frame.frameKey}' has no instance path.`);
   const segment = lastSegment(frame.instancePath);
-  if (segment?.kind !== "node") return undefined;
-  return scopeForPath(ir.root, parentPath(frame.instancePath))?.nodes.find(node => node.id === segment.nodeId);
+  if (segment?.kind !== "node") throw new Error(`Scheduler frame '${frame.frameKey}' has an invalid node identity path.`);
+  const scope = scopeForPath(ir.root, parentPath(frame.instancePath));
+  const node = scope?.nodes.find(candidate => candidate.id === segment.nodeId);
+  if (!node) throw new Error(`Scheduler frame '${frame.frameKey}' references missing frozen node '${segment.nodeId}'.`);
+  return node;
 }
 
 function scopeForPath(root: ScopeIR, path: InstancePath): ScopeIR | undefined {
@@ -591,36 +586,90 @@ function scopeForPath(root: ScopeIR, path: InstancePath): ScopeIR | undefined {
   return scope;
 }
 
-function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerProjection, groupKey: string): JsonValue | undefined {
+function groupResult(node: ParallelNodeIR | FanoutNodeIR, projection: SchedulerProjection, groupKey: string): JsonValue {
+  const acceptedMemberKeys = requireAcceptedMemberKeys(projection, groupKey);
   const members = Object.values(projection.groupMembers).filter(member => member.groupKey === groupKey);
   if (node.kind === "parallel" && node.strategy === "all") {
-    return Object.fromEntries(members
-      .filter(member => member.memberKind === "branch")
-      .map(member => [member.branchId, requireWorkflowOutput(member.output, `Parallel branch '${member.branchId}'`)]));
+    const branches = members.filter(member => member.memberKind === "branch");
+    if (branches.length !== members.length) throw new Error(`Parallel all group '${groupKey}' contains non-branch membership.`);
+    const expected = Object.keys(node.branches).sort();
+    const actual = branches.map(member => member.branchId).sort();
+    if (actual.length !== expected.length || actual.some((branchId, index) => branchId !== expected[index])) {
+      throw new Error(`Parallel all group '${groupKey}' does not contain its frozen branch membership.`);
+    }
+    requireSameMemberSet(groupKey, acceptedMemberKeys, branches.map(member => member.memberKey));
+    return Object.fromEntries(branches.map(member => {
+      if (member.status !== "completed") throw new Error(`Completed parallel group '${groupKey}' contains non-completed branch '${member.branchId}'.`);
+      return [member.branchId, requireWorkflowOutput(member.output, `Parallel branch '${member.branchId}'`)];
+    }));
   }
   if (node.kind === "parallel" && node.strategy === "race") {
-    const winner = members
-      .filter(member => member.memberKind === "branch")
+    const branches = members.filter(member => member.memberKind === "branch");
+    if (branches.length !== members.length) throw new Error(`Parallel race group '${groupKey}' contains non-branch membership.`);
+    const expected = Object.keys(node.branches).sort();
+    const actual = branches.map(member => member.branchId).sort();
+    if (actual.length !== expected.length || actual.some((branchId, index) => branchId !== expected[index])) {
+      throw new Error(`Parallel race group '${groupKey}' does not contain its frozen branch membership.`);
+    }
+    const winner = branches
       .filter(member => member.status === "completed")
       .sort(byCompletionSequence)[0];
-    return winner ? { winner: winner.branchId, result: requireWorkflowOutput(winner.output, `Parallel branch '${winner.branchId}'`) } : undefined;
+    if (!winner) throw new Error(`Completed parallel race group '${groupKey}' has no completed winner.`);
+    requireSameMemberOrder(groupKey, acceptedMemberKeys, [winner.memberKey]);
+    return { winner: winner.branchId, result: requireWorkflowOutput(winner.output, `Parallel branch '${winner.branchId}'`) };
   }
   if (node.kind === "fanout" && node.strategy === "all") {
-    return members
-      .filter(member => member.memberKind === "fanout_item")
+    if (members.some(member => member.memberKind !== "fanout_item")) throw new Error(`Fanout all group '${groupKey}' contains non-item membership.`);
+    const items = members
+      .filter((member): member is Extract<GroupMember, { memberKind: "fanout_item" }> => member.memberKind === "fanout_item")
       .sort((left, right) => left.itemIndex - right.itemIndex)
-      .map(member => requireWorkflowOutput(member.output, `Fanout item ${member.itemIndex}`));
+    requireSameMemberSet(groupKey, acceptedMemberKeys, items.map(member => member.memberKey));
+    return items.map(member => {
+        if (member.status !== "completed") throw new Error(`Completed fanout group '${groupKey}' contains non-completed item ${member.itemIndex}.`);
+        return requireWorkflowOutput(member.output, `Fanout item ${member.itemIndex}`);
+      });
   }
   if (node.kind === "fanout") {
+    if (members.some(member => member.memberKind !== "fanout_item")) throw new Error(`Fanout quorum group '${groupKey}' contains non-item membership.`);
     const quorumCount = projection.groups[groupKey]?.quorumCount;
     if (quorumCount === undefined) throw new Error(`Fanout quorum group '${groupKey}' has no resolved quorum count.`);
     const completed = members
       .filter(member => member.memberKind === "fanout_item" && member.status === "completed")
       .sort(byCompletionSequence)
       .slice(0, quorumCount);
+    if (completed.length !== quorumCount) throw new Error(`Completed fanout quorum group '${groupKey}' has fewer completed members than its quorum count.`);
+    requireSameMemberOrder(groupKey, acceptedMemberKeys, completed.map(member => member.memberKey));
     return completed.map(member => requireWorkflowOutput(member.output, `Fanout item ${member.itemIndex}`));
   }
-  return undefined;
+  throw new Error(`Group '${groupKey}' has no materializable result strategy.`);
+}
+
+function requireAcceptedMemberKeys(projection: SchedulerProjection, groupKey: string): string[] {
+  const group = projection.groups[groupKey];
+  if (!group || group.status !== "completed") throw new Error(`Group '${groupKey}' is not durably completed.`);
+  const result = group.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error(`Completed group '${groupKey}' has no accepted member result.`);
+  }
+  const keys = result.acceptedMemberKeys;
+  if (!Array.isArray(keys) || keys.some(key => typeof key !== "string") || new Set(keys).size !== keys.length) {
+    throw new Error(`Completed group '${groupKey}' has invalid accepted member keys.`);
+  }
+  return keys as string[];
+}
+
+function requireSameMemberSet(groupKey: string, actual: string[], expected: string[]): void {
+  const sortedActual = [...actual].sort();
+  const sortedExpected = [...expected].sort();
+  if (sortedActual.length !== sortedExpected.length || sortedActual.some((key, index) => key !== sortedExpected[index])) {
+    throw new Error(`Completed group '${groupKey}' accepted members do not match its completed membership.`);
+  }
+}
+
+function requireSameMemberOrder(groupKey: string, actual: string[], expected: string[]): void {
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`Completed group '${groupKey}' accepted members do not match its deterministic winner set.`);
+  }
 }
 
 function terminalScopeFrameEvents(input: ScopeFrame, status: "failed" | "cancelled", error: JsonObject | undefined, reason: string): SchedulerEvent[] {
@@ -681,20 +730,23 @@ function nextCompletionSequence(projection: SchedulerProjection): number {
   return Math.max(0, ...Object.values(projection.groupMembers).map(member => member.completionSequence ?? 0)) + 1;
 }
 
-function selectConditionalBranch(node: Extract<NodeIR, { kind: "if" | "switch" }>, scope: EvaluationScope): { branchId: string; scope: ScopeIR } {
+function selectConditionalBranch(
+  node: Extract<NodeIR, { kind: "if" | "switch" }>,
+  scope: EvaluationScope,
+): Result<{ branchId: string; scope: ScopeIR }, { message: string }> {
   if (node.kind === "if") {
-    const condition = evaluateExpr(node.condition, scope);
-    if (typeof condition !== "boolean") throw new Error(`If node '${node.id}' condition must evaluate to boolean.`);
-    return condition ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else };
+    const condition = tryEvaluateExpr(node.condition, scope);
+    if (condition.isErr()) return err(condition.error);
+    if (typeof condition.value !== "boolean") return err({ message: `If node '${node.id}' condition must evaluate to boolean.` });
+    return ok(condition.value ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else });
   }
-  const selected = node.cases.findIndex(c => {
-    const condition = evaluateExpr(c.when, scope);
-    if (typeof condition !== "boolean") throw new Error(`Switch node '${node.id}' case condition must evaluate to boolean.`);
-    return condition;
-  });
-  return selected >= 0
-    ? { branchId: `case:${selected}`, scope: node.cases[selected]!.then }
-    : { branchId: "default", scope: node.default };
+  for (const [index, candidate] of node.cases.entries()) {
+    const condition = tryEvaluateExpr(candidate.when, scope);
+    if (condition.isErr()) return err(condition.error);
+    if (typeof condition.value !== "boolean") return err({ message: `Switch node '${node.id}' case condition must evaluate to boolean.` });
+    if (condition.value) return ok({ branchId: `case:${index}`, scope: candidate.then });
+  }
+  return ok({ branchId: "default", scope: node.default });
 }
 
 function conditionalBranchById(node: Extract<NodeIR, { kind: "if" | "switch" }>, branchId: string): { branchId: string; scope: ScopeIR } | undefined {
@@ -715,8 +767,11 @@ function scopeMapForScope(basePath: InstancePath, scope: ScopeIR): Record<string
   return Object.fromEntries(scope.nodes.map(node => [node.id, deriveInstanceKey(appendNode(basePath, node.id))]));
 }
 
-function evaluateOutput(output: ScopeIR["output"], scope: EvaluationScope): JsonValue {
-  return normalizeWorkflowData(evaluateExpr(output, scope), "Scope output") as JsonValue;
+function evaluateOutput(output: ScopeIR["output"], scope: EvaluationScope): Result<JsonValue, { message: string }> {
+  const evaluated = tryEvaluateExpr(output, scope);
+  if (evaluated.isErr()) return err(evaluated.error);
+  const normalized = tryNormalizeWorkflowData(evaluated.value, "Scope output");
+  return normalized.isErr() ? err(normalized.error) : ok(normalized.value as JsonValue);
 }
 
 function requireWorkflowOutput(value: JsonValue | undefined, label: string): JsonValue {
@@ -725,7 +780,12 @@ function requireWorkflowOutput(value: JsonValue | undefined, label: string): Jso
 }
 
 function expressionFailure(error: unknown): JsonObject {
-  return { reason: "expression_failed", message: error instanceof Error ? error.message : String(error) };
+  const message = error instanceof Error
+    ? error.message
+    : error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string"
+      ? (error as { message: string }).message
+      : String(error);
+  return { reason: "expression_failed", message };
 }
 
 function byCompletionSequence(left: GroupMember, right: GroupMember): number {

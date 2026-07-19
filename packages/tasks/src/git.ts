@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { task, z } from "@acpus/core";
 import type { Dollar } from "@acpus/core/runtime";
@@ -24,6 +24,7 @@ type CreateWorktreeError =
   | { type: "dirty-repository"; repoPath: string; dirtyStatus: string; message: string }
   | { type: "source-repository-worktree-path"; repoPath: string; worktreePath: string; message: string }
   | { type: "unregistered-worktree-removal"; repoPath: string; worktreePath: string; message: string }
+  | { type: "worktree-path-inspection-failed"; worktreePath: string; message: string }
   | { type: "git-command-failed"; message: string };
 
 /**
@@ -83,7 +84,9 @@ async function removeExistingWorktree($: Dollar, repo: string, worktreePath: str
     await $`git -C ${repo} worktree remove --force ${worktreePath}`;
     return ok(undefined);
   }
-  if (await pathExists(worktreePath)) {
+  const inspected = await inspectPath(worktreePath);
+  if (inspected.isErr()) return err(inspected.error);
+  if (inspected.value) {
     return err({
       type: "unregistered-worktree-removal",
       repoPath: repo,
@@ -101,15 +104,25 @@ async function registeredWorktrees($: Dollar, repo: string): Promise<Set<string>
     .map(line => resolve(line.slice("worktree ".length).trim())));
 }
 
-async function pathExists(path: string): Promise<boolean> {
+async function inspectPath(path: string): Promise<Result<boolean, CreateWorktreeError>> {
   try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
+    await lstat(path);
+    return ok(true);
+  } catch (error) {
+    if (isMissingPathError(error)) return ok(false);
+    return err({
+      type: "worktree-path-inspection-failed",
+      worktreePath: path,
+      message: `Worktree path '${path}' could not be inspected: ${causeMessage(error)}`,
+    });
   }
 }
 
 function causeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
 }

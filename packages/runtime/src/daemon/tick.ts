@@ -7,18 +7,18 @@ export type DaemonTickResult = {
   idleBlockers: number;
 };
 
-export async function runDaemonTick(store: RuntimeStore, options: { startSession: (runId: string) => void }): Promise<DaemonTickResult> {
-  await store.cleanupRunDirectories();
+export async function runDaemonTick(store: RuntimeStore, options: {
+  startSession: (runId: string) => "started" | "already-active" | "terminal" | "quarantined";
+  dispatchHooks?: (runId: string) => "dispatched" | "retry" | "quarantined";
+}): Promise<DaemonTickResult> {
   let runs = 0;
   const work = store.listDaemonWork();
   for (const run of work.startableRuns) {
-    options.startSession(run.id);
-    runs += 1;
+    if (options.startSession(run.id) === "started") runs += 1;
   }
-  try {
-    store.pruneHookJournal(new Date(Date.now() - hookJournalRetentionMs));
-  } catch {
-    // Retention is opportunistic and must not block scheduling.
+  for (const runId of work.hookDispatchRunIds) {
+    options.dispatchHooks?.(runId);
   }
+  store.pruneHookJournal(new Date(Date.now() - hookJournalRetentionMs));
   return { runs, idleBlockers: work.idleBlockers };
 }

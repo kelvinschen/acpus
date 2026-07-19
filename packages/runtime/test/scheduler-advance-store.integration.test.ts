@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +21,7 @@ describe("durable scheduler advance with store", () => {
         },
       };
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -61,7 +62,7 @@ describe("durable scheduler advance with store", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -108,7 +109,7 @@ describe("durable scheduler advance with store", () => {
       const store = await openRuntimeStore(workspace);
       const calls: string[] = [];
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -154,7 +155,7 @@ describe("durable scheduler advance with store", () => {
       let activeExecutors = 0;
       let peakExecutors = 0;
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -246,7 +247,7 @@ describe("durable scheduler advance with store", () => {
       const store = await openRuntimeStore(workspace);
       const calls: string[] = [];
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const oldOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -296,7 +297,7 @@ describe("durable scheduler advance with store", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const owner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -343,7 +344,7 @@ describe("durable scheduler advance with store", () => {
         return originalLoad(runId);
       };
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -397,7 +398,7 @@ describe("durable scheduler advance with store", () => {
         return result;
       };
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         await expect(advanceRun({
           runId: run.id,
           ownerId: "owner",

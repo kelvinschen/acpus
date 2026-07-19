@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { errAsync, okAsync } from "neverthrow";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,11 +21,6 @@ vi.mock("@acpus/runtime", () => ({
   getRunInspection: (...args: unknown[]) => mockGetRunInspection(...args),
   getArtifact: (...args: unknown[]) => mockGetArtifact(...args),
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
-  DaemonRequestError: class extends Error {
-    constructor(readonly code: string, message: string) {
-      super(message);
-    }
-  },
 }));
 
 import { createWebApp } from "../src/server/app.js";
@@ -55,6 +52,22 @@ describe("web API contract", () => {
       });
       expect(mockGetRuntimeHealth).toHaveBeenCalledWith("/tmp/acpus-web-test");
     });
+  });
+
+  it("sanitizes unexpected server failures", async () => {
+    mockListRuns.mockRejectedValue(new Error("/secret/runtime.db EACCES"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const res = await app.request("/api/runs");
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({
+        ok: false,
+        error: { code: "internal_error", message: "Internal server error." },
+      });
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   describe("GET /api/config", () => {
@@ -210,17 +223,20 @@ describe("web API contract", () => {
 
     it("loads the exact prompt field from a turn artifact without the preview size limit", async () => {
       const cwd = await mkdtemp(join(tmpdir(), "acpus-web-turn-prompt-"));
-      const path = join(cwd, "turn-001.json");
+      const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
+      const path = join(artifactDir, "turn-001.json");
       const prompt = `${"p".repeat(130 * 1024)}PROMPT_TAIL`;
-      await writeFile(path, JSON.stringify({ prompt, response: "done", summary: {} }));
+      const bytes = Buffer.from(JSON.stringify({ prompt, response: "done", summary: {} }));
+      await mkdir(artifactDir, { recursive: true });
+      await writeFile(path, bytes);
       const artifact = {
         id: "turn-1",
         runId: "run_1",
         nodeKey: "review~abc",
         attempt: 1,
         mediaType: "application/json",
-        digest: "sha256:test",
-        size: 1,
+        digest: sha256(bytes),
+        size: bytes.byteLength,
         path,
       };
       mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
@@ -270,6 +286,28 @@ describe("web API contract", () => {
       expect(res.status).toBe(404);
       expect((await res.json() as JsonBody).error.code).toBe("target_not_found");
     });
+
+    it("does not expose inspection storage failures", async () => {
+      const cause = new Error("/secret/runtime.db EIO");
+      mockGetRunInspection.mockResolvedValue(inspectionErr({
+        type: "inspection-read-failed",
+        runId: "run_1",
+        message: cause.message,
+        cause,
+      }));
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const res = await app.request("/api/runs/run_1/nodes/review");
+        expect(res.status).toBe(500);
+        expect(await res.json()).toEqual({
+          ok: false,
+          error: { code: "internal_error", message: "Internal server error." },
+        });
+        expect(logged).toHaveBeenCalledWith("Acpus WebUI request failed:", cause);
+      } finally {
+        logged.mockRestore();
+      }
+    });
   });
 
   describe("GET /api/runs/:id/artifacts/:artifactId/preview", () => {
@@ -280,7 +318,15 @@ describe("web API contract", () => {
       const bytes = Buffer.alloc(128 * 1024 + 7, "a");
       await mkdir(artifactDir, { recursive: true });
       await writeFile(path, bytes);
-      mockGetArtifact.mockResolvedValue({ path });
+      mockGetArtifact.mockResolvedValue({
+        id: "artifact_1",
+        runId: "run_1",
+        nodeKey: "task_1",
+        attempt: 1,
+        digest: sha256(bytes),
+        size: bytes.byteLength,
+        path,
+      });
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request("/api/runs/run_1/artifacts/artifact_1/preview");
@@ -289,6 +335,55 @@ describe("web API contract", () => {
       expect(Object.fromEntries(res.headers)).toEqual({ "content-type": "text/plain; charset=utf-8" });
       expect(Buffer.from(await res.arrayBuffer())).toEqual(bytes.subarray(0, 128 * 1024));
       expect(mockGetArtifact).toHaveBeenCalledWith(cwd, "run_1", "artifact_1");
+    });
+
+    it("treats a missing registered artifact file as server corruption", async () => {
+      mockGetArtifact.mockResolvedValue({
+        id: "artifact_1",
+        runId: "run_1",
+        nodeKey: "task_1",
+        attempt: 1,
+        digest: sha256(Buffer.from("missing")),
+        size: 7,
+        path: "/definitely-missing/acpus-artifact.txt",
+      });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const res = await app.request("/api/runs/run_1/artifacts/artifact_1/preview");
+        expect(res.status).toBe(500);
+        expect(await res.json()).toEqual({
+          ok: false,
+          error: { code: "internal_error", message: "Internal server error." },
+        });
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+    it("treats a tampered registered artifact as server corruption", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-artifact-tampered-"));
+      const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
+      const path = join(artifactDir, "output.txt");
+      await mkdir(artifactDir, { recursive: true });
+      await writeFile(path, "tampered");
+      mockGetArtifact.mockResolvedValue({
+        id: "artifact_1",
+        runId: "run_1",
+        nodeKey: "task_1",
+        attempt: 1,
+        digest: sha256(Buffer.from("original")),
+        size: 8,
+        path,
+      });
+      const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const res = await artifactApp.request("/api/runs/run_1/artifacts/artifact_1/preview");
+        expect(res.status).toBe(500);
+        expect((await res.json() as JsonBody).error).toEqual({ code: "internal_error", message: "Internal server error." });
+      } finally {
+        logged.mockRestore();
+      }
     });
   });
 
@@ -362,7 +457,7 @@ describe("web API contract", () => {
     });
 
     it("accepts pause control", async () => {
-      mockRequestDaemonControl.mockResolvedValue({ run: { id: "run_1", status: "paused" } });
+      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "paused" } }));
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -382,7 +477,7 @@ describe("web API contract", () => {
     });
 
     it("maps a retry target directly onto the daemon intent", async () => {
-      mockRequestDaemonControl.mockResolvedValue({ run: { id: "run_1", status: "running" } });
+      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -401,7 +496,7 @@ describe("web API contract", () => {
       [{ type: "cancel" }, undefined],
       [{ type: "cancel", target: "step_1" }, "step_1"],
     ])("maps cancel target %s onto the daemon intent", async (command, target) => {
-      mockRequestDaemonControl.mockResolvedValue({ run: { id: "run_1", status: "canceled" } });
+      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "canceled" } }));
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -416,7 +511,7 @@ describe("web API contract", () => {
     });
 
     it("accepts signal control", async () => {
-      mockRequestDaemonControl.mockResolvedValue({ run: { id: "run_1", status: "running" } });
+      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -436,8 +531,7 @@ describe("web API contract", () => {
     });
 
     it("maps daemon control errors to the existing HTTP error contract", async () => {
-      const { DaemonRequestError } = await import("@acpus/runtime");
-      mockRequestDaemonControl.mockRejectedValue(new DaemonRequestError("RUN_NOT_CONTROLLABLE", "Run cannot be paused."));
+      mockRequestDaemonControl.mockReturnValue(errAsync({ type: "rejected", code: "RUN_NOT_CONTROLLABLE", message: "Run cannot be paused." }));
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -450,8 +544,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for unknown run", async () => {
-      const { DaemonRequestError } = await import("@acpus/runtime");
-      mockRequestDaemonControl.mockRejectedValue(new DaemonRequestError("RUN_NOT_FOUND", "Run 'nonexistent' was not found."));
+      mockRequestDaemonControl.mockReturnValue(errAsync({ type: "rejected", code: "RUN_NOT_FOUND", message: "Run 'nonexistent' was not found." }));
       const res = await app.request("/api/runs/nonexistent/controls", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -480,6 +573,22 @@ describe("web API contract", () => {
       }]);
     });
 
+    it("does not treat a catalog symlink loop as an absent workflow", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-catalog-loop-"));
+      const packageRoot = join(cwd, ".acpus", "workflows", "loop");
+      await mkdir(packageRoot, { recursive: true });
+      await symlink("workflow.ts", join(packageRoot, "workflow.ts"));
+      const catalogApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const res = await catalogApp.request("/api/workflows/catalog");
+        expect(res.status).toBe(500);
+        expect((await res.json() as JsonBody).error).toEqual({ code: "internal_error", message: "Internal server error." });
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
     it("lists only safe workflow files under the workspace", async () => {
       const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-"));
       await writeFile(join(cwd, "workflow.ts"), "export default {};\n");
@@ -502,6 +611,32 @@ describe("web API contract", () => {
       expect(res.status).toBe(400);
       const body = await res.json() as JsonBody;
       expect(body.error.code).toBe("invalid_workflow_path");
+    });
+
+    it("rejects file-browser symlinks that resolve outside the workspace", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-symlink-"));
+      const outside = await mkdtemp(join(tmpdir(), "acpus-web-files-outside-"));
+      await symlink(outside, join(cwd, "outside"));
+      const filesApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+
+      const res = await filesApp.request("/api/workflows/files?dir=outside");
+
+      expect(res.status).toBe(400);
+      expect((await res.json() as JsonBody).error.code).toBe("invalid_workflow_path");
+    });
+
+    it("does not report a file-browser symlink loop as a user path error", async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-loop-"));
+      await symlink("loop", join(cwd, "loop"));
+      const filesApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const res = await filesApp.request("/api/workflows/files?dir=loop");
+        expect(res.status).toBe(500);
+        expect((await res.json() as JsonBody).error.code).toBe("internal_error");
+      } finally {
+        logged.mockRestore();
+      }
     });
 
     it("returns static workflow contract data from visualization", async () => {
@@ -557,6 +692,10 @@ describe("web API contract", () => {
     });
   });
 });
+
+function sha256(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
 
 function inspectionOk(value: JsonBody) {
   return {

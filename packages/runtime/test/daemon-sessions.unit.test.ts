@@ -4,13 +4,14 @@ import type { applySchedulerControlIntent as ApplySchedulerControlIntent } from 
 import type { createRuntimeRunScheduler as CreateRuntimeRunScheduler, RunExecution, RunExecutionExit, RuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
 import type { SchedulerSnapshot } from "../src/scheduler/store-port.js";
 import type { RunDetails, RuntimeStore } from "../src/store/store.js";
+import { ok } from "neverthrow";
 
 const applySchedulerControlIntent = vi.fn<typeof ApplySchedulerControlIntent>();
 const createRuntimeRunScheduler = vi.fn<typeof CreateRuntimeRunScheduler>();
-const triggerHooksForCommittedRowsForRun = vi.fn();
+const dispatchCommittedHooksForRun = vi.fn(() => ok({ runId: "run-a", eventSequence: 0, dispatched: 0 }));
 
 vi.mock("../src/scheduler/control.js", () => ({ applySchedulerControlIntent }));
-vi.mock("../src/scheduler/runtime-runner.js", () => ({ createRuntimeRunScheduler, triggerHooksForCommittedRowsForRun }));
+vi.mock("../src/scheduler/runtime-runner.js", () => ({ createRuntimeRunScheduler, dispatchCommittedHooksForRun }));
 
 const { RunExecutionSessions } = await import("../src/daemon/sessions.js");
 
@@ -27,7 +28,7 @@ beforeEach(() => {
     return execution;
   });
   createRuntimeRunScheduler.mockReturnValue({ start: schedulerStart });
-  triggerHooksForCommittedRowsForRun.mockReset();
+  dispatchCommittedHooksForRun.mockClear();
 });
 
 describe("daemon run execution sessions", () => {
@@ -59,7 +60,7 @@ describe("daemon run execution sessions", () => {
     });
     applySchedulerControlIntent.mockImplementation(() => {
       order.push("control");
-      return {
+      return ok({
         snapshot: {} as SchedulerSnapshot,
         effect: {
           type: "signal",
@@ -69,7 +70,7 @@ describe("daemon run execution sessions", () => {
           validation: { kind: "raw-string" },
         },
         reopened: false,
-      };
+      });
     });
 
     await sessions.control({
@@ -87,11 +88,11 @@ describe("daemon run execution sessions", () => {
   it.each(["resume", "retry"] as const)("does not replace an active execution for a no-op %s", async type => {
     const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
     sessions.start("run-a");
-    applySchedulerControlIntent.mockReturnValue({
+    applySchedulerControlIntent.mockReturnValue(ok({
       snapshot: {} as SchedulerSnapshot,
       effect: { type, state: "applied" },
       reopened: false,
-    });
+    }));
 
     await sessions.control({ requestId: `${type}-replay`, runId: "run-a", type });
 
@@ -106,7 +107,7 @@ describe("daemon run execution sessions", () => {
     schedulerStart
       .mockReturnValueOnce({
         ownerEpoch: Promise.resolve(1),
-        result: new Promise<RunExecutionExit>((_resolve, reject) => {
+        result: new Promise(( _resolve, reject) => {
           rejectOld = reject;
         }),
         wake: vi.fn(),
@@ -114,7 +115,7 @@ describe("daemon run execution sessions", () => {
       })
       .mockReturnValueOnce({
         ownerEpoch: Promise.resolve(2),
-        result: Promise.resolve({
+        result: Promise.resolve(ok({
           status: "awaiting",
           runId: "run-a",
           ownerEpoch: 2,
@@ -123,17 +124,17 @@ describe("daemon run execution sessions", () => {
           failed: 0,
           cancelled: 0,
           active: 0,
-        }),
+        })),
         wake: vi.fn(),
         stop: vi.fn(),
       });
     applySchedulerControlIntent.mockImplementation(() => {
       store.getRun("run-a")!.eventCount += 1;
-      return {
+      return ok({
         snapshot: {} as SchedulerSnapshot,
         effect: { type: "resume", state: "applied" },
         reopened: true,
-      };
+      });
     });
     const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
 
@@ -192,12 +193,33 @@ describe("daemon run execution sessions", () => {
     expect(schedulerStart).toHaveBeenCalledTimes(2);
     await sessions.stopExecutors(100);
   });
+
+  it("fences a hook projection incident without reloading full run details", () => {
+    const corruption = new Error("scheduler projection is corrupt");
+    const incident = vi.fn();
+    const store = runtimeStore("run-a");
+    const getRun = vi.fn(() => {
+      throw corruption;
+    });
+    store.getRun = getRun;
+    dispatchCommittedHooksForRun.mockImplementationOnce(() => {
+      throw corruption;
+    });
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), incident);
+
+    expect(sessions.dispatchHooks("run-a")).toBe("quarantined");
+    expect(sessions.dispatchHooks("run-a")).toBe("quarantined");
+    expect(getRun).not.toHaveBeenCalled();
+    expect(dispatchCommittedHooksForRun).toHaveBeenCalledOnce();
+    expect(incident).toHaveBeenCalledOnce();
+    expect(incident).toHaveBeenCalledWith({ runId: "run-a", source: "hook", error: corruption });
+  });
 });
 
 function controlledExecution(runId: string): RunExecution {
   let settle!: (exit: RunExecutionExit) => void;
-  const result = new Promise<RunExecutionExit>(resolve => {
-    settle = resolve;
+  const result: RunExecution["result"] = new Promise(resolve => {
+    settle = exit => resolve(ok(exit));
   });
   return {
     ownerEpoch: Promise.resolve(1),
@@ -232,6 +254,7 @@ function runtimeStore(...runIds: string[]): RuntimeStore {
   const runs = new Map(runIds.map(runId => [runId, run(runId)]));
   return {
     getRun: (runId: string) => runs.get(runId),
+    getRunEventVersion: (runId: string) => runs.get(runId)?.eventCount,
     writeNodeProgress: vi.fn(),
   } as unknown as RuntimeStore;
 }

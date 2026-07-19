@@ -1,15 +1,17 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
-import { access, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
 import { loadAgentHostPolicy } from "../src/configuration.js";
 import type { HookContext } from "../src/hooks/context.js";
 import type { HookRunner } from "../src/hooks/runner.js";
-import { advanceRuntimeRun } from "../src/runs/advance-runtime.js";
-import { createRuntimeRunScheduler, triggerHooksForCommittedRowsForRun } from "../src/scheduler/runtime-runner.js";
+import { createRuntimeRunScheduler, dispatchCommittedHooksForRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeRow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { advanceRuntimeRun } from "./support/scheduler.js";
 
 describe("runtime hook integration", () => {
   it("triggers hooks from newly committed rows only", async () => {
@@ -18,7 +20,7 @@ describe("runtime hook integration", () => {
       const store = await openRuntimeStore(workspace);
       const hooks = recordingHookRunner();
       try {
-        const run = await store.admitRun({ prepared, input: { packageName: "runtime" }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
 
         await advanceRuntimeRun(workspace, store, run.id, "owner-a", { hookRunner: hooks });
         expect(hooks.events).toEqual(expect.arrayContaining(["run.started", "run.completed"]));
@@ -35,13 +37,13 @@ describe("runtime hook integration", () => {
     });
   });
 
-  it("does not surface malformed committed hook context to runtime callers", async () => {
+  it("surfaces malformed committed hook data without advancing the durable cursor", async () => {
     await withRuntimeWorkspace("hooks-runtime-non-interfering", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       const hooks = recordingHookRunner();
       try {
-        const run = await store.admitRun({ prepared, input: { packageName: "runtime" }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const summary = await advanceRuntimeRun(workspace, store, run.id, `owner-${attempt}`);
           if (summary.status === "completed" || summary.status === "failed") break;
@@ -51,17 +53,99 @@ describe("runtime hook integration", () => {
         const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
         try {
           db.prepare("UPDATE run_events SET payload_json = ? WHERE run_id = ? AND sequence = ?").run("{\"bad\":true}", run.id, Number(row.sequence));
+          db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(Number(row.sequence) - 1, run.id);
         } finally {
           db.close();
         }
 
-        expect(() => triggerHooksForCommittedRowsForRun({
+        expect(() => dispatchCommittedHooksForRun({
           cwd: workspace,
           store,
           runId: run.id,
           hookRunner: hooks,
-          hookCursor: { sequence: Number(row.sequence) - 1 },
-        })).not.toThrow();
+        })).toThrow();
+        expect(store.getHookDispatchCursor(run.id)).toBe(Number(row.sequence) - 1);
+        expect(hooks.events).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects a hook cursor ahead of the event log before daemon idle accounting", async () => {
+    await withRuntimeWorkspace("hooks-runtime-cursor-ahead", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const lastSequence = store.getLastRunEventSequence(run.id);
+        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        try {
+          db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(lastSequence + 1, run.id);
+        } finally {
+          db.close();
+        }
+
+        expect(() => store.listDaemonWork()).toThrow(
+          `hook dispatch cursor ${lastSequence + 1} exceeds committed event sequence ${lastSequence}`,
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects a tampered Agent prompt artifact without advancing the durable cursor", async () => {
+    await withRuntimeWorkspace("hooks-runtime-tampered-agent-prompt", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const hooks = recordingHookRunner();
+      try {
+        const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
+        await expect(advanceRuntimeRun(workspace, store, run.id, "owner-a")).resolves.toMatchObject({ status: "completed" });
+        const completed = runtimeRow(
+          workspace,
+          "SELECT sequence, json_extract(payload_json, '$.payload.attemptId') AS attempt_id, json_extract(payload_json, '$.payload.nodeKey') AS node_key FROM run_events WHERE run_id = ? AND type = 'instance.completed'",
+          run.id,
+        ) as { sequence: number; attempt_id: string; node_key: string } | undefined;
+        if (!completed?.attempt_id) throw new Error("expected attempt-backed completion event");
+
+        const artifactId = "hook-agent-turn";
+        const relativePath = "artifacts/hook-agent-turn.json";
+        const original = Buffer.from('{"prompt":"original"}');
+        const artifactPath = join(workspace, ".acpus", ".local", "runs", run.id, relativePath);
+        await mkdir(join(artifactPath, ".."), { recursive: true });
+        await writeFile(artifactPath, original);
+        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        try {
+          db.prepare(`
+            INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            artifactId,
+            run.id,
+            completed.node_key,
+            1,
+            "application/json",
+            `sha256:${createHash("sha256").update(original).digest("hex")}`,
+            original.byteLength,
+            relativePath,
+            new Date().toISOString(),
+          );
+          db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(completed.sequence - 1, run.id);
+        } finally {
+          db.close();
+        }
+        store.writeExecutionMetadata({
+          runId: run.id,
+          attemptId: completed.attempt_id,
+          kind: "agent_attempt",
+          metadata: { turns: [{ turnArtifact: { artifactId, mediaType: "application/json" } }] },
+        });
+        await writeFile(artifactPath, '{"prompt":"tampered"}');
+
+        expect(() => dispatchCommittedHooksForRun({ cwd: workspace, store, runId: run.id, hookRunner: hooks })).toThrow("size/digest verification");
+        expect(store.getHookDispatchCursor(run.id)).toBe(completed.sequence - 1);
         expect(hooks.events).toEqual([]);
       } finally {
         store.close();
@@ -85,7 +169,7 @@ describe("runtime hook integration", () => {
         },
       };
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const execution = createRuntimeRunScheduler({
           cwd: workspace,
           store,
@@ -94,7 +178,7 @@ describe("runtime hook integration", () => {
           hookRunner: hooks,
         }).start({ runId: run.id, ownerId: "owner-a" });
 
-        await expect(execution.result).resolves.toMatchObject({ status: "completed" });
+        expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "completed" });
         expect(triggerCount).toBeGreaterThan(0);
         expect(store.getRun(run.id)).toMatchObject({ status: "completed" });
       } finally {
@@ -109,7 +193,7 @@ describe("runtime hook integration", () => {
       const store = await openRuntimeStore(workspace);
       const hooks = recordingHookRunner();
       try {
-        const run = await store.admitRun({ prepared, input: { packageName: "runtime" }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
         await advanceRuntimeRun(workspace, store, run.id, "owner-a", { hookRunner: hooks });
 
         expect(hooks.contexts.find(context => context.event === "node.started")?.node).toMatchObject({
@@ -130,7 +214,7 @@ describe("runtime hook integration", () => {
       const store = await openRuntimeStore(workspace);
       const hooks = recordingHookRunner();
       try {
-        const run = await store.admitRun({ prepared, input: { markerPath, releasePath }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { markerPath, releasePath }, cwd: workspace });
         const advancing = advanceRuntimeRun(workspace, store, run.id, "owner-a", { hookRunner: hooks });
 
         await waitUntil(async () => {

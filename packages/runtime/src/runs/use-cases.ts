@@ -1,5 +1,6 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { normalizeWorkflowInput } from "../admission/input.js";
+import { err, ok, ResultAsync } from "neverthrow";
+import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
   openExistingRuntimeStore,
@@ -8,9 +9,10 @@ import {
   type RuntimeDiagnostics,
   type DaemonDiagnostics,
   type RunDetails,
-  type ArtifactRecord, type RunRecord,
+  type ArtifactRecord, type RunDeleteFailure, type RunRecord,
 } from "../store/store.js";
 export type { ArtifactRecord };
+export type { RunDeleteFailure } from "../store/store.js";
 
 type RunVisualizationSnapshot = {
   run: RunDetails;
@@ -33,7 +35,9 @@ export type RuntimeHealthReport = {
   checks: RuntimeHealthCheck[];
 };
 
-type RuntimeUseCaseError = { type: "run-delete-active"; runId: string; message: string };
+export type ForkInputNormalizationFailure =
+  | { type: "run-not-found"; runId: string; message: string }
+  | SchemaNormalizationFailure;
 
 export async function listRuns(cwd: string): Promise<RunRecord[]> {
   const store = await openExistingRuntimeStore(cwd);
@@ -55,23 +59,16 @@ export async function getRun(cwd: string, runId: string): Promise<RunDetails | u
   }
 }
 
-export async function deleteRun(cwd: string, runId: string): Promise<RunRecord | undefined> {
-  const store = await openExistingWritableRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    const run = store.getRun(runId);
-    if (!run) return undefined;
-    if (run.execution.state === "active") {
-      throw new RuntimeUseCaseException({
-        type: "run-delete-active",
-        runId,
-        message: `Run '${runId}' is active and cannot be deleted.`,
-      });
+export function deleteRun(cwd: string, runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure> {
+  return new ResultAsync((async () => {
+    const store = await openExistingWritableRuntimeStore(cwd);
+    if (!store) return ok(undefined);
+    try {
+      return await store.deleteRun(runId);
+    } finally {
+      store.close();
     }
-    return store.deleteRun(runId);
-  } finally {
-    store.close();
-  }
+  })());
 }
 
 export async function getArtifact(cwd: string, runId: string, artifactId: string): Promise<ArtifactRecord | undefined> {
@@ -99,9 +96,10 @@ export async function getRunVisualizationSnapshot(cwd: string, runId: string): P
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
   try {
-    const frozen = store.getFrozenRun(runId);
     const run = store.getRun(runId);
-    if (!frozen || !run) return undefined;
+    if (!run) return undefined;
+    const frozen = store.getFrozenRun(runId);
+    if (!frozen) throw new Error(`Run '${runId}' has no frozen workflow.`);
     return {
       run,
       overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
@@ -111,17 +109,19 @@ export async function getRunVisualizationSnapshot(cwd: string, runId: string): P
   }
 }
 
-export async function normalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): Promise<JsonValue | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    const frozen = store.getFrozenRun(runId);
-    if (!frozen) return undefined;
-    if (input !== undefined) return normalizeWorkflowInput(prepared?.ir ?? frozen.ir, input, "Fork input");
-    return prepared ? normalizeWorkflowInput(prepared.ir, frozen.input, "Fork input") : undefined;
-  } finally {
-    store.close();
-  }
+export function tryNormalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure> {
+  return new ResultAsync((async () => {
+    const store = await openExistingRuntimeStore(cwd);
+    if (!store) return err(runNotFound(runId));
+    try {
+      const frozen = store.getFrozenRun(runId);
+      if (!frozen) return err(runNotFound(runId));
+      if (input !== undefined) return tryNormalizeWorkflowInput(prepared?.ir ?? frozen.ir, input, "Fork input");
+      return prepared ? tryNormalizeWorkflowInput(prepared.ir, frozen.input, "Fork input") : ok(undefined);
+    } finally {
+      store.close();
+    }
+  })());
 }
 
 export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport> {
@@ -192,10 +192,8 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
   }
 }
 
-export class RuntimeUseCaseException extends Error {
-  constructor(readonly failure: RuntimeUseCaseError) {
-    super(failure.message);
-  }
+function runNotFound(runId: string): Extract<ForkInputNormalizationFailure, { type: "run-not-found" }> {
+  return { type: "run-not-found", runId, message: `Run '${runId}' was not found.` };
 }
 
 function daemonCheck(daemon: DaemonDiagnostics | undefined): RuntimeHealthCheck {

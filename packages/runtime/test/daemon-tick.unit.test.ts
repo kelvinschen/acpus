@@ -3,27 +3,39 @@ import { runDaemonTick } from "../src/daemon/tick.js";
 import type { RunRecord, RuntimeStore } from "../src/store/store.js";
 
 describe("daemon tick", () => {
-  it("does not let hook journal prune failures block runnable work", async () => {
+  it("propagates non-busy hook journal prune failures after starting runnable work", async () => {
     const started: string[] = [];
 
-    await expect(runDaemonTick(fakeStore(), { startSession: runId => started.push(runId) })).resolves.toEqual({
-      runs: 1,
-      idleBlockers: 0,
-    });
+    await expect(runDaemonTick(fakeStore(undefined, true), { startSession: runId => {
+      started.push(runId);
+      return "started";
+    } })).rejects.toThrow("hook journal unavailable");
     expect(started).toEqual(["run_1"]);
+  });
+
+  it("keeps hook backlog as an idle blocker without counting hook dispatch as a started run", async () => {
+    const dispatched: string[] = [];
+    const store = fakeStore({ hookDispatchRunIds: ["run_2"], idleBlockers: 1 });
+
+    await expect(runDaemonTick(store, {
+      startSession: () => "terminal",
+      dispatchHooks: runId => {
+        dispatched.push(runId);
+        return "quarantined";
+      },
+    })).resolves.toEqual({ runs: 0, idleBlockers: 1 });
+    expect(dispatched).toEqual(["run_2"]);
   });
 });
 
-function fakeStore(): RuntimeStore {
+function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): RuntimeStore {
   return {
-    async cleanupRunDirectories() {
-      return { staged: 0, orphaned: 0 };
-    },
     listDaemonWork() {
-      return { startableRuns: [runRecord()], idleBlockers: 0 };
+      return { startableRuns: [runRecord()], ...work };
     },
     pruneHookJournal() {
-      throw new Error("database busy");
+      if (failPrune) throw new Error("hook journal unavailable");
+      return 0;
     },
   } as unknown as RuntimeStore;
 }

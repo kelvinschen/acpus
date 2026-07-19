@@ -29,12 +29,12 @@ export type SchedulerEvent =
   | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; state?: JsonValue; transition?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number; timeoutMs?: number }>
-  | BaseEvent<"instance.started", { nodeKey: string }>
+  | BaseEvent<"instance.started", { nodeKey: string; attemptId?: string }>
   | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string }>
   | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
   | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number }>
-  | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string }>
-  | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string }>
+  | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string; attemptId?: string }>
+  | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string; attemptId?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>
   // Tracks one scheduler-visible leaf attempt; executor-internal sub-attempts are not events here.
   | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; deadlineAt?: string }>

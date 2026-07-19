@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it, vi } from "vitest";
@@ -32,7 +33,7 @@ describe("scheduler control settlement", () => {
         const store = await openRuntimeStore(workspace);
         let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           claim = store.scheduler.claimRun(run.id, `${type}-owner`, 60_000);
           if (!claim) throw new Error("expected scheduler claim");
           const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
@@ -41,7 +42,7 @@ describe("scheduler control settlement", () => {
             requestId: `${type}:${run.id}`,
             runId: run.id,
             type,
-          }, claim.ownerEpoch);
+          }, claim.ownerEpoch)._unsafeUnwrap();
 
           expect(applied.snapshot.version).toBe(seeded.version + versionDelta);
           expect(applied.snapshot.projection.run.status).toBe(status);
@@ -63,7 +64,7 @@ describe("scheduler control settlement", () => {
       const store = await openRuntimeStore(workspace);
       let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         claim = store.scheduler.claimRun(run.id, "signal-timeout-owner", 60_000);
         if (!claim) throw new Error("expected scheduler claim");
         const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
@@ -119,7 +120,7 @@ describe("scheduler control settlement", () => {
       const store = await openRuntimeStore(workspace);
       let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
       try {
-        const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         claim = store.scheduler.claimRun(run.id, "control-owner", 60_000);
         if (!claim) throw new Error("expected scheduler claim");
         const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);

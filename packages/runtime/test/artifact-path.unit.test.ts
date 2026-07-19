@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -33,7 +33,7 @@ describe("artifact path resolution", () => {
     expect(resolved.isOk() && resolved.value).toBe(path);
   });
 
-  it("returns tagged failures for malformed, foreign, missing, and invalid local artifacts", async () => {
+  it("returns tagged failures for malformed, foreign, missing, and unavailable local artifacts", async () => {
     expect(tryResolveArtifactPath({ kind: "artifact", uri: "artifact://missing-id" }, {
       cwd: workspace,
       runId,
@@ -52,11 +52,69 @@ describe("artifact path resolution", () => {
       store: store(),
     })._unsafeUnwrapErr().type).toBe("artifact-not-found");
 
+    const missingPath = join(workspace, runDir, "artifacts", "missing.txt");
     expect(tryResolveArtifactPath(ref(runId, artifactId), {
       cwd: workspace,
       runId,
-      store: store(record(join(workspace, "outside.txt"))),
+      store: store(record(missingPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+
+    const directoryPath = join(workspace, runDir, "artifacts", "directory");
+    await mkdir(directoryPath);
+    expect(tryResolveArtifactPath(ref(runId, artifactId), {
+      cwd: workspace,
+      runId,
+      store: store(record(directoryPath)),
+    })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+
+    const targetPath = join(workspace, runDir, "artifacts", "target.txt");
+    const symlinkPath = join(workspace, runDir, "artifacts", "link.txt");
+    await writeFile(targetPath, "input\n");
+    await symlink(targetPath, symlinkPath);
+    expect(tryResolveArtifactPath(ref(runId, artifactId), {
+      cwd: workspace,
+      runId,
+      store: store(record(symlinkPath)),
+    })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+  });
+
+  it("propagates store failures and registry path escapes", () => {
+    const sentinel = Object.assign(new Error("storage I/O failed"), { code: "EIO" });
+    expect(() => tryResolveArtifactPath(ref(runId, artifactId), {
+      cwd: workspace,
+      runId,
+      store: {
+        getArtifact: () => {
+          throw sentinel;
+        },
+      } as unknown as RuntimeStore,
+    })).toThrow(sentinel);
+
+    expect(() => tryResolveArtifactPath(ref(runId, artifactId), {
+      cwd: workspace,
+      runId,
+      store: store(record(join(workspace, "outside.txt"))),
+    })).toThrow("escapes the run directory");
+  });
+
+  it("rejects a runs root replaced by a symlink outside the workspace", async () => {
+    const outsideRunsRoot = await mkdtemp(join(tmpdir(), "acpus-artifact-runs-root-"));
+    try {
+      const runsRoot = join(workspace, ".acpus", ".local", "runs");
+      const lexicalArtifactPath = join(workspace, runDir, "artifacts", "input.txt");
+      await mkdir(join(outsideRunsRoot, runId, "artifacts"), { recursive: true });
+      await writeFile(join(outsideRunsRoot, runId, "artifacts", "input.txt"), "input\n");
+      await rm(runsRoot, { recursive: true });
+      await symlink(outsideRunsRoot, runsRoot, "dir");
+
+      expect(() => tryResolveArtifactPath(ref(runId, artifactId), {
+        cwd: workspace,
+        runId,
+        store: store(record(lexicalArtifactPath)),
+      })).toThrow("Runtime runs root is a symbolic link or resolves outside the workspace.");
+    } finally {
+      await rm(outsideRunsRoot, { recursive: true, force: true });
+    }
   });
 
   function record(path: string): ArtifactRecord {

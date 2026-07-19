@@ -494,7 +494,7 @@ describe("scheduler identity and reducers", () => {
 
     expect(attemptTimeoutEvents(projection, new Date("2026-06-30T00:00:01.000Z"))).toEqual([
       { type: "attempt.timed_out", payload: { attemptId: "attempt_1", error: { reason: "attempt_timeout" } } },
-      { type: "instance.failed", payload: { nodeKey: "task~1", error: { reason: "attempt_timeout" }, statusReason: "timed_out" } },
+      { type: "instance.failed", payload: { nodeKey: "task~1", attemptId: "attempt_1", error: { reason: "attempt_timeout" }, statusReason: "timed_out" } },
       { type: "group.member_failed", payload: { memberKey: "task~1", error: { reason: "attempt_timeout" }, terminalReason: "timed_out" } },
     ]);
   });

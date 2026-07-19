@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,10 +10,10 @@ import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from ".
 describe("runtime run deletion", () => {
   it("treats a missing store or run as an ordinary no-op", async () => {
     await withRuntimeWorkspace("runs-delete-missing", async workspace => {
-      await expect(deleteRun(workspace, "missing")).resolves.toBeUndefined();
+      expect((await deleteRun(workspace, "missing"))._unsafeUnwrap()).toBeUndefined();
       const store = await openRuntimeStore(workspace);
       store.close();
-      await expect(deleteRun(workspace, "missing")).resolves.toBeUndefined();
+      expect((await deleteRun(workspace, "missing"))._unsafeUnwrap()).toBeUndefined();
     });
   });
 
@@ -23,8 +24,8 @@ describe("runtime run deletion", () => {
       let deletedId: string;
       let keptId: string;
       try {
-        const deleted = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
-        const kept = await store.admitRun({ prepared, input: { ready: false }, cwd: workspace });
+        const deleted = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const kept = await admitRunForTest(store, { prepared, input: { ready: false }, cwd: workspace });
         deletedId = deleted.id;
         keptId = kept.id;
       } finally {
@@ -34,7 +35,7 @@ describe("runtime run deletion", () => {
       const runDir = join(workspace, ".acpus", ".local", "runs", deletedId);
       await expect(access(runDir)).resolves.toBeUndefined();
 
-      await expect(deleteRun(workspace, deletedId)).resolves.toMatchObject({ id: deletedId });
+      expect((await deleteRun(workspace, deletedId))._unsafeUnwrap()).toMatchObject({ id: deletedId });
 
       await expect(access(runDir)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(getRun(workspace, deletedId)).resolves.toBeUndefined();
@@ -50,7 +51,7 @@ describe("runtime run deletion", () => {
       const store = await openRuntimeStore(workspace);
       let runId: string;
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         runId = run.id;
         store.scheduler.claimRun(run.id, "owner", 60_000);
       } finally {
@@ -61,7 +62,7 @@ describe("runtime run deletion", () => {
       await expect(getRun(workspace, runId)).resolves.toMatchObject({
         execution: { state: "stale" },
       });
-      await expect(deleteRun(workspace, runId)).resolves.toMatchObject({ id: runId });
+      expect((await deleteRun(workspace, runId))._unsafeUnwrap()).toMatchObject({ id: runId });
       await expect(getRun(workspace, runId)).resolves.toBeUndefined();
     });
   });
@@ -72,17 +73,38 @@ describe("runtime run deletion", () => {
       const store = await openRuntimeStore(workspace);
       let runId: string;
       try {
-        const run = await store.admitRun({ prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         runId = run.id;
         store.scheduler.claimRun(run.id, "owner", 60_000);
       } finally {
         store.close();
       }
 
-      await expect(deleteRun(workspace, runId)).rejects.toMatchObject({
-        failure: { type: "run-delete-active", runId },
-      });
+      expect((await deleteRun(workspace, runId))._unsafeUnwrapErr()).toMatchObject({ type: "run-delete-active", runId });
       await expect(getRun(workspace, runId)).resolves.toMatchObject({ id: runId });
+    });
+  });
+
+  it("checks the active lease inside the store deletion transaction", async () => {
+    await withRuntimeWorkspace("runs-delete-store-active-fence", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner", 60_000);
+        if (!claim) throw new Error("expected active run claim");
+
+        expect((await store.deleteRun(run.id))._unsafeUnwrapErr()).toMatchObject({
+          type: "run-delete-active",
+          runId: run.id,
+        });
+        expect(store.getRun(run.id)).toMatchObject({ id: run.id, execution: { state: "active" } });
+        await expect(access(join(workspace, ".acpus", ".local", "runs", run.id))).resolves.toBeUndefined();
+
+        store.scheduler.releaseRun(claim);
+      } finally {
+        store.close();
+      }
     });
   });
 });

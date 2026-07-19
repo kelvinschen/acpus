@@ -1,14 +1,15 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { lift } from "@acpus/expression";
 import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
-import type { TaskAttemptRunner } from "../src/execution/task-process.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
+import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { rootFrameStarted } from "./support/scheduler.js";
 import { type AgentHostPolicy } from "../src/configuration.js";
 
 const taskMocks = vi.hoisted(() => ({ runTaskAttempt: vi.fn<TaskAttemptRunner>() }));
@@ -28,7 +29,60 @@ const taskOnlyAgentHostPolicy: AgentHostPolicy = { responseRepair: { type: "vali
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { taskAttemptRunner, ...productionInput } = input;
   if (taskAttemptRunner) taskMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);
-  return createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy: taskOnlyAgentHostPolicy });
+  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy: taskOnlyAgentHostPolicy });
+  return {
+    execute(context: Parameters<typeof executor.execute>[0]) {
+      ensureTestInstance(input.store, context.runId, context.nodeKey, context.nodeId);
+      return executor.execute(context);
+    },
+  };
+}
+
+const testRunClaims = new WeakMap<RuntimeStore, Map<string, NonNullable<ReturnType<RuntimeStore["scheduler"]["claimRun"]>>>>();
+
+function ensureTestInstance(store: RuntimeStore, runId: string, nodeKey: string, nodeId: string): void {
+  const scheduler = throwingSchedulerStore(store.scheduler);
+  let snapshot = scheduler.loadRunSnapshot(runId);
+  if (snapshot.projection.instances[nodeKey] && snapshot.projection.frames.root) return;
+  let claims = testRunClaims.get(store);
+  if (!claims) {
+    claims = new Map();
+    testRunClaims.set(store, claims);
+  }
+  let claim = claims.get(runId);
+  if (!claim) {
+    claim = store.scheduler.claimRun(runId, `task-test-${runId}`, 60_000);
+    if (!claim) throw new Error(`expected test claim for run '${runId}'`);
+    claims.set(runId, claim);
+  }
+  if (!snapshot.projection.frames.root) {
+    snapshot = scheduler.appendSchedulerEvents({
+      runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `task-test:${runId}:root:${snapshot.version}`,
+      events: [rootFrameStarted(runId, nodeId, nodeKey)],
+    });
+  }
+  if (!snapshot.projection.instances[nodeKey]) {
+    scheduler.appendSchedulerEvents({
+      runId,
+      expectedVersion: snapshot.version,
+      ownerEpoch: claim.ownerEpoch,
+      idempotencyKey: `task-test:${runId}:${nodeKey}:ready:${snapshot.version}`,
+      events: [{
+        type: "instance.ready",
+        payload: {
+          runId,
+          nodeKey,
+          nodeId,
+          instancePath: [{ kind: "node", nodeId }],
+          parentFrameKey: "root",
+          readinessSequence: Object.keys(snapshot.projection.instances).length + 1,
+        },
+      }],
+    });
+  }
 }
 
 describe("scheduler task and signal leaf executor", () => {
@@ -37,7 +91,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingInvocationTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const executor = createRuntimeNodeExecutor({
             cwd: workspace,
             ir: prepared.ir,
@@ -73,7 +127,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, wrongTypeTaskConfigWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { cwd: "workspace" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { cwd: "workspace" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
             status: "failed",
             started: 1,
@@ -104,7 +158,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingSignalPromptWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { prompt: "approve" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { prompt: "approve" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
 
           const expectedError = expect.objectContaining({
@@ -132,7 +186,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { timeout: "5s" }, cwd: workspace });
           const now = new Date();
           vi.useFakeTimers({ toFake: ["Date"] });
           vi.setSystemTime(now);
@@ -158,7 +212,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { timeout: String(Number.MAX_SAFE_INTEGER) }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { timeout: String(Number.MAX_SAFE_INTEGER) }, cwd: workspace });
           vi.useFakeTimers({ toFake: ["Date"] });
           vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
 
@@ -192,7 +246,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { timeout: "0ms" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { timeout: "0ms" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
             status: "failed",
             started: 1,
@@ -213,7 +267,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { timeout: "5s" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { timeout: "5s" }, cwd: workspace });
           const executor = createRuntimeNodeExecutor({
             cwd: workspace,
             ir: prepared.ir,
@@ -242,7 +296,7 @@ describe("scheduler task and signal leaf executor", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, abortStatusTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const executor = createRuntimeNodeExecutor({ cwd: workspace, ir: prepared.ir, scope: {}, store });
           const controller = new AbortController();
           controller.abort();

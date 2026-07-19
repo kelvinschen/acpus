@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExprIR, NodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
+import { completedScopeForFrame } from "../src/scheduler/scope.js";
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
 
 describe("scheduler materialization", () => {
@@ -763,7 +764,7 @@ describe("scheduler materialization", () => {
     ]);
   });
 
-  it.each(["all", "quorum"] as const)("rejects missing accepted fanout item output for %s", strategy => {
+  it.each(["all", "quorum"] as const)("throws when a completed %s fanout has no accepted item output", strategy => {
     const fanout = fanoutNode({
       over: stringArray("a"),
       doNodes: [],
@@ -779,16 +780,7 @@ describe("scheduler materialization", () => {
     projection = applySchedulerEvents(projection, groupCompletionEvents(projection, fanoutKey));
     delete projection.groupMembers[itemKey]!.output;
 
-    expect(continueRootEvents(workflow, projection, {})).toEqual([
-      {
-        type: "frame.failed",
-        payload: {
-          frameKey: fanoutKey,
-          error: { reason: "expression_failed", message: "Fanout item 0 did not produce an output." },
-          terminalReason: "expression_failed",
-        },
-      },
-    ]);
+    expect(() => continueRootEvents(workflow, projection, {})).toThrow("Fanout item 0 did not produce an output.");
   });
 
   it("completes empty fanout inputs with an empty aggregate", () => {
@@ -1100,6 +1092,123 @@ describe("scheduler materialization", () => {
     expect(continueRootEvents(workflow, projection, {})).toEqual([
       { type: "frame.completed", payload: { frameKey: "root", result: 1, terminalReason: "root_completed" } },
     ]);
+  });
+
+  it("rejects a running scope frame whose durable identity is missing", () => {
+    const workflow = workflowWithRootNode({
+      id: "parallel",
+      kind: "parallel",
+      strategy: "all",
+      branches: { work: { nodes: [taskNode("task")], output: { kind: "object", fields: {} } } },
+    });
+    const branchKey = deriveInstanceKey(appendBranch([], "parallel", "work"));
+    const projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
+    delete projection.frames[branchKey]!.instancePath;
+
+    expect(() => continueRootEvents(workflow, projection, {})).toThrow(
+      `Scope frame '${branchKey}' has no instance path.`,
+    );
+  });
+
+  it("rejects a fanout item frame whose durable membership is missing", () => {
+    const workflow = workflowWithRootNode(fanoutNode());
+    const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
+    const projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
+    delete projection.groupMembers[itemKey];
+
+    expect(() => continueRootEvents(workflow, projection, {})).toThrow(
+      `Fanout item frame '${itemKey}' has inconsistent group membership.`,
+    );
+  });
+
+  it("rejects a completed group whose accepted members disagree with durable completion", () => {
+    const workflow = workflowWithRootNode({
+      id: "parallel",
+      kind: "parallel",
+      strategy: "all",
+      branches: {
+        left: { nodes: [], output: { kind: "literal", value: "left" } },
+        right: { nodes: [], output: { kind: "literal", value: "right" } },
+      },
+    });
+    const groupKey = deriveInstanceKey(appendNode([], "parallel"));
+    const leftKey = deriveInstanceKey(appendBranch([], "parallel", "left"));
+    let projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
+    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    projection.groups[groupKey]!.result = { acceptedMemberKeys: [leftKey] };
+
+    expect(() => continueRootEvents(workflow, projection, {})).toThrow(
+      `Completed group '${groupKey}' accepted members do not match its completed membership.`,
+    );
+  });
+
+  it("rejects parallel race membership that does not match frozen branches", () => {
+    const workflow = workflowWithRootNode({
+      id: "parallel",
+      kind: "parallel",
+      strategy: "race",
+      branches: {
+        left: { nodes: [], output: { kind: "literal", value: "left" } },
+        right: { nodes: [], output: { kind: "literal", value: "right" } },
+      },
+    });
+    const groupKey = deriveInstanceKey(appendNode([], "parallel"));
+    let projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
+    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    const acceptedMemberKeys = (projection.groups[groupKey]!.result as { acceptedMemberKeys: string[] }).acceptedMemberKeys;
+    const winner = projection.groupMembers[acceptedMemberKeys[0]!]!;
+    if (winner.memberKind !== "branch") throw new Error("Expected a branch winner.");
+    winner.branchId = "forged";
+
+    expect(() => continueRootEvents(workflow, projection, {})).toThrow(
+      `Parallel race group '${groupKey}' does not contain its frozen branch membership.`,
+    );
+  });
+
+  it("uses the durable scope mapping and rejects extra, duplicate, or mismatched children", () => {
+    const workflow = workflowWithRootNodes([taskNode("first"), taskNode("second")]);
+    const firstKey = deriveInstanceKey(appendNode([], "first"));
+    let projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
+    projection = applySchedulerEvents(projection, [
+      { type: "instance.completed", payload: { nodeKey: firstKey, output: "legitimate" } },
+    ]);
+    const baseScope = { input: {}, nodes: {}, meta: {}, fanout: {}, loop: {} };
+
+    expect(completedScopeForFrame(projection, "root", baseScope).nodes).toEqual({
+      first: { status: "completed", output: "legitimate" },
+    });
+
+    projection.instances.forged = {
+      ...projection.instances[firstKey]!,
+      nodeKey: "forged",
+      nodeId: "first",
+      output: "forged",
+    };
+    expect(() => completedScopeForFrame(projection, "root", baseScope)).toThrow(
+      "Scheduler scope frame 'root' has inconsistent child 'forged'.",
+    );
+
+    delete projection.instances.forged;
+    projection.frames[firstKey] = {
+      runId: "run_corrupt",
+      frameKey: firstKey,
+      frameKind: "node",
+      status: "completed",
+      scope: {},
+      parentFrameKey: "root",
+      nodeKey: firstKey,
+      nodeId: "first",
+      result: "duplicate",
+    };
+    expect(() => completedScopeForFrame(projection, "root", baseScope)).toThrow(
+      `Scheduler scope frame 'root' has inconsistent child '${firstKey}'.`,
+    );
+
+    delete projection.frames[firstKey];
+    projection.instances[firstKey]!.nodeId = "mismatched";
+    expect(() => completedScopeForFrame(projection, "root", baseScope)).toThrow(
+      `Scheduler scope frame 'root' has inconsistent child '${firstKey}'.`,
+    );
   });
 });
 

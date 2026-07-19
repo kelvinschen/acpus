@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
-import { usageError } from "../errors.js";
+import { runError, usageError } from "../errors.js";
 import { ensureDaemonRunning } from "./daemon.js";
 
 export type WebCommandContext = {
@@ -22,13 +22,18 @@ export function createWebCommand(ctx: WebCommandContext): Command {
       const port = parsePort(options.port);
       const { startWebServer } = await import("@acpus/web");
 
-      const server = await startWebServer({
+      const started = await startWebServer({
         cwd: ctx.cwd,
         host,
         ...(port !== undefined ? { port } : {}),
         ...(options.token ? { token: true } : {}),
-        ensureDaemonRunning,
+        ensureDaemonRunning: async cwd => {
+          const ready = await ensureDaemonRunning(cwd);
+          if (ready.isErr()) throw usageError(ready.error.message);
+        },
       });
+      if (started.isErr()) throw runError(started.error.message, { errorCode: "LISTEN_FAILED" });
+      const server = started.value;
 
       if (ctx.wantsJson) {
         ctx.stdout.write(JSON.stringify({ url: server.url, ...(server.token ? { token: server.token } : {}) }) + "\n");

@@ -310,8 +310,9 @@ async function addToDigest(hash: ReturnType<typeof createHash>, path: string, re
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
   }
 }
 
@@ -335,7 +336,7 @@ function inspectError(message: string, errorCode?: string): CliError {
 }
 
 function isMissingPath(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+  return Boolean(error && typeof error === "object" && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR"));
 }
 
 async function pathExists(path: string): Promise<boolean> {

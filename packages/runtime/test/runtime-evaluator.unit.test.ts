@@ -29,6 +29,23 @@ describe("runtime expression evaluator", () => {
       field: "count",
       message: expect.stringContaining("boom"),
     });
+    expect(() => tryResolveString(ref(["workflow", "name"]), {}, "prompt")).toThrow(
+      "Unsupported expression ref root: workflow.",
+    );
+  });
+
+  it("does not reclassify an unexpected evaluation-adapter failure", () => {
+    const sentinel = { type: "artifact-store-failed" };
+    const expression: TemplateIR = { kind: "template", parts: [{ kind: "expr", expr: literal("artifact") }] };
+    let caught: unknown;
+
+    try {
+      tryResolveString(expression, {}, "prompt", { formatTemplateValue: () => { throw sentinel; } });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(sentinel);
   });
 
   it("treats missing and zero concurrency limits as omitted", () => {

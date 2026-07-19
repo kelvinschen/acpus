@@ -42,4 +42,5 @@ export type TaskProcessChildMessage =
   | { type: "artifact_register"; requestId: string; artifact: TaskArtifactRegistration }
   | { type: "completed"; hasOutput: false }
   | { type: "completed"; hasOutput: true; output: JsonValue }
-  | { type: "failed"; error: { name: string; message: string; stack?: string } };
+  | { type: "failed"; message: string }
+  | { type: "system_rejected"; error: { message: string; code?: string } };

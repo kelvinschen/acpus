@@ -13,7 +13,7 @@ describe("artifact reference rewriting", () => {
     }, "source", "fork", {
       artifact_a: "artifact_fork_a",
       artifact_b: "artifact_fork_b",
-    })).toEqual({
+    })._unsafeUnwrap()).toEqual({
       nodeKey: "first",
       output: {
         primary: { kind: "artifact", uri: "artifact://fork/artifact_fork_a", mediaType: "text/plain" },
@@ -24,11 +24,26 @@ describe("artifact reference rewriting", () => {
   });
 
   it("fails when a source artifact id has no fork id", () => {
-    expect(() => rewriteArtifactValue(
+    expect(rewriteArtifactValue(
       { kind: "artifact", uri: "artifact://source/missing" },
       "source",
       "fork",
       {},
-    )).toThrow("Missing fork artifact id for 'missing'.");
+    )._unsafeUnwrapErr()).toEqual({
+      type: "artifact-rewrite-failure",
+      artifactId: "missing",
+      message: "Missing fork artifact id for 'missing'.",
+    });
+  });
+
+  it("preserves and rewrites own __proto__ data without prototype mutation", () => {
+    const input = JSON.parse('{"__proto__":{"kind":"artifact","uri":"artifact://source/artifact_a"}}');
+    const rewritten = rewriteArtifactValue(input, "source", "fork", {
+      artifact_a: "artifact_fork_a",
+    })._unsafeUnwrap() as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(rewritten)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(rewritten, "__proto__")).toBe(true);
+    expect(JSON.stringify(rewritten)).toBe('{"__proto__":{"kind":"artifact","uri":"artifact://fork/artifact_fork_a"}}');
   });
 });

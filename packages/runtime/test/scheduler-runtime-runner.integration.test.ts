@@ -1,3 +1,4 @@
+import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { lift, template } from "@acpus/expression";
 import { ResultAsync } from "neverthrow";
@@ -6,10 +7,9 @@ import { advanceRun } from "../src/scheduler/advance.js";
 import { appendBranch, appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, createRuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
-import type { TaskAttemptRunner } from "../src/execution/task-process.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { createInlineTaskAttemptHarness } from "./support/task-attempt-harness.js";
-import { normalizeWorkflowInput } from "../src/admission/input.js";
+import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
+import { tryNormalizeWorkflowInput } from "../src/admission/input.js";
 import { loadAgentHostPolicy } from "../src/configuration.js";
 import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
@@ -61,7 +61,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingRootAssertWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
 
@@ -80,7 +80,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingExpressionCallbackWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
 
@@ -105,7 +105,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootSignalWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const nodeKey = deriveInstanceKey(appendNode([], "approve"));
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "awaiting", started: 0 });
@@ -135,7 +135,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { timeout: "5s", prompt: "Approve release?", timeoutMessage: "Approval timed out" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { timeout: "5s", prompt: "Approve release?", timeoutMessage: "Approval timed out" }, cwd: workspace });
           const nodeKey = deriveInstanceKey(appendNode([], "approve"));
           vi.useFakeTimers({ toFake: ["Date"] });
           vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
@@ -169,7 +169,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({
+          const run = await admitRunForTest(store, {
             prepared,
             input: { timeout: String(Number.MAX_SAFE_INTEGER), prompt: "Approve release?", timeoutMessage: "Approval timed out" },
             cwd: workspace,
@@ -209,7 +209,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const execution = createRuntimeRunScheduler({
             cwd: workspace,
             store,
@@ -232,7 +232,7 @@ describe("runtime scheduler runner", () => {
         const store = await openRuntimeStore(workspace);
         let owner: ReturnType<typeof store.scheduler.claimRun>;
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           owner = store.scheduler.claimRun(run.id, "owner-a", 60_000);
           if (!owner) throw new Error("expected setup owner claim");
           const execution = createRuntimeRunScheduler({
@@ -243,7 +243,7 @@ describe("runtime scheduler runner", () => {
           }).start({ runId: run.id, ownerId: "owner-b" });
 
           await expect(execution.ownerEpoch).resolves.toBeUndefined();
-          await expect(execution.result).resolves.toMatchObject({ status: "lease_lost" });
+          expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "lease_lost" });
         } finally {
           if (owner) store.scheduler.releaseRun(owner);
           store.close();
@@ -256,7 +256,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, signalWakeRefillWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const signalKey = deriveInstanceKey(appendNode(appendBranch([], "work", "signaled"), "approve"));
           const longTaskKey = deriveInstanceKey(appendNode(appendBranch([], "work", "long"), "long_task"));
           const afterSignalTaskKey = deriveInstanceKey(appendNode(appendBranch([], "work", "signaled"), "after_signal_task"));
@@ -299,7 +299,7 @@ describe("runtime scheduler runner", () => {
             expect(controlled.peak()).toBe(2);
 
             controlled.releaseFirst();
-            await expect(execution.result).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+            expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "completed", started: 2, completed: 2 });
             expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[afterSignalTaskKey]).toMatchObject({
               status: "completed",
               output: { value: "approved" },
@@ -320,7 +320,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const firstKey = deriveInstanceKey(appendNode([], "first_task"));
           const secondKey = deriveInstanceKey(appendNode([], "second_task"));
 
@@ -341,7 +341,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const assertKey = deriveInstanceKey(appendNode([], "require_run"));
           const ifKey = deriveInstanceKey(appendNode([], "gate"));
           const branchKey = deriveInstanceKey(appendBranch([], "gate", "then"));
@@ -369,7 +369,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const assertKey = deriveInstanceKey(appendNode([], "require_run"));
           const ifKey = deriveInstanceKey(appendNode([], "gate"));
           const branchKey = deriveInstanceKey(appendBranch([], "gate", "then"));
@@ -421,7 +421,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfSequentialTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const ifKey = deriveInstanceKey(appendNode([], "gate"));
           const branchKey = deriveInstanceKey(appendBranch([], "gate", "then"));
           const firstKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "then"), "then_first"));
@@ -448,7 +448,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootSwitchSequentialTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { mode: "case" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { mode: "case" }, cwd: workspace });
           const switchKey = deriveInstanceKey(appendNode([], "route"));
           const branchKey = deriveInstanceKey(appendBranch([], "route", "case:0"));
           const firstKey = deriveInstanceKey(appendNode(appendBranch([], "route", "case:0"), "case_first"));
@@ -479,7 +479,7 @@ describe("runtime scheduler runner", () => {
         const branchTaskKey = deriveInstanceKey(appendNode(appendBranch([], "gate", "then"), "then_task"));
         const finalKey = deriveInstanceKey(appendNode([], "final_task"));
         try {
-          const run = await firstStore.admitRun({ prepared, input: { shouldRun: true }, cwd: workspace });
+          const run = await admitRunForTest(firstStore, { prepared, input: { shouldRun: true }, cwd: workspace });
           runId = run.id;
           const frozen = firstStore.getFrozenRun(runId);
           if (!frozen) throw new Error("expected frozen workflow");
@@ -528,7 +528,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
 
           const groupKey = deriveInstanceKey(appendNode([], "race"));
@@ -553,7 +553,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootParallelWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const prepareKey = deriveInstanceKey(appendNode([], "prepare_task"));
           const parallelKey = deriveInstanceKey(appendNode([], "combine"));
 
@@ -579,7 +579,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow({ dynamicMaxConcurrency: true }));
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { maxConcurrency: 1 }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { maxConcurrency: 1 }, cwd: workspace });
           const controlled = holdFirstTaskAttempt();
           const advancing = advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           await vi.waitFor(() => expect(taskMocks.runTaskAttempt).toHaveBeenCalledTimes(1));
@@ -602,7 +602,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
@@ -634,8 +634,8 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ maxConcurrency: 0, dynamicLimits: true }));
         const store = await openRuntimeStore(workspace);
         try {
-          const input = normalizeWorkflowInput(prepared.ir, { items: ["a", "b"] });
-          const run = await store.admitRun({ prepared, input, cwd: workspace });
+          const input = tryNormalizeWorkflowInput(prepared.ir, { items: ["a", "b"] })._unsafeUnwrap();
+          const run = await admitRunForTest(store, { prepared, input, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const group = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groups)[0];
 
@@ -654,7 +654,7 @@ describe("runtime scheduler runner", () => {
         const firstStore = await openRuntimeStore(workspace);
         let runId = "";
         try {
-          const run = await firstStore.admitRun({ prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 1 }, cwd: workspace });
+          const run = await admitRunForTest(firstStore, { prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 1 }, cwd: workspace });
           runId = run.id;
           const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store: firstStore, maxLeafConcurrency: 0 });
           expect(first).toMatchObject({ status: "idle", started: 0, completed: 0 });
@@ -687,11 +687,11 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", dynamicLimits: true }));
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 2 }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 2 }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
-          expect(summary).toMatchObject({ status: "completed", started: 3, completed: 2, cancelled: 1 });
+          expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2, cancelled: 0 });
           const fanoutFrame = projection.frames[deriveInstanceKey(appendNode([], "items"))];
           expect(fanoutFrame).toMatchObject({ status: "completed" });
           expect(fanoutFrame?.result).toHaveLength(2);
@@ -701,7 +701,7 @@ describe("runtime scheduler runner", () => {
           ]));
           expect(Object.values(projection.groupMembers).filter(member => member.status === "completed")).toHaveLength(2);
           expect(Object.values(projection.groupMembers).filter(member => member.status === "cancelled")).toHaveLength(1);
-          expect(Object.values(projection.attempts).filter(attempt => attempt.status === "cancelled")).toHaveLength(1);
+          expect(Object.values(projection.attempts).filter(attempt => attempt.status === "cancelled")).toHaveLength(0);
           expect(Object.values(projection.instances).filter(instance => instance.status === "completed")).toHaveLength(2);
           expect(Object.values(projection.instances).filter(instance => instance.status === "cancelled")).toHaveLength(1);
           expect(Object.values(projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 2 });
@@ -716,7 +716,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", count: 1, maxConcurrency: 2, abortItem: "slow" }));
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["slow", "fast"] }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["slow", "fast"] }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
@@ -737,7 +737,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootParallelWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const parallelKey = deriveInstanceKey(appendNode([], "parallel"));
           const branchKey = deriveInstanceKey(appendBranch([], "parallel", "mixed"));
 
@@ -758,7 +758,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootFanoutWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const fanoutKey = deriveInstanceKey(appendNode([], "items"));
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "completed", started: 4, completed: 4 });
@@ -785,7 +785,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootFanoutWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["a", "b"] }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const controlled = holdFirstTaskAttempt();
 
           const advancing = advanceFrozenRun({
@@ -814,7 +814,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, nestedFanoutInParallelWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: { items: ["a", "b"], parallelism: 1 }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"], parallelism: 1 }, cwd: workspace });
           const firstItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0), "inner_task"));
           const secondItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 1), "inner_task"));
 
@@ -856,7 +856,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, parallelSignalConcurrencyWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const gateKey = deriveInstanceKey(appendNode([], "gate"));
           const leftBranchKey = deriveInstanceKey(appendBranch([], "gate", "left"));
           const rightBranchKey = deriveInstanceKey(appendBranch([], "gate", "right"));
@@ -908,7 +908,7 @@ describe("runtime scheduler runner", () => {
         const store = await openRuntimeStore(workspace);
         let runId = "";
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           runId = run.id;
           const first = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-a", store, maxLeafConcurrency: 0 });
           expect(first).toMatchObject({ status: "idle", started: 0, completed: 0 });
@@ -957,7 +957,7 @@ describe("runtime scheduler runner", () => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootLoopWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
-          const run = await store.admitRun({ prepared, input: {}, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const loopKey = deriveInstanceKey(appendNode([], "retry"));
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });

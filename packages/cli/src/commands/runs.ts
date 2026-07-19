@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, normalizeForkInput, RuntimeUseCaseException, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -9,7 +9,7 @@ import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
 import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
-import { DaemonControlFailure, daemonControlRequestId, sendDaemonControl } from "./daemon.js";
+import { daemonControlRequestId, sendDaemonControl, type DaemonControlFailure } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
 
 export type RunsCommandContext = {
@@ -270,50 +270,38 @@ async function deleteManyRuns(ctx: RunsCommandContext, runIds: string[], initial
   const skippedRuns = [...initialSkipped];
   const skippedIds = new Set(skippedRuns.map(run => run.id));
   for (const id of runIds) {
-    try {
-      const deleted = await deleteRuntimeRun(ctx.cwd, id);
-      if (!deleted) continue;
-      deletedRuns.push(deleted);
-    } catch (error) {
-      if (error instanceof RuntimeUseCaseException && error.failure.type === "run-delete-active") {
-        const run = await getRun(ctx.cwd, id);
-        if (run && !skippedIds.has(run.id)) {
-          skippedRuns.push(toRunRecord(run));
-          skippedIds.add(run.id);
-        }
-        continue;
+    const deleted = await deleteRuntimeRun(ctx.cwd, id);
+    if (deleted.isErr()) {
+      const run = await getRun(ctx.cwd, id);
+      if (run && !skippedIds.has(run.id)) {
+        skippedRuns.push(toRunRecord(run));
+        skippedIds.add(run.id);
       }
-      throw error;
+      continue;
     }
+    if (deleted.value) deletedRuns.push(deleted.value);
   }
   return { deletedRuns, skippedRuns };
 }
 
 async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<RunRecord> {
-  try {
-    const deleted = await deleteRuntimeRun(ctx.cwd, runId);
-    if (!deleted) throw deleteError(`Run '${runId}' was not found.`);
-    return deleted;
-  } catch (error) {
-    if (error instanceof RuntimeUseCaseException && error.failure.type === "run-delete-active") {
-      const run = await getRun(ctx.cwd, runId);
-      throw deleteError(error.message, {
-        errorCode: "RUN_ACTIVE",
-        ...(run ? { run: toRunRecord(run) } : {}),
-      });
-    }
-    throw error;
+  const deleted = await deleteRuntimeRun(ctx.cwd, runId);
+  if (deleted.isErr()) {
+    const run = await getRun(ctx.cwd, runId);
+    throw deleteError(deleted.error.message, {
+      errorCode: "RUN_ACTIVE",
+      ...(run ? { run: toRunRecord(run) } : {}),
+    });
   }
+  if (!deleted.value) throw deleteError(`Run '${runId}' was not found.`);
+  return deleted.value;
 }
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  let result: Awaited<ReturnType<typeof sendDaemonControl>>;
-  try {
-    result = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target!, payload });
-  } catch (error) {
-    throw runControlError(error);
-  }
+  const controlled = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target!, payload });
+  if (controlled.isErr()) throw runControlError(controlled.error);
+  const result = controlled.value;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
   ctx.setExitCode(writeResult({
     ok: true,
@@ -333,10 +321,8 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
   const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
   const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
   const forkInput = await maybeNormalizeForkInput(ctx, runId, action, replacementInput, prepared);
-  let result: Awaited<ReturnType<typeof sendDaemonControl>>;
-  try {
-    const base = { requestId: daemonControlRequestId(), runId };
-    const intent: DaemonControlIntent = action === "pause" || action === "resume"
+  const base = { requestId: daemonControlRequestId(), runId };
+  const intent: DaemonControlIntent = action === "pause" || action === "resume"
       ? { ...base, type: action }
       : action === "retry" || action === "cancel"
         ? { ...base, type: action, ...(options.target ? { target: options.target } : {}) }
@@ -349,10 +335,9 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCo
             ...(agentOverrides !== undefined ? { agentOverrides } : {}),
             ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
           };
-    result = await sendDaemonControl(ctx.cwd, intent);
-  } catch (error) {
-    throw runControlError(error);
-  }
+  const controlled = await sendDaemonControl(ctx.cwd, intent);
+  if (controlled.isErr()) throw runControlError(controlled.error);
+  const result = controlled.value;
   if (result.type !== action) throw new Error(`Daemon returned '${result.type}' for ${action} control.`);
   ctx.setExitCode(writeResult({
     ok: true,
@@ -405,26 +390,21 @@ async function maybeNormalizeForkInput(
 ): Promise<JsonValue | undefined> {
   if (action !== "fork") return undefined;
   if (replacementInput === undefined && !prepared) return undefined;
-  try {
-    return await normalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
-  } catch (error) {
-    throw validationError(error instanceof Error ? error.message : String(error));
-  }
+  const normalized = await tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
+  if (normalized.isErr()) throw validationError(normalized.error.message);
+  return normalized.value;
 }
 
 function outputFormat(ctx: RunsCommandContext): OutputFormat {
   return ctx.wantsJson ? "json" : "text";
 }
 
-function runControlError(error: unknown): ReturnType<typeof controlError> {
-  if (error instanceof DaemonControlFailure) {
-    return controlError(error.message, {
-      errorCode: error.code,
-      control: { type: error.controlType, runId: error.runId },
-      ...(error.run ? { run: toRunRecord(error.run) } : {}),
-    });
-  }
-  return controlError(error instanceof Error ? error.message : String(error));
+function runControlError(error: DaemonControlFailure): ReturnType<typeof controlError> {
+  return controlError(error.message, {
+    errorCode: error.code,
+    control: { type: error.controlType, runId: error.runId },
+    ...(error.run ? { run: toRunRecord(error.run) } : {}),
+  });
 }
 
 function terminalRun(run: RunDetails): boolean {

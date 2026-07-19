@@ -4,6 +4,7 @@ import { access, cp, lstat, mkdtemp, readlink, rename, rm } from "node:fs/promis
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { skillError, usageError } from "../errors.js";
 import { writeResult, type SkillCommandResult } from "../output.js";
 import { existingSkillRootTargets, readAcpusSkillMetadata, skillTargets, type SkillScope, type SkillTarget } from "../skill-installation.js";
@@ -29,6 +30,14 @@ type SkillOptions = {
 
 type InstallationResult = NonNullable<SkillCommandResult["installations"]>[number];
 type RemovalResult = NonNullable<SkillCommandResult["removals"]>[number];
+
+export type SkillReplaceFailure = {
+  type: "skill-replace-failed";
+  stage: "stage" | "backup" | "publish" | "restore" | "cleanup";
+  message: string;
+  recoveryPath: string;
+  published: boolean;
+};
 
 export function createSkillCommand(ctx: SkillCommandContext): Command {
   const command = new Command("skill")
@@ -129,7 +138,13 @@ async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dry
     }
 
     const status = existing === "missing" ? dryRun ? "would-install" : "installed" : dryRun ? "would-update" : "updated";
-    if (!dryRun) await replaceDirectory(sourcePath, target.targetPath);
+    if (!dryRun) {
+      const replaced = await replaceDirectory(sourcePath, target.targetPath, existing !== "missing");
+      if (replaced.isErr()) {
+        results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "failed", error: replaced.error.message });
+        continue;
+      }
+    }
     results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status });
   }
   return results;
@@ -161,36 +176,111 @@ async function classifyExistingTarget(targetPath: string): Promise<"missing" | "
     return "unsafe";
   } catch (error) {
     if (isNotFound(error)) return "missing";
-    return "unsafe";
+    throw error;
   }
 }
 
 async function isAcpusSkillSymlink(targetPath: string): Promise<boolean> {
-  try {
-    return await isAcpusSkillDirectory(resolve(dirname(targetPath), await readlink(targetPath)));
-  } catch {
-    return false;
-  }
+  return isAcpusSkillDirectory(resolve(dirname(targetPath), await readlink(targetPath)));
 }
 
 async function isAcpusSkillDirectory(targetPath: string): Promise<boolean> {
   try {
     return (await readAcpusSkillMetadata(targetPath)).name === ACPUS_SKILL;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
   }
 }
 
-async function replaceDirectory(sourcePath: string, targetPath: string): Promise<void> {
-  const tempParent = await mkdtemp(join(dirname(targetPath), ".acpus-skill-"));
-  const tempPath = join(tempParent, basename(targetPath));
+export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): ResultAsync<void, SkillReplaceFailure> {
+  return new ResultAsync(replaceDirectoryTransaction(sourcePath, targetPath, targetExists));
+}
+
+async function replaceDirectoryTransaction(sourcePath: string, targetPath: string, targetExists: boolean): Promise<Result<void, SkillReplaceFailure>> {
+  const parent = dirname(targetPath);
+  let recoveryPath: string;
   try {
-    await cp(sourcePath, tempPath, { recursive: true, verbatimSymlinks: true });
-    await rm(targetPath, { recursive: true, force: true });
-    await rename(tempPath, targetPath);
-  } finally {
-    await rm(tempParent, { recursive: true, force: true });
+    recoveryPath = await mkdtemp(join(parent, ".acpus-skill-"));
+  } catch (cause) {
+    return err(skillReplaceFailure("stage", parent, false, cause));
   }
+  const stagedPath = join(recoveryPath, basename(targetPath));
+  const backupPath = join(recoveryPath, ".previous");
+
+  try {
+    await cp(sourcePath, stagedPath, { recursive: true, verbatimSymlinks: true });
+  } catch (cause) {
+    return cleanupAfterFailure("stage", recoveryPath, false, cause);
+  }
+
+  if (targetExists) {
+    try {
+      await rename(targetPath, backupPath);
+    } catch (cause) {
+      return cleanupAfterFailure("backup", recoveryPath, false, cause);
+    }
+  }
+
+  try {
+    await rename(stagedPath, targetPath);
+  } catch (publishCause) {
+    if (targetExists) {
+      try {
+        await rename(backupPath, targetPath);
+      } catch (restoreCause) {
+        return err(skillReplaceFailure(
+          "restore",
+          recoveryPath,
+          false,
+          new AggregateError([publishCause, restoreCause], "Skill publication and restoration both failed."),
+        ));
+      }
+    }
+    return cleanupAfterFailure("publish", recoveryPath, false, publishCause);
+  }
+
+  try {
+    await rm(recoveryPath, { recursive: true, force: true });
+  } catch (cause) {
+    return err(skillReplaceFailure("cleanup", recoveryPath, true, cause));
+  }
+  return ok(undefined);
+}
+
+async function cleanupAfterFailure(
+  stage: SkillReplaceFailure["stage"],
+  recoveryPath: string,
+  published: boolean,
+  cause: unknown,
+): Promise<Result<void, SkillReplaceFailure>> {
+  try {
+    await rm(recoveryPath, { recursive: true, force: true });
+    return err(skillReplaceFailure(stage, recoveryPath, published, cause));
+  } catch (cleanupCause) {
+    return err(skillReplaceFailure(
+      stage,
+      recoveryPath,
+      published,
+      new AggregateError([cause, cleanupCause], `Skill replacement failed during ${stage} and cleanup.`),
+    ));
+  }
+}
+
+function skillReplaceFailure(
+  stage: SkillReplaceFailure["stage"],
+  recoveryPath: string,
+  published: boolean,
+  cause: unknown,
+): SkillReplaceFailure {
+  const detail = cause instanceof Error && cause.message.length > 0 ? cause.message : String(cause);
+  return {
+    type: "skill-replace-failed",
+    stage,
+    recoveryPath,
+    published,
+    message: `Acpus skill replacement failed during ${stage}: ${detail} Recovery path: ${recoveryPath}.`,
+  };
 }
 
 function installOk(results: InstallationResult[]): boolean {
@@ -223,5 +313,8 @@ function skillResult(
 }
 
 function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

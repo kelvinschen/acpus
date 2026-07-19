@@ -73,7 +73,15 @@ function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): Ski
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
   }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

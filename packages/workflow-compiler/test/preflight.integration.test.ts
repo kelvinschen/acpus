@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,28 @@ describe("workflow preparation", () => {
         path: "root.nodes.bad id",
         hint: "Use a compile-time string literal for the step id; runtime Expr values are not allowed in node ids.",
       }]);
+    });
+  });
+
+  it("retains the typed compile worker failure", async () => {
+    await withCompilerWorkspace("compiler-worker-result", async cwd => {
+      const workflow = join(cwd, "invalid.workflow.ts");
+      await writeFile(workflow, "export default {};\n");
+
+      const result = await tryPrepareWorkflow({ workflow, cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected compile failure");
+      expect(result.error).toEqual({
+        type: "compile-failed",
+        phase: "compile",
+        message: `Default export of ${workflow} is not an Acpus workflow definition.`,
+        failure: {
+          type: "invalid-default-export",
+          entry: workflow,
+          message: `Default export of ${workflow} is not an Acpus workflow definition.`,
+        },
+      });
     });
   });
 });

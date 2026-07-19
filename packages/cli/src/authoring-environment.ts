@@ -145,5 +145,6 @@ async function installedSkill(path: string, expectedVersion: string): Promise<{ 
 }
 
 function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  return typeof error === "object" && error !== null && "code" in error
+    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

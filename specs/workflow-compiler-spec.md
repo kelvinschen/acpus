@@ -12,6 +12,7 @@
 - The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `extractWorkflowMetadata(source, fileName)` as a `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
+- The package MUST expose `CompileWorkerFailure` and `PackageLockFailure` as public failure types without exposing the worker process entrypoint.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
 
@@ -97,15 +98,23 @@
 - Exact deduplication MUST compare all user-visible diagnostic fields: code, severity, message, path, source file/line/column, and hint. Diagnostics at different source locations MUST NOT be merged, and ordering or cascade classification MUST NOT depend on diagnostic message text, `never`, `CheckedBuildFn`, or another internal type name.
 
 - Full preparation MUST compile through a worker/import path that loads TypeScript workflow modules and supported official `acpus/*` authoring facade specifiers through `@acpus/loader`.
+- The internal `compileWorkflow(...)` boundary MUST return `ResultAsync<CompiledWorkflowModule, CompileWorkerFailure>` for recoverable worker, protocol, and module failures.
+- The compile worker wire envelope MUST be exactly `{ schemaVersion: 1, ok: true, result }` or `{ schemaVersion: 1, ok: false, error }`.
+- The compile worker parent MUST validate the envelope version, discriminant, top-level result shape, source digest, error tag, and process-exit consistency before consuming it.
+- Worker spawn, unsuccessful exit without a result, result read, invalid JSON, invalid result, and worker-system failures MUST retain distinct stable failure tags.
+- A nonzero worker exit MAY become `worker-exit-failed` after result reading only when the result path is absent by `ENOENT` or `ENOTDIR`; permission, I/O, directory, and all other read errors MUST remain `worker-result-read-failed` with their path and error code.
+- Compiler worker stdout and stderr retained in operational failures MUST be bounded tails.
 - Repository source-mode worker bootstrap MAY use a development TypeScript loader only to execute the compiler's own `.ts` worker file; it MUST NOT encode workflow module or reusable task module loading policy.
 - Check failures MUST be reported as `WorkflowPreparationError` with phase `"check"` and `DiagnosticIR[]`.
 - Native TypeScript service, protocol, project, or source-invariant failures during check MUST produce a `WF002` check diagnostic and MUST NOT silently fall back to another compiler backend.
 - Workflow check infrastructure diagnostics MUST use `WF001` for an unreadable workflow source and `WF002` for an unavailable or failed TypeScript 7 native analysis service.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.
-- `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, and validate failures.
+- `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, package-lock read, and validate failures.
 - `WorkflowPreparationFailure` MUST include a stable `type` tag while preserving the existing `phase` field.
-- Compile worker failure payloads MUST be plain JSON objects with `ok: false`, a stable `type`, and a display `message`.
+- A compile-phase `WorkflowPreparationFailure` MUST retain its typed `CompileWorkerFailure`.
+- A package-lock read failure MUST use type `package-lock-read-failed` and phase `lock`.
+- Compile worker failure payloads MUST be plain JSON objects and MUST NOT serialize neverthrow values.
 - `prepareWorkflow(options)` MUST return the successful `tryPrepareWorkflow(options)` value or throw `WorkflowPreparationError` carrying the preparation failure.
 
 ### Task Analysis And Reusable References
@@ -141,6 +150,8 @@
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
 - The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
+- Package lock discovery MUST continue to the next candidate only when the current path fails with `ENOENT` or `ENOTDIR`.
+- An unreadable package lock, directory in place of a lockfile, or symlink-resolution failure MUST return `PackageLockFailure` rather than being treated as absence.
 - The lock metadata MUST use kind `acpus_workflow_preparation_lock`.
 - The lock metadata MUST reference workflow entry, workflow source digest, IR digest, source graph digest, and optional package lock digest.
 - Preparation lock metadata MUST be deterministic for identical workflow source, IR, and package lock inputs; it MUST NOT contain a generation timestamp.

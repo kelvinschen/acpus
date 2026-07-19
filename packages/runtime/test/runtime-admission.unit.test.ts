@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
-import { normalizeWorkflowInput } from "@acpus/runtime";
-import { normalizeSignalPayload } from "../src/admission/input.js";
+import { tryNormalizeWorkflowInput } from "@acpus/runtime";
+import { tryNormalizeSignalPayload } from "../src/admission/input.js";
 
 describe("runtime admission normalization", () => {
   it("applies input defaults and rejects invalid artifact ref objects", () => {
@@ -27,18 +27,18 @@ describe("runtime admission normalization", () => {
       },
     });
 
-    expect(normalizeWorkflowInput(ir, {
+    expect(tryNormalizeWorkflowInput(ir, {
       patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
       token: "API_TOKEN",
-    })).toEqual({
+    })._unsafeUnwrap()).toEqual({
       base: "main",
       patch: { kind: "artifact", uri: "artifact://patch", mediaType: "text/plain" },
       token: "API_TOKEN",
     });
-    expect(() => normalizeWorkflowInput(ir, {
+    expect(tryNormalizeWorkflowInput(ir, {
       patch: { kind: "artifact", uri: "artifact://patch", mediaType: "application/json" },
       token: "API_TOKEN",
-    })).toThrow("$.patch.mediaType expected literal \"text/plain\"");
+    })._unsafeUnwrapErr()).toMatchObject({ type: "schema-mismatch", path: "$.patch.mediaType", expected: "literal \"text/plain\"" });
   });
 
   it("normalizes schema-backed signal payloads and requires raw strings without schema", () => {
@@ -64,9 +64,9 @@ describe("runtime admission normalization", () => {
       ],
     });
 
-    expect(normalizeSignalPayload(ir, "raw", "approved")).toBe("approved");
-    expect(() => normalizeSignalPayload(ir, "raw", { text: "approved" })).toThrow("Signal payload expected string.");
-    expect(normalizeSignalPayload(ir, "structured", { ok: true })).toEqual({ ok: true });
+    expect(tryNormalizeSignalPayload(ir, "raw", "approved")._unsafeUnwrap()).toBe("approved");
+    expect(tryNormalizeSignalPayload(ir, "raw", { text: "approved" })._unsafeUnwrapErr()).toMatchObject({ type: "signal-payload-invalid" });
+    expect(tryNormalizeSignalPayload(ir, "structured", { ok: true })._unsafeUnwrap()).toEqual({ ok: true });
   });
 });
 

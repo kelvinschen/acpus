@@ -62,7 +62,7 @@ export function attemptTimeoutEvents(projection: SchedulerProjection, now: Date)
     return [
       { type: "attempt.timed_out", payload: { attemptId: attempt.attemptId, error } },
       ...(instance && (instance.status === "running" || instance.status === "awaiting")
-        ? [{ type: "instance.failed", payload: { nodeKey: instance.nodeKey, error, statusReason: "timed_out" } } satisfies SchedulerEvent]
+        ? [{ type: "instance.failed", payload: { nodeKey: instance.nodeKey, attemptId: attempt.attemptId, error, statusReason: "timed_out" } } satisfies SchedulerEvent]
         : []),
       ...members.map(member => ({ type: "group.member_failed", payload: { memberKey: member.memberKey, error, terminalReason: "timed_out" } }) satisfies SchedulerEvent),
     ];
@@ -554,14 +554,15 @@ function startReadyAncestorMembers(projection: SchedulerProjection, nodeKey: str
 }
 
 function applyAttemptEvent(projection: SchedulerProjection, event: SchedulerEvent): void {
-  if (!("attemptId" in event.payload)) return;
-  const attempt = requireKey(projection.attempts, event.payload.attemptId, "attempt");
+  if (!("attemptId" in event.payload) || event.payload.attemptId === undefined) return;
+  const attemptId = event.payload.attemptId;
+  const attempt = requireKey(projection.attempts, attemptId, "attempt");
   assertAttemptOpen(attempt);
-  if (event.type === "attempt.completed") projection.attempts[event.payload.attemptId] = compactAttempt({ ...attempt, status: "completed", ...(event.payload.result === undefined ? {} : { result: event.payload.result }) });
-  if (event.type === "attempt.failed") projection.attempts[event.payload.attemptId] = compactAttempt({ ...attempt, status: "failed", error: event.payload.error, ...(event.payload.terminalReason === undefined ? {} : { terminalReason: event.payload.terminalReason }) });
-  if (event.type === "attempt.timed_out") projection.attempts[event.payload.attemptId] = compactAttempt({ ...attempt, status: "timed_out", ...(event.payload.error === undefined ? {} : { error: event.payload.error }), terminalReason: "timed_out" });
-  if (event.type === "attempt.cancelled") projection.attempts[event.payload.attemptId] = compactAttempt({ ...attempt, status: "cancelled", cancelReason: event.payload.cancelReason });
-  if (event.type === "attempt.superseded") projection.attempts[event.payload.attemptId] = compactAttempt({ ...attempt, status: "superseded", cancelReason: event.payload.cancelReason ?? "superseded" });
+  if (event.type === "attempt.completed") projection.attempts[attemptId] = compactAttempt({ ...attempt, status: "completed", ...(event.payload.result === undefined ? {} : { result: event.payload.result }) });
+  if (event.type === "attempt.failed") projection.attempts[attemptId] = compactAttempt({ ...attempt, status: "failed", error: event.payload.error, ...(event.payload.terminalReason === undefined ? {} : { terminalReason: event.payload.terminalReason }) });
+  if (event.type === "attempt.timed_out") projection.attempts[attemptId] = compactAttempt({ ...attempt, status: "timed_out", ...(event.payload.error === undefined ? {} : { error: event.payload.error }), terminalReason: "timed_out" });
+  if (event.type === "attempt.cancelled") projection.attempts[attemptId] = compactAttempt({ ...attempt, status: "cancelled", cancelReason: event.payload.cancelReason });
+  if (event.type === "attempt.superseded") projection.attempts[attemptId] = compactAttempt({ ...attempt, status: "superseded", cancelReason: event.payload.cancelReason ?? "superseded" });
 }
 
 function applyGroupEvent(projection: SchedulerProjection, event: SchedulerEvent): void {

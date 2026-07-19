@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { daemonEndpoint, getRun, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop } from "../src/index.js";
+import type { Result } from "neverthrow";
+import {
+  daemonEndpoint,
+  getRun,
+  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
+  requestDaemonControl as requestDaemonControlResult,
+  requestDaemonShutdown as requestDaemonShutdownResult,
+  requestDaemonStatus as requestDaemonStatusResult,
+  startDaemonLoop,
+  type DaemonClientFailure,
+} from "../src/index.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 
@@ -18,6 +28,27 @@ type StoreWithDb = RuntimeStore & {
     };
   };
 };
+
+async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
+  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
+}
+
+async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
+  return unwrapDaemon(await requestDaemonControlResult(...args));
+}
+
+async function requestDaemonShutdown(...args: Parameters<typeof requestDaemonShutdownResult>) {
+  return unwrapDaemon(await requestDaemonShutdownResult(...args));
+}
+
+async function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusResult>) {
+  return unwrapDaemon(await requestDaemonStatusResult(...args));
+}
+
+function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
+  if (result.isOk()) return result.value;
+  throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "acpus-daemon-"));

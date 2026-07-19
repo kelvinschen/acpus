@@ -28,6 +28,13 @@ export function workflowPreparationCliError(failure: WorkflowPreparationFailure)
       message: failure.message,
     });
   }
+  if (failure.type === "package-lock-read-failed") {
+    return new CliError(1, {
+      ok: false,
+      phase: "lock",
+      message: failure.message,
+    });
+  }
   return new CliError(1, {
     ok: false,
     phase: "validate",

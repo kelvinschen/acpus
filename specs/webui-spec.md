@@ -27,6 +27,7 @@
 - Selecting a workflow source MUST NOT compile or import it until the user explicitly requests visualization.
 - Static workflow visualization APIs MUST run workflow preparation in memory and MUST NOT write durable preflight artifacts.
 - The `@acpus/web` package root MUST expose only `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
+- `startWebServer` MUST return a tagged `listen-failed` Result when the requested listener cannot be established.
 - Self-contained workflow visualization HTML MUST use the same WebUI static graph React component as the browser Workflows graph. It MUST remain a single offline HTML bundle without live WebUI API calls, and it MUST embed only the static graph runtime needed for graph rendering, static inspection, and workflow I/O.
 - Self-contained workflow visualization HTML MUST receive workflow metadata, workflow contract, and source graph digest. Its document title MUST use the workflow name.
 - Self-contained workflow visualization HTML MUST embed the same Sera graph and static inspector styling as the browser Workflows graph.
@@ -42,6 +43,10 @@
 - Run lists MUST project each run to `id`, `name`, and `status`. A runtime snapshot run MUST project `id`, `name`, `status`, `input`, optional `output`, `createdAt`, `updatedAt`, dynamic `version`, and only failed frame, node-instance, and group-member retry targets.
 - Runtime visualization overlays MAY expose semantic node detail derived from frozen `WorkflowIR`, but MUST NOT pre-render WebUI display strings.
 - WebUI server code MUST own graph label, descriptor, schema preview, expression preview, and template preview formatting.
+- Browser HTTP transport MUST distinguish network failure, invalid JSON, invalid envelopes, and application request failures before the React Query adapter converts them to thrown query errors.
+- Recoverable workflow browsing and preparation failures MUST remain tagged Results until the Hono adapter converts them to an HTTP response; permission, I/O, and other unknown failures MUST propagate to the redacted `500` boundary.
+- Workflow browsing and file visualization MUST reject lexical or symlink-resolved paths outside the workspace.
+- An unregistered artifact request MUST return `404`; a registered artifact whose file is missing, non-regular, escapes its run, or fails its recorded size/digest MUST be treated as server corruption and return the fixed, redacted `500` envelope.
 - Core, expression, and runtime packages MUST NOT expose public display-formatting APIs solely for WebUI graph labels.
 - The graph API MUST NOT persist, store, or return layout coordinates. The browser owns deterministic layout, viewport, zoom, pan, and local selector state.
 - The browser graph MUST use an Acpus-specific deterministic workflow renderer. It MUST NOT delegate canonical workflow layout to a general-purpose graph layout engine.
@@ -71,7 +76,8 @@
 - WebUI code MUST use `@acpus/runtime` public read/control APIs and MUST NOT query runtime SQLite tables directly.
 - WebUI runtime controls MUST ensure the workspace daemon is ready, then submit one `DaemonControlIntent` through `requestDaemonControl`. WebUI server code MUST NOT apply runtime controls directly.
 - WebUI control request bodies MUST be closed shapes: Pause and Resume contain only `type`; Retry contains `type` and a non-empty `target`; Cancel contains `type` and an optional non-empty `target`; Signal contains `type`, a non-empty `target`, and `payload`. A successful control response MUST contain only `{ ok: true }`.
-- WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404 and error code `run_not_found`. Other `DaemonRequestError` failures MUST map to HTTP 400 with the daemon code normalized to lowercase snake case. The daemon error message MUST be preserved.
+- WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404 and error code `run_not_found`. Other daemon rejections MUST map to HTTP 400 with the daemon code normalized to lowercase snake case. The daemon error message MUST be preserved.
+- Unexpected WebUI server failures MUST return a fixed `internal_error` response without exposing filesystem, process, or runtime details.
 - WebUI runtime controls MUST NOT expose fork; fork remains a CLI/runtime control because replacement workflow, input, and agent overrides require explicit parameters.
 - WebUI Pause and Resume controls MUST be mutually exclusive: active runs show Pause, paused runs show Resume, and terminal runs show neither.
 - WebUI Retry MUST be target-first for failed runs. It MUST submit a failed dynamic retry target and MUST NOT default to run-level retry.

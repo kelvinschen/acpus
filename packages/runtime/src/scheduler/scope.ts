@@ -4,7 +4,9 @@ import type { InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjec
 
 export function baseScopeForFrame(projection: SchedulerProjection, frame: SchedulerFrame, baseScope: EvaluationScope): EvaluationScope {
   if (frame.frameKey === "root") return baseScope;
-  const parent = frame.parentFrameKey ? projection.frames[frame.parentFrameKey] : undefined;
+  if (!frame.parentFrameKey) throw new Error(`Scheduler frame '${frame.frameKey}' has no parent frame.`);
+  const parent = projection.frames[frame.parentFrameKey];
+  if (!parent) throw new Error(`Scheduler frame '${frame.frameKey}' references missing parent frame '${frame.parentFrameKey}'.`);
   const containingFrameKey = parent && (parent.frameKind === "node" || parent.frameKind === "loop")
     ? parent.parentFrameKey
     : frame.parentFrameKey;
@@ -12,34 +14,81 @@ export function baseScopeForFrame(projection: SchedulerProjection, frame: Schedu
   if (frame.frameKind === "fanout_item") {
     const member = projection.groupMembers[frame.frameKey];
     const group = member ? projection.groups[member.groupKey] : undefined;
-    if (member?.memberKind === "fanout_item" && group?.kind === "fanout") {
-      scope = scopeWithFanoutItem(scope, group.nodeId, member.item, member.itemIndex);
+    if (member?.memberKind !== "fanout_item" || group?.kind !== "fanout") {
+      throw new Error(`Fanout item frame '${frame.frameKey}' has inconsistent group membership.`);
     }
+    scope = scopeWithFanoutItem(scope, group.nodeId, member.item, member.itemIndex);
   }
   if (frame.frameKind === "loop_iteration") {
     const segment = lastSegment(frame.instancePath);
-    const loopFrame = frame.parentFrameKey ? projection.frames[frame.parentFrameKey] : undefined;
-    if (segment?.kind === "loop") scope = scopeWithLoopIteration(scope, segment.nodeId, segment.iter, loopFrame?.loop?.state);
+    if (segment?.kind !== "loop" || parent.frameKind !== "loop") {
+      throw new Error(`Loop iteration frame '${frame.frameKey}' has inconsistent identity.`);
+    }
+    scope = scopeWithLoopIteration(scope, segment.nodeId, segment.iter, parent.loop?.state);
   }
   return scope;
 }
 
 export function completedScopeForFrame(projection: SchedulerProjection, frameKey: string, baseScope: EvaluationScope): EvaluationScope {
   const frame = projection.frames[frameKey];
-  if (!frame) return baseScope;
-  let scope = baseScopeForFrame(projection, frame, baseScope);
-  for (const instance of Object.values(projection.instances)) {
-    if (instance.parentFrameKey === frameKey && instance.status === "completed") scope = scopeWithNodeOutput(scope, instance.nodeId, instance.output);
+  if (!frame) throw new Error(`Scheduler scope references missing frame '${frameKey}'.`);
+  const expectedChildren = expectedScopeChildren(frame);
+  const children = new Map<string, { status: string; output?: JsonValue }>();
+  for (const [key, instance] of Object.entries(projection.instances)) {
+    if (instance.parentFrameKey !== frameKey) continue;
+    addScopeChild(frameKey, expectedChildren, children, key, instance.nodeKey, instance.nodeId, instance.status, instance.output);
   }
-  for (const child of Object.values(projection.frames)) {
-    if (child.parentFrameKey === frameKey && child.nodeKey && child.nodeId && child.status === "completed") scope = scopeWithNodeOutput(scope, child.nodeId, child.result);
+  for (const [key, child] of Object.entries(projection.frames)) {
+    if (child.parentFrameKey !== frameKey) continue;
+    if (child.nodeKey === undefined || child.nodeId === undefined) {
+      throw new Error(`Scheduler scope frame '${frameKey}' has inconsistent child '${key}'.`);
+    }
+    addScopeChild(frameKey, expectedChildren, children, key, child.nodeKey, child.nodeId, child.status, child.result);
+  }
+  let scope = baseScopeForFrame(projection, frame, baseScope);
+  for (const [nodeId, nodeKey] of Object.entries(frame.scope)) {
+    const child = children.get(nodeKey);
+    if (child?.status === "completed") scope = scopeWithNodeOutput(scope, nodeId, child.output);
   }
   return scope;
 }
 
+function expectedScopeChildren(frame: SchedulerFrame): Map<string, string> {
+  const value = frame.scope as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Scheduler scope frame '${frame.frameKey}' has an invalid durable scope mapping.`);
+  }
+  const expected = new Map<string, string>();
+  for (const [nodeId, nodeKey] of Object.entries(value)) {
+    if (nodeId.length === 0 || typeof nodeKey !== "string" || nodeKey.length === 0 || expected.has(nodeKey)) {
+      throw new Error(`Scheduler scope frame '${frame.frameKey}' has an invalid durable scope mapping.`);
+    }
+    expected.set(nodeKey, nodeId);
+  }
+  return expected;
+}
+
+function addScopeChild(
+  frameKey: string,
+  expected: ReadonlyMap<string, string>,
+  children: Map<string, { status: string; output?: JsonValue }>,
+  projectionKey: string,
+  nodeKey: string,
+  nodeId: string,
+  status: string,
+  output: JsonValue | undefined,
+): void {
+  const expectedNodeId = expected.get(projectionKey);
+  if (projectionKey !== nodeKey || expectedNodeId !== nodeId || children.has(nodeKey)) {
+    throw new Error(`Scheduler scope frame '${frameKey}' has inconsistent child '${projectionKey}'.`);
+  }
+  children.set(nodeKey, { status, ...(output === undefined ? {} : { output }) });
+}
+
 export function scopeForNodeAttempt(baseScope: EvaluationScope, projection: SchedulerProjection, nodeKey: string): EvaluationScope {
   const instance = projection.instances[nodeKey];
-  return instance?.parentFrameKey
+  if (!instance) throw new Error(`Scheduler attempt references missing node instance '${nodeKey}'.`);
+  return instance.parentFrameKey
     ? completedScopeForFrame(projection, instance.parentFrameKey, baseScope)
     : completedScopeForFrame(projection, "root", baseScope);
 }

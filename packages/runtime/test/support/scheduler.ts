@@ -1,4 +1,7 @@
 import type { JsonValue } from "@acpus/expression/ir";
+import { loadAgentHostPolicy, type AgentHostPolicy } from "../../src/configuration.js";
+import type { HookRunner } from "../../src/hooks/runner.js";
+import type { NodeProgressWriter } from "../../src/progress/writer.js";
 import type { RuntimeStore } from "../../src/store/store.js";
 import {
   applySchedulerControlIntent as applySchedulerControlIntentWithOwner,
@@ -6,11 +9,45 @@ import {
   type SchedulerControlEffect,
 } from "../../src/scheduler/control.js";
 import { advanceFrozenRun } from "../../src/scheduler/runtime-runner.js";
+import type { SchedulerEvent } from "../../src/scheduler/events.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput, type SchedulerSnapshot } from "../../src/scheduler/store-port.js";
 import type { AdvanceRunSummary } from "../../src/scheduler/advance.js";
 
 export function completed(output?: JsonValue): AttemptCommitInput["result"] {
   return output === undefined ? { status: "completed" } : { status: "completed", output };
+}
+
+export function rootFrameStarted(runId: string, nodeId: string, nodeKey: string): SchedulerEvent {
+  return {
+    type: "frame.started",
+    payload: {
+      runId,
+      frameKey: "root",
+      frameKind: "root",
+      scope: { [nodeId]: nodeKey },
+    },
+  };
+}
+
+type RuntimeAdvanceOptions = {
+  maxLeafConcurrency?: number;
+  agentHostPolicy?: AgentHostPolicy;
+  hookRunner?: HookRunner;
+  progressWriter?: NodeProgressWriter;
+};
+
+export async function advanceRuntimeRun(cwd: string, store: RuntimeStore, runId: string, ownerId: string, options: RuntimeAdvanceOptions = {}): Promise<AdvanceRunSummary> {
+  if (!store.getFrozenRun(runId)) throw new Error(`Run '${runId}' was not found.`);
+  return advanceFrozenRun({
+    cwd,
+    store,
+    runId,
+    ownerId,
+    ...(options.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: options.maxLeafConcurrency }),
+    agentHostPolicy: options.agentHostPolicy ?? loadAgentHostPolicy(process.env),
+    ...(options.hookRunner === undefined ? {} : { hookRunner: options.hookRunner }),
+    ...(options.progressWriter === undefined ? {} : { progressWriter: options.progressWriter }),
+  });
 }
 
 export async function applySchedulerControlIntent(
@@ -35,7 +72,9 @@ export async function applySchedulerControlIntent(
   let effect: SchedulerControlEffect;
   let reopened: boolean;
   try {
-    ({ snapshot, effect, reopened } = applySchedulerControlIntentWithOwner(store, intent, claim.ownerEpoch));
+    const applied = applySchedulerControlIntentWithOwner(store, intent, claim.ownerEpoch);
+    if (applied.isErr()) throw Object.assign(new Error(applied.error.message), { failure: applied.error });
+    ({ snapshot, effect, reopened } = applied.value);
   } finally {
     store.scheduler.releaseRun(claim);
   }

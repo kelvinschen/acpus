@@ -39,8 +39,8 @@ describe("hooks events and context", () => {
     const ir = workflow();
     const projection = schedulerProjection();
     const executionMetadata = [
-      { id: 1, kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
-      { id: 2, kind: "agent_attempt", metadata: { nodeKey: "review~1" }, createdAt: "2026-07-04T00:00:02.000Z" },
+      { id: 1, attemptId: "attempt-task", kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
+      { id: 2, attemptId: "attempt-agent", kind: "agent_attempt", metadata: { nodeKey: "review~1" }, createdAt: "2026-07-04T00:00:02.000Z" },
     ];
 
     expect(buildHookContext({
@@ -73,7 +73,7 @@ describe("hooks events and context", () => {
     });
 
     expect(buildHookContext({
-      row: row("instance.completed", { nodeKey: "build~1", output: { ok: true } }, 43, "build~1"),
+      row: row("instance.completed", { nodeKey: "build~1", attemptId: "attempt-task", output: { ok: true } }, 43, "build~1"),
       hookEvent: "node.completed",
       projection,
       ir,
@@ -90,14 +90,24 @@ describe("hooks events and context", () => {
     });
 
     expect(buildHookContext({
-      row: row("instance.started", { nodeKey: "review~1", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
+      row: row("instance.completed", { nodeKey: "build~1", output: { inherited: true } }, 43, "build~1"),
+      hookEvent: "node.completed",
+      projection,
+      ir,
+      workspaceDir: "/workspace",
+      workflowPath: "/workspace/workflow.ts",
+      executionMetadata,
+    }).node).not.toHaveProperty("taskInput");
+
+    expect(buildHookContext({
+      row: row("instance.started", { nodeKey: "review~1", attemptId: "attempt-agent", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
       hookEvent: "node.started",
       projection,
       ir,
       workspaceDir: "/workspace",
       workflowPath: "/workspace/workflow.ts",
       executionMetadata,
-      agentPrompts: new Map([["review~1", "Review ready"]]),
+      agentPrompts: new Map([["attempt-agent", "Review ready"]]),
     }).node).toMatchObject({
       id: "review",
       key: "review~1",
@@ -106,7 +116,7 @@ describe("hooks events and context", () => {
       agentPrompt: "Review ready",
     });
     expect(buildHookContext({
-      row: row("instance.started", { nodeKey: "review~1", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
+      row: row("instance.started", { nodeKey: "review~1", attemptId: "attempt-agent", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
       hookEvent: "node.started",
       projection,
       ir,
