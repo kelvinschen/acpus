@@ -1,0 +1,41 @@
+/* Acpus Next brand tokens — pigment modernism with a classical undertone. */
+:root {
+  color-scheme: light;
+
+  --acpus-paper: #F4F0E4;
+  --acpus-surface: #FFFDF8;
+  --acpus-ink: #101522;
+  --acpus-ink-muted: #52586a;
+  --acpus-line: #d8d0bc;
+
+  --acpus-ultramarine: #3155FF;
+  --acpus-ultramarine-soft: #8fa2ff;
+  --acpus-vermilion: #FF5A36;
+  --acpus-brass: #C89A3D;
+
+  --acpus-success: #187254;
+  --acpus-failure: #b83a28;
+  --acpus-awaiting: #7a4fb5;
+  --acpus-idle: #777061;
+
+  --acpus-font-sans: "Cabin", "Avenir Next", "Segoe UI", sans-serif;
+  --acpus-font-code: "Recursive", "SFMono-Regular", Consolas, monospace;
+  --acpus-font-heritage: "Gentium Book Plus", "Iowan Old Style", Georgia, serif;
+
+  --acpus-radius-s: 6px;
+  --acpus-radius-m: 14px;
+  --acpus-radius-l: 28px;
+
+  --acpus-ease-relay: cubic-bezier(0.22, 0.72, 0.2, 1);
+}
+
+.acpus-theme-dark {
+  color-scheme: dark;
+  --acpus-paper: #101522;
+  --acpus-surface: #171e31;
+  --acpus-ink: #F4F0E4;
+  --acpus-ink-muted: #b7bdd0;
+  --acpus-line: #343d56;
+  --acpus-ultramarine: #8FA2FF;
+  --acpus-vermilion: #FF755D;
+}
