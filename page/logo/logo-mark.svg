@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-labelledby="title desc">
   <title id="title">Acpus relay ligature</title>
-  <desc id="desc">A modern capital A crossed by an open workflow loop, with a vermilion handoff node.</desc>
-  <path d="M 29 168 C 42 137 55 105 70 69 C 78 50 85 39 100 39 C 115 39 123 51 130 70 L 171 168" fill="none" stroke="#101522" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <desc id="desc">A modern capital A interlaced with an open workflow loop, with a vermilion handoff node.</desc>
   <path d="M 97 75 C 108 61 124 54 141 55 C 165 56 181 73 179 96 C 177 119 158 132 135 128 C 108 123 82 127 58 142" fill="none" stroke="#3155FF" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 29 168 C 42 137 55 105 70 69 C 78 50 85 39 100 39 C 115 39 123 51 130 70 L 171 168" fill="none" stroke="#101522" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 179 96 C 177 119 158 132 135 128" fill="none" stroke="#3155FF" stroke-width="15" stroke-linecap="butt" stroke-linejoin="round"/>
   <circle cx="97" cy="75" r="7" fill="#FF5A36"/>
 </svg>
