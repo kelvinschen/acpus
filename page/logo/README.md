@@ -1,6 +1,6 @@
 # Acpus Next logo assets
 
-The Acpus Next identity is built around the **Relay Ligature**: a Roman-proportioned `A`, an open workflow loop that also hints at a lowercase `p`, and a vermilion handoff node.
+The Acpus Next identity is built around the **Relay Ligature**: a Roman-proportioned `A`, an open workflow loop that also hints at a lowercase `p`, and a vermilion handoff node. The `A` and loop are interlaced so the upper crossing passes behind the `A` while the lower crossing passes in front.
 
 ## Files
 
@@ -24,6 +24,7 @@ The CSS source tokens live in [`../brand-tokens.css`](../brand-tokens.css). Revi
 ## Quick rules
 
 - Use the core Acpus lockup by default. Attach `next` only to release-specific material.
+- Preserve the interlace: `A` over loop at the upper crossing, loop over `A` at the lower crossing. Never flatten both crossings into one layer order.
 - Keep clear space equal to at least one vermilion node diameter.
 - Use `logo-favicon.svg` below 20 px; do not shrink the full mark indefinitely.
 - Vermilion and brass are accents, not body-text colors.
