@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320" role="img" aria-labelledby="title desc">
+  <title id="title">Acpus flow pattern</title>
+  <desc id="desc">Open relay curves and handoff nodes for backgrounds.</desc>
+  <g fill="none" stroke="#3155FF" stroke-width="12" stroke-linecap="round" opacity="0.16">
+    <path d="M -58 84 C 10 10 94 20 110 78 C 126 136 64 168 -12 142"/>
+    <path d="M 154 278 C 222 204 306 214 322 272 C 338 330 276 362 200 336"/>
+    <path d="M 230 -58 C 298 16 288 100 230 116 C 172 132 140 70 166 -6"/>
+  </g>
+  <g fill="#FF5A36" opacity="0.72">
+    <circle cx="36" cy="45" r="7"/>
+    <circle cx="248" cy="239" r="7"/>
+    <circle cx="273" cy="37" r="7"/>
+  </g>
+  <g fill="#C89A3D" opacity="0.48">
+    <circle cx="118" cy="188" r="4"/>
+    <circle cx="296" cy="158" r="4"/>
+  </g>
+</svg>
