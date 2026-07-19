@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-labelledby="title desc">
   <title id="title">Acpus Next social card</title>
-  <desc id="desc">Acpus Next brand card with the relay ligature and the line Every run is an opus.</desc>
+  <desc id="desc">Acpus Next brand card with the interlaced relay ligature and the line Every run is an opus.</desc>
   <rect width="1200" height="630" fill="#101522"/>
   <g opacity="0.42" transform="translate(820 -40) scale(1.5)">
     <path d="M -58 84 C 10 10 94 20 110 78 C 126 136 64 168 -12 142" fill="none" stroke="#3155FF" stroke-width="12" stroke-linecap="round" opacity="0.32"/>
@@ -9,8 +9,9 @@
   <path d="M 0 525 L 1200 330 L 1200 630 L 0 630 Z" fill="#3155FF" opacity="0.12"/>
 
   <g transform="translate(56 128) scale(1.8)">
-    <path d="M 29 168 C 42 137 55 105 70 69 C 78 50 85 39 100 39 C 115 39 123 51 130 70 L 171 168" fill="none" stroke="#F4F0E4" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M 97 75 C 108 61 124 54 141 55 C 165 56 181 73 179 96 C 177 119 158 132 135 128 C 108 123 82 127 58 142" fill="none" stroke="#8FA2FF" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 29 168 C 42 137 55 105 70 69 C 78 50 85 39 100 39 C 115 39 123 51 130 70 L 171 168" fill="none" stroke="#F4F0E4" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 179 96 C 177 119 158 132 135 128" fill="none" stroke="#8FA2FF" stroke-width="15" stroke-linecap="butt" stroke-linejoin="round"/>
     <circle cx="97" cy="75" r="7" fill="#FF755D"/>
   </g>
 
