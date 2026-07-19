@@ -177,6 +177,22 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
+  it("writes terminal visualizations without generic summaries and preserves diagnostics", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const result = checkResult();
+    result.phase = "viz";
+    result.message = "Workflow visualization rendered.";
+    result.visualization = "semantic\ninput {}";
+    result.diagnostics = [{ code: "VIZ001", severity: "info", message: "Visualization note." }];
+
+    expect(writeResult(result, "text", { stdout, stderr }, 0)).toBe(0);
+    expect(stdout.text).toBe("semantic\ninput {}\n\n[info VIZ001] Visualization note.\n");
+    expect(stdout.text).not.toContain("Workflow visualization rendered.");
+    expect(stdout.text).not.toContain("Workflow: cli-valid");
+    expect(stderr.text).toBe("");
+  });
+
   it("writes text summaries for commands that return a run record", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();

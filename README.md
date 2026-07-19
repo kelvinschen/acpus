@@ -162,15 +162,16 @@ export default defineWorkflow({
 
 ```sh
 acpus workflow check workflow.ts --input '{"topic":"release readiness"}'
+acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow.html
 acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
 acpus runs inspect <run-id>
 ```
 
 `workflow check` typechecks, compiles, and validates without admitting a run.
-`workflow viz` writes a self-contained static HTML graph. `workflow run` admits
-and executes a durable run; `runs inspect` reads its structure, status, attempts,
-artifacts, and results.
+`workflow viz` prints a compact static terminal tree by default; `--out` writes
+a self-contained HTML graph instead. `workflow run` admits and executes a durable
+run; `runs inspect` reads its structure, status, attempts, artifacts, and results.
 
 ### Common Run Controls
 

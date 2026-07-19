@@ -14,6 +14,7 @@ import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonAdmitRun, type CliDaemonFailure } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
 import { importWorkflowPackage } from "../workflow-import.js";
+import { renderWorkflowTerminalViz } from "../workflow-terminal-viz.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
@@ -104,9 +105,9 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
 
   command.addCommand(new Command("viz")
     .exitOverride()
-    .description("Generate a self-contained static workflow visualization HTML file.")
+    .description("Render a static workflow visualization in the terminal or to an HTML file.")
     .argument("<workflow-module>", "workflow module path or catalog name")
-    .requiredOption("--out <file.html>", "write the visualization HTML to this file")
+    .option("--out <file.html>", "write the visualization as a self-contained HTML file")
     .option("--force", "overwrite the output file if it already exists")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
@@ -253,10 +254,30 @@ function daemonFailureCode(failure: CliDaemonFailure): string {
 }
 
 async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowOptions): Promise<void> {
+  if (options.force && options.out === undefined) throw usageError("--force requires --out.");
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
+  if (options.out === undefined) {
+    const visualization = renderWorkflowTerminalViz(prepared.ir, {
+      color: !ctx.wantsJson
+        && (ctx.stdout as Writable & { isTTY?: boolean }).isTTY === true
+        && process.env.NO_COLOR === undefined,
+    });
+    ctx.setExitCode(writeResult({
+      ok: true,
+      phase: "viz",
+      message: "Workflow visualization rendered.",
+      visualization,
+      workflow: summarizeWorkflow(prepared.ir),
+      diagnostics: prepared.ir.diagnostics,
+      sourceGraphDigest: prepared.sourceGraphDigest,
+      ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+    }, outputFormat(ctx), ctx, 0));
+    return;
+  }
+
   const { renderWorkflowVizHtml, workflowIrToWebGraph } = await import("@acpus/web");
-  const outputPath = resolve(ctx.cwd, options.out!);
+  const outputPath = resolve(ctx.cwd, options.out);
   const graph = workflowIrToWebGraph(prepared.ir);
   const html = renderWorkflowVizHtml({
     graph,

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `acpus` package owns command parsing and human/JSON presentation. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and graph rendering to the [WebUI](webui-spec.md).
+The `acpus` package owns command parsing and human/JSON presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
 
 ## Requirements
 
@@ -17,7 +17,7 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 | `acpus --version`, `-V`, `version` | Print the CLI package version. |
 | `workflow check <workflow>` | `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
 | `workflow run <workflow>` | Check options plus `--background`; foreground `--interval <duration>` defaults to 1s, has a 250ms minimum, and conflicts with `--background`. |
-| `workflow viz <workflow> --out <file.html>` | `--force` permits replacement; catalog scope flags select project or global lookup. |
+| `workflow viz <workflow>` | Optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow list`, `workflow show <name>` | Optional, mutually exclusive `--project` or `--global`. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--all`, `--target`, `--follow`, `--interval`, and `--raw` as constrained below. |
@@ -67,7 +67,14 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - Preparation failures MUST map to their compiler-owned `check`, `compile`, or `validate` phases.
 - Foreground and background runs MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
 - Foreground run MUST follow the read-only inspection stream to terminal status; background run returns after daemon acceptance.
-- `workflow viz` MUST write one offline HTML graph through WebUI rendering helpers, preserve CLI diagnostics, and refuse an existing output unless `--force` is present.
+- `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
+- Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
+- Terminal visualization Agent bindings MUST use `name (target, optional model/agent mode)` and MUST omit permission mode.
+- Terminal visualization Agent nodes MUST show their referenced Agent binding key as dim metadata instead of the generic `agent` node type.
+- Terminal visualization MUST enable ANSI styling only for a TTY when `NO_COLOR` is absent; non-TTY and JSON visualization MUST contain no ANSI sequences.
+- `workflow viz --out <file.html>` MUST write one offline HTML graph through WebUI rendering helpers and MUST refuse an existing output unless `--force` is present.
+- `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
+- Both workflow visualization modes MUST preserve CLI diagnostics.
 - Read-only commands MUST use Runtime read APIs without starting the daemon or creating state; this includes inspect, artifacts, catalog reads, hook reads, and Doctor.
 - Artifact listing MUST present Runtime-owned registry records without reading bodies; absent artifacts produce `No artifacts.` in text and an empty array in JSON.
 - Inspect MUST map default, `--all`, `--target`, and `--raw --json` to the corresponding Runtime query modes. Target/all conflict; raw requires JSON and conflicts with target, all, and follow.
@@ -111,6 +118,7 @@ The `acpus` package owns command parsing and human/JSON presentation. It delegat
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Catalog JSON MUST preserve the catalog projections and stable ordering by available name/scope then invalid absolute package path; duplicate project/global names set `requiresScope: true`.
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
+- Successful terminal visualization JSON MUST contain the complete unstyled tree in `visualization` alongside workflow summary metadata and diagnostics.
 - A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
 - Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; foreground run instead maps completed to 0 and failed/canceled to 1, while successful Ctrl-C detach exits 0.
 

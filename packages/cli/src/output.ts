@@ -54,6 +54,7 @@ type CliResultFields = {
   hookValidation?: { count: number };
   hooks?: HookListResult;
   outputPath?: string;
+  visualization?: string;
   skill?: SkillCommandResult;
 };
 
@@ -126,6 +127,14 @@ export function writeResult(
   }
 
   const stream = result.ok ? streams.stdout : streams.stderr;
+  if (result.visualization !== undefined) {
+    stream.write(`${result.visualization}\n`);
+    if (result.diagnostics?.length) {
+      stream.write("\n");
+      for (const diagnostic of result.diagnostics) writeDiagnostic(stream, diagnostic, streams.cwd);
+    }
+    return exitCode;
+  }
   if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);

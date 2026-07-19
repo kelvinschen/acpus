@@ -19,10 +19,11 @@ Import copies one snapshot: it does not install dependencies, track the source, 
 ## Static visualization
 
 ```sh
+acpus workflow viz <workflow.ts-or-catalog>
 acpus workflow viz <workflow.ts-or-catalog> --out workflow.html [--force]
 ```
 
-This prepares the workflow and writes self-contained HTML without creating a run. It shows the authored graph; fanout items and loop rounds materialize only at runtime. Existing output is rejected unless `--force` is explicit.
+This prepares the workflow without creating a run. With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
 
 ## Web operator console
 

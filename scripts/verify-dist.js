@@ -59,7 +59,7 @@ try {
     output: { ok: true },
   });
 } finally {
-  await requestDaemonShutdown(workspace).catch(() => undefined);
+  await requestDaemonShutdown(workspace);
   await rm(workspace, { recursive: true, force: true });
 }
 
