@@ -38,6 +38,8 @@ The mark has three parts:
 2. **Relay** — the ultramarine open loop; orchestration, branching, continuation.
 3. **Handoff** — the vermilion node; agency, state change, human or agent intervention.
 
+The structure and relay are **interlaced rather than stacked**. At the upper crossing, the `A` passes in front of the loop. At the lower crossing, the loop passes in front of the `A`. Preserve this alternating layer order in every redraw, export, and motion treatment; flattening both crossings into the same order removes the mark's spatial logic.
+
 ### Core lockup
 
 Use `logo-lockup.svg` for long-lived Acpus material. The lowercase wordmark lowers the formality and makes the identity feel more active.
@@ -142,6 +144,8 @@ Motion should describe orchestration:
 - reveal branches in execution order;
 - settle completed states instead of keeping everything in motion.
 
+When animating the mark itself, keep the upper crossing behind the `A` and bring the lower crossing forward only after the loop reaches it. The depth change should read as a continuous weave, not a sudden z-index swap.
+
 Respect `prefers-reduced-motion`. Do not use perpetual floating, sparkle, or ambient particle effects.
 
 ## 8. Voice
@@ -184,5 +188,7 @@ Design tokens live in `page/brand-tokens.css`. The live specimen is `page/brand-
 ## 中文速览
 
 新形象的核心是 **“传奏结”**：保留罗马大写 `A` 的比例与 “opus” 文脉，用一条开放的群青色曲线同时暗示小写 `p`、工作流边和指挥手势；朱红结点表示任务在 agent、runtime 与人之间完成交接。
+
+`A` 与蓝色路径采用交织关系，而不是普通叠层：**上方交点由 `A` 压住蓝线，下方交点由蓝线跨过 `A`**。所有重绘、导出与动效都必须保留这一前后顺序，空间感来自这一次明确的上下穿插。
 
 古典感只保留在**比例、语言和少量字体**里，不再依赖双重边框、星形分隔、仿古纸张或大面积金色。主色从“羊皮纸 + 黑 + 金”调整为“暖纸 + 碳黑 + 群青 + 朱红”，因此整体更轻、更有速度，也更适合图标、CLI、WebUI 和社交传播。
