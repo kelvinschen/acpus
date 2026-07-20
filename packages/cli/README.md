@@ -25,5 +25,7 @@ for `acpus workflow`.
 npm package into existing project skills roots (`.agents/skills` and
 `.claude/skills`) as `acpus`. Use `--global` to target `$CODEX_HOME/skills`
 or `~/.codex/skills`, and `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`.
+Use `--dir <skills-root>` to install into another existing root as
+`<skills-root>/acpus`.
 `acpus skill uninstall` removes only installed targets that can be identified
 as the Acpus skill.

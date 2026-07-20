@@ -84,7 +84,9 @@ acpus skill install --project
 project Skill root: `.agents/skills` and `.claude/skills`. Missing roots are
 skipped, and at least one must already exist, so the example creates
 `.agents/skills` first. Use `--global` when a supported global Skill root
-already exists.
+already exists. To install into another existing Skill root, use
+`acpus skill install --dir <skills-root>`; the Skill is copied to
+`<skills-root>/acpus`.
 
 ### 2. Start with the outcome
 

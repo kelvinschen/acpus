@@ -36,12 +36,12 @@ The command ensures the workspace daemon is running, binds to localhost and a ra
 ## Bundled skill and version
 
 ```sh
-acpus skill install [--project|--global] [--dry-run]
+acpus skill install [--project|--global|--dir <skills-root>] [--dry-run]
 acpus skill uninstall [--project|--global] [--dry-run]
 acpus version
 ```
 
-Skill commands manage the Acpus skill bundled with this CLI, default to project scope, and refuse targets not identifiable as Acpus skills. They do not install or remove the npm package.
+Skill commands manage the Acpus skill bundled with this CLI, default to project scope, and refuse targets not identifiable as Acpus skills. Install accepts an existing custom skills root through `--dir` and copies the skill to its `acpus` child. They do not install or remove the npm package.
 
 ## Artifact registry
 

@@ -25,7 +25,8 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
 | `doctor` | Read-only runtime and authoring health. |
-| `skill install`, `skill uninstall` | `--project`, `--global`, and `--dry-run`. |
+| `skill install` | Mutually exclusive `--project`, `--global`, or `--dir <skills-root>`; optional `--dry-run`. |
+| `skill uninstall` | `--project`, `--global`, and `--dry-run`. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
@@ -95,6 +96,9 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 - Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill in existing selected roots, never symlinks or unrelated user content.
 - Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
 - Project skill scope MUST use `<cwd>/.agents/skills` and `<cwd>/.claude/skills`; global scope uses the configured/default Codex and Claude skill roots. Missing roots are skipped, but no selected root is an error.
+- `skill install --dir <skills-root>` MUST resolve a relative root from the CLI working directory and install to the absolute `<skills-root>/acpus` target.
+- A custom skills root MUST already exist as a directory; a missing or non-directory root fails without creating filesystem entries.
+- Custom skill JSON results MUST identify the target with `scope: "custom"`, `kind: "custom"`, and absolute `rootPath` and `targetPath` fields.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 

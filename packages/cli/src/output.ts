@@ -89,17 +89,17 @@ export type SkillCommandResult = {
   skillName: string;
   targetName: string;
   version: string;
-  scope: "project" | "global";
+  scope: "project" | "global" | "custom";
   dryRun: boolean;
   targets: {
-    scope: "project" | "global";
-    kind: "agents" | "claude";
+    scope: "project" | "global" | "custom";
+    kind: "agents" | "claude" | "custom";
     rootPath: string;
     targetPath: string;
   }[];
   installations?: {
-    scope: "project" | "global";
-    kind: "agents" | "claude";
+    scope: "project" | "global" | "custom";
+    kind: "agents" | "claude" | "custom";
     targetPath: string;
     status: "installed" | "updated" | "would-install" | "would-update" | "skipped" | "failed";
     error?: string;

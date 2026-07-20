@@ -854,6 +854,147 @@ describe("CLI program usage contracts", () => {
     });
   });
 
+  it("installs into an existing custom skills root", async () => {
+    await withTestWorkspace("skill-custom-root", async workspace => {
+      const rootPath = join(workspace, "custom-skills");
+      const targetPath = join(rootPath, "acpus");
+      await mkdir(rootPath);
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--dir", "custom-skills", "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          action: "install",
+          scope: "custom",
+          targets: [{ scope: "custom", kind: "custom", rootPath, targetPath }],
+          installations: [{ scope: "custom", kind: "custom", targetPath, status: "installed" }],
+        },
+      });
+      expect(await readFile(join(targetPath, "SKILL.md"), "utf8")).toContain("name: acpus");
+      await expect(lstat(join(workspace, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("reports a custom skill dry-run without writing files", async () => {
+    await withTestWorkspace("skill-custom-dry-run", async workspace => {
+      const rootPath = join(workspace, "custom-skills");
+      const targetPath = join(rootPath, "acpus");
+      await mkdir(rootPath);
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--dir", rootPath, "--dry-run", "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: true,
+        phase: "skill",
+        skill: {
+          scope: "custom",
+          dryRun: true,
+          installations: [{ scope: "custom", kind: "custom", targetPath, status: "would-install" }],
+        },
+      });
+      await expect(lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(stderr.text).toBe("");
+    });
+  });
+
+  it("rejects missing and non-directory custom skills roots", async () => {
+    await withTestWorkspace("skill-custom-invalid-root", async workspace => {
+      const filePath = join(workspace, "skills-file");
+      await writeFile(filePath, "keep");
+
+      for (const dir of ["missing-skills", "skills-file"]) {
+        const rootPath = join(workspace, dir);
+        const targetPath = join(rootPath, "acpus");
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(["skill", "install", "--dir", dir, "--json"], { cwd: workspace, stdout, stderr });
+
+        expect(exitCode).toBe(1);
+        expect(JSON.parse(stdout.text)).toMatchObject({
+          ok: false,
+          phase: "skill",
+          skill: {
+            action: "install",
+            scope: "custom",
+            targets: [{ scope: "custom", kind: "custom", rootPath, targetPath }],
+            installations: [{
+              scope: "custom",
+              kind: "custom",
+              targetPath,
+              status: "skipped",
+              error: "skills root does not exist or is not a directory",
+            }],
+          },
+        });
+        expect(stdout.text).toContain(`Custom skills directory does not exist or is not a directory: ${rootPath}`);
+        expect(stderr.text).toBe("");
+      }
+
+      await expect(lstat(join(workspace, "missing-skills"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(filePath, "utf8")).toBe("keep");
+    });
+  });
+
+  it("rejects conflicting or empty custom skill directory selectors", async () => {
+    await withTestWorkspace("skill-custom-usage", async workspace => {
+      const cases = [
+        { args: ["--dir", "custom-skills", "--project"], message: "Pass only one of --project, --global, or --dir." },
+        { args: ["--dir", "custom-skills", "--global"], message: "Pass only one of --project, --global, or --dir." },
+        { args: ["--dir", ""], message: "--dir must not be empty." },
+      ];
+
+      for (const { args, message } of cases) {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(["skill", "install", ...args, "--json"], { cwd: workspace, stdout, stderr });
+
+        expect(exitCode).toBe(2);
+        expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage", message });
+        expect(stderr.text).toBe("");
+      }
+    });
+  });
+
+  it("does not overwrite an unsafe custom skill target", async () => {
+    await withTestWorkspace("skill-custom-unsafe", async workspace => {
+      const rootPath = join(workspace, "custom-skills");
+      const targetPath = join(rootPath, "acpus");
+      await mkdir(targetPath, { recursive: true });
+      await writeFile(join(targetPath, "SKILL.md"), "name: other\n");
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["skill", "install", "--dir", rootPath, "--json"], { cwd: workspace, stdout, stderr });
+
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(stdout.text)).toMatchObject({
+        ok: false,
+        phase: "skill",
+        skill: {
+          scope: "custom",
+          installations: [{
+            scope: "custom",
+            kind: "custom",
+            targetPath,
+            status: "failed",
+            error: "target exists and is not the Acpus skill",
+          }],
+        },
+      });
+      expect(await readFile(join(targetPath, "SKILL.md"), "utf8")).toBe("name: other\n");
+      expect(stderr.text).toBe("");
+    });
+  });
+
   it("installs into Codex and Claude global skills roots", async () => {
     await withTestWorkspace("skill-global", async workspace => {
       const codexHome = join(workspace, "codex-home");

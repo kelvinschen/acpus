@@ -5,19 +5,28 @@ import { join, resolve } from "node:path";
 export type SkillScope = "project" | "global";
 export type SkillTargetKind = "agents" | "claude";
 
-export type SkillTarget = {
+export type StandardSkillTarget = {
   scope: SkillScope;
   kind: SkillTargetKind;
   rootPath: string;
   targetPath: string;
 };
 
+export type CustomSkillTarget = {
+  scope: "custom";
+  kind: "custom";
+  rootPath: string;
+  targetPath: string;
+};
+
+export type SkillTarget = StandardSkillTarget | CustomSkillTarget;
+
 export type AcpusSkillMetadata = {
   name?: string;
   version?: string;
 };
 
-export function skillTargets(cwd: string, scope: SkillScope): SkillTarget[] {
+export function skillTargets(cwd: string, scope: SkillScope): StandardSkillTarget[] {
   if (scope === "project") {
     return [
       target(scope, "agents", join(cwd, ".agents", "skills")),
@@ -32,10 +41,22 @@ export function skillTargets(cwd: string, scope: SkillScope): SkillTarget[] {
   ];
 }
 
-export async function existingSkillRootTargets(cwd: string, scopes: readonly SkillScope[]): Promise<SkillTarget[]> {
+export function customSkillTarget(cwd: string, rootPath: string): CustomSkillTarget {
+  const absoluteRoot = resolve(cwd, rootPath);
+  return { scope: "custom", kind: "custom", rootPath: absoluteRoot, targetPath: join(absoluteRoot, "acpus") };
+}
+
+export async function existingSkillTargets<T extends SkillTarget>(candidates: readonly T[]): Promise<T[]> {
+  const existing: T[] = [];
+  for (const candidate of candidates) {
+    if (await isDirectory(candidate.rootPath)) existing.push(candidate);
+  }
+  return existing;
+}
+
+export async function existingSkillRootTargets(cwd: string, scopes: readonly SkillScope[]): Promise<StandardSkillTarget[]> {
   const candidates = scopes.flatMap(scope => skillTargets(cwd, scope));
-  const existing = await Promise.all(candidates.map(async candidate => await isDirectory(candidate.rootPath) ? candidate : undefined));
-  return existing.filter((candidate): candidate is SkillTarget => candidate !== undefined);
+  return existingSkillTargets(candidates);
 }
 
 export async function readAcpusSkillMetadata(path: string): Promise<AcpusSkillMetadata> {
@@ -65,7 +86,7 @@ export function parseAcpusSkillMetadata(source: string): AcpusSkillMetadata {
   };
 }
 
-function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): SkillTarget {
+function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): StandardSkillTarget {
   const absoluteRoot = resolve(rootPath);
   return { scope, kind, rootPath: absoluteRoot, targetPath: join(absoluteRoot, "acpus") };
 }

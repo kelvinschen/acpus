@@ -7,7 +7,16 @@ import { Command } from "commander";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { skillError, usageError } from "../errors.js";
 import { writeResult, type SkillCommandResult } from "../output.js";
-import { existingSkillRootTargets, readAcpusSkillMetadata, skillTargets, type SkillScope, type SkillTarget } from "../skill-installation.js";
+import {
+  customSkillTarget,
+  existingSkillRootTargets,
+  existingSkillTargets,
+  readAcpusSkillMetadata,
+  skillTargets,
+  type SkillScope,
+  type SkillTarget,
+  type StandardSkillTarget,
+} from "../skill-installation.js";
 import { getCliPackageInfo } from "./version.js";
 
 const ACPUS_PACKAGE = "acpus";
@@ -25,8 +34,11 @@ export type SkillCommandContext = {
 type SkillOptions = {
   project?: boolean;
   global?: boolean;
+  dir?: string;
   dryRun?: boolean;
 };
+
+type InstallSelection = { scope: SkillScope } | { scope: "custom"; dir: string };
 
 type InstallationResult = NonNullable<SkillCommandResult["installations"]>[number];
 type RemovalResult = NonNullable<SkillCommandResult["removals"]>[number];
@@ -55,18 +67,21 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     .exitOverride()
     .option("--project", "install into project skills directories")
     .option("--global", "install into global skills directories")
+    .option("--dir <path>", "install into a custom skills directory")
     .option("--dry-run", "show what would be installed without changing files")
     .action(async (options: SkillOptions) => {
-      const scope = parseScope(options);
+      const selection = parseInstallSelection(options);
       const sourcePath = await bundledSkillPath();
-      const targets = await resolveExistingTargets(ctx.cwd, scope, "install");
+      const targets = selection.scope === "custom"
+        ? await resolveCustomInstallTarget(ctx.cwd, selection.dir, options.dryRun === true)
+        : await resolveExistingTargets(ctx.cwd, selection.scope, "install");
       const installations = await installAcpusSkill(sourcePath, targets, options.dryRun === true);
       const ok = installOk(installations);
       ctx.setExitCode(writeResult({
         ok,
         phase: "skill",
         message: ok ? "Acpus skill installed." : "Acpus skill installation skipped unsafe entries.",
-        skill: skillResult("install", scope, options.dryRun === true, targets, { installations }),
+        skill: skillResult("install", selection.scope, options.dryRun === true, targets, { installations }),
       }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
     }));
 
@@ -91,6 +106,15 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
   return command;
 }
 
+function parseInstallSelection(options: Pick<SkillOptions, "project" | "global" | "dir">): InstallSelection {
+  if (options.dir !== undefined) {
+    if (options.project === true || options.global === true) throw usageError("Pass only one of --project, --global, or --dir.");
+    if (options.dir.trim().length === 0) throw usageError("--dir must not be empty.");
+    return { scope: "custom", dir: options.dir };
+  }
+  return { scope: parseScope(options) };
+}
+
 function parseScope(options: Pick<SkillOptions, "project" | "global">): SkillScope {
   if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
   return options.global === true ? "global" : "project";
@@ -110,7 +134,7 @@ async function bundledSkillPath(): Promise<string> {
   }
 }
 
-async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "install" | "uninstall"): Promise<SkillTarget[]> {
+async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "install" | "uninstall"): Promise<StandardSkillTarget[]> {
   const candidates = skillTargets(cwd, scope);
   const targets = await existingSkillRootTargets(cwd, [scope]);
   if (targets.length === 0) {
@@ -126,6 +150,23 @@ async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "i
     });
   }
   return targets;
+}
+
+async function resolveCustomInstallTarget(cwd: string, dir: string, dryRun: boolean): Promise<SkillTarget[]> {
+  const candidate = customSkillTarget(cwd, dir);
+  const targets = await existingSkillTargets([candidate]);
+  if (targets.length > 0) return targets;
+
+  const installations: InstallationResult[] = [{
+    scope: "custom",
+    kind: "custom",
+    targetPath: candidate.targetPath,
+    status: "skipped",
+    error: "skills root does not exist or is not a directory",
+  }];
+  throw skillError(`Custom skills directory does not exist or is not a directory: ${candidate.rootPath}`, {
+    skill: skillResult("install", "custom", dryRun, [candidate], { installations }),
+  });
 }
 
 async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dryRun: boolean): Promise<InstallationResult[]> {
@@ -150,7 +191,7 @@ async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dry
   return results;
 }
 
-async function uninstallAcpusSkill(targets: SkillTarget[], dryRun: boolean): Promise<RemovalResult[]> {
+async function uninstallAcpusSkill(targets: StandardSkillTarget[], dryRun: boolean): Promise<RemovalResult[]> {
   const results: RemovalResult[] = [];
   for (const target of targets) {
     const existing = await classifyExistingTarget(target.targetPath);
@@ -294,7 +335,7 @@ function uninstallOk(results: RemovalResult[]): boolean {
 
 function skillResult(
   action: "install" | "uninstall",
-  scope: SkillScope,
+  scope: SkillTarget["scope"],
   dryRun: boolean,
   targets: SkillTarget[],
   details: Pick<SkillCommandResult, "installations" | "removals">,
