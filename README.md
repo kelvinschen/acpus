@@ -6,7 +6,7 @@
 <p align="center"><em>Every run is an opus.</em></p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/acpus?activeTab=versions"><img src="https://img.shields.io/npm/v/acpus/alpha?label=alpha" alt="npm alpha version"></a>
+  <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.12-5FA04E" alt="Node.js 22.12 or newer">
 </p>
@@ -18,43 +18,41 @@
   &nbsp;·&nbsp;
   <a href="docs/acpus-next-user-guide.md">User Guide</a>
   &nbsp;·&nbsp;
-  <a href="docs/migrate-to-next.md">Migrate to Next</a>
+  <a href="docs/migrate-to-next.md">Migration Guide</a>
 </p>
 
-<p align="center"><strong>Describe the task. Let agents orchestrate agents.</strong></p>
+<p align="center"><strong>Describe the task. Let one agent orchestrate many.</strong></p>
 
-Acpus is a workflow language and durable runtime for agents orchestrating
-agents. Give an authoring agent a task and it writes `workflow.ts` to coordinate
-Agent, Task, Signal, and control flow across any mix of ACP-compatible agents.
-Acpus checks the graph, executes the run, and tracks its state, artifacts, and
-results.
+Give an orchestrator agent a task. It designs the workflow with TypeScript,
+directs any mix of ACP-compatible worker agents, and stays in control as the
+work unfolds. Acpus provides the durable runtime that checks and executes the
+graph while tracking its state, artifacts, and results.
 
-> **Your agent writes the workflow.**
+> **Your orchestrator agent owns the workflow.**
 >
-> **Any mix of ACP-compatible agents can carry it out.**
+> **ACP-compatible worker agents carry it out.**
 >
-> **Acpus runs and tracks the work.**
-
-> [!IMPORTANT]
-> **Acpus Next is alpha software.** Install the `alpha` release and review
-> generated workflows before running important work. Next is a TypeScript-first
-> foundation rewrite, not a drop-in upgrade from the previous YAML version.
-> See [Migrate to Next](docs/migrate-to-next.md) for the model and command changes.
+> **Acpus makes the run durable.**
 
 ## How It Works
 
 ```text
 Describe the task
-  → Authoring agent writes workflow.ts
-  → Acpus checks and executes the workflow
-  → ACP-compatible agents collaborate
-  → Acpus tracks state, artifacts, and results
+  → Orchestrator agent orchestrates workers with workflow.ts
+  → Acpus checks and runs it while the orchestrator observes
+  → Orchestrator agent reports the outcome to you
 ```
 
-The authoring agent decides how to split, parallelize, verify, and converge the
-work. Execution agents handle the research, implementation, review, or
-synthesis assigned to them. Acpus provides the independent boundary that
-checks, runs, observes, controls, and recovers the workflow.
+One orchestrator agent owns the work end
+to end: it decomposes the task, assigns roles, writes `workflow.ts`, starts the
+run, watches its progress, and intervenes through Acpus until the work
+converges. Worker agents stay focused on the research, implementation, review,
+or synthesis assigned to their nodes; they do not own the overall plan or run.
+
+Acpus is the durable execution and control boundary. It checks the authored
+graph, schedules nodes, records state, artifacts, and results, and exposes the
+controls the orchestrator uses to inspect, pause, resume, retry failed work, or
+fork the run.
 
 Simple work should still go directly to one agent. Reach for Acpus when a task
 needs multiple independent contexts, different agent strengths, local commands
@@ -63,7 +61,7 @@ or artifacts, human input, or recovery without starting over.
 ## Why `workflow.ts`
 
 - **Agent-authored, human-reviewable.** The orchestration is a real TypeScript
-  module that you can read, edit, review, and version.
+  module that you can read, edit, and review.
 - **ACP-native.** Different roles in one workflow can use different
   ACP-compatible agents without binding the graph to one model product.
 - **Acpus-operated.** Before execution, Acpus checks the authored structure and
@@ -74,29 +72,32 @@ or artifacts, human input, or recovery without starting over.
 
 ## Quick Start
 
-### 1. Install the alpha CLI and bundled Skill
+### 1. Install the CLI and bundled Skill
 
 ```sh
-npm install -g acpus@alpha
+npm install -g acpus
 mkdir -p .agents/skills
 acpus skill install --project
 ```
 
-The installer writes only to an existing supported Skill root, so the example
-creates the generic project root first. Use `--global` when a supported global
-agent Skill root already exists.
+`acpus skill install --project` installs the bundled Skill into each existing
+project Skill root: `.agents/skills` and `.claude/skills`. Missing roots are
+skipped, and at least one must already exist, so the example creates
+`.agents/skills` first. Use `--global` when a supported global Skill root
+already exists.
 
-### 2. Ask your agent to build the workflow
+### 2. Start with the outcome
 
 > [!TIP]
-> Copy this prompt into a Skill-capable agent:
+> From a Skill-capable agent, invoke Acpus with the outcome you want:
 >
 > ```text
-> Use the Acpus skill to turn this task into workflow.ts: review release
-> readiness from independent implementation and risk perspectives, use
-> different ACP-compatible agents for the reviews, and synthesize one decision.
-> Run acpus workflow check after authoring and show me the graph before execution.
+> /acpus start a workflow to decide whether this release is ready to ship
 > ```
+>
+> That is enough. The orchestrator decides how to structure, run, and observe
+> the work. You can also choose which worker agents to orchestrate—for example,
+> ask Claude to review and Codex to synthesize the result.
 
 ### 3. Review the generated TypeScript
 
@@ -218,19 +219,19 @@ second format for the reusable version.
 
 ## Migrate from Previous
 
-Previous Acpus authored YAML Workflow Specs around a different node model and
-CLI. Next uses TypeScript modules, `Expr` value flow, Agent / Task / Signal, a
-new control surface, and a new durable runtime. It intentionally does not add
-compatibility shims.
+Previous Acpus releases authored YAML Workflow Specs around a different node
+model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent /
+Task / Signal, a new control surface, and a new durable runtime. It intentionally
+does not add compatibility shims.
 
-Read [Migrate to Acpus Next](docs/migrate-to-next.md) for the mental-model
+Read the [migration guide](docs/migrate-to-next.md) for the mental-model
 mapping and a practical rewrite path. For the previous product documentation,
 see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md).
 
 ## Documentation
 
-- [Acpus Next User Guide](docs/acpus-next-user-guide.md)
-- [Migrate to Acpus Next](docs/migrate-to-next.md)
+- [User Guide](docs/acpus-next-user-guide.md)
+- [Migration Guide](docs/migrate-to-next.md)
 - [Specs Index](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)

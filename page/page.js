@@ -1,5 +1,5 @@
 /* ============================================================
-   Acpus — "The Lowering"
+   Acpus — "Paper Relay"
    One instrument: task → workflow.ts → check → lowered graph →
    a durable run the visitor drives (pause, retry, signal, ending).
    Scripted simulation of the real CLI & runtime semantics.
@@ -165,11 +165,11 @@ const GRAPH_H = 400;
 const LANE_Y = 200;
 
 const NODES = {
-  extract: { id: "extract_claims", agent: "◈ claude", x: 8, y: 165, w: 140, h: 70 },
-  verify: { id: "verify_claims", agent: "◈ pi × fanout", x: 185, y: 165, w: 216, h: 70, frame: { y: 88, h: 224 } },
-  redteam: { id: "red_team", agent: "◈ codex", x: 438, y: 165, w: 140, h: 70 },
-  gate: { id: "publish_gate", agent: "✦ you", x: 615, y: 165, w: 140, h: 70 },
-  report: { id: "write_report", agent: "⚙ task · node", x: 792, y: 165, w: 140, h: 70 },
+  extract: { id: "extract_claims", agent: "claude · agent", x: 8, y: 165, w: 140, h: 70 },
+  verify: { id: "verify_claims", agent: "pi · fanout × 4", x: 185, y: 165, w: 216, h: 70, frame: { y: 88, h: 224 } },
+  redteam: { id: "red_team", agent: "codex · agent", x: 438, y: 165, w: 140, h: 70 },
+  gate: { id: "publish_gate", agent: "signal · gate", x: 615, y: 165, w: 140, h: 70 },
+  report: { id: "write_report", agent: "task · node", x: 792, y: 165, w: 140, h: 70 },
 };
 
 const GATE_TIP = { left: 532, top: 10, width: 306 };
@@ -265,15 +265,17 @@ function renderBaseGraph() {
   }
 
   const tip = document.createElement("div");
-  tip.className = "gate-tip";
+  tip.className = "gate-tip-shell";
   tip.id = "gateTip";
   tip.hidden = true;
   tip.style.left = GATE_TIP.left + "px";
   tip.style.top = GATE_TIP.top + "px";
   tip.style.width = GATE_TIP.width + "px";
   tip.innerHTML = `
-    <span class="gt-label"><strong>publish_gate</strong> awaits a signal — the run holds at a durable gate. <em>You are the signal.</em></span>
-    <button class="btn btn-signal" id="approveBtn" type="button">Approve &amp; publish</button>`;
+    <div class="gate-tip-panel">
+      <span class="gt-label"><strong>publish_gate</strong> awaits a signal — the run holds at a durable gate.</span>
+      <button class="btn btn-signal" id="approveBtn" type="button">Approve &amp; publish</button>
+    </div>`;
   graphEl.appendChild(tip);
   tip.querySelector("#approveBtn").addEventListener("click", fireSignal);
 
@@ -337,6 +339,7 @@ function sendToken(path, dur, onArrive) {
   el.setAttribute("y", "-4");
   el.setAttribute("width", "8");
   el.setAttribute("height", "8");
+  el.setAttribute("rx", "4");
   svgEdges.appendChild(el);
   clock.tokens.push({ path, len: path.getTotalLength(), p: 0, dur, el, onArrive: () => {
     path.classList.remove("is-live");
@@ -370,14 +373,23 @@ const codePanel = $("#codePanel");
 const fileTab = $("#fileTab");
 const authoringStatus = $("#authoringStatus");
 const delegateBtn = $("#delegateBtn");
+const delegateLabel = $("#delegateLabel");
+const taskBtn = $("#taskBtn");
 const skipBtn = $("#skipBtn");
 const pauseBtn = $("#pauseBtn");
 const resumeBtn = $("#resumeBtn");
 const replayBtn = $("#replayBtn");
 const completePlate = $("#completePlate");
+const stageShell = $(".stage-shell");
+const workbenchPage = $("#workbench");
+const heroIntro = $(".hero-intro");
+const taskCard = $("#taskCard");
+const instrumentEl = $("#instrument");
 
 let lineEls = [];
 let phase = "idle"; // idle | authoring | checking | lowering | running | done
+let hasDelegated = false;
+let workbenchTransitionTimer;
 let retryKeyEl = null;
 let retryFired = false;
 let approved = false;
@@ -614,15 +626,8 @@ function flyNode(key, fromLineEl) {
     { duration: 460, easing: "cubic-bezier(0.22, 0.61, 0.21, 1)", fill: "forwards" }
   );
   anim.onfinish = () => {
-    ghost.remove();
     node.style.visibility = "visible";
-    node.animate(
-      [
-        { transform: "scale(1.06)" },
-        { transform: "scale(1)" },
-      ],
-      { duration: 220, easing: "ease-out" }
-    );
+    ghost.remove();
   };
 }
 
@@ -660,7 +665,7 @@ function expandFanout(onItemsReady) {
   itemEls = [1, 2, 3, 4].map((n, i) => {
     const it = document.createElement("div");
     it.className = "fitem is-queued";
-    it.innerHTML = `<span class="dot"></span><span>verify[${i}]</span><span class="f-agent">◈ pi</span><span class="f-meta">queued</span>`;
+    it.innerHTML = `<span class="dot"></span><span>verify[${i}]</span><span class="f-agent">pi</span><span class="f-meta">queued</span>`;
     itemsBox.appendChild(it);
     return it;
   });
@@ -850,7 +855,7 @@ function fireRetry() {
   setItem(1, "running", "attempt 2 · running");
 }
 
-/* approve — the visitor is the signal (bound per tooltip render) */
+/* approve the waiting signal (bound per tooltip render) */
 function fireSignal() {
   if (approved) return;
   approved = true;
@@ -873,14 +878,16 @@ function fireSignal() {
     termLine(`<span class="t-ok">✓</span> write_report <span class="t-dim">completed · artifact fact-check-report.md · 2.1s</span>`);
   });
   later(4400, () => {
-    setStatus("completed — 5/5 nodes · 3 agents · 1 retry · 4 artifacts", "is-done");
+    setStatus("completed — 8/8 nodes · 6 agents · 1 signal · 1 retry · 4 artifacts", "is-done");
     termLine(`<span class="t-ok">✓</span> run <span class="t-gilt">${RUN_ID}</span> <span class="t-ok">completed</span> <span class="t-dim">· durable state in ${RUN_DIR}</span>`);
     phase = "done";
     pauseBtn.hidden = true;
     resumeBtn.hidden = true;
     replayBtn.hidden = false;
     completePlate.hidden = false;
-    completePlate.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "nearest" });
+    completePlate.getBoundingClientRect();
+    stageShell.inert = true;
+    workbenchPage.classList.add("is-complete");
   });
 }
 
@@ -903,9 +910,14 @@ resumeBtn.addEventListener("click", () => {
   stageEl.classList.remove("is-paused");
   resumeBtn.hidden = true;
   pauseBtn.hidden = false;
-  setStatus("running — gate cleared", "is-running");
+  setStatus(
+    clock.held ? "awaiting signal — publish_gate · the run holds" : "running — pause gate cleared",
+    clock.held ? "is-awaiting" : "is-running"
+  );
   termCmd(`acpus runs resume ${RUN_ID}`, () => {
-    termLine(`<span class="t-gilt">▶</span> gate cleared <span class="t-dim">· scheduler driving runnable work</span>`);
+    termLine(
+      `<span class="t-gilt">▶</span> pause gate cleared <span class="t-dim">· ${clock.held ? "signal gate still waiting" : "scheduler driving runnable work"}</span>`
+    );
   });
 });
 
@@ -928,7 +940,9 @@ skipBtn.addEventListener("click", () => {
 
 /* replay the run from a clean graph */
 replayBtn.addEventListener("click", () => {
-  completePlate.hidden = true;
+  workbenchPage.classList.remove("is-complete");
+  stageShell.inert = false;
+  setTimeout(() => { completePlate.hidden = true; }, REDUCED ? 0 : 180);
   termEl.innerHTML = "";
   trayItems.innerHTML = "";
   trayEl.hidden = true;
@@ -978,18 +992,49 @@ fileTab.addEventListener("click", () => {
   fileTab.setAttribute("aria-expanded", String(open));
 });
 
-/* delegate — the one button that starts the chain */
+const WORKBENCH_TRANSITION_MS = REDUCED ? 0 : 580;
+
+function showStage() {
+  clearTimeout(workbenchTransitionTimer);
+  heroIntro.hidden = false;
+  instrumentEl.setAttribute("aria-hidden", "false");
+  heroIntro.setAttribute("aria-hidden", "true");
+  requestAnimationFrame(() => {
+    workbenchPage.classList.add("is-stage-active");
+    workbenchTransitionTimer = setTimeout(() => {
+      heroIntro.hidden = true;
+      (workbenchPage.classList.contains("is-complete") ? taskBtn : stageEl).focus({ preventScroll: true });
+    }, WORKBENCH_TRANSITION_MS);
+  });
+}
+
+function showTask() {
+  clearTimeout(workbenchTransitionTimer);
+  heroIntro.hidden = false;
+  instrumentEl.setAttribute("aria-hidden", "true");
+  heroIntro.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    workbenchPage.classList.remove("is-stage-active");
+    workbenchTransitionTimer = setTimeout(() => {
+      taskCard.focus({ preventScroll: true });
+    }, WORKBENCH_TRANSITION_MS);
+  });
+}
+
+/* delegate — starts once, then becomes the way back to the live run */
 delegateBtn.addEventListener("click", () => {
-  if (phase !== "idle") return;
-  delegateBtn.disabled = true;
-  $("#taskCard").classList.add("is-taken");
-  setStatus("authoring — an agent is writing workflow.ts", "is-running");
-  $("#instrument").classList.add("is-live"); // the board unfolds in both directions
-  // the whole stage fits the viewport: put its top just below the edge
-  const y = $("#instrument").getBoundingClientRect().top + window.scrollY - 14;
-  window.scrollTo({ top: y, behavior: REDUCED ? "auto" : "smooth" });
-  authorCode(() => runCheck(() => lowerGraph(finishLowering)));
+  if (!hasDelegated) {
+    hasDelegated = true;
+    delegateLabel.textContent = "Return to stage";
+    delegateBtn.setAttribute("aria-label", "Return to the simulation stage");
+    taskBtn.hidden = false;
+    setStatus("authoring — an agent is writing workflow.ts", "is-running");
+    authorCode(() => runCheck(() => lowerGraph(finishLowering)));
+  }
+  showStage();
 });
+
+taskBtn.addEventListener("click", showTask);
 
 /* ------------------------------------------------------------
    recast toy — fork with a new agent mapping
@@ -1022,7 +1067,7 @@ function renderToy() {
     el.dataset.idx = i;
     el.innerHTML = `
       <div class="tn-id"><span class="dot" style="background:var(--st-ok)"></span><span>${n.id}</span></div>
-      <button class="tn-agent" type="button" data-idx="${i}">◈ ${n.agent} ▾</button>
+      <button class="tn-agent" type="button" data-idx="${i}">${n.agent} ▾</button>
       <div class="tn-verdict">completed</div>`;
     toyChain.appendChild(el);
   });
@@ -1072,7 +1117,7 @@ function applyRecast(idx, agent) {
     }
   });
   nodes[idx].classList.add("is-changed");
-  nodes[idx].querySelector(".tn-agent").innerHTML = `◈ ${agent} ▾`;
+  nodes[idx].querySelector(".tn-agent").textContent = `${agent} ▾`;
 
   toyEcho.classList.add("is-cmd");
   toyEcho.textContent = `acpus runs fork ${RUN_ID} --agents ${toyState[idx].id}=${agent}`;

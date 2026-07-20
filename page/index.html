@@ -7,77 +7,89 @@
     <meta
       name="description"
       content="Give an agent a task. It writes a TypeScript workflow to coordinate any mix of ACP-compatible agents. Acpus executes the graph and tracks every run." />
-    <link rel="icon" href="./logo/logo-favicon.svg" />
+    <link rel="icon" href="./logo/logo-favicon.svg?v=flat-mark-sticker-wordmark-20260720" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Google+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Nunito+Sans:opsz,wght@6..12,400..900&display=swap"
       rel="stylesheet" />
-    <link rel="stylesheet" href="./page.css" />
+    <link rel="stylesheet" href="./page.css?v=mobile-control-layout-v2-20260720" />
   </head>
   <body>
-    <a class="skip-link" href="#instrument">Skip to the demonstration</a>
+    <a class="skip-link" href="#workbench">Skip to the task</a>
 
     <!-- ======================= top bar ======================= -->
     <header class="topbar">
-      <a class="brand" href="#top" aria-label="Acpus — back to top">
-        <img class="brand-mark" src="./logo/logo-opus-mark.svg" alt="" width="34" height="34" />
-        <span class="brand-word">Acpus</span>
-      </a>
-      <nav class="topnav" aria-label="Page">
-        <a href="#m-artifact">the file</a>
-        <a href="#m-cast">the cast</a>
-        <a href="#m-control">control</a>
-        <a href="#m-after">afterlife</a>
-        <a class="topnav-gh" href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub&nbsp;↗</a>
-      </nav>
+      <div class="topbar-inner">
+        <a class="brand" href="#top" aria-label="Acpus — back to top">
+          <img class="brand-lockup" src="./logo/logo-lockup.svg?v=refined-contour-20260720" alt="Acpus" width="132" height="52" />
+          </a>
+          <nav class="topnav" aria-label="Page">
+            <a href="#m-artifact">the file</a>
+            <a href="#m-cast">the cast</a>
+            <a href="#m-control">control</a>
+            <a href="#m-after">afterlife</a>
+            <a class="topnav-gh" href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub&nbsp;↗</a>
+          </nav>
+      </div>
     </header>
 
     <main id="top">
       <!-- ======================= hero: the task ======================= -->
-      <section class="hero" aria-labelledby="hero-eyebrow">
-        <p class="eyebrow" id="hero-eyebrow">A workflow language &amp; runtime for agents orchestrating agents</p>
-
-        <p class="thesis">Describe the task. Let agents orchestrate agents.</p>
-        <p class="thesis-sub">
-          <span>your agent writes <code>workflow.ts</code></span>
-          <span>that carries any mix of ACP agents, </span>
-          <span>acpus keeps the run</span>
-        </p>
-
-        <div class="task-card plate-deep" id="taskCard">
-          <div class="task-head">
-            <span class="task-label">The task — your words</span>
-            <span class="task-corner" aria-hidden="true">✦</span>
-          </div>
-          <p class="task-text" id="taskText">
-            Verify every technical claim in this article against the code and the primary
-            documentation. Have independent agents check each claim, let another agent attack
-            the weak verdicts, and wait for my approval before writing the cited report.
-          </p>
-          <div class="task-foot">
-            <span class="task-hint">one sentence is the whole assignment</span>
-            <button class="btn btn-delegate" id="delegateBtn" type="button">
-              Delegate <span aria-hidden="true">⟶</span>
-            </button>
-          </div>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-art-shell">
+          <img class="hero-art" src="./hero-papercut.svg?v=quadrilateral-bursts-20260720"
+            alt="Acpus paper-cut wordmark and agents orchestrate agents slogan" width="1672" height="720" />
         </div>
-      </section>
 
-      <!-- ======================= the instrument ======================= -->
-      <section class="instrument" id="instrument" aria-label="Interactive demonstration">
+        <div class="workbench-page" id="workbench">
+          <div class="hero-intro">
+          <div class="hero-copy">
+            <p class="eyebrow">A durable agent workflow runtime</p>
+            <h1 class="thesis" id="hero-title">Describe the task,<br> Let your agent orchestrate the work.</h1>
+            <p class="thesis-sub">
+              <span>your agent writes <code>workflow.ts</code></span>
+              <span>workflow carries any mix of ACP agents</span>
+              <span>acpus keeps the run</span>
+              </p>
+          </div>
+
+          <div class="task-card plate-deep" id="taskCard" tabindex="-1">
+            <div class="task-head">
+              <span class="task-label">The task — your words</span>
+              <span class="task-corner" aria-hidden="true">■</span>
+              </div>
+              <p class="task-text" id="taskText">
+                Fact-check this article against the code and primary docs, challenge any weak
+                findings, and wait for my approval before writing the cited report.
+              </p>
+              <div class="task-foot">
+                <span class="task-hint"></span>
+                <button class="btn btn-delegate" id="delegateBtn" type="button">
+                <span id="delegateLabel">Delegate</span> <span aria-hidden="true">→</span>
+                </button>
+            </div>
+          </div>
+          </div>
+
+          <!-- ======================= the instrument ======================= -->
+          <section class="instrument" id="instrument" aria-label="Interactive demonstration" aria-hidden="true">
         <div class="stage-meta">
-          <span class="stage-tag">a scripted simulation — the commands, states &amp; semantics are real</span>
-          <span class="stage-live" id="runStatus" role="status" aria-live="polite">idle — awaiting a task</span>
+          <span class="stage-tag">a scripted simulation</span>
+          <span class="stage-meta-actions">
+            <span class="stage-live" id="runStatus" role="status" aria-live="polite">idle — awaiting a task</span>
+            <button class="ctl stage-task-btn" id="taskBtn" type="button" hidden>view task ↩</button>
+            </span>
         </div>
 
-        <div class="stage" id="stage">
+        <div class="stage-shell">
+          <div class="stage" id="stage" tabindex="-1">
           <!-- stage head: file tab + controls -->
           <div class="stage-head">
-            <button class="filetab" id="fileTab" type="button" aria-expanded="false" aria-controls="codeOverlay" hidden>
+            <button class="filetab" id="fileTab" type="button" aria-expanded="false" aria-controls="codePanel" hidden>
               <span class="filetab-arrow" aria-hidden="true">▸</span>
               <span class="filetab-name">workflow.ts</span>
-              <span class="filetab-meta">5 steps · 3 agents · 1 signal</span>
+              <span class="filetab-meta">5 steps · 8 nodes · 6 agents · 1 signal</span>
             </button>
             <span class="stage-authoring" id="authoringStatus" hidden></span>
             <span class="stage-controls">
@@ -111,15 +123,25 @@
 
           <!-- terminal echo strip — always part of the stage, empty until check -->
           <div class="term" id="term" aria-label="CLI echo"></div>
+          </div>
         </div>
 
         <!-- completion plate -->
         <div class="complete-plate" id="completePlate" hidden>
           <p class="complete-kicker">run 20260717143052A91F3E7C42D08B6E5F · completed</p>
           <dl class="complete-stats">
-            <div><dt>nodes</dt><dd>5</dd></div>
-            <div><dt>agents</dt><dd>3</dd></div>
-            <div><dt>signal</dt><dd>yours</dd></div>
+            <div>
+              <dt>nodes</dt>
+              <dd>8</dd>
+            </div>
+            <div>
+              <dt>agents</dt>
+              <dd>6</dd>
+            </div>
+            <div>
+              <dt>signal</dt>
+              <dd>1</dd>
+            </div>
             <div><dt>retries</dt><dd>1</dd></div>
             <div><dt>artifacts</dt><dd>4</dd></div>
           </dl>
@@ -131,7 +153,9 @@
           </div>
           <p class="complete-note" id="endingNote" hidden></p>
         </div>
-      </section>
+          </section>
+        </div>
+        </section>
 
       <!-- ======================= I · the file is real ======================= -->
       <section class="movement" id="m-artifact">
@@ -215,28 +239,28 @@
           </p>
           <div class="keys">
             <div class="key reveal">
-              <code>acpus runs inspect {run_id} --follow</code>
-              <p>Watch the same state the web graph draws — compact, incremental, scriptable.</p>
+              <code>acpus runs inspect</code>
+              <p>Follow the durable run state in the CLI.</p>
             </div>
             <div class="key reveal">
-              <code>acpus runs pause {run_id}</code>
-              <p>Write a durable pause gate; active attempts wind down. <span class="key-note">you tried this mid-run</span></p>
+              <code>acpus runs pause</code>
+              <p>Set a durable pause gate; active attempts wind down.</p>
             </div>
             <div class="key reveal">
-              <code>acpus runs resume {run_id}</code>
-              <p>Clear the gate; the scheduler drives on.</p>
+              <code>acpus runs resume</code>
+              <p>Clear the gate; scheduling resumes.</p>
             </div>
             <div class="key reveal">
-              <code>acpus runs retry {run_id} --target {node_key}</code>
-              <p>Re-run exactly one failed node, never the whole graph. <span class="key-note">fired once in your run</span></p>
+              <code>acpus runs retry</code>
+              <p>Retry one failed node, not the whole graph.</p>
             </div>
             <div class="key reveal">
-              <code>acpus runs signal {run_id} --target publish_gate --payload '{"approved":true}'</code>
-              <p>Feed a waiting signal; the run continues. <span class="key-note">you were this signal</span></p>
+              <code>acpus runs signal</code>
+              <p>Deliver a waiting signal; the run continues.</p>
             </div>
             <div class="key reveal">
-              <code>acpus runs fork {run_id} --agents review=codex</code>
-              <p>Open a new run with a new cast; compatible facts carry over.</p>
+              <code>acpus runs fork</code>
+              <p>Fork with a new cast; compatible facts carry over.</p>
             </div>
           </div>
         </div>
@@ -277,22 +301,26 @@
 
       <!-- ======================= coda ======================= -->
       <section class="coda">
-        <p class="coda-line reveal">Your agent writes the workflow. Any mix of ACP agents can carry it out.</p>
-        <p class="coda-line reveal">Acpus runs and tracks the work.</p>
-        <a class="btn btn-coda reveal" href="https://github.com/kelvinschen/acpus" rel="noopener">Ask my agent to build a workflow&nbsp;↗</a>
+        <div class="coda-content">
+          <p class="coda-line reveal">Acpus expands the boundaries of your agent’s intelligence.<br><em>Try use it in your
+              everyday work.</em></p>
+          <a class="btn btn-coda reveal" href="https://github.com/kelvinschen/acpus" rel="noopener">Ask my agent to build a
+            workflow&nbsp;↗</a>
+        </div>
+
+        <footer class="footer">
+          <a class="footer-brand" href="#top" aria-label="Acpus — back to top">
+            <img src="./logo/logo-lockup.svg?v=refined-contour-20260720" alt="Acpus" width="170" height="66" />
+            </a>
+            <div class="footer-copy">
+              <nav class="footer-nav" aria-label="Footer">
+                <a href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub ↗</a>
+              </nav>
+            </div>
+            </footer>
       </section>
-    </main>
+      </main>
 
-    <!-- ======================= footer ======================= -->
-    <footer class="footer">
-      <p class="footer-note">
-        This page is a scripted simulation; the commands, states and semantics are the real ones.
-      </p>
-      <nav class="footer-nav" aria-label="Footer">
-        <a href="https://github.com/kelvinschen/acpus" rel="noopener">GitHub ↗</a>
-      </nav>
-    </footer>
-
-    <script src="./page.js" defer></script>
+    <script src="./page.js?v=accurate-run-counts-20260720" defer></script>
   </body>
 </html>

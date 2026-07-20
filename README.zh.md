@@ -6,7 +6,7 @@
 <p align="center"><em>Every run is an opus.</em></p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/acpus?activeTab=versions"><img src="https://img.shields.io/npm/v/acpus/alpha?label=alpha" alt="npm alpha 版本"></a>
+  <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm 版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 许可证"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.12-5FA04E" alt="Node.js 22.12 或更高版本">
 </p>
@@ -18,47 +18,45 @@
   &nbsp;·&nbsp;
   <a href="docs/acpus-next-user-guide.md">用户指南</a>
   &nbsp;·&nbsp;
-  <a href="docs/migrate-to-next.md">迁移到 Next</a>
+  <a href="docs/migrate-to-next.md">迁移指南</a>
 </p>
 
-<p align="center"><strong>描述任务，让 Agent 编排 Agent。</strong></p>
+<p align="center"><strong>描述你的任务，让 Agent 编排 Agents。</strong></p>
 
-Acpus 是让 Agent 编排 Agent 的工作流语言与持久化运行时。把任务交给 Authoring
-Agent，它会写出 `workflow.ts`，自由组合任意兼容 ACP 的 Agent，并编排 Agent、Task、
-Signal 与控制流。Acpus 负责检查工作流、执行整次运行，并追踪状态、artifact 与结果。
+把任务交给 Orchestrator Agent。它使用 TypeScript 设计工作流，指挥任意组合的
+ACP-compatible Worker Agents，并随着工作推进始终掌控全局。Acpus 提供持久化 runtime，
+负责检查和执行工作流图，同时追踪状态、artifact 与结果。
 
-> **Agent 编写工作流。**
+> **Orchestrator Agent 掌控工作流。**
 >
-> **任意组合的 ACP-compatible Agent 协作执行。**
+> **ACP-compatible Worker Agents 负责执行。**
 >
-> **Acpus 运行并追踪结果。**
-
-> [!IMPORTANT]
-> **Acpus Next 仍处于 alpha。** 请安装 `alpha` 版本，并在运行重要任务前审查 Agent
-> 生成的 workflow。Next 是 TypeScript-first 的基础重写，不是 Previous YAML 版本的
-> 原位升级。编程模型与命令变化见[迁移到 Next](docs/migrate-to-next.md)。
+> **Acpus 让每次运行持久可靠。**
 
 ## 工作方式
 
 ```text
 描述任务
-  → Authoring Agent 编写 workflow.ts
-  → Acpus 检查并执行 workflow
-  → ACP-compatible Agents 协作
-  → Acpus 追踪状态、artifact 与结果
+  → Orchestrator Agent 通过 workflow.ts 编排 Worker Agents
+  → Acpus 检查并运行，Orchestrator Agent 持续观察
+  → Orchestrator Agent 向你报告结果
 ```
 
-Authoring Agent 决定如何拆分任务、安排并行、独立验证和最终收敛。执行 Agent 分别负责
-研究、实现、审查或综合。Acpus 提供独立的运行边界，负责检查、执行、观察、控制和恢复
-这张工作流。
+一个 Orchestrator Agent 端到端负责整项工作：拆解任务、分配角色、编写
+`workflow.ts`、启动 run、观察进展，并通过 Acpus 介入，直到工作收敛。Worker Agents
+专注于各自节点中的研究、实现、审查或综合任务；它们不负责整体计划或整次运行。
 
-简单任务仍然适合直接交给单个 Agent。只有当任务需要多个独立上下文、不同 Agent
-能力、本地命令或 artifact、人工输入，或者失败后不适合从头再来时，才值得使用 Acpus。
+Acpus 是持久化执行与控制边界。它检查工作流图、调度节点、记录状态、artifact 与结果，
+并提供 inspect、pause、resume、局部 retry 和 fork 等控制能力，供 Orchestrator Agent
+使用。
+
+简单任务仍然适合直接交给单个 Agent。当任务需要多个独立上下文、不同 Agent 能力、
+本地命令或 artifact、人工输入，或者失败后不适合从头再来时，再使用 Acpus。
 
 ## 为什么是 `workflow.ts`
 
-- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以阅读、修改、
-  code review 和版本化。
+- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以阅读、修改和
+  审查。
 - **原生面向 ACP。** 同一张 workflow 可以让不同角色使用不同的 ACP-compatible
   Agents，而不把整张图绑定到单一模型产品。
 - **由 Acpus 运行。** 执行前，Acpus 检查 authored structure，并将其降低为冻结、可
@@ -68,27 +66,30 @@ Authoring Agent 决定如何拆分任务、安排并行、独立验证和最终�
 
 ## 快速开始
 
-### 1. 安装 alpha CLI 与内置 Skill
+### 1. 安装 CLI 和内置 Skill
 
 ```sh
-npm install -g acpus@alpha
+npm install -g acpus
 mkdir -p .agents/skills
 acpus skill install --project
 ```
 
-安装器只会写入已有的受支持 Skill 目录，所以上面的命令先创建通用项目目录。如果全局
-Agent 环境中已经存在受支持的 Skill 目录，可以改用 `--global`。
+`acpus skill install --project` 会把内置 Skill 安装到项目中每个已经存在的 Skill 根
+目录：`.agents/skills` 和 `.claude/skills`。不存在的目录会被跳过，而且至少需要已有
+一个，因此示例先创建 `.agents/skills`。如果受支持的全局 Skill 根目录已经存在，可以
+使用 `--global`。
 
-### 2. 让 Agent 构建工作流
+### 2. 从目标开始
 
 > [!TIP]
-> 把下面的 prompt 交给能够使用 Skill 的 Agent：
+> 在支持 Skill 的 Agent 中调用 Acpus，只需说明你想要的结果：
 >
 > ```text
-> 使用 Acpus skill 把这个任务写成 workflow.ts：从实现质量和风险两个独立视角检查
-> 发布准备情况，分别使用不同的 ACP-compatible Agent，再综合为一个发布结论。
-> 编写完成后先运行 acpus workflow check，并在执行前向我展示工作流图。
+> /acpus 启动一个 workflow，判断这个 release 是否已经可以发布
 > ```
+>
+> 这就够了。Orchestrator Agent 会决定如何组织、运行和观察整个工作。你也可以指定要
+> 编排的 Worker Agents，例如让 Claude 负责审查、Codex 负责总结。
 
 ### 3. 审查生成的 TypeScript
 
@@ -153,14 +154,16 @@ export default defineWorkflow({
 
 ```sh
 acpus workflow check workflow.ts --input '{"topic":"release readiness"}'
+acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow.html
 acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
 acpus runs inspect <run-id>
 ```
 
-`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 会生成一份
-自包含的静态 HTML 工作流图。`workflow run` 创建并执行持久化 run；`runs inspect`
-读取它的结构、状态、attempt、artifact 与结果。
+`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在
+终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。
+`workflow run` 创建并执行持久化 run；`runs inspect` 读取它的结构、状态、attempt、
+artifact 与结果。
 
 ### 常用运行控制
 
@@ -203,20 +206,20 @@ Retry 用于重试当前 run 中失败的部分。Fork 会创建新 run，并且
 复用，就提交同一个文件、随 Skill 分发，或在下一次运行前继续修改。一次性与持久化版本
 不需要两套格式。
 
-## 从 Previous 迁移
+## 从旧版本迁移
 
-Previous Acpus 使用 YAML Workflow Spec、不同的节点模型与 CLI。Next 改用 TypeScript
-module、`Expr` 值流、Agent / Task / Signal、新的控制面和新的持久化 runtime，并且不会
-添加兼容 shim。
+旧版 Acpus 使用 YAML Workflow Spec、不同的节点模型与 CLI。现在的 Acpus 使用
+TypeScript module、`Expr` 值流、Agent / Task / Signal、新的控制面和新的持久化
+runtime，并且不会添加兼容 shim。
 
-请阅读[迁移到 Acpus Next](docs/migrate-to-next.md)，了解核心心智映射与实际重写步骤。
-Previous 产品文档见
+请阅读[迁移指南](docs/migrate-to-next.md)，了解核心心智映射与实际重写步骤。旧版产品
+文档见
 [Acpus 0.5.2 中文 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.zh.md)。
 
 ## 文档
 
-- [Acpus Next 用户指南](docs/acpus-next-user-guide.md)
-- [迁移到 Acpus Next](docs/migrate-to-next.md)
+- [用户指南](docs/acpus-next-user-guide.md)
+- [迁移指南](docs/migrate-to-next.md)
 - [Specs 索引](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
@@ -225,8 +228,8 @@ Previous 产品文档见
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；Previous release 保留在
-repository tag 历史中。
+当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；旧版本保留在 repository tag
+历史中。
 
 ## 开发
 

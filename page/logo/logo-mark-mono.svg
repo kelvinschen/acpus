@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 400" width="470" height="400" role="img" aria-labelledby="title desc">
+  <title id="title">Acpus one-ink Compass Arch</title>
+  <desc id="desc">One-ink reproduction of the paper-cut Compass Arch.</desc>
+  <defs>
+    <pattern id="paper" width="43" height="37" patternUnits="userSpaceOnUse">
+      <rect width="43" height="37" fill="#FBF6EB"/>
+      <g fill="#252828" opacity=".055"><circle cx="4" cy="8" r=".8"/><circle cx="18" cy="5" r=".55"/><circle cx="34" cy="15" r=".7"/><circle cx="11" cy="29" r=".5"/><circle cx="38" cy="33" r=".45"/></g>
+      <g fill="#fff" opacity=".48"><circle cx="9" cy="14" r=".7"/><circle cx="27" cy="3" r=".45"/><circle cx="24" cy="25" r=".6"/><circle cx="41" cy="22" r=".5"/></g>
+    </pattern>
+    <pattern id="blueInk" width="29" height="31" patternUnits="userSpaceOnUse">
+      <rect width="29" height="31" fill="#0A46D4"/>
+      <g fill="#FBF6EB" opacity=".19"><circle cx="3" cy="8" r=".8"/><circle cx="13" cy="3" r=".55"/><circle cx="24" cy="13" r=".7"/><circle cx="8" cy="24" r=".45"/><circle cx="21" cy="27" r=".65"/></g>
+      <g fill="#001B71" opacity=".12"><circle cx="18" cy="17" r=".45"/><circle cx="27" cy="4" r=".35"/><circle cx="2" cy="29" r=".35"/></g>
+    </pattern>
+    <pattern id="orangeInk" width="31" height="27" patternUnits="userSpaceOnUse">
+      <rect width="31" height="27" fill="#FA7408"/>
+      <g fill="#FBF6EB" opacity=".2"><circle cx="5" cy="5" r=".7"/><circle cx="17" cy="3" r=".5"/><circle cx="27" cy="10" r=".75"/><circle cx="10" cy="19" r=".45"/><circle cx="24" cy="24" r=".6"/></g>
+      <g fill="#B44100" opacity=".1"><circle cx="17" cy="14" r=".45"/><circle cx="2" cy="25" r=".35"/></g>
+    </pattern>
+    <pattern id="ink" width="37" height="33" patternUnits="userSpaceOnUse">
+      <rect width="37" height="33" fill="#252828"/>
+      <g fill="#FBF6EB" opacity=".13"><circle cx="4" cy="7" r=".7"/><circle cx="16" cy="4" r=".45"/><circle cx="30" cy="12" r=".75"/><circle cx="9" cy="26" r=".5"/><circle cx="27" cy="29" r=".55"/></g>
+      <g fill="#000" opacity=".12"><circle cx="21" cy="18" r=".45"/><circle cx="35" cy="3" r=".35"/></g>
+    </pattern>
+    <pattern id="dotsBlue" width="13" height="13" patternUnits="userSpaceOnUse" patternTransform="rotate(8)"><circle cx="3" cy="3" r="2.2" fill="#0A46D4"/></pattern>
+    <pattern id="dotsInk" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)"><circle cx="3" cy="3" r="2.1" fill="#252828"/></pattern>
+  </defs>
+  <g transform="translate(20 20) scale(1) translate(-180 -160)"><path d="M195 14L217 15L226 18L245 31L264 53L295 117L329 209L317 214L303 216L277 213L243 111L230 81L221 70L213 66L203 67L194 72L180 86L149 138L121 196L62 340L50 346L32 341L12 331L11 327L19 305L56 217L118 86L156 30ZM352 267L357 272L375 321L368 332L345 342L325 334L304 278L312 279L326 276Z" transform="translate(180 160)" fill="url(#ink)" fill-rule="evenodd"/><path d="M212 13L244 14L272 24L303 49L316 69L327 98L331 128L328 150L322 170L306 198L276 220L246 230L208 233L138 225L98 231L66 241L40 253L18 247L17 239L30 201L66 186L120 174L156 174L228 182L242 179L254 173L265 163L271 154L278 134L279 114L275 96L265 78L253 67L237 60L213 57L196 21L196 19Z" transform="translate(260 200)" fill="url(#ink)" fill-rule="evenodd"/></g>
+</svg>
