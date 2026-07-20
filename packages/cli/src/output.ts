@@ -135,6 +135,7 @@ export function writeResult(
     }
     return exitCode;
   }
+  if (writeWorkflowPreparationSummary(result, stream, streams.cwd)) return exitCode;
   if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
@@ -187,6 +188,79 @@ export function writeResult(
     }
   }
   return exitCode;
+}
+
+function writeWorkflowPreparationSummary(result: CliResult, stream: Writable, cwd: string | undefined): boolean {
+  if (result.phase === "check") {
+    if (result.ok && result.workflow) {
+      writeCheckStage(stream, "passed", "typescript", "0 errors");
+      writeCheckStage(stream, "passed", "authoring rules", "0 errors");
+      writeCheckStage(stream, "passed", "WorkflowIR", `0 errors · ${formatStaticNodeCount(result.workflow.nodeCount)}`);
+      writeDiagnostics(stream, result.diagnostics, cwd);
+      return true;
+    }
+    if (!result.ok && result.diagnostics?.length) {
+      const errors = result.diagnostics.filter(diagnostic => diagnostic.severity === "error");
+      const infrastructureErrors = errors.filter(diagnostic => /^WF00[12]$/u.test(diagnostic.code)).length;
+      if (infrastructureErrors > 0) {
+        writeCheckStage(stream, "failed", "check infrastructure", formatErrorCount(infrastructureErrors));
+        writeCheckStage(stream, "skipped", "typescript", "skipped");
+        writeCheckStage(stream, "skipped", "authoring rules", "skipped");
+      } else {
+        const typescriptErrors = errors.filter(diagnostic => /^TS\d+$/u.test(diagnostic.code)).length;
+        const authoringErrors = errors.filter(diagnostic => /^(?:AL|TB)\d+$/u.test(diagnostic.code)).length;
+        writeCheckStage(stream, typescriptErrors === 0 ? "passed" : "failed", "typescript", formatErrorCount(typescriptErrors));
+        writeCheckStage(stream, authoringErrors === 0 ? "passed" : "failed", "authoring rules", formatErrorCount(authoringErrors));
+      }
+      writeCheckStage(stream, "skipped", "WorkflowIR", "skipped");
+      writeDiagnostics(stream, result.diagnostics, cwd);
+      return true;
+    }
+    return false;
+  }
+  if (!result.ok && result.phase === "compile") {
+    writePassedChecks(stream);
+    writeCheckStage(stream, "failed", "WorkflowIR", "compile failed");
+    stream.write(`  ${result.message ?? "Workflow compilation failed."}\n`);
+    return true;
+  }
+  if (!result.ok && result.phase === "validate" && result.workflow && result.diagnostics?.length) {
+    writePassedChecks(stream);
+    const errors = result.diagnostics.filter(diagnostic => diagnostic.severity === "error").length;
+    writeCheckStage(stream, "failed", "WorkflowIR", formatErrorCount(errors));
+    writeDiagnostics(stream, result.diagnostics, cwd);
+    return true;
+  }
+  if (!result.ok && result.phase === "lock") {
+    writePassedChecks(stream);
+    writeCheckStage(stream, "passed", "WorkflowIR", "0 errors");
+    writeCheckStage(stream, "failed", "package lock", "read failed");
+    stream.write(`  ${result.message ?? "Package lock could not be read."}\n`);
+    return true;
+  }
+  return false;
+}
+
+function writePassedChecks(stream: Writable): void {
+  writeCheckStage(stream, "passed", "typescript", "0 errors");
+  writeCheckStage(stream, "passed", "authoring rules", "0 errors");
+}
+
+function writeCheckStage(stream: Writable, status: "passed" | "failed" | "skipped", label: string, detail: string): void {
+  const marker = status === "passed" ? "✓" : status === "failed" ? "✗" : "–";
+  stream.write(`${marker} ${label.padEnd(19)} ${detail}\n`);
+}
+
+function formatErrorCount(count: number): string {
+  return `${count} ${count === 1 ? "error" : "errors"}`;
+}
+
+function formatStaticNodeCount(count: number): string {
+  return `${count} static ${count === 1 ? "node" : "nodes"}`;
+}
+
+function writeDiagnostics(stream: Writable, diagnostics: DiagnosticIR[] | undefined, cwd: string | undefined): void {
+  for (const diagnostic of diagnostics ?? []) writeDiagnostic(stream, diagnostic, cwd);
 }
 
 function writeDiagnostic(stream: Writable, diagnostic: DiagnosticIR, cwd: string | undefined): void {

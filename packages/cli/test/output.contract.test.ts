@@ -163,17 +163,19 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("writes workflow summaries with explicit static node wording", () => {
+  it("writes concise successful workflow check stages", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const exitCode = writeResult(checkResult(), "text", { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
-    expect(stdout.text).toContain("Workflow check passed.");
-    expect(stdout.text).toContain("Description: Validate CLI workflow summaries.");
-    expect(stdout.text).toContain("Static nodes: 1");
-    expect(stdout.text).toContain("Output: object (ready)");
-    expect(stdout.text).not.toContain("Nodes: 1");
+    expect(stdout.text).toBe([
+      "✓ typescript          0 errors",
+      "✓ authoring rules     0 errors",
+      "✓ WorkflowIR          0 errors · 1 static node",
+      "",
+    ].join("\n"));
+    expect(stdout.text).not.toContain("Workflow: cli-valid");
     expect(stderr.text).toBe("");
   });
 
@@ -225,9 +227,8 @@ describe("CLI result output contracts", () => {
     const checkStderr = new CaptureStream();
 
     expect(writeResult(checkResult(), "text", { stdout: checkStdout, stderr: checkStderr }, 0)).toBe(0);
-    expect(checkStdout.text).toContain("Workflow check passed.");
-    expect(checkStdout.text).toContain("Workflow: cli-valid");
-    expect(checkStdout.text).not.toContain("Preflight:");
+    expect(checkStdout.text).toContain("✓ WorkflowIR          0 errors · 1 static node");
+    expect(checkStdout.text).not.toContain("Workflow check passed.");
     expect(checkStderr.text).toBe("");
 
     const failedStdout = new CaptureStream();
@@ -310,7 +311,7 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toContain("workflow.ts:1:2 [error AL001] Already relative.");
   });
 
-  it("prints failed-check counts once and does not duplicate workflow summary counts", () => {
+  it("counts mixed TypeScript and authoring errors without reordering diagnostics", () => {
     const failedStdout = new CaptureStream();
     const failedStderr = new CaptureStream();
     writeResult({
@@ -318,20 +319,119 @@ describe("CLI result output contracts", () => {
       phase: "check",
       message: "Workflow check failed.",
       diagnostics: [
-        { code: "AL001", severity: "error", message: "error" },
-        { code: "W", severity: "warning", message: "warning" },
-        { code: "I", severity: "info", message: "info" },
+        { code: "TS2322", severity: "error", message: "first" },
+        { code: "AL001", severity: "error", message: "second" },
+        { code: "TB003", severity: "error", message: "third" },
+        { code: "TS2339", severity: "error", message: "fourth" },
       ],
     }, "text", { stdout: failedStdout, stderr: failedStderr }, 1);
-    expect(failedStderr.text.match(/Diagnostics:/g)).toHaveLength(1);
-    expect(failedStderr.text).toContain("Diagnostics: 1 errors, 1 warnings, 1 infos.");
+    expect(failedStdout.text).toBe("");
+    expect(failedStderr.text).toBe([
+      "✗ typescript          2 errors",
+      "✗ authoring rules     2 errors",
+      "– WorkflowIR          skipped",
+      "[error TS2322] first",
+      "[error AL001] second",
+      "[error TB003] third",
+      "[error TS2339] fourth",
+      "",
+    ].join("\n"));
+    expect(failedStderr.text).not.toContain("Diagnostics:");
+  });
 
+  it("marks a clean check category passed when the other category fails", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    writeResult({
+      ok: false,
+      phase: "check",
+      diagnostics: [{ code: "AL002", severity: "error", message: "Return .output." }],
+    }, "text", { stdout, stderr }, 1);
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toBe([
+      "✓ typescript          0 errors",
+      "✗ authoring rules     1 error",
+      "– WorkflowIR          skipped",
+      "[error AL002] Return .output.",
+      "",
+    ].join("\n"));
+  });
+
+  it("separates check infrastructure failures from skipped analysis", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    writeResult({
+      ok: false,
+      phase: "check",
+      diagnostics: [{ code: "WF002", severity: "error", message: "TypeScript service unavailable." }],
+    }, "text", { stdout, stderr }, 1);
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toBe([
+      "✗ check infrastructure 1 error",
+      "– typescript          skipped",
+      "– authoring rules     skipped",
+      "– WorkflowIR          skipped",
+      "[error WF002] TypeScript service unavailable.",
+      "",
+    ].join("\n"));
+  });
+
+  it("renders compile, IR validation, and package-lock preparation failures", () => {
+    const cases: Array<{ result: CliResult; expected: string[] }> = [{
+      result: { ok: false, phase: "compile", message: "Worker exited before returning a result." },
+      expected: [
+        "✓ typescript          0 errors",
+        "✓ authoring rules     0 errors",
+        "✗ WorkflowIR          compile failed",
+        "  Worker exited before returning a result.",
+      ],
+    }, {
+      result: {
+        ok: false,
+        phase: "validate",
+        message: "Workflow validation failed.",
+        workflow: checkResult().workflow!,
+        diagnostics: [
+          { code: "IR003", severity: "error", message: "Invisible reference." },
+          { code: "SC002", severity: "error", message: "Invalid schema." },
+        ],
+      },
+      expected: [
+        "✓ typescript          0 errors",
+        "✓ authoring rules     0 errors",
+        "✗ WorkflowIR          2 errors",
+        "[error IR003] Invisible reference.",
+        "[error SC002] Invalid schema.",
+      ],
+    }, {
+      result: { ok: false, phase: "lock", message: "Cannot read pnpm-lock.yaml." },
+      expected: [
+        "✓ typescript          0 errors",
+        "✓ authoring rules     0 errors",
+        "✓ WorkflowIR          0 errors",
+        "✗ package lock        read failed",
+        "  Cannot read pnpm-lock.yaml.",
+      ],
+    }];
+    for (const { result, expected } of cases) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      writeResult(result, "text", { stdout, stderr }, 1);
+      expect(stdout.text).toBe("");
+      expect(stderr.text).toBe(`${expected.join("\n")}\n`);
+    }
+  });
+
+  it("keeps successful warnings visible without restoring generic metadata", () => {
     const summaryStdout = new CaptureStream();
     const summaryStderr = new CaptureStream();
     const summary = checkResult();
     summary.diagnostics = [{ code: "I", severity: "info", message: "info" }];
     writeResult(summary, "text", { stdout: summaryStdout, stderr: summaryStderr }, 0);
-    expect(summaryStdout.text.match(/Diagnostics:/g)).toHaveLength(1);
+    expect(summaryStdout.text).toContain("✓ WorkflowIR          0 errors · 1 static node");
+    expect(summaryStdout.text).toContain("[info I] info");
+    expect(summaryStdout.text).not.toContain("Diagnostics:");
+    expect(summaryStderr.text).toBe("");
   });
 });
 

@@ -27,8 +27,9 @@
     --st-await: var(--orange);
     --st-idle: #77736b;
 
-  --sans: "Nunito Sans", "Avenir Next", ui-rounded, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --sans: "Outfit", "Avenir Next", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    --tracking-display: -0.012em;
 
     --col: 1180px;
     --wide: 1440px;
@@ -44,9 +45,9 @@
     /* One physical light source, three material levels. */
     --elevation-micro-x: 3px;
     --elevation-micro-y: 5px;
-    --elevation-medium-x: 6px;
+    --elevation-medium-x: 7px;
     --elevation-medium-y: 9px;
-    --elevation-plate-x: clamp(7px, 0.65vw, 11px);
+    --elevation-plate-x: clamp(8px, 0.65vw, 11px);
     --elevation-plate-y: clamp(11px, 1vw, 17px);
     --shadow-micro: var(--elevation-micro-x) var(--elevation-micro-y) 0 var(--shadow);
     --shadow-micro-raised: 4px 6px 0 var(--shadow);
@@ -253,6 +254,7 @@ a:hover {
   }
   
   .hero-art-shell {
+    position: relative;
     width: min(1480px, calc(100% - 28px));
     margin: 0 auto;
     padding: var(--hero-top-space) 0 clamp(24px, 5svh, 64px);
@@ -267,6 +269,76 @@ a:hover {
       display: block;
       width: 100%;
       height: auto;
+      transform-origin: center;
+    }
+
+    .hero-art.is-entering {
+      animation: hero-art-land 600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+
+    @keyframes hero-art-land {
+      from {
+        transform: translateY(-22px) rotate(-0.35deg) scale(0.98);
+      }
+    }
+
+    .hero-tagline {
+      position: absolute;
+      inset-inline: 4%;
+      bottom: 15%;
+      color: var(--ink);
+      font-size: clamp(20px, 5.5vw, 88px);
+      font-weight: 900;
+      letter-spacing: var(--tracking-display);
+      line-height: 1;
+      text-align: center;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .hero-tagline.is-waiting {
+      opacity: 0;
+    }
+
+    .hero-tagline-track {
+      display: inline-block;
+      text-align: left;
+    }
+
+    .hero-tagline-from {
+      color: var(--blue);
+    }
+
+    .hero-tagline-verb {
+      color: var(--ink);
+    }
+
+    .hero-tagline-to {
+      color: #e86200;
+    }
+
+    .hero-tagline-caret {
+      display: inline-block;
+      width: 0.5em;
+      height: max(2px, 0.08em);
+      margin-left: 0.1em;
+      background: var(--red);
+      transform: translateY(0.08em);
+      animation: hero-caret 900ms ease-in-out infinite;
+    }
+
+    .hero-tagline.is-resetting .hero-tagline-caret {
+      opacity: 0;
+      animation: none;
+    }
+
+    .hero-tagline-measure {
+      position: absolute;
+      visibility: hidden;
+    }
+
+    @keyframes hero-caret {
+      50% { opacity: 0.18; }
     }
 
         .workbench-page {
@@ -333,7 +405,7 @@ a:hover {
   margin-top: 20px;
   font-size: clamp(44px, 5vw, 74px);
   font-weight: 950;
-  letter-spacing: -0.038em;
+  letter-spacing: var(--tracking-display);
   line-height: 0.98;
   text-wrap: balance;
 }
@@ -375,7 +447,7 @@ a:hover {
   padding: clamp(28px, 4vw, 46px);
     border: 1px solid var(--paper-edge);
     background: var(--paper-raised);
-    box-shadow: var(--shadow-micro);
+    box-shadow: var(--shadow-medium);
 }
 
 .task-head {
@@ -406,7 +478,7 @@ a:hover {
   color: var(--ink);
   font-size: clamp(20px, 2vw, 25px);
     font-weight: 780;
-    letter-spacing: -0.015em;
+    letter-spacing: 0;
     line-height: 1.4;
     text-wrap: pretty;
 }
@@ -582,15 +654,6 @@ a:hover {
   transition: opacity 160ms ease, transform 200ms var(--ease-out);
 }
 
-.stage-shell::after {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  background: var(--underlay-durable);
-  pointer-events: none;
-  transform: translate(var(--underlay-x), var(--underlay-y));
-}
 
 .stage {
   position: relative;
@@ -720,11 +783,13 @@ a:hover {
 }
 
 .code {
+  --code-gutter-x: 22px;
+    --code-highlight: rgb(178 126 82 / 22%);
   flex: none;
   width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 20px 22px;
+  padding: 20px var(--code-gutter-x);
   overflow-x: hidden;
   overflow-y: auto;
   background: var(--paper-raised);
@@ -754,7 +819,7 @@ a:hover {
   display: block;
   min-height: 1.58em;
   white-space: pre;
-  transition: opacity 220ms ease, background 220ms ease;
+  transition: opacity 220ms ease, background 220ms ease, box-shadow 220ms ease;
 }
 
 .code .cl.is-pending {
@@ -770,7 +835,10 @@ a:hover {
 }
 
 .code .cl.is-lit {
-  background: rgb(250 116 8 / 14%);
+  background: var(--code-highlight);
+    box-shadow:
+      calc(-1 * var(--code-gutter-x)) 0 0 var(--code-highlight),
+      var(--code-gutter-x) 0 0 var(--code-highlight);
     color: var(--ink);
 }
 
@@ -1570,7 +1638,7 @@ a:hover {
   color: var(--blue);
     font-size: clamp(66px, 8vw, 112px);
     font-weight: 950;
-    letter-spacing: -0.04em;
+    letter-spacing: 0;
     line-height: 0.8;
 }
 
@@ -1579,7 +1647,7 @@ a:hover {
   max-width: 14ch;
     font-size: clamp(46px, 6vw, 82px);
     font-weight: 950;
-    letter-spacing: -0.04em;
+    letter-spacing: var(--tracking-display);
     line-height: 0.94;
     text-wrap: balance;
 }
@@ -1625,11 +1693,12 @@ a:hover {
 .duo {
   margin-top: var(--space-block);
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  grid-template-columns: minmax(0, 44fr) minmax(0, 56fr);
     gap: 22px;
 }
 
 .mini-term {
+  min-width: 0;
   border: 1px solid rgb(251 246 235 / 18%);
     background: var(--ink);
     color: var(--paper);
@@ -1641,22 +1710,24 @@ a:hover {
     padding: 11px 15px;
     color: var(--orange);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 0.8125rem;
   font-weight: 600;
+  line-height: 1.4;
 }
 
 .mini-term pre {
   overflow-x: auto;
     padding: 17px 18px 20px;
   font-family: var(--mono);
-  font-size: 11px;
-    line-height: 1.76;
+  font-size: clamp(0.8125rem, 0.8vw, 0.875rem);
+    line-height: 1.65;
   }
   
   .mini-term code {
     background: none;
     color: inherit;
     padding: 0;
+    font: inherit;
   }
   
   .mini-term .t-cmd {
@@ -1934,7 +2005,7 @@ a:hover {
   background: transparent;
     color: var(--paper);
   padding: 0;
-    font-size: 11px;
+    font-size: 13px;
       font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -1992,8 +2063,7 @@ a:hover {
     transition: outline-color 220ms ease, background 220ms ease;
   }
   
-  .ending-plate:nth-child(2) {
-    border-color: var(--blue);
+    .ending-plate:nth-child(2) {
     background: var(--paper-raised);
     color: var(--ink);
 }
@@ -2025,7 +2095,7 @@ a:hover {
   margin: 18px 0 10px;
     font-size: 22px;
     font-weight: 900;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.008em;
     line-height: 1.1;
 }
 
@@ -2051,7 +2121,7 @@ a:hover {
 .coda-line {
   font-size: clamp(44px, 6vw, 84px);
     font-weight: 950;
-    letter-spacing: -0.035em;
+    letter-spacing: var(--tracking-display);
     line-height: 1.02;
     text-wrap: balance;
 }
@@ -2229,6 +2299,9 @@ a:hover {
     max-width: 880px;
   }
 
+        .duo {
+          grid-template-columns: minmax(0, 1fr);
+        }
   .movement-body {
     padding-left: 132px;
   }
@@ -2421,7 +2494,7 @@ a:hover {
     }
     
     .duo {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     
     .roster {
@@ -2530,6 +2603,10 @@ a:hover {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .hero-tagline-caret {
+    display: none;
   }
 
     .workbench-page>.hero-intro,

@@ -15,6 +15,106 @@ const RUN_DIR = `.acpus/.local/runs/${RUN_ID}`;
 const RETRY_KEY = "verify_claims#1/verify~8d2b4f6a0c18";
 
 const $ = (sel) => document.querySelector(sel);
+const AGENTS = Object.freeze(
+  [...document.querySelectorAll(".roster li:not(.roster-more)")].map((item) => item.textContent.trim())
+);
+
+/* ------------------------------------------------------------
+   hero tagline — type, hold, erase, repeat
+   ------------------------------------------------------------ */
+
+const heroTagline = $(".hero-tagline");
+const heroArt = $(".hero-art");
+const heroTaglineTrack = $("#heroTaglineTrack");
+const heroTaglineMeasure = $("#heroTaglineMeasure");
+const heroTaglineParts = [
+  $("#heroTaglineFrom"),
+  $("#heroTaglineVerb"),
+  $("#heroTaglineTo"),
+];
+const HERO_PHRASE = ["agents", " orchestrate ", "agents"];
+const HERO_PHRASE_TEXT = HERO_PHRASE.join("");
+const HERO_TYPE_MS = 68;
+const HERO_ERASE_MS = 12;
+const HERO_HOLD_MS = 3500;
+const HERO_INTRO_MS = 1180;
+const HERO_CARET_EM = 0.6;
+let heroTaglineVisible = true;
+const heroVisibilityWaiters = new Set();
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function releaseHeroVisibilityWaiters() {
+  if (document.hidden || !heroTaglineVisible) return;
+  heroVisibilityWaiters.forEach((resolve) => resolve());
+  heroVisibilityWaiters.clear();
+}
+
+function waitForVisibleHero() {
+  if (!document.hidden && heroTaglineVisible) return Promise.resolve();
+  return new Promise((resolve) => heroVisibilityWaiters.add(resolve));
+}
+
+document.addEventListener("visibilitychange", releaseHeroVisibilityWaiters);
+new IntersectionObserver(([entry]) => {
+  heroTaglineVisible = entry.isIntersecting;
+  releaseHeroVisibilityWaiters();
+}).observe(heroTagline);
+
+function renderHeroPhrase(length) {
+  let remaining = length;
+  HERO_PHRASE.forEach((part, index) => {
+    heroTaglineParts[index].textContent = part.slice(0, Math.max(0, remaining));
+    remaining -= part.length;
+  });
+}
+
+function sizeHeroPhrase() {
+  heroTaglineMeasure.textContent = HERO_PHRASE_TEXT;
+  const baseFontSize = parseFloat(getComputedStyle(heroTagline).fontSize);
+  const measuredWidth = heroTaglineMeasure.getBoundingClientRect().width;
+  const scale = Math.min(1, (heroTagline.clientWidth - baseFontSize * HERO_CARET_EM) / measuredWidth);
+  const fontSize = baseFontSize * scale;
+  heroTaglineTrack.style.fontSize = `${fontSize}px`;
+  heroTaglineTrack.style.width = `${Math.ceil(measuredWidth * scale + fontSize * HERO_CARET_EM)}px`;
+}
+
+let heroResizeFrame;
+window.addEventListener("resize", () => {
+  cancelAnimationFrame(heroResizeFrame);
+  heroResizeFrame = requestAnimationFrame(sizeHeroPhrase);
+});
+
+async function animateHeroTagline() {
+  await heroArt.decode?.().catch(() => {});
+  heroArt.classList.add("is-entering");
+  await Promise.all([document.fonts?.ready, wait(HERO_INTRO_MS)]);
+  sizeHeroPhrase();
+  while (true) {
+    heroTagline.classList.add("is-resetting");
+    renderHeroPhrase(0);
+    heroTagline.classList.remove("is-waiting");
+    await wait(160);
+    heroTagline.classList.remove("is-resetting");
+
+    const length = HERO_PHRASE_TEXT.length;
+    for (let index = 1; index <= length; index += 1) {
+      await waitForVisibleHero();
+      renderHeroPhrase(index);
+      await wait(HERO_TYPE_MS);
+    }
+
+    await wait(HERO_HOLD_MS);
+    for (let index = length - 1; index >= 0; index -= 1) {
+      await waitForVisibleHero();
+      renderHeroPhrase(index);
+      await wait(HERO_ERASE_MS);
+    }
+
+    heroTagline.classList.add("is-resetting");
+    await wait(140);
+  }
+}
 
 /* ------------------------------------------------------------
    sim clock — pausable, holdable (durable gate), event queue
@@ -115,41 +215,63 @@ const CODE_LINES = [
   { html: `` },
   { html: `<span class="tok-k">export default</span> <span class="tok-t">defineWorkflow</span>({` },
   { html: `  name: <span class="tok-s">"fact-check"</span>,` },
+  { html: `  inputSchema: z.object({ article: z.string() }),` },
   { html: `  agents: {` },
   { html: `    extractor: { use: <span class="tok-s">"claude"</span> },` },
-  { html: `    verifier:  { use: <span class="tok-s">"pi"</span> },` },
-  { html: `    redteam:   { use: <span class="tok-s">"codex"</span> },` },
+  { html: `    verifier: { use: <span class="tok-s">"pi"</span> },` },
+  { html: `    redteam: { use: <span class="tok-s">"codex"</span> },` },
   { html: `  },` },
-  { html: `}).build(({ input, agents, step }) <span class="tok-k">=&gt;</span> {` },
-  { html: `` },
+  { html: `}).build(({ input, agents, meta, step }) <span class="tok-k">=&gt;</span> {` },
   { html: `  <span class="tok-k">const</span> claims = <span class="tok-t">step</span>(<span class="tok-s">"extract_claims"</span>).<span class="tok-t">agent</span>({`, sig: "extract" },
-  { html: `    agent: agents.extractor, outputSchema: Claims,` },
-  { html: `    prompt: <span class="tok-t">md</span>\`Extract every technical claim in \${input.article}\`,` },
+  { html: `    agent: agents.extractor,` },
+  { html: `    cwd: meta.workspaceDir,` },
+  { html: `    outputSchema: z.array(z.string()).length(<span class="tok-n">4</span>),` },
+  { html: `    prompt: <span class="tok-t">md</span>\`` },
+  { html: `      Extract exactly four important technical claims from this article:` },
+  { html: `      \${input.article}` },
+  { html: `      Return only the four concise claims requested by the output schema.` },
+  { html: `    \`,` },
   { html: `  });` },
   { html: `` },
   { html: `  <span class="tok-k">const</span> verdicts = <span class="tok-t">step</span>(<span class="tok-s">"verify_claims"</span>).<span class="tok-t">fanout</span>({`, sig: "verify" },
-  { html: `    over: claims.output.claims, maxConcurrency: <span class="tok-n">3</span>,` },
+  { html: `    over: claims.output,` },
+  { html: `    maxConcurrency: <span class="tok-n">3</span>,` },
   { html: `    do({ item }) {` },
   { html: `      <span class="tok-k">return</span> <span class="tok-t">step</span>(<span class="tok-s">"verify"</span>).<span class="tok-t">agent</span>({` },
-  { html: `        agent: agents.verifier, outputSchema: Verdict,` },
-  { html: `        prompt: <span class="tok-t">md</span>\`Check \${item.text} against primary sources\`,` },
+  { html: `        agent: agents.verifier,` },
+  { html: `        cwd: meta.workspaceDir,` },
+  { html: `        prompt: <span class="tok-t">md</span>\`Check \${item} against project code and primary sources. Return a concise cited verdict.\`,` },
   { html: `      }).output;` },
   { html: `    },` },
   { html: `  });` },
   { html: `` },
   { html: `  <span class="tok-k">const</span> attack = <span class="tok-t">step</span>(<span class="tok-s">"red_team"</span>).<span class="tok-t">agent</span>({`, sig: "redteam" },
   { html: `    agent: agents.redteam,` },
-  { html: `    prompt: <span class="tok-t">md</span>\`Attack under-evidenced verdicts: \${verdicts.output}\`,` },
+  { html: `    cwd: meta.workspaceDir,` },
+  { html: `    prompt: <span class="tok-t">md</span>\`Attack weak findings in \${verdicts.output}. Return only substantial objections and concessions.\`,` },
   { html: `  });` },
   { html: `` },
   { html: `  <span class="tok-k">const</span> gate = <span class="tok-t">step</span>(<span class="tok-s">"publish_gate"</span>).<span class="tok-t">signal</span>({`, sig: "gate" },
-  { html: `    outputSchema: z.object({ approved: z.boolean() }),` },
-  { html: `    prompt: <span class="tok-t">md</span>\`Approve publishing the cited report?\`, timeout: <span class="tok-s">"24h"</span>,` },
+  { html: `    outputSchema: z.object({ approved: z.literal(<span class="tok-k">true</span>) }),` },
+  { html: `    prompt: <span class="tok-t">md</span>\`Approve publishing the cited report from \${verdicts.output} after \${attack.output}?\`,` },
   { html: `  });` },
   { html: `` },
   { html: `  <span class="tok-k">const</span> report = <span class="tok-t">step</span>(<span class="tok-s">"write_report"</span>).<span class="tok-t">task</span>({`, sig: "report" },
-  { html: `    input: { verdicts: verdicts.output, attack: attack.output },` },
-  { html: `    exec: <span class="tok-k">async</span> ({ input, artifact }) <span class="tok-k">=&gt;</span> writeReport(input, artifact),` },
+  { html: `    input: {` },
+  { html: `      verdicts: verdicts.output,` },
+  { html: `      attack: attack.output,` },
+  { html: `      approved: gate.output.approved,` },
+  { html: `    },` },
+  { html: `    exec: <span class="tok-k">async</span> ({ input, artifact }) <span class="tok-k">=&gt;</span> {` },
+  { html: `      <span class="tok-k">const</span> markdown = [` },
+  { html: `        <span class="tok-s">"# Fact-check report"</span>,` },
+  { html: `        ...input.verdicts.map((verdict, index) <span class="tok-k">=&gt;</span> \`\\n## Claim \${index + 1}\\n\${verdict}\`),` },
+  { html: `        \`\\n## Red-team review\\n\${input.attack}\`,` },
+  { html: `      ].join(<span class="tok-s">"\\n"</span>);` },
+  { html: `      <span class="tok-k">return</span> {` },
+  { html: `        report: <span class="tok-k">await</span> artifact.write(<span class="tok-s">"fact-check-report.md"</span>, markdown, { mediaType: <span class="tok-s">"text/markdown"</span> }),` },
+  { html: `      };` },
+  { html: `    },` },
   { html: `  });` },
   { html: `` },
   { html: `  <span class="tok-k">return</span> report.output;` },
@@ -274,7 +396,7 @@ function renderBaseGraph() {
   tip.innerHTML = `
     <div class="gate-tip-panel">
       <span class="gt-label"><strong>publish_gate</strong> awaits a signal — the run holds at a durable gate.</span>
-      <button class="btn btn-signal" id="approveBtn" type="button">Approve &amp; publish</button>
+      <button class="btn btn-signal" id="approveBtn" type="button">Approve</button>
     </div>`;
   graphEl.appendChild(tip);
   tip.querySelector("#approveBtn").addEventListener("click", fireSignal);
@@ -462,10 +584,9 @@ function runCheck(done) {
   setAuthoring("acpus workflow check…");
   termCmd("acpus workflow check workflow.ts", () => {
     const rows = [
-      [`<span class="t-ok">✓</span> typescript            <span class="t-dim">0 problems</span>`, 260],
-      [`<span class="t-ok">✓</span> authoring rules       <span class="t-dim">0 problems</span>`, 260],
-      [`<span class="t-ok">✓</span> value flow            <span class="t-dim">0 problems</span>`, 260],
-      [`<span class="t-ok">✓</span> WorkflowIR frozen     <span class="t-dim">5 steps · 7 edges</span>`, 0],
+      [`<span class="t-ok">✓</span> typescript          <span class="t-dim">0 errors</span>`, 260],
+      [`<span class="t-ok">✓</span> authoring rules     <span class="t-dim">0 errors</span>`, 260],
+      [`<span class="t-ok">✓</span> WorkflowIR          <span class="t-dim">0 errors · 6 static nodes</span>`, 0],
     ];
     let i = 0;
     function next() {
@@ -485,11 +606,11 @@ function runCheck(done) {
 
 /* step blocks (CODE_LINES index ranges) — the unit the morph highlights */
 const BLOCKS = {
-  extract: [12, 15],
-  verify: [17, 25],
-  redteam: [27, 30],
-  gate: [32, 35],
-  report: [37, 40],
+  extract: [12, 21],
+  verify: [23, 33],
+  redteam: [35, 39],
+  gate: [41, 44],
+  report: [46, 62],
 };
 
 function lightBlock(key) {
@@ -732,7 +853,7 @@ function scheduleRun() {
   at(0, () => {
     setStatus("running — extract_claims", "is-running");
     termCmd(`acpus workflow run workflow.ts`, () => {
-      termLine(`run <span class="t-gilt">${RUN_ID}</span> admitted <span class="t-dim">· 5 steps · 7 edges · workspace-local state</span>`);
+      termLine(`run <span class="t-gilt">${RUN_ID}</span> admitted <span class="t-dim">· 5 root steps · 6 static nodes · workspace-local state</span>`);
     });
   });
 
@@ -740,7 +861,6 @@ function scheduleRun() {
   at(300, () => setNodeState("extract", "running", "running"));
   at(4300, () => {
     setNodeState("extract", "complete", "✓ 4 claims");
-    addArtifact("claims.json");
     termLine(`<span class="t-ok">✓</span> extract_claims <span class="t-dim">completed · 4 claims · 14.2s</span>`);
     sendToken(edgeEls.e1, 700, () => {
       setStatus("running — verify_claims fanout × 4", "is-running");
@@ -790,7 +910,6 @@ function scheduleVerify() {
     sendToken(edgeEls.fi1, 620, () => {});
   });
   later(12400, () => {
-    addArtifact("verdicts.jsonl");
     setNodeState("verify", "complete", "✓ 4/4");
     termLine(`<span class="t-ok">✓</span> verify_claims <span class="t-dim">completed · 4/4 · one targeted retry</span>`);
   });
@@ -802,7 +921,6 @@ function scheduleVerify() {
   });
   later(17000, () => {
     setNodeState("redteam", "complete", "✓ 2 objections");
-    addArtifact("rebuttal.md");
     termLine(`<span class="t-ok">✓</span> red_team <span class="t-dim">completed · 2 objections upheld · 9.8s</span>`);
     sendToken(edgeEls.e3, 700, () => {
       setNodeState("gate", "awaiting", "awaiting signal");
@@ -819,7 +937,7 @@ function scheduleVerify() {
       }, REDUCED ? 0 : 300);
       clock.held = true;
       setStatus("awaiting signal — publish_gate · the run holds", "is-awaiting");
-      termLine(`<span class="t-await">…</span> publish_gate <span class="t-dim">awaiting signal · timeout 24h · durable gate written</span>`);
+      termLine(`<span class="t-await">…</span> publish_gate <span class="t-dim">awaiting signal · durable gate written</span>`);
     });
   });
 }
@@ -878,7 +996,7 @@ function fireSignal() {
     termLine(`<span class="t-ok">✓</span> write_report <span class="t-dim">completed · artifact fact-check-report.md · 2.1s</span>`);
   });
   later(4400, () => {
-    setStatus("completed — 8/8 nodes · 6 agents · 1 signal · 1 retry · 4 artifacts", "is-done");
+    setStatus("completed — 8 node instances · 6 agent executions · 1 signal · 1 retry · 1 artifact", "is-done");
     termLine(`<span class="t-ok">✓</span> run <span class="t-gilt">${RUN_ID}</span> <span class="t-ok">completed</span> <span class="t-dim">· durable state in ${RUN_DIR}</span>`);
     phase = "done";
     pauseBtn.hidden = true;
@@ -1040,7 +1158,6 @@ taskBtn.addEventListener("click", showTask);
    recast toy — fork with a new agent mapping
    ------------------------------------------------------------ */
 
-const TOY_AGENTS = ["pi", "claude", "codex", "trae", "opencode", "gemini", "cursor", "copilot", "qwen"];
 const TOY_BASE = [
   { id: "research", agent: "pi" },
   { id: "implement", agent: "claude" },
@@ -1081,7 +1198,7 @@ function renderToy() {
 
 function openToyPicker(badge, idx) {
   toyPicker.innerHTML = "";
-  TOY_AGENTS.forEach((a) => {
+  AGENTS.forEach((a) => {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = a;
@@ -1162,3 +1279,5 @@ document.querySelectorAll(".reveal").forEach((el) => revealObserver.observe(el))
 
 renderBaseGraph();
 renderToy();
+if (REDUCED) heroTagline.classList.remove("is-waiting");
+else void animateHeroTagline();

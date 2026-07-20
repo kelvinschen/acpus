@@ -11,9 +11,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Nunito+Sans:opsz,wght@6..12,400..900&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800;900&display=swap"
       rel="stylesheet" />
-    <link rel="stylesheet" href="./page.css?v=mobile-control-layout-v2-20260720" />
+    <link rel="stylesheet" href="./page.css?v=paper-assembly-intro-v3-20260721" />
   </head>
   <body>
     <a class="skip-link" href="#workbench">Skip to the task</a>
@@ -38,8 +38,14 @@
       <!-- ======================= hero: the task ======================= -->
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-art-shell">
-          <img class="hero-art" src="./hero-papercut.svg?v=quadrilateral-bursts-20260720"
-            alt="Acpus paper-cut wordmark and agents orchestrate agents slogan" width="1672" height="720" />
+          <img class="hero-art" src="./hero-papercut.svg?v=paper-assembly-intro-v5-20260721"
+            alt="Acpus paper-cut wordmark" width="1672" height="720" />
+          <p class="hero-tagline is-waiting" aria-label="Agents orchestrate agents">
+            <span class="hero-tagline-track" id="heroTaglineTrack" aria-hidden="true">
+              <span class="hero-tagline-from" id="heroTaglineFrom">agents</span><span class="hero-tagline-verb" id="heroTaglineVerb"> orchestrate </span><span class="hero-tagline-to" id="heroTaglineTo">agents</span><span class="hero-tagline-caret"></span>
+            </span>
+            <span class="hero-tagline-measure" id="heroTaglineMeasure" aria-hidden="true"></span>
+          </p>
         </div>
 
         <div class="workbench-page" id="workbench">
@@ -89,7 +95,7 @@
             <button class="filetab" id="fileTab" type="button" aria-expanded="false" aria-controls="codePanel" hidden>
               <span class="filetab-arrow" aria-hidden="true">▸</span>
               <span class="filetab-name">workflow.ts</span>
-              <span class="filetab-meta">5 steps · 8 nodes · 6 agents · 1 signal</span>
+              <span class="filetab-meta">5 root steps · 6 static nodes · 3 agent roles · 1 signal</span>
             </button>
             <span class="stage-authoring" id="authoringStatus" hidden></span>
             <span class="stage-controls">
@@ -131,11 +137,11 @@
           <p class="complete-kicker">run 20260717143052A91F3E7C42D08B6E5F · completed</p>
           <dl class="complete-stats">
             <div>
-              <dt>nodes</dt>
+              <dt>node instances</dt>
               <dd>8</dd>
             </div>
             <div>
-              <dt>agents</dt>
+              <dt>agent executions</dt>
               <dd>6</dd>
             </div>
             <div>
@@ -143,7 +149,7 @@
               <dd>1</dd>
             </div>
             <div><dt>retries</dt><dd>1</dd></div>
-            <div><dt>artifacts</dt><dd>4</dd></div>
+            <div><dt>artifacts</dt><dd>1</dd></div>
           </dl>
           <p class="complete-question">The run is durable fact. What happens to <code>workflow.ts</code>?</p>
           <div class="complete-endings" role="group" aria-label="Choose an ending">
@@ -176,17 +182,24 @@
             <figure class="mini-term reveal">
               <figcaption>check — before admission</figcaption>
               <pre><code><span class="t-cmd">$ acpus workflow check workflow.ts</span>
-<span class="t-ok">✓</span> typescript            <span class="t-dim">0 problems</span>
-<span class="t-ok">✓</span> authoring rules       <span class="t-dim">0 problems</span>
-<span class="t-ok">✓</span> value flow            <span class="t-dim">0 problems</span>
-<span class="t-ok">✓</span> WorkflowIR frozen     <span class="t-dim">5 steps · 7 edges</span></code></pre>
+<span class="t-ok">✓</span> typescript          <span class="t-dim">0 errors</span>
+<span class="t-ok">✓</span> authoring rules     <span class="t-dim">0 errors</span>
+<span class="t-ok">✓</span> WorkflowIR          <span class="t-dim">0 errors · 6 static nodes</span></code></pre>
             </figure>
             <figure class="mini-term reveal">
               <figcaption>viz — the graph, pre-run</figcaption>
-              <pre><code><span class="t-cmd">$ acpus workflow viz workflow.ts --out graph.html</span>
-<span class="t-ok">✓</span> graph.html <span class="t-dim">— self-contained</span>
-  <span class="t-dim">the complete authored structure,</span>
-  <span class="t-dim">before a single node runs</span></code></pre>
+              <pre><code><span class="t-cmd">$ acpus workflow viz workflow.ts</span>
+<span class="t-ok">fact-check</span>
+<span class="t-dim">input { article: string }
+output …
+agents: extractor (claude) · verifier (pi) · redteam (codex)</span>
+
+┌─ <span class="t-ok">✦</span> extract_claims <span class="t-dim">· extractor</span>
+├─ <span class="t-ok">✣</span> verify_claims <span class="t-dim">· fanout</span>
+│  └─ <span class="t-ok">✦</span> verify <span class="t-dim">· verifier</span>
+├─ <span class="t-ok">✦</span> red_team <span class="t-dim">· redteam</span>
+├─ <span class="t-ok">◌</span> publish_gate <span class="t-dim">· signal</span>
+└─ <span class="t-ok">$</span> write_report <span class="t-dim">· task</span></code></pre>
             </figure>
           </div>
         </div>
@@ -321,6 +334,6 @@
       </section>
       </main>
 
-    <script src="./page.js?v=accurate-run-counts-20260720" defer></script>
+    <script src="./page.js?v=fixed-hero-tagline-loop-20260721" defer></script>
   </body>
 </html>

@@ -2,7 +2,7 @@ import { cp, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getRunInspection } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
-import { runSourceCli } from "./support/cli-runner.js";
+import { repoRoot, runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { skillWorkflowPath } from "./support/skill-workflow-examples.js";
 import { withTestWorkspace } from "./support/workspace.js";
@@ -10,6 +10,25 @@ import { withTestWorkspace } from "./support/workspace.js";
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("acpus CLI subprocess smoke", () => {
+  it("checks the landing-page workflow with the documented text output", async () => {
+    const result = await runSourceCli(repoRoot, [
+      "workflow",
+      "check",
+      "page/workflow.ts",
+      "--input",
+      '{"article":"A short technical article for the checked landing-page demo."}',
+    ]);
+
+    expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe([
+      "✓ typescript          0 errors",
+      "✓ authoring rules     0 errors",
+      "✓ WorkflowIR          0 errors · 6 static nodes",
+      "",
+    ].join("\n"));
+  });
+
   it("checks a representative skill example workflow", async () => {
     await withTestWorkspace("e2e-check-skill-example", async workspace => {
       const sourceWorkflow = skillWorkflowPath("reusable-task-artifact");
