@@ -1,5 +1,8 @@
 # Replace `main` and Publish Acpus 0.6
 
+> This is the historical runbook for the one-time Acpus 0.6 main replacement.
+> Ongoing package and Pages releases use the [release guide](releasing.md).
+
 This runbook promotes the TypeScript-first Acpus line to stable by replacing
 the Git tree at `main`. It does **not** merge, rebase, or cherry-pick the old
 `main` history into `next/acpus_ts_workflow`.

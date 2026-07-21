@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - next/acpus_ts_workflow
+      - main
   workflow_dispatch:
 
 permissions:

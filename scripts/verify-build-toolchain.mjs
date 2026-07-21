@@ -54,6 +54,7 @@ equal(rootManifest.scripts?.["check:docs"], "node scripts/verify-doc-links.mjs",
 equal(rootManifest.scripts?.["check:release"], "node scripts/verify-release-state.mjs", "release check script");
 equal(rootManifest.scripts?.["check:security"], "pnpm audit --audit-level high", "security check script");
 equal(rootManifest.scripts?.["version-packages"], "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only", "version packages script");
+equal(rootManifest.scripts?.["ci:publish"], "pnpm check:release && changeset publish", "publish script");
 const cliManifest = manifests.get("cli");
 const skillVersion = (await text("packages/cli/skills/acpus/SKILL.md")).match(/^\s+acpus-version:\s*([^\s#]+)/mu)?.[1];
 equal(skillVersion, cliManifest.version, "bundled Acpus skill version");

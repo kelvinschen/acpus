@@ -1,13 +1,17 @@
-name: Publish stable to npm
-run-name: Publish stable from ${{ inputs.release_sha }}
+name: Release packages
+run-name: Release packages from ${{ github.sha }}
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .changeset/**
+      - packages/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
   workflow_dispatch:
-    inputs:
-      release_sha:
-        description: Full audited commit SHA currently at origin/main
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -18,22 +22,20 @@ concurrency:
 
 jobs:
   verify:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release_sha }}
+          ref: ${{ github.sha }}
 
-      - name: Verify audited main commit
-        env:
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        run: |
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          test "$(git rev-parse refs/remotes/origin/main)" = "$RELEASE_SHA"
+      - name: Verify main commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Verify stable release mode
+        run: test ! -f .changeset/pre.json
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -52,7 +54,6 @@ jobs:
       - run: pnpm check:dependencies
       - run: pnpm check:dependencies:strict
       - run: pnpm check:docs
-      - run: pnpm check:release
       - run: pnpm check:security
       - run: pnpm test
       - run: pnpm test:dist
@@ -68,21 +69,15 @@ jobs:
     permissions:
       contents: write
       id-token: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release_sha }}
+          ref: ${{ github.sha }}
 
-      - name: Reverify audited main commit
-        env:
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        run: |
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          test "$(git rev-parse refs/remotes/origin/main)" = "$RELEASE_SHA"
+      - name: Reverify main commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -96,15 +91,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
-      - run: pnpm check:release
       - run: pnpm check:security
       - run: pnpm test:dist
 
-      - name: Publish stable packages
+      - name: Create version PR or publish stable packages
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
+          version: pnpm version-packages
           publish: pnpm ci:publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
