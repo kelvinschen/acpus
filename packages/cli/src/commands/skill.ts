@@ -1,55 +1,41 @@
-import type { Writable } from "node:stream";
-import { constants } from "node:fs";
-import { access, cp, lstat, mkdtemp, readlink, rename, rm } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import type { Readable, Writable } from "node:stream";
+import { homedir } from "node:os";
+import { isCancel, multiselect, select } from "@clack/prompts";
 import { Command } from "commander";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { skillError, usageError } from "../errors.js";
 import { writeResult, type SkillCommandResult } from "../output.js";
-import {
-  customSkillTarget,
-  existingSkillRootTargets,
-  existingSkillTargets,
-  readAcpusSkillMetadata,
-  skillTargets,
-  type SkillScope,
-  type SkillTarget,
-  type StandardSkillTarget,
-} from "../skill-installation.js";
 import { getCliPackageInfo } from "../package-info.js";
-import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
+import {
+  bundledAcpusSkillPath,
+  installAcpusSkill,
+  skillAgents,
+  skillTargets,
+  uninstallAcpusSkill,
+  type SkillAgent,
+  type SkillInstallation,
+  type SkillRemoval,
+  type SkillScope,
+  type SkillSelection,
+  type SkillTarget,
+} from "../skill-installation.js";
+import { canPrompt } from "./prompt-io.js";
 
 const ACPUS_PACKAGE = "acpus";
 const ACPUS_SKILL = "acpus";
-const ACPUS_TARGET = "acpus";
 
 export type SkillCommandContext = {
   cwd: string;
+  stdin: Readable;
   stdout: Writable;
   stderr: Writable;
   setExitCode(code: number): void;
 };
 
-type SkillScopeOptions = JsonOutputOptions & {
+type SkillOptions = {
   project?: boolean;
   global?: boolean;
+  agent?: string;
   dryRun?: boolean;
-};
-
-type InstallOptions = SkillScopeOptions & { dir?: string };
-
-type InstallSelection = { scope: SkillScope } | { scope: "custom"; dir: string };
-
-type InstallationResult = NonNullable<SkillCommandResult["installations"]>[number];
-type RemovalResult = NonNullable<SkillCommandResult["removals"]>[number];
-
-export type SkillReplaceFailure = {
-  type: "skill-replace-failed";
-  stage: "stage" | "backup" | "publish" | "restore" | "cleanup";
-  message: string;
-  recoveryPath: string;
-  published: boolean;
 };
 
 export function createSkillCommand(ctx: SkillCommandContext): Command {
@@ -57,301 +43,134 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     .exitOverride()
     .description("Install or uninstall the bundled Acpus agent skill.");
 
-  command.addCommand(withJsonOutput(new Command("install")
-    .exitOverride()
+  command.addCommand(skillLeaf("install")
     .description("Install or update the bundled Acpus skill.")
-    .option("--project", "install into project skills directories")
-    .option("--global", "install into global skills directories")
-    .option("--dir <path>", "install into a custom skills directory")
-    .option("--dry-run", "show what would be installed without changing files")
-    ).action(async (options: InstallOptions) => {
-      const selection = parseInstallSelection(options);
-      const sourcePath = await bundledSkillPath();
-      const targets = selection.scope === "custom"
-        ? await resolveCustomInstallTarget(ctx.cwd, selection.dir, options.dryRun === true)
-        : await resolveExistingTargets(ctx.cwd, selection.scope, "install");
-      const installations = await installAcpusSkill(sourcePath, targets, options.dryRun === true);
-      const ok = installOk(installations);
+    .action(async (options: SkillOptions) => {
+      const selection = await resolveSelection(options, "install", ctx);
+      const source = await bundledAcpusSkillPath(getCliPackageInfo().version);
+      if (source.isErr()) throw skillError(source.error.message);
+      const targets = skillTargets(ctx.cwd, homedir(), selection);
+      const installations = await installAcpusSkill(source.value, targets, options.dryRun === true);
+      const ok = installations.every(result => result.status !== "failed");
       ctx.setExitCode(writeResult({
         ok,
         phase: "skill",
-        message: ok ? "Acpus skill installed." : "Acpus skill installation skipped unsafe entries.",
-        skill: skillResult("install", selection.scope, options.dryRun === true, targets, { installations }),
-      }, outputFormatFor(options), ctx, ok ? 0 : 1));
+        message: ok ? "Acpus skill installed." : "Acpus skill installation completed with failures.",
+        skill: skillResult("install", selection, options.dryRun === true, targets, { installations }),
+      }, "text", ctx, ok ? 0 : 1));
     }));
 
-  command.addCommand(withJsonOutput(new Command("uninstall")
-    .exitOverride()
+  command.addCommand(skillLeaf("uninstall")
     .description("Remove installed copies of the bundled Acpus skill.")
-    .option("--project", "uninstall from project skills directories")
-    .option("--global", "uninstall from global skills directories")
-    .option("--dry-run", "show what would be removed without changing files")
-    ).action(async (options: SkillScopeOptions) => {
-      const scope = parseScope(options);
-      const targets = await resolveExistingTargets(ctx.cwd, scope, "uninstall");
+    .action(async (options: SkillOptions) => {
+      const selection = await resolveSelection(options, "uninstall", ctx);
+      const targets = skillTargets(ctx.cwd, homedir(), selection);
       const removals = await uninstallAcpusSkill(targets, options.dryRun === true);
-      const ok = uninstallOk(removals);
+      const ok = removals.every(result => result.status !== "failed" && result.status !== "skipped");
       ctx.setExitCode(writeResult({
         ok,
         phase: "skill",
-        message: ok ? "Acpus skill uninstalled." : "Acpus skill uninstall skipped unsafe entries.",
-        skill: skillResult("uninstall", scope, options.dryRun === true, targets, { removals }),
-      }, outputFormatFor(options), ctx, ok ? 0 : 1));
+        message: ok ? "Acpus skill uninstalled." : "Acpus skill uninstall completed with failures.",
+        skill: skillResult("uninstall", selection, options.dryRun === true, targets, { removals }),
+      }, "text", ctx, ok ? 0 : 1));
     }));
 
   return command;
 }
 
-function parseInstallSelection(options: Pick<InstallOptions, "project" | "global" | "dir">): InstallSelection {
-  if (options.dir !== undefined) {
-    if (options.project === true || options.global === true) throw usageError("Pass only one of --project, --global, or --dir.");
-    if (options.dir.trim().length === 0) throw usageError("--dir must not be empty.");
-    return { scope: "custom", dir: options.dir };
+function skillLeaf(name: "install" | "uninstall"): Command {
+  return new Command(name)
+    .exitOverride()
+    .option("--project", `${name} in project skills directories`)
+    .option("--global", `${name} in global skills directories`)
+    .option("--agent <agents>", "target universal and/or claude agents (comma-separated)")
+    .option("--dry-run", `show what would be ${name === "install" ? "installed" : "removed"} without changing files`);
+}
+
+async function resolveSelection(
+  options: Pick<SkillOptions, "project" | "global" | "agent">,
+  action: "install" | "uninstall",
+  ctx: SkillCommandContext,
+): Promise<SkillSelection> {
+  let scope = explicitScope(options);
+  let agents = options.agent === undefined ? undefined : parseAgents(options.agent);
+  if (scope !== undefined && agents !== undefined) return { scope, agents };
+  if (!canPrompt(ctx)) {
+    throw usageError(`Non-interactive skill ${action} requires one of --project or --global and --agent <universal[,claude]>.`);
   }
-  return { scope: parseScope(options) };
-}
 
-function parseScope(options: Pick<SkillScopeOptions, "project" | "global">): SkillScope {
-  if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
-  return options.global === true ? "global" : "project";
-}
-
-async function bundledSkillPath(): Promise<string> {
-  const sourcePath = fileURLToPath(new URL("../../skills/acpus", import.meta.url));
-  try {
-    await access(join(sourcePath, "SKILL.md"), constants.R_OK);
-    const metadata = await readAcpusSkillMetadata(sourcePath);
-    if (metadata.name !== ACPUS_SKILL || metadata.version !== getCliPackageInfo().version) {
-      throw new Error("bundled skill identity mismatch");
-    }
-    return sourcePath;
-  } catch {
-    throw skillError("Bundled Acpus skill is missing or does not match this acpus package version.");
-  }
-}
-
-async function resolveExistingTargets(cwd: string, scope: SkillScope, action: "install" | "uninstall"): Promise<StandardSkillTarget[]> {
-  const candidates = skillTargets(cwd, scope);
-  const targets = await existingSkillRootTargets(cwd, [scope]);
-  if (targets.length === 0) {
-    const missing = candidates.map(candidate => ({
-      scope,
-      kind: candidate.kind,
-      targetPath: candidate.targetPath,
-      status: "skipped" as const,
-      error: "skills root does not exist",
-    }));
-    throw skillError(`No ${scope} skills directories found: ${candidates.map(candidate => candidate.rootPath).join(", ")}`, {
-      skill: skillResult(action, scope, false, candidates, action === "install" ? { installations: missing } : { removals: missing }),
+  if (scope === undefined) {
+    const picked = await select<SkillScope>({
+      message: `Select where to ${action} the Acpus skill:`,
+      options: [
+        { value: "project", label: "Project", hint: ".agents and .claude in the current project" },
+        { value: "global", label: "Global", hint: ".agents and .claude in your home directory" },
+      ],
+      initialValue: "project",
+      input: ctx.stdin,
+      output: ctx.stderr,
     });
-  }
-  return targets;
-}
-
-async function resolveCustomInstallTarget(cwd: string, dir: string, dryRun: boolean): Promise<SkillTarget[]> {
-  const candidate = customSkillTarget(cwd, dir);
-  const targets = await existingSkillTargets([candidate]);
-  if (targets.length > 0) return targets;
-
-  const installations: InstallationResult[] = [{
-    scope: "custom",
-    kind: "custom",
-    targetPath: candidate.targetPath,
-    status: "skipped",
-    error: "skills root does not exist or is not a directory",
-  }];
-  throw skillError(`Custom skills directory does not exist or is not a directory: ${candidate.rootPath}`, {
-    skill: skillResult("install", "custom", dryRun, [candidate], { installations }),
-  });
-}
-
-async function installAcpusSkill(sourcePath: string, targets: SkillTarget[], dryRun: boolean): Promise<InstallationResult[]> {
-  const results: InstallationResult[] = [];
-  for (const target of targets) {
-    const existing = await classifyExistingTarget(target.targetPath);
-    if (existing === "unsafe") {
-      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "failed", error: "target exists and is not the Acpus skill" });
-      continue;
-    }
-
-    const status = existing === "missing" ? dryRun ? "would-install" : "installed" : dryRun ? "would-update" : "updated";
-    if (!dryRun) {
-      const replaced = await replaceDirectory(sourcePath, target.targetPath, existing !== "missing");
-      if (replaced.isErr()) {
-        results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "failed", error: replaced.error.message });
-        continue;
-      }
-    }
-    results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status });
-  }
-  return results;
-}
-
-async function uninstallAcpusSkill(targets: StandardSkillTarget[], dryRun: boolean): Promise<RemovalResult[]> {
-  const results: RemovalResult[] = [];
-  for (const target of targets) {
-    const existing = await classifyExistingTarget(target.targetPath);
-    if (existing === "missing") {
-      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "missing" });
-      continue;
-    }
-    if (existing === "unsafe") {
-      results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: "skipped", error: "target is not the Acpus skill" });
-      continue;
-    }
-    if (!dryRun) await rm(target.targetPath, { recursive: true, force: true });
-    results.push({ scope: target.scope, kind: target.kind, targetPath: target.targetPath, status: dryRun ? "would-remove" : "removed" });
-  }
-  return results;
-}
-
-async function classifyExistingTarget(targetPath: string): Promise<"missing" | "acpus" | "unsafe"> {
-  try {
-    const stats = await lstat(targetPath);
-    if (stats.isSymbolicLink()) return await isAcpusSkillSymlink(targetPath) ? "acpus" : "unsafe";
-    if (stats.isDirectory()) return await isAcpusSkillDirectory(targetPath) ? "acpus" : "unsafe";
-    return "unsafe";
-  } catch (error) {
-    if (isNotFound(error)) return "missing";
-    throw error;
-  }
-}
-
-async function isAcpusSkillSymlink(targetPath: string): Promise<boolean> {
-  return isAcpusSkillDirectory(resolve(dirname(targetPath), await readlink(targetPath)));
-}
-
-async function isAcpusSkillDirectory(targetPath: string): Promise<boolean> {
-  try {
-    return (await readAcpusSkillMetadata(targetPath)).name === ACPUS_SKILL;
-  } catch (error) {
-    if (isNotFound(error)) return false;
-    throw error;
-  }
-}
-
-export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): ResultAsync<void, SkillReplaceFailure> {
-  return new ResultAsync(replaceDirectoryTransaction(sourcePath, targetPath, targetExists));
-}
-
-async function replaceDirectoryTransaction(sourcePath: string, targetPath: string, targetExists: boolean): Promise<Result<void, SkillReplaceFailure>> {
-  const parent = dirname(targetPath);
-  let recoveryPath: string;
-  try {
-    recoveryPath = await mkdtemp(join(parent, ".acpus-skill-"));
-  } catch (cause) {
-    return err(skillReplaceFailure("stage", parent, false, cause));
-  }
-  const stagedPath = join(recoveryPath, basename(targetPath));
-  const backupPath = join(recoveryPath, ".previous");
-
-  try {
-    await cp(sourcePath, stagedPath, { recursive: true, verbatimSymlinks: true });
-  } catch (cause) {
-    return cleanupAfterFailure("stage", recoveryPath, false, cause);
+    if (isCancel(picked)) throw usageError("Skill selection cancelled.");
+    scope = picked;
   }
 
-  if (targetExists) {
-    try {
-      await rename(targetPath, backupPath);
-    } catch (cause) {
-      return cleanupAfterFailure("backup", recoveryPath, false, cause);
-    }
+  if (agents === undefined) {
+    const picked = await multiselect<SkillAgent>({
+      message: `Select agents to ${action}:`,
+      options: [
+        { value: "universal", label: "Universal", hint: ".agents" },
+        { value: "claude", label: "Claude", hint: ".claude" },
+      ],
+      initialValues: [...skillAgents],
+      required: true,
+      input: ctx.stdin,
+      output: ctx.stderr,
+    });
+    if (isCancel(picked)) throw usageError("Skill selection cancelled.");
+    agents = canonicalAgents(picked);
   }
-
-  try {
-    await rename(stagedPath, targetPath);
-  } catch (publishCause) {
-    if (targetExists) {
-      try {
-        await rename(backupPath, targetPath);
-      } catch (restoreCause) {
-        return err(skillReplaceFailure(
-          "restore",
-          recoveryPath,
-          false,
-          new AggregateError([publishCause, restoreCause], "Skill publication and restoration both failed."),
-        ));
-      }
-    }
-    return cleanupAfterFailure("publish", recoveryPath, false, publishCause);
-  }
-
-  try {
-    await rm(recoveryPath, { recursive: true, force: true });
-  } catch (cause) {
-    return err(skillReplaceFailure("cleanup", recoveryPath, true, cause));
-  }
-  return ok(undefined);
+  return { scope, agents };
 }
 
-async function cleanupAfterFailure(
-  stage: SkillReplaceFailure["stage"],
-  recoveryPath: string,
-  published: boolean,
-  cause: unknown,
-): Promise<Result<void, SkillReplaceFailure>> {
-  try {
-    await rm(recoveryPath, { recursive: true, force: true });
-    return err(skillReplaceFailure(stage, recoveryPath, published, cause));
-  } catch (cleanupCause) {
-    return err(skillReplaceFailure(
-      stage,
-      recoveryPath,
-      published,
-      new AggregateError([cause, cleanupCause], `Skill replacement failed during ${stage} and cleanup.`),
-    ));
+function explicitScope(options: Pick<SkillOptions, "project" | "global">): SkillScope | undefined {
+  if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
+  if (options.project === true) return "project";
+  if (options.global === true) return "global";
+  return undefined;
+}
+
+function parseAgents(value: string): SkillAgent[] {
+  const agents = value.split(",").map(agent => agent.trim());
+  if (agents.some(agent => agent.length === 0)) {
+    throw usageError("--agent must contain only universal and/or claude without empty values.");
   }
+  if (agents.some(agent => !skillAgents.includes(agent as SkillAgent))) {
+    throw usageError("--agent must contain only universal and/or claude.");
+  }
+  return canonicalAgents(agents as SkillAgent[]);
 }
 
-function skillReplaceFailure(
-  stage: SkillReplaceFailure["stage"],
-  recoveryPath: string,
-  published: boolean,
-  cause: unknown,
-): SkillReplaceFailure {
-  const detail = cause instanceof Error && cause.message.length > 0 ? cause.message : String(cause);
-  return {
-    type: "skill-replace-failed",
-    stage,
-    recoveryPath,
-    published,
-    message: `Acpus skill replacement failed during ${stage}: ${detail} Recovery path: ${recoveryPath}.`,
-  };
-}
-
-function installOk(results: InstallationResult[]): boolean {
-  return results.some(result => result.status === "installed" || result.status === "updated" || result.status === "would-install" || result.status === "would-update")
-    && results.every(result => result.status !== "failed" && result.status !== "skipped");
-}
-
-function uninstallOk(results: RemovalResult[]): boolean {
-  return results.every(result => result.status !== "failed" && result.status !== "skipped");
+function canonicalAgents(agents: readonly SkillAgent[]): SkillAgent[] {
+  const selected = new Set(agents);
+  return skillAgents.filter(agent => selected.has(agent));
 }
 
 function skillResult(
   action: "install" | "uninstall",
-  scope: SkillTarget["scope"],
+  selection: SkillSelection,
   dryRun: boolean,
   targets: SkillTarget[],
-  details: Pick<SkillCommandResult, "installations" | "removals">,
+  details: { installations: SkillInstallation[] } | { removals: SkillRemoval[] },
 ): SkillCommandResult {
   return {
     action,
     packageName: ACPUS_PACKAGE,
     skillName: ACPUS_SKILL,
-    targetName: ACPUS_TARGET,
+    targetName: ACPUS_SKILL,
     version: getCliPackageInfo().version,
-    scope,
+    scope: selection.scope,
     dryRun,
-    targets: targets.map(target => ({ scope: target.scope, kind: target.kind, rootPath: target.rootPath, targetPath: target.targetPath })),
+    targets,
     ...details,
   };
-}
-
-function isNotFound(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

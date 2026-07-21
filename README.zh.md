@@ -56,13 +56,13 @@ Acpus 是持久化执行与控制边界。它检查工作流图、调度节点�
 
 ```sh
 npm install -g acpus
-# use bundled skill
+# use bundled skill install
 acpus skill install
 # or use skills cli
 npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 ```
 
-`acpus skill install` 会把内置 Skill 安装到项目中每个已经存在的 Skill 根目录：`.agents/skills` 和 `.claude/skills`。不存在的目录会被跳过，而且至少需要已有一个。如果受支持的全局 Skill 根目录已经存在，可以使用 `--global`。
+在交互式终端中，`acpus skill install` 可以提示选择 scope 和 Agent 目标。脚本中必须同时传入 `--project` 或 `--global`，以及 `--agent universal`、`--agent claude` 或 `--agent universal,claude`。安装会自动创建所选目录，并把 Skill 写入项目或操作系统 home 下的 `.agents/skills/acpus` 和/或 `.claude/skills/acpus`。
 
 ### 2. 从目标开始
 

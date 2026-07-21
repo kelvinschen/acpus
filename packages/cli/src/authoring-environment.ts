@@ -1,9 +1,10 @@
 import { lstat, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { officialAuthoringEnvironment } from "@acpus/loader";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getCliPackageInfo } from "./package-info.js";
-import { existingSkillRootTargets, readAcpusSkillMetadata, type SkillScope, type SkillTargetKind } from "./skill-installation.js";
+import { existingSkillRootTargets, readAcpusSkillMetadata, type SkillAgent, type SkillScope } from "./skill-installation.js";
 
 type HealthStatus = "ok" | "warn" | "fail";
 
@@ -32,7 +33,7 @@ export type AuthoringEnvironment = {
     };
     installed: Array<{
       scope: SkillScope;
-      kind: SkillTargetKind;
+      agent: SkillAgent;
       path: string;
       version?: string;
       status: InstalledSkillStatus;
@@ -78,22 +79,22 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
     details: { path: bundled.path, status: bundled.status, ...(bundled.version ? { version: bundled.version } : {}) },
   });
 
-  const targets = await existingSkillRootTargets(cwd, ["project", "global"]);
+  const targets = await existingSkillRootTargets(cwd, homedir(), ["project", "global"]);
   const installed = await Promise.all(targets.map(async target => {
     const inspected = await installedSkill(target.targetPath, cli.version);
-    const remediation = `acpus skill install --${target.scope}`;
+    const remediation = `acpus skill install --${target.scope} --agent ${target.agent}`;
     const needsRepair = inspected.status !== "aligned" && inspected.status !== "missing";
     if (needsRepair) {
       checks.push({
         area: "skill",
         status: "warn",
-        message: `Installed ${target.kind} Acpus skill is ${inspected.status}; run '${remediation}'.`,
-        details: { path: target.targetPath, scope: target.scope, kind: target.kind, status: inspected.status, remediation },
+        message: `Installed ${target.agent} Acpus skill is ${inspected.status}; run '${remediation}'.`,
+        details: { path: target.targetPath, scope: target.scope, agent: target.agent, status: inspected.status, remediation },
       });
     }
     return {
       scope: target.scope,
-      kind: target.kind,
+      agent: target.agent,
       path: target.targetPath,
       ...inspected,
       ...(needsRepair ? { remediation } : {}),

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { replaceDirectory } from "../src/commands/skill.js";
+import { replaceDirectory } from "../src/skill-installation.js";
 
 const fsMock = vi.hoisted(() => ({ rename: vi.fn() }));
 vi.mock("node:fs/promises", async importOriginal => ({

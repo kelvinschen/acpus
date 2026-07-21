@@ -9,7 +9,7 @@ acpus workflow check workflow.ts
 acpus workflow run workflow.ts --input '{"ready":true}'
 acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow-viz.html
-acpus skill install
+acpus skill install --project --agent universal,claude
 ```
 
 `acpus workflow check` statically checks and prepares the workflow through
@@ -21,11 +21,11 @@ visualization instead. The `acpus runs` command group inspects and controls
 durable runs. `acpus wf` is a shorter alias
 for `acpus workflow`.
 
-`acpus skill install` copies the Acpus agent skill bundled in the local `acpus`
-npm package into existing project skills roots (`.agents/skills` and
-`.claude/skills`) as `acpus`. Use `--global` to target `$CODEX_HOME/skills`
-or `~/.codex/skills`, and `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`.
-Use `--dir <skills-root>` to install into another existing root as
-`<skills-root>/acpus`.
+`acpus skill install` copies the bundled Acpus skill to selected fixed targets:
+`.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for
+Claude, rooted at either the current project or operating-system home. It
+creates selected skills roots when needed. Interactive terminals prompt for
+missing selections; scripts must pass `--project` or `--global` together with
+`--agent universal`, `--agent claude`, or `--agent universal,claude`.
 `acpus skill uninstall` removes only installed targets that can be identified
 as the Acpus skill.

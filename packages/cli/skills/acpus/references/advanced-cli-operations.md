@@ -49,12 +49,12 @@ The command ensures the workspace daemon is running, binds to localhost and a ra
 ## Bundled skill and version
 
 ```sh
-acpus skill install [--project|--global|--dir <skills-root>] [--dry-run]
-acpus skill uninstall [--project|--global] [--dry-run]
+acpus skill install [--project|--global] [--agent <universal[,claude]>] [--dry-run]
+acpus skill uninstall [--project|--global] [--agent <universal[,claude]>] [--dry-run]
 acpus --version
 ```
 
-Skill commands manage the Acpus skill bundled with this CLI, default to project scope, and refuse targets not identifiable as Acpus skills. Install accepts an existing custom skills root through `--dir` and copies the skill to its `acpus` child. They do not install or remove the npm package.
+Skill commands manage the Acpus skill bundled with this CLI and refuse targets not identifiable as Acpus skills. In a terminal they prompt only for missing scope or Agent selections. Automation must provide `--project` or `--global` and `--agent`; selected roots are `.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for Claude under the project or home directory. Install creates missing selected roots. They do not install or remove the npm package.
 
 ## Artifact registry
 
@@ -70,4 +70,4 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, and visualization do not accept it. Machine records use `schemaVersion: 1`. Result phases are `usage`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, `viz`, and `skill`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.
+`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Machine records use `schemaVersion: 1`. Machine-visible result phases are `usage`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.

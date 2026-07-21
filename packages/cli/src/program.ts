@@ -85,6 +85,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void): Command 
   }));
   program.addCommand(createSkillCommand({
     ...io,
+    stdin,
     setExitCode,
   }));
   program.addCommand(createWebCommand({

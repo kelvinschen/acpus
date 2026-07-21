@@ -25,13 +25,13 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
 | `doctor` | Read-only runtime and authoring health. |
-| `skill install` | Mutually exclusive `--project`, `--global`, or `--dir <skills-root>`; optional `--dry-run`. |
-| `skill uninstall` | `--project`, `--global`, and `--dry-run`. |
+| `skill install` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
+| `skill uninstall` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs, hooks, and skill leaf; doctor; and web.
+- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs and hooks leaf; doctor; and web.
 - Root, group, version, and workflow visualization surfaces MUST reject `--json` and MUST omit it from help.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
@@ -101,13 +101,18 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
 - Foreground run and follow `Ctrl-C` MUST detach without canceling the run; foreground run prints its run id and an explicit cancel command. No hidden double-`Ctrl-C` control exists.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
-- Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with scoped remediation, while a simply missing installed copy remains structured `missing` without a warning.
-- Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill in existing selected roots, never symlinks or unrelated user content.
+- Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with remediation `acpus skill install --<scope> --agent <agent>`, while a simply missing installed copy remains structured `missing` without a warning.
+- Doctor installed-skill records MUST inspect only existing fixed skills roots and identify the target with `agent: "universal" | "claude"`.
+- In an interactive stdin/stdout/stderr TTY, skill commands MUST prompt on stderr only for a missing scope or Agent selection; project and both Agents are initially selected, and cancellation fails as usage before mutation.
+- Outside such a TTY, skill commands MUST require exactly one explicit scope and an explicit `--agent` value before mutation.
+- `--agent` MUST parse a comma-separated list by trimming and deduplicating values, reject empty or unknown values, and process selected values in `universal`, `claude` order.
+- Project skill targets MUST be `<cwd>/.agents/skills/acpus` for `universal` and `<cwd>/.claude/skills/acpus` for `claude`.
+- Global skill targets MUST be `<home>/.agents/skills/acpus` for `universal` and `<home>/.claude/skills/acpus` for `claude`.
+- Skill install MUST recursively create each selected missing skills root immediately before installation; dry-run reports `would-install` without creating it.
+- A selected install root that is a file, an invalid symlink, or cannot be created MUST fail that target without preventing other selected targets from being processed.
+- Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.
 - Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
-- Project skill scope MUST use `<cwd>/.agents/skills` and `<cwd>/.claude/skills`; global scope uses the configured/default Codex and Claude skill roots. Missing roots are skipped, but no selected root is an error.
-- `skill install --dir <skills-root>` MUST resolve a relative root from the CLI working directory and install to the absolute `<skills-root>/acpus` target.
-- A custom skills root MUST already exist as a directory; a missing or non-directory root fails without creating filesystem entries.
-- Custom skill JSON results MUST identify the target with `scope: "custom"`, `kind: "custom"`, and absolute `rootPath` and `targetPath` fields.
+- Skill uninstall MUST NOT create skills roots; an absent target reports `missing`, while unrelated content reports `skipped` and makes the command fail.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 

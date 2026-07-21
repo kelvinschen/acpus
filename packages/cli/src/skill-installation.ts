@@ -1,62 +1,177 @@
-import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { constants } from "node:fs";
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+
+const ACPUS_SKILL = "acpus";
+
+export const skillAgents = ["universal", "claude"] as const;
 
 export type SkillScope = "project" | "global";
-export type SkillTargetKind = "agents" | "claude";
+export type SkillAgent = typeof skillAgents[number];
 
-export type StandardSkillTarget = {
+export type SkillSelection = {
   scope: SkillScope;
-  kind: SkillTargetKind;
+  agents: SkillAgent[];
+};
+
+export type SkillTarget = {
+  scope: SkillScope;
+  agent: SkillAgent;
   rootPath: string;
   targetPath: string;
 };
 
-export type CustomSkillTarget = {
-  scope: "custom";
-  kind: "custom";
-  rootPath: string;
+export type SkillInstallation = {
+  scope: SkillScope;
+  agent: SkillAgent;
   targetPath: string;
+  status: "installed" | "updated" | "would-install" | "would-update" | "failed";
+  error?: string;
 };
 
-export type SkillTarget = StandardSkillTarget | CustomSkillTarget;
+export type SkillRemoval = {
+  scope: SkillScope;
+  agent: SkillAgent;
+  targetPath: string;
+  status: "removed" | "would-remove" | "missing" | "skipped" | "failed";
+  error?: string;
+};
 
 export type AcpusSkillMetadata = {
   name?: string;
   version?: string;
 };
 
-export function skillTargets(cwd: string, scope: SkillScope): StandardSkillTarget[] {
-  if (scope === "project") {
-    return [
-      target(scope, "agents", join(cwd, ".agents", "skills")),
-      target(scope, "claude", join(cwd, ".claude", "skills")),
-    ];
-  }
-  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
-  const claudeHome = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
-  return [
-    target(scope, "agents", join(codexHome, "skills")),
-    target(scope, "claude", join(claudeHome, "skills")),
-  ];
+export type SkillReplaceFailure = {
+  type: "skill-replace-failed";
+  stage: "stage" | "backup" | "publish" | "restore" | "cleanup";
+  message: string;
+  recoveryPath: string;
+  published: boolean;
+};
+
+export type BundledSkillFailure = {
+  type: "bundled-skill-invalid";
+  message: string;
+};
+
+export function skillTargets(cwd: string, home: string, selection: SkillSelection): SkillTarget[] {
+  const basePath = selection.scope === "project" ? cwd : home;
+  const selected = new Set(selection.agents);
+  return skillAgents
+    .filter(agent => selected.has(agent))
+    .map(agent => target(selection.scope, agent, join(basePath, agent === "universal" ? ".agents" : ".claude", "skills")));
 }
 
-export function customSkillTarget(cwd: string, rootPath: string): CustomSkillTarget {
-  const absoluteRoot = resolve(cwd, rootPath);
-  return { scope: "custom", kind: "custom", rootPath: absoluteRoot, targetPath: join(absoluteRoot, "acpus") };
-}
-
-export async function existingSkillTargets<T extends SkillTarget>(candidates: readonly T[]): Promise<T[]> {
-  const existing: T[] = [];
+export async function existingSkillRootTargets(
+  cwd: string,
+  home: string,
+  scopes: readonly SkillScope[],
+): Promise<SkillTarget[]> {
+  const candidates = scopes.flatMap(scope => skillTargets(cwd, home, { scope, agents: [...skillAgents] }));
+  const existing: SkillTarget[] = [];
   for (const candidate of candidates) {
     if (await isDirectory(candidate.rootPath)) existing.push(candidate);
   }
   return existing;
 }
 
-export async function existingSkillRootTargets(cwd: string, scopes: readonly SkillScope[]): Promise<StandardSkillTarget[]> {
-  const candidates = scopes.flatMap(scope => skillTargets(cwd, scope));
-  return existingSkillTargets(candidates);
+export function bundledAcpusSkillPath(expectedVersion: string): ResultAsync<string, BundledSkillFailure> {
+  const sourcePath = fileURLToPath(new URL("../skills/acpus", import.meta.url));
+  return ResultAsync.fromPromise((async () => {
+    await access(join(sourcePath, "SKILL.md"), constants.R_OK);
+    const metadata = await readAcpusSkillMetadata(sourcePath);
+    if (metadata.name !== ACPUS_SKILL || metadata.version !== expectedVersion) {
+      throw new Error("bundled skill identity mismatch");
+    }
+    return sourcePath;
+  })(), () => ({
+    type: "bundled-skill-invalid" as const,
+    message: "Bundled Acpus skill is missing or does not match this acpus package version.",
+  }));
+}
+
+export async function installAcpusSkill(
+  sourcePath: string,
+  targets: readonly SkillTarget[],
+  dryRun: boolean,
+): Promise<SkillInstallation[]> {
+  const results: SkillInstallation[] = [];
+  for (const target of targets) {
+    try {
+      const rootState = await classifyRoot(target.rootPath);
+      if (rootState === "invalid") {
+        results.push(failedInstallation(target, "skills root is not a directory"));
+        continue;
+      }
+      if (rootState === "missing" && !dryRun) await mkdir(target.rootPath, { recursive: true });
+
+      const existing = rootState === "missing" ? "missing" : await classifyExistingTarget(target.targetPath);
+      if (existing === "unsafe") {
+        results.push(failedInstallation(target, "target exists and is not the Acpus skill"));
+        continue;
+      }
+
+      const status = existing === "missing"
+        ? dryRun ? "would-install" : "installed"
+        : dryRun ? "would-update" : "updated";
+      if (!dryRun) {
+        const replaced = await replaceDirectory(sourcePath, target.targetPath, existing !== "missing");
+        if (replaced.isErr()) {
+          results.push(failedInstallation(target, replaced.error.message));
+          continue;
+        }
+      }
+      results.push({ scope: target.scope, agent: target.agent, targetPath: target.targetPath, status });
+    } catch (error) {
+      results.push(failedInstallation(target, causeMessage(error)));
+    }
+  }
+  return results;
+}
+
+export async function uninstallAcpusSkill(
+  targets: readonly SkillTarget[],
+  dryRun: boolean,
+): Promise<SkillRemoval[]> {
+  const results: SkillRemoval[] = [];
+  for (const target of targets) {
+    try {
+      const existing = await classifyExistingTarget(target.targetPath);
+      if (existing === "missing") {
+        results.push({ scope: target.scope, agent: target.agent, targetPath: target.targetPath, status: "missing" });
+        continue;
+      }
+      if (existing === "unsafe") {
+        results.push({
+          scope: target.scope,
+          agent: target.agent,
+          targetPath: target.targetPath,
+          status: "skipped",
+          error: "target is not the Acpus skill",
+        });
+        continue;
+      }
+      if (!dryRun) await rm(target.targetPath, { recursive: true, force: true });
+      results.push({
+        scope: target.scope,
+        agent: target.agent,
+        targetPath: target.targetPath,
+        status: dryRun ? "would-remove" : "removed",
+      });
+    } catch (error) {
+      results.push({
+        scope: target.scope,
+        agent: target.agent,
+        targetPath: target.targetPath,
+        status: "failed",
+        error: causeMessage(error),
+      });
+    }
+  }
+  return results;
 }
 
 export async function readAcpusSkillMetadata(path: string): Promise<AcpusSkillMetadata> {
@@ -86,9 +201,148 @@ export function parseAcpusSkillMetadata(source: string): AcpusSkillMetadata {
   };
 }
 
-function target(scope: SkillScope, kind: SkillTargetKind, rootPath: string): StandardSkillTarget {
+export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): ResultAsync<void, SkillReplaceFailure> {
+  return new ResultAsync(replaceDirectoryTransaction(sourcePath, targetPath, targetExists));
+}
+
+async function replaceDirectoryTransaction(
+  sourcePath: string,
+  targetPath: string,
+  targetExists: boolean,
+): Promise<Result<void, SkillReplaceFailure>> {
+  const parent = dirname(targetPath);
+  let recoveryPath: string;
+  try {
+    recoveryPath = await mkdtemp(join(parent, ".acpus-skill-"));
+  } catch (cause) {
+    return err(skillReplaceFailure("stage", parent, false, cause));
+  }
+  const stagedPath = join(recoveryPath, basename(targetPath));
+  const backupPath = join(recoveryPath, ".previous");
+
+  try {
+    await cp(sourcePath, stagedPath, { recursive: true, verbatimSymlinks: true });
+  } catch (cause) {
+    return cleanupAfterFailure("stage", recoveryPath, false, cause);
+  }
+
+  if (targetExists) {
+    try {
+      await rename(targetPath, backupPath);
+    } catch (cause) {
+      return cleanupAfterFailure("backup", recoveryPath, false, cause);
+    }
+  }
+
+  try {
+    await rename(stagedPath, targetPath);
+  } catch (publishCause) {
+    if (targetExists) {
+      try {
+        await rename(backupPath, targetPath);
+      } catch (restoreCause) {
+        return err(skillReplaceFailure(
+          "restore",
+          recoveryPath,
+          false,
+          new AggregateError([publishCause, restoreCause], "Skill publication and restoration both failed."),
+        ));
+      }
+    }
+    return cleanupAfterFailure("publish", recoveryPath, false, publishCause);
+  }
+
+  try {
+    await rm(recoveryPath, { recursive: true, force: true });
+  } catch (cause) {
+    return err(skillReplaceFailure("cleanup", recoveryPath, true, cause));
+  }
+  return ok(undefined);
+}
+
+async function classifyRoot(rootPath: string): Promise<"directory" | "missing" | "invalid"> {
+  try {
+    return (await stat(rootPath)).isDirectory() ? "directory" : "invalid";
+  } catch (error) {
+    if (errorCode(error) === "ENOTDIR") return "invalid";
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+  try {
+    await lstat(rootPath);
+    return "invalid";
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return "missing";
+    if (errorCode(error) === "ENOTDIR") return "invalid";
+    throw error;
+  }
+}
+
+async function classifyExistingTarget(targetPath: string): Promise<"missing" | "acpus" | "unsafe"> {
+  try {
+    const stats = await lstat(targetPath);
+    if (stats.isSymbolicLink()) return await isAcpusSkillSymlink(targetPath) ? "acpus" : "unsafe";
+    if (stats.isDirectory()) return await isAcpusSkillDirectory(targetPath) ? "acpus" : "unsafe";
+    return "unsafe";
+  } catch (error) {
+    if (isMissingPathError(error)) return "missing";
+    throw error;
+  }
+}
+
+async function isAcpusSkillSymlink(targetPath: string): Promise<boolean> {
+  return isAcpusSkillDirectory(resolve(dirname(targetPath), await readlink(targetPath)));
+}
+
+async function isAcpusSkillDirectory(targetPath: string): Promise<boolean> {
+  try {
+    return (await readAcpusSkillMetadata(targetPath)).name === ACPUS_SKILL;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+async function cleanupAfterFailure(
+  stage: SkillReplaceFailure["stage"],
+  recoveryPath: string,
+  published: boolean,
+  cause: unknown,
+): Promise<Result<void, SkillReplaceFailure>> {
+  try {
+    await rm(recoveryPath, { recursive: true, force: true });
+    return err(skillReplaceFailure(stage, recoveryPath, published, cause));
+  } catch (cleanupCause) {
+    return err(skillReplaceFailure(
+      stage,
+      recoveryPath,
+      published,
+      new AggregateError([cause, cleanupCause], `Skill replacement failed during ${stage} and cleanup.`),
+    ));
+  }
+}
+
+function skillReplaceFailure(
+  stage: SkillReplaceFailure["stage"],
+  recoveryPath: string,
+  published: boolean,
+  cause: unknown,
+): SkillReplaceFailure {
+  return {
+    type: "skill-replace-failed",
+    stage,
+    recoveryPath,
+    published,
+    message: `Acpus skill replacement failed during ${stage}: ${causeMessage(cause)} Recovery path: ${recoveryPath}.`,
+  };
+}
+
+function failedInstallation(target: SkillTarget, error: string): SkillInstallation {
+  return { scope: target.scope, agent: target.agent, targetPath: target.targetPath, status: "failed", error };
+}
+
+function target(scope: SkillScope, agent: SkillAgent, rootPath: string): SkillTarget {
   const absoluteRoot = resolve(rootPath);
-  return { scope, kind, rootPath: absoluteRoot, targetPath: join(absoluteRoot, "acpus") };
+  return { scope, agent, rootPath: absoluteRoot, targetPath: join(absoluteRoot, ACPUS_SKILL) };
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -101,8 +355,13 @@ async function isDirectory(path: string): Promise<boolean> {
 }
 
 function isMissingPathError(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error.code === "ENOENT" || error.code === "ENOTDIR");
+  return errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR";
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error && cause.message.length > 0 ? cause.message : String(cause);
 }

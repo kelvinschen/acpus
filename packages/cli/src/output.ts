@@ -5,6 +5,7 @@ import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
+import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "./skill-installation.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
@@ -122,28 +123,11 @@ export type SkillCommandResult = {
   skillName: string;
   targetName: string;
   version: string;
-  scope: "project" | "global" | "custom";
+  scope: SkillScope;
   dryRun: boolean;
-  targets: {
-    scope: "project" | "global" | "custom";
-    kind: "agents" | "claude" | "custom";
-    rootPath: string;
-    targetPath: string;
-  }[];
-  installations?: {
-    scope: "project" | "global" | "custom";
-    kind: "agents" | "claude" | "custom";
-    targetPath: string;
-    status: "installed" | "updated" | "would-install" | "would-update" | "skipped" | "failed";
-    error?: string;
-  }[];
-  removals?: {
-    scope: "project" | "global";
-    kind: "agents" | "claude";
-    targetPath: string;
-    status: "removed" | "would-remove" | "missing" | "skipped" | "failed";
-    error?: string;
-  }[];
+  targets: SkillTarget[];
+  installations?: SkillInstallation[];
+  removals?: SkillRemoval[];
 };
 
 export type OutputFormat = "text" | "json";
@@ -353,12 +337,12 @@ function writeSkillResult(stream: Writable, result: SkillCommandResult): void {
   stream.write(`Scope: ${result.scope}\n`);
   if (result.installations) {
     for (const installation of result.installations) {
-      stream.write(`${installation.status}\t${installation.kind}\t${installation.targetPath}${installation.error ? `\t${installation.error}` : ""}\n`);
+      stream.write(`${installation.status}\t${installation.agent}\t${installation.targetPath}${installation.error ? `\t${installation.error}` : ""}\n`);
     }
   }
   if (result.removals) {
     for (const removal of result.removals) {
-      stream.write(`${removal.status}\t${removal.kind}\t${removal.targetPath}${removal.error ? `\t${removal.error}` : ""}\n`);
+      stream.write(`${removal.status}\t${removal.agent}\t${removal.targetPath}${removal.error ? `\t${removal.error}` : ""}\n`);
     }
   }
 }

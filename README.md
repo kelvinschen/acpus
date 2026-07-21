@@ -56,13 +56,13 @@ Simple work should still go directly to one agent. Reach for Acpus when a task n
 
 ```sh
 npm install -g acpus
-# use bundled skill
+# use bundled skill install
 acpus skill install
 # or use skills cli
 npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 ```
 
-`acpus skill install` installs the bundled Skill into each existing project Skill root: `.agents/skills` and `.claude/skills`. Missing roots are skipped, and at least one must already exist. Use `--global` when a supported global Skill root already exists. To install into another existing Skill root, use `acpus skill install --dir <skills-root>`; the Skill is copied to `<skills-root>/acpus`.
+`acpus skill install` can prompt for scope and Agent targets in an interactive terminal. For scripts, pass `--project` or `--global` together with `--agent universal`, `--agent claude`, or `--agent universal,claude`. Install creates the selected roots and writes the Skill to `.agents/skills/acpus` and/or `.claude/skills/acpus` under the project or operating-system home directory.
 
 ### 2. Start with the outcome
 

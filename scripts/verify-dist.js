@@ -224,9 +224,9 @@ async function verifyPackedCli(packages) {
     await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
 
     const cliEntry = join(consumerDirectory, "node_modules", "acpus", "dist", "cli.js");
-    const codexHome = join(consumerDirectory, "codex-home");
-    const claudeHome = join(consumerDirectory, "claude-home");
-    const environment = { ...cliEnvironment(), CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome };
+    const homeDirectory = join(consumerDirectory, "home");
+    await mkdir(homeDirectory);
+    const environment = { ...cliEnvironment(), HOME: homeDirectory, USERPROFILE: homeDirectory };
     const runCli = async args => {
       const result = await execFileAsync(process.execPath, [cliEntry, ...args], { cwd: consumerDirectory, env: environment });
       assert.equal(result.stderr, "", `packed CLI wrote to stderr: ${args.join(" ")}`);
@@ -258,18 +258,25 @@ async function verifyPackedCli(packages) {
       assert.equal(checked.ok, true, `packed skill example failed: ${entry.name}`);
     }
 
-    await mkdir(join(consumerDirectory, ".agents", "skills"), { recursive: true });
-    await mkdir(join(consumerDirectory, ".claude", "skills"), { recursive: true });
-    const installed = JSON.parse((await runCli(["skill", "install", "--json"])).stdout);
-    assert.equal(installed.skill.version, doctor.authoring.cli.version);
+    const installed = await runCli(["skill", "install", "--project", "--agent", "universal,claude"]);
+    assert.match(installed.stdout, /installed\s+universal/u);
+    assert.match(installed.stdout, /installed\s+claude/u);
     const aligned = JSON.parse((await runCli(["doctor", "--json"])).stdout);
-    assert.deepEqual(aligned.authoring.skills.installed.map(skill => skill.status), ["aligned", "aligned"]);
+    assert.deepEqual(aligned.authoring.skills.installed.map(skill => ({
+      scope: skill.scope,
+      agent: skill.agent,
+      status: skill.status,
+      version: skill.version,
+    })), [
+      { scope: "project", agent: "universal", status: "aligned", version: doctor.authoring.cli.version },
+      { scope: "project", agent: "claude", status: "aligned", version: doctor.authoring.cli.version },
+    ]);
 
     const installedSkill = join(consumerDirectory, ".agents", "skills", "acpus", "SKILL.md");
     await writeFile(installedSkill, (await readFile(installedSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
     const stale = JSON.parse((await runCli(["doctor", "--json"])).stdout);
     assert.equal(stale.ok, true);
-    assert.ok(stale.checks.some(check => check.area === "skill" && check.status === "warn" && check.details?.remediation === "acpus skill install --project"));
+    assert.ok(stale.checks.some(check => check.area === "skill" && check.status === "warn" && check.details?.remediation === "acpus skill install --project --agent universal"));
 
     const installedManifestPath = join(consumerDirectory, "node_modules", "acpus", "package.json");
     const installedManifestSource = await readFile(installedManifestPath, "utf8");
