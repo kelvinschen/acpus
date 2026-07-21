@@ -16,9 +16,7 @@ behavior.
 
 ## Active
 
-- [Skill Evolution Workflow Optimization](skill-evolution-workflow-optimization.md) —
-  workflow-local correctness, evidence, gating, and reporting improvements
-  found during an Acpus Skill study.
+No active roadmap records.
 
 ## Completed
 

@@ -1,11 +1,11 @@
 {
   "name": "@acpus/runtime",
-  "version": "0.9.0-alpha.8",
+  "version": "0.9.0",
   "type": "module",
   "description": "Acpus local durable runtime.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@acpus/workflow-compiler": "workspace:*",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.13.3",
     "tsx": "^4.23.0"
   },
   "repository": {

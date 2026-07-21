@@ -1,7 +1,7 @@
 # Migrate to Acpus Next
 
 > [!IMPORTANT]
-> Acpus Next is an alpha / foundation rewrite. It is not a compatibility release
+> Acpus 0.6 is a TypeScript-first foundation rewrite. It is not a compatibility release
 > for the Previous YAML Workflow-Spec product. Migrate one workflow at a time,
 > keep the Previous workflow available until the replacement has been checked and
 > exercised, and verify current behavior against [`specs/`](../specs/INDEX.md),
@@ -491,7 +491,8 @@ it for important work.
 Compare public outputs and side effects against the recorded Previous contract.
 Test at least one transient retry and one replacement fork in a non-critical
 run. Keep rollback instructions and the Previous workflow until the Next
-replacement is accepted. Alpha status should be part of the adoption decision.
+replacement is accepted. Treat the migration as a product change rather than
+an in-place package upgrade.
 
 ## Verification checklist
 
@@ -527,8 +528,8 @@ replacement is accepted. Alpha status should be part of the adoption decision.
 
 ## Related documentation
 
-- [Acpus Next promotion reference](acpus-next-promotion-reference.md)
-- [Acpus Next user guide](acpus-next-user-guide.md)
+- [Acpus README](../README.md)
+- [Bundled Acpus Skill](../packages/cli/skills/acpus/SKILL.md)
 - [Specs index](../specs/INDEX.md)
 - [Core spec](../specs/core-spec.md)
 - [Expression spec](../specs/expression-spec.md)

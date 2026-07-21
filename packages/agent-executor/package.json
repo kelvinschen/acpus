@@ -1,11 +1,11 @@
 {
   "name": "@acpus/agent-executor",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0",
   "type": "module",
   "description": "Acpus acpx-backed ACP agent turn execution.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
@@ -28,7 +28,7 @@
     "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1"
+    "@types/node": "^24.13.3"
   },
   "dependencies": {
     "acpx": "0.12.0"

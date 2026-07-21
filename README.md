@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="page/logo/logo-opus-mark.svg" alt="Acpus mark" width="120">
+  <img src="page/logo/logo-mark.svg" alt="Acpus mark" width="120">
 </p>
 
 <h1 align="center">Acpus</h1>
@@ -8,15 +8,13 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D22.12-5FA04E" alt="Node.js 22.12 or newer">
+  <img src="https://img.shields.io/badge/node-%3E%3D24.15-5FA04E" alt="Node.js 24.15 or newer">
 </p>
 
 <p align="center">
   <a href="README.zh.md">中文</a>
   &nbsp;·&nbsp;
   <a href="https://kelvinschen.github.io/acpus/">Website</a>
-  &nbsp;·&nbsp;
-  <a href="docs/acpus-next-user-guide.md">User Guide</a>
   &nbsp;·&nbsp;
   <a href="docs/migrate-to-next.md">Migration Guide</a>
 </p>
@@ -249,8 +247,9 @@ see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400
 
 ## Documentation
 
-- [User Guide](docs/acpus-next-user-guide.md)
+- [Bundled Acpus Skill](packages/cli/skills/acpus/SKILL.md)
 - [Migration Guide](docs/migrate-to-next.md)
+- [Main Replacement Release Runbook](docs/main-replacement-release-runbook.md)
 - [Specs Index](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)

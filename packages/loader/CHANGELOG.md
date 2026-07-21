@@ -1,5 +1,54 @@
 # @acpus/loader
 
+## 0.1.0
+
+### Minor Changes
+
+- cd35e5b: Release the TypeScript-first Acpus package graph with the CLI, authoring
+  facades, compiler, durable runtime, task library, and Web inspector aligned on
+  the same public dependency contract.
+- 85b3b7d: Make the running CLI's resolved authoring packages the single declaration
+  authority, expose their absolute paths through Doctor, version bundled and
+  installed Acpus skills with the CLI, and verify the complete packed-install
+  authoring environment.
+
+### Patch Changes
+
+- 108d06e: Align the package graph so runtime consumers resolve an
+  `@acpus/expression/ir` entrypoint that exports `isJsonValue`.
+- 9686cda: Include built loader artifacts in the published package graph.
+- 0a842d4: Fix installed workflow typechecking for Acpus authoring facade imports.
+- aae74a6: Exclude TypeScript build caches from published tarballs and remove package file
+  declarations for README and LICENSE documents that do not exist.
+- c5b897b: Move the workspace build to incremental TypeScript 7 project references,
+  upgrade the web bundle to Vite 8, and run workflow checks through the pinned
+  TypeScript 7 native analysis API.
+- Require Node.js 24.15 or newer so every supported runtime provides the
+  unflagged `node:sqlite` API used by durable runs.
+- Updated dependencies [e3a75f4]
+- Updated dependencies [61bbf86]
+- Updated dependencies [b8fef84]
+- Updated dependencies [c1f09ae]
+- Updated dependencies [aae74a6]
+- Updated dependencies [aae74a6]
+- Updated dependencies [cd35e5b]
+- Updated dependencies [108d06e]
+- Updated dependencies [958779b]
+- Updated dependencies [9686cda]
+- Updated dependencies [0a842d4]
+- Updated dependencies [aae74a6]
+- Updated dependencies [c902db5]
+- Updated dependencies [aae74a6]
+- Updated dependencies [c5b897b]
+- Updated dependencies [6ef7549]
+- Updated dependencies [3df9b55]
+- Updated dependencies
+- Updated dependencies [d92f9f9]
+- Updated dependencies [c14e800]
+  - @acpus/expression@0.1.0
+  - @acpus/core@0.7.0
+  - @acpus/tasks@0.1.0
+
 ## 0.1.0-alpha.7
 
 ### Patch Changes
