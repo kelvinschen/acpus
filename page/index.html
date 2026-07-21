@@ -156,11 +156,11 @@
             <div><dt>retries</dt><dd>1</dd></div>
             <div><dt>artifacts</dt><dd>1</dd></div>
           </dl>
-          <p class="complete-question">The run is durable fact. What happens to <code>workflow.ts</code>?</p>
+          <p class="complete-question">The run is settled. The file — keep it, or let it go.</p>
           <div class="complete-endings" role="group" aria-label="Choose an ending">
             <button class="ending" data-ending="delete" type="button"><code>rm</code><span>delete it</span></button>
             <button class="ending" data-ending="commit" type="button"><code>git commit</code><span>keep it</span></button>
-            <button class="ending" data-ending="catalog" type="button"><code>catalog</code><span>re-run it</span></button>
+            <button class="ending" data-ending="install" type="button"><code>install</code><span>catalog it</span></button>
           </div>
           <p class="complete-note" id="endingNote" hidden></p>
         </div>
@@ -173,15 +173,16 @@
         <header class="movement-head reveal">
           <p class="movement-no">I</p>
           <h2 class="movement-title">The file is real</h2>
-          <p class="movement-pull">Agent-authored. Human-reviewable.</p>
+          <p class="movement-pull">Typed before it runs. Reviewed when it matters.</p>
         </header>
         <div class="movement-body">
           <p class="prose reveal">
-            The authoring agent's output is not a plan trapped inside a chat window — it is a
-            TypeScript module your project owns. Read it, diff it, review it in a pull request.
-            Before anything executes, <code>acpus workflow check</code> covers type diagnostics,
-            authoring rules and value flow, then lowers the module into a frozen, serializable
-            WorkflowIR — the same graph you just watched, inspectable before a single node runs.
+            The authoring agent does not hand you a plan in prose — it writes real TypeScript,
+            and Acpus checks it before a single node runs. <code>acpus workflow check</code>
+            covers type diagnostics, authoring rules and value flow, then lowers the module
+            into a frozen, serializable WorkflowIR — the same graph you just watched. The file
+            is yours to read, diff, or review in a pull request; but most of the time, the
+            agent gets it right because the type system won't let it ship nonsense.
           </p>
           <div class="duo">
             <figure class="mini-term reveal">
