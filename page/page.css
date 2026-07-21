@@ -8,7 +8,7 @@
   --paper: #fbf6eb;
     --paper-raised: #fff9ef;
     --paper-edge: #e7e0d3;
-    --ink: #252828;
+    --ink: #2d2f2f;
     --shadow: #1b1e1f;
     --blue: #0a46d4;
     --orange: #ffa012;
@@ -305,6 +305,10 @@ a:hover {
       text-align: left;
     }
 
+                                                                .hero-tagline-track>span {
+                                                                  display: inline-block;
+                                                                  transform-origin: center bottom;
+                                                                }
     .hero-tagline-from {
       color: var(--blue);
     }
@@ -317,19 +321,16 @@ a:hover {
       color: #e86200;
     }
 
-    .hero-tagline-caret {
-      display: inline-block;
-      width: 0.5em;
-      height: max(2px, 0.08em);
-      margin-left: 0.1em;
-      background: var(--red);
-      transform: translateY(0.08em);
-      animation: hero-caret 900ms ease-in-out infinite;
+                                                                .hero-tagline.is-entering .hero-tagline-from {
+                                                                  animation: hero-word-left 520ms var(--ease-out) both;
     }
 
-    .hero-tagline.is-resetting .hero-tagline-caret {
-      opacity: 0;
-      animation: none;
+                                                                .hero-tagline.is-entering .hero-tagline-verb {
+                                                                  animation: hero-word-stamp 520ms var(--ease-out) 90ms both;
+                                                                }
+                                
+                                                                .hero-tagline.is-entering .hero-tagline-to {
+                                                                  animation: hero-word-right 520ms var(--ease-out) 180ms both;
     }
 
     .hero-tagline-measure {
@@ -337,8 +338,55 @@ a:hover {
       visibility: hidden;
     }
 
-    @keyframes hero-caret {
-      50% { opacity: 0.18; }
+                                                                @keyframes hero-word-left {
+                                                                  0% {
+                                                                    opacity: 0;
+                                                                    transform: translate(-22px, -14px) rotate(-2.2deg) scale(0.94);
+                                                                  }
+                                
+                                                                  82% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
+                                
+                                                                  100% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
+                                                                }
+                                
+                                                                @keyframes hero-word-stamp {
+                                                                  0% {
+                                                                    opacity: 0;
+                                                                    transform: translateY(18px) rotate(0.4deg) scale(0.92, 0.86);
+                                                                  }
+                                
+                                                                  82% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
+                                
+                                                                  100% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
+                                                                }
+                                
+                                                                @keyframes hero-word-right {
+                                                                  0% {
+                                                                    opacity: 0;
+                                                                    transform: translate(22px, -12px) rotate(2.2deg) scale(0.94);
+                                                                  }
+                                
+                                                                  82% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
+                                
+                                                                  100% {
+                                                                    opacity: 1;
+                                                                    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+                                                                  }
     }
 
         .workbench-page {
@@ -2603,10 +2651,6 @@ a:hover {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
-  }
-
-  .hero-tagline-caret {
-    display: none;
   }
 
     .workbench-page>.hero-intro,

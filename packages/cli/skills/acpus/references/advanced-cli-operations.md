@@ -9,10 +9,11 @@ If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 Project entries live under `.acpus/workflows/<name>/workflow.ts`; global entries under `$HOME/.acpus/workflows/<name>/workflow.ts`. The direct lower-kebab `defineWorkflow({ name })` must equal the package directory. Catalog names work with check, run, and viz; pass `--project` or `--global` when names collide. Discovery is static: invalid first-level packages remain listable but cannot be used.
 
 ```sh
-acpus workflow list
-acpus workflow show <name>
+acpus workflow catalog [name] [--project|--global]
 acpus workflow import <file|directory|zip|tgz|http-url> [--project|--global]
 ```
+
+Omit `name` in an interactive terminal to select an available workflow; piped text lists compact scope/status/name rows without paths, and `--json` returns the complete catalog projection without prompting. Provide a name to inspect its unique available entry; its TTY detail view uses restrained semantic color and honors `NO_COLOR`. Use a scope flag when project and global catalogs contain the same name.
 
 Import copies one snapshot: it does not install dependencies, track the source, update, or overwrite. Default import reads metadata statically. `--check` executes trusted module top-level code and commits only after preparation succeeds; a global check proves compatibility only in the current workspace.
 

@@ -8,7 +8,8 @@ import { followRun, parseFollowInterval } from "../run-follow.js";
 import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
-import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
+import { confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
+import { canPrompt } from "./prompt-io.js";
 import { daemonControlRequestId, sendDaemonControl, type DaemonControlFailure } from "./daemon.js";
 import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 import { toRunRecord } from "../run-record.js";
@@ -174,7 +175,7 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
     return;
   }
   if (outputFormatFor(options) === "json") throw usageError("Run id is required when --json is used.");
-  if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
+  if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const runs = await listRuns(ctx.cwd);
   if (runs.length === 0) throw notFoundError("No runs found.");
@@ -252,7 +253,7 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
     return;
   }
   if (format === "json") throw usageError("Run id is required when --json is used.");
-  if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
+  if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const choices = await deleteChoices(ctx);
   if (choices.length === 0) throw deleteError("No runs found.");

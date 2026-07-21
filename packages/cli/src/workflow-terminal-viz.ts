@@ -1,4 +1,5 @@
 import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import { ansi } from "./terminal-style.js";
 
 const TYPE_ICONS: Record<NodeIR["kind"], string> = {
   agent: "✦",
@@ -293,8 +294,4 @@ function renderRegions(
     lines.push(`${prefix}${last ? "└┄" : "├┄"} ${region.label}`);
     renderScope(region.scope, `${prefix}${last ? "   " : "│  "}`, lines, color);
   });
-}
-
-function ansi(text: string, code: number, enabled: boolean): string {
-  return enabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 }

@@ -20,63 +20,26 @@ const AGENTS = Object.freeze(
 );
 
 /* ------------------------------------------------------------
-   hero tagline — type, hold, erase, repeat
+   hero tagline — paper-cut word landing
    ------------------------------------------------------------ */
 
 const heroTagline = $(".hero-tagline");
 const heroArt = $(".hero-art");
 const heroTaglineTrack = $("#heroTaglineTrack");
 const heroTaglineMeasure = $("#heroTaglineMeasure");
-const heroTaglineParts = [
-  $("#heroTaglineFrom"),
-  $("#heroTaglineVerb"),
-  $("#heroTaglineTo"),
-];
-const HERO_PHRASE = ["agents", " orchestrate ", "agents"];
-const HERO_PHRASE_TEXT = HERO_PHRASE.join("");
-const HERO_TYPE_MS = 68;
-const HERO_ERASE_MS = 12;
-const HERO_HOLD_MS = 3500;
-const HERO_INTRO_MS = 1180;
-const HERO_CARET_EM = 0.6;
-let heroTaglineVisible = true;
-const heroVisibilityWaiters = new Set();
+const HERO_PHRASE_TEXT = "agents orchestrate agents";
+const HERO_INTRO_MS = 980;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function releaseHeroVisibilityWaiters() {
-  if (document.hidden || !heroTaglineVisible) return;
-  heroVisibilityWaiters.forEach((resolve) => resolve());
-  heroVisibilityWaiters.clear();
-}
-
-function waitForVisibleHero() {
-  if (!document.hidden && heroTaglineVisible) return Promise.resolve();
-  return new Promise((resolve) => heroVisibilityWaiters.add(resolve));
-}
-
-document.addEventListener("visibilitychange", releaseHeroVisibilityWaiters);
-new IntersectionObserver(([entry]) => {
-  heroTaglineVisible = entry.isIntersecting;
-  releaseHeroVisibilityWaiters();
-}).observe(heroTagline);
-
-function renderHeroPhrase(length) {
-  let remaining = length;
-  HERO_PHRASE.forEach((part, index) => {
-    heroTaglineParts[index].textContent = part.slice(0, Math.max(0, remaining));
-    remaining -= part.length;
-  });
-}
 
 function sizeHeroPhrase() {
   heroTaglineMeasure.textContent = HERO_PHRASE_TEXT;
   const baseFontSize = parseFloat(getComputedStyle(heroTagline).fontSize);
   const measuredWidth = heroTaglineMeasure.getBoundingClientRect().width;
-  const scale = Math.min(1, (heroTagline.clientWidth - baseFontSize * HERO_CARET_EM) / measuredWidth);
+  const scale = Math.min(1, heroTagline.clientWidth / measuredWidth);
   const fontSize = baseFontSize * scale;
   heroTaglineTrack.style.fontSize = `${fontSize}px`;
-  heroTaglineTrack.style.width = `${Math.ceil(measuredWidth * scale + fontSize * HERO_CARET_EM)}px`;
+  heroTaglineTrack.style.width = `${Math.ceil(measuredWidth * scale)}px`;
 }
 
 let heroResizeFrame;
@@ -86,34 +49,14 @@ window.addEventListener("resize", () => {
 });
 
 async function animateHeroTagline() {
+  const introElapsed = wait(HERO_INTRO_MS);
+  const fontReady = document.fonts?.load("900 1em Outfit", HERO_PHRASE_TEXT) ?? Promise.resolve();
   await heroArt.decode?.().catch(() => {});
   heroArt.classList.add("is-entering");
-  await Promise.all([document.fonts?.ready, wait(HERO_INTRO_MS)]);
+  await Promise.all([fontReady, introElapsed]);
   sizeHeroPhrase();
-  while (true) {
-    heroTagline.classList.add("is-resetting");
-    renderHeroPhrase(0);
-    heroTagline.classList.remove("is-waiting");
-    await wait(160);
-    heroTagline.classList.remove("is-resetting");
-
-    const length = HERO_PHRASE_TEXT.length;
-    for (let index = 1; index <= length; index += 1) {
-      await waitForVisibleHero();
-      renderHeroPhrase(index);
-      await wait(HERO_TYPE_MS);
-    }
-
-    await wait(HERO_HOLD_MS);
-    for (let index = length - 1; index >= 0; index -= 1) {
-      await waitForVisibleHero();
-      renderHeroPhrase(index);
-      await wait(HERO_ERASE_MS);
-    }
-
-    heroTagline.classList.add("is-resetting");
-    await wait(140);
-  }
+  heroTagline.classList.add("is-entering");
+  heroTagline.classList.remove("is-waiting");
 }
 
 /* ------------------------------------------------------------
@@ -1279,5 +1222,7 @@ document.querySelectorAll(".reveal").forEach((el) => revealObserver.observe(el))
 
 renderBaseGraph();
 renderToy();
-if (REDUCED) heroTagline.classList.remove("is-waiting");
-else void animateHeroTagline();
+if (REDUCED) {
+  sizeHeroPhrase();
+  heroTagline.classList.remove("is-waiting");
+} else void animateHeroTagline();

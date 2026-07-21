@@ -24,6 +24,10 @@ describe("CLI result type", () => {
     acceptResult({ ok: true, phase: "check", checked: true });
     // @ts-expect-error import failure cannot expose catalog state
     acceptResult({ ok: false, phase: "import", catalog });
+    acceptResult({ ok: true, phase: "inspect", catalog });
+    acceptResult({ ok: true, phase: "inspect", catalogEntries: [catalog] });
+    // @ts-expect-error catalog query results are self-describing and omit generic messages
+    acceptResult({ ok: true, phase: "inspect", message: "Catalog shown.", catalog });
     // @ts-expect-error usage and compilation phases represent failures
     acceptResult({ ok: true, phase: "usage", message: "OK" });
     // @ts-expect-error usage and compilation phases represent failures

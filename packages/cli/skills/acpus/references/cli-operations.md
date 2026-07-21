@@ -4,7 +4,7 @@ Use this for the ordinary lifecycle: check, run, observe, interact, and stop. Us
 
 ## Check
 
-Run `acpus doctor` when workspace health is uncertain; it is read-only. Check every edited workflow before running:
+Run `acpus doctor` when workspace health is uncertain; it is read-only. Its aligned TTY report uses semantic color and honors `NO_COLOR`, while pipes and `--json` stay unstyled. Check every edited workflow before running:
 
 ```sh
 acpus workflow check workflow.ts --input sample-input.json

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { stripVTControlCharacters } from "node:util";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { summarizeWorkflow, writeResult, type CliResult } from "../src/output.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -184,6 +185,71 @@ describe("CLI result output contracts", () => {
       "",
     ].join("\n"));
     expect(stderr.text).toBe("");
+  });
+
+  it("colors Doctor semantics in a TTY without changing visible column alignment", () => {
+    const report = {
+      ok: true,
+      phase: "doctor",
+      message: "Doctor checks passed.",
+      checks: [
+        { status: "ok", area: "workspace", message: "Workspace resolved." },
+        { status: "warn", area: "store", message: "Runtime store needs attention." },
+      ],
+    } satisfies CliResult;
+    const plain = [
+      "Doctor checks passed.",
+      "ok    workspace  Workspace resolved.",
+      "warn  store      Runtime store needs attention.",
+      "",
+    ].join("\n");
+    const previousNoColor = process.env.NO_COLOR;
+    delete process.env.NO_COLOR;
+    try {
+      const stdout = new TtyCaptureStream();
+      const stderr = new TtyCaptureStream();
+      expect(writeResult(report, "text", { stdout, stderr }, 0)).toBe(0);
+      expect(stdout.text).toBe([
+        "\u001b[32mDoctor checks passed.\u001b[0m",
+        "\u001b[32mok  \u001b[0m  \u001b[36mworkspace\u001b[0m  Workspace resolved.",
+        "\u001b[33mwarn\u001b[0m  \u001b[36mstore    \u001b[0m  Runtime store needs attention.",
+        "",
+      ].join("\n"));
+      expect(stripVTControlCharacters(stdout.text)).toBe(plain);
+      expect(stderr.text).toBe("");
+
+      const jsonStdout = new TtyCaptureStream();
+      expect(writeResult(report, "json", {
+        stdout: jsonStdout,
+        stderr: new TtyCaptureStream(),
+      }, 0)).toBe(0);
+      expect(JSON.parse(jsonStdout.text)).toMatchObject({ ok: true, phase: "doctor" });
+      expect(jsonStdout.text).not.toContain("\u001b");
+
+      const failedStderr = new TtyCaptureStream();
+      expect(writeResult({
+        ok: false,
+        phase: "doctor",
+        message: "Doctor checks failed.",
+        checks: [{ status: "fail", area: "store", message: "Runtime store unreadable." }],
+      }, "text", { stdout: new TtyCaptureStream(), stderr: failedStderr }, 1)).toBe(1);
+      expect(failedStderr.text).toBe([
+        "\u001b[31mDoctor checks failed.\u001b[0m",
+        "\u001b[31mfail\u001b[0m  \u001b[36mstore\u001b[0m  Runtime store unreadable.",
+        "",
+      ].join("\n"));
+
+      process.env.NO_COLOR = "1";
+      const noColorStdout = new TtyCaptureStream();
+      expect(writeResult(report, "text", {
+        stdout: noColorStdout,
+        stderr: new TtyCaptureStream(),
+      }, 0)).toBe(0);
+      expect(noColorStdout.text).toBe(plain);
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = previousNoColor;
+    }
   });
 
   it("writes concise successful workflow check stages", () => {
@@ -464,6 +530,10 @@ describe("CLI result output contracts", () => {
     expect(summaryStderr.text).toBe("");
   });
 });
+
+class TtyCaptureStream extends CaptureStream {
+  readonly isTTY = true;
+}
 
 function checkResult(): CliResult {
   return {

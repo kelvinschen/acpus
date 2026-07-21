@@ -1,21 +1,6 @@
-import type { Readable, Writable } from "node:stream";
 import { confirm, isCancel, multiselect, select } from "@clack/prompts";
 import type { RunRecord } from "@acpus/runtime";
-
-type TtyInput = Readable & {
-  isTTY?: boolean;
-  setRawMode?(mode: boolean): TtyInput;
-};
-
-type TtyOutput = Writable & {
-  isTTY?: boolean;
-};
-
-export type RunPickerIo = {
-  stdin: Readable;
-  stdout: Writable;
-  stderr: Writable;
-};
+import { clearSubmittedSelect, type PromptIo } from "./prompt-io.js";
 
 export type DeleteRunChoice = {
   run: RunRecord;
@@ -30,15 +15,7 @@ export type DeleteRunSelection = {
 
 const allDeletableRunsValue = "__acpus_all_deletable_runs__";
 
-export function canPickRun(io: RunPickerIo): boolean {
-  const stdin = io.stdin as TtyInput;
-  return stdin.isTTY === true
-    && typeof stdin.setRawMode === "function"
-    && (io.stdout as TtyOutput).isTTY === true
-    && (io.stderr as TtyOutput).isTTY === true;
-}
-
-export async function pickRunId(runs: RunRecord[], io: RunPickerIo): Promise<string | undefined> {
+export async function pickRunId(runs: RunRecord[], io: PromptIo): Promise<string | undefined> {
   const picked = await select({
     message: "Select a run to inspect:",
     options: runs.map(run => ({
@@ -54,7 +31,7 @@ export async function pickRunId(runs: RunRecord[], io: RunPickerIo): Promise<str
   return picked;
 }
 
-export async function pickRunsToDelete(choices: DeleteRunChoice[], io: RunPickerIo): Promise<DeleteRunSelection | undefined> {
+export async function pickRunsToDelete(choices: DeleteRunChoice[], io: PromptIo): Promise<DeleteRunSelection | undefined> {
   const deletable = choices.filter(choice => choice.disabled !== true).map(choice => choice.run.id);
   const picked = await multiselect({
     message: "Select runs to delete:",
@@ -81,7 +58,7 @@ export async function pickRunsToDelete(choices: DeleteRunChoice[], io: RunPicker
   return { runIds: selectedAll ? deletable : picked, selectedAll };
 }
 
-export async function confirmDelete(count: number, io: RunPickerIo): Promise<boolean | undefined> {
+export async function confirmDelete(count: number, io: PromptIo): Promise<boolean | undefined> {
   const confirmed = await confirm({
     message: `Delete ${count} ${count === 1 ? "run" : "runs"}?`,
     initialValue: false,
@@ -102,8 +79,4 @@ function formatRunHint(run: RunRecord): string {
 function formatUpdatedAt(updatedAt: string): string {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(updatedAt);
   return match ? `${match[1]} ${match[2]}` : updatedAt;
-}
-
-function clearSubmittedSelect(output: Writable): void {
-  if ((output as TtyOutput).isTTY === true) output.write("\x1b[3A\x1b[J");
 }

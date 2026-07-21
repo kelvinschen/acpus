@@ -36,7 +36,7 @@ describe("CLI program usage contracts", () => {
     expect(invalidStdout.text).toBe("");
     expect(invalidStderr.text).toContain("unknown option '--json'");
 
-    for (const argv of [["--version", "doctor", "--json"], ["-V", "workflow", "list", "--json"]]) {
+    for (const argv of [["--version", "doctor", "--json"], ["-V", "workflow", "catalog", "--json"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(2);
@@ -333,7 +333,7 @@ describe("CLI program usage contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("lists an empty workflow catalog", async () => {
+  it("queries an empty workflow catalog", async () => {
     await withTestWorkspace("catalog-empty", async workspace => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
@@ -341,7 +341,7 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["workflow", "list", "--json"], {
+        const exitCode = await runCli(["workflow", "catalog", "--json"], {
           cwd: workspace,
           stdout,
           stderr,
@@ -369,7 +369,7 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["wf", "list", "--json"], {
+        const exitCode = await runCli(["wf", "catalog", "--json"], {
           cwd: workspace,
           stdout,
           stderr,

@@ -18,7 +18,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `workflow check <workflow>` | `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
 | `workflow run <workflow>` | Check options plus `--background`; foreground `--interval <duration>` defaults to 1s, has a 250ms minimum, and conflicts with `--background`. |
 | `workflow viz <workflow>` | Optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
-| `workflow list`, `workflow show <name>` | Optional, mutually exclusive `--project` or `--global`. |
+| `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--all`, `--target`, `--follow`, `--interval`, and `--raw` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
@@ -31,7 +31,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned by executable leaves that provide a structured result: workflow list/show/import/check/run; every runs, hooks, and skill leaf; doctor; and web.
+- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs, hooks, and skill leaf; doctor; and web.
 - Root, group, version, and workflow visualization surfaces MUST reject `--json` and MUST omit it from help.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
@@ -47,7 +47,10 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `available` | `status`, `scope`, `name`, absolute `packagePath`, absolute `entryPath`, `requiresScope` |
 | `invalid` | `status`, `scope`, absolute `packagePath`, expected absolute `entryPath`, `requiresScope: false`, stable `errorCode`, `error`, optional extracted `name` |
 
-- Invalid entries MUST be visible in listing but excluded from show, check, run, and visualization lookup.
+- Invalid entries MUST be visible when `workflow catalog` omits `name` but excluded from named catalog lookup and from check, run, and visualization lookup.
+- `workflow catalog` without `name` MUST open a single-select prompt only for text output when stdin, stdout, and stderr are interactive and at least one available entry exists; otherwise it lists directly.
+- Catalog prompts MUST show invalid entries as disabled choices without paths, write interaction UI to stderr, and reserve stdout for the selected catalog result.
+- A catalog prompt selection MUST perform named lookup with the selected entry's scope; prompt cancellation is a usage failure.
 - Unscoped lookup MUST require a name unique across project and global catalogs; scoped lookup searches only the selected scope.
 - Path-like workflow arguments MUST use direct preparation unless a scope flag is present; other arguments resolve as catalog names.
 - Global catalog preparation MUST use a content-addressed `.acpus/.local/catalog-cache/global/<name>/<digest>/` snapshot that follows symlinks and copies their target content; run records omit catalog metadata.
@@ -111,7 +114,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `lock` and `import` members.
 - Every machine-readable record MUST contain `schemaVersion: 1`, `ok`, and `phase`.
 - Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
-- Text Doctor health checks MUST align the status, area, and message fields as three columns within each report.
+- Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
@@ -130,6 +133,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Completed workflow output MUST appear once as pretty JSON; missing or empty output is omitted.
 - Default inspection JSON MUST use the Runtime compact projection; target JSON adds exact attempt/signal/artifact detail, while raw JSON adds the unbounded run and frozen `WorkflowIR`.
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
+- Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
+- Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY and JSON output MUST remain free of ANSI styling.
 - Catalog JSON MUST preserve the catalog projections and stable ordering by available name/scope then invalid absolute package path; duplicate project/global names set `requiresScope: true`.
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
 - Successful web JSON MUST use the ordinary result envelope and place its URL and optional token under `web`.

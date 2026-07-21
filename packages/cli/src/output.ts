@@ -1,10 +1,11 @@
 import type { Writable } from "node:stream";
-import { isAbsolute, relative } from "node:path";
+import { basename, isAbsolute, relative } from "node:path";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
+import { ansi, supportsColor } from "./terminal-style.js";
 
 export type ResultPhase = "usage" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
@@ -98,8 +99,8 @@ export type CliResult =
   | ResultRecord<"run", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "run" | "followRunId" | "catalog", "message" | "workflow" | "run">
   | ResultRecord<"run", true, "message" | "web", "message" | "web">
   | ResultRecord<"run", false, "message" | "run" | "errorCode", "message">
-  | ResultRecord<"inspect", true, "message" | "catalog", "message" | "catalog">
-  | ResultRecord<"inspect", true, "message" | "catalogEntries", "message" | "catalogEntries">
+  | ResultRecord<"inspect", true, "catalog", "catalog">
+  | ResultRecord<"inspect", true, "catalogEntries", "catalogEntries">
   | ResultRecord<"inspect", true, "message" | "hooks", "message" | "hooks">
   | ResultRecord<"inspect", false, "message" | "errorCode", "message">
   | ControlSuccessCliResult
@@ -147,6 +148,12 @@ export type SkillCommandResult = {
 
 export type OutputFormat = "text" | "json";
 
+const healthStatusColors = {
+  ok: 32,
+  warn: 33,
+  fail: 31,
+} as const;
+
 export function writeResult(
   result: CliResult,
   format: OutputFormat,
@@ -168,7 +175,14 @@ export function writeResult(
     return exitCode;
   }
   if (writeWorkflowPreparationSummary(result, stream, streams.cwd)) return exitCode;
-  if (!result.hooks) stream.write(`${result.message ?? (result.ok ? "OK" : "Failed")}\n`);
+  const namedCatalogQuery = result.phase === "inspect" && result.catalog !== undefined;
+  const doctorColor = result.phase === "doctor" && supportsColor(stream);
+  if (!result.hooks && result.message !== undefined) {
+    const message = result.phase === "doctor"
+      ? ansi(result.message, result.ok ? 32 : 31, doctorColor)
+      : result.message;
+    stream.write(`${message}\n`);
+  }
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
@@ -177,20 +191,10 @@ export function writeResult(
     stream.write(`Output: ${formatOutputShape(result.workflow.outputShape)}\n`);
     stream.write(`Diagnostics: ${result.workflow.diagnostics.errors} errors, ${result.workflow.diagnostics.warnings} warnings, ${result.workflow.diagnostics.infos} infos\n`);
   }
-  if (result.catalog) writeCatalogEntry(stream, result.catalog);
+  if (result.catalog) writeCatalogEntry(stream, result.catalog, namedCatalogQuery);
   if (result.checked !== undefined) stream.write(`Checked: ${result.checked ? "yes" : "no"}\n`);
   if (result.catalogEntries) {
-    if (result.catalogEntries.length === 0) {
-      stream.write("No cataloged workflows.\n");
-    } else {
-      for (const entry of result.catalogEntries) {
-        if (entry.status === "available") {
-          stream.write(`${entry.scope}\t${entry.status}\t${entry.requiresScope ? "requires-scope" : "ready"}\t${entry.name}\t${entry.entryPath}\n`);
-        } else {
-          stream.write(`${entry.scope}\t${entry.status}\tinvalid\t${entry.name ?? "-"}\t${entry.entryPath}\t${entry.errorCode}: ${entry.error}\n`);
-        }
-      }
-    }
+    writeCatalogEntries(stream, result.catalogEntries);
   }
   if (result.run) writeRun(stream, result.run, result.control);
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
@@ -207,7 +211,9 @@ export function writeResult(
     const statusWidth = result.checks.reduce((width, check) => Math.max(width, check.status.length), 0);
     const areaWidth = result.checks.reduce((width, check) => Math.max(width, check.area.length), 0);
     for (const check of result.checks) {
-      stream.write(`${check.status.padEnd(statusWidth)}  ${check.area.padEnd(areaWidth)}  ${check.message}\n`);
+      const status = ansi(check.status.padEnd(statusWidth), healthStatusColors[check.status], doctorColor);
+      const area = ansi(check.area.padEnd(areaWidth), 36, doctorColor);
+      stream.write(`${status}  ${area}  ${check.message}\n`);
     }
   }
   if (result.hooks) writeHooks(stream, result.hooks);
@@ -381,12 +387,52 @@ function writeHookScope(stream: Writable, label: "Project" | "Global", scope: No
   }
 }
 
-function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void {
+function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry, concise = false): void {
+  if (concise) {
+    writeNamedCatalogEntry(stream, entry);
+    return;
+  }
   stream.write(`Catalog: ${entry.scope}/${entry.name ?? "-"}\n`);
   stream.write(`Catalog status: ${entry.status}${entry.requiresScope ? " (requires --project or --global when unscoped)" : ""}\n`);
   stream.write(`Catalog package: ${entry.packagePath}\n`);
   stream.write(`Catalog entry: ${entry.entryPath}\n`);
   if (entry.status === "invalid") stream.write(`Catalog error: ${entry.errorCode}: ${entry.error}\n`);
+}
+
+function writeNamedCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): void {
+  const color = supportsColor(stream);
+  const label = (text: string): string => ansi(`${text}:`, 36, color);
+  const scopeHint = entry.requiresScope
+    ? ansi(" (requires --project or --global when unscoped)", 33, color)
+    : "";
+  stream.write(`${label("Catalog")} ${ansi(`${entry.scope}/${entry.name ?? "-"}`, 1, color)}\n`);
+  stream.write(`${label("Status")} ${ansi(entry.status, entry.status === "available" ? 32 : 31, color)}${scopeHint}\n`);
+  stream.write(`${label("Package")} ${entry.packagePath}\n`);
+  stream.write(`${label("Entry")} ${entry.entryPath}\n`);
+  if (entry.status === "invalid") {
+    stream.write(`${label("Error")} ${ansi(`${entry.errorCode}: ${entry.error}`, 31, color)}\n`);
+  }
+}
+
+function writeCatalogEntries(stream: Writable, entries: WorkflowCatalogEntry[]): void {
+  if (entries.length === 0) {
+    stream.write("No cataloged workflows.\n");
+    return;
+  }
+  const rows = entries.map(entry => ({
+    scope: entry.scope,
+    status: entry.status,
+    name: entry.name ?? basename(entry.packagePath),
+    detail: entry.status === "available"
+      ? entry.requiresScope ? "requires --project or --global" : undefined
+      : entry.errorCode,
+  }));
+  const scopeWidth = rows.reduce((width, row) => Math.max(width, row.scope.length), 0);
+  const statusWidth = rows.reduce((width, row) => Math.max(width, row.status.length), 0);
+  const nameWidth = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
+  for (const row of rows) {
+    stream.write(`${row.scope.padEnd(scopeWidth)}  ${row.status.padEnd(statusWidth)}  ${row.detail ? row.name.padEnd(nameWidth) : row.name}${row.detail ? `  ${row.detail}` : ""}\n`);
+  }
 }
 
 export function writeJsonLine(stream: Writable, value: unknown): void {

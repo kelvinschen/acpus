@@ -92,15 +92,27 @@ export async function discoverWorkflowCatalog(cwd: string, options: WorkflowCata
     .sort(compareCatalogEntries);
 }
 
-export async function showWorkflowCatalogEntry(cwd: string, name: string, options: WorkflowCatalogScopeOptions = {}): Promise<AvailableWorkflowCatalogEntry> {
+export async function lookupWorkflowCatalogEntry(cwd: string, name: string, options: WorkflowCatalogScopeOptions = {}): Promise<AvailableWorkflowCatalogEntry> {
   assertCatalogName(name);
-  return findCatalogEntry(cwd, name, options);
+  const discovered = await discoverWorkflowCatalog(cwd, options);
+  const entries = discovered.filter((entry): entry is AvailableWorkflowCatalogEntry => entry.status === "available" && entry.name === name);
+  if (entries.length === 0) {
+    const scope = selectedScope(options);
+    const invalid = discovered.find((entry): entry is InvalidWorkflowCatalogEntry => entry.status === "invalid" && (entry.name === name || basename(entry.packagePath) === name));
+    if (invalid) {
+      throw inspectError(`Workflow catalog entry '${name}' is invalid: ${invalid.error}`, invalid.errorCode);
+    }
+    throw inspectError(scope
+      ? `Workflow catalog entry '${name}' was not found in ${scope} scope.`
+      : `Workflow catalog entry '${name}' was not found.`);
+  }
+  if (entries.length > 1) throw usageError(`Workflow catalog entry '${name}' exists in project and global scopes. Pass --project or --global.`);
+  return entries[0]!;
 }
 
 export async function resolveWorkflowReference(cwd: string, workflow: string, options: WorkflowCatalogScopeOptions = {}): Promise<ResolvedWorkflowReference> {
   if (!hasSelectedScope(options) && await isPathLikeWorkflowReference(cwd, workflow)) return { workflow };
-  assertCatalogName(workflow);
-  const catalog = await findCatalogEntry(cwd, workflow, options);
+  const catalog = await lookupWorkflowCatalogEntry(cwd, workflow, options);
   if (catalog.scope === "project") return { workflow: catalog.entryPath, catalog };
   return { workflow: await materializeGlobalCatalogEntry(cwd, catalog), catalog };
 }
@@ -154,23 +166,6 @@ function selectedScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogSco
 
 function hasSelectedScope(options: WorkflowCatalogScopeOptions): boolean {
   return Boolean(options.project || options.global);
-}
-
-async function findCatalogEntry(cwd: string, name: string, options: WorkflowCatalogScopeOptions): Promise<AvailableWorkflowCatalogEntry> {
-  const discovered = await discoverWorkflowCatalog(cwd, options);
-  const entries = discovered.filter((entry): entry is AvailableWorkflowCatalogEntry => entry.status === "available" && entry.name === name);
-  if (entries.length === 0) {
-    const scope = selectedScope(options);
-    const invalid = discovered.find((entry): entry is InvalidWorkflowCatalogEntry => entry.status === "invalid" && (entry.name === name || basename(entry.packagePath) === name));
-    if (invalid) {
-      throw inspectError(`Workflow catalog entry '${name}' is invalid: ${invalid.error}`, invalid.errorCode);
-    }
-    throw inspectError(scope
-      ? `Workflow catalog entry '${name}' was not found in ${scope} scope.`
-      : `Workflow catalog entry '${name}' was not found.`);
-  }
-  if (entries.length > 1) throw usageError(`Workflow catalog entry '${name}' exists in project and global scopes. Pass --project or --global.`);
-  return entries[0]!;
 }
 
 async function discoverScope(cwd: string, scope: WorkflowCatalogScope): Promise<WorkflowCatalogEntry[]> {

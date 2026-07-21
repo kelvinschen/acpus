@@ -1,4 +1,4 @@
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
@@ -7,7 +7,7 @@ import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrid
 import { staticExprShape, type JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../errors.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
-import { discoverWorkflowCatalog, resolveWorkflowReference, showWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
+import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, resolveWorkflowReference, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeJsonLine, writeResult } from "../output.js";
 import { prepareWorkflowForCli, workflowPreparationCliError } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
@@ -15,10 +15,14 @@ import { sendDaemonAdmitRun, type CliDaemonFailure } from "./daemon.js";
 import { toRunRecord } from "../run-record.js";
 import { importWorkflowPackage } from "../workflow-import.js";
 import { renderWorkflowTerminalViz } from "../workflow-terminal-viz.js";
+import { supportsColor } from "../terminal-style.js";
 import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
+import { canPrompt } from "./prompt-io.js";
+import { pickWorkflowCatalogEntry } from "./workflow-catalog-picker.js";
 
 export type WorkflowCommandContext = {
   cwd: string;
+  stdin: Readable;
   stdout: Writable;
   stderr: Writable;
   setExitCode(code: number): void;
@@ -49,25 +53,16 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
   const command = new Command("workflow")
     .alias("wf")
     .exitOverride()
-    .description("List, import, check, run, and visualize workflow definitions.");
+    .description("Browse, import, check, run, and visualize workflow definitions.");
 
-  command.addCommand(withJsonOutput(new Command("list")
+  command.addCommand(withJsonOutput(new Command("catalog")
     .exitOverride()
-    .description("List cataloged workflows.")
-    .option("--project", "list project workflow catalog entries")
-    .option("--global", "list global workflow catalog entries")
-    ).action(async (options: CatalogOutputOptions) => {
-      await listCatalog(ctx, options);
-    }));
-
-  command.addCommand(withJsonOutput(new Command("show")
-    .exitOverride()
-    .description("Show a cataloged workflow.")
-    .argument("<name>", "workflow catalog name")
-    .option("--project", "show a project workflow catalog entry")
-    .option("--global", "show a global workflow catalog entry")
-    ).action(async (name: string, options: CatalogOutputOptions) => {
-      await showCatalog(ctx, name, options);
+    .description("Browse the workflow catalog or inspect one entry.")
+    .argument("[name]", "workflow catalog name; omit to browse the catalog")
+    .option("--project", "use the project workflow catalog")
+    .option("--global", "use the global workflow catalog")
+    ).action(async (name: string | undefined, options: CatalogOutputOptions) => {
+      await queryCatalog(ctx, name, options);
     }));
 
   command.addCommand(withJsonOutput(new Command("import")
@@ -122,22 +117,35 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
   return command;
 }
 
-async function listCatalog(ctx: WorkflowCommandContext, options: CatalogOutputOptions): Promise<void> {
+async function queryCatalog(ctx: WorkflowCommandContext, name: string | undefined, options: CatalogOutputOptions): Promise<void> {
+  if (name !== undefined) {
+    await writeCatalogEntryResult(ctx, name, options);
+    return;
+  }
+
   const catalogEntries = await discoverWorkflowCatalog(ctx.cwd, options);
+  if (outputFormatFor(options) === "text"
+    && canPrompt(ctx)
+    && catalogEntries.some(entry => entry.status === "available")) {
+    const selected = await pickWorkflowCatalogEntry(catalogEntries, ctx);
+    if (selected === undefined) throw usageError("Workflow selection cancelled.");
+    await writeCatalogEntryResult(ctx, selected.name, {
+      [selected.scope]: true,
+    });
+    return;
+  }
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "inspect",
-    message: "Workflow catalog listed.",
     catalogEntries,
   }, outputFormatFor(options), ctx, 0));
 }
 
-async function showCatalog(ctx: WorkflowCommandContext, name: string, options: CatalogOutputOptions): Promise<void> {
-  const catalog = await showWorkflowCatalogEntry(ctx.cwd, name, options);
+async function writeCatalogEntryResult(ctx: WorkflowCommandContext, name: string, options: CatalogOutputOptions): Promise<void> {
+  const catalog = await lookupWorkflowCatalogEntry(ctx.cwd, name, options);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "inspect",
-    message: "Workflow catalog entry shown.",
     catalog,
   }, outputFormatFor(options), ctx, 0));
 }
@@ -264,8 +272,7 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
   const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
   if (options.out === undefined) {
     const visualization = renderWorkflowTerminalViz(prepared.ir, {
-      color: (ctx.stdout as Writable & { isTTY?: boolean }).isTTY === true
-        && process.env.NO_COLOR === undefined,
+      color: supportsColor(ctx.stdout),
     });
     ctx.setExitCode(writeResult({
       ok: true,

@@ -67,6 +67,7 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void): Command 
 
   program.addCommand(createWorkflowCommand({
     ...io,
+    stdin,
     setExitCode,
   }));
   program.addCommand(createRunsCommand({
