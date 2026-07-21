@@ -1,5 +1,17 @@
 # @acpus/web
 
+## 0.1.0-alpha.9
+
+### Patch Changes
+
+- 108d06e: Republish the alpha package graph so runtime consumers resolve an
+  `@acpus/expression/ir` entrypoint that exports `isJsonValue`.
+- Updated dependencies [108d06e]
+  - @acpus/core@0.7.0-alpha.7
+  - @acpus/expression@0.1.0-alpha.6
+  - @acpus/runtime@0.9.0-alpha.8
+  - @acpus/workflow-compiler@0.1.0-alpha.7
+
 ## 0.1.0-alpha.8
 
 ### Patch Changes

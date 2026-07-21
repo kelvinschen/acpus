@@ -1,6 +1,6 @@
 {
   "name": "@acpus/workflow-compiler",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "type": "module",
   "description": "Acpus workflow module compiler and frozen workflow preparation.",
   "license": "MIT",

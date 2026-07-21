@@ -1,5 +1,14 @@
 # @acpus/core
 
+## 0.7.0-alpha.7
+
+### Patch Changes
+
+- 108d06e: Republish the alpha package graph so runtime consumers resolve an
+  `@acpus/expression/ir` entrypoint that exports `isJsonValue`.
+- Updated dependencies [108d06e]
+  - @acpus/expression@0.1.0-alpha.6
+
 ## 0.7.0-alpha.6
 
 ### Minor Changes

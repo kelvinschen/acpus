@@ -1,5 +1,12 @@
 # @acpus/expression
 
+## 0.1.0-alpha.6
+
+### Minor Changes
+
+- 108d06e: Republish the alpha package graph so runtime consumers resolve an
+  `@acpus/expression/ir` entrypoint that exports `isJsonValue`.
+
 ## 0.1.0-alpha.5
 
 ### Minor Changes
