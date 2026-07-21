@@ -20,9 +20,7 @@
 
 <p align="center"><strong>描述你的任务，让 Agent 编排 Agents。</strong></p>
 
-把任务交给 Orchestrator Agent。它使用 TypeScript 设计工作流，指挥任意组合的
-ACP-compatible Worker Agents，并随着工作推进始终掌控全局。Acpus 提供持久化 runtime，
-负责检查和执行工作流图，同时追踪状态、artifact 与结果。
+把任务交给 Orchestrator Agent。它使用 TypeScript 设计工作流，指挥任意组合的 ACP-compatible Worker Agents，并随着工作推进始终掌控全局。Acpus 提供持久化 runtime，负责检查和执行工作流图，同时追踪状态、artifact 与结果。
 
 > **Orchestrator Agent 掌控工作流。**
 >
@@ -39,27 +37,18 @@ ACP-compatible Worker Agents，并随着工作推进始终掌控全局。Acpus �
   → Orchestrator Agent 向你报告结果
 ```
 
-一个 Orchestrator Agent 端到端负责整项工作：拆解任务、分配角色、编写
-`workflow.ts`、启动 run、观察进展，并通过 Acpus 介入，直到工作收敛。Worker Agents
-专注于各自节点中的研究、实现、审查或综合任务；它们不负责整体计划或整次运行。
+一个 Orchestrator Agent 端到端负责整项工作：拆解任务、分配角色、编写`workflow.ts`、启动 run、观察进展，并通过 Acpus 介入，直到工作收敛。Worker Agents 专注于各自节点中的研究、实现、审查或综合任务；它们不负责整体计划或整次运行。
 
-Acpus 是持久化执行与控制边界。它检查工作流图、调度节点、记录状态、artifact 与结果，
-并提供 inspect、pause、resume、局部 retry 和 fork 等控制能力，供 Orchestrator Agent
-使用。
+Acpus 是持久化执行与控制边界。它检查工作流图、调度节点、记录状态、artifact 与结果，并提供 inspect、pause、resume、局部 retry 和 fork 等控制能力，供 Orchestrator Agent 使用。
 
-简单任务仍然适合直接交给单个 Agent。当任务需要多个独立上下文、不同 Agent 能力、
-本地命令或 artifact、人工输入，或者失败后不适合从头再来时，再使用 Acpus。
+简单任务仍然适合直接交给单个 Agent。当任务需要多个独立上下文、不同 Agent 能力、本地命令或 artifact、人工输入，或者失败后不适合从头再来时，再使用 Acpus。
 
 ## 为什么是 `workflow.ts`
 
-- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以阅读、修改和
-  审查。
-- **原生面向 ACP。** 同一张 workflow 可以让不同角色使用不同的 ACP-compatible
-  Agents，而不把整张图绑定到单一模型产品。
-- **由 Acpus 运行。** 执行前，Acpus 检查 authored structure，并将其降低为冻结、可
-  序列化的 `WorkflowIR`；执行中，Acpus 在当前 workspace 保存持久化状态。
-- **一次性与持久化使用同一个文件。** 任务结束后可以删除，也可以提交进仓库或随 Skill
-  分发，沉淀为工程资产。
+- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以阅读、修改和审查。
+- **原生面向 ACP。** 同一张 workflow 可以让不同角色使用不同的 ACP-compatible Agents，而不把整张图绑定到单一模型产品。
+- **由 Acpus 运行。** 执行前，Acpus 检查 authored structure，并将其降低为冻结、可序列化的 `WorkflowIR`；执行中，Acpus 在当前 workspace 保存持久化状态。
+- **一次性与持久化使用同一个文件。** 任务结束后可以删除，也可以提交进仓库或随 Skill 分发，沉淀为工程资产。
 
 ## 快速开始
 
@@ -67,14 +56,10 @@ Acpus 是持久化执行与控制边界。它检查工作流图、调度节点�
 
 ```sh
 npm install -g acpus
-mkdir -p .agents/skills
 acpus skill install --project
 ```
 
-`acpus skill install --project` 会把内置 Skill 安装到项目中每个已经存在的 Skill 根
-目录：`.agents/skills` 和 `.claude/skills`。不存在的目录会被跳过，而且至少需要已有
-一个，因此示例先创建 `.agents/skills`。如果受支持的全局 Skill 根目录已经存在，可以
-使用 `--global`。
+`acpus skill install --project` 会把内置 Skill 安装到项目中每个已经存在的 Skill 根目录：`.agents/skills` 和 `.claude/skills`。不存在的目录会被跳过，而且至少需要已有一个。如果受支持的全局 Skill 根目录已经存在，可以使用 `--global`。
 
 ### 2. 从目标开始
 
@@ -85,8 +70,7 @@ acpus skill install --project
 > /acpus 启动一个 workflow，判断这个 release 是否已经可以发布
 > ```
 >
-> 这就够了。Orchestrator Agent 会决定如何组织、运行和观察整个工作。你也可以指定要
-> 编排的 Worker Agents，例如让 Claude 负责审查、Codex 负责总结。
+> 这就够了。Orchestrator Agent 会决定如何组织、运行和观察整个工作。你也可以指定要编排的 Worker Agents，例如让 Claude 负责审查、Codex 负责总结。
 
 ### 3. 审查生成的 TypeScript
 
@@ -157,10 +141,7 @@ acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
 acpus runs inspect <run-id>
 ```
 
-`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在
-终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。
-`workflow run` 创建并执行持久化 run；`runs inspect` 读取它的结构、状态、attempt、
-artifact 与结果。
+`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 创建并执行持久化 run；`runs inspect` 读取它的结构、状态、attempt、artifact 与结果。
 
 ### 常用运行控制
 
@@ -173,13 +154,11 @@ acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-Retry 用于重试当前 run 中失败的部分。Fork 会创建新 run，并且只会在 Acpus 的兼容性与
-依赖边界内复用已完成工作；它不是无条件缓存。
+Retry 用于重试当前 run 中失败的部分。Fork 会创建新 run，并且只会在 Acpus 的兼容性与依赖边界内复用已完成工作；它不是无条件缓存。
 
 ## 配置 Agent
 
-Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配置全局 custom
-agent，或在项目的 `.acpxrc.json` 中配置：
+Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配置全局 custom agent，或在项目的 `.acpxrc.json` 中配置：
 
 ```json
 {
@@ -189,9 +168,7 @@ agent，或在项目的 `.acpxrc.json` 中配置：
 }
 ```
 
-然后在 workflow 中通过 `{ use: "my-agent" }` 引用该名称。更多配置方式请参考 `acpx`
-文档：[pin-a-custom-agent-name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in)
-和 [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents)。
+然后在 workflow 中通过 `{ use: "my-agent" }` 引用该名称。更多配置方式请参考 `acpx`文档：[pin-a-custom-agent-name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in) 和 [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents)。
 
 ## 核心概念
 
@@ -216,18 +193,13 @@ agent，或在项目的 `.acpxrc.json` 中配置：
 
 ## 运行一次，或长期保留
 
-`workflow.ts` 可以只服务眼前这一次任务，结束后直接删除。如果 Agent 写出的编排值得
-复用，就提交同一个文件、随 Skill 分发，或在下一次运行前继续修改。一次性与持久化版本
-不需要两套格式。
+`workflow.ts` 可以只服务眼前这一次任务，结束后直接删除。如果 Agent 写出的编排值得复用，就提交同一个文件、随 Skill 分发，或在下一次运行前继续修改。一次性与持久化版本不需要两套格式。
 
 ## 从旧版本迁移
 
-旧版 Acpus 使用 YAML Workflow Spec、不同的节点模型与 CLI。现在的 Acpus 使用
-TypeScript module、`Expr` 值流、Agent / Task / Signal、新的控制面和新的持久化
-runtime，并且不会添加兼容 shim。
+旧版 Acpus 使用 YAML Workflow Spec、不同的节点模型与 CLI。现在的 Acpus 使用TypeScript module、`Expr` 值流、Agent / Task / Signal、新的控制面和新的持久化runtime，并且不会添加兼容 shim。
 
-请阅读[迁移指南](docs/migrate-to-next.md)，了解核心心智映射与实际重写步骤。旧版产品
-文档见
+请阅读[迁移指南](docs/migrate-to-next.md)，了解核心心智映射与实际重写步骤。旧版产品文档见
 [Acpus 0.5.2 中文 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.zh.md)。
 
 ## 文档
@@ -243,8 +215,7 @@ runtime，并且不会添加兼容 shim。
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；旧版本保留在 repository tag
-历史中。
+当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；旧版本保留在 repository tag历史中。
 
 ## 开发
 

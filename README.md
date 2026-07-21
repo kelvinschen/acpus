@@ -20,10 +20,7 @@
 
 <p align="center"><strong>Describe the task. Let one agent orchestrate many.</strong></p>
 
-Give an orchestrator agent a task. It designs the workflow with TypeScript,
-directs any mix of ACP-compatible worker agents, and stays in control as the
-work unfolds. Acpus provides the durable runtime that checks and executes the
-graph while tracking its state, artifacts, and results.
+Give an orchestrator agent a task. It designs the workflow with TypeScript, directs any mix of ACP-compatible worker agents, and stays in control as the work unfolds. Acpus provides the durable runtime that checks and executes the graph while tracking its state, artifacts, and results.
 
 > **Your orchestrator agent owns the workflow.**
 >
@@ -40,32 +37,18 @@ Describe the task
   → Orchestrator agent reports the outcome to you
 ```
 
-One orchestrator agent owns the work end
-to end: it decomposes the task, assigns roles, writes `workflow.ts`, starts the
-run, watches its progress, and intervenes through Acpus until the work
-converges. Worker agents stay focused on the research, implementation, review,
-or synthesis assigned to their nodes; they do not own the overall plan or run.
+One orchestrator agent owns the work end to end: it decomposes the task, assigns roles, writes `workflow.ts`, starts the run, watches its progress, and intervenes through Acpus until the work converges. Worker agents stay focused on the research, implementation, review, or synthesis assigned to their nodes; they do not own the overall plan or run.
 
-Acpus is the durable execution and control boundary. It checks the authored
-graph, schedules nodes, records state, artifacts, and results, and exposes the
-controls the orchestrator uses to inspect, pause, resume, retry failed work, or
-fork the run.
+Acpus is the durable execution and control boundary. It checks the authored graph, schedules nodes, records state, artifacts, and results, and exposes the controls the orchestrator uses to inspect, pause, resume, retry failed work, or fork the run.
 
-Simple work should still go directly to one agent. Reach for Acpus when a task
-needs multiple independent contexts, different agent strengths, local commands
-or artifacts, human input, or recovery without starting over.
+Simple work should still go directly to one agent. Reach for Acpus when a task needs multiple independent contexts, different agent strengths, local commands or artifacts, human input, or recovery without starting over.
 
 ## Why `workflow.ts`
 
-- **Agent-authored, human-reviewable.** The orchestration is a real TypeScript
-  module that you can read, edit, and review.
-- **ACP-native.** Different roles in one workflow can use different
-  ACP-compatible agents without binding the graph to one model product.
-- **Acpus-operated.** Before execution, Acpus checks the authored structure and
-  lowers it to frozen, serializable `WorkflowIR`. During execution, it records
-  durable workspace-local state.
-- **Disposable or durable.** Delete a one-off workflow after the task, or keep
-  the same file in your repository or Skill as an engineering asset.
+- **Agent-authored, human-reviewable.** The orchestration is a real TypeScript module that you can read, edit, and review.
+- **ACP-native.** Different roles in one workflow can use different ACP-compatible agents without binding the graph to one model product.
+- **Acpus-operated.** Before execution, Acpus checks the authored structure and lowers it to frozen, serializable `WorkflowIR`. During execution, it records durable workspace-local state.
+- **Disposable or durable.** Delete a one-off workflow after the task, or keep the same file in your repository or Skill as an engineering asset.
 
 ## Quick Start
 
@@ -73,17 +56,10 @@ or artifacts, human input, or recovery without starting over.
 
 ```sh
 npm install -g acpus
-mkdir -p .agents/skills
 acpus skill install --project
 ```
 
-`acpus skill install --project` installs the bundled Skill into each existing
-project Skill root: `.agents/skills` and `.claude/skills`. Missing roots are
-skipped, and at least one must already exist, so the example creates
-`.agents/skills` first. Use `--global` when a supported global Skill root
-already exists. To install into another existing Skill root, use
-`acpus skill install --dir <skills-root>`; the Skill is copied to
-`<skills-root>/acpus`.
+`acpus skill install --project` installs the bundled Skill into each existing project Skill root: `.agents/skills` and `.claude/skills`. Missing roots are skipped, and at least one must already exist. Use `--global` when a supported global Skill root already exists. To install into another existing Skill root, use `acpus skill install --dir <skills-root>`; the Skill is copied to `<skills-root>/acpus`.
 
 ### 2. Start with the outcome
 
@@ -100,8 +76,7 @@ already exists. To install into another existing Skill root, use
 
 ### 3. Review the generated TypeScript
 
-This compact example uses two ACP-compatible agents for independent reviews and
-a third role to synthesize them:
+This compact example uses two ACP-compatible agents for independent reviews and a third role to synthesize them:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -169,9 +144,7 @@ acpus runs inspect <run-id>
 ```
 
 `workflow check` typechecks, compiles, and validates without admitting a run.
-`workflow viz` prints a compact static terminal tree by default; `--out` writes
-a self-contained HTML graph instead. `workflow run` admits and executes a durable
-run; `runs inspect` reads its structure, status, attempts, artifacts, and results.
+`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` admits and executes a durable run; `runs inspect` reads its structure, status, attempts, artifacts, and results.
 
 ### Common Run Controls
 
@@ -184,14 +157,11 @@ acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-Retry targets a failed part of the current run. Fork creates a new run and can
-reuse completed work only within Acpus compatibility and dependency boundaries;
-it is not an unconditional cache.
+Retry targets a failed part of the current run. Fork creates a new run and can reuse completed work only within Acpus compatibility and dependency boundaries; it is not an unconditional cache.
 
 ## Configuring Agents
 
-Acpus uses `acpx` as the source of truth for named agent configuration. Define a
-custom agent globally in `~/.acpx/config.json` or per project in `.acpxrc.json`:
+Acpus uses `acpx` as the source of truth for named agent configuration. Define a custom agent globally in `~/.acpx/config.json` or per project in `.acpxrc.json`:
 
 ```json
 {
@@ -201,9 +171,7 @@ custom agent globally in `~/.acpx/config.json` or per project in `.acpxrc.json`:
 }
 ```
 
-Then reference that name in the workflow with `{ use: "my-agent" }`. See the
-`acpx` guides for [pinning a custom agent name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in)
-and [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents).
+Then reference that name in the workflow with `{ use: "my-agent" }`. See the `acpx` guides for [pinning a custom agent name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in) and [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents).
 
 ## Core Concepts
 
@@ -228,21 +196,13 @@ and [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/cust
 
 ## Run It Once—or Keep It
 
-A `workflow.ts` can exist only for the task in front of you. When the work is
-done, delete it. If the orchestration proves useful, commit the same file,
-publish it with a Skill, or adapt it for the next run. Acpus does not require a
-second format for the reusable version.
+A `workflow.ts` can exist only for the task in front of you. When the work is done, delete it. If the orchestration proves useful, commit the same file, publish it with a Skill, or adapt it for the next run. Acpus does not require a second format for the reusable version.
 
 ## Migrate from Previous
 
-Previous Acpus releases authored YAML Workflow Specs around a different node
-model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent /
-Task / Signal, a new control surface, and a new durable runtime. It intentionally
-does not add compatibility shims.
+Previous Acpus releases authored YAML Workflow Specs around a different node model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent / Task / Signal, a new control surface, and a new durable runtime. It intentionally does not add compatibility shims.
 
-Read the [migration guide](docs/migrate-to-next.md) for the mental-model
-mapping and a practical rewrite path. For the previous product documentation,
-see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md).
+Read the [migration guide](docs/migrate-to-next.md) for the mental-model mapping and a practical rewrite path. For the previous product documentation, see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md).
 
 ## Documentation
 
