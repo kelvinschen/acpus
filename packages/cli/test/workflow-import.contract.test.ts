@@ -94,7 +94,7 @@ describe("workflow import contracts", () => {
         const tarSource = join(workspace, "tar-source");
         await writePackage(join(tarSource, "package"), "tar-import", { "data/value.txt": "tar" });
         const tarPath = join(workspace, "source.tGz");
-        await createTar({ cwd: tarSource, file: tarPath, gzip: true }, ["package"]);
+        createTar({ cwd: tarSource, file: tarPath, gzip: true, sync: true }, ["package"]);
         const tarImport = await importDirect(workspace, tarPath, { scope: "global" });
         expectOk(tarImport, "tar-import", "global");
 
@@ -218,18 +218,19 @@ describe("workflow import contracts", () => {
         await writePackage(join(tarSource, "package"), "unsafe-tar");
         await symlink("workflow.ts", join(tarSource, "package", "workflow-link.ts"));
         const symlinkTar = join(workspace, "symlink.tar.gz");
-        await createTar({ cwd: tarSource, file: symlinkTar, gzip: true }, ["package"]);
+        createTar({ cwd: tarSource, file: symlinkTar, gzip: true, sync: true }, ["package"]);
         expectImportFailure(await importDirect(workspace, symlinkTar), "IMPORT_ARCHIVE_INVALID");
 
         await rm(join(tarSource, "package", "workflow-link.ts"));
+        const duplicateTar = join(workspace, "duplicate.tar.gz");
+        createTar({ cwd: tarSource, file: duplicateTar, gzip: true, sync: true }, ["package/workflow.ts", "package/workflow.ts"]);
+        expectImportFailure(await importDirect(workspace, duplicateTar), "IMPORT_ARCHIVE_INVALID");
+
         await link(join(tarSource, "package", "workflow.ts"), join(tarSource, "package", "workflow-hardlink.ts"));
         const hardlinkTar = join(workspace, "hardlink.tar.gz");
-        await createTar({ cwd: tarSource, file: hardlinkTar, gzip: true }, ["package"]);
+        // Fixture creation is synchronous because only archive import is under test.
+        createTar({ cwd: tarSource, file: hardlinkTar, gzip: true, sync: true }, ["package"]);
         expectImportFailure(await importDirect(workspace, hardlinkTar), "IMPORT_ARCHIVE_INVALID");
-
-        const duplicateTar = join(workspace, "duplicate.tar.gz");
-        await createTar({ cwd: tarSource, file: duplicateTar, gzip: true }, ["package/workflow.ts", "package/workflow.ts"]);
-        expectImportFailure(await importDirect(workspace, duplicateTar), "IMPORT_ARCHIVE_INVALID");
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
       });
     });
