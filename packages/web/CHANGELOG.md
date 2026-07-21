@@ -1,5 +1,12 @@
 # @acpus/web
 
+## 0.1.0-alpha.8
+
+### Patch Changes
+
+- Updated dependencies [32cc127]
+  - @acpus/runtime@0.9.0-alpha.7
+
 ## 0.1.0-alpha.7
 
 ### Patch Changes

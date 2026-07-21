@@ -1,5 +1,31 @@
 # acpus
 
+## 0.6.0-alpha.8
+
+### Minor Changes
+
+- 76c788f: Allow the bundled Acpus skill to be installed into an existing custom skills root with `acpus skill install --dir`.
+- aa39b84: Render compact semantic workflow trees directly in the terminal while preserving optional self-contained HTML output through `workflow viz --out`.
+- f5892b2: Replace the separate `workflow list` and `workflow show` commands with `workflow catalog [name]`. An omitted name opens an interactive terminal picker or prints a path-free list when piped, while a provided or selected name uses strict entry lookup with concise, semantic-color TTY details that honor `NO_COLOR`.
+
+  Add semantic TTY colors to the aligned Doctor report while keeping piped, `NO_COLOR`, and JSON output unstyled.
+
+### Patch Changes
+
+- 32cc127: Make targeted retry distinguish failed target paths from `parent_failed`
+  completion dependencies, restore required canceled work in one event, preserve
+  resolved timeouts, and atomically reject terminal, paused, configuration, or
+  strategy-blocked retries that cannot schedule progress. Fail and recover
+  running `parallel all` and `fanout all` groups whose required work is canceled
+  instead of leaving the run non-terminal without schedulable work. After a
+  restart, reconcile all immediately derivable composite transitions, resume
+  admissible ready work, and recover an expired owner's started attempts even
+  beside an untimed Signal wait. Derive wide member cancellation batches without
+  rescanning the projection per member.
+- Updated dependencies [32cc127]
+  - @acpus/runtime@0.9.0-alpha.7
+  - @acpus/web@0.1.0-alpha.8
+
 ## 0.6.0-alpha.7
 
 ### Minor Changes
