@@ -53,7 +53,10 @@ Test public behavior through public entrypoints. Testing an internal helper is a
 4. Run narrow checks while iterating, then broaden verification in proportion to the change's reach and risk.
 5. Update the canonical spec in the same change when current behavior changes.
 
-Greenfield changes should test the current contract directly. Do not add compatibility tests, migration behavior, or legacy terminology unless they are explicitly part of the requested behavior. `legacy/` remains read-only history.
+Greenfield changes should test the current contract directly. Do not add
+compatibility tests, migration behavior, or previous-product terminology unless
+they are explicitly part of the requested behavior. Acpus 0.5 remains available
+as history at its release tag.
 
 Use the repository's package scripts rather than duplicating their underlying commands. A typical progression is a focused test project or file, then package typechecking, followed by workspace tests and build checks when the change crosses package or distribution boundaries.
 

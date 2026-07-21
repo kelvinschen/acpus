@@ -1,14 +1,17 @@
 # Acpus Codes of Conduct
 
-> The codebase is being rebuilt around the TypeScript-first core (`@acpus/core` in `packages/core`). The previous version archived under `legacy/`. They are read-only history. Because the TypeScript core has not been published yet, **NEVER add compatibility shims unless explicitly requested**.
+> Acpus is a TypeScript-first product built around `@acpus/core` in
+> `packages/core`. The previous YAML product remains available at the
+> `acpus@0.5.2` Git tag. Treat current development as greenfield and **NEVER add
+> compatibility shims unless explicitly requested**.
 
 ## Specification Maintenance
 
 - Follow the [specification maintenance guide](docs/specification-maintenance.md)
   before adding or reorganizing specs.
 - Current behavior belongs in `specs/`; future work belongs in `docs/roadmap/`;
-  completed TypeScript plans belong in `docs/roadmap/archive/`; the previous
-  YAML product remains read-only under `legacy/`.
+  completed plans and previous product history belong in Git history and
+  release tags.
 - Read the owning spec before changing behavior. Update the canonical spec and
   verification in the same change; behavior-preserving refactors do not add
   normative requirements.
@@ -23,7 +26,8 @@
 - Read the relevant spec before changing implementation. If code and spec disagree, fix one of them in the same change.
 - Use the smallest layer that solves the task. Prefer a pure lowering/helper change over adding a new wrapper or abstraction.
 - Model recoverable boundary failures with typed Result/ResultAsync and tagged errors. Keep local absence as `undefined`, invariant/system failures as throws, and never serialize Result objects into IR, events, SQLite rows, or CLI JSON.
-- Treat `legacy/` as archival. Do not edit or import from it unless the task explicitly asks for legacy maintenance.
+- Do not restore previous-product code from older tags unless the task
+  explicitly asks for historical maintenance.
 
 ## The Way of Clean Code
 

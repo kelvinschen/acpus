@@ -128,8 +128,7 @@ Implemented:
 - compile to WorkflowIR
 - zx/core-backed `$` wrapper shape
 
-See the current [`Core Spec`](../../specs/core-spec.md) and
-[`Specs Index`](../../specs/INDEX.md). Future gaps belong in the
-[`Active Roadmap Index`](../../docs/roadmap/INDEX.md); the
-[`historical Core Roadmap`](../../docs/roadmap/archive/core-roadmap.md) is
-completed TypeScript-rewrite context, not the current contract.
+See the current [Core Spec](https://github.com/kelvinschen/acpus/blob/main/specs/core-spec.md)
+and [Specs Index](https://github.com/kelvinschen/acpus/blob/main/specs/INDEX.md).
+Future gaps belong in the
+[Active Roadmap Index](https://github.com/kelvinschen/acpus/blob/main/docs/roadmap/INDEX.md).

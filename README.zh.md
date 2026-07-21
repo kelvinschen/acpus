@@ -215,7 +215,7 @@ Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；旧版本保留在 repository tag历史中。
+当前行为以 `specs/` 为准；未来工作放在 `docs/roadmap/`；旧版本保留在 Git tag 历史中。
 
 ## 开发
 

@@ -1,24 +1,17 @@
 # Acpus Roadmap Index
 
-This directory tracks Acpus plans, goal records, backlog, and capability gaps.
-Current implemented behavior lives in `specs/` and is not repeated here.
-Completed TypeScript-rewrite roadmap records live under `archive/` as
-implementation context. The previous YAML implementation and its documentation
-remain separately archived under `legacy/`. Neither archive defines current
-behavior.
+This directory tracks active Acpus plans, goal records, backlog, and capability
+gaps. Current implemented behavior lives in `specs/` and is not repeated here.
+Completed plans and previous implementations remain available in Git history
+and release tags; they are not retained in the current documentation tree.
 
 ## Writing Conventions
 
 - Write future plans, goal records, and capability gaps. Implemented behavior
-  belongs in `specs/`; completed roadmap records are background context, not
-  current behavior truth.
+  belongs in `specs/`; delete a roadmap record after its lasting contract has
+  moved into the owning spec.
 - Do not use RFC 2119 normative verbs as constraints; those are reserved for specs. Use descriptive wording such as "plan", "goal", "gap", "candidate", and "TBD" here.
 
 ## Active
 
 No active roadmap records.
-
-## Completed
-
-- [Archived Roadmap Records](archive/INDEX.md) — completed plans, implementation
-  goals, audits, and design context for the TypeScript rewrite.

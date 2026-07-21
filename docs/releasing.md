@@ -34,8 +34,8 @@ also be automated.
 Do not edit package versions by hand. Do not rerun a partially failed publish
 until the versions that reached npm have been inventoried. npm releases are
 fixed forward with a new changeset; they are not rolled back by moving `main`.
-Stable automation refuses to run while Changesets prerelease mode is active;
-prereleases continue to use the separate alpha workflow.
+Stable automation refuses to run while Changesets prerelease mode is active.
+There is no maintained prerelease publication workflow.
 
 ## Deploy the product page
 
