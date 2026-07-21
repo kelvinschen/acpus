@@ -1,5 +1,11 @@
 # @acpus/agent-executor
 
+## 0.1.1
+
+### Patch Changes
+
+- 93560c5: Support Node.js 22.18+ within the Node.js 22 line and Node.js 24 or newer. Acpus-triggered SQLite initialization now suppresses only Node.js's SQLite experimental warning, leaving unrelated warnings visible.
+
 ## 0.1.0
 
 ### Minor Changes
