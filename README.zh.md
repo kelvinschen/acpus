@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="page/logo/logo-lockup.svg" alt="Acpus mark" width="120">
+  <img src="page/logo/logo-lockup.svg" alt="Acpus mark" width="300">
 </p>
 
 <h1 align="center">acpus</h1>
