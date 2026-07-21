@@ -72,6 +72,11 @@
 
 * {
   margin: 0;
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
 }
 [hidden] {
   display: none !important;
@@ -960,8 +965,6 @@ a:hover {
     font-family: var(--mono);
     font-size: 12px;
     line-height: 1.58;
-    scrollbar-color: var(--blue) transparent;
-  scrollbar-width: thin;
   tab-size: 2;
   transition: width 500ms var(--ease-out), padding 500ms var(--ease-out), opacity 320ms ease;
 }
@@ -1104,8 +1107,6 @@ a:hover {
 .graph-viewport.can-pan {
   overflow-x: auto;
   justify-content: flex-start;
-  scrollbar-color: var(--blue) transparent;
-  scrollbar-width: thin;
 }
 
 .graph-zoom {
@@ -1569,8 +1570,6 @@ a:hover {
   font-family: var(--mono);
   font-size: 10.5px;
     line-height: 1.72;
-    scrollbar-color: var(--orange) transparent;
-  scrollbar-width: thin;
 }
 
 .term:empty::before {
@@ -1974,8 +1973,6 @@ a:hover {
   display: flex;
   align-items: stretch;
   overflow-x: auto;
-  scrollbar-color: var(--blue) transparent;
-    scrollbar-width: thin;
 }
 
 .toy-node {
