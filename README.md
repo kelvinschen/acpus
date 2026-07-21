@@ -198,9 +198,9 @@ Then reference that name in the workflow with `{ use: "my-agent" }`. See the `ac
 
 A `workflow.ts` can exist only for the task in front of you. When the work is done, delete it. If the orchestration proves useful, commit the same file, publish it with a Skill, or adapt it for the next run. Acpus does not require a second format for the reusable version.
 
-## Migrate from Previous
+## Migrate from Acpus 0.5
 
-Previous Acpus releases authored YAML Workflow Specs around a different node model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent / Task / Signal, a new control surface, and a new durable runtime. It intentionally does not add compatibility shims.
+Acpus 0.5 authored YAML Workflow Specs around a different node model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent / Task / Signal, a new control surface, and a new durable runtime. It intentionally does not add compatibility shims.
 
 Read the [migration guide](docs/migrate-to-next.md) for the mental-model mapping and a practical rewrite path. For the previous product documentation, see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md).
 

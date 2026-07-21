@@ -1,6 +1,9 @@
 # Specs Index
 
-Specs define current implementation truth for Acpus. A file in this directory is current; drafts, backlog, and capability gaps belong in `docs/roadmap/`, completed TypeScript-era plans belong in `docs/roadmap/archive/`, and pre-TypeScript history belongs in `legacy/`.
+Specs define current implementation truth for Acpus. A file in this directory
+is current; drafts, backlog, and capability gaps belong in `docs/roadmap/`, and
+completed plans and previous implementations belong in Git history and release
+tags.
 
 ## Template
 

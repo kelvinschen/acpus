@@ -5,12 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-async function markdownFiles(directory, { exclude = [] } = {}) {
+async function markdownFiles(directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const entryPath = path.join(directory, entry.name);
-    if (exclude.some((excluded) => entryPath.startsWith(excluded))) continue;
-    if (entry.isDirectory()) files.push(...(await markdownFiles(entryPath, { exclude })));
+    if (entry.isDirectory()) files.push(...(await markdownFiles(entryPath)));
     else if (entry.name.endsWith(".md")) files.push(entryPath);
   }
   return files;
@@ -18,9 +17,7 @@ async function markdownFiles(directory, { exclude = [] } = {}) {
 
 const files = [path.join(root, "README.md"), path.join(root, "README.zh.md")];
 files.push(
-  ...(await markdownFiles(path.join(root, "docs"), {
-    exclude: [path.join(root, "docs", "roadmap", "archive")],
-  })),
+  ...(await markdownFiles(path.join(root, "docs"))),
   ...(await markdownFiles(path.join(root, "specs"))),
   ...(await markdownFiles(path.join(root, "packages", "cli", "skills", "acpus"))),
 );

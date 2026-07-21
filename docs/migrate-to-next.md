@@ -1,26 +1,26 @@
-# Migrate to Acpus Next
+# Migrate to Acpus 0.6
 
 > [!IMPORTANT]
 > Acpus 0.6 is a TypeScript-first foundation rewrite. It is not a compatibility release
-> for the Previous YAML Workflow-Spec product. Migrate one workflow at a time,
-> keep the Previous workflow available until the replacement has been checked and
+> for the 0.5 YAML Workflow-Spec product. Migrate one workflow at a time,
+> keep the 0.5 workflow available until the replacement has been checked and
 > exercised, and verify current behavior against [`specs/`](../specs/INDEX.md),
 > `acpus --help`, and `acpus workflow check`.
 
-Acpus Next keeps the durable-workflow goal, but changes the authoring model. A
-Previous workflow cannot be made into a Next workflow by changing the extension
+Acpus 0.6 keeps the durable-workflow goal, but changes the authoring model. A
+0.5 workflow cannot be made into a 0.6 workflow by changing the extension
 from `.yaml` to `.ts`. The graph, runtime value flow, local execution boundary,
 and several control semantics must be re-authored deliberately.
 
-There is no promised YAML compatibility shim, automatic converter, or Previous
+There is no promised YAML compatibility shim, automatic converter, or 0.5
 run-state importer. The current CLI accepts TypeScript workflow modules and
-TypeScript workflow packages; it does not execute Previous Workflow-Spec YAML.
+TypeScript workflow packages; it does not execute 0.5 Workflow-Spec YAML.
 
 ## The new mental model
 
 ### `build` declares a graph; it does not run the workflow
 
-A Next workflow is a TypeScript module built with
+A 0.6 workflow is a TypeScript module built with
 `defineWorkflow(...).build(...)`. Acpus executes the synchronous `build`
 callback during workflow preparation to construct the authored graph. The
 runtime executes that frozen graph later.
@@ -51,7 +51,7 @@ const count = result.output.items.length;
 
 Use the operation that matches the intent:
 
-| Intent | Next authoring surface |
+| Intent | 0.6 authoring surface |
 | --- | --- |
 | Render text | `template` or dedented Markdown `md` |
 | Project a known field | `node.output.field` |
@@ -89,9 +89,9 @@ author-facing `outputSchema`. Pass runtime data through Task `input`. An inline
 Task `exec` must be self-contained instead of capturing workflow or module
 bindings.
 
-## Previous and Next at a glance
+## 0.5 and 0.6 at a glance
 
-| Area | Previous | Next | Migration consequence |
+| Area | 0.5 | 0.6 | Migration consequence |
 | --- | --- | --- | --- |
 | Authoring file | YAML Workflow Spec | TypeScript module using `defineWorkflow(...).build(...)` | Re-author the workflow; do not mechanically rename the file |
 | Runtime values | CEL and `${{ ... }}` strings | Typed `Expr<T>`, projections, predicates, `template` / `md`, and `lift` | Rewrite every value-flow expression and condition |
@@ -108,12 +108,12 @@ bindings.
 | Hooks | YAML injectors and events; injectors could prepend prompts or alter Program env | JSON event observers only; failures cannot change workflow state or output | Remove injector dependencies or move required context into workflow inputs/Tasks |
 | Replay | Read-only topology replay command | No replay product surface | Use inspect for evidence, retry for the same frozen plan, and fork for a changed plan; none is a replay alias |
 | Visualization | TUI and served visualizer | Compact CLI inspection, static offline HTML, and local Web operator console | Replace old visualization commands and operational habits |
-| Catalog | YAML specs under catalog roots | `.acpus/workflows/<name>/workflow.ts` packages, with the directory and workflow names matching | Repackage catalog entries; YAML is not a valid Next entry |
-| Durable state | Previous `.acpus/state/...` layout | Workspace-local `.acpus/.local/state/runtime.db` and `.acpus/.local/runs/<run-id>/` | Do not copy Previous state files into Next storage |
+| Catalog | YAML specs under catalog roots | `.acpus/workflows/<name>/workflow.ts` packages, with the directory and workflow names matching | Repackage catalog entries; YAML is not a valid 0.6 entry |
+| Durable state | 0.5 `.acpus/state/...` layout | Workspace-local `.acpus/.local/state/runtime.db` and `.acpus/.local/runs/<run-id>/` | Do not copy 0.5 state files into 0.6 storage |
 
-Previous already had ACP Agents, frozen workflow state, pause/resume, retry,
+0.5 already had ACP Agents, frozen workflow state, pause/resume, retry,
 Signal, fork, and visualization. Those are retained product foundations, not
-capabilities that Next invented. Next's main change is the typed authoring and
+capabilities that 0.6 invented. 0.6's main change is the typed authoring and
 runtime boundary: TypeScript graph construction, `Expr<T>` value flow, typed
 Tasks, current inspection surfaces, and compatibility-aware replacement fork.
 
@@ -123,7 +123,7 @@ Tasks, current inspection surfaces, and compatibility-aware replacement fork.
 
 Translate the top-level contract first:
 
-| Previous | Next |
+| 0.5 | 0.6 |
 | --- | --- |
 | `input:` | `inputSchema: z.object(...)` |
 | `agents.<name>.type: builtin` plus `use` | `agents.<name>: { use: "..." }` |
@@ -138,9 +138,9 @@ server command without a named acpx token.
 
 ### Expressions and references
 
-Keep a migration ledger for every Previous expression. A few common rewrites:
+Keep a migration ledger for every 0.5 expression. A few common rewrites:
 
-| Previous intent | Next form |
+| 0.5 intent | 0.6 form |
 | --- | --- |
 | Interpolate `${{ input.topic }}` in a prompt | ``md`Review ${input.topic}``` |
 | Read `${{ steps.review.output.ready }}` | `review.output.ready` |
@@ -173,53 +173,53 @@ Program-to-Task requires a design decision:
 - Return durable data directly; output types come from the TypeScript return
   type.
 - Write only meaningful artifacts with `artifact.write(...)`; do not assume
-  Previous Program stdout/stderr capture behavior.
+  0.5 Program stdout/stderr capture behavior.
 - Treat the Task as trusted code with possible side effects. A fresh process per
   attempt prevents shared module globals across attempts; it does not make the
   Task deterministic or safe to reuse automatically.
 
 For Signals, add an `outputSchema` whenever the payload is structured. A
-schema-less Next Signal expects a JSON string at the CLI boundary, not the
-arbitrary JSON object accepted by a schema-less Previous Signal. Previous
-`on_timeout: default` has no direct Next equivalent; redesign the decision path
+schema-less 0.6 Signal expects a JSON string at the CLI boundary, not the
+arbitrary JSON object accepted by a schema-less 0.5 Signal. 0.5
+`on_timeout: default` has no direct 0.6 equivalent; redesign the decision path
 or recover the failed wait with retry/fork.
 
 ## Map control flow deliberately
 
 ### Sequence, if, and switch
 
-Next has no authored Pipeline node. A workflow or composite callback declares a
+0.6 has no authored Pipeline node. A workflow or composite callback declares a
 static scope and returns its single output. Each `step("id")` is a static node
 declaration; ids remain static even inside fanout and loop callbacks because the
 runtime derives distinct dynamic `nodeKey` values.
 
-Next `if` requires both `then` and `else`. If a Previous `if` omitted `else`,
-return `{}` explicitly from the Next `else` callback when that branch is
-control-only. Next `switch` requires `default`, as Previous did.
+0.6 `if` requires both `then` and `else`. If a 0.5 `if` omitted `else`,
+return `{}` explicitly from the 0.6 `else` callback when that branch is
+control-only. 0.6 `switch` requires `default`, as 0.5 did.
 
 ### Parallel and fanout
 
 Review join semantics instead of copying names:
 
-- Next `parallel` supports `strategy: "all" | "race"`. A Next race returns
+- 0.6 `parallel` supports `strategy: "all" | "race"`. A 0.6 race returns
   `{ winner, result }` for the first successful branch and cancels the rest.
-  Previous parallel race did not cancel losing branches.
-- Next `fanout` supports `strategy: "all" | "quorum"`; quorum uses a runtime
-  `count`. It does not expose Previous `race`, `key`, or independent
+  0.5 parallel race did not cancel losing branches.
+- 0.6 `fanout` supports `strategy: "all" | "quorum"`; quorum uses a runtime
+  `count`. It does not expose 0.5 `race`, `key`, or independent
   `success_criteria` fields.
 - `fanout all` preserves duplicate occurrences and returns results in ascending
   `itemIndex`. Quorum accepts successful outputs in completion order and cancels
   remaining work when the quorum is reached.
-- `maxConcurrency` is a runtime value in Next. `0` or `undefined` means no
+- `maxConcurrency` is a runtime value in 0.6. `0` or `undefined` means no
   authored local cap, still subject to the runtime's host ceiling.
 
-If a Previous fanout race meant “first successful lane,” Next quorum with
+If a 0.5 fanout race meant “first successful lane,” 0.6 quorum with
 `count: 1` may express the intent, but it is not a mechanical translation:
 recheck failure handling, cancellation, output order, and downstream shape.
 
 ### Loop
 
-Next loops are do-while state machines. Declare the complete initial state and
+0.6 loops are do-while state machines. Declare the complete initial state and
 return a complete transition on every round:
 
 ```ts
@@ -243,22 +243,22 @@ const loop = step("refine").loop({
 ```
 
 The transition replaces the whole state; it does not merge a partial object.
-Next has no authored `max_iterations` field, so include an explicit bound in
+0.6 has no authored `max_iterations` field, so include an explicit bound in
 `stop`. Widen empty arrays, `null`, or literal state fields with an explicit
 TypeScript type when necessary.
 
 ### Guard, Assert, and Subworkflow
 
-- A Previous Guard whose only purpose was “continue when true, fail when false”
+- A 0.5 Guard whose only purpose was “continue when true, fail when false”
   can usually become `step(...).assert({ condition, message })`.
-- Guard `complete` has no direct Next equivalent. Restructure the remaining work
+- Guard `complete` has no direct 0.6 equivalent. Restructure the remaining work
   into `if`/`switch` branches and return the selected scope output.
 - Guard's persisted `{ matched, action, message? }` output has no Assert
   equivalent. Preserve that data explicitly if downstream work needs it.
-- Subworkflow has no current Next node equivalent. Re-author one static graph or
+- Subworkflow has no current 0.6 node equivalent. Re-author one static graph or
   split the workflow at an operational boundary. A reusable Task shares local
   computation; it is not a nested durable workflow.
-- Previous YAML `include` is not a Next graph-composition contract. TypeScript
+- 0.5 YAML `include` is not a 0.6 graph-composition contract. TypeScript
   imports can share ordinary code and reusable Tasks, but imported code must
   still produce one valid static authored graph.
 
@@ -266,7 +266,7 @@ TypeScript type when necessary.
 
 ### CLI commands
 
-| Previous | Next |
+| 0.5 | 0.6 |
 | --- | --- |
 | `acpus workflows lint <workflow.yaml>` | `acpus workflow check <workflow.ts>` |
 | `acpus workflows run <workflow.yaml>` | `acpus workflow run <workflow.ts>` |
@@ -274,10 +274,10 @@ TypeScript type when necessary.
 | `acpus runs show <run-id>` | `acpus runs inspect <run-id>` |
 | `acpus runs retry <run-id> --node <nodeKey>` | `acpus runs retry <run-id> --target <target>` |
 | `acpus runs signal <run-id> --node <nodeKey>` | `acpus runs signal <run-id> --target <target>` |
-| Previous spec/run visualizer | `acpus workflow viz ... --out workflow.html` for static HTML; `acpus web` for the local operator console |
-| `acpus runs replay <run-id>` | No Next equivalent |
+| 0.5 spec/run visualizer | `acpus workflow viz ... --out workflow.html` for static HTML; `acpus web` for the local operator console |
+| `acpus runs replay <run-id>` | No 0.6 equivalent |
 
-`wf` remains an alias for the singular `workflow` command. Next foreground
+`wf` remains an alias for the singular `workflow` command. 0.6 foreground
 `workflow run` follows the run; `Ctrl-C` detaches without canceling it. Use
 `--background` for admission without following.
 
@@ -286,12 +286,12 @@ TypeScript type when necessary.
 Do not copy `.acpus/hooks.yaml` to `.acpus/hooks.json`. Rebuild the integration
 from its purpose:
 
-- Next reads `<workspace>/.acpus/hooks.json` and `$HOME/.acpus/hooks.json`.
+- 0.6 reads `<workspace>/.acpus/hooks.json` and `$HOME/.acpus/hooks.json`.
 - The JSON top level is an event map; there is no `hooks` wrapper.
 - Supported events are `run.started`, `run.completed`, `run.failed`,
   `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and
   `node.failed`.
-- Next hooks are asynchronous, non-interfering observers. A hook failure,
+- 0.6 hooks are asynchronous, non-interfering observers. A hook failure,
   timeout, or output cannot change workflow status, output, or IR.
 - `beforeAgentExec` prompt injection and `beforeProgramExec` environment
   injection have no direct equivalent. Move required inputs into the workflow
@@ -344,7 +344,7 @@ them.
 The public input and output keys stay the same in this example; only the
 authoring and runtime-value model changes.
 
-### Previous
+### 0.5
 
 ```yaml
 # review.workflow.yaml
@@ -371,7 +371,7 @@ outputs:
   ready: ${{ steps.review.output.ready }}
 ```
 
-### Next
+### 0.6
 
 ```ts
 // review.workflow.ts
@@ -428,7 +428,7 @@ What changed:
 
 ## A phased migration
 
-### 1. Capture the Previous contract
+### 1. Capture the 0.5 contract
 
 Before rewriting, record:
 
@@ -441,10 +441,10 @@ Before rewriting, record:
   and replay dependencies;
 - the operational commands and dashboards used by people or automation.
 
-Keep existing Previous runs on the Previous runtime. Do not copy their state
-directories into Next.
+Keep existing 0.5 runs on the 0.5 runtime. Do not copy their state
+directories into 0.6.
 
-### 2. Establish the Next contract
+### 2. Establish the 0.6 contract
 
 Create `workflow.ts` with a literal, identifier-like `name`, supported Zod
 `inputSchema`, and top-level Agent definitions. A catalog package additionally
@@ -488,9 +488,9 @@ it for important work.
 
 ### 8. Cut over intentionally
 
-Compare public outputs and side effects against the recorded Previous contract.
+Compare public outputs and side effects against the recorded 0.5 contract.
 Test at least one transient retry and one replacement fork in a non-critical
-run. Keep rollback instructions and the Previous workflow until the Next
+run. Keep rollback instructions and the 0.5 workflow until the 0.6
 replacement is accepted. Treat the migration as a product change rather than
 an in-place package upgrade.
 
@@ -508,10 +508,10 @@ an in-place package upgrade.
 - [ ] Task and composite outputs rely on TypeScript inference, without
       `outputSchema`.
 - [ ] Structured Signal payloads have an `outputSchema`; timeout behavior has
-      been redesigned where Previous used a default payload.
+      been redesigned where 0.5 used a default payload.
 - [ ] Parallel race, fanout, loop, Guard, and Subworkflow behavior has been
       reviewed rather than mechanically translated.
-- [ ] Previous hooks injectors have been removed or replaced by explicit
+- [ ] 0.5 hooks injectors have been removed or replaced by explicit
       workflow inputs, prompts, environments, or Tasks.
 - [ ] `acpus workflow check <workflow.ts> --input <representative.json>` passes
       with no diagnostics.
@@ -523,7 +523,7 @@ an in-place package upgrade.
       workflow/input/Agents.
 - [ ] Fork reuse is treated as compatibility-bounded completed-fact reuse, not
       unconditional memoization; `--unsafe-reuse` is absent from routine runbooks.
-- [ ] No process depends on Previous run state, replay, TUI, hooks injectors, or
+- [ ] No process depends on 0.5 run state, replay, TUI, hooks injectors, or
       YAML catalog behavior after cutover.
 
 ## Related documentation
@@ -540,6 +540,6 @@ an in-place package upgrade.
 - [Current authoring guide](../packages/cli/skills/acpus/references/authoring.md)
 - [Current runtime recovery guide](../packages/cli/skills/acpus/references/runtime-recovery.md)
 - [Current workflow examples](../packages/cli/skills/acpus/examples/workflows/)
-- [Previous product README at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md)
-- [Previous Workflow Spec at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/specs/workflow-spec.md)
-- [Previous hooks spec at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/specs/hooks-spec.md)
+- [0.5 product README at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md)
+- [0.5 Workflow Spec at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/specs/workflow-spec.md)
+- [0.5 hooks spec at `acpus@0.5.2`](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/specs/hooks-spec.md)

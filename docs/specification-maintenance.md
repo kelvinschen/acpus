@@ -1,7 +1,7 @@
 # Specification Maintenance Guide
 
-This guide defines how Acpus maintains product specifications during the
-TypeScript-first rewrite. It complements the spec template and catalog in
+This guide defines how Acpus maintains product specifications. It complements
+the spec template and catalog in
 [`specs/INDEX.md`](../specs/INDEX.md); it does not define product behavior.
 
 The maintenance goal is a small, navigable set of current contracts. A spec is
@@ -13,13 +13,7 @@ not a changelog, proposal, implementation diary, or compatibility record.
 | --- | --- |
 | Current implemented product and design contract | `specs/` |
 | Future work, capability gaps, and active implementation goals | `docs/roadmap/` |
-| Completed TypeScript-rewrite plans and design context | `docs/roadmap/archive/` |
-| Previous YAML implementation and its documentation | `legacy/` |
-| Line-by-line evolution of current files | Git history |
-
-The TypeScript roadmap archive and `legacy/` are different. The former records
-completed work on the current rewrite. The latter is the read-only previous
-product. Neither is current behavior truth.
+| Completed plans, previous implementations, and line-by-line evolution | Git history and release tags |
 
 ## Route a Change Before Writing
 
@@ -36,7 +30,8 @@ Use this decision tree before adding or editing a spec:
    - Update a spec only if an implementation reference, ownership boundary, or
      verification command became stale.
    - Record an unusually important architectural choice as a roadmap/design
-     record, then archive that record when the work is complete.
+     record, then remove that record when the current spec captures the lasting
+     decision. Git history preserves the implementation context.
 3. **Is it a bug fix?**
    - If implementation violates an existing spec, fix implementation and add
      the missing regression test. Do not rewrite the contract to match the bug.
@@ -50,11 +45,10 @@ Use this decision tree before adding or editing a spec:
      current product and was explicitly requested. Give it an owner, exit
      condition, and removal date.
 5. **Is it future work or a known gap?** Put it in `docs/roadmap/`, not in a
-   spec. Move the record to `docs/roadmap/archive/` after the current spec and
-   implementation converge.
+   spec. Remove the record after the current spec and implementation converge.
 6. **Is it history, rationale, benchmark evidence, or a handoff?** Keep it in
-   an archived record or Git history. Link it from a spec only when it is needed
-   to understand the current boundary.
+   Git history. Link it from a spec only when it is needed to understand the
+   current boundary.
 
 Create a new spec only for a distinct, stable behavior boundary with a clear
 owner and independent verification. A new use case inside an existing boundary
@@ -154,8 +148,8 @@ them.
 
 Before approving a spec change, verify:
 
-- [ ] The change is routed to current contract, future plan, archive, legacy, or
-      Git history according to its role.
+- [ ] The change is routed to current contract, future plan, or Git history
+      according to its role.
 - [ ] The relevant existing owner spec was considered before a new file was
       created.
 - [ ] Each behavior is normative in one place; delegating specs link to it.
@@ -199,9 +193,9 @@ self-report.
    TypeScript union should remain the canonical member list, the owning spec
    should define the closed-set semantics and failure behavior, and contract
    verification should prevent the CLI spec and type from drifting.
-9. **Archive conflict:** provide an archived roadmap record that disagrees with
-   a current spec. The agent should follow the current spec and treat the
-   archive only as historical design context.
+9. **Historical conflict:** provide an older-tag plan that disagrees with a
+   current spec. The agent should follow the current spec and treat the older
+   record only as historical design context.
 
 Include normal, boundary, and conflicting-instruction variants. A successful
 smoke run finds the right source, makes the smallest contract change, and picks
@@ -223,9 +217,9 @@ optimizing for the tool.
 ## Maintenance Cadence
 
 Update current specs with the implementation change. Periodically review each
-domain to merge duplicates, delete obsolete clauses, move completed plans to the
-TypeScript roadmap archive, and verify links and commands. Prefer a smaller
-accurate contract over a large partially current record.
+domain to merge duplicates, delete obsolete clauses and completed plans, and
+verify links and commands. Prefer a smaller accurate contract over a large
+partially current record.
 
 ## References
 
