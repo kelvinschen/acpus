@@ -1,6 +1,7 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
+import { probeProcessLiveness } from "../process-liveness.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import {
   openExistingRuntimeStore,
@@ -200,7 +201,8 @@ function daemonCheck(daemon: DaemonDiagnostics | undefined): RuntimeHealthCheck 
   if (!daemon) return { area: "daemon", status: "ok", message: "No daemon lease is present." };
   const heartbeatAgeMs = daemon.heartbeatAt ? Date.now() - Date.parse(daemon.heartbeatAt) : undefined;
   const idleAgeMs = daemon.idleSinceAt ? Date.now() - Date.parse(daemon.idleSinceAt) : undefined;
-  const processAlive = daemon.pid === undefined ? undefined : isProcessAlive(daemon.pid);
+  const processLiveness = daemon.pid === undefined ? undefined : probeProcessLiveness(daemon.pid);
+  const processAlive = processLiveness === undefined || processLiveness === "unknown" ? undefined : processLiveness === "alive";
   const stale = heartbeatAgeMs !== undefined && heartbeatAgeMs > 30_000;
   return {
     area: "daemon",
@@ -239,17 +241,4 @@ function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
       ...(diagnostics.daemon?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.daemon.idleStopMs }),
     },
   };
-}
-
-function isProcessAlive(pid: number): boolean | undefined {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isNodeError(error) && error.code === "ESRCH" ? false : undefined;
-  }
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return Boolean(error && typeof error === "object" && "code" in error);
 }

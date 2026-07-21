@@ -2,13 +2,14 @@ import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createDoctorCommand } from "./commands/doctor.js";
 import { createHooksCommand } from "./commands/hooks.js";
+import { selectedOutputFormat } from "./commands/output-option.js";
 import { createRunsCommand } from "./commands/runs.js";
 import { createSkillCommand } from "./commands/skill.js";
-import { createVersionCommand, getCliPackageInfo } from "./commands/version.js";
 import { createWebCommand } from "./commands/web.js";
 import { createWorkflowCommand } from "./commands/workflow.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
+import { getCliPackageInfo } from "./package-info.js";
 
 export type CliIo = {
   cwd: string;
@@ -19,21 +20,21 @@ export type CliIo = {
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
-  const wantsJson = argv.includes("--json");
   const program = createProgram(io, code => {
     exitCode = code;
-  }, wantsJson);
+  });
 
   try {
     await program.parseAsync(argv, { from: "user" });
     return exitCode;
   } catch (error) {
+    const format = selectedOutputFormat(program);
     if (error instanceof CliError) {
-      return writeResult(error.result, wantsJson ? "json" : "text", io, error.exitCode);
+      return writeResult(error.result, format, io, error.exitCode);
     }
     if (error instanceof CommanderError) {
-      if (error.code === "commander.helpDisplayed" || error.code === "commander.version") return error.exitCode;
-      if (wantsJson) {
+      if (error.code === "commander.helpDisplayed") return error.exitCode;
+      if (format === "json") {
         const result = usageError(error.message).result;
         return writeResult(result, "json", io, 2);
       }
@@ -43,72 +44,65 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   }
 }
 
-function createProgram(io: CliIo, setExitCode: (code: number) => void, wantsJson: boolean): Command {
+function createProgram(io: CliIo, setExitCode: (code: number) => void): Command {
   const stdin = io.stdin ?? process.stdin;
+  const packageInfo = getCliPackageInfo();
   const program = new Command()
     .name("acpus")
     .description("Acpus TypeScript workflow CLI.")
-    .version(getCliPackageInfo().version)
-    .option("--json", "emit structured JSON output")
+    .option("-V, --version", "output the version number")
+    .enablePositionalOptions()
     .exitOverride()
     .helpCommand(false)
     .showHelpAfterError()
-    .configureOutput({
-      writeOut: text => io.stdout.write(text),
-      writeErr: text => {
-        if (!wantsJson) io.stderr.write(text);
-      },
-      outputError: (text, write) => write(text),
+    .action((options: { version?: boolean }) => {
+      if (options.version) io.stdout.write(`${packageInfo.version}\n`);
+      else program.outputHelp();
     });
+  program.hook("preSubcommand", command => {
+    if (command.opts<{ version?: boolean }>().version === true) {
+      throw usageError("--version cannot be combined with a command.");
+    }
+  });
 
   program.addCommand(createWorkflowCommand({
     ...io,
-    wantsJson,
     setExitCode,
   }));
   program.addCommand(createRunsCommand({
     ...io,
     stdin,
-    wantsJson,
     setExitCode,
   }));
   program.addCommand(createHooksCommand({
     ...io,
-    wantsJson,
     setExitCode,
   }));
   program.addCommand(createDoctorCommand({
     ...io,
-    wantsJson,
     setExitCode,
   }));
   program.addCommand(createSkillCommand({
     ...io,
-    wantsJson,
-    setExitCode,
-  }));
-  program.addCommand(createVersionCommand({
-    stdout: io.stdout,
     setExitCode,
   }));
   program.addCommand(createWebCommand({
     ...io,
-    wantsJson,
   }));
 
-  configureCommandTree(program, io, wantsJson);
+  configureCommandTree(program, program, io);
 
   return program;
 }
 
-function configureCommandTree(command: Command, io: CliIo, wantsJson: boolean): void {
-  command.configureHelp({ showGlobalOptions: true });
+function configureCommandTree(command: Command, program: Command, io: CliIo): void {
+  command.helpCommand(false);
   command.configureOutput({
     writeOut: text => io.stdout.write(text),
     writeErr: text => {
-      if (!wantsJson) io.stderr.write(text);
+      if (selectedOutputFormat(program) === "text") io.stderr.write(text);
     },
     outputError: (text, write) => write(text),
   });
-  for (const child of command.commands) configureCommandTree(child, io, wantsJson);
+  for (const child of command.commands) configureCommandTree(child, program, io);
 }

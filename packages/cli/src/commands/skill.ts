@@ -17,7 +17,8 @@ import {
   type SkillTarget,
   type StandardSkillTarget,
 } from "../skill-installation.js";
-import { getCliPackageInfo } from "./version.js";
+import { getCliPackageInfo } from "../package-info.js";
+import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 
 const ACPUS_PACKAGE = "acpus";
 const ACPUS_SKILL = "acpus";
@@ -27,16 +28,16 @@ export type SkillCommandContext = {
   cwd: string;
   stdout: Writable;
   stderr: Writable;
-  wantsJson: boolean;
   setExitCode(code: number): void;
 };
 
-type SkillOptions = {
+type SkillScopeOptions = JsonOutputOptions & {
   project?: boolean;
   global?: boolean;
-  dir?: string;
   dryRun?: boolean;
 };
+
+type InstallOptions = SkillScopeOptions & { dir?: string };
 
 type InstallSelection = { scope: SkillScope } | { scope: "custom"; dir: string };
 
@@ -54,22 +55,16 @@ export type SkillReplaceFailure = {
 export function createSkillCommand(ctx: SkillCommandContext): Command {
   const command = new Command("skill")
     .exitOverride()
-    .configureOutput({
-      writeOut: text => ctx.stdout.write(text),
-      writeErr: text => {
-        if (!ctx.wantsJson) ctx.stderr.write(text);
-      },
-      outputError: (text, write) => write(text),
-    })
     .description("Install or uninstall the bundled Acpus agent skill.");
 
-  command.addCommand(new Command("install")
+  command.addCommand(withJsonOutput(new Command("install")
     .exitOverride()
+    .description("Install or update the bundled Acpus skill.")
     .option("--project", "install into project skills directories")
     .option("--global", "install into global skills directories")
     .option("--dir <path>", "install into a custom skills directory")
     .option("--dry-run", "show what would be installed without changing files")
-    .action(async (options: SkillOptions) => {
+    ).action(async (options: InstallOptions) => {
       const selection = parseInstallSelection(options);
       const sourcePath = await bundledSkillPath();
       const targets = selection.scope === "custom"
@@ -82,15 +77,16 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
         phase: "skill",
         message: ok ? "Acpus skill installed." : "Acpus skill installation skipped unsafe entries.",
         skill: skillResult("install", selection.scope, options.dryRun === true, targets, { installations }),
-      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
+      }, outputFormatFor(options), ctx, ok ? 0 : 1));
     }));
 
-  command.addCommand(new Command("uninstall")
+  command.addCommand(withJsonOutput(new Command("uninstall")
     .exitOverride()
+    .description("Remove installed copies of the bundled Acpus skill.")
     .option("--project", "uninstall from project skills directories")
     .option("--global", "uninstall from global skills directories")
     .option("--dry-run", "show what would be removed without changing files")
-    .action(async (options: SkillOptions) => {
+    ).action(async (options: SkillScopeOptions) => {
       const scope = parseScope(options);
       const targets = await resolveExistingTargets(ctx.cwd, scope, "uninstall");
       const removals = await uninstallAcpusSkill(targets, options.dryRun === true);
@@ -100,13 +96,13 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
         phase: "skill",
         message: ok ? "Acpus skill uninstalled." : "Acpus skill uninstall skipped unsafe entries.",
         skill: skillResult("uninstall", scope, options.dryRun === true, targets, { removals }),
-      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
+      }, outputFormatFor(options), ctx, ok ? 0 : 1));
     }));
 
   return command;
 }
 
-function parseInstallSelection(options: Pick<SkillOptions, "project" | "global" | "dir">): InstallSelection {
+function parseInstallSelection(options: Pick<InstallOptions, "project" | "global" | "dir">): InstallSelection {
   if (options.dir !== undefined) {
     if (options.project === true || options.global === true) throw usageError("Pass only one of --project, --global, or --dir.");
     if (options.dir.trim().length === 0) throw usageError("--dir must not be empty.");
@@ -115,7 +111,7 @@ function parseInstallSelection(options: Pick<SkillOptions, "project" | "global" 
   return { scope: parseScope(options) };
 }
 
-function parseScope(options: Pick<SkillOptions, "project" | "global">): SkillScope {
+function parseScope(options: Pick<SkillScopeOptions, "project" | "global">): SkillScope {
   if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
   return options.global === true ? "global" : "project";
 }

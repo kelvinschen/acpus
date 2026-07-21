@@ -30,6 +30,7 @@ describe("@acpus/expression public API", () => {
       "expressionCallbackOperatorNames",
       "expressionOperatorSpec",
       "isExpr",
+      "isJsonValue",
       "refExpr",
       "staticExprShape",
       "tryValueToExprIR",

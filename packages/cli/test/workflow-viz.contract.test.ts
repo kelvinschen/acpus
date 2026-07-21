@@ -6,7 +6,7 @@ import { CaptureStream } from "./support/capture-stream.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
 describe("workflow visualization CLI contract", () => {
-  it("renders the semantic tree to text and structured JSON by default", async () => {
+  it("renders the semantic tree as terminal text", async () => {
     await withTestWorkspace("workflow-viz-terminal", async workspace => {
       const workflow = await writeVizWorkflow(workspace);
       const expected = `program-viz
@@ -29,42 +29,32 @@ agents: none
       expect(stdout.text).toBe(`${expected}\n`);
       expect(stderr.text).toBe("");
 
-      const jsonStdout = new CaptureStream();
-      const jsonStderr = new CaptureStream();
-      const jsonExitCode = await runCli(["workflow", "viz", workflow, "--json"], {
+      const unsupportedStdout = new CaptureStream();
+      const unsupportedStderr = new CaptureStream();
+      const unsupportedExitCode = await runCli(["workflow", "viz", workflow, "--json"], {
         cwd: workspace,
-        stdout: jsonStdout,
-        stderr: jsonStderr,
+        stdout: unsupportedStdout,
+        stderr: unsupportedStderr,
       });
 
-      expect(jsonExitCode).toBe(0);
-      expect(JSON.parse(jsonStdout.text)).toMatchObject({
-        ok: true,
-        phase: "viz",
-        visualization: expected,
-        workflow: { name: "program-viz", nodeCount: 4 },
-      });
-      expect(jsonStdout.text).not.toContain("\u001b");
-      expect(jsonStderr.text).toBe("");
+      expect(unsupportedExitCode).toBe(2);
+      expect(unsupportedStdout.text).toBe("");
+      expect(unsupportedStderr.text).toContain("unknown option '--json'");
     });
   });
 
   it("rejects --force without --out before workflow preparation", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const exitCode = await runCli(["workflow", "viz", "missing.workflow.ts", "--force", "--json"], {
+    const exitCode = await runCli(["workflow", "viz", "missing.workflow.ts", "--force"], {
       cwd: process.cwd(),
       stdout,
       stderr,
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: false,
-      phase: "usage",
-      message: "--force requires --out.",
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("--force requires --out.");
   });
 
   it("generates workflow visualization HTML with overwrite controls", async () => {
@@ -74,15 +64,10 @@ agents: none
 
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
-      const exitCode = await runCli(["workflow", "viz", workflow, "--out", out, "--json"], { cwd: workspace, stdout, stderr });
+      const exitCode = await runCli(["workflow", "viz", workflow, "--out", out], { cwd: workspace, stdout, stderr });
 
       expect(exitCode).toBe(0);
-      expect(JSON.parse(stdout.text)).toMatchObject({
-        ok: true,
-        phase: "viz",
-        outputPath: out,
-        workflow: { name: "program-viz", nodeCount: 4 },
-      });
+      expect(stdout.text).toContain(`Output: ${out}`);
       const html = await readFile(out, "utf8");
       expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
       expect(html).toContain("Program viz description.");
@@ -93,21 +78,43 @@ agents: none
       expect(stderr.text).toBe("");
 
       const duplicateStdout = new CaptureStream();
-      const duplicateExit = await runCli(["workflow", "viz", workflow, "--out", out, "--json"], {
+      const duplicateStderr = new CaptureStream();
+      const duplicateExit = await runCli(["workflow", "viz", workflow, "--out", out], {
         cwd: workspace,
         stdout: duplicateStdout,
-        stderr: new CaptureStream(),
+        stderr: duplicateStderr,
       });
       expect(duplicateExit).toBe(2);
-      expect(JSON.parse(duplicateStdout.text).message).toContain("already exists");
+      expect(duplicateStdout.text).toBe("");
+      expect(duplicateStderr.text).toContain("already exists");
 
       const forcedStdout = new CaptureStream();
-      const forcedExit = await runCli(["workflow", "viz", workflow, "--out", out, "--force", "--json"], {
+      const forcedExit = await runCli(["workflow", "viz", workflow, "--out", out, "--force"], {
         cwd: workspace,
         stdout: forcedStdout,
         stderr: new CaptureStream(),
       });
       expect(forcedExit).toBe(0);
+    });
+  });
+
+  it("classifies filesystem failures as operational visualization errors", async () => {
+    await withTestWorkspace("workflow-viz-io", async workspace => {
+      const workflow = await writeVizWorkflow(workspace);
+      const blockedParent = join(workspace, "not-a-directory");
+      await writeFile(blockedParent, "file");
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+
+      const exitCode = await runCli(["workflow", "viz", workflow, "--out", join(blockedParent, "viz.html")], {
+        cwd: workspace,
+        stdout,
+        stderr,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(stdout.text).toBe("");
+      expect(stderr.text).toContain("not-a-directory");
     });
   });
 });

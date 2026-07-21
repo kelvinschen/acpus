@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { schemaToJsonSchema } from "@acpus/core/schema";
 import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallSummary, type AgentTraceEvent, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
-import type { JsonValue } from "@acpus/expression/ir";
+import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { isArtifactRefCandidate, tryResolveArtifactPath, type ArtifactPathError } from "../artifacts/path.js";
@@ -494,14 +494,6 @@ function projectToSchema(schema: SchemaIR, value: JsonValue): JsonValue {
 
 function isJsonObject(value: JsonValue): value is Record<string, JsonValue> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null) return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  return Boolean(value && typeof value === "object" && Object.values(value).every(isJsonValue));
 }
 
 async function writeAgentTurnArtifacts(

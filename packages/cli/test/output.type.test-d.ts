@@ -13,16 +13,38 @@ const catalog = {
 function acceptResult(_result: CliResult): void {}
 
 describe("CLI result type", () => {
-  it("requires a complete import success and forbids import-only fields elsewhere", () => {
-    const imported = { ok: true, phase: "import", catalog, checked: true } as const;
+  it("closes fields and success states by phase", () => {
+    const imported = { ok: true, phase: "import", message: "Imported.", catalog, checked: true } as const;
     acceptResult(imported);
     expectTypeOf(imported.checked).toEqualTypeOf<true>();
 
     // @ts-expect-error successful imports require checked
-    acceptResult({ ok: true, phase: "import", catalog });
+    acceptResult({ ok: true, phase: "import", message: "Imported.", catalog });
     // @ts-expect-error checked is only valid for import success
     acceptResult({ ok: true, phase: "check", checked: true });
     // @ts-expect-error import failure cannot expose catalog state
     acceptResult({ ok: false, phase: "import", catalog });
+    // @ts-expect-error usage and compilation phases represent failures
+    acceptResult({ ok: true, phase: "usage", message: "OK" });
+    // @ts-expect-error usage and compilation phases represent failures
+    acceptResult({ ok: true, phase: "compile", message: "OK" });
+    // @ts-expect-error web startup data belongs only to run results
+    acceptResult({ ok: true, phase: "inspect", web: { url: "http://localhost" } });
+    // @ts-expect-error operational error codes are not part of check results
+    acceptResult({ ok: false, phase: "check", errorCode: "CHECK_FAILED" });
+
+    // @ts-expect-error successful run results cannot carry failure error codes
+    acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" }, errorCode: "LISTEN_FAILED" });
+    // @ts-expect-error doctor results require the checks they summarize
+    acceptResult({ ok: true, phase: "doctor", message: "OK" });
+    // @ts-expect-error failed controls cannot advertise a follow-up run
+    acceptResult({ ok: false, phase: "control", message: "Failed.", followRunId: "run_1" });
+    // @ts-expect-error failed controls cannot carry an applied receipt
+    acceptResult({ ok: false, phase: "control", message: "Failed.", control: { type: "pause", state: "applied", runId: "run_1" } });
+    // @ts-expect-error successful controls require an applied or consumed receipt
+    acceptResult({ ok: true, phase: "control", message: "OK", run: {} as never, control: { type: "pause", runId: "run_1" } });
+
+    acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" } });
+    acceptResult({ ok: false, phase: "control", message: "Failed.", control: { type: "pause", runId: "run_1" } });
   });
 });

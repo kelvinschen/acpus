@@ -1,4 +1,4 @@
-import type { ExprIR, TemplateIR } from "./ir.js";
+import { isJsonValue, type ExprIR, type TemplateIR } from "./ir.js";
 import { callbackSourceIssue } from "./internal/callback-source.js";
 import { expressionCallbackLayout, expressionOperatorSpec } from "./internal/operators.js";
 
@@ -183,31 +183,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function assertJsonCompatible(value: unknown, operator: string, seen = new Set<object>()): void {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number") {
-    if (Number.isFinite(value)) return;
-    throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  }
-  if (!value || typeof value !== "object") throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  if (seen.has(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) {
-      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-      assertJsonCompatible(value[index], operator, seen);
-    }
-    seen.delete(value);
-    return;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  if (Object.getOwnPropertySymbols(value).length > 0) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  for (const item of Object.values(value)) {
-    if (item === undefined) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-    assertJsonCompatible(item, operator, seen);
-  }
-  seen.delete(value);
+function assertJsonCompatible(value: unknown, operator: string): void {
+  if (!isJsonValue(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
 }
 
 function assertCallbackInputCompatible(value: unknown, operator: string, seen = new Set<object>()): void {

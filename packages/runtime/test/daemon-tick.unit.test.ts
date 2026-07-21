@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runDaemonTick } from "../src/daemon/tick.js";
-import type { RunRecord, RuntimeStore } from "../src/store/store.js";
+import type { RunRecord } from "../src/store/store.js";
 
 describe("daemon tick", () => {
   it("propagates non-busy hook journal prune failures after starting runnable work", async () => {
@@ -28,7 +28,7 @@ describe("daemon tick", () => {
   });
 });
 
-function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): RuntimeStore {
+function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): Parameters<typeof runDaemonTick>[0] {
   return {
     listDaemonWork() {
       return { startableRuns: [runRecord()], ...work };
@@ -37,7 +37,7 @@ function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 
       if (failPrune) throw new Error("hook journal unavailable");
       return 0;
     },
-  } as unknown as RuntimeStore;
+  };
 }
 
 function runRecord(): RunRecord {

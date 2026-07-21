@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentOverrideMap } from "@acpus/runtime";
-import type { JsonValue } from "@acpus/expression/ir";
+import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, errAsync, ok, okAsync, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 import { usageError } from "../errors.js";
 
@@ -77,14 +77,6 @@ function inputErrorMessage(error: InputOptionError): string {
   return error.type === "invalid-json"
     ? `${source} must be valid JSON: ${error.message}`
     : `${source} must be JSON-serializable.`;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null) return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  return Boolean(value && typeof value === "object" && Object.values(value).every(isJsonValue));
 }
 
 function causeMessage(cause: unknown): string {

@@ -4,7 +4,7 @@ import { access, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, wr
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import { staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
+import { isJsonValue, staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
@@ -12,6 +12,7 @@ import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
+import { probeProcessLiveness } from "../process-liveness.js";
 import { stableJson } from "../stable-json.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, groupCompletionEvents, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
@@ -1622,14 +1623,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     if (daemon?.heartbeat_at && now - Date.parse(daemon.heartbeat_at) > 5_000) {
       return { state: "stale", lastStatus: run.status, reason: "daemon_heartbeat_expired", daemonHeartbeatAt: daemon.heartbeat_at, ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
     }
-    if (daemon?.pid !== null && daemon?.pid !== undefined && !isProcessAlive(daemon.pid)) {
-      return { state: "stale", lastStatus: run.status, reason: "daemon_pid_dead", ...(daemon.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
+    const processLiveness = daemon?.pid === null || daemon?.pid === undefined ? undefined : probeProcessLiveness(daemon.pid);
+    if (processLiveness === "dead") {
+      return { state: "stale", lastStatus: run.status, reason: "daemon_pid_dead", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
     }
     if (lease && Date.parse(lease.lease_expires_at) <= now) {
       return { state: "stale", lastStatus: run.status, reason: "run_lease_expired", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
     }
     if (lease) return { state: "active", lastStatus: run.status, reason: "run_lease_active", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
-    if (daemon?.heartbeat_at) return { state: "inactive", lastStatus: run.status, reason: "daemon_alive", daemonHeartbeatAt: daemon.heartbeat_at };
+    if (daemon?.heartbeat_at || processLiveness === "alive") return { state: "inactive", lastStatus: run.status, reason: "daemon_alive", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}) };
+    if (processLiveness === "unknown") return { state: "unknown", lastStatus: run.status };
     return { state: "inactive", lastStatus: run.status, reason: "no_liveness_evidence" };
   }
 
@@ -3913,15 +3916,6 @@ function collectNodeIds(scope: ScopeIR): string[] {
   return Array.from(walkNodes(scope), ({ node }) => node.id);
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EPERM";
-  }
-}
-
 function inheritableCompletedNodeKeys(ir: WorkflowIR, completed: Set<string>): Set<string> {
   const ancestors = nodeAncestors(ir.root);
   return new Set([...completed].filter(nodeKey => (ancestors.get(nodeKey) ?? []).every(parent => completed.has(parent))));
@@ -3981,15 +3975,6 @@ function stableJsonLine(value: unknown): string {
 function assertJsonValue(value: unknown, path: string): JsonValue {
   if (!isJsonValue(value)) throw new Error(`${path} is not JSON-serializable.`);
   return value;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null) return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value === "string" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value).every(isJsonValue);
 }
 
 function evaluateRecordedOutput(output: ExprIR, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {

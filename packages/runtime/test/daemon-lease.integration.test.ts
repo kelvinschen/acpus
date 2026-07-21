@@ -2,12 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
 import type { Result } from "neverthrow";
 import {
   daemonEndpoint,
   getRun,
+  getRuntimeHealth,
   requestDaemonAdmitRun as requestDaemonAdmitRunResult,
   requestDaemonControl as requestDaemonControlResult,
   requestDaemonShutdown as requestDaemonShutdownResult,
@@ -25,6 +26,7 @@ type StoreWithDb = RuntimeStore & {
   db: {
     prepare(sql: string): {
       all(): Array<{ name: string }>;
+      run(...params: unknown[]): unknown;
     };
   };
 };
@@ -100,6 +102,91 @@ describe("daemon lease", () => {
     const columns = storeDbColumns("daemon_lease");
     expect(columns).not.toContain("endpoint");
     expect(columns).not.toContain("auth_token_hash");
+  });
+
+  it("maps process liveness through the run-execution evidence priority", async () => {
+    const prepared = await prepareSyntheticWorkflow(dir, signalWorkflow());
+    const admitted = (await store.admitRun({ prepared, cwd: dir, input: {} }))._unsafeUnwrap();
+    const daemon = store.claimDaemon({
+      workspaceRealpath: dir,
+      pid: 123,
+      protocolVersion: 1,
+      packageVersion: "0.0.0-test",
+      nodeVersion: process.version,
+      execPath: process.execPath,
+      idleStopMs: 30_000,
+    });
+    const nowMs = Date.parse(daemon.heartbeatAt);
+    const now = vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const kill = vi.spyOn(process, "kill");
+    const db = (store as StoreWithDb).db;
+    try {
+      const active = store.scheduler.claimRun(admitted.id, "active-owner", 60_000)!;
+      kill.mockImplementation(() => {
+        throw Object.assign(new Error("missing"), { code: "ESRCH" });
+      });
+      db.prepare("UPDATE daemon_lease SET heartbeat_at = ?").run(new Date(nowMs - 5_001).toISOString());
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "stale", reason: "daemon_heartbeat_expired" });
+
+      db.prepare("UPDATE daemon_lease SET heartbeat_at = ?").run(daemon.heartbeatAt);
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "stale", reason: "daemon_pid_dead" });
+
+      kill.mockImplementation(() => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      });
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "active", reason: "run_lease_active" });
+      store.scheduler.releaseRun(active);
+
+      const expired = store.scheduler.claimRun(admitted.id, "expired-owner", -60_000)!;
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "stale", reason: "run_lease_expired" });
+      store.scheduler.releaseRun(expired);
+
+      db.prepare("UPDATE daemon_lease SET heartbeat_at = ?").run(daemon.heartbeatAt);
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "inactive", reason: "daemon_alive" });
+
+      db.prepare("UPDATE daemon_lease SET heartbeat_at = NULL").run();
+      expect(store.getRun(admitted.id)?.execution).toEqual({ state: "unknown", lastStatus: "pending" });
+
+      kill.mockImplementation(() => true);
+      expect(store.getRun(admitted.id)?.execution).toMatchObject({ state: "inactive", reason: "daemon_alive" });
+    } finally {
+      kill.mockRestore();
+      now.mockRestore();
+    }
+  });
+
+  it("maps process liveness explicitly in doctor output", async () => {
+    const daemon = store.claimDaemon({
+      workspaceRealpath: dir,
+      pid: 123,
+      protocolVersion: 1,
+      packageVersion: "0.0.0-test",
+      nodeVersion: process.version,
+      execPath: process.execPath,
+      idleStopMs: 30_000,
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(daemon.heartbeatAt));
+    const kill = vi.spyOn(process, "kill");
+    const daemonCheck = async () => (await getRuntimeHealth(dir)).checks.find(check => check.area === "daemon")!;
+    try {
+      kill.mockImplementation(() => true);
+      await expect(daemonCheck()).resolves.toMatchObject({ status: "ok", details: { processAlive: true } });
+
+      kill.mockImplementation(() => {
+        throw Object.assign(new Error("missing"), { code: "ESRCH" });
+      });
+      await expect(daemonCheck()).resolves.toMatchObject({ status: "warn", details: { processAlive: false } });
+
+      kill.mockImplementation(() => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      });
+      const unknown = await daemonCheck();
+      expect(unknown).toMatchObject({ status: "ok" });
+      expect(unknown.details).not.toHaveProperty("processAlive");
+    } finally {
+      kill.mockRestore();
+      now.mockRestore();
+    }
   });
 
   it("serves daemon status on the workspace-derived endpoint", async () => {

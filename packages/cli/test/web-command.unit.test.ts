@@ -35,6 +35,7 @@ describe("web command options", () => {
 
     expect(exitCode).toBe(1);
     expect(JSON.parse(stdout.text)).toEqual({
+      schemaVersion: 1,
       ok: false,
       phase: "run",
       message: "listen EADDRINUSE: address already in use 127.0.0.1:4517",
@@ -54,8 +55,7 @@ describe("web command options", () => {
       cwd: "/workspace",
       stdout,
       stderr,
-      wantsJson: true,
-    }).parseAsync(["--host", "0.0.0.0"], { from: "user" });
+    }).parseAsync(["--host", "0.0.0.0", "--json"], { from: "user" });
     await waitForSignalListeners(listenerCounts);
 
     expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
@@ -64,7 +64,13 @@ describe("web command options", () => {
       ensureDaemonRunning: expect.any(Function),
     }));
     expect(mocks.startWebServer.mock.calls[0]![0]).not.toHaveProperty("token");
-    expect(JSON.parse(stdout.text)).toEqual({ url: "http://0.0.0.0:4517" });
+    expect(JSON.parse(stdout.text)).toEqual({
+      schemaVersion: 1,
+      ok: true,
+      phase: "run",
+      message: "WebUI started.",
+      web: { url: "http://0.0.0.0:4517" },
+    });
     expect(stderr.text).toBe("");
 
     process.emit("SIGINT");
@@ -88,8 +94,7 @@ describe("web command options", () => {
       cwd: "/workspace",
       stdout,
       stderr,
-      wantsJson: true,
-    }).parseAsync(["--token"], { from: "user" });
+    }).parseAsync(["--token", "--json"], { from: "user" });
     await waitForSignalListeners(listenerCounts);
 
     expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
@@ -99,8 +104,14 @@ describe("web command options", () => {
       ensureDaemonRunning: expect.any(Function),
     }));
     expect(JSON.parse(stdout.text)).toEqual({
-      url: "http://localhost:4517/?token=generated",
-      token: "generated",
+      schemaVersion: 1,
+      ok: true,
+      phase: "run",
+      message: "WebUI started.",
+      web: {
+        url: "http://localhost:4517/?token=generated",
+        token: "generated",
+      },
     });
     expect(stderr.text).toBe("");
 
@@ -124,7 +135,6 @@ describe("web command options", () => {
       cwd: "/workspace",
       stdout,
       stderr,
-      wantsJson: false,
     }).parseAsync([], { from: "user" });
     await waitForSignalListeners(listenerCounts);
 

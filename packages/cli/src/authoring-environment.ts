@@ -2,7 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { officialAuthoringEnvironment } from "@acpus/loader";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getCliPackageInfo } from "./commands/version.js";
+import { getCliPackageInfo } from "./package-info.js";
 import { existingSkillRootTargets, readAcpusSkillMetadata, type SkillScope, type SkillTargetKind } from "./skill-installation.js";
 
 type HealthStatus = "ok" | "warn" | "fail";

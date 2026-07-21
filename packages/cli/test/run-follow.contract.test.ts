@@ -37,7 +37,7 @@ describe("run inspection follow output", () => {
     const stderr = new CaptureStream();
 
     const outcome = await followRun("/workspace", { runId: "run_1", mode: "overview", intervalMs: 250 }, {
-      phase: "inspect", wantsJson: true, stdout, stderr,
+      phase: "inspect", format: "ndjson", stdout, stderr,
     });
 
     expect(outcome).toMatchObject({ kind: "done", run: { status: "completed" } });
@@ -66,7 +66,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text.match(/Run run_1  workflow  running/g)).toHaveLength(1);
@@ -110,7 +110,7 @@ describe("run inspection follow output", () => {
 
     try {
       await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
 
       expect(stdout.text).toContain("Agent: observer  turns=1  tools=1");
@@ -141,7 +141,7 @@ describe("run inspection follow output", () => {
 
     try {
       await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
 
       const terminalLines = stdout.text.split("\n").filter(line => line.includes("observe  completed"));
@@ -185,7 +185,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "all" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text.split("\n").filter(line => line.startsWith("+21s  observe"))).toHaveLength(4);
@@ -210,7 +210,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: true, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "ndjson", stdout, stderr: new CaptureStream(),
     });
 
     const records = stdout.text.trim().split("\n").map(line => JSON.parse(line));
@@ -271,7 +271,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text.match(/^\+\S+/gm)).toHaveLength(72);
@@ -319,7 +319,7 @@ describe("run inspection follow output", () => {
 
     try {
       const followed = followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
       await vi.advanceTimersByTimeAsync(29_000);
       expect(stdout.text.match(/contexts omitted/g)).toHaveLength(1);
@@ -364,7 +364,7 @@ describe("run inspection follow output", () => {
 
     try {
       await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
       expect(stdout.text.match(/contexts omitted/g)).toHaveLength(2);
       expect(stdout.text).toContain("… 5 contexts omitted (running=5)");
@@ -400,7 +400,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text).toContain("batch[20] › work  failed");
@@ -436,7 +436,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text).not.toMatch(/^(?:#\d+|p\d+) /m);
@@ -478,7 +478,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text).toContain("+2s  omitted Agents  running  5 changed outside the compact context budget (12 tracked)");
@@ -505,7 +505,7 @@ describe("run inspection follow output", () => {
       : { runId: "run_1", mode };
 
     await followRun("/workspace", query, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text.match(/^\+\S+/gm)).toHaveLength(25);
@@ -529,7 +529,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
     try {
       const followed = followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-        phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(stdout.text.match(/· checkpoint/g)).toHaveLength(1);
@@ -559,7 +559,7 @@ describe("run inspection follow output", () => {
     const stdout = new TtyCaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     expect(stdout.text).toContain("\x1b[");
@@ -584,7 +584,7 @@ describe("run inspection follow output", () => {
     const stdout = new TtyCaptureStream();
 
     await followRun("/workspace", { runId: "run_1", mode: "target", target: "observe" }, {
-      phase: "inspect", wantsJson: false, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
     });
 
     const finalFrame = stdout.text.split("\x1b[J").at(-1)!;
@@ -601,7 +601,7 @@ describe("run inspection follow output", () => {
     const stdout = new SnapshotCaptureStream();
     const stderr = new CaptureStream();
     const followed = followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "run", wantsJson: true, stdout, stderr,
+      phase: "run", format: "ndjson", stdout, stderr,
     });
     await stdout.snapshotWritten;
     expect(stdout.text).toContain('"kind":"snapshot"');
@@ -627,7 +627,7 @@ describe("run inspection follow output", () => {
     const stdout = new CaptureStream();
 
     const outcome = await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect", wantsJson: true, stdout, stderr: new CaptureStream(),
+      phase: "inspect", format: "ndjson", stdout, stderr: new CaptureStream(),
     });
 
     expect(outcome).toMatchObject({ kind: "error", error: { type: "run-not-found" } });
@@ -644,11 +644,10 @@ async function runRunsCommand(argv: readonly string[]): Promise<{ exitCode: numb
     stdin: Readable.from([]),
     stdout,
     stderr,
-    wantsJson: true,
     setExitCode: code => { exitCode = code; },
   });
 
-  await command.parseAsync([...argv], { from: "user" });
+  await command.parseAsync([...argv, "--json"], { from: "user" });
   return { exitCode, stdout: stdout.text, stderr: stderr.text };
 }
 

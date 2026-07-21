@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok, okAsync } from "neverthrow";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode as executeTaskNodeResult } from "../src/execution/task-executor.js";
-import type { ArtifactRecord, RegisterArtifactInput, RuntimeStore } from "../src/store/store.js";
+import type { ArtifactRecord, RegisterArtifactInput } from "../src/store/store.js";
 import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";
 
 const taskProcessMocks = vi.hoisted(() => ({
@@ -78,9 +78,10 @@ describe("task executor", () => {
       ownerEpoch: 1,
       store: {
         getRunDir: () => ".acpus/.local/runs/run_1",
+        getArtifact: () => undefined,
         registerArtifact: () => ok(undefined),
         writeExecutionMetadata: (input: unknown) => metadata.push(input),
-      } as unknown as RuntimeStore,
+      },
     })).resolves.toEqual({ value: "ok" });
 
     expect(metadata).toEqual([
@@ -215,7 +216,7 @@ describe("task executor", () => {
         getArtifact: (_runId: string, id: string) => id === artifactId ? artifact : undefined,
         registerArtifact: () => ok(undefined),
         writeExecutionMetadata: () => {},
-      } as unknown as RuntimeStore,
+      },
     })).resolves.toEqual({ before: path, after: path });
   });
 
@@ -456,11 +457,12 @@ function taskOptions(runId: string, registerArtifact: (artifact: RegisterArtifac
     ownerEpoch: 1,
     store: {
       getRunDir: () => `.acpus/.local/runs/${runId}`,
+      getArtifact: () => undefined,
       registerArtifact: (input: RegisterArtifactInput) => {
         registerArtifact(input);
         return ok(undefined);
       },
       writeExecutionMetadata: () => {},
-    } as unknown as RuntimeStore,
+    },
   };
 }

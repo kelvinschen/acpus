@@ -1,3 +1,4 @@
+import { isJsonValue } from "@acpus/expression/ir";
 import { validateExprIR, type ExpressionDiagnostic } from "@acpus/expression/validator";
 import { tryParseDurationMs } from "./duration.js";
 import { isPositiveInteger } from "./integer.js";
@@ -719,26 +720,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isJsonPrimitive(value: unknown): value is null | string | number | boolean {
-  return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-}
-
-function isJsonValue(value: unknown, seen = new Set<object>()): boolean {
-  if (isJsonPrimitive(value)) return true;
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return false;
-    seen.add(value);
-    for (let index = 0; index < value.length; index++) {
-      if (!Object.prototype.hasOwnProperty.call(value, index) || !isJsonValue(value[index], seen)) return false;
-    }
-    seen.delete(value);
-    return true;
-  }
-  if (!isRecord(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  for (const item of Object.values(value)) if (!isJsonValue(item, seen)) return false;
-  seen.delete(value);
-  return true;
+  return isJsonValue(value) && (value === null || typeof value !== "object");
 }

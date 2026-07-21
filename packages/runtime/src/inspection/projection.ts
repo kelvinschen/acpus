@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import type { JsonPrimitive, JsonValue, TemplateIR } from "@acpus/expression/ir";
+import { isJsonValue, type JsonPrimitive, type TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
 import type {
   ArtifactRecord,
@@ -230,7 +230,7 @@ function projectSnapshot(
     for (const segment of item.instancePath ?? []) if (segment.kind === "branch") branchMaterialized.add(`${segment.nodeId}:${segment.branchId}`);
   }
 
-  const structural = structuralItems(ir.root, run, staticNodes, materialized, branchMaterialized);
+  const structural = structuralItems(ir.root, run, materialized, branchMaterialized);
   const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
   const instanceStatuses = new Map(instances.map(instance => [instance.nodeKey, instanceInspectionState(run, instance, attempts).status]));
   const repeated = new Map<string, RunDynamicNodeInstance[]>();
@@ -276,7 +276,7 @@ function projectSnapshot(
   const omittedAgentProgress = dynamic?.progress.filter(item => item.kind === "agent" && omittedKeys.has(item.nodeKey)).length ?? 0;
   const contexts = contextItems(selected, frames);
   const instanceItems = selected.map(instance => instanceItem(ir, run, instance, attempts, staticById));
-  const items = orderProjectionItems([...structural, ...contexts, ...instanceItems, ...foldItems], staticById);
+  const items = orderProjectionItems([...structural, ...contexts, ...instanceItems, ...foldItems]);
   const executionStatuses = operatorVisibleExecutionStatuses(staticNodes, structural, instances, frames, instanceStatuses);
   const hiddenCount = omittedInstances.length;
   const hasFolds = foldItems.length > 0;
@@ -348,11 +348,9 @@ function nearestCompositeParent(node: RunInspectionStaticNode | undefined, stati
 function structuralItems(
   scope: ScopeIR,
   run: RunDetails,
-  staticNodes: RunInspectionStaticNode[],
   materialized: Set<string>,
   branchMaterialized: Set<string>,
 ): RunInspectionItem[] {
-  void staticNodes;
   const items: RunInspectionItem[] = [];
   const visit = (current: ScopeIR, parentKey?: string, path: string[] = []): void => {
     for (const node of current.nodes) {
@@ -485,7 +483,7 @@ function instanceItem(
     ...(attempt?.finishedAt ? { finishedAt: attempt.finishedAt } : {}),
     ...(attempt?.deadlineAt ? { deadlineAt: attempt.deadlineAt } : {}),
     ...failureDetails(node, instance.error ?? attempt?.error, instance.statusReason ?? attempt?.terminalReason),
-    ...(node?.kind === "agent" ? { agent: agentDetails(ir, run, node, metadata, progress) } : {}),
+    ...(node?.kind === "agent" ? { agent: agentDetails(ir, node, metadata, progress) } : {}),
     ...(node?.kind === "task" ? { task: { target: node.run.target.kind } } : {}),
     ...(node?.kind === "signal" ? { signal: {
       target: instance.nodeKey,
@@ -570,7 +568,7 @@ function projectTarget(
   const status = staticAggregate
     ? aggregateStatus(staticStatuses)
     : signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
-  const agent = node?.kind === "agent" ? agentDetails(ir, run, node, metadata, currentProgress) : undefined;
+  const agent = node?.kind === "agent" ? agentDetails(ir, node, metadata, currentProgress) : undefined;
   const signal = node?.kind === "signal" ? {
     target: latestWait?.nodeKey ?? latestInstance?.nodeKey ?? targetId,
     ...(latestWait?.deadlineAt ? { deadlineAt: latestWait.deadlineAt } : {}),
@@ -685,7 +683,7 @@ function targetInspectionItems(
     kind: staticNode.kind,
     status: aggregateStatus(relatedStatuses(run, staticNode.nodeId)),
     nodeId: staticNode.nodeId,
-    ...(node?.kind === "agent" ? { agent: agentDetails(ir, run, node, metadata, progress) } : {}),
+    ...(node?.kind === "agent" ? { agent: agentDetails(ir, node, metadata, progress) } : {}),
     ...(node ? compositeDetails(run, node) : {}),
   }];
 }
@@ -754,12 +752,10 @@ function compositeDetails(run: RunDetails, node: NodeIR, nodeKey?: string): Pick
 
 function agentDetails(
   ir: WorkflowIR,
-  run: RunDetails,
   node: Extract<NodeIR, { kind: "agent" }>,
   metadata: RunExecutionMetadata | undefined,
   progress: RunNodeProgress | undefined,
 ): NonNullable<RunInspectionItem["agent"]> {
-  void run;
   const configured = ir.agents[node.run.agent];
   const agentState = agentInspectionState(metadata, progress);
   return {
@@ -1079,8 +1075,7 @@ function foldableStatus(status: RunInspectionStatus): boolean {
   return status === "completed" || status === "cancelled";
 }
 
-function orderProjectionItems(items: RunInspectionItem[], staticById: Map<string, RunInspectionStaticNode>): RunInspectionItem[] {
-  void staticById;
+function orderProjectionItems(items: RunInspectionItem[]): RunInspectionItem[] {
   const rank = new Map(items.map((item, index) => [item.key, index]));
   const byKey = new Map(items.map(item => [item.key, item]));
   const children = new Map<string, RunInspectionItem[]>();
@@ -1337,11 +1332,4 @@ function string(value: unknown): string | undefined {
 
 function number(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  return Boolean(value && typeof value === "object" && Object.values(value).every(isJsonValue));
 }

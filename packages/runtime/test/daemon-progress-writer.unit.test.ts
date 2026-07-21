@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { CoalescingNodeProgressWriter } from "../src/progress/writer.js";
-import type { RuntimeStore, WriteNodeProgressInput } from "../src/store/store.js";
+import { CoalescingNodeProgressWriter, type NodeProgressWriter } from "../src/progress/writer.js";
+import type { WriteNodeProgressInput } from "../src/store/store.js";
 
 describe("coalescing node progress writer", () => {
   it("coalesces active progress by owned attempt", () => {
@@ -60,7 +60,7 @@ describe("coalescing node progress writer", () => {
         writeNodeProgress: () => {
           throw new Error("store busy");
         },
-      } as unknown as RuntimeStore, 1_000);
+      }, 1_000);
 
       writer.writeNodeProgress(progress("running"));
       expect(() => vi.advanceTimersByTime(1_000)).not.toThrow();
@@ -106,10 +106,10 @@ function progress(message: string, status = "running"): WriteNodeProgressInput {
   };
 }
 
-function progressStore(writes: WriteNodeProgressInput[]): RuntimeStore {
+function progressStore(writes: WriteNodeProgressInput[]): NodeProgressWriter {
   return {
     writeNodeProgress(input: WriteNodeProgressInput): void {
       writes.push(input);
     },
-  } as unknown as RuntimeStore;
+  };
 }

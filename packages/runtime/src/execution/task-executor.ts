@@ -14,7 +14,7 @@ import { runTaskAttempt, type TaskAttemptFailure } from "./task-process.js";
 export type TaskExecutorOptions = {
   cwd: string;
   runId: string;
-  store: RuntimeStore;
+  store: Pick<RuntimeStore, "getRunDir" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
   nodeKey?: string;
   attemptId: string;
   attemptNo: number;

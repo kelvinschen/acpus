@@ -48,6 +48,7 @@ describe("runs artifacts", () => {
     const result = await runCommand(["artifacts", "run_1"], true);
 
     expect(JSON.parse(result.stdout)).toEqual({
+      schemaVersion: 1,
       ok: true,
       phase: "inspect",
       runId: "run_1",
@@ -65,6 +66,7 @@ describe("runs artifacts", () => {
       target: "attempt_1",
     });
     expect(JSON.parse(result.stdout)).toEqual({
+      schemaVersion: 1,
       ok: true,
       phase: "inspect",
       runId: "run_1",
@@ -102,7 +104,7 @@ describe("runs artifacts", () => {
   });
 });
 
-async function runCommand(argv: string[], wantsJson: boolean): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
   let exitCode = -1;
@@ -111,10 +113,9 @@ async function runCommand(argv: string[], wantsJson: boolean): Promise<{ exitCod
     stdin: Readable.from([]),
     stdout,
     stderr,
-    wantsJson,
     setExitCode: code => { exitCode = code; },
   });
-  await command.parseAsync(argv, { from: "user" });
+  await command.parseAsync([...argv, ...(json ? ["--json"] : [])], { from: "user" });
   return { exitCode, stdout: stdout.text, stderr: stderr.text };
 }
 

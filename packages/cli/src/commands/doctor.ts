@@ -3,27 +3,20 @@ import { Command } from "commander";
 import { getRuntimeHealth } from "@acpus/runtime";
 import { getAuthoringHealth, type AuthoringHealthCheck } from "../authoring-environment.js";
 import { writeResult } from "../output.js";
+import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 
 export type DoctorCommandContext = {
   cwd: string;
   stdout: Writable;
   stderr: Writable;
-  wantsJson: boolean;
   setExitCode(code: number): void;
 };
 
 export function createDoctorCommand(ctx: DoctorCommandContext): Command {
-  return new Command("doctor")
+  return withJsonOutput(new Command("doctor")
     .exitOverride()
-    .configureOutput({
-      writeOut: text => ctx.stdout.write(text),
-      writeErr: text => {
-        if (!ctx.wantsJson) ctx.stderr.write(text);
-      },
-      outputError: (text, write) => write(text),
-    })
     .description("Run read-only workspace health checks.")
-    .action(async () => {
+  ).action(async (options: JsonOutputOptions) => {
       const report = await getRuntimeHealth(ctx.cwd);
       let authoring: Awaited<ReturnType<typeof getAuthoringHealth>> | undefined;
       let authoringFailure: AuthoringHealthCheck | undefined;
@@ -43,6 +36,6 @@ export function createDoctorCommand(ctx: DoctorCommandContext): Command {
         message: ok ? "Doctor checks passed." : "Doctor checks failed.",
         checks: [...report.checks, ...(authoring?.checks ?? []), ...(authoringFailure ? [authoringFailure] : [])],
         ...(authoring ? { authoring: authoring.environment } : {}),
-      }, ctx.wantsJson ? "json" : "text", ctx, ok ? 0 : 1));
+      }, outputFormatFor(options), ctx, ok ? 0 : 1));
     });
 }

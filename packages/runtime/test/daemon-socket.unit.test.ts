@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
+import { openRuntimeStore } from "../src/store/store.js";
 import { err, ok, ResultAsync } from "neverthrow";
 
 describe("daemon socket server", () => {
@@ -123,6 +124,35 @@ describe("daemon socket server", () => {
       expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
     } finally {
       await first.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps an occupied socket when pid liveness is unknown", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-unknown-pid-"));
+    const endpoint = daemonEndpoint(workspace);
+    const store = await openRuntimeStore(workspace);
+    const daemon = store.claimDaemon({
+      workspaceRealpath: workspace,
+      pid: 123,
+      protocolVersion: 1,
+      packageVersion: "test",
+      nodeVersion: process.version,
+      execPath: process.execPath,
+      idleStopMs: 30_000,
+    });
+    store.close();
+    await writeFile(endpoint, "occupied");
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(daemon.heartbeatAt));
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("access denied"), { code: "EACCES" });
+    });
+    try {
+      await expect(startDaemonServer(workspace, testHandlers())).rejects.toMatchObject({ code: "EADDRINUSE" });
+      await expect(readFile(endpoint, "utf8")).resolves.toBe("occupied");
+    } finally {
+      kill.mockRestore();
+      now.mockRestore();
       await rm(workspace, { recursive: true, force: true });
     }
   });

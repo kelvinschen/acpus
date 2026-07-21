@@ -21,7 +21,7 @@ describe("workflow import contracts", () => {
 
         const imported = await runJson(workspace, ["workflow", "import", source, "--json"]);
         expect(imported.exitCode).toBe(0);
-        expect(Object.keys(imported.json).sort()).toEqual(["catalog", "checked", "message", "ok", "phase"]);
+        expect(Object.keys(imported.json).sort()).toEqual(["catalog", "checked", "message", "ok", "phase", "schemaVersion"]);
         expect(imported.json).toMatchObject({
           ok: true,
           phase: "import",

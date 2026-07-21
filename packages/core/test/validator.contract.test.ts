@@ -945,6 +945,27 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(validateWorkflowIR(ir)).toEqual([]);
   });
 
+  it("rejects non-finite hand-authored schema values", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      inputSchema: {
+        kind: "object",
+        fields: {
+          defaulted: { kind: "unknown", default: Number.NaN },
+          literal: { kind: "literal", value: Number.POSITIVE_INFINITY },
+          enumerated: { kind: "enum", values: [Number.NEGATIVE_INFINITY] },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    }));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.defaulted.default" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.literal.value" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema.fields.enumerated.values.0" }),
+    ]));
+  });
+
   it("validates the root workflow output", () => {
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       root: {

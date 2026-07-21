@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { getCliPackageInfo } from "../src/commands/version.js";
+import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withTestWorkspace } from "./support/workspace.js";
@@ -24,23 +24,30 @@ describe("CLI program usage contracts", () => {
       expect(stderr.text).toBe("");
     }
 
-    const jsonStdout = new CaptureStream();
-    const jsonStderr = new CaptureStream();
-    const jsonExitCode = await runCli(["--json", "--version"], {
+    const invalidStdout = new CaptureStream();
+    const invalidStderr = new CaptureStream();
+    const invalidExitCode = await runCli(["--json", "--version"], {
       cwd: process.cwd(),
-      stdout: jsonStdout,
-      stderr: jsonStderr,
+      stdout: invalidStdout,
+      stderr: invalidStderr,
     });
 
-    expect(jsonExitCode).toBe(0);
-    expect(jsonStdout.text).toBe(`${version}\n`);
-    expect(jsonStderr.text).toBe("");
+    expect(invalidExitCode).toBe(2);
+    expect(invalidStdout.text).toBe("");
+    expect(invalidStderr.text).toContain("unknown option '--json'");
+
+    for (const argv of [["--version", "doctor", "--json"], ["-V", "workflow", "list", "--json"]]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(2);
+      expect(stdout.text).not.toContain(version);
+      expect(stderr.text).toContain("--version cannot be combined with a command");
+    }
   });
 
-  it("prints the package version through the version command", async () => {
+  it("does not expose a duplicate version command", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const version = getCliPackageInfo().version;
 
     const exitCode = await runCli(["version"], {
       cwd: process.cwd(),
@@ -48,9 +55,9 @@ describe("CLI program usage contracts", () => {
       stderr,
     });
 
-    expect(exitCode).toBe(0);
-    expect(stdout.text).toBe(`${version}\n`);
-    expect(stderr.text).toBe("");
+    expect(exitCode).toBe(2);
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("version");
   });
 
   it("reports absolute authoring authority without initializing runtime state", async () => {
@@ -135,7 +142,7 @@ describe("CLI program usage contracts", () => {
   });
 
 
-  it("returns structured JSON for commander usage errors", async () => {
+  it("does not infer JSON mode from an unsupported trailing token", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
@@ -146,15 +153,11 @@ describe("CLI program usage contracts", () => {
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: false,
-      phase: "usage",
-    });
-    expect(stdout.text).toContain("unknown command");
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("unknown option '--json'");
   });
 
-  it("accepts global JSON before the command", async () => {
+  it("rejects JSON before the leaf command", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
@@ -165,15 +168,12 @@ describe("CLI program usage contracts", () => {
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: false,
-      phase: "usage",
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("unknown option '--json'");
   });
 
-  it("documents global JSON in root and nested command help", async () => {
-    for (const argv of [["--help"], ["runs", "inspect", "--help"]]) {
+  it("documents JSON only on structured-output leaf commands", async () => {
+    for (const argv of [["--help"], ["runs", "--help"], ["workflow", "viz", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
 
@@ -184,8 +184,42 @@ describe("CLI program usage contracts", () => {
       });
 
       expect(exitCode).toBe(0);
+      expect(stdout.text).not.toContain("--json");
+      expect(stderr.text).toBe("");
+    }
+
+    for (const argv of [["runs", "inspect", "--help"], ["web", "--help"]]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);
       expect(stdout.text).toContain("--json");
       expect(stderr.text).toBe("");
+    }
+  });
+
+  it("selects machine output from the parsed leaf option only", async () => {
+    const jsonStdout = new CaptureStream();
+    const jsonStderr = new CaptureStream();
+    expect(await runCli(["doctor", "--json", "--bogus"], {
+      cwd: process.cwd(), stdout: jsonStdout, stderr: jsonStderr,
+    })).toBe(2);
+    expect(JSON.parse(jsonStdout.text)).toMatchObject({
+      schemaVersion: 1,
+      ok: false,
+      phase: "usage",
+    });
+    expect(jsonStderr.text).toBe("");
+
+    for (const argv of [
+      ["runs", "--json", "inspect"],
+      ["runs", "signal", "--", "--json"],
+      ["runs", "inspect", "run_1", "-V"],
+    ]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(2);
+      expect(stdout.text).toBe("");
+      expect(stderr.text).not.toBe("");
     }
   });
 

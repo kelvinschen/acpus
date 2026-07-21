@@ -43,4 +43,4 @@ Signal target inspection exposes the complete persisted prompt/schema. Schema-ba
 
 Pause records a durable gate and best-effort aborts active attempts; resume clears the gate and re-drives eligible work. Cancel terminalizes the run or selected scheduler subtree. Ask before canceling unless already explicitly requested. Controls return when their effect is confirmed, not when later work becomes terminal.
 
-Prefer text for people. Use global `--json` only for structured parsing; foreground run NDJSON uses `phase: "run"`, while inspect-follow uses `phase: "inspect"` over the same snapshot/update/resync/done model.
+Prefer text for people. Use a structured leaf's local `--json` option only for parsing; foreground run NDJSON uses `phase: "run"`, while inspect-follow uses `phase: "inspect"` over the same snapshot/update/resync/done model.

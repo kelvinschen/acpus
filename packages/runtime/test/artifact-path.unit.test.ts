@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { tryResolveArtifactPath } from "../src/artifacts/path.js";
-import type { ArtifactRecord, RuntimeStore } from "../src/store/store.js";
+import { tryResolveArtifactPath, type ArtifactPathContext } from "../src/artifacts/path.js";
+import type { ArtifactRecord } from "../src/store/store.js";
 
 describe("artifact path resolution", () => {
   let workspace: string;
@@ -87,7 +87,8 @@ describe("artifact path resolution", () => {
         getArtifact: () => {
           throw sentinel;
         },
-      } as unknown as RuntimeStore,
+        getRunDir: () => runDir,
+      },
     })).toThrow(sentinel);
 
     expect(() => tryResolveArtifactPath(ref(runId, artifactId), {
@@ -121,11 +122,11 @@ describe("artifact path resolution", () => {
     return { id: artifactId, runId, nodeKey: "produce", attempt: 1, digest: "sha256:test", size: 6, path };
   }
 
-  function store(artifact?: ArtifactRecord): RuntimeStore {
+  function store(artifact?: ArtifactRecord): ArtifactPathContext["store"] {
     return {
       getRunDir: () => runDir,
       getArtifact: (_runId: string, id: string) => id === artifactId ? artifact : undefined,
-    } as unknown as RuntimeStore;
+    };
   }
 });
 

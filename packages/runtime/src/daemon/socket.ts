@@ -3,8 +3,9 @@ import { mkdir, open, rm } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { JsonValue } from "@acpus/expression/ir";
+import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { probeProcessLiveness } from "../process-liveness.js";
 import { openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
 
 export type DaemonStatus = {
@@ -546,14 +547,6 @@ function isRunWorkflowLockArtifact(value: unknown): boolean {
   return true;
 }
 
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(item => isJsonValue(item));
-  if (!isPlainRecord(value)) return false;
-  return Object.values(value).every(item => isJsonValue(item));
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -588,17 +581,8 @@ async function hasStaleDaemonEvidence(cwd: string): Promise<boolean> {
     const daemon = store.getRuntimeDiagnostics().daemon;
     if (!daemon) return true;
     if (daemon.heartbeatAt && Date.now() - Date.parse(daemon.heartbeatAt) > 5_000) return true;
-    return daemon.pid !== undefined && !isProcessAlive(daemon.pid);
+    return daemon.pid !== undefined && probeProcessLiveness(daemon.pid) === "dead";
   } finally {
     store.close();
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EPERM";
   }
 }

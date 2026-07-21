@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `acpus` package owns command parsing and human/JSON presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
+The `acpus` package owns command parsing and human/JSON/NDJSON presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
 
 ## Requirements
 
@@ -14,7 +14,7 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 
 | Command | Options and behavior |
 | --- | --- |
-| `acpus --version`, `-V`, `version` | Print the CLI package version. |
+| `acpus --version`, `acpus -V` | Print the CLI package version. |
 | `workflow check <workflow>` | `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
 | `workflow run <workflow>` | Check options plus `--background`; foreground `--interval <duration>` defaults to 1s, has a 250ms minimum, and conflicts with `--background`. |
 | `workflow viz <workflow>` | Optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
@@ -30,7 +30,10 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
-- Global `--json` MUST work before or after command names and appear in root and subcommand help; help remains on `-h`/`--help` without an `acpus help` command.
+- Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
+- `--json` MUST be owned by executable leaves that provide a structured result: workflow list/show/import/check/run; every runs, hooks, and skill leaf; doctor; and web.
+- Root, group, version, and workflow visualization surfaces MUST reject `--json` and MUST omit it from help.
+- Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
 
 ### Workflow Resolution And Import
@@ -72,9 +75,10 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
 - Terminal visualization Agent bindings MUST use `name (target, optional model/agent mode)` and MUST omit permission mode.
 - Terminal visualization Agent nodes MUST show their referenced Agent binding key as dim metadata instead of the generic `agent` node type.
-- Terminal visualization MUST enable ANSI styling only for a TTY when `NO_COLOR` is absent; non-TTY and JSON visualization MUST contain no ANSI sequences.
+- Terminal visualization MUST enable ANSI styling only for a TTY when `NO_COLOR` is absent; non-TTY visualization MUST contain no ANSI sequences.
 - `workflow viz --out <file.html>` MUST write one offline HTML graph through WebUI rendering helpers and MUST refuse an existing output unless `--force` is present.
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
+- Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
 - Read-only commands MUST use Runtime read APIs without starting the daemon or creating state; this includes inspect, artifacts, catalog reads, hook reads, and Doctor.
 - Artifact listing MUST present Runtime-owned registry records without reading bodies; absent artifacts produce `No artifacts.` in text and an empty array in JSON.
@@ -104,12 +108,15 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 
 ### Output And Exit Codes
 
-- JSON `CliResult.phase` MUST use the closed exported [`ResultPhase`](../packages/cli/src/output.ts) union, including distinct `lock` and `import` phases; non-streaming commands emit one JSON object.
+- `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `lock` and `import` members.
+- Every machine-readable record MUST contain `schemaVersion: 1`, `ok`, and `phase`.
+- Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
+- Text Doctor health checks MUST align the status, area, and message fields as three columns within each report.
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
-- Foreground run and JSON follow MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
+- Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
 - Non-TTY overview follow MUST emit its first dynamic-context omission summary immediately, retain only the latest omitted status per context during each subsequent 30-second window, and flush at the window, checkpoint, or terminal boundary; failures, timeouts, awaits, retries, and requeues remain immediate. TTY, JSON/NDJSON, `--all`, and `--target` follow MUST remain uncoalesced by this rule.
 - Non-TTY semantic lines MUST use only `+<elapsed>` as their leading marker and preserve intermediate transition order.
@@ -125,13 +132,13 @@ The `acpus` package owns command parsing and human/JSON presentation, including 
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Catalog JSON MUST preserve the catalog projections and stable ordering by available name/scope then invalid absolute package path; duplicate project/global names set `requiresScope: true`.
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
-- Successful terminal visualization JSON MUST contain the complete unstyled tree in `visualization` alongside workflow summary metadata and diagnostics.
+- Successful web JSON MUST use the ordinary result envelope and place its URL and optional token under `web`.
 - A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
 - Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; foreground run instead maps completed to 0 and failed/canceled to 1, while successful Ctrl-C detach exits 0.
 
 ## Verification
 
-- Cover command grammar, option conflicts, phase/exit-code mapping, text output, JSON envelopes, and NDJSON ordering with CLI contract tests.
+- Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
 - Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, hooks, Doctor, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime state.
 - Typecheck and apply native authoring checks to official workflow examples across every node kind and disclosure route; one representative CLI E2E covers full preparation, and public API contracts cover authoring-facade exports.

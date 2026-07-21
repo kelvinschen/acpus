@@ -2,17 +2,17 @@ import { Command } from "commander";
 import type { Writable } from "node:stream";
 import { formatHookLoadError, globalHooksPath, loadHooksConfigScope, loadHooksConfigScopes, projectHooksPath, type HookConfigScope } from "@acpus/runtime";
 import { validationError, usageError } from "../errors.js";
-import { writeResult, type HookListResult, type OutputFormat } from "../output.js";
+import { writeResult, type HookListResult } from "../output.js";
+import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 
 export type HooksCommandContext = {
   cwd: string;
   stdout: Writable;
   stderr: Writable;
-  wantsJson: boolean;
   setExitCode(code: number): void;
 };
 
-type ScopeOptions = {
+type ScopeOptions = JsonOutputOptions & {
   project?: boolean;
   global?: boolean;
 };
@@ -20,20 +20,14 @@ type ScopeOptions = {
 export function createHooksCommand(ctx: HooksCommandContext): Command {
   const command = new Command("hooks")
     .exitOverride()
-    .configureOutput({
-      writeOut: text => ctx.stdout.write(text),
-      writeErr: text => {
-        if (!ctx.wantsJson) ctx.stderr.write(text);
-      },
-      outputError: (text, write) => write(text),
-    })
     .description("Inspect runtime hook configuration.");
 
-  command.addCommand(new Command("validate")
+  command.addCommand(withJsonOutput(new Command("validate")
     .exitOverride()
+    .description("Validate selected hook configuration files.")
     .option("--project", "validate project hooks")
     .option("--global", "validate global hooks")
-    .action(async (options: ScopeOptions) => {
+    ).action(async (options: ScopeOptions) => {
       const scopes = await loadSelectedScopes(ctx, options);
       const count = scopes.reduce((sum, scope) => sum + scope.hooks.length, 0);
       ctx.setExitCode(writeResult({
@@ -41,21 +35,22 @@ export function createHooksCommand(ctx: HooksCommandContext): Command {
         phase: "validate",
         message: `OK (${count} hooks)`,
         hookValidation: { count },
-      }, outputFormat(ctx), ctx, 0));
+      }, outputFormatFor(options), ctx, 0));
     }));
 
-  command.addCommand(new Command("list")
+  command.addCommand(withJsonOutput(new Command("list")
     .exitOverride()
+    .description("List selected hook configurations.")
     .option("--project", "list project hooks")
     .option("--global", "list global hooks")
-    .action(async (options: ScopeOptions) => {
+    ).action(async (options: ScopeOptions) => {
       const scopes = await loadSelectedScopes(ctx, options);
       ctx.setExitCode(writeResult({
         ok: true,
         phase: "inspect",
         message: "Hooks listed.",
         hooks: groupedHooks(scopes),
-      }, outputFormat(ctx), ctx, 0));
+      }, outputFormatFor(options), ctx, 0));
     }));
 
   return command;
@@ -74,8 +69,4 @@ async function loadSelectedScopes(ctx: HooksCommandContext, options: ScopeOption
 
 function groupedHooks(scopes: readonly HookConfigScope[]): HookListResult {
   return Object.fromEntries(scopes.map(scope => [scope.source, { path: scope.path, hooks: scope.hooks }]));
-}
-
-function outputFormat(ctx: HooksCommandContext): OutputFormat {
-  return ctx.wantsJson ? "json" : "text";
 }

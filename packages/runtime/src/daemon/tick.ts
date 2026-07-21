@@ -7,7 +7,7 @@ export type DaemonTickResult = {
   idleBlockers: number;
 };
 
-export async function runDaemonTick(store: RuntimeStore, options: {
+export async function runDaemonTick(store: Pick<RuntimeStore, "listDaemonWork" | "pruneHookJournal">, options: {
   startSession: (runId: string) => "started" | "already-active" | "terminal" | "quarantined";
   dispatchHooks?: (runId: string) => "dispatched" | "retry" | "quarantined";
 }): Promise<DaemonTickResult> {

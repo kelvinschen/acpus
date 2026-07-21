@@ -1,4 +1,4 @@
-import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
+import type { WriteNodeProgressInput } from "../store/store.js";
 
 const DEFAULT_PROGRESS_FLUSH_INTERVAL_MS = 1_000;
 const TERMINAL_PROGRESS_STATUSES = new Set(["completed", "failed", "cancelled", "timed_out"]);
@@ -11,7 +11,7 @@ export class CoalescingNodeProgressWriter implements NodeProgressWriter {
   private readonly pending = new Map<string, WriteNodeProgressInput>();
   private timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly store: RuntimeStore, private readonly flushIntervalMs = DEFAULT_PROGRESS_FLUSH_INTERVAL_MS) {}
+  constructor(private readonly target: NodeProgressWriter, private readonly flushIntervalMs = DEFAULT_PROGRESS_FLUSH_INTERVAL_MS) {}
 
   writeNodeProgress(input: WriteNodeProgressInput): void {
     if (TERMINAL_PROGRESS_STATUSES.has(input.status)) {
@@ -51,7 +51,7 @@ export class CoalescingNodeProgressWriter implements NodeProgressWriter {
 
   private flushNow(input: WriteNodeProgressInput): void {
     try {
-      this.store.writeNodeProgress(input);
+      this.target.writeNodeProgress(input);
     } catch {
       // Progress is an inspect convenience projection; it must not alter run outcome.
     }

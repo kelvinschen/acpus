@@ -35,7 +35,8 @@ export type CliAppliedControl =
       validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
     };
 
-type CliControl = CliAppliedControl | { type: string; runId: string; state?: undefined };
+export type CliUnappliedControl = { type: string; runId: string; state?: undefined };
+type CliControl = CliAppliedControl | CliUnappliedControl;
 
 type CliResultFields = {
   message?: string;
@@ -56,30 +57,61 @@ type CliResultFields = {
   outputPath?: string;
   visualization?: string;
   skill?: SkillCommandResult;
-};
-
-type NonImportCliResult = CliResultFields & {
-  ok: boolean;
-  phase: Exclude<ResultPhase, "import">;
+  web?: { url: string; token?: string };
   catalog?: WorkflowCatalogEntry;
-  checked?: never;
+  checked?: boolean;
 };
 
-type ImportSuccessCliResult = CliResultFields & {
-  ok: true;
-  phase: "import";
+type ResultRecord<
+  Phase extends ResultPhase,
+  Ok extends boolean,
+  Fields extends keyof CliResultFields,
+  RequiredFields extends Fields = never,
+> = {
+  ok: Ok;
+  phase: Phase;
+} & Required<Pick<CliResultFields, RequiredFields>>
+  & Pick<CliResultFields, Exclude<Fields, RequiredFields>>
+  & Partial<Record<Exclude<keyof CliResultFields, Fields>, never>>;
+
+type ImportSuccessCliResult = Omit<ResultRecord<"import", true, "message" | "catalog" | "checked", "message" | "catalog" | "checked">, "catalog"> & {
   catalog: AvailableWorkflowCatalogEntry;
-  checked: boolean;
 };
 
-type ImportFailureCliResult = CliResultFields & {
-  ok: false;
-  phase: "import";
-  catalog?: never;
-  checked?: never;
+type ControlFailureCliResult = Omit<ResultRecord<"control", false, "message" | "run" | "control" | "errorCode", "message">, "control"> & {
+  control?: CliUnappliedControl;
 };
 
-export type CliResult = NonImportCliResult | ImportSuccessCliResult | ImportFailureCliResult;
+type ControlSuccessCliResult = Omit<ResultRecord<"control", true, "message" | "run" | "followRunId" | "control", "message" | "run" | "control">, "control"> & {
+  control: CliAppliedControl;
+};
+
+export type CliResult =
+  | ResultRecord<"usage", false, "message", "message">
+  | ResultRecord<"check", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog", "message" | "workflow">
+  | ResultRecord<"check", false, "message" | "diagnostics", "message">
+  | ResultRecord<"compile" | "lock", false, "message", "message">
+  | ResultRecord<"validate", true, "message" | "hookValidation", "message" | "hookValidation">
+  | ResultRecord<"validate", false, "message" | "workflow" | "diagnostics", "message">
+  | ImportSuccessCliResult
+  | ResultRecord<"import", false, "message" | "errorCode", "message">
+  | ResultRecord<"run", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "run" | "followRunId" | "catalog", "message" | "workflow" | "run">
+  | ResultRecord<"run", true, "message" | "web", "message" | "web">
+  | ResultRecord<"run", false, "message" | "run" | "errorCode", "message">
+  | ResultRecord<"inspect", true, "message" | "catalog", "message" | "catalog">
+  | ResultRecord<"inspect", true, "message" | "catalogEntries", "message" | "catalogEntries">
+  | ResultRecord<"inspect", true, "message" | "hooks", "message" | "hooks">
+  | ResultRecord<"inspect", false, "message" | "errorCode", "message">
+  | ControlSuccessCliResult
+  | ControlFailureCliResult
+  | ResultRecord<"delete", true, "message" | "run" | "deletedRuns" | "skippedRuns", "message" | "deletedRuns" | "skippedRuns">
+  | ResultRecord<"delete", false, "message" | "run" | "errorCode", "message">
+  | ResultRecord<"doctor", boolean, "message" | "checks" | "authoring", "message" | "checks">
+  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "visualization", "message" | "workflow" | "visualization">
+  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
+  | ResultRecord<"viz", false, "message", "message">
+  | ResultRecord<"skill", true, "message" | "skill", "message" | "skill">
+  | ResultRecord<"skill", false, "message" | "skill" | "errorCode", "message">;
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
 
@@ -122,7 +154,7 @@ export function writeResult(
   exitCode: number,
 ): number {
   if (format === "json") {
-    streams.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    streams.stdout.write(`${JSON.stringify({ schemaVersion: 1, ...result }, null, 2)}\n`);
     return exitCode;
   }
 
@@ -172,7 +204,11 @@ export function writeResult(
   }
   if (result.followRunId) stream.write(`Next: acpus runs inspect ${result.followRunId} --follow\n`);
   if (result.checks) {
-    for (const check of result.checks) stream.write(`${check.status}\t${check.area}\t${check.message}\n`);
+    const statusWidth = result.checks.reduce((width, check) => Math.max(width, check.status.length), 0);
+    const areaWidth = result.checks.reduce((width, check) => Math.max(width, check.area.length), 0);
+    for (const check of result.checks) {
+      stream.write(`${check.status.padEnd(statusWidth)}  ${check.area.padEnd(areaWidth)}  ${check.message}\n`);
+    }
   }
   if (result.hooks) writeHooks(stream, result.hooks);
   if (result.skill) writeSkillResult(stream, result.skill);

@@ -495,7 +495,7 @@ replacement is accepted. Alpha status should be part of the adoption decision.
 
 ## Verification checklist
 
-- [ ] `acpus version` reports the CLI build you intend to use.
+- [ ] `acpus --version` reports the CLI build you intend to use.
 - [ ] `acpus doctor` reports a usable authoring/runtime environment.
 - [ ] The workflow imports public facades from `acpus/core`,
       `acpus/expression`, and, when needed, `acpus/tasks/git`.

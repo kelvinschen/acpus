@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "neverthrow";
-import type { RuntimeStore } from "../store/store.js";
+import type { ArtifactRecord, RuntimeStore } from "../store/store.js";
 
 export type ArtifactPathError =
   | { type: "invalid-artifact-ref"; message: string }
@@ -13,7 +13,7 @@ export type ArtifactPathError =
 export type ArtifactPathContext = {
   cwd: string;
   runId: string;
-  store: RuntimeStore;
+  store: Pick<RuntimeStore, "getArtifact" | "getRunDir">;
 };
 
 export function isArtifactRefCandidate(value: unknown): value is { kind: "artifact"; uri?: unknown } {
@@ -64,7 +64,7 @@ export function readVerifiedArtifactBytes(context: ArtifactPathContext, artifact
 function validateRegisteredArtifactPath(
   uri: string,
   context: ArtifactPathContext,
-  artifact: NonNullable<ReturnType<RuntimeStore["getArtifact"]>>,
+  artifact: ArtifactRecord,
 ): Result<string, ArtifactPathError> {
   const runDir = context.store.getRunDir(context.runId);
   if (!runDir) throw new Error(`Run '${context.runId}' has no run directory for registered artifact '${artifact.id}'.`);

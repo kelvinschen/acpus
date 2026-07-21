@@ -11,7 +11,7 @@
 - The root `@acpus/expression` entrypoint authoring value surface MUST be `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`, `and`, `or`, `template`, and `md`.
 - The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
-- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
+- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `isJsonValue`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
 - `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.
 
@@ -26,6 +26,8 @@
 - `TemplateIR` MUST use the canonical `{ kind: "template", parts: TemplatePartIR[] }` shape and MUST contain text parts and expression parts only.
 - `WorkflowData` MUST be JSON-compatible data: string, finite number, boolean, null, arrays, and plain objects with WorkflowData values.
 - `WorkflowData` MUST NOT include `undefined`, functions, promises, dates, maps, sets, class instances, symbols, bigint, sparse arrays, cycles, or non-finite numbers.
+- `isJsonValue(value)` MUST implement the preceding `WorkflowData` boundary, including plain objects with a null prototype and shared non-cyclic subgraphs.
+- `isJsonValue(value)` MUST return `false` rather than throw when a value is unsupported or cannot be inspected.
 
 ### Authoring And Lowering
 
@@ -82,4 +84,4 @@
 ## Verification
 
 - Contract and type tests cover public exports, `lift` inference/rejection, structured dependencies, predicates, templates, and accessors.
-- Lowering, evaluator, and validator tests cover every IR kind and operator, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.
+- JSON guard, lowering, evaluator, and validator tests cover the WorkflowData boundary, every IR kind and operator, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.

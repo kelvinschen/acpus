@@ -10,6 +10,7 @@ import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
 import { canPickRun, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { daemonControlRequestId, sendDaemonControl, type DaemonControlFailure } from "./daemon.js";
+import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 import { toRunRecord } from "../run-record.js";
 
 export type RunsCommandContext = {
@@ -17,20 +18,30 @@ export type RunsCommandContext = {
   stdin: Readable;
   stdout: Writable;
   stderr: Writable;
-  wantsJson: boolean;
   setExitCode(code: number): void;
 };
 
-type RunsCommandOptions = {
+type Target = {
   target?: string;
-  payload?: string;
+};
+
+type TargetOptions = Target & JsonOutputOptions;
+
+type ForkMutation = Target & {
   input?: string;
   workflow?: string;
   agents?: string;
   unsafeReuse?: boolean;
 };
 
-type InspectRunOptions = {
+type ForkOptions = ForkMutation & JsonOutputOptions;
+
+type SignalOptions = JsonOutputOptions & {
+  target: string;
+  payload: string;
+};
+
+type InspectRunOptions = JsonOutputOptions & {
   target?: string;
   all?: boolean;
   follow?: boolean;
@@ -38,25 +49,22 @@ type InspectRunOptions = {
   raw?: boolean;
 };
 
-type ArtifactsRunOptions = {
+type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
 };
 
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
+type RunMutation =
+  | { type: "pause" | "resume" }
+  | ({ type: "retry" | "cancel" } & Target)
+  | ({ type: "fork" } & ForkMutation);
 
 export function createRunsCommand(ctx: RunsCommandContext): Command {
   const command = new Command("runs")
     .exitOverride()
-    .configureOutput({
-      writeOut: text => ctx.stdout.write(text),
-      writeErr: text => {
-        if (!ctx.wantsJson) ctx.stderr.write(text);
-      },
-      outputError: (text, write) => write(text),
-    })
     .description("Inspect and control durable runs.");
 
-  command.addCommand(new Command("inspect")
+  command.addCommand(withJsonOutput(new Command("inspect")
     .exitOverride()
     .description("Inspect durable run structure and status.")
     .argument("[run-id]", "run id")
@@ -65,57 +73,71 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--follow", "follow run status until completion or Ctrl-C")
     .option("--interval <duration>", "refresh followed status (default: 1s, minimum: 250ms)")
     .option("--raw", "emit the unbounded raw inspection bundle (requires --json)")
-    .action(async (runId: string | undefined, options: InspectRunOptions) => {
+    ).action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);
     }));
 
-  command.addCommand(new Command("artifacts")
+  command.addCommand(withJsonOutput(new Command("artifacts")
     .exitOverride()
     .description("List artifact metadata and absolute paths.")
     .argument("<run-id>", "run id")
     .option("--target <run-target>", "list artifacts for one static node, dynamic node, frame, or attempt")
-    .action(async (runId: string, options: ArtifactsRunOptions) => {
+    ).action(async (runId: string, options: ArtifactsRunOptions) => {
       await artifactsRunCommand(ctx, runId, options);
     }));
 
-  command.addCommand(new Command("delete")
+  command.addCommand(withJsonOutput(new Command("delete")
     .exitOverride()
+    .description("Delete durable run state and run-local artifacts.")
     .argument("[run-id]", "run id")
-    .action(async (runId: string | undefined) => {
-      await deleteRunCommand(ctx, runId);
+    ).action(async (runId: string | undefined, options: JsonOutputOptions) => {
+      await deleteRunCommand(ctx, runId, outputFormatFor(options));
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
-    const control = new Command(name)
+    const control = withJsonOutput(new Command(name)
       .exitOverride()
+      .description(controlDescription(name))
       .argument("<run-id>", "run id")
-      .action(async (runId: string, options: RunsCommandOptions) => {
-        await mutateRun(ctx, runId, options, name);
-      });
+    ).action(async (runId: string, options: TargetOptions) => {
+      const request: RunMutation = name === "pause" || name === "resume"
+        ? { type: name }
+        : { type: name, ...(options.target === undefined ? {} : { target: options.target }) };
+      await mutateRun(ctx, runId, request, outputFormatFor(options));
+    });
     if (name === "retry") control.option("--target <run-target>", "retry only a failed run target");
     if (name === "cancel") control.option("--target <run-target>", "cancel only a non-terminal run target");
     command.addCommand(control);
   }
 
-  command.addCommand(new Command("fork")
+  command.addCommand(withJsonOutput(new Command("fork")
     .exitOverride()
+    .description("Fork a run, optionally replacing its workflow or recovery target.")
     .argument("<run-id>", "run id")
     .option("--workflow <workflow-module>", "use a replacement workflow module for the fork")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
     .option("--agents <json>", "override inherited agents for the fork")
     .option("--target <run-target>", "target a replacement workflow recovery point")
     .option("--unsafe-reuse", "dangerously reuse completed fork prerequisites despite workflow, input, or signature changes")
-    .action(async (runId: string, options: RunsCommandOptions) => {
-      await mutateRun(ctx, runId, options, "fork");
+    ).action(async (runId: string, options: ForkOptions) => {
+      await mutateRun(ctx, runId, {
+        type: "fork",
+        ...(options.target === undefined ? {} : { target: options.target }),
+        ...(options.input === undefined ? {} : { input: options.input }),
+        ...(options.workflow === undefined ? {} : { workflow: options.workflow }),
+        ...(options.agents === undefined ? {} : { agents: options.agents }),
+        ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
+      }, outputFormatFor(options));
     }));
 
-  command.addCommand(new Command("signal")
+  command.addCommand(withJsonOutput(new Command("signal")
     .exitOverride()
+    .description("Deliver a payload to one open Signal wait.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "signal wait target")
     .requiredOption("--payload <json>", "signal payload JSON")
-    .action(async (runId: string, options: RunsCommandOptions) => {
-      await signalRun(ctx, runId, options);
+    ).action(async (runId: string, options: SignalOptions) => {
+      await signalRun(ctx, runId, options, outputFormatFor(options));
     }));
 
   return command;
@@ -127,7 +149,7 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
     if (query.mode === "raw") throw usageError("--raw cannot be followed.");
     const outcome = await followRun(ctx.cwd, { ...query, intervalMs: parseFollowInterval(options.interval) }, {
       phase: "inspect",
-      wantsJson: ctx.wantsJson,
+      format: outputFormatFor(options) === "json" ? "ndjson" : "text",
       stdout: ctx.stdout,
       stderr: ctx.stderr,
     });
@@ -137,7 +159,7 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
 
   const inspected = await getRunInspection(ctx.cwd, query);
   if (inspected.isErr()) throw inspectionError(inspected.error);
-  if (ctx.wantsJson) {
+  if (outputFormatFor(options) === "json") {
     ctx.stdout.write(`${JSON.stringify({ ok: true, phase: "inspect", ...inspected.value }, null, 2)}\n`);
   } else {
     ctx.stdout.write(formatRunInspectionDocument(inspected.value));
@@ -146,12 +168,12 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
 }
 
 async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefined, options: InspectRunOptions): Promise<void> {
-  validateInspectOptions(ctx, options);
+  validateInspectOptions(options);
   if (runId !== undefined) {
     await inspectRun(ctx, runId, options);
     return;
   }
-  if (ctx.wantsJson) throw usageError("Run id is required when --json is used.");
+  if (outputFormatFor(options) === "json") throw usageError("Run id is required when --json is used.");
   if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const runs = await listRuns(ctx.cwd);
@@ -188,8 +210,9 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
     artifacts = inspected.value.artifacts;
   }
 
-  if (ctx.wantsJson) {
+  if (outputFormatFor(options) === "json") {
     ctx.stdout.write(`${JSON.stringify({
+      schemaVersion: 1,
       ok: true,
       phase: "inspect",
       runId,
@@ -204,18 +227,18 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
   ctx.setExitCode(0);
 }
 
-function validateInspectOptions(ctx: RunsCommandContext, options: InspectRunOptions): void {
+function validateInspectOptions(options: InspectRunOptions): void {
   if (options.target === "") throw usageError("--target must be a non-empty string.");
   if (options.target !== undefined && options.all) throw usageError("--target cannot be used with --all.");
   if (options.interval !== undefined && !options.follow) throw usageError("--interval requires --follow.");
-  if (options.raw && !ctx.wantsJson) throw usageError("--raw requires --json.");
+  if (options.raw && outputFormatFor(options) !== "json") throw usageError("--raw requires --json.");
   if (options.raw && (options.follow || options.all || options.target !== undefined)) {
     throw usageError("--raw cannot be used with --follow, --all, or --target.");
   }
   if (options.follow) void parseFollowInterval(options.interval);
 }
 
-async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
+async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined, format: OutputFormat): Promise<void> {
   if (runId !== undefined) {
     const deleted = await deleteOneRun(ctx, runId);
     ctx.setExitCode(writeResult({
@@ -225,10 +248,10 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
       run: deleted,
       deletedRuns: [deleted],
       skippedRuns: [],
-    }, outputFormat(ctx), ctx, 0));
+    }, format, ctx, 0));
     return;
   }
-  if (ctx.wantsJson) throw usageError("Run id is required when --json is used.");
+  if (format === "json") throw usageError("Run id is required when --json is used.");
   if (!canPickRun(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const choices = await deleteChoices(ctx);
@@ -250,7 +273,7 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
     message: deletedRuns.length === 1 ? "Run deleted." : "Runs deleted.",
     deletedRuns,
     skippedRuns,
-  }, outputFormat(ctx), ctx, 0));
+  }, format, ctx, 0));
 }
 
 async function deleteChoices(ctx: RunsCommandContext): Promise<DeleteRunChoice[]> {
@@ -297,9 +320,9 @@ async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<Run
   return deleted.value;
 }
 
-async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions): Promise<void> {
+async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions, format: OutputFormat): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  const controlled = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target!, payload });
+  const controlled = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target, payload });
   if (controlled.isErr()) throw runControlError(controlled.error);
   const result = controlled.value;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
@@ -310,43 +333,61 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: RunsCo
     control: appliedControl(result),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, outputFormat(ctx), ctx, 0));
+  }, format, ctx, 0));
 }
 
-async function mutateRun(ctx: RunsCommandContext, runId: string, options: RunsCommandOptions, action: ControlAction): Promise<void> {
-  if (action === "fork" && options.target === "") throw usageError("--target must be a non-empty string.");
-  const replacementInput = action === "fork" && options.input !== undefined
-    ? await parseInput(options.input, ctx.cwd)
+async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation, format: OutputFormat): Promise<void> {
+  if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
+  const replacementInput = request.type === "fork" && request.input !== undefined
+    ? await parseInput(request.input, ctx.cwd)
     : undefined;
-  const prepared = action === "fork" && options.workflow ? await prepareWorkflowForCli(options.workflow, ctx.cwd) : undefined;
-  const agentOverrides = action === "fork" ? parseAgents(options.agents) : undefined;
-  const forkInput = await maybeNormalizeForkInput(ctx, runId, action, replacementInput, prepared);
+  const prepared = request.type === "fork" && request.workflow ? await prepareWorkflowForCli(request.workflow, ctx.cwd) : undefined;
+  const agentOverrides = request.type === "fork" ? parseAgents(request.agents) : undefined;
+  const forkInput = request.type === "fork" ? await maybeNormalizeForkInput(ctx, runId, replacementInput, prepared) : undefined;
   const base = { requestId: daemonControlRequestId(), runId };
-  const intent: DaemonControlIntent = action === "pause" || action === "resume"
-      ? { ...base, type: action }
-      : action === "retry" || action === "cancel"
-        ? { ...base, type: action, ...(options.target ? { target: options.target } : {}) }
-        : {
-            ...base,
-            type: "fork",
-            ...(options.target ? { target: options.target } : {}),
-            ...(prepared ? { prepared } : {}),
-            ...(forkInput !== undefined ? { input: forkInput } : {}),
-            ...(agentOverrides !== undefined ? { agentOverrides } : {}),
-            ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
-          };
+  let intent: DaemonControlIntent;
+  switch (request.type) {
+    case "pause":
+    case "resume":
+      intent = { ...base, type: request.type };
+      break;
+    case "retry":
+    case "cancel":
+      intent = { ...base, type: request.type, ...(request.target ? { target: request.target } : {}) };
+      break;
+    case "fork":
+      intent = {
+        ...base,
+        type: "fork",
+        ...(request.target ? { target: request.target } : {}),
+        ...(prepared ? { prepared } : {}),
+        ...(forkInput !== undefined ? { input: forkInput } : {}),
+        ...(agentOverrides !== undefined ? { agentOverrides } : {}),
+        ...(request.unsafeReuse === true ? { unsafeReuse: true } : {}),
+      };
+      break;
+  }
   const controlled = await sendDaemonControl(ctx.cwd, intent);
   if (controlled.isErr()) throw runControlError(controlled.error);
   const result = controlled.value;
-  if (result.type !== action) throw new Error(`Daemon returned '${result.type}' for ${action} control.`);
+  if (result.type !== request.type) throw new Error(`Daemon returned '${result.type}' for ${request.type} control.`);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
-    message: controlSuccessMessage(action),
+    message: controlSuccessMessage(request.type),
     control: appliedControl(result),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, outputFormat(ctx), ctx, 0));
+  }, format, ctx, 0));
+}
+
+function controlDescription(type: Exclude<ControlAction, "fork">): string {
+  switch (type) {
+    case "pause": return "Pause a run and its active attempts.";
+    case "resume": return "Resume a paused run.";
+    case "retry": return "Retry a failed run or target.";
+    case "cancel": return "Cancel a run or non-terminal target.";
+  }
 }
 
 function controlSuccessMessage(type: Exclude<DaemonControlResult["type"], "signal">): string {
@@ -384,19 +425,13 @@ function appliedControl(result: DaemonControlResult): CliAppliedControl {
 async function maybeNormalizeForkInput(
   ctx: RunsCommandContext,
   runId: string,
-  action: ControlAction,
   replacementInput: JsonValue | undefined,
   prepared: PreparedRunWorkflow | undefined,
 ): Promise<JsonValue | undefined> {
-  if (action !== "fork") return undefined;
   if (replacementInput === undefined && !prepared) return undefined;
   const normalized = await tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
   if (normalized.isErr()) throw validationError(normalized.error.message);
   return normalized.value;
-}
-
-function outputFormat(ctx: RunsCommandContext): OutputFormat {
-  return ctx.wantsJson ? "json" : "text";
 }
 
 function runControlError(error: DaemonControlFailure): ReturnType<typeof controlError> {

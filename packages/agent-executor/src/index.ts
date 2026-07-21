@@ -223,11 +223,15 @@ type AcpxProcessResult = {
   spawnError?: string;
 };
 
-type PromptSummary = {
+type FailureEvidence = {
+  nonJsonTail: string;
+  error?: JsonRpcFailure;
+};
+
+type PromptSummary = FailureEvidence & {
   responseText: string;
   summary: AgentTurnSummary;
   malformedLine?: string;
-  error?: JsonRpcFailure;
 };
 
 type JsonRpcFailure = {
@@ -243,12 +247,11 @@ type PromptSummaryOptions = {
   acpxRecordId?: string;
 };
 
-type PromptAccumulator = {
+type PromptAccumulator = FailureEvidence & {
   responseText: string;
   eventCount: number;
   stopReason?: string;
   malformedLine?: string;
-  error?: JsonRpcFailure;
   tools: Map<string, AgentToolCallSummary>;
   context?: AgentContextSummary;
   tokenUsage?: AgentTokenUsageSummary;
@@ -366,14 +369,15 @@ async function executeAgentTurnInternal(request: AgentTurnRequest, trace: TraceC
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   const summary = promptSummaryFromAccumulator(accumulator);
-  const promptRpc = summary.error ?? extractJsonRpcFailure(prompt.stderr);
+  const stderrEvidence = failureEvidence(prompt.stderr);
+  const promptRpc = summary.error ?? stderrEvidence.error;
   const rawDebug = request.captureRawDebug ? { stdout: prompt.stdout } : undefined;
   if (prompt.aborted) return withRawDebug({ status: "cancelled", message: "Agent turn was aborted.", responseText: summary.responseText, stderr: prompt.stderr, summary: summary.summary }, rawDebug);
   if (prompt.timedOut) return withRawDebug(failedTurn("timeout", timeoutMessage(request.timeoutMs), prompt, summary, "prompt"), rawDebug);
   if (prompt.spawnError) return withRawDebug(failedTurn("spawn", prompt.spawnError, prompt, summary, "prompt"), rawDebug);
   if (summary.malformedLine) return withRawDebug(failedTurn("provider_exit", `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, prompt, summary, "prompt"), rawDebug);
   if (promptRpc) return withRawDebug(failedTurn(failureKindForRpc(promptRpc, "provider_exit"), actionableRpcMessage(promptRpc), prompt, summary, "prompt", promptRpc), rawDebug);
-  if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug(failedTurn("provider_exit", failureMessage(prompt), prompt, summary, "prompt"), rawDebug);
+  if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug(failedTurn("provider_exit", failureMessage(prompt, summary, stderrEvidence), prompt, summary, "prompt"), rawDebug);
   return withRawDebug({ status: "completed", responseText: summary.responseText, stderr: prompt.stderr, summary: summary.summary }, rawDebug);
 }
 
@@ -626,8 +630,8 @@ function runDetachedAcpx(args: string[], cwd: string, env: NodeJS.ProcessEnv): v
 
 function summarizePromptOutput(stdout: string, options?: PromptSummaryOptions): PromptSummary {
   const accumulator = createPromptAccumulator(options);
-  for (const { line, event } of acpxJsonLines(stdout)) {
-    consumePromptLineEvent(accumulator, line, event);
+  for (const { raw, line, event } of acpxJsonLines(stdout)) {
+    consumePromptLineEvent(accumulator, line, event, raw);
   }
   return promptSummaryFromAccumulator(accumulator);
 }
@@ -636,6 +640,7 @@ function createPromptAccumulator(options?: PromptSummaryOptions, trace?: TraceCa
   return {
     responseText: "",
     eventCount: 0,
+    nonJsonTail: "",
     tools: new Map(),
     ...(options ? { options } : {}),
     ...(trace ? { trace } : {}),
@@ -647,16 +652,23 @@ function consumePromptLine(accumulator: PromptAccumulator, raw: string): boolean
   if (!line) return false;
   const observation = traceObservation(accumulator.trace);
   try {
-    consumePromptLineEvent(accumulator, line, JSON.parse(line) as unknown, observation);
+    consumePromptLineEvent(accumulator, line, JSON.parse(line) as unknown, raw, observation);
   } catch {
-    consumePromptLineEvent(accumulator, line, undefined, observation);
+    consumePromptLineEvent(accumulator, line, undefined, raw, observation);
   }
   return true;
 }
 
-function consumePromptLineEvent(accumulator: PromptAccumulator, line: string, event: unknown | undefined, observation = traceObservation(accumulator.trace)): void {
+function consumePromptLineEvent(
+  accumulator: PromptAccumulator,
+  line: string,
+  event: unknown | undefined,
+  raw = line,
+  observation = traceObservation(accumulator.trace),
+): void {
   if (event === undefined) {
     accumulator.malformedLine ??= line;
+    accumulator.nonJsonTail = appendNonJsonLine(accumulator.nonJsonTail, raw);
     return;
   }
   accumulator.eventCount += 1;
@@ -685,6 +697,7 @@ function promptSummaryFromAccumulator(accumulator: PromptAccumulator): PromptSum
   return {
     responseText: accumulator.responseText,
     summary: turnSummaryFromAccumulator(accumulator),
+    nonJsonTail: accumulator.nonJsonTail,
     ...(accumulator.malformedLine ? { malformedLine: accumulator.malformedLine } : {}),
     ...(accumulator.error ? { error: accumulator.error } : {}),
   };
@@ -962,11 +975,12 @@ function failedControlResult(
 ): AgentTurnOutcome {
   if (result.aborted) return cancelledResult(`Agent ${operation} was aborted.`);
   const summary = summarizePromptOutput(result.stdout);
-  const rpc = summary.error ?? extractJsonRpcFailure(result.stderr);
+  const stderrEvidence = failureEvidence(result.stderr);
+  const rpc = summary.error ?? stderrEvidence.error;
   if (result.timedOut) return failedTurn("timeout", timeoutMessage(timeoutMs), result, summary, operation, rpc);
   if (result.spawnError) return failedTurn("spawn", result.spawnError, result, summary, operation, rpc);
   const kind = rpc ? failureKindForRpc(rpc, defaultKind) : defaultKind;
-  return failedTurn(kind, rpc ? actionableRpcMessage(rpc) : failureMessage(result), result, summary, operation, rpc);
+  return failedTurn(kind, rpc ? actionableRpcMessage(rpc) : failureMessage(result, summary, stderrEvidence), result, summary, operation, rpc);
 }
 
 function timeoutResult(timeoutMs: number | undefined): AgentTurnOutcome {
@@ -1017,9 +1031,9 @@ function failureKindForRpc(error: JsonRpcFailure, fallback: AgentBackendFailureK
   return error.code === -32602 || error.code === "-32602" ? "config" : fallback;
 }
 
-function failureMessage(result: AcpxProcessResult): string {
-  const rpc = extractJsonRpcFailure(result.stdout) ?? extractJsonRpcFailure(result.stderr);
-  return (rpc ? actionableRpcMessage(rpc) : nonJsonTail(result.stderr) || nonJsonTail(result.stdout) || result.stdinError || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
+function failureMessage(result: Pick<AcpxProcessResult, "exitCode" | "stdinError">, stdout: FailureEvidence, stderr: FailureEvidence): string {
+  const rpc = stdout.error ?? stderr.error;
+  return (rpc ? actionableRpcMessage(rpc) : stderr.nonJsonTail || stdout.nonJsonTail || result.stdinError || `acpx exited with ${result.exitCode ?? "unknown status"}`).trim();
 }
 
 function timeoutMessage(timeoutMs: number | undefined): string {
@@ -1028,14 +1042,6 @@ function timeoutMessage(timeoutMs: number | undefined): string {
 
 function boundedTail(value: string, max = 4000): string {
   return value.length > max ? value.slice(value.length - max) : value;
-}
-
-function extractJsonRpcFailure(value: string): JsonRpcFailure | undefined {
-  for (const { event } of acpxJsonLines(value)) {
-    const failure = jsonRpcFailure(event);
-    if (failure) return failure;
-  }
-  return undefined;
 }
 
 function jsonRpcFailure(event: unknown): JsonRpcFailure | undefined {
@@ -1071,8 +1077,18 @@ function agentJsonObject(value: AgentJsonValue | undefined): { [key: string]: Ag
   return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
-function nonJsonTail(value: string): string {
-  return boundedTail([...acpxJsonLines(value)].filter(line => line.event === undefined).map(line => line.raw).join("\n"));
+function failureEvidence(value: string): FailureEvidence {
+  let error: JsonRpcFailure | undefined;
+  let nonJsonTail = "";
+  for (const { raw, event } of acpxJsonLines(value)) {
+    error ??= jsonRpcFailure(event);
+    if (event === undefined) nonJsonTail = appendNonJsonLine(nonJsonTail, raw);
+  }
+  return { nonJsonTail, ...(error ? { error } : {}) };
+}
+
+function appendNonJsonLine(tail: string, line: string): string {
+  return boundedTail(tail ? `${tail}\n${line}` : line);
 }
 
 function* acpxJsonLines(value: string): Generator<{ raw: string; line: string; event?: unknown }> {

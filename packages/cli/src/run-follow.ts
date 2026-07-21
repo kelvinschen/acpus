@@ -47,7 +47,7 @@ export async function followRun(
   query: FollowRunInspectionQuery,
   options: {
     phase: "inspect" | "run";
-    wantsJson: boolean;
+    format: "text" | "ndjson";
     stdout: Writable;
     stderr: Writable;
   },
@@ -66,7 +66,7 @@ export async function followRun(
   });
   try {
     const source = followRunInspection(cwd, { ...query, signal: controller.signal });
-    for await (const event of withPresentationTicks(source, options.wantsJson ? undefined : 1_000)) {
+    for await (const event of withPresentationTicks(source, options.format === "ndjson" ? undefined : 1_000)) {
       if (event.kind === "tick") {
         await presenter.tick();
         continue;
@@ -95,7 +95,7 @@ export async function followRun(
   }
 
   if (detached) {
-    const stream = options.wantsJson ? options.stderr : options.stdout;
+    const stream = options.format === "ndjson" ? options.stderr : options.stdout;
     stream.write(`Detached from run ${query.runId}. Background daemon continues running.\n`);
     stream.write(`Resume: acpus runs inspect ${query.runId} --follow\n`);
     stream.write(`Cancel: acpus runs cancel ${query.runId}\n`);
@@ -128,12 +128,12 @@ class RunFollowPresenter {
   ) {}
 
   emission(emission: RunInspectionEmission): void {
-    if (this.options.wantsJson) this.writeJson(emission);
+    if (this.options.format === "ndjson") this.writeJson(emission);
 
     if (emission.kind === "snapshot" || emission.kind === "resync") {
       this.document = withoutTerminalOutput(emission.document);
       this.targetChanges = [];
-      if (this.options.wantsJson) return;
+      if (this.options.format === "ndjson") return;
       if (this.budgetOverviewTranscript && !isTty(this.options.stdout)) this.resetTranscriptBudget(this.document.items);
       if (emission.kind === "resync" && !isTty(this.options.stdout)) this.options.stdout.write(`Resynced inspection (${emission.reason}).\n`);
       this.renderedLines = redraw(this.options.stdout, formatRunInspectionDocument(this.document), this.renderedLines);
@@ -143,7 +143,7 @@ class RunFollowPresenter {
 
     if (emission.kind === "update") {
       if (this.document) this.document = applyRunInspectionUpdate(this.document, emission);
-      if (this.options.wantsJson) return;
+      if (this.options.format === "ndjson") return;
       const items = this.document?.items ?? emission.patch.upsertItems;
       const textChanges = coalesceTerminalAgentChanges(emission.changes, items);
       const transcript = this.budgetOverviewTranscript && !isTty(this.options.stdout)
@@ -163,7 +163,7 @@ class RunFollowPresenter {
       return;
     }
 
-    if (!this.options.wantsJson) {
+    if (this.options.format === "text") {
       if (!isTty(this.options.stdout)) {
         const omitted = this.flushTranscriptOmissions(emission.run.id);
         if (omitted) this.options.stdout.write(omitted);
@@ -182,7 +182,7 @@ class RunFollowPresenter {
   }
 
   async tick(nowMs = Date.now()): Promise<void> {
-    if (this.options.wantsJson || !this.document) return;
+    if (this.options.format === "ndjson" || !this.document) return;
     if (isTty(this.options.stdout)) {
       this.renderedLines = redraw(this.options.stdout, this.currentText(nowMs), this.renderedLines);
       return;
@@ -500,7 +500,7 @@ async function* withPresentationTicks(
 }
 
 function writeFollowError(error: RunInspectionError, options: Parameters<typeof followRun>[2]): void {
-  if (options.wantsJson) writeJsonLine(options.stdout, { schemaVersion: 1, ok: false, phase: options.phase, kind: "error", error: publicInspectionError(error) });
+  if (options.format === "ndjson") writeJsonLine(options.stdout, { schemaVersion: 1, ok: false, phase: options.phase, kind: "error", error: publicInspectionError(error) });
   else options.stderr.write(`Inspection failed: ${error.message}\n`);
 }
 

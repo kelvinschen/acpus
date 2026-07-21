@@ -163,6 +163,29 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
+  it("aligns Doctor status, area, and message columns", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    expect(writeResult({
+      ok: true,
+      phase: "doctor",
+      message: "Doctor checks passed.",
+      checks: [
+        { status: "ok", area: "workspace", message: "Workspace resolved." },
+        { status: "warn", area: "store", message: "Runtime store needs attention." },
+      ],
+    }, "text", { stdout, stderr }, 0)).toBe(0);
+
+    expect(stdout.text).toBe([
+      "Doctor checks passed.",
+      "ok    workspace  Workspace resolved.",
+      "warn  store      Runtime store needs attention.",
+      "",
+    ].join("\n"));
+    expect(stderr.text).toBe("");
+  });
+
   it("writes concise successful workflow check stages", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
@@ -182,11 +205,15 @@ describe("CLI result output contracts", () => {
   it("writes terminal visualizations without generic summaries and preserves diagnostics", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const result = checkResult();
-    result.phase = "viz";
-    result.message = "Workflow visualization rendered.";
-    result.visualization = "semantic\ninput {}";
-    result.diagnostics = [{ code: "VIZ001", severity: "info", message: "Visualization note." }];
+    const checked = checkResult();
+    const result: CliResult = {
+      ok: true,
+      phase: "viz",
+      message: "Workflow visualization rendered.",
+      visualization: "semantic\ninput {}",
+      workflow: checked.workflow!,
+      diagnostics: [{ code: "VIZ001", severity: "info", message: "Visualization note." }],
+    };
 
     expect(writeResult(result, "text", { stdout, stderr }, 0)).toBe(0);
     expect(stdout.text).toBe("semantic\ninput {}\n\n[info VIZ001] Visualization note.\n");
@@ -202,6 +229,7 @@ describe("CLI result output contracts", () => {
       ok: true,
       phase: "run",
       message: "Run admitted in background.",
+      workflow: checkResult().workflow!,
       run: {
         id: "run_1",
         name: "cli-valid",
@@ -275,7 +303,7 @@ describe("CLI result output contracts", () => {
     const jsonStderr = new CaptureStream();
 
     expect(writeResult(result, "json", { stdout: jsonStdout, stderr: jsonStderr, cwd: "/workspace" }, 1)).toBe(1);
-    expect(JSON.parse(jsonStdout.text)).toEqual(result);
+    expect(JSON.parse(jsonStdout.text)).toEqual({ schemaVersion: 1, ...result });
     expect(JSON.parse(jsonStdout.text).diagnostics[0].source.file).toBe("/workspace/src/workflow.ts");
     expect(jsonStderr.text).toBe("");
   });
@@ -345,6 +373,7 @@ describe("CLI result output contracts", () => {
     writeResult({
       ok: false,
       phase: "check",
+      message: "Workflow check failed.",
       diagnostics: [{ code: "AL002", severity: "error", message: "Return .output." }],
     }, "text", { stdout, stderr }, 1);
     expect(stdout.text).toBe("");
@@ -363,6 +392,7 @@ describe("CLI result output contracts", () => {
     writeResult({
       ok: false,
       phase: "check",
+      message: "Workflow check failed.",
       diagnostics: [{ code: "WF002", severity: "error", message: "TypeScript service unavailable." }],
     }, "text", { stdout, stderr }, 1);
     expect(stdout.text).toBe("");

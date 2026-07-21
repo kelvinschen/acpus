@@ -1320,6 +1320,45 @@ describe("executeAgentTurn", () => {
     });
   });
 
+  it("parses each prompt stdout JSON line once when a nonzero exit uses stderr evidence", async () => {
+    const promptLines = [
+      "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial-single-pass\"}}}}",
+      "{\"jsonrpc\":\"2.0\",\"id\":\"single-pass-result\",\"result\":{\"stopReason\":\"end_turn\"}}",
+    ];
+    fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdout.emit("data", `${promptLines.join("\n")}\n`);
+      child.stderr.emit("data", `earlier diagnostic\n${"x".repeat(4_500)}\n`);
+      child.emit("close", 7);
+    });
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const parse = vi.spyOn(JSON, "parse");
+
+    try {
+      const result = await executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: { kind: "provider_exit" },
+        responseText: "partial-single-pass",
+        summary: { eventCount: 2, stopReason: "end_turn" },
+      });
+      if (result.status !== "failed") throw new Error("expected failed turn");
+      expect(result.failure.message).toBe("x".repeat(4_000));
+      for (const line of promptLines) {
+        expect(parse.mock.calls.filter(([value]) => value === line)).toHaveLength(1);
+      }
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
   it("preserves structured JSON-RPC prompt failures without exposing raw protocol JSON by default", async () => {
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.stdout("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}\n", 1));
     const { executeAgentTurn } = await import("@acpus/agent-executor");
@@ -1348,6 +1387,49 @@ describe("executeAgentTurn", () => {
       rawDebug: {
         stdout: "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}\n",
       },
+    });
+  });
+
+  it("classifies prompt JSON-RPC failures parsed independently from stderr", async () => {
+    const data = {
+      acpxCode: "INVALID_PARAMS",
+      origin: "agent",
+      details: "Choose a supported model.",
+    };
+    fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}\n");
+      child.stderr.emit("data", `provider prelude\n${JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32602, message: "Unsupported model", data },
+      })}\n`);
+      child.emit("close", 1);
+    });
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+    })).resolves.toMatchObject({
+      status: "failed",
+      failure: {
+        kind: "config",
+        message: data.details,
+        upstream: {
+          source: "acpx",
+          operation: "prompt",
+          exitCode: 1,
+          code: data.acpxCode,
+          origin: data.origin,
+          protocol: { name: "json-rpc", code: -32602, message: "Unsupported model" },
+          data,
+        },
+      },
+      responseText: "partial",
+      stderr: expect.stringContaining("provider prelude"),
     });
   });
 

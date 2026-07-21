@@ -1,4 +1,4 @@
-import type { CliResult, ResultPhase } from "./output.js";
+import type { CliResult, CliUnappliedControl, ResultPhase } from "./output.js";
 
 export class CliError extends Error {
   constructor(
@@ -29,12 +29,16 @@ export function runError(message: string, details: Pick<CliResult, "errorCode" |
   return new CliError(1, { ok: false, phase: "run", message, ...details });
 }
 
-export function controlError(message: string, details: Pick<CliResult, "control" | "errorCode" | "run"> = {}): CliError {
+export function controlError(message: string, details: Pick<CliResult, "errorCode" | "run"> & { control?: CliUnappliedControl } = {}): CliError {
   return new CliError(1, { ok: false, phase: "control", message, ...details });
 }
 
 export function deleteError(message: string, details: Pick<CliResult, "errorCode" | "run"> = {}): CliError {
   return new CliError(1, { ok: false, phase: "delete", message, ...details });
+}
+
+export function vizError(message: string): CliError {
+  return new CliError(1, { ok: false, phase: "viz", message });
 }
 
 export function skillError(message: string, details: Pick<CliResult, "skill" | "errorCode"> = {}): CliError {
