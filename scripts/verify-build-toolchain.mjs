@@ -71,6 +71,7 @@ equal(rootManifest.scripts?.["ci:publish"], "pnpm check:release && changeset pub
 
 const ciWorkflow = await text(".github/workflows/ci.yml");
 const publishWorkflow = await text(".github/workflows/publish.yml");
+assert(ciWorkflow.includes("        node-version:\n          - 22.18.0\n          - 24.x\n"), "CI MUST test only the minimum and latest Node versions");
 for (const [name, workflow, expectedSetups] of [["CI", ciWorkflow, 1], ["publish", publishWorkflow, 2]]) {
   const setupBlocks = workflow.split(/(?=^\s*- uses:)/mu).filter(block => block.includes("pnpm/action-setup@"));
   equal(setupBlocks.length, expectedSetups, `${name} pnpm setup count`);

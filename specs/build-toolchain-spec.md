@@ -9,6 +9,7 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 ### Package Manager
 
 - The workspace MUST pin `pnpm@11.15.1`, and GitHub Actions MUST derive that version from the root `packageManager` field rather than duplicate it in workflow inputs.
+- Pull request, main-branch, and manually dispatched CI MUST run on Node.js `22.18.0` and the latest Node.js 24 release.
 - Dependency lifecycle scripts MUST fail installation unless explicitly approved; `esbuild` MUST be the sole approved dependency build.
 - Dependency resolution MUST block exotic subdependencies and versions published less than 1,440 minutes ago.
 - Frozen installs MUST revalidate the committed lockfile against the active supply-chain policies rather than trust it without verification.
@@ -51,6 +52,6 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 
 ## Verification
 
-- `pnpm check:build-toolchain`: verifies the pnpm pin and supply-chain policy, CI version authority, publish provenance configuration, tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm check:build-toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of cross-command caches.
 - `pnpm check:docs`, `pnpm check:release`, and `pnpm check:security`: verify public documentation links, the stable package-release state, and the locked dependency graph.
 - `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership and publishable artifacts without build caches.

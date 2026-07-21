@@ -19,8 +19,6 @@ jobs:
       matrix:
         node-version:
           - 22.18.0
-          - 22.x
-          - 24.0.0
           - 24.x
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
