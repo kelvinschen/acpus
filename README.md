@@ -209,7 +209,6 @@ Read the [migration guide](docs/migrate-to-next.md) for the mental-model mapping
 - [Bundled Acpus Skill](packages/cli/skills/acpus/SKILL.md)
 - [Migration Guide](docs/migrate-to-next.md)
 - [Release Guide](docs/releasing.md)
-- [Acpus 0.6 Main Replacement Record](docs/main-replacement-release-runbook.md)
 - [Specs Index](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
