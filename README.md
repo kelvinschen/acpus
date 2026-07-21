@@ -191,6 +191,23 @@ Retry targets a failed part of the current run. Fork creates a new run and can
 reuse completed work only within Acpus compatibility and dependency boundaries;
 it is not an unconditional cache.
 
+## Configuring Agents
+
+Acpus uses `acpx` as the source of truth for named agent configuration. Define a
+custom agent globally in `~/.acpx/config.json` or per project in `.acpxrc.json`:
+
+```json
+{
+  "agents": {
+    "my-agent": { "command": "node ./scripts/agent-acp-bridge.mjs" }
+  }
+}
+```
+
+Then reference that name in the workflow with `{ use: "my-agent" }`. See the
+`acpx` guides for [pinning a custom agent name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in)
+and [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents).
+
 ## Core Concepts
 
 ### Execution Building Blocks

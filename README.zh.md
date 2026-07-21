@@ -179,6 +179,23 @@ acpus runs fork <run-id> --workflow workflow.ts
 Retry 用于重试当前 run 中失败的部分。Fork 会创建新 run，并且只会在 Acpus 的兼容性与
 依赖边界内复用已完成工作；它不是无条件缓存。
 
+## 配置 Agent
+
+Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配置全局 custom
+agent，或在项目的 `.acpxrc.json` 中配置：
+
+```json
+{
+  "agents": {
+    "my-agent": { "command": "node ./scripts/agent-acp-bridge.mjs" }
+  }
+}
+```
+
+然后在 workflow 中通过 `{ use: "my-agent" }` 引用该名称。更多配置方式请参考 `acpx`
+文档：[pin-a-custom-agent-name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in)
+和 [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents)。
+
 ## 核心概念
 
 ### 执行单元
