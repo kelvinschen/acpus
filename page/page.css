@@ -80,7 +80,6 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: var(--topbar-height);
-    scroll-snap-type: y mandatory;
 }
 
 body {
@@ -249,8 +248,6 @@ a:hover {
   .movement,
   .coda {
     min-height: var(--page-height);
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
   }
   
   .hero-art-shell {
