@@ -18,7 +18,7 @@ When invoked with a task, accomplish it with acpus: own the full loop of *author
 - **Author or adapt:** Read `references/authoring.md` completely before editing, then write the target workflow module directly.
 - **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cooperative Task cancellation, or Agent tracing configuration.
 - **Signal authoring:** **DO NOT read `references/signal-authoring.md` by default.** Read it only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
-- **Run, observe, or routine controls:** Read `references/cli-operations.md` for validation without execution,  inspect, Agent overrides, signal, pause, resume, or cancel; use `acpus <cmd> --help` for exact syntax.
+- **Run, observe, or routine controls:** Read `references/cli-operations.md` for run, inspect, Agent overrides, signal, pause, resume, or cancel; use `acpus <cmd> --help` for exact syntax.
 - **Advanced CLI operations:** **DO NOT read `references/advanced-cli-operations.md` by default.** Read it only when the requirement needs catalogs, import, static visualization, WebUI, bundled-skill management, standalone artifact lookup, run deletion, version lookup, or structured CLI automation.
 - **Recover a run:** Read `references/runtime-recovery.md` for failed, timed-out, or stale execution, retry/fork decisions, or deep diagnostics. Inspect before recovery.
 - **Trace Agent execution:** Read `references/agent-tracing.md` for turn records, normalized traces, raw ACP diagnostics, and trace consumption.

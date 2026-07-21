@@ -1,7 +1,7 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { stableJson } from "../stable-json.js";
 import { isTerminalAttemptStatus, isTerminalFrameStatus, isTerminalGroupMemberStatus, isTerminalInstanceStatus, type SchedulerEvent } from "./events.js";
-import { ancestorGroupMembersForNode, descendantFramesForFrame, descendantFramesForMember, descendantGroupKeysForFrame, descendantGroupKeysForMember, descendantGroupMembersForFrame, descendantGroupMembersForMember, descendantInstancesForFrame, descendantInstancesForMember } from "./membership.js";
+import { ancestorGroupMembersForNode, descendantFramesForFrame, descendantGroupKeysForFrame, descendantGroupMembersForFrame, descendantInstancesForFrame } from "./membership.js";
 import type {
   GroupMember,
   GroupProjection,
@@ -94,6 +94,8 @@ function evaluateGroupCompletion(group: GroupProjection, members: readonly Group
   if (group.strategy === "all") {
     const failed = members.find(member => member.status === "failed");
     if (failed) return { status: "failed", reason: failed.terminalReason ?? "member_failed", cancelRemaining: true };
+    const cancelled = members.find(member => member.status === "cancelled");
+    if (cancelled) return { status: "failed", reason: cancelled.terminalReason ?? "member_cancelled", cancelRemaining: true };
     return members.every(member => member.status === "completed")
       ? { status: "completed", acceptedMemberKeys: members.map(member => member.memberKey), cancelRemaining: false }
       : { status: "running" };
@@ -124,27 +126,341 @@ function evaluateGroupCompletion(group: GroupProjection, members: readonly Group
     : { status: "running" };
 }
 
+export function targetedRetryGroupBlocker(
+  group: GroupProjection,
+  members: readonly GroupMember[],
+  reopenedMemberKeys: ReadonlySet<string>,
+): { status: "completed" | "failed"; reason: string } | undefined {
+  const completion = evaluateGroupCompletion(
+    { ...group, status: "running" },
+    members.map(member => reopenedMemberKeys.has(member.memberKey)
+      ? compactMember({ ...member, status: "ready", terminalReason: undefined })
+      : member),
+  );
+  if (completion.status === "running") return undefined;
+  return completion.status === "failed"
+    ? { status: "failed", reason: completion.reason }
+    : { status: "completed", reason: "group_would_complete_without_retry" };
+}
+
+type RetryDependencyOutcome = "blocked" | "complete" | "work";
+
+export function targetedRetryDependencyBlocker(
+  projection: SchedulerProjection,
+  memberKeys: readonly string[],
+): { memberKey: string } | undefined {
+  const membersByGroup = new Map<string, GroupMember[]>();
+  for (const member of Object.values(projection.groupMembers)) {
+    const members = membersByGroup.get(member.groupKey) ?? [];
+    members.push(member);
+    membersByGroup.set(member.groupKey, members);
+  }
+  const childrenByFrame = new Map<string, SchedulerFrame[]>();
+  for (const frame of Object.values(projection.frames)) {
+    if (frame.parentFrameKey === undefined) continue;
+    const children = childrenByFrame.get(frame.parentFrameKey) ?? [];
+    children.push(frame);
+    childrenByFrame.set(frame.parentFrameKey, children);
+  }
+  const instancesByFrame = new Map<string, NodeInstance[]>();
+  for (const instance of Object.values(projection.instances)) {
+    if (instance.parentFrameKey === undefined) continue;
+    const instances = instancesByFrame.get(instance.parentFrameKey) ?? [];
+    instances.push(instance);
+    instancesByFrame.set(instance.parentFrameKey, instances);
+  }
+  const groupsByFrame = new Map<string, GroupProjection>();
+  for (const group of Object.values(projection.groups)) {
+    if (groupsByFrame.has(group.nodeKey)) throw new Error(`Frame '${group.nodeKey}' owns multiple groups.`);
+    groupsByFrame.set(group.nodeKey, group);
+  }
+  const frameOutcomes = new Map<string, RetryDependencyOutcome>();
+  const visiting = new Set<string>();
+
+  const instanceOutcome = (instance: NodeInstance): RetryDependencyOutcome => {
+    if (instance.status === "completed") return "complete";
+    if (instance.status === "failed" || instance.status === "cancelled") return "blocked";
+    if (instance.status === "pending") throw new Error(`Retry dependency instance '${instance.nodeKey}' has non-runnable status 'pending'.`);
+    return "work";
+  };
+  const memberOutcome = (member: GroupMember): RetryDependencyOutcome => {
+    if (member.status === "completed") return "complete";
+    if (member.status === "failed" || member.status === "cancelled") return "blocked";
+    const frameKey = member.childFrameKey ?? member.memberKey;
+    const frame = projection.frames[frameKey];
+    if (frame) return frameOutcome(frame);
+    if (member.childFrameKey !== undefined) throw new Error(`Retry dependency member '${member.memberKey}' references missing frame '${member.childFrameKey}'.`);
+    const instance = projection.instances[member.memberKey];
+    if (!instance) throw new Error(`Retry dependency member '${member.memberKey}' has no runnable backing state.`);
+    return instanceOutcome(instance);
+  };
+  const groupOutcome = (group: GroupProjection): RetryDependencyOutcome => {
+    if (group.status === "completed") return "complete";
+    if (group.status === "failed" || group.status === "cancelled") return "blocked";
+    const outcomes = (membersByGroup.get(group.groupKey) ?? []).map(memberOutcome);
+    if (group.strategy === "all") {
+      if (outcomes.includes("blocked")) return "blocked";
+      return outcomes.every(outcome => outcome === "complete") ? "complete" : "work";
+    }
+    if (group.strategy === "race") {
+      if (outcomes.includes("complete")) return "complete";
+      return outcomes.includes("work") ? "work" : "blocked";
+    }
+    const quorum = requirePositiveQuorum(group);
+    const complete = outcomes.filter(outcome => outcome === "complete").length;
+    if (complete >= quorum) return "complete";
+    const possible = complete + outcomes.filter(outcome => outcome === "work").length;
+    return possible >= quorum ? "work" : "blocked";
+  };
+  const frameOutcome = (frame: SchedulerFrame): RetryDependencyOutcome => {
+    const cached = frameOutcomes.get(frame.frameKey);
+    if (cached) return cached;
+    if (visiting.has(frame.frameKey)) throw new Error(`Retry dependency frame '${frame.frameKey}' has cyclic ancestry.`);
+    visiting.add(frame.frameKey);
+    let outcome: RetryDependencyOutcome;
+    if (frame.status === "completed") outcome = "complete";
+    else if (frame.status === "failed" || frame.status === "cancelled") outcome = "blocked";
+    else if (frame.status !== "running") throw new Error(`Retry dependency frame '${frame.frameKey}' has non-runnable status '${frame.status}'.`);
+    else {
+      const group = groupsByFrame.get(frame.frameKey);
+      if (group) outcome = groupOutcome(group);
+      else {
+        const descendants = [
+          ...(childrenByFrame.get(frame.frameKey) ?? []).map(frameOutcome),
+          ...(instancesByFrame.get(frame.frameKey) ?? []).map(instanceOutcome),
+        ];
+        outcome = descendants.includes("blocked") ? "blocked" : "work";
+      }
+    }
+    visiting.delete(frame.frameKey);
+    frameOutcomes.set(frame.frameKey, outcome);
+    return outcome;
+  };
+
+  for (const memberKey of memberKeys) {
+    const member = projection.groupMembers[memberKey];
+    if (!member) throw new Error(`Retry dependency member '${memberKey}' is missing.`);
+    if (memberOutcome(member) === "blocked") return { memberKey };
+  }
+  return undefined;
+}
+
 export function groupCompletionEvents(projection: SchedulerProjection, groupKey: string): SchedulerEvent[] {
   const group = requireKey(projection.groups, groupKey, "group");
   if (group.status !== "running") return [];
   const members = Object.values(projection.groupMembers).filter(member => member.groupKey === groupKey);
   const completion = evaluateGroupCompletion(group, members);
+  const cancellation = completionCancellation(group, members, completion);
+  return completionEventsForGroup(
+    projection,
+    group,
+    completion,
+    cancellation,
+    indexMemberCancellations(projection, cancellation?.members ?? []),
+  );
+}
+
+function completionEventsForGroup(
+  projection: SchedulerProjection,
+  group: GroupProjection,
+  completion: GroupCompletion,
+  cancellation: GroupCompletionCancellation | undefined,
+  cancellationIndex: MemberCancellationIndex,
+): SchedulerEvent[] {
   if (completion.status === "running") return [];
+  const cancellationEvents = cancellation?.members.flatMap(member =>
+    cancellationEventsForMember(projection, member, cancellation.cancelReason, cancellationIndex),
+  ) ?? [];
   if (completion.status === "completed") {
-    const accepted = new Set(completion.acceptedMemberKeys);
     return [
-      ...completion.cancelRemaining ? members
-        .filter(member => !accepted.has(member.memberKey) && (member.status === "ready" || member.status === "running"))
-        .flatMap(member => cancellationEventsForMember(projection, member, group.strategy === "race" ? "race_lost" : "quorum_reached")) : [],
-      { type: "group.completed", payload: { groupKey, result: { acceptedMemberKeys: completion.acceptedMemberKeys } } },
+      ...cancellationEvents,
+      { type: "group.completed", payload: { groupKey: group.groupKey, result: { acceptedMemberKeys: completion.acceptedMemberKeys } } },
     ];
   }
   return [
-    ...completion.cancelRemaining ? members
-      .filter(member => member.status === "ready" || member.status === "running")
-      .flatMap(member => cancellationEventsForMember(projection, member, "parent_failed")) : [],
-    { type: "group.failed", payload: { groupKey, error: { reason: completion.reason } } },
+    ...cancellationEvents,
+    { type: "group.failed", payload: { groupKey: group.groupKey, error: { reason: completion.reason } } },
   ];
+}
+
+type GroupCompletionCancellation = {
+  members: GroupMember[];
+  cancelReason: "parent_failed" | "race_lost" | "quorum_reached";
+};
+
+function completionCancellation(
+  group: GroupProjection,
+  members: readonly GroupMember[],
+  completion: GroupCompletion,
+): GroupCompletionCancellation | undefined {
+  if (completion.status === "running" || !completion.cancelRemaining) return undefined;
+  if (completion.status === "failed") {
+    return {
+      members: members.filter(member => member.status === "ready" || member.status === "running"),
+      cancelReason: "parent_failed",
+    };
+  }
+  const accepted = new Set(completion.acceptedMemberKeys);
+  return {
+    members: members.filter(member => !accepted.has(member.memberKey) && (member.status === "ready" || member.status === "running")),
+    cancelReason: group.strategy === "race" ? "race_lost" : "quorum_reached",
+  };
+}
+
+export function nextGroupCompletionBatchEvents(projection: SchedulerProjection): SchedulerEvent[] {
+  for (const group of Object.values(projection.groups)) {
+    if (group.groupKey !== group.nodeKey || projection.groups[group.nodeKey] !== group) {
+      throw new Error(`Group '${group.groupKey}' has inconsistent owner key '${group.nodeKey}'.`);
+    }
+    requireGroupOwnerFrame(projection, group);
+  }
+  const membersByGroup = new Map<string, GroupMember[]>();
+  const identitiesByGroup = new Map<string, Set<string>>();
+  for (const member of Object.values(projection.groupMembers)) {
+    validateGroupMemberIdentity(projection, member);
+    const identity = member.memberKind === "branch" ? `branch:${member.branchId}` : `item:${member.itemIndex}`;
+    const identities = identitiesByGroup.get(member.groupKey) ?? new Set<string>();
+    if (identities.has(identity)) throw new Error(`Group '${member.groupKey}' contains duplicate member identity '${identity}'.`);
+    identities.add(identity);
+    identitiesByGroup.set(member.groupKey, identities);
+    const members = membersByGroup.get(member.groupKey) ?? [];
+    members.push(member);
+    membersByGroup.set(member.groupKey, members);
+  }
+  let deepest = -1;
+  const frameDepths = new Map<string, number>();
+  let candidates: Array<{ group: GroupProjection; members: GroupMember[]; completion: GroupCompletion }> = [];
+  for (const group of Object.values(projection.groups)) {
+    if (group.status !== "running") continue;
+    const depth = groupFrameDepth(projection, group, frameDepths);
+    const members = membersByGroup.get(group.groupKey) ?? [];
+    const completion = evaluateGroupCompletion(group, members);
+    if (completion.status === "running") continue;
+    if (depth > deepest) {
+      deepest = depth;
+      candidates = [{ group, members, completion }];
+    } else if (depth === deepest) {
+      candidates.push({ group, members, completion });
+    }
+  }
+  const planned = candidates.map(candidate => ({
+    ...candidate,
+    cancellation: completionCancellation(candidate.group, candidate.members, candidate.completion),
+  }));
+  const cancellationIndex = indexMemberCancellations(
+    projection,
+    planned.flatMap(candidate => candidate.cancellation?.members ?? []),
+  );
+  return planned.flatMap(candidate => completionEventsForGroup(
+    projection,
+    candidate.group,
+    candidate.completion,
+    candidate.cancellation,
+    cancellationIndex,
+  ));
+}
+
+function groupFrameDepth(
+  projection: SchedulerProjection,
+  group: GroupProjection,
+  depths: Map<string, number>,
+): number {
+  requireGroupOwnerFrame(projection, group);
+  const seen = new Set<string>();
+  const path: string[] = [];
+  let frameKey = group.nodeKey;
+  for (;;) {
+    const knownDepth = depths.get(frameKey);
+    if (knownDepth !== undefined) {
+      let depth = knownDepth;
+      for (let index = path.length - 1; index >= 0; index -= 1) {
+        depth += 1;
+        depths.set(path[index]!, depth);
+      }
+      return depths.get(group.nodeKey)!;
+    }
+    if (seen.has(frameKey)) throw new Error(`Group '${group.groupKey}' has a cyclic frame ancestry.`);
+    seen.add(frameKey);
+    const frame = projection.frames[frameKey];
+    if (!frame) throw new Error(`Group '${group.groupKey}' references missing frame '${frameKey}'.`);
+    path.push(frameKey);
+    if (frame.parentFrameKey === undefined) {
+      let depth = 0;
+      for (let index = path.length - 1; index >= 0; index -= 1) {
+        depths.set(path[index]!, depth);
+        depth += 1;
+      }
+      return depths.get(group.nodeKey)!;
+    }
+    frameKey = frame.parentFrameKey;
+  }
+}
+
+function requireGroupOwnerFrame(projection: SchedulerProjection, group: GroupProjection): SchedulerFrame {
+  const frame = projection.frames[group.nodeKey];
+  if (!frame) throw new Error(`Group '${group.groupKey}' references missing frame '${group.nodeKey}'.`);
+  const tail = frame.instancePath?.at(-1);
+  const statusMatches = group.status === "running"
+    ? frame.status === "running"
+    : group.status === "completed"
+      ? frame.status === "running" || frame.status === "completed" || frame.status === "cancelled"
+      : group.status === "failed"
+        ? frame.status === "running" || frame.status === "failed" || frame.status === "cancelled"
+        : frame.status === "running" || frame.status === "cancelled";
+  if (frame.frameKind !== "node"
+    || !statusMatches
+    || frame.nodeKey !== group.nodeKey
+    || frame.nodeId !== group.nodeId
+    || frame.strategy !== group.strategy
+    || (tail !== undefined && (tail.kind !== "node" || tail.nodeId !== group.nodeId))) {
+    throw new Error(`Group '${group.groupKey}' has inconsistent owner frame '${group.nodeKey}'.`);
+  }
+  return frame;
+}
+
+function validateGroupMemberIdentity(projection: SchedulerProjection, member: GroupMember): void {
+  const group = projection.groups[member.groupKey];
+  if (!group) throw new Error(`Group member '${member.memberKey}' references missing group '${member.groupKey}'.`);
+  assertMemberKindMatchesGroup(group, member.memberKind);
+  if (group.status !== "running" && (member.status === "ready" || member.status === "running")) {
+    throw new Error(`Terminal group '${group.groupKey}' contains open member '${member.memberKey}'.`);
+  }
+  if (member.memberKind === "fanout_item" && (!Number.isSafeInteger(member.itemIndex) || member.itemIndex < 0)) {
+    throw new Error(`Fanout group member '${member.memberKey}' has invalid item index '${member.itemIndex}'.`);
+  }
+  const open = member.status === "ready" || member.status === "running";
+  const childFrameKey = member.childFrameKey ?? (projection.frames[member.memberKey] ? member.memberKey : undefined);
+  if (childFrameKey === undefined) {
+    const instance = projection.instances[member.memberKey];
+    if (open && !instance) throw new Error(`Open group member '${member.memberKey}' has no child frame or instance.`);
+    if (open && instance && instance.status !== "ready" && instance.status !== "running" && instance.status !== "awaiting") {
+      throw new Error(`Open group member '${member.memberKey}' references non-runnable instance '${instance.nodeKey}'.`);
+    }
+    return;
+  }
+  const frame = projection.frames[childFrameKey];
+  if (!frame) throw new Error(`Group member '${member.memberKey}' references missing child frame '${childFrameKey}'.`);
+  const expectedKind = member.memberKind === "branch" ? "branch" : "fanout_item";
+  const tail = frame.instancePath?.at(-1);
+  const tailMatches = tail === undefined
+    || (member.memberKind === "branch"
+      ? tail.kind === "branch" && tail.nodeId === group.nodeId && tail.branchId === member.branchId
+      : tail.kind === "fanout" && tail.nodeId === group.nodeId && tail.itemIndex === member.itemIndex);
+  const ownerPath = projection.frames[group.nodeKey]?.instancePath;
+  const pathPrefixMatches = frame.instancePath === undefined || ownerPath === undefined
+    || stableJson(frame.instancePath.slice(0, -1)) === stableJson(ownerPath.slice(0, -1));
+  if ((member.childFrameKey !== undefined && member.childFrameKey !== member.memberKey)
+    || frame.frameKind !== expectedKind
+    || frame.parentFrameKey !== group.nodeKey
+    || (frame.nodeId !== undefined && frame.nodeId !== group.nodeId)
+    || (frame.strategy !== undefined && frame.strategy !== group.strategy)
+    || !tailMatches
+    || !pathPrefixMatches) {
+    throw new Error(`Group member '${member.memberKey}' has inconsistent child frame '${childFrameKey}'.`);
+  }
+  if (open && frame.status !== "running") {
+    throw new Error(`Open group member '${member.memberKey}' references non-running child frame '${childFrameKey}'.`);
+  }
 }
 
 export function cancellationEventsForFrame(projection: SchedulerProjection, frameKey: string, cancelReason: "operator_cancelled"): SchedulerEvent[] {
@@ -198,13 +514,92 @@ function cancellationEventsForSubtree(
   ];
 }
 
-function cancellationEventsForMember(projection: SchedulerProjection, member: GroupMember, cancelReason: "parent_failed" | "race_lost" | "quorum_reached" | "operator_cancelled"): SchedulerEvent[] {
-  const instances = memberInstances(projection, member);
-  const frames = memberFrames(projection, member);
-  const childMembers = descendantGroupMembersForMember(projection, member);
-  const childGroupKeys = descendantGroupKeysForMember(projection, member);
+type MemberCancellationBucket = {
+  member: GroupMember;
+  frames: SchedulerFrame[];
+  descendantInstances: NodeInstance[];
+  childMembers: GroupMember[];
+  childGroupKeys: string[];
+};
+
+type MemberCancellationIndex = {
+  buckets: Map<string, MemberCancellationBucket>;
+  attemptsByNode: Map<string, SchedulerProjection["attempts"][string][]>;
+};
+
+function indexMemberCancellations(projection: SchedulerProjection, members: readonly GroupMember[]): MemberCancellationIndex {
+  const buckets = new Map<string, MemberCancellationBucket>();
+  for (const member of members) {
+    if (buckets.has(member.memberKey)) throw new Error(`Group member '${member.memberKey}' is scheduled for cancellation more than once.`);
+    buckets.set(member.memberKey, { member, frames: [], descendantInstances: [], childMembers: [], childGroupKeys: [] });
+  }
+  const attemptsByNode = new Map<string, SchedulerProjection["attempts"][string][]>();
+  if (members.length === 0) return { buckets, attemptsByNode };
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const frame of Object.values(projection.frames)) {
+    if (frame.parentFrameKey === undefined) continue;
+    const children = childrenByParent.get(frame.parentFrameKey) ?? [];
+    children.push(frame.frameKey);
+    childrenByParent.set(frame.parentFrameKey, children);
+  }
+  const ownerByFrame = new Map<string, string>();
+  for (const member of members) {
+    const rootFrameKey = member.childFrameKey ?? member.memberKey;
+    if (!projection.frames[rootFrameKey]) continue;
+    const pending = [rootFrameKey];
+    while (pending.length > 0) {
+      const frameKey = pending.pop()!;
+      const owner = ownerByFrame.get(frameKey);
+      if (owner === member.memberKey) continue;
+      if (owner !== undefined) throw new Error(`Cancellation members '${owner}' and '${member.memberKey}' have overlapping frame subtrees.`);
+      ownerByFrame.set(frameKey, member.memberKey);
+      pending.push(...(childrenByParent.get(frameKey) ?? []));
+    }
+  }
+
+  for (const frame of Object.values(projection.frames)) {
+    const owner = ownerByFrame.get(frame.frameKey);
+    if (owner !== undefined) buckets.get(owner)!.frames.push(frame);
+  }
+  for (const instance of Object.values(projection.instances)) {
+    if (instance.parentFrameKey === undefined) continue;
+    const owner = ownerByFrame.get(instance.parentFrameKey);
+    if (owner !== undefined) buckets.get(owner)!.descendantInstances.push(instance);
+  }
+  for (const child of Object.values(projection.groupMembers)) {
+    if (buckets.has(child.memberKey)) continue;
+    const owner = (child.childFrameKey === undefined ? undefined : ownerByFrame.get(child.childFrameKey))
+      ?? ownerByFrame.get(child.memberKey);
+    if (owner !== undefined) buckets.get(owner)!.childMembers.push(child);
+  }
+  for (const group of Object.values(projection.groups)) {
+    const owner = ownerByFrame.get(group.nodeKey);
+    if (owner === undefined || group.nodeKey === buckets.get(owner)!.member.groupKey) continue;
+    buckets.get(owner)!.childGroupKeys.push(group.groupKey);
+  }
+  for (const attempt of Object.values(projection.attempts)) {
+    const attempts = attemptsByNode.get(attempt.nodeKey) ?? [];
+    attempts.push(attempt);
+    attemptsByNode.set(attempt.nodeKey, attempts);
+  }
+  return { buckets, attemptsByNode };
+}
+
+function cancellationEventsForMember(
+  projection: SchedulerProjection,
+  member: GroupMember,
+  cancelReason: "parent_failed" | "race_lost" | "quorum_reached" | "operator_cancelled",
+  index: MemberCancellationIndex = indexMemberCancellations(projection, [member]),
+): SchedulerEvent[] {
+  const bucket = index.buckets.get(member.memberKey);
+  if (!bucket) throw new Error(`Group member '${member.memberKey}' is missing from the cancellation index.`);
+  const instances = [
+    ...(projection.instances[member.memberKey] ? [projection.instances[member.memberKey]!] : []),
+    ...bucket.descendantInstances,
+  ];
   const attempts = instances.flatMap(instance =>
-    Object.values(projection.attempts).filter(attempt => attempt.nodeKey === instance.nodeKey && attempt.status === "started"),
+    (index.attemptsByNode.get(instance.nodeKey) ?? []).filter(attempt => attempt.status === "started"),
   );
   const signalWaits = instances.flatMap(instance => {
     const wait = projection.signalWaits[instance.nodeKey];
@@ -212,10 +607,10 @@ function cancellationEventsForMember(projection: SchedulerProjection, member: Gr
   });
   return [
     { type: "group.member_cancelled", payload: { memberKey: member.memberKey, cancelReason } },
-    ...childMembers
+    ...bucket.childMembers
       .filter(child => child.status === "ready" || child.status === "running")
       .map(child => ({ type: "group.member_cancelled", payload: { memberKey: child.memberKey, cancelReason } }) satisfies SchedulerEvent),
-    ...childGroupKeys
+    ...bucket.childGroupKeys
       .filter(groupKey => projection.groups[groupKey]?.status === "running")
       .map(groupKey => ({ type: "group.cancelled", payload: { groupKey, cancelReason } }) satisfies SchedulerEvent),
     ...attempts.map(attempt => ({ type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason } }) satisfies SchedulerEvent),
@@ -223,19 +618,11 @@ function cancellationEventsForMember(projection: SchedulerProjection, member: Gr
     ...instances
       .filter(instance => instance.status === "ready" || instance.status === "running" || instance.status === "awaiting")
       .map(instance => ({ type: "instance.cancelled", payload: { nodeKey: instance.nodeKey, cancelReason } }) satisfies SchedulerEvent),
-    ...frames
+    ...bucket.frames
       .filter(frame => !isTerminalFrameStatus(frame.status))
       .sort((left, right) => frameDepth(right) - frameDepth(left))
       .map(frame => ({ type: "frame.cancelled", payload: { frameKey: frame.frameKey, cancelReason } }) satisfies SchedulerEvent),
   ];
-}
-
-function memberInstances(projection: SchedulerProjection, member: GroupMember): NodeInstance[] {
-  return descendantInstancesForMember(projection, member);
-}
-
-function memberFrames(projection: SchedulerProjection, member: GroupMember): SchedulerFrame[] {
-  return descendantFramesForMember(projection, member);
 }
 
 function frameDepth(frame: SchedulerFrame): number {
@@ -300,7 +687,7 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     return;
   }
   if (event.type === "frame.retry_requested") {
-    applyFrameRetryEvent(projection, event.payload.frameKey);
+    applyFrameRetryEvent(projection, event.payload.frameKey, event.payload.retryDependencyMemberKeys);
     return;
   }
   if (event.type === "frame.completed" || event.type === "frame.failed" || event.type === "frame.cancelled") {
@@ -532,8 +919,10 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
       instancePath: instance.instancePath,
       ...(instance.parentFrameKey === undefined ? {} : { parentFrameKey: instance.parentFrameKey }),
       readinessSequence: event.payload.readinessSequence ?? instance.readinessSequence,
+      ...(instance.timeoutMs === undefined ? {} : { timeoutMs: instance.timeoutMs }),
       statusReason: "retry",
     });
+    reopenRetryDependencies(projection, event.payload.retryDependencyMemberKeys);
     return;
   }
   assertInstanceOpen(instance);
@@ -636,7 +1025,7 @@ function reopenForControlNodeRetry(projection: SchedulerProjection, instance: No
   }
 }
 
-function applyFrameRetryEvent(projection: SchedulerProjection, frameKey: string): void {
+function applyFrameRetryEvent(projection: SchedulerProjection, frameKey: string, retryDependencyMemberKeys: string[] | undefined): void {
   const frame = requireKey(projection.frames, frameKey, "frame");
   assertFrameRetryable(frame);
   const instances = descendantInstancesForFrame(projection, frameKey);
@@ -666,6 +1055,7 @@ function applyFrameRetryEvent(projection: SchedulerProjection, frameKey: string)
     delete projection.branchDecisions[child.frameKey];
     delete projection.frames[child.frameKey];
   }
+  reopenRetryDependencies(projection, retryDependencyMemberKeys);
 }
 
 function reopenFrameForControlRetry(projection: SchedulerProjection, frameKey: string): void {
@@ -690,6 +1080,94 @@ function reopenGroupForControlRetry(projection: SchedulerProjection, groupKey: s
     error: undefined,
   });
   reopenFrameForControlRetry(projection, group.nodeKey);
+}
+
+function reopenRetryDependencies(projection: SchedulerProjection, memberKeys: readonly string[] | undefined): void {
+  if (!memberKeys || memberKeys.length === 0) return;
+  const rootMemberKeys = new Set<string>();
+  const rootFrameKeys = new Set<string>();
+  for (const memberKey of memberKeys) {
+    if (rootMemberKeys.has(memberKey)) throw new Error(`Retry dependency member '${memberKey}' is duplicated.`);
+    const member = requireKey(projection.groupMembers, memberKey, "group member");
+    if (member.status !== "cancelled" || member.terminalReason !== "parent_failed") {
+      throw new Error(`Group member '${member.memberKey}' is not a parent-failed retry dependency.`);
+    }
+    rootMemberKeys.add(memberKey);
+    const rootFrameKey = member.childFrameKey ?? member.memberKey;
+    if (projection.frames[rootFrameKey]) rootFrameKeys.add(rootFrameKey);
+    else if (member.childFrameKey !== undefined) throw new Error(`Retry dependency member '${memberKey}' references missing frame '${member.childFrameKey}'.`);
+  }
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const frame of Object.values(projection.frames)) {
+    if (frame.parentFrameKey === undefined) continue;
+    const children = childrenByParent.get(frame.parentFrameKey) ?? [];
+    children.push(frame.frameKey);
+    childrenByParent.set(frame.parentFrameKey, children);
+  }
+  const frameKeys = new Set<string>();
+  const pending = [...rootFrameKeys];
+  while (pending.length > 0) {
+    const frameKey = pending.pop()!;
+    if (frameKeys.has(frameKey)) continue;
+    frameKeys.add(frameKey);
+    pending.push(...(childrenByParent.get(frameKey) ?? []));
+  }
+
+  const attemptedNodeKeys = new Set(Object.values(projection.attempts).map(attempt => attempt.nodeKey));
+  for (const instance of Object.values(projection.instances)) {
+    if (!rootMemberKeys.has(instance.nodeKey)
+      && (instance.parentFrameKey === undefined || !frameKeys.has(instance.parentFrameKey))) continue;
+    if (instance.status !== "cancelled" || instance.statusReason !== "parent_failed") continue;
+    const wait = projection.signalWaits[instance.nodeKey];
+    if (wait?.status === "cancelled" && wait.terminalReason === "parent_failed") delete projection.signalWaits[instance.nodeKey];
+    projection.instances[instance.nodeKey] = compactInstance({
+      ...instance,
+      status: "ready",
+      statusReason: attemptedNodeKeys.has(instance.nodeKey) ? "retry" : undefined,
+      output: undefined,
+      error: undefined,
+      acceptedAttemptId: undefined,
+    });
+  }
+
+  for (const frameKey of frameKeys) {
+    const frame = projection.frames[frameKey]!;
+    if (frame.status !== "cancelled" || frame.terminalReason !== "parent_failed") continue;
+    projection.frames[frame.frameKey] = compactFrame({
+      ...frame,
+      status: "running",
+      terminalReason: undefined,
+      result: undefined,
+      error: undefined,
+    });
+  }
+
+  for (const group of Object.values(projection.groups)) {
+    if (!frameKeys.has(group.nodeKey) || group.status !== "cancelled" || group.error?.reason !== "parent_failed") continue;
+    projection.groups[group.groupKey] = compactGroup({
+      ...group,
+      status: "running",
+      result: undefined,
+      error: undefined,
+    });
+  }
+
+  for (const child of Object.values(projection.groupMembers)) {
+    if (!rootMemberKeys.has(child.memberKey)
+      && !(child.childFrameKey !== undefined && frameKeys.has(child.childFrameKey))
+      && !frameKeys.has(child.memberKey)) continue;
+    if (child.status !== "cancelled" || child.terminalReason !== "parent_failed") continue;
+    projection.groupMembers[child.memberKey] = compactMember({
+      ...child,
+      status: "ready",
+      completionSequence: undefined,
+      acceptedRank: undefined,
+      terminalReason: undefined,
+      output: undefined,
+      error: undefined,
+    });
+  }
 }
 
 function applySignalEvent(projection: SchedulerProjection, event: Extract<SchedulerEvent, { type: "signal.awaiting" | "signal.timeout_paused" | "signal.timeout_resumed" | "signal.consumed" | "signal.timed_out" | "signal.cancelled" }>): void {

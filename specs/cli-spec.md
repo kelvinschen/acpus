@@ -34,6 +34,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs, hooks, and skill leaf; doctor; and web.
 - Root, group, version, and workflow visualization surfaces MUST reject `--json` and MUST omit it from help.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
+- `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
+- `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
 
 ### Workflow Resolution And Import
@@ -146,5 +148,5 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
 - Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, hooks, Doctor, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime state.
-- Typecheck and apply native authoring checks to official workflow examples across every node kind and disclosure route; one representative CLI E2E covers full preparation, and public API contracts cover authoring-facade exports.
+- Contract-test bundled lifecycle routing and example disclosure; typecheck and apply native authoring checks to official workflow examples across every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, collisions, and mutation-free failures.

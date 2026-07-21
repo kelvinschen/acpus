@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import type { NodeIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
-import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { resolutionErrorPayload, tryCreateDeadline, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
 import { buildHookContext } from "../hooks/context.js";
 import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
@@ -13,9 +12,9 @@ import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { indexNodes } from "./ir-walk.js";
 import { scopeForNodeAttempt } from "./scope.js";
+import { frozenRunScope, settleFrozenProjection } from "./settle.js";
 import { throwSchedulerStoreResult } from "./store-port.js";
 import type { SchedulerSnapshot } from "./store-port.js";
-import { applySchedulerEvents, attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 import { readVerifiedArtifactBytes } from "../artifacts/path.js";
 import { createVersionedWakeup } from "./wakeup.js";
@@ -138,7 +137,7 @@ function runExecutionExit(runId: string, summary: AdvanceRunSummary): RunExecuti
 export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<AdvanceRunSummary> {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
-  const scope = rootScope(frozen);
+  const scope = frozenRunScope(frozen);
   const nodes = indexNodes(frozen.ir.root);
   const signalNodeIds = new Set([...nodes.values()].filter(node => node.kind === "signal").map(node => node.id));
   const agentHostPolicy = input.agentHostPolicy ?? loadAgentHostPolicy(process.env);
@@ -378,40 +377,22 @@ export function settleFrozenRunTransitions(input: {
 }): SchedulerSnapshot {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
-  const scope = rootScope(frozen);
   const current = throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId));
-  let projection = current.projection;
-  const events = [];
-  for (;;) {
-    const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
-    if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
-    if (derived.length === 0) derived.push(...attemptTimeoutEvents(projection, input.now ?? new Date()));
-    if (derived.length === 0) derived.push(...signalTimeoutEvents(projection, input.now ?? new Date()));
-    if (derived.length === 0) {
-      if (events.length === 0) return current;
-      return throwSchedulerStoreResult(input.store.scheduler.tryAppendSchedulerEvents({
-        runId: input.runId,
-        ownerEpoch: input.ownerEpoch,
-        expectedVersion: current.version,
-        idempotencyKey: `scheduler:settle-control:${input.runId}:${current.version}`,
-        events,
-      }));
-    }
-    events.push(...derived);
-    projection = applySchedulerEvents(projection, derived);
-  }
+  const settled = settleFrozenProjection({
+    frozen,
+    projection: current.projection,
+    now: input.now ?? new Date(),
+  });
+  if (settled.events.length === 0) return current;
+  return throwSchedulerStoreResult(input.store.scheduler.tryAppendSchedulerEvents({
+    runId: input.runId,
+    ownerEpoch: input.ownerEpoch,
+    expectedVersion: current.version,
+    idempotencyKey: `scheduler:settle-control:${input.runId}:${current.version}`,
+    events: settled.events,
+  }));
 }
 
 function isSchedulerRetryLeaf(node: NodeIR): node is Extract<NodeIR, { kind: "task" | "agent" }> {
   return node.kind === "task" || node.kind === "agent";
-}
-
-function rootScope(frozen: FrozenRun): EvaluationScope {
-  return {
-    input: frozen.input,
-    nodes: {},
-    meta: frozen.meta,
-    fanout: {},
-    loop: {},
-  };
 }

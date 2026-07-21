@@ -29,6 +29,7 @@ describe("durable scheduler advance with store", () => {
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-race",
           events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "race", frameKind: "node", nodeKey: "race", nodeId: "race", strategy: "race" } },
             { type: "group.started", payload: { runId: run.id, groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
             { type: "group.member_ready", payload: { runId: run.id, groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
             { type: "group.member_started", payload: { memberKey: "winner" } },
@@ -70,6 +71,7 @@ describe("durable scheduler advance with store", () => {
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-quorum",
           events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "items", frameKind: "node", nodeKey: "items", nodeId: "items", strategy: "quorum" } },
             { type: "group.started", payload: { runId: run.id, groupKey: "items", nodeKey: "items", nodeId: "items", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
             { type: "group.member_ready", payload: { runId: run.id, groupKey: "items", memberKey: "items[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
             { type: "group.member_started", payload: { memberKey: "items[0]" } },
@@ -117,6 +119,7 @@ describe("durable scheduler advance with store", () => {
           ownerEpoch: setupOwner.ownerEpoch,
           idempotencyKey: "setup-member-lifecycle",
           events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "all", frameKind: "node", nodeKey: "all", nodeId: "all", strategy: "all" } },
             { type: "group.started", payload: { runId: run.id, groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
             { type: "group.member_ready", payload: { runId: run.id, groupKey: "all", memberKey: "leaf", memberKind: "branch", branchId: "leaf", readinessSequence: 1 } },
             { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf", nodeId: "leaf", instancePath: [{ kind: "branch", nodeId: "all", branchId: "leaf" }, { kind: "node", nodeId: "leaf" }], readinessSequence: 1 } },

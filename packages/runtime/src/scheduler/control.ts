@@ -59,6 +59,16 @@ export function applySchedulerControlIntent(
       reopened: false,
     }));
   }
+  if (intent.type === "retry" && intent.target !== undefined) {
+    const target = intent.target;
+    const current = store.scheduler.tryLoadRunSnapshot(runId);
+    if (current.isErr()) return err(current.error);
+    return store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, target }).map(next => ({
+      snapshot: next,
+      effect: { type: "retry", state: "applied", target } as const,
+      reopened: next.version > current.value.version,
+    }));
+  }
 
   const settled = trySettleFrozenRunTransitions(store, runId, ownerEpoch);
   if (settled.isErr()) return err(settled.error);
@@ -72,13 +82,9 @@ export function applySchedulerControlIntent(
     }));
   }
   if (intent.type === "retry") {
-    const target = intent.target;
-    const applied = target === undefined
-      ? store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey })
-      : store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, target });
-    return applied.map(next => ({
+    return store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey }).map(next => ({
       snapshot: next,
-      effect: { type: "retry", state: "applied", ...(target === undefined ? {} : { target }) } as const,
+      effect: { type: "retry", state: "applied" } as const,
       reopened: next.version > snapshot.version,
     }));
   }

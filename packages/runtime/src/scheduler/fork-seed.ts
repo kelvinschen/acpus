@@ -5,7 +5,7 @@ import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { stableJson } from "../stable-json.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
-import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "./transitions.js";
+import { applySchedulerEvents, createSchedulerProjection, nextGroupCompletionBatchEvents } from "./transitions.js";
 import type { SchedulerEvent } from "./events.js";
 import type { InstancePath, InstancePathSegment, SchedulerProjection } from "./types.js";
 
@@ -174,10 +174,6 @@ function replacementMaterializedStaticTargets(input: ForkSeedInput, sourceFacts:
   throw new Error("Replacement static target materialization did not converge.");
 }
 
-function schedulerGroupCompletionEvents(projection: SchedulerProjection): SchedulerEvent[] {
-  return Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
-}
-
 function nextSeedMaterializationStep(input: {
   projection: SchedulerProjection;
   sourceProjection: SchedulerProjection;
@@ -190,7 +186,7 @@ function nextSeedMaterializationStep(input: {
 }): { events: SchedulerEvent[]; completions: SeedableCompletion[] } | undefined {
   const completions = seedableCompletionEvents(input);
   if (completions.length > 0) return { events: completions.map(item => item.event), completions };
-  const groupEvents = schedulerGroupCompletionEvents(input.projection);
+  const groupEvents = nextGroupCompletionBatchEvents(input.projection);
   if (groupEvents.length > 0) return { events: groupEvents, completions: [] };
   const next = continueRootEvents(input.replacementWorkflow, input.projection, input.replacementScope);
   return next.length === 0 ? undefined : { events: next, completions: [] };

@@ -12,7 +12,7 @@ import {
   type SchedulerStorePort,
   type SchedulerStoreResult,
 } from "./store-port.js";
-import { attemptTimeoutEvents, groupCompletionEvents, signalTimeoutEvents } from "./transitions.js";
+import { nextSchedulerTransitionEvents } from "./settle.js";
 import type { NodeInstance, SchedulerProjection } from "./types.js";
 import { createVersionedWakeup, type VersionedWakeup } from "./wakeup.js";
 
@@ -383,10 +383,11 @@ async function drainDerivedTransitions(
   let progressedBatches = 0;
   for (;;) {
     if (input.shouldStop?.()) return { status: "stopped", snapshot };
-    const events = Object.keys(snapshot.projection.groups).flatMap(groupKey => groupCompletionEvents(snapshot.projection, groupKey));
-    if (events.length === 0) events.push(...(input.materialize?.(snapshot) ?? []));
-    if (events.length === 0) events.push(...attemptTimeoutEvents(snapshot.projection, now()));
-    if (events.length === 0) events.push(...signalTimeoutEvents(snapshot.projection, now()));
+    const events = nextSchedulerTransitionEvents(
+      snapshot.projection,
+      () => input.materialize?.(snapshot) ?? [],
+      now(),
+    );
     if (events.length === 0) return { status: "quiescent", snapshot };
     if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
 

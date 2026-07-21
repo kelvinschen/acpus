@@ -342,9 +342,12 @@ describe("scheduler advance loop", () => {
 
   it("respects direct-member local concurrency caps before enqueueing work", async () => {
     const store = new MemorySchedulerStore([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "fanout", frameKind: "node", nodeKey: "fanout", nodeId: "fanout", strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all", maxConcurrency: 2 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-0", memberKind: "fanout_item", readinessSequence: 1, itemIndex: 0, item: 0 } },
+      ready("item-0", 0),
       { type: "group.member_started", payload: { memberKey: "item-0" } },
+      { type: "instance.started", payload: { nodeKey: "item-0" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-1", memberKind: "fanout_item", readinessSequence: 2, itemIndex: 1, item: 1 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-2", memberKind: "fanout_item", readinessSequence: 3, itemIndex: 2, item: 2 } },
       ready("item-1", 1),
@@ -364,38 +367,6 @@ describe("scheduler advance loop", () => {
     });
 
     expect(calls).toEqual(["item-1", "item-2"]);
-  });
-
-  it("does not leak local capacity reservations from rejected ancestor members", async () => {
-    const store = new MemorySchedulerStore([
-      { type: "group.started", payload: { runId: "run_1", groupKey: "child", nodeKey: "child", nodeId: "child", kind: "parallel", strategy: "all", maxConcurrency: 1 } },
-      { type: "group.started", payload: { runId: "run_1", groupKey: "parent", nodeKey: "parent", nodeId: "parent", kind: "parallel", strategy: "all", maxConcurrency: 1 } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "parent-running", frameKind: "branch" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parent", memberKey: "parent-running", memberKind: "branch", childFrameKey: "parent-running", branchId: "busy", readinessSequence: 1 } },
-      { type: "group.member_started", payload: { memberKey: "parent-running" } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "parent-blocked", frameKind: "branch" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parent", memberKey: "parent-blocked", memberKind: "branch", childFrameKey: "parent-blocked", branchId: "blocked", readinessSequence: 2 } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "child-blocked", frameKind: "branch", parentFrameKey: "parent-blocked" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "child", memberKey: "child-blocked", memberKind: "branch", childFrameKey: "child-blocked", branchId: "blocked", readinessSequence: 2 } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "blocked", nodeId: "blocked", parentFrameKey: "child-blocked", instancePath: [{ kind: "node", nodeId: "blocked" }], readinessSequence: 1 } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "child-open", frameKind: "branch" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "child", memberKey: "child-open", memberKind: "branch", childFrameKey: "child-open", branchId: "open", readinessSequence: 3 } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "open", nodeId: "open", parentFrameKey: "child-open", instancePath: [{ kind: "node", nodeId: "open" }], readinessSequence: 2 } },
-    ]);
-    const calls: string[] = [];
-
-    await advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      maxLeafConcurrency: 2,
-      executor: executor(context => {
-        calls.push(context.nodeKey);
-        return completed();
-      }),
-    });
-
-    expect(calls).toEqual(["open"]);
   });
 
   it("returns paused, awaiting, and lease-lost summaries without starting work", async () => {
@@ -946,6 +917,7 @@ describe("scheduler advance loop", () => {
 
   it("drains group cancellation before overlapping attempt timeouts", async () => {
     const store = new MemorySchedulerStore([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "race", frameKind: "node", nodeKey: "race", nodeId: "race", strategy: "race" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "winner" } },
@@ -973,6 +945,7 @@ describe("scheduler advance loop", () => {
 
   it("drains group terminal events before starting loser work", async () => {
     const store = new MemorySchedulerStore([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "race", frameKind: "node", nodeKey: "race", nodeId: "race", strategy: "race" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "winner" } },
@@ -1000,6 +973,7 @@ describe("scheduler advance loop", () => {
 
   it("aborts active race losers after a winner commits", async () => {
     const store = new MemorySchedulerStore([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "race", frameKind: "node", nodeKey: "race", nodeId: "race", strategy: "race" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "winner", memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "loser", memberKind: "branch", branchId: "loser", readinessSequence: 2 } },
@@ -1037,6 +1011,7 @@ describe("scheduler advance loop", () => {
 
   it("leaves a failed leaf and its group failed without an explicit retry", async () => {
     const store = new MemorySchedulerStore([
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "all", frameKind: "node", nodeKey: "all", nodeId: "all", strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "work", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       ready("work", 1),

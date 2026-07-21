@@ -1267,6 +1267,133 @@ describe("scheduler store port", () => {
     });
   });
 
+  it.each([
+    {
+      label: "instance target",
+      target: "target",
+      targetEventType: "instance.retry_requested",
+      retriedMemberKeys: ["inner.left", "outer.left"],
+      dependencyMemberKeys: ["inner.second", "inner.third", "outer.right"],
+    },
+    {
+      label: "frame target",
+      target: "inner",
+      targetEventType: "frame.retry_requested",
+      retriedMemberKeys: ["outer.left"],
+      dependencyMemberKeys: ["outer.right"],
+    },
+  ])("requeues parent-failed siblings deterministically for a $label", async ({ target, targetEventType, retriedMemberKeys, dependencyMemberKeys }) => {
+    await withRuntimeWorkspace(`scheduler-store-${target}-retry-completion-closure`, async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const failed = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry-closure:failed-state",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "outer", frameKind: "node", parentFrameKey: "root", nodeKey: "outer", nodeId: "outer", strategy: "all" } },
+            { type: "group.started", payload: { runId: run.id, groupKey: "outer", nodeKey: "outer", nodeId: "outer", kind: "parallel", strategy: "all" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "outer.left", frameKind: "branch", parentFrameKey: "outer" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "outer", memberKey: "outer.left", childFrameKey: "outer.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "inner", frameKind: "node", parentFrameKey: "outer.left", nodeKey: "inner", nodeId: "inner", strategy: "all" } },
+            { type: "group.started", payload: { runId: run.id, groupKey: "inner", nodeKey: "inner", nodeId: "inner", kind: "parallel", strategy: "all" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "inner.left", frameKind: "branch", parentFrameKey: "inner" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "inner", memberKey: "inner.left", childFrameKey: "inner.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "target", nodeId: "target", parentFrameKey: "inner.left", instancePath: [{ kind: "node", nodeId: "outer" }, { kind: "branch", nodeId: "outer", branchId: "left" }, { kind: "node", nodeId: "inner" }, { kind: "branch", nodeId: "inner", branchId: "left" }, { kind: "node", nodeId: "target" }], readinessSequence: 1 } },
+            { type: "instance.failed", payload: { nodeKey: "target", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "inner.left", error: { reason: "boom" } } },
+            { type: "group.member_failed", payload: { memberKey: "inner.left", error: { reason: "boom" } } },
+
+            { type: "frame.started", payload: { runId: run.id, frameKey: "inner.third", frameKind: "branch", parentFrameKey: "inner" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "inner", memberKey: "inner.third", childFrameKey: "inner.third", memberKind: "branch", branchId: "third", readinessSequence: 3 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "inner.third.task", nodeId: "task", parentFrameKey: "inner.third", instancePath: [{ kind: "node", nodeId: "inner" }, { kind: "branch", nodeId: "inner", branchId: "third" }, { kind: "node", nodeId: "task" }] } },
+            { type: "group.member_cancelled", payload: { memberKey: "inner.third", cancelReason: "parent_failed" } },
+            { type: "instance.cancelled", payload: { nodeKey: "inner.third.task", cancelReason: "parent_failed" } },
+            { type: "frame.cancelled", payload: { frameKey: "inner.third", cancelReason: "parent_failed" } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "inner.second", frameKind: "branch", parentFrameKey: "inner" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "inner", memberKey: "inner.second", childFrameKey: "inner.second", memberKind: "branch", branchId: "second", readinessSequence: 2 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "inner.second.task", nodeId: "task", parentFrameKey: "inner.second", instancePath: [{ kind: "node", nodeId: "inner" }, { kind: "branch", nodeId: "inner", branchId: "second" }, { kind: "node", nodeId: "task" }] } },
+            { type: "group.member_cancelled", payload: { memberKey: "inner.second", cancelReason: "parent_failed" } },
+            { type: "instance.cancelled", payload: { nodeKey: "inner.second.task", cancelReason: "parent_failed" } },
+            { type: "frame.cancelled", payload: { frameKey: "inner.second", cancelReason: "parent_failed" } },
+            { type: "group.failed", payload: { groupKey: "inner", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "inner", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "outer.left", error: { reason: "boom" } } },
+            { type: "group.member_failed", payload: { memberKey: "outer.left", error: { reason: "boom" } } },
+
+            { type: "frame.started", payload: { runId: run.id, frameKey: "outer.right", frameKind: "branch", parentFrameKey: "outer" } },
+            { type: "group.member_ready", payload: { runId: run.id, groupKey: "outer", memberKey: "outer.right", childFrameKey: "outer.right", memberKind: "branch", branchId: "right", readinessSequence: 2 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "outer.right.task", nodeId: "task", parentFrameKey: "outer.right", instancePath: [{ kind: "node", nodeId: "outer" }, { kind: "branch", nodeId: "outer", branchId: "right" }, { kind: "node", nodeId: "task" }] } },
+            { type: "group.member_cancelled", payload: { memberKey: "outer.right", cancelReason: "parent_failed" } },
+            { type: "instance.cancelled", payload: { nodeKey: "outer.right.task", cancelReason: "parent_failed" } },
+            { type: "frame.cancelled", payload: { frameKey: "outer.right", cancelReason: "parent_failed" } },
+            { type: "group.failed", payload: { groupKey: "outer", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "outer", error: { reason: "boom" } } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
+          ],
+        });
+
+        const retried = throwingSchedulerStore(store.scheduler).retry({
+          runId: run.id,
+          target,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: `retry-closure:${target}`,
+        });
+
+        expect(dbRows(workspace, `
+          SELECT type,
+                 json_extract(payload_json, '$.payload.memberKey') AS member_key
+          FROM run_events
+          WHERE run_id = ?
+            AND sequence > ?
+            AND type = 'group.member_retry_requested'
+          ORDER BY sequence
+        `, run.id, failed.version)).toEqual(retriedMemberKeys.map(member_key => ({
+          type: "group.member_retry_requested",
+          member_key,
+        })));
+        expect(dbRow(workspace, `
+          SELECT json_extract(payload_json, '$.payload.retryDependencyMemberKeys') AS dependency_member_keys
+          FROM run_events
+          WHERE run_id = ?
+            AND sequence > ?
+            AND type = ?
+        `, run.id, failed.version, targetEventType)).toEqual({
+          dependency_member_keys: JSON.stringify(dependencyMemberKeys),
+        });
+        expect(dbScalar(workspace, `
+          SELECT COUNT(*)
+          FROM run_events
+          WHERE run_id = ?
+            AND sequence > ?
+            AND type = 'group.member_requeued'
+        `, run.id, failed.version)).toBe(0);
+        expect(retried.projection.groupMembers["outer.right"]).toMatchObject({ status: "ready", readinessSequence: 2 });
+        expect(retried.projection.instances["outer.right.task"]).toMatchObject({ status: "ready" });
+        if (target === "target") {
+          expect(retried.projection.instances.target).toMatchObject({ status: "ready", statusReason: "retry" });
+          expect(retried.projection.groupMembers["inner.second"]).toMatchObject({ status: "ready", readinessSequence: 2 });
+          expect(retried.projection.groupMembers["inner.third"]).toMatchObject({ status: "ready", readinessSequence: 3 });
+          expect(retried.projection.instances["inner.second.task"]).toMatchObject({ status: "ready" });
+          expect(retried.projection.instances["inner.third.task"]).toMatchObject({ status: "ready" });
+        } else {
+          expect(retried.projection.frames.inner).toBeUndefined();
+          expect(retried.projection.groups.inner).toBeUndefined();
+          expect(retried.projection.instances.target).toBeUndefined();
+        }
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groupMembers["outer.right"])
+          .toMatchObject({ status: "ready", readinessSequence: 2 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("records attempts durably and rejects stale owner commits", async () => {
     await withRuntimeWorkspace("scheduler-store-attempts", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -1497,19 +1624,23 @@ describe("scheduler store port", () => {
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:failed-state",
           events: [
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], readinessSequence: 1 } },
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "require_ready" }], readinessSequence: 1 } },
             { type: "instance.failed", payload: { nodeKey: "require_ready~1", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~1", nodeId: "other", instancePath: [{ kind: "node", nodeId: "other" }], readinessSequence: 2 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~1", nodeId: "other", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "other" }], readinessSequence: 2 } },
             { type: "instance.failed", payload: { nodeKey: "other~1", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~2", nodeId: "other", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 1 }, { kind: "node", nodeId: "other" }], readinessSequence: 3 } },
+            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~2", nodeId: "other", parentFrameKey: "root", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 1 }, { kind: "node", nodeId: "other" }], readinessSequence: 3 } },
             { type: "instance.failed", payload: { nodeKey: "other~2", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "require_ready~1", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
-            { type: "group.member_failed", payload: { memberKey: "require_ready~1", error: { reason: "boom" } } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "other~1", memberKind: "branch", branchId: "right", readinessSequence: 2 } },
+            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
           ],
         });
 
+        expect(() => throwingSchedulerStore(store.scheduler).retry({
+          runId: run.id,
+          target: "other",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry:other",
+        })).toThrow("ambiguous");
         const retried = throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready",
@@ -1521,7 +1652,6 @@ describe("scheduler store port", () => {
           status: "ready",
           error_json: null,
         });
-        expect(retried.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "ready" });
         expect(throwingSchedulerStore(store.scheduler).retry({
           runId: run.id,
           target: "require_ready",
@@ -1533,7 +1663,7 @@ describe("scheduler store port", () => {
           target: "require_ready~1",
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:node-again",
-        })).toThrow("cannot be retried from ready");
+        })).toThrow("in a completed run");
         expect(store.scheduler.tryRetry({
           runId: run.id,
           target: "other",
@@ -1544,12 +1674,6 @@ describe("scheduler store port", () => {
           idempotencyKey: "retry:node",
           runId: run.id,
         });
-        expect(() => throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "other~1",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:other",
-        })).toThrow("Group member 'other~1' cannot be retried from ready");
       } finally {
         store.close();
       }

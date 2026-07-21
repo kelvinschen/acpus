@@ -9,18 +9,19 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
-import { evaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { evaluateExpr } from "../evaluation/evaluator.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { stableJson } from "../stable-json.js";
-import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, groupCompletionEvents, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
+import { selectNextAdmission } from "../scheduler/admission.js";
+import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, signalTimeoutEvents, targetedRetryDependencyBlocker, targetedRetryGroupBlocker, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
-import { continueRootEvents } from "../scheduler/materialize.js";
+import type { GroupMember, GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
+import { nextFrozenRunTransitionEvents, settleFrozenProjection } from "../scheduler/settle.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
@@ -797,17 +798,97 @@ class SqliteRuntimeStore implements RuntimeStore {
     const timedWaits = this.db.prepare("SELECT run_id, node_key, deadline_at FROM signal_waits WHERE status = 'awaiting' AND deadline_at IS NOT NULL")
       .all() as Array<{ run_id: string; node_key: string; deadline_at: string }>;
     for (const wait of timedWaits) persistedDeadline(wait.deadline_at, `Signal wait '${wait.run_id}:${wait.node_key}'`);
-    const startableRuns = this.db.prepare(`
+    const ordinaryStartableRuns = this.db.prepare(`
       SELECT ${this.runRecordColumns()}
       FROM runs
       WHERE (${RUNNABLE_RUNS_WHERE}) OR (${DUE_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
       ORDER BY created_at ASC
     `).all(nowIso, nowIso).map(toRunRecord);
-    const row = this.db.prepare(`
-      SELECT COUNT(*) AS count
+    const reconciliationRuns = this.db.prepare(`
+      SELECT ${this.runRecordColumns()}
+      FROM runs
+      WHERE status IN ('running', 'awaiting')
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM group_members
+            WHERE group_members.run_id = runs.id
+              AND group_members.status IN ('completed', 'failed', 'cancelled')
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM node_instances
+            WHERE node_instances.run_id = runs.id
+              AND node_instances.status IN ('completed', 'failed', 'cancelled')
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM scheduler_frames
+            WHERE scheduler_frames.run_id = runs.id
+              AND scheduler_frames.status IN ('completed', 'failed', 'cancelled')
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM node_attempts
+            WHERE node_attempts.run_id = runs.id
+              AND node_attempts.status = 'started'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM node_instances
+            WHERE node_instances.run_id = runs.id
+              AND node_instances.status = 'ready'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM scheduler_frames
+            WHERE scheduler_frames.run_id = runs.id
+              AND scheduler_frames.status = 'running'
+              AND scheduler_frames.strategy IN ('all', 'race', 'quorum')
+              AND NOT EXISTS (
+                SELECT 1
+                FROM group_members
+                WHERE group_members.run_id = scheduler_frames.run_id
+                  AND group_members.group_key = scheduler_frames.frame_key
+              )
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM run_leases
+          WHERE run_leases.run_id = runs.id
+            AND run_leases.released_at IS NULL
+            AND run_leases.lease_expires_at > ?
+      )
+      ORDER BY created_at ASC
+    `).all(nowIso).map(toRunRecord).filter(run => {
+      const snapshot = throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(run.id));
+      const frozen = this.getFrozenRun(run.id);
+      if (!frozen) throw new Error(`Run '${run.id}' has no frozen workflow.`);
+      if (nextFrozenRunTransitionEvents(frozen, snapshot.projection, now).length > 0) return true;
+      if (Object.values(snapshot.projection.attempts).some(attempt => attempt.status === "started")) return true;
+      const signalNodeIds = new Set<string>();
+      for (const { node } of walkNodes(frozen.ir.root)) {
+        if (node.kind === "signal") signalNodeIds.add(node.id);
+      }
+      return selectNextAdmission({
+        projection: snapshot.projection,
+        // Configured run caps are positive; any durable started attempt matched above.
+        maxLeafConcurrency: 1,
+        ownerLocalUnsettled: 0,
+        signalNodeIds,
+      }) !== undefined;
+    });
+    const startableById = new Map(ordinaryStartableRuns.map(run => [run.id, run]));
+    for (const run of reconciliationRuns) startableById.set(run.id, run);
+    const startableRuns = [...startableById.values()]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+    const idleBlockerRunIds = new Set((this.db.prepare(`
+      SELECT id
       FROM runs
       WHERE (${RUNNABLE_RUNS_WHERE}) OR (${TIMED_SIGNAL_WAIT_WHERE}) OR (${RECOVERABLE_RUNNING_RUNS_WHERE})
-    `).get(nowIso) as CountRow;
+    `).all(nowIso) as Array<{ id: string }>).map(row => row.id));
+    for (const run of reconciliationRuns) idleBlockerRunIds.add(run.id);
     const hookDispatchRows = this.db.prepare(`
       SELECT runs.id, hook_dispatch_cursors.event_sequence, COALESCE((
         SELECT MAX(run_events.sequence)
@@ -830,7 +911,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
       if (cursor < lastSequence) hookDispatchRunIds.push(hook.id);
     }
-    return { startableRuns, hookDispatchRunIds, idleBlockers: Number(row.count) + hookDispatchRunIds.length };
+    return { startableRuns, hookDispatchRunIds, idleBlockers: idleBlockerRunIds.size + hookDispatchRunIds.length };
   }
 
   private countRunnableRuns(): number {
@@ -2313,7 +2394,19 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
     const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
-    const snapshot = this.loadRunSnapshot(input.runId);
+    const current = this.loadRunSnapshot(input.runId);
+    assertTargetedRetryRunOpen(input.runId, input.target, current.projection.run.status);
+    const settled = settleFrozenProjection({
+      frozen: this.loadFrozenRun(input.runId),
+      projection: current.projection,
+      now: new Date(),
+    });
+    const snapshot: SchedulerSnapshot = {
+      runId: current.runId,
+      version: current.version + settled.events.length,
+      projection: settled.projection,
+    };
+    assertTargetedRetryRunOpen(input.runId, input.target, snapshot.projection.run.status);
     const targetKey = retryTargetKey(input.target, snapshot).match(
       value => value,
       failure => throwSchedulerStoreError(failure),
@@ -2328,61 +2421,53 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       if (frame.frameKind !== "node" && frame.frameKind !== "loop") {
         throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: frame.status, message: `Frame '${targetKey}' is not a retryable public node frame.` });
       }
-      const events: SchedulerEvent[] = [{ type: "frame.retry_requested", payload: { frameKey: targetKey } }];
-      for (const member of ancestorGroupMembersForFrame(snapshot.projection, frame.parentFrameKey)) {
-        if (member.status !== "failed") {
-          throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
-        }
-        events.push({
-          type: "group.member_retry_requested",
-          payload: {
-            memberKey: member.memberKey,
-            readinessSequence: member.readinessSequence,
-          },
-        });
-      }
+      assertRetryableAncestorFrames(input.runId, targetKey, snapshot.projection, frame.parentFrameKey);
+      const plan = planRetryAncestorGroups(input.runId, targetKey, snapshot.projection, ancestorGroupMembersForFrame(snapshot.projection, frame.parentFrameKey));
+      const retryEvents: SchedulerEvent[] = [{
+        type: "frame.retry_requested",
+        payload: {
+          frameKey: targetKey,
+          ...(plan.retryDependencyMemberKeys.length === 0 ? {} : { retryDependencyMemberKeys: plan.retryDependencyMemberKeys }),
+        },
+      }, ...plan.events];
+      assertRetryDependenciesCanProgress(input.runId, targetKey, snapshot.projection, retryEvents, plan.retryDependencyMemberKeys);
       return this.appendSchedulerEvents({
         runId: input.runId,
-        expectedVersion: snapshot.version,
+        expectedVersion: current.version,
         ownerEpoch: input.ownerEpoch,
         idempotencyKey,
         intentDigest,
-        events,
+        events: [...settled.events, ...retryEvents],
       });
     }
     if (!instance) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey, message: `Retry target '${targetKey}' was not found.` });
     if (instance.status !== "failed") {
       throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: instance.status, message: `Node instance '${targetKey}' cannot be retried from ${instance.status}.` });
     }
-    const events: SchedulerEvent[] = [
+    if (instance.statusReason === "expression_resolution_failed") {
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: instance.statusReason, message: `Node instance '${targetKey}' failed before execution and must be retried through its containing frame or run.` });
+    }
+    assertRetryableAncestorFrames(input.runId, targetKey, snapshot.projection, instance.parentFrameKey);
+    const plan = planRetryAncestorGroups(input.runId, targetKey, snapshot.projection, ancestorGroupMembersForNode(snapshot.projection, targetKey));
+    const retryEvents: SchedulerEvent[] = [
       {
         type: "instance.retry_requested",
         payload: {
           nodeKey: targetKey,
           ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+          ...(plan.retryDependencyMemberKeys.length === 0 ? {} : { retryDependencyMemberKeys: plan.retryDependencyMemberKeys }),
         },
       },
+      ...plan.events,
     ];
-    const members = ancestorGroupMembersForNode(snapshot.projection, targetKey);
-    for (const member of members) {
-      if (member.status !== "failed") {
-        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: member.status, message: `Group member '${member.memberKey}' cannot be retried from ${member.status}.` });
-      }
-      events.push({
-        type: "group.member_retry_requested",
-        payload: {
-          memberKey: member.memberKey,
-          readinessSequence: member.readinessSequence,
-        },
-      });
-    }
+    assertRetryDependenciesCanProgress(input.runId, targetKey, snapshot.projection, retryEvents, plan.retryDependencyMemberKeys);
     return this.appendSchedulerEvents({
       runId: input.runId,
-      expectedVersion: snapshot.version,
+      expectedVersion: current.version,
       ownerEpoch: input.ownerEpoch,
       idempotencyKey,
       intentDigest,
-      events,
+      events: [...settled.events, ...retryEvents],
     });
   }
 
@@ -2537,23 +2622,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const events = signalTimeoutEvents(snapshot.projection, now);
     if (events.length === 0) return snapshot;
     const frozen = this.loadFrozenRun(runId);
-    const scope = rootScope(frozen);
-    let projection = applySchedulerEvents(snapshot.projection, events);
-    for (;;) {
-      const derived = Object.keys(projection.groups).flatMap(groupKey => groupCompletionEvents(projection, groupKey));
-      if (derived.length === 0) derived.push(...continueRootEvents(frozen.ir, projection, scope));
-      if (derived.length === 0) {
-        return throwSchedulerStoreResult(this.tryAppendSchedulerEvents({
-          runId,
-          ownerEpoch,
-          expectedVersion: snapshot.version,
-          idempotencyKey: `scheduler:signal-timeouts:${runId}:${snapshot.version}`,
-          events,
-        }));
-      }
-      events.push(...derived);
-      projection = applySchedulerEvents(projection, derived);
-    }
+    const settled = settleFrozenProjection({ frozen, projection: snapshot.projection, initialEvents: events, now });
+    return throwSchedulerStoreResult(this.tryAppendSchedulerEvents({
+      runId,
+      ownerEpoch,
+      expectedVersion: snapshot.version,
+      idempotencyKey: `scheduler:signal-timeouts:${runId}:${snapshot.version}`,
+      events: settled.events,
+    }));
   }
 
   private loadFrozenRun(runId: string): FrozenRun {
@@ -3482,6 +3558,121 @@ function schedulerIntentDigest(intent: JsonValue): string {
   return createHash("sha256").update(stableJson(intent)).digest("hex");
 }
 
+function assertTargetedRetryRunOpen(
+  runId: string,
+  targetKey: string,
+  status: SchedulerProjection["run"]["status"],
+): void {
+  if (status !== "completed" && status !== "canceled" && status !== "paused") return;
+  throwSchedulerStoreError({
+    type: "invalid-retry-target",
+    runId,
+    targetKey,
+    status,
+    message: `Cannot retry target '${targetKey}' in a ${status} run.`,
+  });
+}
+
+function assertRetryDependenciesCanProgress(
+  runId: string,
+  targetKey: string,
+  projection: SchedulerProjection,
+  retryEvents: readonly SchedulerEvent[],
+  dependencyMemberKeys: readonly string[],
+): void {
+  const retried = applySchedulerEvents(projection, retryEvents);
+  const blockedDependency = targetedRetryDependencyBlocker(retried, dependencyMemberKeys);
+  if (blockedDependency) {
+    throwBlockedTargetedRetry(runId, targetKey, `completion dependency '${blockedDependency.memberKey}' contains an independent failure blocker`);
+  }
+}
+
+function throwBlockedTargetedRetry(runId: string, targetKey: string, reason: string): never {
+  throwSchedulerStoreError({
+    type: "invalid-retry-target",
+    runId,
+    targetKey,
+    status: "blocked",
+    message: `Target '${targetKey}' cannot make progress because ${reason}; use run-level retry or fork.`,
+  });
+}
+
+function planRetryAncestorGroups(
+  runId: string,
+  targetKey: string,
+  projection: SchedulerProjection,
+  members: readonly GroupMember[],
+): { events: SchedulerEvent[]; retryDependencyMemberKeys: string[] } {
+  const membersByGroup = new Map<string, GroupMember[]>();
+  for (const member of Object.values(projection.groupMembers)) {
+    const groupMembers = membersByGroup.get(member.groupKey) ?? [];
+    groupMembers.push(member);
+    membersByGroup.set(member.groupKey, groupMembers);
+  }
+  const events: SchedulerEvent[] = [];
+  const retryDependencyMemberKeys: string[] = [];
+  for (const member of members) {
+    if (member.status !== "failed") {
+      const detail = member.status === "cancelled" && member.terminalReason === "parent_failed"
+        ? " is outside the failed completion path"
+        : ` cannot be retried from ${member.status}`;
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: member.status, message: `Group member '${member.memberKey}'${detail}.` });
+    }
+    const group = projection.groups[member.groupKey];
+    if (!group) throw new Error(`Group member '${member.memberKey}' references missing group '${member.groupKey}'.`);
+    if (group.status === "completed" || group.status === "cancelled") {
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: group.status, message: `Target '${targetKey}' belongs to ${group.status} group '${group.groupKey}'.` });
+    }
+    const groupMembers = membersByGroup.get(member.groupKey) ?? [];
+    const dependencies = groupMembers
+      .filter(candidate => candidate.memberKey !== member.memberKey
+        && candidate.status === "cancelled"
+        && candidate.terminalReason === "parent_failed")
+      .sort((left, right) => left.readinessSequence - right.readinessSequence || left.memberKey.localeCompare(right.memberKey));
+    const reopenedMemberKeys = new Set([member.memberKey, ...dependencies.map(dependency => dependency.memberKey)]);
+    const blocker = targetedRetryGroupBlocker(group, groupMembers, reopenedMemberKeys);
+    if (blocker) {
+      throwSchedulerStoreError({
+        type: "invalid-retry-target",
+        runId,
+        targetKey,
+        status: "blocked",
+        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use run-level retry or fork.`,
+      });
+    }
+    events.push({
+      type: "group.member_retry_requested",
+      payload: { memberKey: member.memberKey, readinessSequence: member.readinessSequence },
+    });
+    for (const dependency of dependencies) {
+      retryDependencyMemberKeys.push(dependency.memberKey);
+    }
+  }
+  return { events, retryDependencyMemberKeys };
+}
+
+function assertRetryableAncestorFrames(
+  runId: string,
+  targetKey: string,
+  projection: SchedulerProjection,
+  frameKey: string | undefined,
+): void {
+  const seen = new Set<string>();
+  for (let current = frameKey; current !== undefined;) {
+    if (seen.has(current)) throw new Error(`Retry target '${targetKey}' has cyclic frame ancestry at '${current}'.`);
+    seen.add(current);
+    const frame = projection.frames[current];
+    if (!frame) throw new Error(`Retry target '${targetKey}' references missing ancestor frame '${current}'.`);
+    if (frame.status === "completed" || frame.status === "cancelled") {
+      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: frame.status, message: `Target '${targetKey}' belongs to ${frame.status} frame '${frame.frameKey}'.` });
+    }
+    if (frame.status !== "running" && frame.status !== "failed") {
+      throw new Error(`Retry target '${targetKey}' has non-runnable ancestor frame '${frame.frameKey}' in status '${frame.status}'.`);
+    }
+    current = frame.parentFrameKey;
+  }
+}
+
 function retryTargetKey(target: string, snapshot: SchedulerSnapshot): Result<string, SchedulerStoreError> {
   if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return ok(target);
   const instanceMatches = Object.values(snapshot.projection.instances)
@@ -4339,16 +4530,6 @@ function summarizeWorkflowForEvent(ir: WorkflowIR): {
 
 function countNodes(scope: ScopeIR): number {
   return Array.from(walkNodes(scope)).length;
-}
-
-function rootScope(frozen: FrozenRun): EvaluationScope {
-  return {
-    input: frozen.input,
-    nodes: {},
-    meta: frozen.meta,
-    fanout: {},
-    loop: {},
-  };
 }
 
 function throwSchedulerStoreError(error: SchedulerStoreError): never {

@@ -25,14 +25,14 @@ export type SchedulerEvent =
   | BaseEvent<"frame.completed", { frameKey: string; result?: JsonValue; terminalReason?: string }>
   | BaseEvent<"frame.failed", { frameKey: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"frame.cancelled", { frameKey: string; cancelReason: CancellationReason }>
-  | BaseEvent<"frame.retry_requested", { frameKey: string }>
+  | BaseEvent<"frame.retry_requested", { frameKey: string; retryDependencyMemberKeys?: string[] }>
   | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; state?: JsonValue; transition?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number; timeoutMs?: number }>
   | BaseEvent<"instance.started", { nodeKey: string; attemptId?: string }>
   | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string }>
   | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded"; readinessSequence?: number }>
-  | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number }>
+  | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number; retryDependencyMemberKeys?: string[] }>
   | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string; attemptId?: string }>
   | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string; attemptId?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>

@@ -24,11 +24,6 @@ export function descendantFramesForFrame(projection: SchedulerProjection, frameK
   }
 }
 
-export function descendantFramesForMember(projection: SchedulerProjection, member: GroupMember): SchedulerFrame[] {
-  const rootFrameKey = member.childFrameKey ?? member.memberKey;
-  return descendantFramesForFrame(projection, rootFrameKey);
-}
-
 export function descendantInstancesForFrame(projection: SchedulerProjection, frameKey: string): NodeInstance[] {
   const frameKeys = new Set(descendantFramesForFrame(projection, frameKey).map(frame => frame.frameKey));
   return Object.values(projection.instances).filter(instance => instance.parentFrameKey !== undefined && frameKeys.has(instance.parentFrameKey));
@@ -44,28 +39,6 @@ export function descendantGroupKeysForFrame(projection: SchedulerProjection, fra
   const frameKeys = new Set(descendantFramesForFrame(projection, frameKey).map(frame => frame.frameKey));
   return Object.values(projection.groups)
     .filter(group => frameKeys.has(group.nodeKey))
-    .map(group => group.groupKey);
-}
-
-export function descendantInstancesForMember(projection: SchedulerProjection, member: GroupMember): NodeInstance[] {
-  const direct = projection.instances[member.memberKey];
-  const frameKeys = new Set(descendantFramesForMember(projection, member).map(frame => frame.frameKey));
-  return [
-    ...(direct ? [direct] : []),
-    ...Object.values(projection.instances).filter(instance => instance.parentFrameKey !== undefined && frameKeys.has(instance.parentFrameKey)),
-  ];
-}
-
-export function descendantGroupMembersForMember(projection: SchedulerProjection, member: GroupMember): GroupMember[] {
-  const frameKeys = new Set(descendantFramesForMember(projection, member).map(frame => frame.frameKey));
-  return Object.values(projection.groupMembers)
-    .filter(child => child.memberKey !== member.memberKey && ((child.childFrameKey !== undefined && frameKeys.has(child.childFrameKey)) || frameKeys.has(child.memberKey)));
-}
-
-export function descendantGroupKeysForMember(projection: SchedulerProjection, member: GroupMember): string[] {
-  const frameKeys = new Set(descendantFramesForMember(projection, member).map(frame => frame.frameKey));
-  return Object.values(projection.groups)
-    .filter(group => group.nodeKey !== member.groupKey && frameKeys.has(group.nodeKey))
     .map(group => group.groupKey);
 }
 
