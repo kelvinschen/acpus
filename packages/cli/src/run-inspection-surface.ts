@@ -1,6 +1,8 @@
+import { stripVTControlCharacters } from "node:util";
 import type { SchemaIR } from "@acpus/core/ir";
 import type {
   RunInspectionChange,
+  RunInspectionAction,
   RunInspectionDocument,
   RunInspectionEmission,
   RunInspectionItem,
@@ -10,6 +12,7 @@ import type {
   RunInspectionStatusCounts,
   RunInspectionTargetDocument,
 } from "@acpus/runtime";
+import { terminalTreeChildPrefix, terminalTreeConnector, type TerminalTreeEdge } from "./terminal-tree.js";
 
 type RunInspectionUpdate = Extract<RunInspectionEmission, { kind: "update" }>;
 type FollowableInspectionDocument = RunInspectionSnapshot | RunInspectionTargetDocument;
@@ -31,13 +34,17 @@ export function formatRunInspectionChanges(
   context: {
     run: RunInspectionRunSummary;
     items: readonly RunInspectionItem[];
+    actions?: readonly RunInspectionAction[];
     nowMs?: number;
   },
 ): string {
   const nowMs = context.nowMs ?? Date.now();
   const items = new Map(context.items.map(item => [item.key, item]));
+  const actions = indexActions(context.actions ?? []);
   const visible = changes.filter(change => !(change.entity.kind === "run" && ["completed", "failed", "cancelled"].includes(change.action)));
-  return visible.map(change => {
+  const lines: string[] = [];
+  let runLevelRecoveryTransition = false;
+  for (const change of visible) {
     const item = change.itemKey ? items.get(change.itemKey) : undefined;
     const elapsed = elapsedSince(context.run.createdAt, change.at);
     const subject = change.subject || item?.label || change.entity.nodeId || change.entity.id;
@@ -48,8 +55,15 @@ export function formatRunInspectionChanges(
       : "";
     const message = failure || (change.message ? `  ${oneLine(change.message, 160)}` : "");
     const agent = item?.agent ? `  ${formatAgentProgress(item.agent, nowMs)}` : "";
-    return `+${elapsed}  ${subject}  ${state}${attempt}${agent}${message}`;
-  }).join("\n") + (visible.length > 0 ? "\n" : "");
+    lines.push(`+${elapsed}  ${subject}  ${state}${attempt}${agent}${message}`);
+    const actionable = change.action === "awaiting" || change.action === "failed" || change.action === "timed_out";
+    if (item && actionable) {
+      runLevelRecoveryTransition ||= (actions.byItem.get(item.key) ?? []).some(action => action.kind === "retry");
+      lines.push(...formatActionCommands(item, actions, context.run.id).map(line => `  ${line}`));
+    }
+  }
+  if (runLevelRecoveryTransition) lines.push(...formatRunLevelActionCommands(actions, context.run.id).map(line => `  ${line}`));
+  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
 }
 
 export function formatRunInspectionCheckpoint(document: FollowableInspectionDocument, nowMs = Date.now()): string {
@@ -57,7 +71,7 @@ export function formatRunInspectionCheckpoint(document: FollowableInspectionDocu
   if (document.kind === "target") {
     const current = currentTargetItem(document);
     const agent = current?.agent ?? document.summary.agent;
-    const details = agent ? `\n  ${current?.label ?? document.target.id}  ${formatAgentProgress(agent, nowMs)}` : "";
+    const details = agent ? `\n  ${current?.label ?? document.target.id}  ${formatAgentPulse(agent, nowMs)}` : "";
     return `· checkpoint +${elapsed}  ${document.run.status}${details}\n`;
   }
 
@@ -66,7 +80,7 @@ export function formatRunInspectionCheckpoint(document: FollowableInspectionDocu
   const shown = candidates.slice(0, 3);
   const lines = [`· checkpoint +${elapsed}  ${document.run.status}${counts ? `  ${counts}` : ""}`];
   for (const item of shown) {
-    const detail = item.agent ? formatAgentProgress(item.agent, nowMs) : displayStatus(item.status);
+    const detail = item.agent ? formatAgentPulse(item.agent, nowMs) : displayStatus(item.status);
     lines.push(`  ${item.label}  ${detail}`);
   }
   if (candidates.length > shown.length) lines.push(`  … ${candidates.length - shown.length} more actionable`);
@@ -110,19 +124,26 @@ export function formatTerminalOutput(output: unknown): string {
 }
 
 function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string {
-  const lines = [formatHeader(document.run, nowMs)];
-  const byKey = new Map(document.items.map(item => [item.key, item]));
-  for (const item of document.items) lines.push(...formatItem(item, depthFor(item, byKey), document.run.id, nowMs));
-  if (document.omitted) {
-    const progress = document.omitted.agentProgress ? `  agent-progress=${document.omitted.agentProgress.tracked}` : "";
-    lines.push(`  … ${document.omitted.dynamicContexts} dynamic contexts omitted (${formatCounts(document.omitted.counts)})${progress}`);
+  const lines = [formatHeader(document.run, nowMs), "", "Tree:"];
+  lines.push(...formatInspectionTree(document.items));
+  if (document.omitted && !document.items.some(item => item.role === "fold")) {
+    lines.push(`  … ${document.omitted.dynamicContexts} contexts omitted (${formatCounts(document.omitted.counts)})`);
   }
-  for (const action of document.actions) {
-    if (action.kind === "inspect-all") lines.push(`  More: acpus runs inspect ${document.run.id} --all`);
-    if (action.kind === "inspect-target") lines.push(`  Inspect: acpus runs inspect ${document.run.id} --target ${action.target}`);
-    if (action.kind === "retry") lines.push(`  Retry: acpus runs retry ${document.run.id} --target ${action.target}`);
-    if (action.kind === "fork") lines.push(`  Fork: acpus runs fork ${document.run.id}`);
+  const inspectAll = document.actions.find(action => action.kind === "inspect-all");
+  if (inspectAll) lines.push(`  More: acpus runs inspect ${document.run.id} --all`);
+
+  const active = activeItems(document.items);
+  const hiddenActive = (document.omitted?.counts.starting ?? 0) + (document.omitted?.counts.running ?? 0);
+  if (active.length + hiddenActive > 0) {
+    const byKey = new Map(document.items.map(item => [item.key, item]));
+    lines.push("", "Active:");
+    for (const item of active.slice(0, 3)) lines.push(`  ${formatActiveItem(item, byKey, nowMs)}`);
+    const additional = Math.max(0, active.length - 3) + hiddenActive;
+    if (additional > 0) lines.push(`  … ${additional} more running`);
   }
+
+  const attention = formatAttention(document);
+  if (attention.length > 0) lines.push("", "Attention:", ...attention);
   if (document.output !== undefined) {
     lines.push("", "Output:", ...prettyLines(document.output, "  "));
   }
@@ -191,30 +212,211 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
   return `${lines.join("\n")}\n`;
 }
 
-function formatItem(item: RunInspectionItem, depth: number, runId: string, nowMs: number): string[] {
-  const indent = `  ${"  ".repeat(depth)}`;
-  if (item.role === "fold") {
-    return [`${indent}… ${item.label}  ${item.fold?.count ?? 0} folded${item.fold ? `  ${formatCounts(item.fold.counts)}` : ""}`];
+function formatInspectionTree(items: readonly RunInspectionItem[]): string[] {
+  if (items.length === 0) return ["  (empty workflow)"];
+  const byKey = new Map(items.map(item => [item.key, item]));
+  const children = new Map<string, RunInspectionItem[]>();
+  const roots: RunInspectionItem[] = [];
+  for (const item of items) {
+    if (!item.parentKey || !byKey.has(item.parentKey)) {
+      roots.push(item);
+      continue;
+    }
+    const siblings = children.get(item.parentKey);
+    if (siblings) siblings.push(item);
+    else children.set(item.parentKey, [item]);
   }
 
-  const parts = [item.label, `[${item.kind}]`];
-  if (item.status !== "completed") parts.push(displayStatus(item.status));
-  const duration = between(item.startedAt ?? item.createdAt, item.finishedAt, nowMs, item.status);
-  if (duration) parts.push(duration);
-  if ((item.attemptNo ?? 1) > 1) parts.push(`attempt=${item.attemptNo}`);
-  if (item.statusReason && !item.failure) parts.push(oneLine(item.statusReason, 80));
-  const lines = [`${indent}${statusGlyph(item.status)} ${parts.join("  ")}`];
-  const detailIndent = depth + 2;
-  if (item.failure) {
-    lines.push(`${"  ".repeat(detailIndent)}${formatFailure(item.failure, 240)}`);
-  }
-  if (item.agent) lines.push(...formatAgent(item.agent, detailIndent, nowMs));
-  if (item.signal) lines.push(...formatSignal(item.signal, runId, detailIndent, true, item.status === "awaiting"));
-  if (item.composite) {
-    const details = [item.composite.strategy, item.composite.quorumCount === undefined ? undefined : `quorum=${item.composite.quorumCount}`, item.composite.maxConcurrency === undefined ? undefined : `maxConcurrency=${item.composite.maxConcurrency}`, item.composite.currentIteration === undefined ? undefined : `round=${item.composite.currentIteration + 1}`, item.composite.counts ? formatCounts(item.composite.counts) : undefined].filter(Boolean);
-    if (details.length > 0) lines.push(`${"  ".repeat(detailIndent)}${details.join("  ")}`);
-  }
+  const lines: string[] = [];
+  const visited = new Set<string>();
+  const visit = (item: RunInspectionItem, prefix: string, last: boolean, firstRoot = false): void => {
+    if (visited.has(item.key)) return;
+    visited.add(item.key);
+    const connector = terminalTreeConnector(treeEdge(item), last, firstRoot);
+    lines.push(`${prefix}${connector} ${formatTreeItem(item)}`);
+    const nested = children.get(item.key) ?? [];
+    const childPrefix = terminalTreeChildPrefix(prefix, last);
+    nested.forEach((child, index) => visit(child, childPrefix, index === nested.length - 1));
+  };
+  roots.forEach((root, index) => visit(root, "", index === roots.length - 1, index === 0));
+  for (const item of items) if (!visited.has(item.key)) visit(item, "", true, lines.length === 0);
   return lines;
+}
+
+function treeEdge(item: RunInspectionItem): TerminalTreeEdge {
+  return item.scope || item.role === "context" || item.role === "fold" ? "region" : "node";
+}
+
+function formatTreeItem(item: RunInspectionItem): string {
+  if (item.role === "fold") {
+    const count = item.fold?.count ?? 0;
+    return `… ${count} ${foldDescription(item)}`;
+  }
+
+  const parts = [`${statusGlyph(item.status)} ${item.label}`];
+  if (item.scope) {
+    if (item.scope.kind === "branch" && item.scope.ownerKind !== "parallel") {
+      parts.push(item.scope.selection.replace("_", " "));
+      if (item.scope.selection === "selected" && item.status !== "completed") parts.push(displayTreeStatus(item.status));
+    }
+    else if (item.status !== "completed") parts.push(displayTreeStatus(item.status));
+    if (item.scope.empty) parts.push("empty");
+    return parts.join(" · ");
+  }
+
+  parts.push(item.kind === "agent" && item.agent ? `agent(${item.agent.key})` : item.kind);
+  if (item.status !== "completed") parts.push(displayTreeStatus(item.status));
+  const progress = treeProgress(item);
+  if (progress) parts.push(progress);
+  return parts.join(" · ");
+}
+
+function foldDescription(item: RunInspectionItem): string {
+  const noun = item.kind === "fanout_item" ? "items"
+    : item.kind === "loop_iteration" ? "rounds"
+      : item.kind === "branch" ? "branches"
+        : item.label.replace(/^\d+\s+/, "").replaceAll("_", " ");
+  const counts = item.fold?.counts;
+  if (!counts) return noun;
+  const statuses: Array<[keyof RunInspectionStatusCounts, string]> = [
+    ["notStarted", "not started"], ["notSelected", "not selected"], ["pending", "pending"], ["starting", "starting"], ["ready", "ready"], ["running", "running"], ["awaiting", "awaiting"], ["completed", "completed"], ["failed", "failed"], ["timedOut", "timed out"], ["cancelled", "canceled"], ["mixed", "mixed"],
+  ];
+  const populated = statuses.filter(([key]) => (counts[key] ?? 0) > 0);
+  const status = populated.length === 1 && counts[populated[0]![0]] === counts.total ? populated[0]![1] : undefined;
+  return status && !noun.startsWith(`${status} `) ? `${status} ${noun}` : noun;
+}
+
+function treeProgress(item: RunInspectionItem): string | undefined {
+  if ((item.attemptNo ?? 1) > 1) return `attempt ${item.attemptNo}`;
+  const count = item.composite?.counts?.total;
+  if (item.kind === "parallel" && count !== undefined) return `${count} branches`;
+  if (item.kind === "fanout" && count !== undefined) return `${count} items`;
+  if (item.kind === "loop") {
+    const rounds = count ?? (item.composite?.currentIteration === undefined ? undefined : item.composite.currentIteration + 1);
+    if (rounds !== undefined) return `${rounds} ${rounds === 1 ? "round" : "rounds"}`;
+  }
+  return undefined;
+}
+
+function activeItems(items: readonly RunInspectionItem[]): RunInspectionItem[] {
+  const executableKinds = new Set(["agent", "task", "signal", "assert"]);
+  return items.filter(item => executableKinds.has(item.kind) && (item.status === "starting" || item.status === "running"));
+}
+
+function formatActiveItem(item: RunInspectionItem, byKey: ReadonlyMap<string, RunInspectionItem>, nowMs: number): string {
+  const kind = item.kind === "agent" && item.agent ? `agent(${item.agent.key})` : item.kind;
+  const pulse = item.agent ? ` · ${formatAgentPulse(item.agent, nowMs)}` : "";
+  return `${statusGlyph(item.status)} ${itemBreadcrumb(item, byKey)} · ${kind}${pulse}`;
+}
+
+function formatAgentPulse(agent: AgentInspectionState, nowMs: number): string {
+  const recentTools = agent.tools?.recent ?? [];
+  const tool = recentTools.filter(item => item.status === "running" || item.status === "started").at(-1) ?? recentTools.at(-1);
+  const updated = agent.lastActivityAt ? relativeAge(agent.lastActivityAt, nowMs) : undefined;
+  const fields = [
+    agent.turnCount === undefined ? undefined : `turn ${agent.turnCount}`,
+    tool ? formatRecentTool(tool) : undefined,
+    updated ? `updated ${updated}` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  return fields.length > 0 ? fields.join(" · ") : "no update yet";
+}
+
+function formatAttention(document: RunInspectionSnapshot): string[] {
+  const byKey = new Map(document.items.map(item => [item.key, item]));
+  const actions = indexActions(document.actions);
+  const exceptional = document.items.filter(item => item.role !== "fold"
+    && (item.status === "awaiting" || item.status === "failed" || item.status === "timed_out")
+    && (item.role !== "context" || item.failure !== undefined || actions.byItem.has(item.key)));
+  const exceptionalAncestors = new Set<string>();
+  for (const item of exceptional) {
+    let parentKey = item.parentKey;
+    while (parentKey && !exceptionalAncestors.has(parentKey)) {
+      exceptionalAncestors.add(parentKey);
+      parentKey = byKey.get(parentKey)?.parentKey;
+    }
+  }
+  const candidates = exceptional.filter(item => !exceptionalAncestors.has(item.key));
+  const lines: string[] = [];
+  if (document.run.execution.state === "stale") {
+    const reason = document.run.execution.reason?.replaceAll("_", " ") ?? "execution inactive";
+    lines.push(`  ◆ run — stale: ${reason}`);
+  }
+  for (const item of candidates) {
+    const breadcrumb = itemBreadcrumb(item, byKey);
+    if (item.status === "awaiting") {
+      lines.push(`  ${statusGlyph(item.status)} ${breadcrumb} — waiting for input`);
+      if (item.signal?.promptPreview) lines.push(`     Prompt: ${oneLine(item.signal.promptPreview, 240)}`);
+      if (item.signal) {
+        const schema = item.signal.outputSchema ? schemaSummary(item.signal.outputSchema) : item.signal.schemaSummary ?? "JSON string";
+        lines.push(`     Expected payload: ${oneLine(schema, 240)}`);
+      }
+    } else {
+      const detail = item.failure ? formatFailure(item.failure, 240) : displayStatus(item.status);
+      lines.push(`  ${statusGlyph(item.status)} ${breadcrumb} — ${detail}`);
+    }
+    const commands = formatActionCommands(item, actions, document.run.id);
+    lines.push(...commands.map(command => `     ${command}`));
+  }
+  lines.push(...formatRunLevelActionCommands(actions, document.run.id).map(command => `  ${command}`));
+  return lines;
+}
+
+function formatActionCommands(
+  item: RunInspectionItem,
+  actions: ActionIndex,
+  runId: string,
+): string[] {
+  const relevant = actions.byItem.get(item.key) ?? [];
+  const commands = relevant.flatMap(action => {
+    if (action.kind === "inspect-target") return [`Inspect: acpus runs inspect ${runId} --target ${action.target}`];
+    if (action.kind === "signal") {
+      const payload = item.signal?.outputSchema || item.signal?.schemaSummary || action.schemaSummary ? "'<json>'" : `'\"text\"'`;
+      return [`Signal: acpus runs signal ${runId} --target ${action.target} --payload ${payload}`];
+    }
+    if (action.kind === "retry") return [`Retry: acpus runs retry ${runId} --target ${action.target}`];
+    if (action.kind === "fork") return [`Fork: acpus runs fork ${runId}`];
+    return [];
+  });
+  return [...new Set(commands)];
+}
+
+function formatRunLevelActionCommands(actions: ActionIndex, runId: string): string[] {
+  return actions.unscopedForks.length > 0 ? [`Fork: acpus runs fork ${runId}`] : [];
+}
+
+type ActionIndex = {
+  byItem: Map<string, RunInspectionAction[]>;
+  unscopedForks: Array<Extract<RunInspectionAction, { kind: "fork" }>>;
+};
+
+function indexActions(actions: readonly RunInspectionAction[]): ActionIndex {
+  const byItem = new Map<string, RunInspectionAction[]>();
+  const unscopedForks: ActionIndex["unscopedForks"] = [];
+  for (const action of actions) {
+    if (action.kind === "inspect-all") continue;
+    if (action.kind === "fork" && action.itemKey === undefined) {
+      unscopedForks.push(action);
+      continue;
+    }
+    const itemKey = action.itemKey;
+    if (!itemKey) continue;
+    const itemActions = byItem.get(itemKey);
+    if (itemActions) itemActions.push(action);
+    else byItem.set(itemKey, [action]);
+  }
+  return { byItem, unscopedForks };
+}
+
+function itemBreadcrumb(item: RunInspectionItem, byKey: ReadonlyMap<string, RunInspectionItem>): string {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  let current: RunInspectionItem | undefined = item;
+  while (current && !seen.has(current.key)) {
+    seen.add(current.key);
+    labels.push(current.label);
+    current = current.parentKey ? byKey.get(current.parentKey) : undefined;
+  }
+  return oneLine(labels.reverse().join(" › "), 200);
 }
 
 function formatFailure(failure: NonNullable<RunInspectionItem["failure"]>, messageLimit: number): string {
@@ -222,7 +424,7 @@ function formatFailure(failure: NonNullable<RunInspectionItem["failure"]>, messa
     `${failure.origin}${failure.code ? ` ${failure.code}` : ""}`,
     failure.upstream ? `acpx${failure.upstream.code ? ` ${failure.upstream.code}` : ""}` : undefined,
   ].filter((value): value is string => value !== undefined);
-  return `Error (${layers.join(" · ")}): ${oneLine(failure.message, messageLimit)}`;
+  return oneLine(`Error (${layers.join(" · ")}): ${failure.message}`, messageLimit);
 }
 
 function formatAgent(agent: AgentInspectionState, indent: number, nowMs: number): string[] {
@@ -325,13 +527,6 @@ function executionStatus(run: RunInspectionRunSummary): string {
   return `stale (${reason}, last status: ${run.status})`;
 }
 
-function depthFor(item: RunInspectionItem, byKey: Map<string, RunInspectionItem>, seen = new Set<string>()): number {
-  if (!item.parentKey || seen.has(item.key)) return Math.max(0, item.path.length - 1);
-  seen.add(item.key);
-  const parent = byKey.get(item.parentKey);
-  return parent ? depthFor(parent, byKey, seen) + 1 : Math.max(0, item.path.length - 1);
-}
-
 function formatCounts(counts: RunInspectionStatusCounts): string {
   const labels: Array<[keyof RunInspectionStatusCounts, string]> = [
     ["notStarted", "not-started"], ["notSelected", "not-selected"], ["pending", "pending"], ["starting", "starting"], ["ready", "ready"], ["running", "running"], ["awaiting", "awaiting"], ["completed", "completed"], ["failed", "failed"], ["timedOut", "timed-out"], ["cancelled", "canceled"], ["mixed", "mixed"],
@@ -363,6 +558,10 @@ function statusGlyph(status: RunInspectionStatus): string {
 
 function displayStatus(status: RunInspectionStatus): string {
   return status.replaceAll("_", "-").replace("cancelled", "canceled");
+}
+
+function displayTreeStatus(status: RunInspectionStatus): string {
+  return status.replaceAll("_", " ").replace("cancelled", "canceled");
 }
 
 function changeState(change: RunInspectionChange): string {
@@ -460,8 +659,9 @@ function prettyLines(value: unknown, indent: string): string[] {
 }
 
 function oneLine(value: string, limit: number): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length <= limit ? compact : `${compact.slice(0, limit - 1)}…`;
+  const compact = stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const visible = Array.from(compact);
+  return visible.length <= limit ? compact : `${visible.slice(0, limit - 1).join("")}…`;
 }
 
 function errorText(error: unknown): string {

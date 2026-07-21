@@ -9,6 +9,7 @@ import type { RunInspectionEmission, RunInspectionError } from "../src/inspectio
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 
 describe("run inspection follow", () => {
   beforeEach(() => {
@@ -31,7 +32,10 @@ describe("run inspection follow", () => {
         signal: controller.signal,
       })[Symbol.asyncIterator]();
       try {
-        expect((await nextEmission(iterator)).kind).toBe("snapshot");
+        const initial = await nextEmission(iterator);
+        if (initial.kind !== "snapshot" || initial.document.kind !== "snapshot") throw new Error("expected snapshot");
+        const stableItemKey = `node:${deriveInstanceKey(appendNode([], "observe"))}`;
+        expect(initial.document.items).toContainEqual(expect.objectContaining({ key: stableItemKey, role: "static" }));
         const attempt = startAgent(store, run.id);
         store.writeNodeProgress({
           runId: run.id,
@@ -53,11 +57,12 @@ describe("run inspection follow", () => {
           changes: expect.arrayContaining([
             expect.objectContaining({ action: "ready", status: "ready" }),
             expect.objectContaining({ action: "started", status: "running" }),
-            expect.objectContaining({ action: "progress", progressVersion: 1, itemKey: "instance:observe~1" }),
+            expect.objectContaining({ action: "progress", progressVersion: 1, itemKey: stableItemKey }),
           ]),
           patch: {
             upsertItems: expect.arrayContaining([
               expect.objectContaining({
+                key: stableItemKey,
                 nodeKey: "observe~1",
                 agent: expect.objectContaining({
                   key: "observer",
@@ -65,6 +70,7 @@ describe("run inspection follow", () => {
                 }),
               }),
             ]),
+            removeItemKeys: [],
           },
         });
 
@@ -155,9 +161,87 @@ describe("run inspection follow", () => {
     });
   });
 
+  it("inserts a newly materialized fanout item with a sparse ordered patch", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-new-item", async workspace => {
+      const store = await admittedRepeatedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const claim = store.scheduler.claimRun(run.id, "inspection-order-test", 60_000)!;
+      const appendReady = (itemIndex: number): void => {
+        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        const instancePath = appendNode(appendFanoutItem([], "batch", itemIndex), "observe");
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: snapshot.version,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: `inspection-order-test:${itemIndex}`,
+          events: [{
+            type: "instance.ready",
+            payload: {
+              runId: run.id,
+              nodeKey: deriveInstanceKey(instancePath),
+              nodeId: "observe",
+              instancePath,
+              readinessSequence: itemIndex + 1,
+            },
+          }],
+        });
+      };
+      appendReady(1);
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "overview",
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        const initial = await nextEmission(iterator);
+        if (initial.kind !== "snapshot" || initial.document.kind !== "snapshot") throw new Error("expected snapshot");
+        const item0Path = appendFanoutItem([], "batch", 0);
+        const node0Path = appendNode(item0Path, "observe");
+        const item1Path = appendFanoutItem([], "batch", 1);
+        const node1Path = appendNode(item1Path, "observe");
+        const scope0Key = `scope:${deriveInstanceKey(item0Path)}`;
+        const node0Key = `node:${deriveInstanceKey(node0Path)}`;
+        const scope1Key = `scope:${deriveInstanceKey(item1Path)}`;
+        const node1Key = `node:${deriveInstanceKey(node1Path)}`;
+        expect(initial.document.items.map(item => item.key)).toEqual([
+          `node:${deriveInstanceKey(appendNode([], "batch"))}`,
+          scope1Key,
+          node1Key,
+        ]);
+
+        appendReady(0);
+        const update = await nextPolledEmission(iterator);
+        expect(update).toMatchObject({
+          kind: "update",
+          changes: [expect.objectContaining({ action: "ready", itemKey: node0Key })],
+          patch: {
+            upsertItems: expect.arrayContaining([
+              expect.objectContaining({ key: scope0Key, scope: { kind: "fanout_item", itemIndex: 0, empty: false } }),
+              expect.objectContaining({ key: node0Key, nodeId: "observe" }),
+            ]),
+            removeItemKeys: [],
+            itemOrder: [
+              `node:${deriveInstanceKey(appendNode([], "batch"))}`,
+              scope0Key,
+              node0Key,
+              scope1Key,
+              node1Key,
+            ],
+          },
+        });
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
   it("summarizes Agent progress outside the compact context budget without inlining items", async () => {
     await withRuntimeWorkspace("run-inspection-follow-omitted-progress", async workspace => {
-      const store = await admittedAgentStore(workspace);
+      const store = await admittedRepeatedAgentStore(workspace);
       const run = store.listRuns()[0]!;
       const attempts = startAgents(store, run.id, 21);
       const controller = new AbortController();
@@ -171,7 +255,7 @@ describe("run inspection follow", () => {
         const initial = await nextEmission(iterator);
         if (initial.kind !== "snapshot" || initial.document.kind !== "snapshot") throw new Error("expected snapshot");
         const visible = new Set(initial.document.items.flatMap(item => item.nodeKey ? [item.nodeKey] : []));
-        const hiddenNodeKey = Array.from({ length: 21 }, (_, index) => `observe~${index}`).find(nodeKey => !visible.has(nodeKey));
+        const hiddenNodeKey = [...attempts.keys()].find(nodeKey => !visible.has(nodeKey));
         expect(hiddenNodeKey).toBeDefined();
         const attempt = attempts.get(hiddenNodeKey!);
         if (!attempt) throw new Error(`expected attempt for '${hiddenNodeKey}'`);
@@ -296,6 +380,25 @@ async function admittedAgentStore(workspace: string): Promise<RuntimeStore> {
   return store;
 }
 
+async function admittedRepeatedAgentStore(workspace: string): Promise<RuntimeStore> {
+  const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+    name: "inspection-repeated-agent",
+    agents: { observer: { use: "claude" } },
+  }).build(({ agents, step }) => {
+    const observed = step("batch").fanout({
+      over: Array.from({ length: 21 }, (_, index) => index),
+      do() {
+        const item = step("observe").agent({ agent: agents.observer, prompt: "Inspect" });
+        return item.output;
+      },
+    });
+    return { observed: observed.output };
+  }));
+  const store = await openRuntimeStore(workspace);
+  await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+  return store;
+}
+
 function startAgent(store: RuntimeStore, runId: string) {
   const claim = store.scheduler.claimRun(runId, "inspection-test", 60_000)!;
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
@@ -333,19 +436,22 @@ function startAgents(store: RuntimeStore, runId: string, count: number) {
     expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
     idempotencyKey: "inspection-agent:budget",
-    events: Array.from({ length: count }, (_, index) => ({
-      type: "instance.ready" as const,
-      payload: {
-        runId,
-        nodeKey: `observe~${index}`,
-        nodeId: "observe",
-        instancePath: [{ kind: "node" as const, nodeId: "observe" }],
-        readinessSequence: index + 1,
-      },
-    })),
+    events: Array.from({ length: count }, (_, index) => {
+      const instancePath = appendNode(appendFanoutItem([], "batch", index), "observe");
+      return {
+        type: "instance.ready" as const,
+        payload: {
+          runId,
+          nodeKey: deriveInstanceKey(instancePath),
+          nodeId: "observe",
+          instancePath,
+          readinessSequence: index + 1,
+        },
+      };
+    }),
   });
   return new Map(Array.from({ length: count }, (_, index) => {
-    const nodeKey = `observe~${index}`;
+    const nodeKey = deriveInstanceKey(appendNode(appendFanoutItem([], "batch", index), "observe"));
     const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
       runId,
       nodeKey,

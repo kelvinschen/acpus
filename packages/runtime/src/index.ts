@@ -71,6 +71,7 @@ export type {
   RunInspectionQuery,
   RunInspectionRaw,
   RunInspectionRunSummary,
+  RunInspectionScopeState,
   RunInspectionSnapshot,
   RunInspectionStaticNode,
   RunInspectionStatus,

@@ -75,6 +75,123 @@ describe("run inspection follow output", () => {
     expect(stdout.text).toContain("Output:\n  {}");
   });
 
+  it("appends the actionable command immediately after an awaiting pipe transition", async () => {
+    const initial = snapshot("running");
+    const approval: RunInspectionSnapshot["items"][number] = {
+      key: "node:approval",
+      role: "instance",
+      path: ["approval"],
+      label: "approval",
+      kind: "signal",
+      status: "awaiting",
+      nodeKey: "approval~abc",
+      signal: { target: "approval~abc", schemaSummary: "{ ok: boolean }" },
+    };
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: initial },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(2),
+        run: runSummary("running"),
+        changes: [{
+          sequence: 2,
+          at: "2026-07-11T00:00:01.000Z",
+          entity: { kind: "signal", id: "approval~abc", nodeId: "approval" },
+          subject: "approval",
+          itemKey: approval.key,
+          action: "awaiting",
+          status: "awaiting",
+        }],
+        patch: {
+          upsertItems: [approval],
+          removeItemKeys: ["work"],
+          itemOrder: [approval.key],
+          actions: [{ kind: "signal", target: "approval~abc", itemKey: approval.key, schemaSummary: "{ ok: boolean }" }],
+        },
+      },
+      { schemaVersion: 1, kind: "done", cursor: cursor(3), run: runSummary("completed"), output: {} },
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text).toContain("+1s  approval  awaiting\n  Signal: acpus runs signal run_1 --target approval~abc --payload '<json>'\n");
+  });
+
+  it("appends inspect and recovery commands immediately after failed and timed-out pipe transitions", async () => {
+    const initial = snapshot("running");
+    const failed: RunInspectionSnapshot["items"][number] = {
+      key: "scope:batch:0",
+      role: "context",
+      path: ["batch", "item[0]"],
+      label: "item[0]",
+      kind: "fanout_item",
+      status: "failed",
+      frameKey: "batch~abc:item:0",
+      failure: { origin: "scheduler", code: "expression_failed", message: "Item output failed." },
+      scope: { kind: "fanout_item", itemIndex: 0, empty: true },
+    };
+    const timedOut: RunInspectionSnapshot["items"][number] = {
+      key: "node:approval",
+      role: "instance",
+      path: ["approval"],
+      label: "approval",
+      kind: "signal",
+      status: "timed_out",
+      failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
+    };
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: initial },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(3),
+        run: runSummary("running"),
+        changes: [{
+          sequence: 2,
+          at: "2026-07-11T00:00:01.000Z",
+          entity: { kind: "frame", id: "batch~abc:item:0", nodeId: "batch" },
+          subject: "batch › item[0]",
+          itemKey: failed.key,
+          action: "failed",
+          status: "failed",
+        }, {
+          sequence: 3,
+          at: "2026-07-11T00:00:01.100Z",
+          entity: { kind: "signal", id: "approval~abc", nodeId: "approval" },
+          subject: "approval",
+          itemKey: timedOut.key,
+          action: "timed_out",
+          status: "timed_out",
+        }],
+        patch: {
+          upsertItems: [failed, timedOut],
+          removeItemKeys: ["work"],
+          itemOrder: [failed.key, timedOut.key],
+          actions: [
+            { kind: "inspect-target", target: "batch~abc:item:0", itemKey: failed.key },
+            { kind: "inspect-target", target: "approval~abc", itemKey: timedOut.key },
+            { kind: "retry", target: "approval~abc", itemKey: timedOut.key },
+            { kind: "fork" },
+          ],
+        },
+      },
+      { schemaVersion: 1, kind: "done", cursor: cursor(4), run: runSummary("completed"), output: {} },
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text).toContain("+1s  batch › item[0]  failed  Error (scheduler expression_failed): Item output failed.\n  Inspect: acpus runs inspect run_1 --target batch~abc:item:0\n");
+    expect(stdout.text).toContain("+1.1s  approval  timed-out  Error (scheduler signal_timeout): Approval timed out.\n  Inspect: acpus runs inspect run_1 --target approval~abc\n  Retry: acpus runs retry run_1 --target approval~abc\n");
+    expect(stdout.text).toContain("  Fork: acpus runs fork run_1\n");
+  });
+
   it("appends authored Agent identity and rich progress for pipe consumers", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-11T00:00:02.000Z"));
     const initial = agentSnapshot({
@@ -113,8 +230,9 @@ describe("run inspection follow output", () => {
       phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
       });
 
-      expect(stdout.text).toContain("Agent: observer  turns=1  tools=1");
-      expect(stdout.text).toContain("Last tools: ✓ Read");
+      expect(stdout.text).toContain("Tree:\n┌─ ⠋ observe · agent(observer) · running");
+      expect(stdout.text).toContain("Active:\n  ⠋ observe · agent(observer) · turn 1");
+      expect(stdout.text).not.toContain("Last tools:");
       expect(stdout.text).toContain("+2s  observe  running  active=<1s  turn=2  tools=2[✓Read,⠋Bash:rg]  ctx=26.1k/200k  tok=52k");
       expect(stdout.text).not.toContain("claude");
     } finally {
@@ -522,8 +640,11 @@ describe("run inspection follow output", () => {
     });
     runtime.followRunInspection.mockImplementation(() => checkpointEmissions(released));
     runtime.getRunInspection.mockResolvedValue(okResult(agentSnapshot({
+      model: "codex",
       turnCount: 2,
       lastActivityAt: "2026-07-11T00:00:29.500Z",
+      context: { used: 12_500, size: 200_000 },
+      tokenUsage: { inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 },
       tools: { totalCallCount: 1, recent: [{ command: "Bash: rg", status: "running" }] },
     })));
     const stdout = new CaptureStream();
@@ -534,7 +655,12 @@ describe("run inspection follow output", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(stdout.text.match(/· checkpoint/g)).toHaveLength(1);
       expect(stdout.text).toContain("· checkpoint +30s  running  running=1");
-      expect(stdout.text).toContain("observe  active=<1s  turn=2  tools=1[⠋Bash:rg]");
+      expect(stdout.text).toContain("observe  turn 2 · ⠋ Bash: rg · updated <1s ago");
+      expect(stdout.text).not.toContain("active=");
+      expect(stdout.text).not.toContain("tools=");
+      expect(stdout.text).not.toContain("ctx=");
+      expect(stdout.text).not.toContain("tok=");
+      expect(stdout.text).not.toContain("codex");
       release();
       await vi.advanceTimersByTimeAsync(0);
       await followed;
@@ -565,6 +691,50 @@ describe("run inspection follow output", () => {
     expect(stdout.text).toContain("\x1b[");
     expect(stdout.text).not.toContain("\x1b[2J");
     expect(stdout.text.match(/"result": "ok"/g)).toHaveLength(1);
+  });
+
+  it("redraws the compact Agent pulse in a TTY overview", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-11T00:00:02.000Z"));
+    const initial = agentSnapshot({
+      turnCount: 1,
+      lastActivityAt: "2026-07-11T00:00:00.500Z",
+      tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
+    });
+    const current = {
+      ...initial.items[0]!,
+      agent: {
+        ...initial.items[0]!.agent!,
+        turnCount: 2,
+        lastActivityAt: "2026-07-11T00:00:01.500Z",
+        tools: { totalCallCount: 2, recent: [{ command: "Read", status: "completed" }, { command: "Bash: rg", status: "running" }] },
+      },
+    };
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document: initial },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: { eventSequence: 1, progressVersion: 2 },
+        run: runSummary("running"),
+        changes: [{ progressVersion: 2, at: "2026-07-11T00:00:01.500Z", entity: { kind: "progress", id: "observe~abc", nodeId: "observe" }, subject: "observe", itemKey: "observe~abc", action: "progress", status: "running" }],
+        patch: { upsertItems: [current], removeItemKeys: [] },
+      },
+      { schemaVersion: 1, kind: "done", cursor: cursor(2), run: runSummary("completed"), output: {} },
+    ]));
+    const stdout = new TtyCaptureStream();
+
+    try {
+      await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+        phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
+      });
+
+      expect(stdout.text).toContain("Active:\n  ⠋ observe · agent(observer) · turn 2 · ⠋ Bash: rg · updated <1s ago");
+      expect(stdout.text).not.toContain("agent(observer) · running · ⠋ Bash: rg");
+      expect(stdout.text).not.toContain("Context:");
+      expect(stdout.text).not.toContain("Tokens:");
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("keeps one coalesced terminal Agent row in TTY target change history", async () => {

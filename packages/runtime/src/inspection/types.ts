@@ -136,6 +136,23 @@ export type AgentInspectionState = {
   stopReason?: string;
 };
 
+export type RunInspectionScopeState =
+  | {
+      kind: "branch";
+      ownerKind: "if" | "switch";
+      branchId: string;
+      selection: "undecided" | "selected" | "not_selected";
+      empty: boolean;
+    }
+  | {
+      kind: "branch";
+      ownerKind: "parallel";
+      branchId: string;
+      empty: boolean;
+    }
+  | { kind: "fanout_item"; itemIndex: number; empty: boolean }
+  | { kind: "loop_iteration"; iteration: number; round: number; empty: boolean };
+
 export type RunInspectionItem = {
   key: string;
   role: "static" | "context" | "instance" | "frame" | "fold";
@@ -174,6 +191,7 @@ export type RunInspectionItem = {
     currentIteration?: number;
     counts?: RunInspectionStatusCounts;
   };
+  scope?: RunInspectionScopeState;
   fold?: {
     count: number;
     counts: RunInspectionStatusCounts;
@@ -182,10 +200,10 @@ export type RunInspectionItem = {
 
 export type RunInspectionAction =
   | { kind: "inspect-all"; omitted: number }
-  | { kind: "inspect-target"; target: string }
-  | { kind: "signal"; target: string; schemaSummary?: string }
-  | { kind: "retry"; target: string }
-  | { kind: "fork" };
+  | { kind: "inspect-target"; target: string; itemKey: string }
+  | { kind: "signal"; target: string; itemKey: string; schemaSummary?: string }
+  | { kind: "retry"; target: string; itemKey: string }
+  | { kind: "fork"; itemKey?: string };
 
 export type RunInspectionOmitted = {
   reason: "context-limit";

@@ -1,6 +1,6 @@
 # Agent Tracing
 
-Use this reference to inspect and consume persisted Agent behavior. Authored configuration is documented in [Advanced Authoring](advanced-authoring.md#agent-tracing).
+Use this for persisted Agent history, not liveness; use [CLI Operations](cli-operations.md) for live state. Tracing configuration is in [Advanced Authoring](advanced-authoring.md#agent-tracing).
 
 ## Data Roles
 
@@ -18,7 +18,7 @@ Each response-repair turn gets its own turn record and, when enabled, its own no
 
 ## Locate One Execution
 
-Start with text inspection:
+Inspect the occurrence before loading its evidence:
 
 ```sh
 acpus runs inspect <run-id> --target <agent-node-or-attempt>

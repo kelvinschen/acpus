@@ -136,11 +136,27 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(overview.exitCode, overview.stdout || overview.stderr).toBe(0);
       expect(overview.stderr).toBe("");
       expect(overview.stdout).toContain("inspect-composite-smoke  awaiting");
-      expect(overview.stdout).toContain("route  [if]");
-      expect(overview.stdout).toContain("work  [parallel]");
-      expect(overview.stdout).toContain("batches  [fanout]");
-      expect(overview.stdout).toContain("refine_item  [loop]");
-      expect(overview.stdout).toContain("approval  [signal]  awaiting");
+      expect(overview.stdout).toContain("Tree:");
+      expect(overview.stdout).toContain("route · if");
+      expect(overview.stdout).toContain("├┄ ✓ then · selected");
+      expect(overview.stdout).toContain("└┄ · else · not selected");
+      expect(overview.stdout).toContain("work · parallel");
+      expect(overview.stdout).toContain("├┄ ✓ batches");
+      expect(overview.stdout).toContain("batches · fanout · 2 items");
+      expect(overview.stdout).toContain("├┄ ✓ item[0]");
+      expect(overview.stdout).toContain("refine_item · loop · 1 round");
+      expect(overview.stdout).toContain("└┄ ✓ round 1");
+      expect(overview.stdout).toContain("approval · signal · awaiting");
+      expect(overview.stdout).toContain("Attention:");
+      expect(overview.stdout).toContain(`Signal: acpus runs signal ${runId} --target approval`);
+
+      const machine = await runSourceCli(workspace, ["runs", "inspect", runId, "--json"]);
+      expect(machine.exitCode, machine.stdout || machine.stderr).toBe(0);
+      expect(machine.stderr).toBe("");
+      expect(JSON.parse(machine.stdout)).toMatchObject({ ok: true, phase: "inspect", kind: "snapshot", schemaVersion: 1 });
+      expect(machine.stdout).not.toContain("Tree:");
+      expect(machine.stdout).not.toContain("┌─");
+      expect(machine.stdout).not.toContain("\u001b");
 
       const route = await getRunInspection(workspace, { runId, mode: "target", target: "route" });
       expect(route.isOk()).toBe(true);

@@ -19,11 +19,20 @@ acpus runs inspect <run-id> [--target <target>|--all] [--follow]
 
 Foreground mode follows the run. `--interval` defaults to `1s` with a `250ms` minimum and is invalid with `--background`. `Ctrl-C` only detaches.
 
-Inspection is read-only and does not start or wake the daemon. Normal views are normalized and status-first; the default compact tree folds repeated completed contexts, opens actionable ones, shows copyable Signal help, and includes terminal output. Omit run id only for the TTY picker; use `--target` for one static/dynamic node, frame, or attempt, and `--all` for every repeated context.
+Inspection is read-only and does not wake the daemon. Its compact tree preserves authored structure, folds completed repetitions, caps ordinary contexts, and separates Active from Attention. Omit run id only for the TTY picker.
 
-Follow redraws a TTY; a pipe emits transitions and 30-second liveness checkpoints. It stays attached through paused, awaiting, inactive, or stale state and keeps 20 ordinary dynamic contexts visible unless `--all --follow` is used; failure, timeout, await, retry, and requeue stay immediate. Agent progress exposes bounded activity/tool intent, never tool arguments or output.
+### Low-context monitoring
 
+1. Foreground already follows. Otherwise inspect once and read Tree, bounded Active, then Attention.
+2. Narrow with an authored/Attention target; choose its dynamic target for repetitions. Target owns payload, attempt, Agent/Signal, and artifact details.
+3. Follow overview/target only to the needed transition, then detach and snapshot; piped output keeps growing. Never default to `--all --follow`.
+4. Use `--all` only for cross-occurrence topology. At terminal state, verify Output/artifacts against the goal.
 
+Active/checkpoint Agent rows share one pulse: turn, one normalized tool, update age; age is freshness, not liveness.
+
+For structured output, locate the target in text first, then pipe JSON/NDJSON through focused `jq`. Filter all-mode items by `nodeId` and cap matches.
+
+Add `--follow` to any non-raw inspection view. Follow redraws a TTY; a pipe emits transitions and 30-second liveness checkpoints. It stays attached through paused, awaiting, inactive, or stale state and keeps 20 ordinary dynamic contexts visible unless `--all --follow` is used; failure, timeout, await, retry, and requeue stay immediate. Agent progress exposes bounded activity/tool intent, never tool arguments or output.
 
 ## Signal and lifecycle controls
 
@@ -40,8 +49,6 @@ Pause records a durable gate and best-effort aborts active attempts; resume clea
 
 Prefer text for people. Use a structured leaf's local `--json` option only for parsing; foreground run NDJSON uses `phase: "run"`, while inspect-follow uses `phase: "inspect"` over the same snapshot/update/resync/done model.
 
+## Doctor
 
-## Doctor 
-
-Run `acpus doctor` when workspace health is uncertain; it is read-only. 
-
+Run `acpus doctor` when workspace health is uncertain; it is read-only.

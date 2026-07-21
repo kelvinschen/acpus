@@ -152,6 +152,7 @@ class RunFollowPresenter {
       const changes = formatRunInspectionChanges(transcript.changes, {
         run: emission.run,
         items,
+        ...(this.document?.kind === "snapshot" ? { actions: this.document.actions } : {}),
       }) + this.recordTranscriptOmissions(transcript.omitted, transcript.shownContextKeys, emission.run.id);
       if (isTty(this.options.stdout)) {
         if (changes) this.targetChanges = [...this.targetChanges, ...changes.trimEnd().split("\n")].slice(-20);

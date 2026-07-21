@@ -1,5 +1,6 @@
 import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import { ansi } from "./terminal-style.js";
+import { terminalTreeChildPrefix, terminalTreeConnector } from "./terminal-tree.js";
 
 const TYPE_ICONS: Record<NodeIR["kind"], string> = {
   agent: "✦",
@@ -246,8 +247,8 @@ function renderScope(scope: ScopeIR, prefix: string, lines: string[], color: boo
   scope.nodes.forEach((node, index) => {
     const first = index === 0;
     const last = index === scope.nodes.length - 1;
-    const connector = root && first ? "┌─" : last ? "└─" : "├─";
-    renderNode(node, `${prefix}${connector} `, `${prefix}${last ? "   " : "│  "}`, lines, color);
+    const connector = terminalTreeConnector("node", last, root && first);
+    renderNode(node, `${prefix}${connector} `, terminalTreeChildPrefix(prefix, last), lines, color);
   });
 }
 
@@ -291,7 +292,7 @@ function renderRegions(
 ): void {
   regions.forEach((region, index) => {
     const last = index === regions.length - 1;
-    lines.push(`${prefix}${last ? "└┄" : "├┄"} ${region.label}`);
-    renderScope(region.scope, `${prefix}${last ? "   " : "│  "}`, lines, color);
+    lines.push(`${prefix}${terminalTreeConnector("region", last)} ${region.label}`);
+    renderScope(region.scope, terminalTreeChildPrefix(prefix, last), lines, color);
   });
 }

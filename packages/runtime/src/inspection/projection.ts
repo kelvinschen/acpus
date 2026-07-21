@@ -7,10 +7,15 @@ import type {
   RunDetails,
   RunDynamicAttempt,
   RunDynamicFrame,
+  RunDynamicGroup,
+  RunDynamicGroupMember,
   RunDynamicNodeInstance,
+  RunDynamicSignalWait,
   RunExecutionMetadata,
   RunNodeProgress,
 } from "../store/store.js";
+import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../scheduler/identity.js";
+import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
 import { compactSchemaSummary } from "../schema-summary.js";
 import type {
   AgentInspectionState,
@@ -72,15 +77,27 @@ export function semanticChanges(events: readonly CommittedRuntimeEventRow[], doc
   const items = inspectionItems(document);
   const itemByIdentity = new Map<string, RunInspectionItem>();
   const itemsByNodeId = new Map<string, RunInspectionItem[]>();
+  const itemOccurrenceCounts = new Map<string, number>();
   for (const item of items) {
     for (const key of [item.nodeKey, item.frameKey, item.attemptId]) if (key) itemByIdentity.set(key, item);
-    if (item.nodeId) itemsByNodeId.set(item.nodeId, [...(itemsByNodeId.get(item.nodeId) ?? []), item]);
+    if (item.nodeId) addToMapArray(itemsByNodeId, item.nodeId, item);
+    if (item.nodeId && (item.role === "instance" || item.role === "frame")) {
+      itemOccurrenceCounts.set(item.nodeId, (itemOccurrenceCounts.get(item.nodeId) ?? 0) + 1);
+    }
   }
   const frames = new Map(run?.dynamic?.frames.map(frame => [frame.frameKey, frame]) ?? []);
   const instances = new Map(run?.dynamic?.nodeInstances.map(instance => [instance.nodeKey, instance]) ?? []);
   const attempts = new Map(run?.dynamic?.attempts.map(attempt => [attempt.attemptId, attempt]) ?? []);
-  const contexts = new Map(events.map(event => [event.sequence, eventContext(event, frames, instances, attempts)]));
-  return events.filter(event => operatorVisibleEvent(event, contexts.get(event.sequence)!, events)).map(event => {
+  const occurrenceCounts = new Map<string, number>();
+  for (const instance of instances.values()) occurrenceCounts.set(instance.nodeId, (occurrenceCounts.get(instance.nodeId) ?? 0) + 1);
+  for (const frame of frames.values()) {
+    if (frame.nodeId && (frame.frameKind === "node" || frame.frameKind === "loop")) {
+      occurrenceCounts.set(frame.nodeId, (occurrenceCounts.get(frame.nodeId) ?? 0) + 1);
+    }
+  }
+  const visibility = eventVisibilityIndex(events);
+  const contexts = new Map(events.map(event => [event.sequence, eventContext(event, frames, instances, attempts, occurrenceCounts)]));
+  return events.filter(event => operatorVisibleEvent(event, contexts.get(event.sequence)!, visibility)).map(event => {
     const context = contexts.get(event.sequence)!;
     const baseEntity = eventEntity(event);
     const entity = context.nodeId && !baseEntity.nodeId ? { ...baseEntity, nodeId: context.nodeId } : baseEntity;
@@ -95,7 +112,7 @@ export function semanticChanges(events: readonly CommittedRuntimeEventRow[], doc
       sequence: event.sequence,
       at: event.createdAt,
       entity,
-      subject: eventSubject(document, context, action, item, itemsByNodeId),
+      subject: eventSubject(document, context, action, item, itemOccurrenceCounts),
       action,
       ...(status ? { status } : {}),
       ...(typeof event.payload.attemptNo === "number" ? { attemptNo: event.payload.attemptNo } : {}),
@@ -109,11 +126,12 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
   if (current.cursor.progressVersion === previous.cursor.progressVersion) return [];
   const beforeItems = new Map(inspectionItems(previous).map(item => [item.key, item]));
   const afterItems = inspectionItems(current);
+  const occurrenceCounts = inspectionOccurrenceCounts(afterItems);
   const agentChanges = afterItems.filter(item => item.agent && meaningfulAgentProgressChanged(beforeItems.get(item.key)?.agent, item.agent));
   const changes: RunInspectionChange[] = agentChanges.map(item => ({
     at: item.agent!.lastActivityAt ?? item.updatedAt ?? current.run.updatedAt,
     entity: { kind: "progress", id: item.nodeKey ?? item.key, ...(item.nodeId ? { nodeId: item.nodeId } : {}) },
-    subject: progressSubject(item, afterItems),
+    subject: progressSubject(item, occurrenceCounts),
     action: "progress",
     status: item.status,
     ...(item.attemptNo === undefined ? {} : { attemptNo: item.attemptNo }),
@@ -132,7 +150,7 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
     changes.push({
       at: value.updatedAt,
       entity: { kind: "progress", id: value.nodeKey, ...(value.nodeId ? { nodeId: value.nodeId } : {}) },
-      subject: item ? progressSubject(item, afterItems) : value.nodeId || value.nodeKey,
+      subject: item ? progressSubject(item, occurrenceCounts) : value.nodeId || value.nodeKey,
       action: "progress",
       status: normalizeStatus(value.status),
       ...(value.attemptNo === undefined ? {} : { attemptNo: value.attemptNo }),
@@ -171,12 +189,17 @@ export type NormalizedAgentProgressState = {
 };
 
 export function normalizedAgentProgressStates(run: RunDetails): NormalizedAgentProgressState[] {
+  const instances = new Map((run.dynamic?.nodeInstances ?? []).map(instance => [instance.nodeKey, instance]));
+  const metadataByAttemptId = new Map<string, RunExecutionMetadata>();
+  for (const metadata of run.dynamic?.executionMetadata ?? []) {
+    if (metadata.attemptId) metadataByAttemptId.set(metadata.attemptId, newerCreated(metadataByAttemptId.get(metadata.attemptId), metadata));
+  }
   return (run.dynamic?.progress ?? []).filter(progress => progress.kind === "agent").map(progress => {
-    const metadata = progress.attemptId
-      ? latest(run.dynamic?.executionMetadata.filter(item => item.attemptId === progress.attemptId) ?? [], item => item.createdAt)
-      : undefined;
+    const metadata = progress.attemptId ? metadataByAttemptId.get(progress.attemptId) : undefined;
     return {
-      itemKey: `instance:${progress.nodeKey}`,
+      itemKey: instances.get(progress.nodeKey)?.instancePath
+        ? occurrenceNodeKey(instances.get(progress.nodeKey)!.instancePath!)
+        : `node:${progress.nodeKey}`,
       nodeKey: progress.nodeKey,
       nodeId: progress.nodeId,
       ...(progress.attemptId ? { attemptId: progress.attemptId } : {}),
@@ -189,10 +212,19 @@ export function normalizedAgentProgressStates(run: RunDetails): NormalizedAgentP
   });
 }
 
-function progressSubject(item: RunInspectionItem, items: readonly RunInspectionItem[]): string {
+function progressSubject(item: RunInspectionItem, occurrenceCounts: ReadonlyMap<string, number>): string {
   if (!item.nodeId) return item.nodeKey ?? item.key;
-  const occurrences = items.filter(value => value.nodeId === item.nodeId && (value.role === "instance" || value.role === "frame"));
-  return occurrences.length > 1 && item.path.length > 0 ? item.path.join(" › ") : item.nodeId;
+  return (occurrenceCounts.get(item.nodeId) ?? 0) > 1 && item.path.length > 0 ? item.path.join(" › ") : item.nodeId;
+}
+
+function inspectionOccurrenceCounts(items: readonly RunInspectionItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.nodeId && (item.role === "instance" || item.role === "frame")) {
+      counts.set(item.nodeId, (counts.get(item.nodeId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
@@ -220,96 +252,46 @@ function projectSnapshot(
   staticNodes: RunInspectionStaticNode[],
   all: boolean,
 ): RunInspectionSnapshot {
-  const dynamic = run.dynamic;
-  const instances = dynamic?.nodeInstances ?? [];
-  const frames = dynamic?.frames ?? [];
-  const attempts = dynamic?.attempts ?? [];
-  const materialized = new Set([...instances.map(item => item.nodeId), ...frames.flatMap(item => item.nodeId ? [item.nodeId] : [])]);
-  const branchMaterialized = new Set<string>();
-  for (const item of [...instances, ...frames]) {
-    for (const segment of item.instancePath ?? []) if (segment.kind === "branch") branchMaterialized.add(`${segment.nodeId}:${segment.branchId}`);
-  }
-
-  const structural = structuralItems(ir.root, run, materialized, branchMaterialized);
-  const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
-  const instanceStatuses = new Map(instances.map(instance => [instance.nodeKey, instanceInspectionState(run, instance, attempts).status]));
-  const repeated = new Map<string, RunDynamicNodeInstance[]>();
-  for (const instance of instances) {
-    const key = `${instance.nodeId}:${instanceStatuses.get(instance.nodeKey)}`;
-    const bucket = repeated.get(key) ?? [];
-    bucket.push(instance);
-    repeated.set(key, bucket);
-  }
-  const foldedKeys = new Set<string>();
-  const foldItems: RunInspectionItem[] = [];
-  if (!all) {
-    for (const bucket of repeated.values()) {
-      const status = instanceStatuses.get(bucket[0]!.nodeKey) ?? "mixed";
-      if ((bucket.length <= 3 && instances.length <= overviewContextLimit) || !foldableStatus(status)) continue;
-      for (const item of bucket) foldedKeys.add(item.nodeKey);
-      const nodeId = bucket[0]!.nodeId;
-      const parentNodeId = nearestCompositeParent(staticById.get(nodeId), staticById);
-      foldItems.push({
-        key: `fold:${nodeId}:${status}`,
-        role: "fold",
-        ...(parentNodeId ? { parentKey: `static:${parentNodeId}` } : {}),
-        path: [...(parentNodeId ? staticById.get(parentNodeId)?.path ?? [parentNodeId] : []), `${nodeId}:${status}:${bucket.length}`],
-        label: `${nodeId} ${status}`,
-        kind: staticById.get(nodeId)?.kind ?? "node",
-        status,
-        nodeId,
-        fold: { count: bucket.length, counts: statusCounts(bucket.map(item => instanceStatuses.get(item.nodeKey) ?? "mixed")) },
-      });
-    }
-  }
-
-  const candidates = instances.filter(item => !foldedKeys.has(item.nodeKey));
-  const selected = all ? candidates : [...candidates]
-    .sort((left, right) => priority(instanceStatuses.get(left.nodeKey) ?? "mixed") - priority(instanceStatuses.get(right.nodeKey) ?? "mixed")
-      || (staticById.get(left.nodeId)?.order ?? Number.MAX_SAFE_INTEGER) - (staticById.get(right.nodeId)?.order ?? Number.MAX_SAFE_INTEGER)
-      || pathKey(left.instancePath).localeCompare(pathKey(right.instancePath))
-      || left.nodeKey.localeCompare(right.nodeKey))
-    .slice(0, overviewContextLimit);
-  const selectedKeys = new Set(selected.map(item => item.nodeKey));
-  const omittedInstances = candidates.filter(item => !selectedKeys.has(item.nodeKey));
-  const omittedKeys = new Set(omittedInstances.map(item => item.nodeKey));
-  const omittedAgentProgress = dynamic?.progress.filter(item => item.kind === "agent" && omittedKeys.has(item.nodeKey)).length ?? 0;
-  const contexts = contextItems(selected, frames);
-  const instanceItems = selected.map(instance => instanceItem(ir, run, instance, attempts, staticById));
-  const items = orderProjectionItems([...structural, ...contexts, ...instanceItems, ...foldItems]);
-  const executionStatuses = operatorVisibleExecutionStatuses(staticNodes, structural, instances, frames, instanceStatuses);
-  const hiddenCount = omittedInstances.length;
-  const hasFolds = foldItems.length > 0;
+  const indexes = snapshotIndexes(run, staticNodes);
+  const tree = occurrenceTree(ir, indexes);
+  const compact = all ? { items: tree.items, hiddenStatuses: [], hiddenAgentNodeKeys: new Set<string>(), folds: 0 } : compactOccurrenceTree(tree);
+  const hiddenCount = compact.hiddenStatuses.length;
   const actions: RunInspectionAction[] = [];
-  if (hiddenCount > 0 || hasFolds) actions.push({ kind: "inspect-all", omitted: hiddenCount + [...foldedKeys].length });
-  for (const wait of dynamic?.signalWaits ?? []) {
+  if (hiddenCount > 0 || compact.folds > 0) actions.push({ kind: "inspect-all", omitted: hiddenCount });
+  for (const wait of run.dynamic?.signalWaits ?? []) {
     if (wait.status === "awaiting") {
-      const outputSchema = staticById.get(wait.nodeId)?.outputSchema;
-      actions.push({ kind: "signal", target: wait.nodeKey, ...(outputSchema ? { schemaSummary: compactSchemaSummary(outputSchema) } : {}) });
+      const itemKey = tree.itemKeyByNodeKey.get(wait.nodeKey);
+      if (!itemKey) continue;
+      const outputSchema = indexes.staticById.get(wait.nodeId)?.outputSchema;
+      actions.push({ kind: "signal", target: wait.nodeKey, itemKey, ...(outputSchema ? { schemaSummary: compactSchemaSummary(outputSchema) } : {}) });
     }
   }
-  const inspectTargets = new Set(instanceItems
-    .filter(item => ["failed", "timed_out", "awaiting"].includes(item.status))
-    .map(item => item.nodeKey!));
-  const timedOutSignals = (dynamic?.signalWaits ?? []).filter(wait => wait.status === "timed_out" && wait.terminalReason === "signal_timeout");
-  for (const wait of timedOutSignals) inspectTargets.add(wait.nodeKey);
-  for (const target of inspectTargets) actions.push({ kind: "inspect-target", target });
-  for (const wait of timedOutSignals) actions.push({ kind: "retry", target: wait.nodeKey });
+  const inspectItems = actionableInspectionItems(tree.items);
+  for (const item of inspectItems) {
+    const target = item.nodeKey ?? item.frameKey;
+    if (target) actions.push({ kind: "inspect-target", target, itemKey: item.key });
+  }
+  const timedOutSignals = (run.dynamic?.signalWaits ?? []).filter(wait => wait.status === "timed_out" && wait.terminalReason === "signal_timeout");
+  for (const wait of timedOutSignals) {
+    const itemKey = tree.itemKeyByNodeKey.get(wait.nodeKey);
+    if (itemKey) actions.push({ kind: "retry", target: wait.nodeKey, itemKey });
+  }
   if (timedOutSignals.length > 0) actions.push({ kind: "fork" });
+  const omittedAgentProgress = (run.dynamic?.progress ?? []).filter(item => item.kind === "agent" && compact.hiddenAgentNodeKeys.has(item.nodeKey)).length;
   return {
     schemaVersion: 1,
     kind: "snapshot",
     cursor,
     run: runSummary(ir, run),
-    counts: statusCounts(executionStatuses),
-    items,
+    counts: statusCounts(tree.executionStatuses),
+    items: compact.items,
     actions,
     ...(hiddenCount === 0 ? {} : {
       omitted: {
         reason: "context-limit",
         limit: overviewContextLimit,
         dynamicContexts: hiddenCount,
-        counts: statusCounts(omittedInstances.map(item => instanceStatuses.get(item.nodeKey) ?? "mixed")),
+        counts: statusCounts(compact.hiddenStatuses),
         ...(omittedAgentProgress > 0 ? { agentProgress: { tracked: omittedAgentProgress } } : {}),
       },
     }),
@@ -318,150 +300,587 @@ function projectSnapshot(
   };
 }
 
-function operatorVisibleExecutionStatuses(
-  staticNodes: RunInspectionStaticNode[],
-  structural: RunInspectionItem[],
-  instances: RunDynamicNodeInstance[],
-  frames: RunDynamicFrame[],
-  instanceStatuses: ReadonlyMap<string, RunInspectionStatus>,
-): RunInspectionStatus[] {
-  const assertNodeIds = new Set(staticNodes.filter(node => node.kind === "assert").map(node => node.nodeId));
-  const assertFrames = frames.filter(frame => frame.frameKind === "node" && frame.nodeId !== undefined && assertNodeIds.has(frame.nodeId));
-  const materialized = new Set([...instances.map(instance => instance.nodeId), ...assertFrames.map(frame => frame.nodeId!)]);
-  const staticItems = new Map(structural.flatMap(item => item.role === "static" && item.nodeId ? [[item.nodeId, item] as const] : []));
-  const authoredLeaves = staticNodes.filter(node => ["agent", "task", "signal", "assert"].includes(node.kind) && !materialized.has(node.nodeId));
-  return [
-    ...instances.map(instance => instanceStatuses.get(instance.nodeKey) ?? "mixed"),
-    ...assertFrames.map(frame => normalizeStatus(frame.status)),
-    ...authoredLeaves.map(node => staticItems.get(node.nodeId)?.status ?? "not_selected"),
-  ];
-}
+type SnapshotIndexes = {
+  staticById: Map<string, RunInspectionStaticNode>;
+  framesByKey: Map<string, RunDynamicFrame>;
+  framesByPath: Map<number, RunDynamicFrame>;
+  framesByNodeId: Map<string, RunDynamicFrame[]>;
+  instancesByKey: Map<string, RunDynamicNodeInstance>;
+  instancesByPath: Map<number, RunDynamicNodeInstance>;
+  instancesByNodeId: Map<string, RunDynamicNodeInstance[]>;
+  attemptsByNodeKey: Map<string, RunDynamicAttempt[]>;
+  waitsByNodeKey: Map<string, RunDynamicSignalWait>;
+  progressByNodeKey: Map<string, RunNodeProgress>;
+  metadataByAttemptId: Map<string, RunExecutionMetadata>;
+  groupsByNodeKey: Map<string, RunDynamicGroup>;
+  membersByGroupKey: Map<string, RunDynamicGroupMember[]>;
+  memberByBranch: Map<string, RunDynamicGroupMember>;
+  memberByItem: Map<string, RunDynamicGroupMember>;
+  contextValues: Map<string, Map<string, InstancePathSegment>>;
+  materializedContextPaths: Set<number>;
+  pathIndex: InstancePathIndex;
+  rootFrame?: RunDynamicFrame;
+};
 
-function nearestCompositeParent(node: RunInspectionStaticNode | undefined, staticById: Map<string, RunInspectionStaticNode>): string | undefined {
-  for (const nodeId of [...(node?.path ?? [])].reverse().slice(1)) {
-    const kind = staticById.get(nodeId)?.kind;
-    if (kind && ["if", "switch", "parallel", "fanout", "loop"].includes(kind)) return nodeId;
-  }
-  return undefined;
-}
+type OccurrenceTree = {
+  items: RunInspectionItem[];
+  executionStatuses: RunInspectionStatus[];
+  executionItemKeys: Set<string>;
+  itemKeyByNodeKey: Map<string, string>;
+};
 
-function structuralItems(
-  scope: ScopeIR,
-  run: RunDetails,
-  materialized: Set<string>,
-  branchMaterialized: Set<string>,
-): RunInspectionItem[] {
-  const items: RunInspectionItem[] = [];
-  const visit = (current: ScopeIR, parentKey?: string, path: string[] = []): void => {
-    for (const node of current.nodes) {
-      const key = `static:${node.id}`;
-      const instanceLeaf = node.kind === "agent" || node.kind === "task" || node.kind === "signal";
-      if (instanceLeaf && materialized.has(node.id)) continue;
-      const related = relatedStatuses(run, node.id);
-      const frame = latest(run.dynamic?.frames.filter(value => value.nodeId === node.id && (value.frameKind === "node" || value.frameKind === "loop")) ?? [], value => value.updatedAt);
-      const status = related.length > 0
-        ? aggregateStatus(related)
-        : run.status === "pending" && Date.now() - Date.parse(run.createdAt) < 5_000
-          ? "starting"
-          : "not_started";
-      const item: RunInspectionItem = {
-        key,
-        role: "static",
-        ...(parentKey ? { parentKey } : {}),
-        path: [...path, node.id],
-        label: node.id,
-        kind: node.kind,
-        status,
-        nodeId: node.id,
-        ...(frame?.nodeKey ? { nodeKey: frame.nodeKey } : {}),
-        ...(frame?.frameKey ? { frameKey: frame.frameKey } : {}),
-        ...(frame?.createdAt ? { createdAt: frame.createdAt } : {}),
-        ...(frame?.updatedAt ? { updatedAt: frame.updatedAt } : {}),
-        ...(frame && terminalItem(normalizeStatus(frame.status)) ? { finishedAt: frame.updatedAt } : {}),
-        ...(frame?.terminalReason ? { statusReason: frame.terminalReason } : {}),
-        ...failureDetails(node, frame?.error, frame?.terminalReason),
-        ...compositeDetails(run, node, frame?.nodeKey),
-      };
-      items.push(item);
-      for (const child of childScopes(node)) {
-        if (child.kind === "fanout" || child.kind === "loop") {
-          visit(child.scope, key, [...path, node.id]);
-          continue;
-        }
-        const branchKey = `branch:${node.id}:${child.branchId}`;
-        const chosen = branchMaterialized.has(`${node.id}:${child.branchId}`);
-        const branchDescendants = Array.from(walkNodes(child.scope), value => value.node.id);
-        const branchStatus: RunInspectionStatus = chosen
-          ? aggregateStatus(branchDescendants.flatMap(id => relatedStatuses(run, id)))
-          : terminalRun(run.status) || relatedStatuses(run, node.id).some(terminalItem)
-            ? "not_selected"
-            : "not_started";
-        if (!chosen) {
-          items.push({
-            key: branchKey,
-            role: "context",
-            parentKey: key,
-            path: [...path, node.id, child.branchId],
-            label: `branch ${child.branchId}`,
-            kind: "branch",
-            status: branchStatus,
-            nodeId: node.id,
-          });
-          if (branchStatus === "not_selected") continue;
-        }
-        visit(child.scope, chosen ? key : branchKey, [...path, node.id, child.branchId]);
+function snapshotIndexes(run: RunDetails, staticNodes: RunInspectionStaticNode[]): SnapshotIndexes {
+  const dynamic = run.dynamic;
+  const framesByKey = new Map((dynamic?.frames ?? []).map(frame => [frame.frameKey, frame]));
+  const framesByPath = new Map<number, RunDynamicFrame>();
+  const framesByNodeId = new Map<string, RunDynamicFrame[]>();
+  const instancesByKey = new Map((dynamic?.nodeInstances ?? []).map(instance => [instance.nodeKey, instance]));
+  const instancesByPath = new Map<number, RunDynamicNodeInstance>();
+  const instancesByNodeId = new Map<string, RunDynamicNodeInstance[]>();
+  const attemptsByNodeKey = new Map<string, RunDynamicAttempt[]>();
+  const waitsByNodeKey = new Map<string, RunDynamicSignalWait>();
+  const progressByNodeKey = new Map<string, RunNodeProgress>();
+  const metadataByAttemptId = new Map<string, RunExecutionMetadata>();
+  const groupsByNodeKey = new Map<string, RunDynamicGroup>();
+  const membersByGroupKey = new Map<string, RunDynamicGroupMember[]>();
+  const memberByBranch = new Map<string, RunDynamicGroupMember>();
+  const memberByItem = new Map<string, RunDynamicGroupMember>();
+  const contextValues = new Map<string, Map<string, InstancePathSegment>>();
+  const materializedContextPaths = new Set<number>();
+  const pathIndex = createInstancePathIndex();
+  const indexPath = (path: InstancePath): number => {
+    let prefixId = pathIndex.rootId;
+    for (const segment of path) {
+      if (segment.kind !== "node") {
+        const owner = contextOwnerKey(prefixId, segment.kind, segment.nodeId);
+        const values = contextValues.get(owner) ?? new Map<string, InstancePathSegment>();
+        values.set(contextValueKey(segment), segment);
+        contextValues.set(owner, values);
       }
+      prefixId = pathIndex.append(prefixId, segment);
+      if (segment.kind !== "node") materializedContextPaths.add(prefixId);
     }
+    return prefixId;
   };
-  visit(scope);
-  return items;
+  for (const frame of dynamic?.frames ?? []) {
+    if (frame.instancePath) {
+      const pathId = indexPath(frame.instancePath);
+      framesByPath.set(pathId, newer(framesByPath.get(pathId), frame));
+    }
+    if (frame.nodeId) addToMapArray(framesByNodeId, frame.nodeId, frame);
+  }
+  for (const instance of dynamic?.nodeInstances ?? []) {
+    if (instance.instancePath) {
+      const pathId = indexPath(instance.instancePath);
+      instancesByPath.set(pathId, newer(instancesByPath.get(pathId), instance));
+    }
+    addToMapArray(instancesByNodeId, instance.nodeId, instance);
+  }
+  for (const attempt of dynamic?.attempts ?? []) addToMapArray(attemptsByNodeKey, attempt.nodeKey, attempt);
+  for (const attempts of attemptsByNodeKey.values()) attempts.sort((left, right) => right.attemptNo - left.attemptNo);
+  for (const wait of dynamic?.signalWaits ?? []) waitsByNodeKey.set(wait.nodeKey, newer(waitsByNodeKey.get(wait.nodeKey), wait));
+  for (const progress of dynamic?.progress ?? []) progressByNodeKey.set(progress.nodeKey, newer(progressByNodeKey.get(progress.nodeKey), progress));
+  for (const metadata of dynamic?.executionMetadata ?? []) if (metadata.attemptId) metadataByAttemptId.set(metadata.attemptId, newerCreated(metadataByAttemptId.get(metadata.attemptId), metadata));
+  for (const group of dynamic?.groups ?? []) groupsByNodeKey.set(group.nodeKey, group);
+  for (const member of dynamic?.groupMembers ?? []) {
+    addToMapArray(membersByGroupKey, member.groupKey, member);
+    if (member.memberKind === "branch") memberByBranch.set(`${member.groupKey}\0${member.branchId}`, member);
+    else memberByItem.set(`${member.groupKey}\0${member.itemIndex}`, member);
+  }
+  return {
+    staticById: new Map(staticNodes.map(node => [node.nodeId, node])),
+    framesByKey,
+    framesByPath,
+    framesByNodeId,
+    instancesByKey,
+    instancesByPath,
+    instancesByNodeId,
+    attemptsByNodeKey,
+    waitsByNodeKey,
+    progressByNodeKey,
+    metadataByAttemptId,
+    groupsByNodeKey,
+    membersByGroupKey,
+    memberByBranch,
+    memberByItem,
+    contextValues,
+    materializedContextPaths,
+    pathIndex,
+    ...((dynamic?.frames ?? []).find(frame => frame.frameKind === "root") ? { rootFrame: (dynamic?.frames ?? []).find(frame => frame.frameKind === "root")! } : {}),
+  };
 }
 
-function contextItems(instances: RunDynamicNodeInstance[], frames: RunDynamicFrame[]): RunInspectionItem[] {
-  const result = new Map<string, RunInspectionItem>();
-  for (const instance of instances) {
-    let parentKey: string | undefined;
-    const keyParts: string[] = [];
-    const displayPath: string[] = [];
-    for (const segment of instance.instancePath ?? []) {
-      if (segment.kind === "node") continue;
-      const segmentId = segment.kind === "branch" ? `branch:${segment.nodeId}:${segment.branchId}`
-        : segment.kind === "fanout" ? `fanout:${segment.nodeId}:${segment.itemIndex}`
-          : `loop:${segment.nodeId}:${segment.iter}`;
-      keyParts.push(segmentId);
-      displayPath.push(segment.kind === "branch" ? `${segment.nodeId}.${segment.branchId}` : segment.kind === "fanout" ? `${segment.nodeId}[${segment.itemIndex}]` : `${segment.nodeId}#${segment.iter}`);
-      const key = `context:${keyParts.join("/")}`;
-      if (!result.has(key)) {
-        const label = segment.kind === "branch" ? `${segment.nodeId} / branch ${segment.branchId}` : segment.kind === "fanout" ? `${segment.nodeId} / item ${segment.itemIndex}` : `${segment.nodeId} / round ${segment.iter + 1}`;
-        const matching = frames.filter(frame => pathMatches(frame.instancePath, instance.instancePath?.filter((_, index) => index <= (instance.instancePath?.indexOf(segment) ?? -1)) ?? []));
-        result.set(key, {
-          key,
-          role: "context",
-          parentKey: parentKey ?? `static:${segment.nodeId}`,
-          path: [...displayPath],
-          label,
-          kind: segment.kind === "fanout" ? "fanout_item" : segment.kind === "loop" ? "loop_iteration" : "branch",
-          status: aggregateStatus(matching.map(frame => normalizeStatus(frame.status))),
-          nodeId: segment.nodeId,
-        });
+function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTree {
+  const items: RunInspectionItem[] = [];
+  const executionStatuses: RunInspectionStatus[] = [];
+  const executionItemKeys = new Set<string>();
+  const itemKeyByNodeKey = new Map<string, string>();
+
+  const visitScope = (scope: ScopeIR, basePath: InstancePath, parentKey: string | undefined, parentFrame: RunDynamicFrame | undefined): RunInspectionStatus[] => {
+    const scopeStatuses: RunInspectionStatus[] = [];
+    for (const node of scope.nodes) {
+      const nodePath = appendNode(basePath, node.id);
+      const key = occurrenceNodeKey(nodePath);
+      const instance = occurrenceInstance(indexes, nodePath, node.id, parentFrame);
+      const frame = occurrenceNodeFrame(indexes, nodePath, node.id, parentFrame);
+      const item = snapshotNodeItem(ir, indexes, node, nodePath, key, parentKey, instance, frame);
+      items.push(item);
+      if (item.nodeKey) itemKeyByNodeKey.set(item.nodeKey, key);
+
+      let childStatuses: RunInspectionStatus[] = [];
+      if (node.kind === "if" || node.kind === "switch") {
+        const children = childScopes(node).filter(child => child.kind === "if" || child.kind === "switch");
+        const selected = children.find(child => indexes.materializedContextPaths.has(indexes.pathIndex.id(appendBranch(basePath, node.id, child.branchId))));
+        for (const child of children) {
+          const branchPath = appendBranch(basePath, node.id, child.branchId);
+          const branchFrame = occurrenceContextFrame(indexes, branchPath);
+          const selection = selected ? child.branchId === selected.branchId ? "selected" : "not_selected" : "undecided";
+          const branchItem = snapshotScopeItem(node, branchPath, key, branchFrame, child.scope.nodes.length === 0, {
+            kind: "branch",
+            ownerKind: node.kind,
+            branchId: child.branchId,
+            selection,
+            empty: child.scope.nodes.length === 0,
+          }, selection === "not_selected" ? "not_selected" : selection === "undecided" ? "not_started" : undefined);
+          items.push(branchItem);
+          if (selection === "selected") {
+            const statuses = visitScope(child.scope, branchPath, branchItem.key, branchFrame);
+            childStatuses.push(...statuses);
+            if (!branchFrame && statuses.length > 0) branchItem.status = aggregateStatus(statuses);
+          }
+        }
+      } else if (node.kind === "parallel") {
+        const group = occurrenceGroup(indexes, item.nodeKey);
+        for (const child of childScopes(node)) {
+          if (child.kind !== "parallel") continue;
+          const branchPath = appendBranch(basePath, node.id, child.branchId);
+          const branchFrame = occurrenceContextFrame(indexes, branchPath);
+          const member = group ? indexes.memberByBranch.get(`${group.groupKey}\0${child.branchId}`) : undefined;
+          const materialized = Boolean(branchFrame || member || indexes.materializedContextPaths.has(indexes.pathIndex.id(branchPath)));
+          const branchItem = snapshotScopeItem(node, branchPath, key, branchFrame, child.scope.nodes.length === 0, {
+            kind: "branch",
+            ownerKind: "parallel",
+            branchId: child.branchId,
+            empty: child.scope.nodes.length === 0,
+          }, member ? normalizeStatus(member.status) : undefined);
+          items.push(branchItem);
+          if (materialized) {
+            const statuses = visitScope(child.scope, branchPath, branchItem.key, branchFrame);
+            childStatuses.push(...statuses);
+            if (!branchFrame && !member && statuses.length > 0) branchItem.status = aggregateStatus(statuses);
+          }
+        }
+      } else if (node.kind === "fanout") {
+        const group = occurrenceGroup(indexes, item.nodeKey);
+        const itemIndexes = contextNumbers(indexes, basePath, node.id, "fanout");
+        for (const member of group ? indexes.membersByGroupKey.get(group.groupKey) ?? [] : []) if (member.memberKind === "fanout_item") itemIndexes.add(member.itemIndex);
+        if (!frame && itemIndexes.size === 0) executionStatuses.push(...unmaterializedExecutionStatuses(node.do));
+        for (const itemIndex of [...itemIndexes].sort((left, right) => left - right)) {
+          const itemPath = appendFanoutItem(basePath, node.id, itemIndex);
+          const itemFrame = occurrenceContextFrame(indexes, itemPath);
+          const member = group ? indexes.memberByItem.get(`${group.groupKey}\0${itemIndex}`) : undefined;
+          const scopeItem = snapshotScopeItem(node, itemPath, key, itemFrame, node.do.nodes.length === 0, {
+            kind: "fanout_item",
+            itemIndex,
+            empty: node.do.nodes.length === 0,
+          }, member ? normalizeStatus(member.status) : undefined);
+          items.push(scopeItem);
+          const statuses = visitScope(node.do, itemPath, scopeItem.key, itemFrame);
+          childStatuses.push(...statuses);
+          if (!itemFrame && !member && statuses.length > 0) scopeItem.status = aggregateStatus(statuses);
+        }
+      } else if (node.kind === "loop") {
+        const iterations = contextNumbers(indexes, basePath, node.id, "loop");
+        if (!frame && iterations.size === 0) executionStatuses.push(...unmaterializedExecutionStatuses(node.do));
+        for (const iteration of [...iterations].sort((left, right) => left - right)) {
+          const iterationPath = appendLoopIteration(basePath, node.id, iteration);
+          const iterationFrame = occurrenceContextFrame(indexes, iterationPath);
+          const scopeItem = snapshotScopeItem(node, iterationPath, key, iterationFrame, node.do.nodes.length === 0, {
+            kind: "loop_iteration",
+            iteration,
+            round: iteration + 1,
+            empty: node.do.nodes.length === 0,
+          });
+          items.push(scopeItem);
+          const statuses = visitScope(node.do, iterationPath, scopeItem.key, iterationFrame);
+          childStatuses.push(...statuses);
+          if (!iterationFrame && statuses.length > 0) scopeItem.status = aggregateStatus(statuses);
+        }
       }
-      parentKey = key;
+
+      const executable = node.kind === "agent" || node.kind === "task" || node.kind === "signal" || node.kind === "assert";
+      if (executable) {
+        executionStatuses.push(item.status);
+        executionItemKeys.add(item.key);
+        scopeStatuses.push(item.status);
+      } else {
+        if (!instance && !frame && childStatuses.length > 0) item.status = aggregateStatus(childStatuses);
+        scopeStatuses.push(...childStatuses);
+      }
     }
+    return scopeStatuses;
+  };
+
+  visitScope(ir.root, [], undefined, indexes.rootFrame);
+  return { items, executionStatuses, executionItemKeys, itemKeyByNodeKey };
+}
+
+function snapshotNodeItem(
+  ir: WorkflowIR,
+  indexes: SnapshotIndexes,
+  node: NodeIR,
+  path: InstancePath,
+  key: string,
+  parentKey: string | undefined,
+  instance: RunDynamicNodeInstance | undefined,
+  frame: RunDynamicFrame | undefined,
+): RunInspectionItem {
+  if (instance) {
+    const state = indexedInstanceState(indexes, instance);
+    const progress = indexes.progressByNodeKey.get(instance.nodeKey);
+    const metadata = state.attempt?.attemptId ? indexes.metadataByAttemptId.get(state.attempt.attemptId) : undefined;
+    return {
+      key,
+      role: "instance",
+      ...(parentKey ? { parentKey } : {}),
+      path: inspectionPath(path),
+      label: node.id,
+      kind: node.kind,
+      status: state.status,
+      nodeId: node.id,
+      nodeKey: instance.nodeKey,
+      ...(state.attempt?.attemptId ? { attemptId: state.attempt.attemptId } : {}),
+      ...(state.attempt?.attemptNo === undefined ? {} : { attemptNo: state.attempt.attemptNo }),
+      ...(instance.statusReason ? { statusReason: instance.statusReason } : {}),
+      createdAt: instance.createdAt,
+      updatedAt: instance.updatedAt,
+      ...(state.attempt?.startedAt ? { startedAt: state.attempt.startedAt } : {}),
+      ...(state.attempt?.finishedAt ? { finishedAt: state.attempt.finishedAt } : {}),
+      ...(state.attempt?.deadlineAt ? { deadlineAt: state.attempt.deadlineAt } : {}),
+      ...failureDetails(node, instance.error ?? state.attempt?.error, instance.statusReason ?? state.attempt?.terminalReason),
+      ...(node.kind === "agent" ? { agent: agentDetails(ir, node, metadata, progress) } : {}),
+      ...(node.kind === "task" ? { task: { target: node.run.target.kind } } : {}),
+      ...(node.kind === "signal" ? { signal: {
+        target: instance.nodeKey,
+        ...(state.wait?.deadlineAt ? { deadlineAt: state.wait.deadlineAt } : {}),
+        ...(state.wait?.renderedPrompt ? { promptPreview: boundedSummary(state.wait.renderedPrompt, 160) } : {}),
+        ...(node.outputSchema ? { schemaSummary: compactSchemaSummary(node.outputSchema) } : {}),
+      } } : {}),
+    };
   }
-  return [...result.values()];
+  if (frame) {
+    const status = normalizeStatus(frame.status);
+    return {
+      key,
+      role: "frame",
+      ...(parentKey ? { parentKey } : {}),
+      path: inspectionPath(path),
+      label: node.id,
+      kind: node.kind,
+      status,
+      nodeId: node.id,
+      ...(frame.nodeKey ? { nodeKey: frame.nodeKey } : {}),
+      frameKey: frame.frameKey,
+      ...(frame.terminalReason ? { statusReason: frame.terminalReason } : {}),
+      createdAt: frame.createdAt,
+      updatedAt: frame.updatedAt,
+      ...(terminalItem(status) ? { finishedAt: frame.updatedAt } : {}),
+      ...failureDetails(node, frame.error, frame.terminalReason),
+      ...occurrenceCompositeDetails(indexes, node, frame),
+    };
+  }
+  return {
+    key,
+    role: "static",
+    ...(parentKey ? { parentKey } : {}),
+    path: inspectionPath(path),
+    label: node.id,
+    kind: node.kind,
+    status: "not_started",
+    nodeId: node.id,
+    ...occurrenceCompositeDetails(indexes, node),
+  };
+}
+
+function snapshotScopeItem(
+  owner: NodeIR,
+  path: InstancePath,
+  parentKey: string,
+  frame: RunDynamicFrame | undefined,
+  empty: boolean,
+  scope: NonNullable<RunInspectionItem["scope"]>,
+  statusOverride?: RunInspectionStatus,
+): RunInspectionItem {
+  const status = statusOverride ?? (frame ? normalizeStatus(frame.status) : "not_started");
+  const label = scope.kind === "branch"
+    ? owner.kind === "switch" && scope.branchId.startsWith("case:") ? `case ${Number(scope.branchId.slice(5)) + 1}` : scope.branchId
+    : scope.kind === "fanout_item" ? `item[${scope.itemIndex}]` : `round ${scope.round}`;
+  return {
+    key: occurrenceScopeKey(path),
+    role: "context",
+    parentKey,
+    path: inspectionPath(path),
+    label,
+    kind: scope.kind,
+    status,
+    nodeId: owner.id,
+    ...(frame?.frameKey ? { frameKey: frame.frameKey } : {}),
+    ...(frame?.terminalReason ? { statusReason: frame.terminalReason } : {}),
+    ...(frame?.createdAt ? { createdAt: frame.createdAt } : {}),
+    ...(frame?.updatedAt ? { updatedAt: frame.updatedAt } : {}),
+    ...(frame && terminalItem(status) ? { finishedAt: frame.updatedAt } : {}),
+    ...failureDetails(owner, frame?.error, frame?.terminalReason),
+    scope: { ...scope, empty },
+  };
+}
+
+function occurrenceCompositeDetails(indexes: SnapshotIndexes, node: NodeIR, frame?: RunDynamicFrame): Pick<RunInspectionItem, "composite"> | {} {
+  if (!["if", "switch", "parallel", "fanout", "loop"].includes(node.kind)) return {};
+  const group = occurrenceGroup(indexes, frame?.nodeKey);
+  const members = group ? indexes.membersByGroupKey.get(group.groupKey) ?? [] : [];
+  return {
+    composite: {
+      ...(group?.strategy ? { strategy: group.strategy } : node.kind === "parallel" || node.kind === "fanout" ? { strategy: node.strategy } : {}),
+      ...(group?.quorumCount === undefined ? {} : { quorumCount: group.quorumCount }),
+      ...(group?.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
+      ...(frame?.loop?.iter === undefined ? {} : { currentIteration: frame.loop.iter }),
+      ...(group ? { counts: statusCounts(members.map(member => normalizeStatus(member.status))) } : {}),
+    },
+  };
+}
+
+function occurrenceInstance(indexes: SnapshotIndexes, path: InstancePath, nodeId: string, parentFrame: RunDynamicFrame | undefined): RunDynamicNodeInstance | undefined {
+  const exact = indexes.instancesByPath.get(indexes.pathIndex.id(path));
+  if (exact) return exact;
+  const scopedKey = parentFrame?.scope?.[nodeId];
+  if (scopedKey) return indexes.instancesByKey.get(scopedKey);
+  const matches = indexes.instancesByNodeId.get(nodeId) ?? [];
+  return path.length === 1 && matches.length === 1 ? matches[0] : undefined;
+}
+
+function occurrenceNodeFrame(indexes: SnapshotIndexes, path: InstancePath, nodeId: string, parentFrame: RunDynamicFrame | undefined): RunDynamicFrame | undefined {
+  const exact = indexes.framesByPath.get(indexes.pathIndex.id(path));
+  if (exact && (exact.frameKind === "node" || exact.frameKind === "loop")) return exact;
+  const scopedKey = parentFrame?.scope?.[nodeId];
+  if (scopedKey) {
+    const scoped = indexes.framesByKey.get(scopedKey);
+    if (scoped && (scoped.frameKind === "node" || scoped.frameKind === "loop")) return scoped;
+  }
+  const matches = (indexes.framesByNodeId.get(nodeId) ?? []).filter(frame => frame.frameKind === "node" || frame.frameKind === "loop");
+  return path.length === 1 && matches.length === 1 ? matches[0] : undefined;
+}
+
+function occurrenceContextFrame(indexes: SnapshotIndexes, path: InstancePath): RunDynamicFrame | undefined {
+  const frame = indexes.framesByPath.get(indexes.pathIndex.id(path));
+  return frame && frame.frameKind !== "node" && frame.frameKind !== "loop" && frame.frameKind !== "root" ? frame : undefined;
+}
+
+function occurrenceGroup(indexes: SnapshotIndexes, nodeKey: string | undefined): RunDynamicGroup | undefined {
+  return nodeKey ? indexes.groupsByNodeKey.get(nodeKey) : undefined;
+}
+
+function indexedInstanceState(indexes: SnapshotIndexes, instance: RunDynamicNodeInstance) {
+  const attempts = indexes.attemptsByNodeKey.get(instance.nodeKey) ?? [];
+  const attempt = instance.acceptedAttemptId ? attempts.find(item => item.attemptId === instance.acceptedAttemptId) ?? attempts[0] : attempts[0];
+  const wait = indexes.waitsByNodeKey.get(instance.nodeKey);
+  const signalStatus = wait?.status === "awaiting" || wait?.status === "timed_out" ? wait.status : undefined;
+  return { attempt, wait, status: normalizeStatus(signalStatus ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)) };
+}
+
+function contextNumbers(indexes: SnapshotIndexes, basePath: InstancePath, nodeId: string, kind: "fanout" | "loop"): Set<number> {
+  const values = indexes.contextValues.get(contextOwnerKey(indexes.pathIndex.id(basePath), kind, nodeId));
+  return new Set([...(values?.values() ?? [])].flatMap(segment => segment.kind === "fanout" ? [segment.itemIndex] : segment.kind === "loop" ? [segment.iter] : []));
+}
+
+function contextOwnerKey(basePathId: number, kind: "branch" | "fanout" | "loop", nodeId: string): string {
+  return JSON.stringify([basePathId, kind, nodeId]);
+}
+
+function contextValueKey(segment: Exclude<InstancePathSegment, { kind: "node" }>): string {
+  return segment.kind === "branch" ? segment.branchId : segment.kind === "fanout" ? String(segment.itemIndex) : String(segment.iter);
+}
+
+type InstancePathIndex = {
+  rootId: number;
+  append(parentId: number, segment: InstancePathSegment): number;
+  id(path: InstancePath): number;
+};
+
+function createInstancePathIndex(): InstancePathIndex {
+  const rootId = 0;
+  let nextId = 1;
+  const children = new Map<number, Map<string, number>>();
+  const append = (parentId: number, segment: InstancePathSegment): number => {
+    const siblings = children.get(parentId) ?? new Map<string, number>();
+    children.set(parentId, siblings);
+    const key = JSON.stringify(segment.kind === "node" ? ["node", segment.nodeId]
+      : segment.kind === "branch" ? ["branch", segment.nodeId, segment.branchId]
+        : segment.kind === "fanout" ? ["fanout", segment.nodeId, segment.itemIndex]
+          : ["loop", segment.nodeId, segment.iter]);
+    const existing = siblings.get(key);
+    if (existing !== undefined) return existing;
+    const id = nextId++;
+    siblings.set(key, id);
+    return id;
+  };
+  return {
+    rootId,
+    append,
+    id: path => path.reduce((parentId, segment) => append(parentId, segment), rootId),
+  };
+}
+
+function occurrenceNodeKey(path: InstancePath): string {
+  return `node:${deriveInstanceKey(path)}`;
+}
+
+function occurrenceScopeKey(path: InstancePath): string {
+  return `scope:${deriveInstanceKey(path)}`;
+}
+
+function addToMapArray<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const values = map.get(key) ?? [];
+  values.push(value);
+  map.set(key, values);
+}
+
+function newer<T extends { updatedAt: string }>(current: T | undefined, candidate: T): T {
+  return !current || candidate.updatedAt.localeCompare(current.updatedAt) >= 0 ? candidate : current;
+}
+
+function newerCreated<T extends { createdAt: string }>(current: T | undefined, candidate: T): T {
+  return !current || candidate.createdAt.localeCompare(current.createdAt) >= 0 ? candidate : current;
+}
+
+function actionableInspectionItems(items: RunInspectionItem[]): RunInspectionItem[] {
+  const actionable = new Set(items.filter(item => item.role !== "fold" && ["failed", "timed_out", "awaiting"].includes(item.status)).map(item => item.key));
+  const hasActionableDescendant = new Set<string>();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (!item.parentKey || (!actionable.has(item.key) && !hasActionableDescendant.has(item.key))) continue;
+    hasActionableDescendant.add(item.parentKey);
+  }
+  return items.filter(item => actionable.has(item.key) && !hasActionableDescendant.has(item.key));
+}
+
+function compactOccurrenceTree(tree: OccurrenceTree): { items: RunInspectionItem[]; hiddenStatuses: RunInspectionStatus[]; hiddenAgentNodeKeys: Set<string>; folds: number } {
+  const byKey = new Map(tree.items.map(item => [item.key, item]));
+  const children = new Map<string, RunInspectionItem[]>();
+  const roots: RunInspectionItem[] = [];
+  for (const item of tree.items) {
+    if (!item.parentKey || !byKey.has(item.parentKey)) roots.push(item);
+    else addToMapArray(children, item.parentKey, item);
+  }
+  type Summary = { actionable: boolean; executionCount: number; localCost: number };
+  const summaries = new Map<string, Summary>();
+  const summarize = (item: RunInspectionItem): Summary => {
+    const itemChildren = children.get(item.key) ?? [];
+    const childSummaries = itemChildren.map(summarize);
+    const summary = {
+      actionable: ["failed", "timed_out", "awaiting"].includes(item.status) || (item.attemptNo ?? 1) > 1 || childSummaries.some(value => value.actionable),
+      executionCount: (tree.executionItemKeys.has(item.key) ? 1 : 0) + childSummaries.reduce((count, value) => count + value.executionCount, 0),
+      localCost: (tree.executionItemKeys.has(item.key) ? 1 : 0)
+        + itemChildren.reduce((count, child, index) => count + (isDynamicScope(child) ? 0 : childSummaries[index]!.localCost), 0),
+    };
+    summaries.set(item.key, summary);
+    return summary;
+  };
+  for (const root of roots) summarize(root);
+
+  let ordinary = 0;
+  let folds = 0;
+  const hiddenStatuses: RunInspectionStatus[] = [];
+  const hiddenAgentNodeKeys = new Set<string>();
+  const output: RunInspectionItem[] = [];
+  const emit = (item: RunInspectionItem, budgetCovered = false): void => {
+    output.push(item);
+    const itemChildren = children.get(item.key) ?? [];
+    const foldableCounts = new Map<string, number>();
+    for (const child of itemChildren) {
+      if (!isDynamicScope(child) || !foldableStatus(child.status)) continue;
+      const group = `${child.kind}\0${child.status}`;
+      foldableCounts.set(group, (foldableCounts.get(group) ?? 0) + 1);
+    }
+    const hidden = new Set<string>();
+    const fullyCovered = new Set<string>();
+    for (const child of itemChildren) {
+      if (!isDynamicScope(child)) continue;
+      const summary = summaries.get(child.key)!;
+      const repeatedFold = foldableStatus(child.status) && (foldableCounts.get(`${child.kind}\0${child.status}`) ?? 0) > 3;
+      const cost = Math.max(1, summary.executionCount);
+      if (summary.actionable || budgetCovered) continue;
+      if (repeatedFold) hidden.add(child.key);
+      else if (ordinary + cost <= overviewContextLimit) {
+        ordinary += cost;
+        fullyCovered.add(child.key);
+      } else if (ordinary < overviewContextLimit && summary.executionCount > summary.localCost && ordinary + summary.localCost <= overviewContextLimit) {
+        ordinary += summary.localCost;
+      } else {
+        hidden.add(child.key);
+      }
+    }
+    let pending: RunInspectionItem[] = [];
+    const flush = (): void => {
+      if (pending.length === 0) return;
+      const statuses = pending.map(value => value.status);
+      const executions: RunInspectionItem[] = [];
+      const collectExecutions = (value: RunInspectionItem): void => {
+        if (tree.executionItemKeys.has(value.key)) executions.push(value);
+        for (const child of children.get(value.key) ?? []) collectExecutions(child);
+      };
+      for (const value of pending) collectExecutions(value);
+      if (executions.length > 0) hiddenStatuses.push(...executions.map(value => value.status));
+      else hiddenStatuses.push(...statuses);
+      for (const execution of executions) if (execution.agent && execution.nodeKey) hiddenAgentNodeKeys.add(execution.nodeKey);
+      const first = pending[0]!;
+      const last = pending.at(-1)!;
+      output.push({
+        key: `fold:${item.key}:${first.key}:${last.key}`,
+        role: "fold",
+        parentKey: item.key,
+        path: [...item.path, `omitted:${pending.length}`],
+        label: `${aggregateStatus(statuses).replaceAll("_", " ")} ${first.scope?.kind === "loop_iteration" ? "rounds" : "items"}`,
+        kind: first.kind,
+        status: aggregateStatus(statuses),
+        ...(item.nodeId ? { nodeId: item.nodeId } : {}),
+        fold: { count: pending.length, counts: statusCounts(statuses) },
+      });
+      folds += 1;
+      pending = [];
+    };
+    for (const child of itemChildren) {
+      if (hidden.has(child.key)) {
+        pending.push(child);
+        continue;
+      }
+      flush();
+      emit(child, budgetCovered || fullyCovered.has(child.key));
+    }
+    flush();
+  };
+  for (const root of roots) emit(root);
+  return { items: output, hiddenStatuses, hiddenAgentNodeKeys, folds };
+}
+
+function isDynamicScope(item: RunInspectionItem): boolean {
+  return item.scope?.kind === "fanout_item" || item.scope?.kind === "loop_iteration";
+}
+
+function unmaterializedExecutionStatuses(scope: ScopeIR): RunInspectionStatus[] {
+  return Array.from(walkNodes(scope)).flatMap(({ node }) => node.kind === "agent" || node.kind === "task" || node.kind === "signal" || node.kind === "assert" ? ["not_started" as const] : []);
 }
 
 function instanceItem(
   ir: WorkflowIR,
-  run: RunDetails,
   instance: RunDynamicNodeInstance,
-  attempts: RunDynamicAttempt[],
+  indexes: SnapshotIndexes,
+  nodesById: ReadonlyMap<string, NodeIR>,
   staticById: Map<string, RunInspectionStaticNode>,
 ): RunInspectionItem {
-  const node = nodeById(ir, instance.nodeId);
-  const { attempt, wait, status } = instanceInspectionState(run, instance, attempts);
-  const progress = latest(run.dynamic?.progress.filter(item => item.nodeKey === instance.nodeKey) ?? [], item => item.updatedAt);
-  const metadata = latest(run.dynamic?.executionMetadata.filter(item => item.attemptId && item.attemptId === attempt?.attemptId) ?? [], item => item.createdAt);
+  const node = nodesById.get(instance.nodeId);
+  const { attempt, wait, status } = indexedInstanceState(indexes, instance);
+  const progress = indexes.progressByNodeKey.get(instance.nodeKey);
+  const metadata = attempt?.attemptId ? indexes.metadataByAttemptId.get(attempt.attemptId) : undefined;
   const parentContext = lastContextKey(instance.instancePath);
   const parentNodeId = staticById.get(instance.nodeId)?.parentNodeId;
   return {
@@ -494,20 +913,6 @@ function instanceItem(
   };
 }
 
-function instanceInspectionState(run: RunDetails, instance: RunDynamicNodeInstance, attempts: RunDynamicAttempt[]) {
-  const relevantAttempts = attempts.filter(item => item.nodeKey === instance.nodeKey).sort((left, right) => right.attemptNo - left.attemptNo);
-  const attempt = instance.acceptedAttemptId
-    ? relevantAttempts.find(item => item.attemptId === instance.acceptedAttemptId) ?? relevantAttempts[0]
-    : relevantAttempts[0];
-  const wait = run.dynamic?.signalWaits.find(item => item.nodeKey === instance.nodeKey);
-  const signalStatus = wait?.status === "awaiting" || wait?.status === "timed_out" ? wait.status : undefined;
-  return {
-    attempt,
-    wait,
-    status: normalizeStatus(signalStatus ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)),
-  };
-}
-
 function projectTarget(
   ir: WorkflowIR,
   run: RunDetails,
@@ -519,6 +924,7 @@ function projectTarget(
 ): RunInspectionTargetDocument | undefined {
   const dynamic = run.dynamic;
   const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
+  const indexes = snapshotIndexes(run, staticNodes);
   const staticNode = staticNodes.find(item => item.nodeId === targetId);
   const exactInstance = dynamic?.nodeInstances.find(item => item.nodeKey === targetId);
   const exactFrame = dynamic?.frames.find(item => item.frameKey === targetId);
@@ -563,7 +969,7 @@ function projectTarget(
   const signalStatus = node?.kind === "signal" && (latestWait?.status === "awaiting" || latestWait?.status === "timed_out")
     ? latestWait.status
     : undefined;
-  const staticStatuses = target.kind === "static-node" ? staticTargetStatuses(node, run, instances, frames, attempts) : [];
+  const staticStatuses = target.kind === "static-node" ? staticTargetStatuses(node, indexes, instances, frames) : [];
   const staticAggregate = staticStatuses.length > 1;
   const status = staticAggregate
     ? aggregateStatus(staticStatuses)
@@ -580,7 +986,7 @@ function projectTarget(
     latestInstance?.error ?? latestAttempt?.error ?? latestFrame?.error,
     latestInstance?.statusReason ?? latestAttempt?.terminalReason ?? latestFrame?.terminalReason,
   );
-  const items = targetInspectionItems(ir, run, instances, frames, attempts, resolvedStatic, staticById);
+  const items = targetInspectionItems(ir, run, indexes, instances, frames, resolvedStatic, staticById);
   return {
     schemaVersion: 1,
     kind: "target",
@@ -625,13 +1031,12 @@ function projectTarget(
 
 function staticTargetStatuses(
   node: NodeIR | undefined,
-  run: RunDetails,
+  indexes: SnapshotIndexes,
   instances: RunDynamicNodeInstance[],
   frames: RunDynamicFrame[],
-  attempts: RunDynamicAttempt[],
 ): RunInspectionStatus[] {
   if (!node) return [];
-  if (instances.length > 0) return instances.map(item => instanceInspectionState(run, item, attempts).status);
+  if (instances.length > 0) return instances.map(item => indexedInstanceState(indexes, item).status);
   return frames
     .filter(item => item.nodeId === node.id && (item.frameKind === "node" || item.frameKind === "loop"))
     .map(item => normalizeStatus(item.status));
@@ -640,16 +1045,17 @@ function staticTargetStatuses(
 function targetInspectionItems(
   ir: WorkflowIR,
   run: RunDetails,
+  indexes: SnapshotIndexes,
   instances: RunDynamicNodeInstance[],
   frames: RunDynamicFrame[],
-  attempts: RunDynamicAttempt[],
   staticNode: RunInspectionStaticNode | undefined,
   staticById: Map<string, RunInspectionStaticNode>,
 ): RunInspectionItem[] {
-  const items = instances.map(instance => instanceItem(ir, run, instance, attempts, staticById));
+  const nodesById = new Map(Array.from(walkNodes(ir.root), ({ node }) => [node.id, node]));
+  const items = instances.map(instance => instanceItem(ir, instance, indexes, nodesById, staticById));
   const frameKeys = new Set(frames.map(frame => frame.frameKey));
   for (const frame of frames) {
-    const node = frame.nodeId ? nodeById(ir, frame.nodeId) : undefined;
+    const node = frame.nodeId ? nodesById.get(frame.nodeId) : undefined;
     items.push({
       key: `frame:${frame.frameKey}`,
       role: "frame",
@@ -665,7 +1071,7 @@ function targetInspectionItems(
       createdAt: frame.createdAt,
       updatedAt: frame.updatedAt,
       ...failureDetails(node, frame.error, frame.terminalReason),
-      ...(node ? compositeDetails(run, node, frame.nodeKey) : {}),
+      ...(node ? occurrenceCompositeDetails(indexes, node, frame) : {}),
     });
   }
   if (items.length > 0 || !staticNode) return items.sort((left, right) => left.key.localeCompare(right.key));
@@ -1063,38 +1469,12 @@ function normalizeStatus(status: string): RunInspectionStatus {
   return "mixed";
 }
 
-function priority(status: RunInspectionStatus): number {
-  return ({ failed: 0, timed_out: 1, awaiting: 2, running: 3, ready: 4, starting: 5, pending: 6, mixed: 7, completed: 8, cancelled: 9, not_selected: 10, not_started: 11 })[status];
-}
-
 function terminalItem(status: RunInspectionStatus): boolean {
   return status === "completed" || status === "failed" || status === "timed_out" || status === "cancelled" || status === "not_selected";
 }
 
 function foldableStatus(status: RunInspectionStatus): boolean {
   return status === "completed" || status === "cancelled";
-}
-
-function orderProjectionItems(items: RunInspectionItem[]): RunInspectionItem[] {
-  const rank = new Map(items.map((item, index) => [item.key, index]));
-  const byKey = new Map(items.map(item => [item.key, item]));
-  const children = new Map<string, RunInspectionItem[]>();
-  const roots: RunInspectionItem[] = [];
-  for (const item of items) {
-    if (!item.parentKey || !byKey.has(item.parentKey)) roots.push(item);
-    else {
-      const bucket = children.get(item.parentKey) ?? [];
-      bucket.push(item);
-      children.set(item.parentKey, bucket);
-    }
-  }
-  const ordered: RunInspectionItem[] = [];
-  const visit = (item: RunInspectionItem): void => {
-    ordered.push(item);
-    for (const child of (children.get(item.key) ?? []).sort((left, right) => rank.get(left.key)! - rank.get(right.key)!)) visit(child);
-  };
-  for (const root of roots.sort((left, right) => rank.get(left.key)! - rank.get(right.key)!)) visit(root);
-  return ordered;
 }
 
 function lastContextKey(path: RunDynamicNodeInstance["instancePath"]): string | undefined {
@@ -1106,10 +1486,6 @@ function lastContextKey(path: RunDynamicNodeInstance["instancePath"]): string | 
   return parts.length > 0 ? `context:${parts.join("/")}` : undefined;
 }
 
-function pathKey(path: RunDynamicNodeInstance["instancePath"]): string {
-  return inspectionPath(path).join("/");
-}
-
 function inspectionPath(path: RunDynamicNodeInstance["instancePath"]): string[] {
   return (path ?? []).map(segment => segment.kind === "node" ? segment.nodeId : segment.kind === "branch" ? `${segment.nodeId}.${segment.branchId}` : segment.kind === "fanout" ? `${segment.nodeId}[${segment.itemIndex}]` : `${segment.nodeId}#${segment.iter}`);
 }
@@ -1118,11 +1494,6 @@ function contextMatches(path: RunDynamicNodeInstance["instancePath"], context: R
   return context.every(selection => path?.some(segment => selection.kind === "fanout"
     ? segment.kind === "fanout" && segment.nodeId === selection.nodeId && segment.itemIndex === selection.itemIndex
     : segment.kind === "loop" && segment.nodeId === selection.nodeId && segment.iter === selection.iteration));
-}
-
-function pathMatches(left: RunDynamicFrame["instancePath"], right: RunDynamicNodeInstance["instancePath"]): boolean {
-  if (!left || !right) return false;
-  return right.every((segment, index) => JSON.stringify(left[index]) === JSON.stringify(segment));
 }
 
 function nodeById(ir: WorkflowIR, nodeId: string): NodeIR | undefined {
@@ -1161,6 +1532,7 @@ function eventContext(
   frames: Map<string, RunDynamicFrame>,
   instances: Map<string, RunDynamicNodeInstance>,
   attempts: Map<string, RunDynamicAttempt>,
+  occurrenceCounts: ReadonlyMap<string, number>,
 ): EventContext {
   const attemptId = string(event.payload.attemptId);
   const attempt = attemptId ? attempts.get(attemptId) : undefined;
@@ -1170,10 +1542,7 @@ function eventContext(
   const instance = nodeKey ? instances.get(nodeKey) : undefined;
   const nodeId = string(event.payload.nodeId) ?? instance?.nodeId ?? attempt?.nodeId ?? frame?.nodeId;
   const frameKind = frame?.frameKind ?? string(event.payload.frameKind);
-  const occurrenceCount = nodeId ? [
-    ...[...instances.values()].filter(value => value.nodeId === nodeId),
-    ...[...frames.values()].filter(value => value.nodeId === nodeId && (value.frameKind === "node" || value.frameKind === "loop")),
-  ].length : 0;
+  const occurrenceCount = nodeId ? occurrenceCounts.get(nodeId) ?? 0 : 0;
   return {
     ...(nodeId ? { nodeId } : {}),
     ...(nodeKey ? { nodeKey } : {}),
@@ -1185,30 +1554,51 @@ function eventContext(
   };
 }
 
-function operatorVisibleEvent(event: CommittedRuntimeEventRow, context: EventContext, events: readonly CommittedRuntimeEventRow[]): boolean {
+type EventVisibilityIndex = {
+  byTypeAndNodeKey: Set<string>;
+  retryStartsByNodeKey: Set<string>;
+};
+
+function eventVisibilityIndex(events: readonly CommittedRuntimeEventRow[]): EventVisibilityIndex {
+  const byTypeAndNodeKey = new Set<string>();
+  const retryStartsByNodeKey = new Set<string>();
+  for (const event of events) {
+    const nodeKey = string(event.payload.nodeKey) ?? event.nodeKey;
+    if (!nodeKey) continue;
+    byTypeAndNodeKey.add(`${event.type}\0${nodeKey}`);
+    if (event.type === "attempt.started" && Number(event.payload.attemptNo ?? 1) > 1) retryStartsByNodeKey.add(nodeKey);
+  }
+  return { byTypeAndNodeKey, retryStartsByNodeKey };
+}
+
+function operatorVisibleEvent(event: CommittedRuntimeEventRow, context: EventContext, visibility: EventVisibilityIndex): boolean {
   const type = event.type;
   if (type.startsWith("group.") || type === "branch.decided") return false;
   if (type === "attempt.completed" || type === "attempt.cancelled") return false;
   if (type === "attempt.started") return Number(event.payload.attemptNo ?? 1) > 1;
   if (type.startsWith("attempt.")) return true;
-  if (type === "instance.awaiting" && matchingEvent(events, "signal.awaiting", context.nodeKey)) return false;
-  if (type === "instance.completed" && matchingEvent(events, "signal.consumed", context.nodeKey)) return false;
+  if (type === "instance.awaiting" && matchingEvent(visibility, "signal.awaiting", context.nodeKey)) return false;
+  if (type === "instance.completed" && matchingEvent(visibility, "signal.consumed", context.nodeKey)) return false;
   if ((type === "instance.started" || type === "instance.failed" || type === "instance.timed_out")
-    && matchingAttemptEvent(events, context.nodeKey, type === "instance.started" ? "attempt.started" : type.replace("instance.", "attempt."))) return false;
+    && matchingAttemptEvent(visibility, context.nodeKey, type === "instance.started" ? "attempt.started" : type.replace("instance.", "attempt."))) return false;
   if (type.startsWith("instance.") || type.startsWith("signal.")) return true;
   if (type === "frame.loop_advanced") return context.frameKind === "loop";
-  if (type.startsWith("frame.")) return context.frameKey !== "root" && (context.frameKind === "node" || context.frameKind === "loop");
+  if (type.startsWith("frame.")) {
+    const actionableScopeFailure = type === "frame.failed"
+      && (context.frameKind === "branch" || context.frameKind === "fanout_item" || context.frameKind === "loop_iteration");
+    return context.frameKey !== "root" && (context.frameKind === "node" || context.frameKind === "loop" || actionableScopeFailure);
+  }
   return type.startsWith("run.") || type.startsWith("control.");
 }
 
-function matchingEvent(events: readonly CommittedRuntimeEventRow[], type: string, nodeKey: string | undefined): boolean {
-  return Boolean(nodeKey && events.some(event => event.type === type && (string(event.payload.nodeKey) ?? event.nodeKey) === nodeKey));
+function matchingEvent(index: EventVisibilityIndex, type: string, nodeKey: string | undefined): boolean {
+  return Boolean(nodeKey && index.byTypeAndNodeKey.has(`${type}\0${nodeKey}`));
 }
 
-function matchingAttemptEvent(events: readonly CommittedRuntimeEventRow[], nodeKey: string | undefined, type: string): boolean {
-  return Boolean(nodeKey && events.some(event => event.type === type
-    && (string(event.payload.nodeKey) ?? event.nodeKey) === nodeKey
-    && (type !== "attempt.started" || Number(event.payload.attemptNo ?? 1) > 1)));
+function matchingAttemptEvent(index: EventVisibilityIndex, nodeKey: string | undefined, type: string): boolean {
+  return Boolean(nodeKey && (type === "attempt.started"
+    ? index.retryStartsByNodeKey.has(nodeKey)
+    : index.byTypeAndNodeKey.has(`${type}\0${nodeKey}`)));
 }
 
 function eventSubject(
@@ -1216,10 +1606,10 @@ function eventSubject(
   context: EventContext,
   action: RunInspectionChange["action"],
   item: RunInspectionItem | undefined,
-  itemsByNodeId: Map<string, RunInspectionItem[]>,
+  itemOccurrenceCounts: ReadonlyMap<string, number>,
 ): string {
   if (!context.nodeId) return context.nodeKey ?? context.frameKey ?? document.run.id;
-  const itemOccurrences = itemsByNodeId.get(context.nodeId)?.filter(value => value.role === "instance" || value.role === "frame").length ?? 0;
+  const itemOccurrences = itemOccurrenceCounts.get(context.nodeId) ?? 0;
   const path = context.path ? semanticPath(context.path) : item?.path.join(" › ");
   const subject = (context.repeated ?? itemOccurrences > 1) && path ? path : context.nodeId;
   const actionable = action === "awaiting" || action === "failed" || action === "timed_out" || action === "retrying" || action === "requeued";

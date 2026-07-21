@@ -210,12 +210,37 @@
 
 | Mode | Projection |
 | --- | --- |
-| overview | Versioned bounded authored tree, exact status counts, cursors, sparse items, actions, omitted counts, terminal output. |
-| all | Every normalized dynamic context without exposing raw tables. |
+| overview | Versioned compact occurrence tree, exact status counts, cursors, sparse items, actions, omitted counts, terminal output. |
+| all | Complete occurrence-expanded execution tree without exposing raw tables. |
 | target | Static aggregate or exact node/frame/attempt context with history, progress, Signal, execution metadata, and artifact references. |
 | raw | Unbounded run details, complete frozen `WorkflowIR`, and artifact registry. |
 
-- Overview MUST count every dynamic leaf context, represent an unmaterialized authored leaf once, exclude grouping rows, and bound expanded dynamic contexts to 20.
+- Snapshot items MUST form a unique-keyed, parent-before-child preorder tree whose `parentKey` values resolve within the same snapshot.
+- Snapshot item keys MUST remain stable for the same authored node or dynamic scope occurrence across follow polls and MUST be treated as opaque by consumers.
+- `RunInspectionItem.scope` MUST use the following closed additive shape while inspection documents retain `schemaVersion: 1`.
+
+```ts
+type RunInspectionScopeState =
+  | { kind: "branch"; ownerKind: "if" | "switch"; branchId: string; selection: "undecided" | "selected" | "not_selected"; empty: boolean }
+  | { kind: "branch"; ownerKind: "parallel"; branchId: string; empty: boolean }
+  | { kind: "fanout_item"; itemIndex: number; empty: boolean }
+  | { kind: "loop_iteration"; iteration: number; round: number; empty: boolean };
+```
+
+- A scope state's `empty` field MUST be true exactly when its frozen authored scope contains no nodes.
+- Occurrence-targeted inspect, Signal, and retry actions MUST carry the corresponding snapshot `itemKey`; a fork action MAY carry that `itemKey`, while an inspect-all action remains run-wide without one.
+- Inspection MUST parent repeated nodes and scopes by exact dynamic occurrence identity rather than by static `nodeId` alone.
+- Inspection preorder MUST retain authored node order within each scope, authored If/Switch route and Parallel branch order, Switch case-before-default order, ascending Fanout `itemIndex`, and ascending Loop `iteration`.
+- For each materialized If or Switch occurrence, all-mode inspection MUST emit every authored route in authored order, mark its selection state, and expand only the selected route.
+- For each materialized Parallel occurrence, all-mode inspection MUST emit every authored branch in authored order and expand only branches whose durable member or scope frame is materialized.
+- All-mode inspection MUST emit every persisted Fanout item and Loop iteration, including an empty scope.
+- Within each materialized scope, all-mode inspection MUST represent each authored but unmaterialized direct node once as a `not_started` placeholder.
+- All-mode inspection MUST NOT invent a future Fanout item or Loop iteration.
+- All-mode inspection MUST contain neither fold items nor omitted-context metadata.
+- Overview and all-mode inspection MUST expose the same compact fields for the same occurrence; they differ only in occurrence visibility, folds, and omitted metadata.
+- Overview MUST count every dynamic leaf context, represent an unmaterialized authored leaf once, and exclude grouping rows.
+- Overview MUST bound ordinary expanded dynamic leaf contexts to 20 while retaining every failed, timed-out, awaiting, or retried occurrence and its ancestry outside that budget.
+- Overview MUST compact repeated completed or cancelled occurrences when needed to preserve its bounded presentation and MUST retain valid parent links after compaction. Each fold MUST replace one contiguous run of hidden sibling occurrences under the same parent and MUST NOT aggregate across an outer occurrence.
 - Inspection run summaries MUST expose `agentUsage` for workflows containing Agent nodes, including zero values before materialization; instances count materialized Agent nodes, attempts count all scheduler attempts for those nodes, and turns use durable attempt metadata supplemented by newer active progress without double counting.
 - A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its detailed projection and zero matches remain `not_started`.
 - Public artifacts MUST expose absolute `path` only and never read bodies; `listArtifacts` returns `[]` for an empty existing run and `undefined` for a missing run/store.

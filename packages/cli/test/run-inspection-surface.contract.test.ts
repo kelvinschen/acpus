@@ -54,7 +54,7 @@ describe("compact run inspection surface", () => {
     expect(output).not.toContain("Agent: observer");
   });
 
-  it("does not add compact text for explicitly unavailable Agent telemetry", () => {
+  it("shows Agent identity without unavailable telemetry in the tree", () => {
     const document = snapshot();
     document.items[2]!.agent = {
       key: "observer",
@@ -64,25 +64,26 @@ describe("compact run inspection surface", () => {
 
     const output = formatRunInspectionDocument(document);
 
-    expect(output).toContain("Agent: observer");
+    expect(output).toContain("✓ review · agent(observer)");
     expect(output).not.toContain("unavailable");
     expect(output).not.toContain("Context:");
     expect(output).not.toContain("Tokens:");
   });
 
-  it("renders normalized nested structure, folded counts, agent status, and full terminal output", () => {
+  it("renders a topology-first tree, folded contexts, and full terminal output", () => {
     const document = snapshot();
     const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
 
     expect(output).toContain("Run run_1  nested  completed  2s");
-    expect(output).toContain("✓ review_loop  [loop]");
-    expect(output).toContain("    ✓ round 1  [loop-iteration]");
-    expect(output).toContain("      ✓ review~abc  [agent]");
-    expect(output).toContain("Agent: observer  turns=2  tools=4");
-    expect(output).toContain("Last tools: ✓ Bash: rg · ⠋ Grep · ◆ Write generated release…");
-    expect(output).toContain("Context: 12.5k/200k");
+    expect(output).toContain("Tree:\n┌─ ✓ review_loop · loop · 25 rounds");
+    expect(output).toContain("├┄ ✓ round 1");
+    expect(output).toContain("└─ ✓ review · agent(observer)");
+    expect(output).toContain("└┄ … 24 completed rounds");
+    expect(output).not.toContain("Last tools:");
+    expect(output).not.toContain("Context:");
+    expect(output).not.toContain("Tokens:");
     expect(output).not.toContain("acpx");
-    expect(output).toContain("… completed rounds  24 folded  completed=24");
+    expect(output).toContain("└┄ … 24 completed rounds");
     expect(output).toContain("More: acpus runs inspect run_1 --all");
     expect(output).toContain('"field_29": 29');
     expect(output).not.toContain("prompt text must stay out of overview");
@@ -239,7 +240,7 @@ describe("compact run inspection surface", () => {
     expect(text).toBe("+1.5s  review~abc  running  active=<1s  turn=2  tools=4[✓Bash:rg,⠋Grep,◆Write generated release…]  ctx=12.5k/200k  tok=1.5k\n");
   });
 
-  it("caps recent tool commands by count, word count, and visible characters", () => {
+  it("keeps Agent tool activity out of overview trees", () => {
     const document = snapshot();
     document.items[2]!.agent!.tools = {
       totalCallCount: 9,
@@ -252,8 +253,45 @@ describe("compact run inspection surface", () => {
     };
 
     const text = formatRunInspectionDocument(document);
-    expect(text).toContain("Last tools: ✓ one two three… · ✗ abcdefghijklmnopqrstuvwxyz12345… · ⠋ Bash: rg");
+    expect(text).not.toContain("Last tools:");
+    expect(text).not.toContain("one two three");
     expect(text).not.toContain("hidden oldest");
+  });
+
+  it("retains full Agent telemetry in target inspection", () => {
+    const base = snapshot();
+    const item = base.items[2]!;
+    const document: RunInspectionTargetDocument = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: base.cursor,
+      run: base.run,
+      target: { kind: "dynamic-node", id: item.nodeKey! },
+      summary: {
+        targetKind: "dynamic-node",
+        targetId: item.nodeKey!,
+        runStatus: base.run.status,
+        runStartedAt: base.run.createdAt,
+        nodeId: item.nodeId!,
+        nodeKey: item.nodeKey!,
+        nodeStatus: item.status,
+        artifacts: [],
+      },
+      items: [item],
+      instances: [],
+      frames: [],
+      attempts: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [],
+    };
+
+    const text = formatRunInspectionDocument(document);
+    expect(text).toContain("Agent: observer  turns=2  tools=4");
+    expect(text).toContain("Last tools: ✓ Bash: rg · ⠋ Grep · ◆ Write generated release…");
+    expect(text).toContain("Context: 12.5k/200k");
+    expect(text).toContain("Tokens: in 1k, out 500, total 1.5k");
   });
 
   it("bounds text-only checkpoints to three actionable rows", () => {
@@ -278,17 +316,149 @@ describe("compact run inspection surface", () => {
     expect(text).not.toContain("  work_3  running");
   });
 
+  it("uses the compact Agent pulse in target checkpoints", () => {
+    const base = snapshot();
+    const item = {
+      ...base.items[2]!,
+      status: "running" as const,
+      agent: {
+        ...base.items[2]!.agent!,
+        lastActivityAt: "2026-07-11T00:00:01.000Z",
+      },
+    };
+    const document: RunInspectionTargetDocument = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: base.cursor,
+      run: { ...base.run, status: "running" },
+      target: { kind: "dynamic-node", id: item.nodeKey! },
+      summary: {
+        targetKind: "dynamic-node",
+        targetId: item.nodeKey!,
+        runStatus: "running",
+        runStartedAt: base.run.createdAt,
+        nodeId: item.nodeId!,
+        nodeKey: item.nodeKey!,
+        nodeStatus: "running",
+        artifacts: [],
+      },
+      items: [item],
+      instances: [],
+      frames: [],
+      attempts: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [],
+    };
+
+    const text = formatRunInspectionCheckpoint(document, Date.parse("2026-07-11T00:00:31.000Z"));
+    expect(text).toBe("· checkpoint +31s  running\n  review  turn 2 · ⠋ Grep · updated 30s ago\n");
+    expect(text).not.toContain("Context:");
+    expect(text).not.toContain("Tokens:");
+    expect(text).not.toContain("Write generated release");
+  });
+
+  it("bounds Active to three stable tree-order leaves", () => {
+    const document = snapshot();
+    delete document.output;
+    delete document.omitted;
+    document.actions = [];
+    document.items = Array.from({ length: 5 }, (_, index) => ({
+      key: `node:work_${index}`,
+      role: "instance" as const,
+      path: [`work_${index}`],
+      label: `work_${index}`,
+      kind: "task",
+      status: "running" as const,
+    }));
+
+    const text = formatRunInspectionDocument(document);
+    const active = text.slice(text.indexOf("Active:"));
+    expect(active).toContain("⠋ work_0 · task");
+    expect(active).toContain("⠋ work_2 · task");
+    expect(active).not.toContain("⠋ work_3 · task");
+    expect(active).toContain("… 2 more running");
+  });
+
+  it("falls back to the latest Agent tool and reports missing telemetry", () => {
+    const document = snapshot();
+    delete document.output;
+    delete document.omitted;
+    document.actions = [];
+    document.items = [{
+      ...document.items[2]!,
+      status: "running",
+      agent: {
+        key: "observer",
+        availability: { context: "unavailable", tokenUsage: "unavailable" },
+        tools: { totalCallCount: 2, recent: [{ command: "Read", status: "completed" }, { command: "Write", status: "failed" }] },
+      },
+    }];
+
+    expect(formatRunInspectionDocument(document)).toContain("Active:\n  ⠋ review · agent(observer) · ◆ Write");
+    document.items[0]!.agent = { key: "observer", availability: { context: "unavailable", tokenUsage: "unavailable" } };
+    expect(formatRunInspectionDocument(document)).toContain("Active:\n  ⠋ review · agent(observer) · no update yet");
+  });
+
+  it("includes omitted active occurrences in the Active remainder", () => {
+    const document = snapshot();
+    delete document.output;
+    document.items = [{
+      key: "node:work",
+      role: "instance",
+      path: ["work"],
+      label: "work",
+      kind: "task",
+      status: "running",
+    }];
+    document.omitted = { reason: "context-limit", limit: 20, dynamicContexts: 4, counts: { total: 4, running: 4 } };
+    document.actions = [{ kind: "inspect-all", omitted: 4 }];
+
+    const text = formatRunInspectionDocument(document);
+    expect(text).toContain("Active:\n  ⠋ work · task\n  … 4 more running");
+  });
+
+  it("keeps scheduler cancellation reasons out of structural scope rows", () => {
+    const document = snapshot();
+    delete document.output;
+    delete document.omitted;
+    document.actions = [];
+    document.items = [{
+      key: "node:race",
+      role: "frame",
+      path: ["race"],
+      label: "race",
+      kind: "parallel",
+      status: "completed",
+    }, {
+      key: "scope:race:slow",
+      role: "context",
+      parentKey: "node:race",
+      path: ["race", "slow"],
+      label: "slow",
+      kind: "branch",
+      status: "cancelled",
+      statusReason: "race_lost",
+      scope: { kind: "branch", ownerKind: "parallel", branchId: "slow", empty: false },
+    }];
+
+    const output = formatRunInspectionDocument(document);
+    expect(output).toContain("└┄ ✗ slow · canceled");
+    expect(output).not.toContain("race lost");
+  });
+
   it("renders an actionable awaiting signal without inlining unrelated data", () => {
     const document: RunInspectionSnapshot = {
       ...snapshot(),
       run: { ...snapshot().run, status: "awaiting", execution: { state: "inactive", lastStatus: "awaiting", reason: "daemon_alive" } },
       counts: { total: 1, awaiting: 1 },
-      actions: [{ kind: "signal", target: "approve~abc", schemaSummary: "{ ok: boolean }" }],
+      actions: [{ kind: "signal", target: "approve~abc", itemKey: "approve~abc", schemaSummary: "{ ok: boolean }" }],
       items: [{
         key: "approve~abc",
         role: "instance",
         path: ["approve"],
-        label: "approve~abc",
+        label: "approve",
         kind: "signal",
         status: "awaiting",
         signal: {
@@ -302,10 +472,143 @@ describe("compact run inspection surface", () => {
     delete document.omitted;
 
     const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
-    expect(output).toContain("⏳ approve~abc  [signal]  awaiting");
+    expect(output).toContain("Tree:\n┌─ ⏳ approve · signal · awaiting");
+    expect(output.slice(output.indexOf("Tree:"), output.indexOf("Attention:"))).not.toContain("approve~abc");
+    expect(output).toContain("Attention:\n  ⏳ approve — waiting for input");
     expect(output).toContain("Prompt: Approve this release?");
     expect(output).toContain("Expected payload: { ok: boolean }");
     expect(output).toContain("acpus runs signal run_1 --target approve~abc --payload '<json>'");
+  });
+
+  it("renders nested branch, fanout, active, and attention structure without inline telemetry", () => {
+    const document: RunInspectionSnapshot = {
+      ...snapshot(),
+      run: {
+        ...snapshot().run,
+        status: "running",
+        execution: { state: "active", lastStatus: "running", reason: "daemon_alive" },
+      },
+      counts: { total: 5, notStarted: 1, running: 2, awaiting: 1, completed: 1 },
+      items: [{
+        key: "node:route",
+        role: "static",
+        path: ["route"],
+        label: "route",
+        kind: "if",
+        status: "completed",
+      }, {
+        key: "scope:route:then",
+        role: "context",
+        parentKey: "node:route",
+        path: ["route", "then"],
+        label: "then",
+        kind: "branch",
+        status: "completed",
+        scope: { kind: "branch", ownerKind: "if", branchId: "then", selection: "selected", empty: false },
+      }, {
+        key: "node:primary",
+        role: "instance",
+        parentKey: "scope:route:then",
+        path: ["route", "then", "primary_route"],
+        label: "primary_route",
+        kind: "task",
+        status: "completed",
+      }, {
+        key: "scope:route:else",
+        role: "context",
+        parentKey: "node:route",
+        path: ["route", "else"],
+        label: "else",
+        kind: "branch",
+        status: "not_selected",
+        scope: { kind: "branch", ownerKind: "if", branchId: "else", selection: "not_selected", empty: false },
+      }, {
+        key: "node:batch",
+        role: "static",
+        path: ["batch"],
+        label: "batch",
+        kind: "fanout",
+        status: "running",
+        composite: { strategy: "all", counts: { total: 2, completed: 1, running: 1 } },
+      }, {
+        key: "scope:batch:0",
+        role: "context",
+        parentKey: "node:batch",
+        path: ["batch", "item[0]"],
+        label: "item[0]",
+        kind: "fanout-item",
+        status: "completed",
+        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
+      }, {
+        key: "scope:batch:1",
+        role: "context",
+        parentKey: "node:batch",
+        path: ["batch", "item[1]"],
+        label: "item[1]",
+        kind: "fanout-item",
+        status: "running",
+        scope: { kind: "fanout_item", itemIndex: 1, empty: false },
+      }, {
+        key: "node:review",
+        role: "instance",
+        parentKey: "scope:batch:1",
+        path: ["batch", "item[1]", "review"],
+        label: "review",
+        kind: "agent",
+        status: "running",
+        agent: {
+          key: "observer",
+          availability: { context: "available", tokenUsage: "available" },
+          turnCount: 3,
+          lastActivityAt: "2026-07-11T00:00:01.400Z",
+          context: { used: 90_000, size: 200_000 },
+          tokenUsage: { totalTokens: 12_000 },
+          tools: { totalCallCount: 8, recent: [{ command: "Read", status: "running" }, { command: "Write", status: "completed" }] },
+        },
+      }, {
+        key: "node:approval",
+        role: "instance",
+        path: ["approval"],
+        label: "approval",
+        kind: "signal",
+        status: "awaiting",
+        signal: { target: "approval~abc", promptPreview: "Approve deployment?", schemaSummary: "{ ok: boolean }" },
+      }, {
+        key: "node:assert",
+        role: "static",
+        path: ["require_approval"],
+        label: "require_approval",
+        kind: "assert",
+        status: "not_started",
+      }],
+      actions: [{ kind: "signal", target: "approval~abc", itemKey: "node:approval", schemaSummary: "{ ok: boolean }" }],
+    };
+    delete document.output;
+    delete document.omitted;
+
+    expect(formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"))).toBe(`Run run_1  nested  running  2s
+
+Tree:
+┌─ ✓ route · if
+│  ├┄ ✓ then · selected
+│  │  └─ ✓ primary_route · task
+│  └┄ · else · not selected
+├─ ⠋ batch · fanout · running · 2 items
+│  ├┄ ✓ item[0] · empty
+│  └┄ ⠋ item[1] · running
+│     └─ ⠋ review · agent(observer) · running
+├─ ⏳ approval · signal · awaiting
+└─ ○ require_approval · assert · not started
+
+Active:
+  ⠋ batch › item[1] › review · agent(observer) · turn 3 · ⠋ Read · updated <1s ago
+
+Attention:
+  ⏳ approval — waiting for input
+     Prompt: Approve deployment?
+     Expected payload: { ok: boolean }
+     Signal: acpus runs signal run_1 --target approval~abc --payload '<json>'
+`);
   });
 
   it("renders terminal Signal timeout evidence with retry and fork recovery", () => {
@@ -314,15 +617,15 @@ describe("compact run inspection surface", () => {
       run: { ...snapshot().run, status: "failed", execution: { state: "terminal", lastStatus: "failed", reason: "terminal" } },
       counts: { total: 1, timedOut: 1 },
       actions: [
-        { kind: "inspect-target", target: "approve~abc" },
-        { kind: "retry", target: "approve~abc" },
+        { kind: "inspect-target", target: "approve~abc", itemKey: "approve~abc" },
+        { kind: "retry", target: "approve~abc", itemKey: "approve~abc" },
         { kind: "fork" },
       ],
       items: [{
         key: "approve~abc",
         role: "instance",
         path: ["approve"],
-        label: "approve~abc",
+        label: "approve",
         kind: "signal",
         status: "timed_out",
         statusReason: "signal_timeout",
@@ -340,13 +643,124 @@ describe("compact run inspection surface", () => {
 
     const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:01:01.000Z"));
     expect(output).toContain("Error (scheduler signal_timeout): Approval timed out.");
-    expect(output).toContain("Deadline: 2026-07-11T00:01:00.000Z");
-    expect(output).toContain("Signal wait is closed.");
+    expect(output).toContain("Attention:");
+    expect(output).not.toContain("Deadline:");
+    expect(output).not.toContain("Signal wait is closed.");
     expect(output).toContain("Inspect: acpus runs inspect run_1 --target approve~abc");
     expect(output).toContain("Retry: acpus runs retry run_1 --target approve~abc");
     expect(output).toContain("Fork: acpus runs fork run_1");
+    expect(output).toContain("\n  Fork: acpus runs fork run_1\n");
+    expect(output).not.toContain("\n     Fork: acpus runs fork run_1\n");
     expect(output).not.toContain("Expected payload:");
     expect(output).not.toContain("acpus runs signal");
+  });
+
+  it("keeps failed context rows from suppressing the actionable owning node", () => {
+    const document: RunInspectionSnapshot = {
+      ...snapshot(),
+      counts: { total: 1, failed: 1 },
+      items: [{
+        key: "node:batch",
+        role: "frame",
+        path: ["batch"],
+        label: "batch",
+        kind: "fanout",
+        status: "failed",
+        frameKey: "batch~abc",
+        failure: { origin: "scheduler", code: "group_failed", message: "One item failed." },
+      }, {
+        key: "scope:batch:0",
+        role: "context",
+        parentKey: "node:batch",
+        path: ["batch", "item[0]"],
+        label: "item[0]",
+        kind: "fanout_item",
+        status: "failed",
+        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
+      }],
+      actions: [{ kind: "inspect-target", target: "batch~abc", itemKey: "node:batch" }],
+    };
+    delete document.output;
+    delete document.omitted;
+
+    const output = formatRunInspectionDocument(document);
+    expect(output).toContain("◆ batch — Error (scheduler group_failed): One item failed.");
+    expect(output).toContain("Inspect: acpus runs inspect run_1 --target batch~abc");
+    expect(output).not.toContain("◆ batch › item[0] —");
+  });
+
+  it("surfaces a failed scope frame as the deepest actionable root cause", () => {
+    const document: RunInspectionSnapshot = {
+      ...snapshot(),
+      counts: { total: 1, failed: 1 },
+      items: [{
+        key: "node:batch",
+        role: "frame",
+        path: ["batch"],
+        label: "batch",
+        kind: "fanout",
+        status: "failed",
+        frameKey: "batch~abc",
+        failure: { origin: "scheduler", code: "group_failed", message: "An item failed." },
+      }, {
+        key: "scope:batch:0",
+        role: "context",
+        parentKey: "node:batch",
+        path: ["batch", "item[0]"],
+        label: "item[0]",
+        kind: "fanout_item",
+        status: "failed",
+        frameKey: "batch~abc:item:0",
+        failure: { origin: "scheduler", code: "expression_failed", message: "Item output failed." },
+        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
+      }],
+      actions: [{ kind: "inspect-target", target: "batch~abc:item:0", itemKey: "scope:batch:0" }],
+    };
+    delete document.output;
+    delete document.omitted;
+
+    const output = formatRunInspectionDocument(document);
+    const attention = output.slice(output.indexOf("Attention:"));
+    expect(attention).toContain("◆ batch › item[0] — Error (scheduler expression_failed): Item output failed.");
+    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target batch~abc:item:0");
+    expect(attention).not.toContain("◆ batch — Error (scheduler group_failed)");
+  });
+
+  it("bounds failure previews and strips terminal control sequences from text output", () => {
+    const document = snapshot();
+    delete document.output;
+    delete document.omitted;
+    const message = `\u001b[31m${"x".repeat(300)}\u001b[0m\nnext`;
+    document.items = [{
+      key: "node:work",
+      role: "instance",
+      path: ["work"],
+      label: "work",
+      kind: "task",
+      status: "failed",
+      failure: { origin: "task", code: "task_failed", message },
+    }];
+    document.actions = [{ kind: "inspect-target", target: "work~abc", itemKey: "node:work" }];
+
+    const output = formatRunInspectionDocument(document);
+    const detail = output.split("\n").find(line => line.includes(" — Error (task task_failed):"))?.split(" — ")[1];
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("[31m");
+    expect(detail).toBeDefined();
+    expect(Array.from(detail!).length).toBeLessThanOrEqual(240);
+
+    const transcript = formatRunInspectionChanges([{
+      sequence: 9,
+      at: "2026-07-11T00:00:02.000Z",
+      entity: { kind: "node", id: "work~abc", nodeId: "work" },
+      subject: "work",
+      itemKey: "node:work",
+      action: "failed",
+      status: "failed",
+      message,
+    }], { run: document.run, items: document.items });
+    expect(transcript).not.toContain("\u001b");
+    expect(transcript).not.toContain("[31m");
   });
 
   it("renders compact terminal hook history", () => {
@@ -369,6 +783,7 @@ describe("compact run inspection surface", () => {
     const output = formatRunInspectionDocument(document);
     expect(output).toContain("Hooks:");
     expect(output).toContain("completed  notify  run.completed  #42  120ms  exit=0");
+    expect(output.indexOf("Output:")).toBeLessThan(output.indexOf("Hooks:"));
   });
 });
 
@@ -405,12 +820,13 @@ function snapshot(): RunInspectionSnapshot {
       label: "round 1",
       kind: "loop-iteration",
       status: "completed",
+      scope: { kind: "loop_iteration", iteration: 0, round: 1, empty: false },
     }, {
       key: "review~abc",
       role: "instance",
       parentKey: "review_loop:0",
       path: ["review_loop", "round:0", "review"],
-      label: "review~abc",
+      label: "review",
       kind: "agent",
       status: "completed",
       nodeId: "review",

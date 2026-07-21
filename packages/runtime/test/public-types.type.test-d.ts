@@ -14,11 +14,13 @@ import type {
   RunDynamicNodeInstance,
   RunNodeProgress,
   RunInspectionEmission,
+  RunInspectionAction,
   RunInspectionDetailedFailure,
   RunInspectionItem,
   RunInspectionPatch,
   RunInspectionRaw,
   RunInspectionRunSummary,
+  RunInspectionScopeState,
   RunDynamicSignalWait,
   RunDetails,
   RunForkInfo,
@@ -147,6 +149,8 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   }>();
   expectTypeOf<RunInspectionRunSummary["agentUsage"]>().toEqualTypeOf<{ instances: number; attempts: number; turns: number } | undefined>();
   expectTypeOf<RunInspectionRunSummary["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
+  expectTypeOf<NonNullable<RunInspectionItem["scope"]>>().toEqualTypeOf<RunInspectionScopeState>();
+  expectTypeOf<Extract<RunInspectionAction, { kind: "inspect-target" | "signal" | "retry" }>>().toMatchTypeOf<{ itemKey: string }>();
   expectTypeOf<RunInspectionPatch>().toMatchTypeOf<{
     upsertItems: RunInspectionItem[];
     removeItemKeys: string[];
