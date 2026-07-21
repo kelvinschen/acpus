@@ -1,9 +1,8 @@
 <p align="center">
-  <img src="page/logo/logo-mark.svg" alt="Acpus mark" width="120">
+  <img src="page/logo/logo-lockup.svg" alt="Acpus mark" width="120">
 </p>
 
-<h1 align="center">Acpus</h1>
-<p align="center"><em>Every run is an opus.</em></p>
+<h1 align="center">acpus</h1>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm version"></a>
