@@ -1,5 +1,11 @@
 # @acpus/core
 
+## 0.7.1
+
+### Patch Changes
+
+- 07f4e6b: Remove stale rewrite-roadmap links from the published package documentation.
+
 ## 0.7.0
 
 ### Minor Changes

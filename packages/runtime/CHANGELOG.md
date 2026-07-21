@@ -1,5 +1,13 @@
 # @acpus/runtime
 
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [07f4e6b]
+  - @acpus/core@0.7.1
+  - @acpus/loader@0.1.1
+
 ## 0.9.0
 
 ### Minor Changes
