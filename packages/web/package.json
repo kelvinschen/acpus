@@ -1,11 +1,11 @@
 {
   "name": "@acpus/web",
-  "version": "0.1.0-alpha.9",
+  "version": "0.1.0",
   "type": "module",
   "description": "Acpus WebUI — local operator console for run observation and control.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^6.0.3",

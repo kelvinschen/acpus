@@ -1,6 +1,6 @@
 {
   "name": "@acpus/core",
-  "version": "0.7.0-alpha.7",
+  "version": "0.7.0",
   "type": "module",
   "description": "Acpus TypeScript Workflow Core: Schema bridge, Acpus Expr IR, zx/core-backed Task command wrapper, authoring DSL, and validator.",
   "keywords": [
@@ -12,7 +12,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
@@ -62,7 +62,7 @@
     "zx": "^8.8.5"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1"
+    "@types/node": "^24.13.3"
   },
   "repository": {
     "type": "git",

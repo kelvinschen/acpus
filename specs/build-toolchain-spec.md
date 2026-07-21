@@ -13,7 +13,8 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - Build configurations MUST resolve workspace dependencies through their published `types` exports and MUST NOT consume another package's source tree.
 - The Web build configuration MUST compile only `src/index.ts` and `src/server/**/*.ts`.
 - The repository MUST use `typescript@7.0.2` as its sole TypeScript implementation.
-- Every workspace and publishable package MUST require Node.js 22.12 or newer.
+- Every workspace and publishable package MUST require Node.js 24.15 or newer.
+- Every package that declares Node.js types MUST use the Node.js 24 type line.
 
 ### Project Graph
 
@@ -33,6 +34,9 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - A failed child build MUST fail the root build, and the root build MUST await every child process that it started.
 - Vite MUST own `packages/web/dist/client`; TypeScript MUST own the remaining Web distribution files. Neither builder MAY delete the other's output.
 - `pnpm typecheck` MUST run source-first package typechecks without a prerequisite emit.
+- `pnpm check:docs` MUST reject missing local targets in current public Markdown documentation and the static Pages entry point.
+- `pnpm check:release` MUST reject prerelease package versions, active or pending Changesets, an inconsistent Node.js engine, and a bundled Skill version that differs from the CLI version.
+- `pnpm check:security` MUST reject high- or critical-severity advisories in the complete locked dependency graph.
 - Each package `clean` command MUST remove both package output and its package-root build cache. The Web clean command MUST also remove its temporary static visualization output.
 - Build cache files MUST be ignored by Git and MUST NOT be included in published packages.
 - The repository MUST NOT use Turbo, Nx, or another cross-command task cache.
@@ -40,4 +44,5 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 ## Verification
 
 - `pnpm check:build-toolchain`: verifies tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm check:docs`, `pnpm check:release`, and `pnpm check:security`: verify public documentation links, the stable package-release state, and the locked dependency graph.
 - `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership and publishable artifacts without build caches.

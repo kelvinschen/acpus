@@ -50,6 +50,9 @@ equal(rootManifest.scripts?.build, "node scripts/build.mjs", "root build script"
 equal(rootManifest.scripts?.["build:clean"], "pnpm clean && pnpm build", "clean build script");
 equal(rootManifest.scripts?.typecheck, "pnpm -r typecheck", "root typecheck script");
 equal(rootManifest.scripts?.["check:build-toolchain"], "node scripts/verify-build-toolchain.mjs", "toolchain check script");
+equal(rootManifest.scripts?.["check:docs"], "node scripts/verify-doc-links.mjs", "documentation check script");
+equal(rootManifest.scripts?.["check:release"], "node scripts/verify-release-state.mjs", "release check script");
+equal(rootManifest.scripts?.["check:security"], "pnpm audit --audit-level high", "security check script");
 equal(rootManifest.scripts?.["version-packages"], "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only", "version packages script");
 const cliManifest = manifests.get("cli");
 const skillVersion = (await text("packages/cli/skills/acpus/SKILL.md")).match(/^\s+acpus-version:\s*([^\s#]+)/mu)?.[1];
@@ -71,11 +74,11 @@ equal(webDependencies?.tailwindcss, "^4.3.2", "Tailwind version");
 equal(webDependencies?.["@tailwindcss/vite"], "^4.3.2", "Tailwind Vite plugin version");
 
 for (const [name, manifest] of [["workspace", rootManifest], ...manifests]) {
-  equal(manifest.engines?.node, ">=22.12", `${name} Node engine`);
+  equal(manifest.engines?.node, ">=24.15.0", `${name} Node engine`);
   const declarations = { ...manifest.dependencies, ...manifest.devDependencies };
   if (declarations.typescript !== undefined) equal(declarations.typescript, "7.0.2", `${name} TypeScript declaration`);
   if (declarations.tsx !== undefined) equal(declarations.tsx, "^4.23.0", `${name} tsx declaration`);
-  if (declarations["@types/node"] !== undefined) equal(declarations["@types/node"], "^22.20.1", `${name} Node types declaration`);
+  if (declarations["@types/node"] !== undefined) equal(declarations["@types/node"], "^24.13.3", `${name} Node types declaration`);
   for (const forbidden of ["@typescript/native-preview", "@typescript/typescript6", "turbo", "nx"]) {
     assert(declarations[forbidden] === undefined, `${name} MUST NOT declare ${forbidden}`);
   }

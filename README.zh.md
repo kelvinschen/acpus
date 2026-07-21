@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="page/logo/logo-opus-mark.svg" alt="Acpus 标志" width="120">
+  <img src="page/logo/logo-mark.svg" alt="Acpus 标志" width="120">
 </p>
 
 <h1 align="center">Acpus</h1>
@@ -8,15 +8,13 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm 版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 许可证"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D22.12-5FA04E" alt="Node.js 22.12 或更高版本">
+  <img src="https://img.shields.io/badge/node-%3E%3D24.15-5FA04E" alt="Node.js 24.15 或更高版本">
 </p>
 
 <p align="center">
   <a href="README.md">English</a>
   &nbsp;·&nbsp;
   <a href="https://kelvinschen.github.io/acpus/">官网</a>
-  &nbsp;·&nbsp;
-  <a href="docs/acpus-next-user-guide.md">用户指南</a>
   &nbsp;·&nbsp;
   <a href="docs/migrate-to-next.md">迁移指南</a>
 </p>
@@ -235,8 +233,9 @@ runtime，并且不会添加兼容 shim。
 
 ## 文档
 
-- [用户指南](docs/acpus-next-user-guide.md)
+- [内置 Acpus Skill](packages/cli/skills/acpus/SKILL.md)
 - [迁移指南](docs/migrate-to-next.md)
+- [完整替换 main 与发布操作手册](docs/main-replacement-release-runbook.md)
 - [Specs 索引](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)

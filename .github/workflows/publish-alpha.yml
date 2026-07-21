@@ -14,24 +14,35 @@ concurrency:
 jobs:
   publish-alpha:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: npm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: true
+
+      - name: Require alpha prerelease mode
+        run: |
+          node --input-type=module -e '
+            import { readFile } from "node:fs/promises";
+            const state = JSON.parse(await readFile(".changeset/pre.json", "utf8"));
+            if (state.mode !== "pre" || state.tag !== "alpha") process.exit(1);
+          '
 
       - name: Prepare Changesets base branch
         run: |
           git fetch origin main:refs/remotes/origin/main
           git branch --force main refs/remotes/origin/main
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.7.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
+          node-version: 24.15.0
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
@@ -54,6 +65,10 @@ jobs:
       - run: pnpm check:dependencies
 
       - run: pnpm check:dependencies:strict
+
+      - run: pnpm check:docs
+
+      - run: pnpm check:security
 
       - run: pnpm test
 

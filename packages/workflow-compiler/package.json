@@ -1,11 +1,11 @@
 {
   "name": "@acpus/workflow-compiler",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0",
   "type": "module",
   "description": "Acpus workflow module compiler and frozen workflow preparation.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
@@ -32,7 +32,7 @@
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.13.3",
     "neverthrow": "^8.2.0",
     "typescript": "7.0.2"
   },

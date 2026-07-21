@@ -1,11 +1,11 @@
 {
   "name": "@acpus/tasks",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0",
   "type": "module",
   "description": "Reusable Acpus task package.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     "./git": {
@@ -30,7 +30,7 @@
     "neverthrow": "^8.2.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1"
+    "@types/node": "^24.13.3"
   },
   "repository": {
     "type": "git",

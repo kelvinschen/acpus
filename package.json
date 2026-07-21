@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.7.0",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -14,6 +14,9 @@
     "check:dead-code": "knip --include-entry-exports --include files,exports,nsExports,types,nsTypes,enumMembers,namespaceMembers,duplicates --treat-config-hints-as-errors",
     "check:dependencies": "knip --dependencies --treat-config-hints-as-errors",
     "check:dependencies:strict": "knip --strict --dependencies --treat-config-hints-as-errors",
+    "check:docs": "node scripts/verify-doc-links.mjs",
+    "check:release": "node scripts/verify-release-state.mjs",
+    "check:security": "pnpm audit --audit-level high",
     "typecheck": "pnpm -r typecheck",
     "test": "node scripts/test.mjs",
     "test:watch": "vitest",
@@ -32,7 +35,7 @@
   "devDependencies": {
     "@acpus/runtime": "workspace:*",
     "@changesets/cli": "^2.31.0",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.13.3",
     "acpus": "workspace:*",
     "knip": "^6.26.0",
     "slash": "^3.0.0",

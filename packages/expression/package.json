@@ -1,6 +1,6 @@
 {
   "name": "@acpus/expression",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0",
   "type": "module",
   "description": "Acpus typed JSON-value expression language.",
   "keywords": [
@@ -11,7 +11,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": {
