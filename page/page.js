@@ -439,6 +439,7 @@ const fileTab = $("#fileTab");
 const authoringStatus = $("#authoringStatus");
 const delegateBtn = $("#delegateBtn");
 const delegateLabel = $("#delegateLabel");
+const taskHintCopy = $("#taskHintCopy");
 const taskBtn = $("#taskBtn");
 const skipBtn = $("#skipBtn");
 const pauseBtn = $("#pauseBtn");
@@ -458,6 +459,31 @@ let workbenchTransitionTimer;
 let retryKeyEl = null;
 let retryFired = false;
 let approved = false;
+let delegateReminderTimer;
+
+function stopDelegateInvite() {
+  clearTimeout(delegateReminderTimer);
+  taskCard.classList.remove("is-inviting", "is-reminding");
+}
+
+const delegateInviteObserver = new IntersectionObserver(
+  ([entry]) => {
+    if (!entry.isIntersecting) return;
+    delegateInviteObserver.disconnect();
+    taskCard.classList.add("is-inviting");
+    if (!REDUCED) {
+      delegateReminderTimer = setTimeout(() => {
+        taskCard.classList.remove("is-inviting");
+        if (!hasDelegated) taskCard.classList.add("is-reminding");
+      }, 4700);
+    }
+  },
+  { threshold: 0.55 }
+);
+
+delegateInviteObserver.observe(taskCard);
+delegateBtn.addEventListener("pointerenter", stopDelegateInvite, { once: true });
+delegateBtn.addEventListener("focus", stopDelegateInvite, { once: true });
 
 function buildCodePanel() {
   codePanel.innerHTML = "";
@@ -1086,7 +1112,10 @@ function showTask() {
 delegateBtn.addEventListener("click", () => {
   if (!hasDelegated) {
     hasDelegated = true;
+    stopDelegateInvite();
+    taskCard.classList.add("has-delegated");
     delegateLabel.textContent = "Return to stage";
+    taskHintCopy.textContent = "The run is live — return to inspect it on the stage.";
     delegateBtn.setAttribute("aria-label", "Return to the simulation stage");
     taskBtn.hidden = false;
     setStatus("authoring — an agent is writing workflow.ts", "is-running");

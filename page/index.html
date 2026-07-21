@@ -13,7 +13,7 @@
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800;900&display=swap"
       rel="stylesheet" />
-    <link rel="stylesheet" href="./page.css?v=paper-word-tagline-v3-20260721" />
+    <link rel="stylesheet" href="./page.css?v=delegate-invite-v1-20260721" />
   </head>
   <body>
     <a class="skip-link" href="#workbench">Skip to the task</a>
@@ -70,9 +70,14 @@
                 findings, and wait for my approval before writing the cited report.
               </p>
               <div class="task-foot">
-                <span class="task-hint"></span>
-                <button class="btn btn-delegate" id="delegateBtn" type="button">
-                <span id="delegateLabel">Delegate</span> <span aria-hidden="true">→</span>
+                <span class="task-hint" id="taskHint">
+                  <span class="task-hint-kicker">Your turn <span aria-hidden="true">→</span></span>
+                  <span class="task-hint-copy" id="taskHintCopy">
+                    watch <code>workflow.ts</code> get written, checked, and run.
+                  </span>
+                </span>
+                <button class="btn btn-delegate" id="delegateBtn" type="button" aria-describedby="taskHintCopy">
+                  <span id="delegateLabel">Delegate &amp; watch</span> <span class="delegate-arrow" aria-hidden="true">→</span>
                 </button>
             </div>
           </div>
@@ -334,6 +339,6 @@ agents: extractor (claude) · verifier (pi) · redteam (codex)</span>
       </section>
       </main>
 
-    <script src="./page.js?v=paper-word-tagline-v3-20260721" defer></script>
+    <script src="./page.js?v=delegate-invite-v1-20260721" defer></script>
   </body>
 </html>

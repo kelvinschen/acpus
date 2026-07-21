@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -35 470 470" width="64" height="64" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
-  <title id="title">Acpus paper-cut Compass Arch</title>
-  <desc id="desc">Orange compass arch interlaced with an ultramarine relay loop on a contour-cut paper backing.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 470" width="64" height="64" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title desc">
+  <title id="title">Acpus app icon</title>
+  <desc id="desc">Orange compass arch interlaced with an ultramarine relay loop on a rounded paper app icon.</desc>
   <defs>
     <pattern id="paper" width="43" height="37" patternUnits="userSpaceOnUse">
       <rect width="43" height="37" fill="#FBF6EB"/>
@@ -25,8 +25,10 @@
     <pattern id="dotsBlue" width="13" height="13" patternUnits="userSpaceOnUse" patternTransform="rotate(8)"><circle cx="3" cy="3" r="2.2" fill="#0A46D4"/></pattern>
     <pattern id="dotsInk" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)"><circle cx="3" cy="3" r="2.1" fill="#252828"/></pattern>
   </defs>
-  <path data-mark-backing="shadow" d="M190 3L223 4L240 10L260 25L283 51L310 50L340 57L370 75L393 100L407 132L412 166L408 194L398 221L381 244L365 262L375 321L368 342L349 354L315 362L276 358L236 364L195 360L155 367L115 362L78 370L55 363L32 357L8 344L2 328L12 298L50 207L111 79L151 22Z" transform="translate(40 27) scale(0.96)" fill="url(#ink)" stroke="url(#ink)" stroke-width="20" stroke-linejoin="bevel" paint-order="stroke fill"/>
-  <path data-mark-backing="edge" d="M190 3L223 4L240 10L260 25L283 51L310 50L340 57L370 75L393 100L407 132L412 166L408 194L398 221L381 244L365 262L375 321L368 342L349 354L315 362L276 358L236 364L195 360L155 367L115 362L78 370L55 363L32 357L8 344L2 328L12 298L50 207L111 79L151 22Z" transform="translate(32 15) scale(0.96)" fill="#E7E0D3" stroke="#E7E0D3" stroke-width="30" stroke-linejoin="bevel" paint-order="stroke fill"/>
-  <path data-mark-backing="paper" d="M190 3L223 4L240 10L260 25L283 51L310 50L340 57L370 75L393 100L407 132L412 166L408 194L398 221L381 244L365 262L375 321L368 342L349 354L315 362L276 358L236 364L195 360L155 367L115 362L78 370L55 363L32 357L8 344L2 328L12 298L50 207L111 79L151 22Z" transform="translate(32 15) scale(0.96)" fill="url(#paper)" stroke="url(#paper)" stroke-width="24" stroke-linejoin="bevel" paint-order="stroke fill"/>
-  <g data-brand-mark="compass-arch" transform="translate(32 15) scale(0.96) translate(-180 -160)"><path d="M195 14L217 15L226 18L245 31L264 53L295 117L329 209L317 214L303 216L277 213L243 111L230 81L221 70L213 66L203 67L194 72L180 86L149 138L121 196L62 340L50 346L32 341L12 331L11 327L19 305L56 217L118 86L156 30ZM352 267L357 272L375 321L368 332L345 342L325 334L304 278L312 279L326 276Z" transform="translate(180 160)" fill="url(#orangeInk)" fill-rule="evenodd"/><path d="M212 13L244 14L272 24L303 49L316 69L327 98L331 128L328 150L322 170L306 198L276 220L246 230L208 233L138 225L98 231L66 241L40 253L18 247L17 239L30 201L66 186L120 174L156 174L228 182L242 179L254 173L265 163L271 154L278 134L279 114L275 96L265 78L253 67L237 60L213 57L196 21L196 19Z" transform="translate(260 200)" fill="url(#blueInk)" fill-rule="evenodd"/></g>
+  <rect data-app-icon="shadow" x="20" y="22" width="438" height="438" rx="100" fill="url(#ink)"/>
+  <rect data-app-icon="edge" x="12" y="12" width="438" height="438" rx="100" fill="#E7E0D3"/>
+  <rect data-app-icon="paper" x="18" y="18" width="426" height="426" rx="92" fill="url(#paper)"/>
+  <g transform="translate(235 235) scale(.9) translate(-235 -235)">
+    <g data-brand-mark="compass-arch" transform="translate(32 50) scale(0.96) translate(-180 -160)"><path d="M195 14L217 15L226 18L245 31L264 53L295 117L329 209L317 214L303 216L277 213L243 111L230 81L221 70L213 66L203 67L194 72L180 86L149 138L121 196L62 340L50 346L32 341L12 331L11 327L19 305L56 217L118 86L156 30ZM352 267L357 272L375 321L368 332L345 342L325 334L304 278L312 279L326 276Z" transform="translate(180 160)" fill="url(#orangeInk)" fill-rule="evenodd"/><path d="M212 13L244 14L272 24L303 49L316 69L327 98L331 128L328 150L322 170L306 198L276 220L246 230L208 233L138 225L98 231L66 241L40 253L18 247L17 239L30 201L66 186L120 174L156 174L228 182L242 179L254 173L265 163L271 154L278 134L279 114L275 96L265 78L253 67L237 60L213 57L196 21L196 19Z" transform="translate(260 200)" fill="url(#blueInk)" fill-rule="evenodd"/></g>
+  </g>
 </svg>

@@ -540,10 +540,41 @@ a:hover {
 }
 
 .task-hint {
+  max-width: 35ch;
+  display: grid;
+  justify-items: start;
+  gap: 9px;
   color: var(--muted);
+}
+
+.task-hint-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--blue);
+  color: var(--paper-raised);
+  padding: 4px 8px 3px;
+  box-shadow: 2px 3px 0 var(--ink);
   font-family: var(--mono);
-  font-size: 10.5px;
-    line-height: 1.5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  text-transform: uppercase;
+  transform: rotate(-1deg);
+  transform-origin: left center;
+}
+
+.task-hint-copy {
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.task-hint-copy code {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .btn {
@@ -563,6 +594,93 @@ a:hover {
     color: var(--ink);
       transform: translate(-1px, -1px);
       box-shadow: var(--shadow-micro-raised);
+}
+
+.btn-delegate {
+  flex: none;
+  white-space: nowrap;
+}
+
+.delegate-arrow {
+  display: inline-block;
+  margin-left: 3px;
+  transition: transform 180ms var(--ease-out);
+}
+
+.btn-delegate:hover .delegate-arrow,
+.btn-delegate:focus-visible .delegate-arrow {
+  transform: translateX(4px);
+}
+
+.task-card.is-inviting .task-hint-kicker {
+  animation: task-kicker-in 420ms var(--ease-out) both;
+}
+
+.task-card.is-inviting .btn-delegate {
+  animation: delegate-invite 540ms var(--ease-out) 220ms both;
+}
+
+.task-card.is-inviting .delegate-arrow {
+  animation: delegate-arrow-invite 420ms var(--ease-out) 330ms both;
+}
+
+.task-card.is-reminding .btn-delegate {
+  animation: delegate-reminder 380ms var(--ease-out) both;
+}
+
+.task-card.is-reminding .delegate-arrow {
+  animation: delegate-arrow-invite 320ms var(--ease-out) 70ms both;
+}
+
+.task-card.has-delegated .task-hint-kicker {
+  background: var(--ink);
+  box-shadow: none;
+  transform: none;
+}
+
+@keyframes task-kicker-in {
+  0% {
+    opacity: 0.65;
+    transform: translate3d(-12px, 3px, 0) rotate(-3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(-1deg);
+  }
+}
+
+@keyframes delegate-invite {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: var(--shadow-micro);
+  }
+  48% {
+    transform: translate3d(-2px, -3px, 0);
+    box-shadow: 5px 8px 0 var(--shadow);
+  }
+}
+
+@keyframes delegate-reminder {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: var(--shadow-micro);
+  }
+  52% {
+    transform: translate3d(-1px, -2px, 0);
+    box-shadow: var(--shadow-micro-raised);
+  }
+}
+
+@keyframes delegate-arrow-invite {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  55% {
+    transform: translateX(5px);
+  }
 }
 
 .btn:active {
@@ -2452,6 +2570,10 @@ a:hover {
       align-items: stretch;
       flex-direction: column;
     }
+
+    .task-hint {
+      max-width: none;
+    }
     
     .btn-delegate {
       width: 100%;
@@ -2665,6 +2787,14 @@ a:hover {
     .complete-plate,
     .workbench-page.is-complete .complete-plate {
       transform: translate(-50%, -50%);
+    }
+
+    .task-card.is-inviting .task-hint-kicker,
+    .task-card.is-inviting .btn-delegate,
+    .task-card.is-inviting .delegate-arrow,
+    .task-card.is-reminding .btn-delegate,
+    .task-card.is-reminding .delegate-arrow {
+      animation: none;
     }
   *,
   *::before,

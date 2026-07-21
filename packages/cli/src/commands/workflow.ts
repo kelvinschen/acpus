@@ -78,7 +78,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
 
   command.addCommand(withJsonOutput(new Command("check")
     .exitOverride()
-    .description("Typecheck, compile, and validate a workflow without mutating runtime state.")
+    .description("Standalone workflow validation without admitting or executing a run.")
     .argument("<workflow-module>", "workflow module path or catalog name")
     .option("--input <json|file.json>", "validate inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "validate submit-time agent overrides")
@@ -90,7 +90,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
 
   command.addCommand(withJsonOutput(new Command("run")
     .exitOverride()
-    .description("Prepare and run a TypeScript workflow module.")
+    .description("Typecheck, compile, and validate a workflow. Execute it only if there are no diagnostics.")
     .argument("<workflow-module>", "workflow module path or catalog name")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")

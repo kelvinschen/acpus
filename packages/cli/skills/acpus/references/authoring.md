@@ -9,13 +9,7 @@ Contents:
 
 ## Start
 
-Write the workflow, then check it without creating a run:
-
-```sh
-acpus workflow check <workflow.ts-or-catalog>
-```
-
-Import only the symbols the workflow uses:
+Write the workflow and import only the symbols it uses:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -58,7 +52,6 @@ Choose the operation by intent:
 - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
 - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`.
 - Never add `outputSchema` to Task or composite nodes; their outputs are TypeScript-inferred.
-- Check after every meaningful edit and fix all diagnostics before running.
 
 ## Expressions And Shapes
 
@@ -167,4 +160,4 @@ When these rules and examples do not answer exact usage:
 1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
-For check/run/control commands read `cli-operations.md`; for retry/fork read `runtime-recovery.md`.
+For operation commands read `cli-operations.md`; for retry/fork read `runtime-recovery.md`.

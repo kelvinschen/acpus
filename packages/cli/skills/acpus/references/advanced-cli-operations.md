@@ -4,6 +4,17 @@ Read this only for catalogs, import, static visualization, WebUI, bundled-skill 
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 
+## Standalone Check
+
+
+Use `workflow check` only when validation without execution is the goal:
+
+```sh
+acpus workflow check workflow.ts --input sample-input.json
+```
+
+`workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
+
 ## Catalog and import
 
 Project entries live under `.acpus/workflows/<name>/workflow.ts`; global entries under `$HOME/.acpus/workflows/<name>/workflow.ts`. The direct lower-kebab `defineWorkflow({ name })` must equal the package directory. Catalog names work with check, run, and viz; pass `--project` or `--global` when names collide. Discovery is static: invalid first-level packages remain listable but cannot be used.
