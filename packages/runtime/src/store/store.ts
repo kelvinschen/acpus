@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { access, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
@@ -3729,6 +3730,8 @@ function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
 }
 
 const RUNTIME_STORE_BUSY_TIMEOUT_MS = 5_000;
+const SQLITE_EXPERIMENTAL_WARNING = "SQLite is an experimental feature and might change at any time";
+let databaseSyncConstructor: typeof import("node:sqlite").DatabaseSync | undefined;
 
 export function isRuntimeStoreBusyError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -3738,9 +3741,26 @@ export function isRuntimeStoreBusyError(error: unknown): boolean {
 }
 
 function openDatabase(path: string, readOnly = false): DatabaseSync {
+  const DatabaseSync = loadDatabaseSync();
   const db = new DatabaseSync(path, { enableForeignKeyConstraints: true, readOnly, timeout: RUNTIME_STORE_BUSY_TIMEOUT_MS });
   db.exec("PRAGMA foreign_keys = ON;");
   return db;
+}
+
+function loadDatabaseSync(): typeof import("node:sqlite").DatabaseSync {
+  if (databaseSyncConstructor) return databaseSyncConstructor;
+
+  const emitWarning = process.emitWarning;
+  process.emitWarning = function emitWarningExceptSqliteExperimental(this: NodeJS.Process, ...args: unknown[]): void {
+    if (args[0] === SQLITE_EXPERIMENTAL_WARNING && args[1] === "ExperimentalWarning") return;
+    Reflect.apply(emitWarning, this, args);
+  } as typeof process.emitWarning;
+  try {
+    databaseSyncConstructor = (createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite")).DatabaseSync;
+    return databaseSyncConstructor;
+  } finally {
+    process.emitWarning = emitWarning;
+  }
 }
 
 function initializeSchema(db: DatabaseSync): void {

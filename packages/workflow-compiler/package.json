@@ -5,7 +5,7 @@
   "description": "Acpus workflow module compiler and frozen workflow preparation.",
   "license": "MIT",
   "engines": {
-    "node": ">=24.15.0"
+    "node": "^22.18.0 || >=24.0.0"
   },
   "exports": {
     ".": {
@@ -32,7 +32,7 @@
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^22.20.1",
     "neverthrow": "^8.2.0",
     "typescript": "7.0.2"
   },

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expectedEngine = ">=24.15.0";
+const expectedEngine = "^22.18.0 || >=24.0.0";
 const expectedPublicPackages = new Set([
   "@acpus/agent-executor",
   "acpus",

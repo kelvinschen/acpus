@@ -9,6 +9,8 @@
 ### Admission And Store
 
 - The runtime MUST store workspace state in `.acpus/.local/state/runtime.db`, initialize the complete current schema on first writable open, preserve current rows on reopen, and leave read-only opens unchanged.
+- Runtime-triggered loading of `node:sqlite` MUST NOT emit Node.js's SQLite experimental warning.
+- Runtime-triggered loading of `node:sqlite` MUST leave every other process warning observable.
 - An existing-store open MUST return absence only for `ENOENT` or `ENOTDIR`; permission, symlink-loop, I/O, and SQLite failures MUST remain system failures.
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
@@ -243,6 +245,7 @@
 - `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, daemon session wiring, and progress beyond internal count limits.
 - `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, retry replay behavior, rejection of non-terminal execution without a durable wake source, attempt/artifact/progress fences, due-Signal scale, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
+- A fresh-process Runtime integration test verifies that SQLite initialization is quiet while an unrelated experimental warning remains observable.
 - Cover schema initialization, frozen-file integrity, run-directory entry limits, prepared-workflow consistency, collision-safe atomic admission, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
 - Prove deterministic scheduler recovery and every node/composite strategy, identity, resource, deadline, cancellation, retry, and projection rule.
 - Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, canonical turn records, and optional captures.

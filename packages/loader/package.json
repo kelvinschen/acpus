@@ -5,7 +5,7 @@
   "description": "Acpus internal TypeScript authoring module loader.",
   "license": "MIT",
   "engines": {
-    "node": ">=24.15.0"
+    "node": "^22.18.0 || >=24.0.0"
   },
   "exports": {
     ".": {
@@ -34,7 +34,7 @@
     "tsx": "^4.23.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@types/node": "^22.20.1"
   },
   "repository": {
     "type": "git",

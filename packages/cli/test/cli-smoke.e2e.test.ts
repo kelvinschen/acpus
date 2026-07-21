@@ -10,6 +10,20 @@ import { withTestWorkspace } from "./support/workspace.js";
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("acpus CLI subprocess smoke", () => {
+  it("prints help and version without runtime warnings", async () => {
+    const [help, version] = await Promise.all([
+      runSourceCli(repoRoot, ["--help"]),
+      runSourceCli(repoRoot, ["--version"]),
+    ]);
+
+    expect(help.exitCode, help.stdout || help.stderr).toBe(0);
+    expect(help.stderr).toBe("");
+    expect(help.stdout).toContain("Usage: acpus");
+    expect(version.exitCode, version.stdout || version.stderr).toBe(0);
+    expect(version.stderr).toBe("");
+    expect(version.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
   it("checks the landing-page workflow with the documented text output", async () => {
     const result = await runSourceCli(repoRoot, [
       "workflow",

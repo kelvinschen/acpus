@@ -13,8 +13,8 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - Build configurations MUST resolve workspace dependencies through their published `types` exports and MUST NOT consume another package's source tree.
 - The Web build configuration MUST compile only `src/index.ts` and `src/server/**/*.ts`.
 - The repository MUST use `typescript@7.0.2` as its sole TypeScript implementation.
-- Every workspace and publishable package MUST require Node.js 24.15 or newer.
-- Every package that declares Node.js types MUST use the Node.js 24 type line.
+- Every workspace and publishable package MUST declare Node.js `^22.18.0 || >=24.0.0` support.
+- Every package that declares Node.js types MUST use `@types/node@^22.20.1`.
 
 ### Project Graph
 

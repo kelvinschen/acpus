@@ -38,7 +38,7 @@ try {
     join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--input", "input.json", "--json",
   ], {
     cwd: workspace,
-    env: { ...process.env, FORCE_COLOR: "0", NODE_NO_WARNINGS: "1", NODE_OPTIONS: "" },
+    env: cliEnvironment(),
   });
   assert.equal(stderr, "");
 
@@ -228,8 +228,17 @@ async function verifyPackedCli(packages) {
     const cliEntry = join(consumerDirectory, "node_modules", "acpus", "dist", "cli.js");
     const codexHome = join(consumerDirectory, "codex-home");
     const claudeHome = join(consumerDirectory, "claude-home");
-    const environment = { ...smokeEnvironment(), CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome };
-    const runCli = args => execFileAsync(process.execPath, [cliEntry, ...args], { cwd: consumerDirectory, env: environment });
+    const environment = { ...cliEnvironment(), CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome };
+    const runCli = async args => {
+      const result = await execFileAsync(process.execPath, [cliEntry, ...args], { cwd: consumerDirectory, env: environment });
+      assert.equal(result.stderr, "", `packed CLI wrote to stderr: ${args.join(" ")}`);
+      return result;
+    };
+
+    const help = await runCli(["--help"]);
+    assert.match(help.stdout, /Usage: acpus/u);
+    const version = await runCli(["--version"]);
+    assert.equal(version.stdout.trim(), packagesByName.get("acpus").manifest.version);
 
     const doctor = JSON.parse((await runCli(["doctor", "--json"])).stdout);
     assert.equal(doctor.ok, true);
@@ -271,7 +280,7 @@ async function verifyPackedCli(packages) {
     await writeFile(installedManifestPath, `${JSON.stringify(installedManifest, null, 2)}\n`);
     await assert.rejects(runCli(["doctor", "--json"]), error => {
       const failed = JSON.parse(error.stdout);
-      return failed.ok === false && failed.checks.some(check => check.area === "authoring" && check.status === "fail");
+      return error.stderr === "" && failed.ok === false && failed.checks.some(check => check.area === "authoring" && check.status === "fail");
     });
     await writeFile(installedManifestPath, installedManifestSource);
 
@@ -279,7 +288,7 @@ async function verifyPackedCli(packages) {
     await writeFile(bundledSkill, (await readFile(bundledSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
     await assert.rejects(runCli(["doctor", "--json"]), error => {
       const failed = JSON.parse(error.stdout);
-      return failed.ok === false && failed.checks.some(check => check.area === "skill" && check.status === "fail");
+      return error.stderr === "" && failed.ok === false && failed.checks.some(check => check.area === "skill" && check.status === "fail");
     });
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -322,13 +331,17 @@ function runPnpm(args, cwd) {
 
 function smokeEnvironment() {
   return {
-    ...process.env,
-    CI: "1",
-    FORCE_COLOR: "0",
+    ...cliEnvironment(),
     NODE_NO_WARNINGS: "1",
     NODE_OPTIONS: "",
-    NODE_PATH: "",
   };
+}
+
+function cliEnvironment() {
+  const environment = { ...process.env, CI: "1", FORCE_COLOR: "0", NODE_PATH: "" };
+  delete environment.NODE_NO_WARNINGS;
+  delete environment.NODE_OPTIONS;
+  return environment;
 }
 
 function localFileSpec(fromDirectory, target) {

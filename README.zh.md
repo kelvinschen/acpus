@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm 版本"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 许可证"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D24.15-5FA04E" alt="Node.js 24.15 或更高版本">
+  <img src="https://img.shields.io/badge/node-22.18%2B%20%7C%2024%2B-5FA04E" alt="Node.js 22.18+（限 22.x）或 Node.js 24+">
 </p>
 
 <p align="center">

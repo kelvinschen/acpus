@@ -75,11 +75,11 @@ equal(webDependencies?.tailwindcss, "^4.3.2", "Tailwind version");
 equal(webDependencies?.["@tailwindcss/vite"], "^4.3.2", "Tailwind Vite plugin version");
 
 for (const [name, manifest] of [["workspace", rootManifest], ...manifests]) {
-  equal(manifest.engines?.node, ">=24.15.0", `${name} Node engine`);
+  equal(manifest.engines?.node, "^22.18.0 || >=24.0.0", `${name} Node engine`);
   const declarations = { ...manifest.dependencies, ...manifest.devDependencies };
   if (declarations.typescript !== undefined) equal(declarations.typescript, "7.0.2", `${name} TypeScript declaration`);
   if (declarations.tsx !== undefined) equal(declarations.tsx, "^4.23.0", `${name} tsx declaration`);
-  if (declarations["@types/node"] !== undefined) equal(declarations["@types/node"], "^24.13.3", `${name} Node types declaration`);
+  if (declarations["@types/node"] !== undefined) equal(declarations["@types/node"], "^22.20.1", `${name} Node types declaration`);
   for (const forbidden of ["@typescript/native-preview", "@typescript/typescript6", "turbo", "nx"]) {
     assert(declarations[forbidden] === undefined, `${name} MUST NOT declare ${forbidden}`);
   }

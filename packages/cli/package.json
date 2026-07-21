@@ -5,7 +5,7 @@
   "description": "Acpus CLI for TypeScript workflow validation and durable run admission.",
   "license": "MIT",
   "engines": {
-    "node": ">=24.15.0"
+    "node": "^22.18.0 || >=24.0.0"
   },
   "bin": {
     "acpus": "./dist/cli.js"
@@ -55,7 +55,7 @@
     "tar": "^7.5.20"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
+    "@types/node": "^22.20.1",
     "tsx": "^4.23.0"
   },
   "repository": {

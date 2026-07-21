@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D24.15-5FA04E" alt="Node.js 24.15 or newer">
+  <img src="https://img.shields.io/badge/node-22.18%2B%20%7C%2024%2B-5FA04E" alt="Node.js 22.18+ within 22.x, or Node.js 24+">
 </p>
 
 <p align="center">

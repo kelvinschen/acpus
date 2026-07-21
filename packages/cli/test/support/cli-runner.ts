@@ -24,10 +24,13 @@ export function runSourceCli(cwd: string, args: string[], options: { env?: NodeJ
 
 function runProcess(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
   return new Promise(resolveProcess => {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, FORCE_COLOR: "0" };
+    delete env.NODE_NO_WARNINGS;
+    delete env.NODE_OPTIONS;
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...options.env, FORCE_COLOR: "0", NODE_NO_WARNINGS: "1" },
+      env,
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
