@@ -1,5 +1,11 @@
 # acpus
 
+## 0.7.0
+
+### Minor Changes
+
+- 944878b: Simplify bundled Skill installation to fixed project or global `.agents` and `.claude` targets with interactive terminal selection and explicit non-interactive scope and Agent options.
+
 ## 0.6.2
 
 ### Patch Changes
