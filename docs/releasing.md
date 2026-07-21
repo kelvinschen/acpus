@@ -31,6 +31,13 @@ GitHub may require a maintainer to approve CI on a pull request created by
 `GITHUB_TOKEN`; use a GitHub App installation token if that approval should
 also be automated.
 
+Changesets publishes through pnpm's native publish client. The publish job sets
+`PNPM_CONFIG_PROVENANCE=true` and verifies both that setting and the repository's
+pinned pnpm version before invoking Changesets. After the first stable publish
+following a pnpm migration, verify all nine public packages on npm have the
+expected version, `latest` dist-tag, and provenance attestation, then verify the
+matching Git tags and GitHub Releases. There is no separate canary workflow.
+
 Do not edit package versions by hand. Do not rerun a partially failed publish
 until the versions that reached npm have been inventoried. npm releases are
 fixed forward with a new changeset; they are not rolled back by moving `main`.

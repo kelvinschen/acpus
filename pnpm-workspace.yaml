@@ -1,2 +1,9 @@
 packages:
   - "packages/*"
+
+allowBuilds:
+  esbuild: true
+blockExoticSubdeps: true
+minimumReleaseAge: 1440
+strictDepBuilds: true
+trustLockfile: false

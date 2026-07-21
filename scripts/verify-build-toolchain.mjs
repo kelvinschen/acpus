@@ -16,6 +16,16 @@ const projects = {
 };
 const foundation = ["agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
 const allProjects = [...foundation, "web", "cli"];
+const expectedPnpmWorkspace = `packages:
+  - "packages/*"
+
+allowBuilds:
+  esbuild: true
+blockExoticSubdeps: true
+minimumReleaseAge: 1440
+strictDepBuilds: true
+trustLockfile: false
+`;
 
 const rootManifest = await json("package.json");
 const manifests = new Map();
@@ -46,8 +56,11 @@ for (const [name, dependencies] of Object.entries(projects)) {
 
 equal((await json("tsconfig.build.foundation.json")).references, solutionReferences(foundation), "foundation solution");
 equal((await json("tsconfig.build.json")).references, solutionReferences(allProjects), "full solution");
+equal(rootManifest.packageManager, "pnpm@11.15.1", "pnpm version");
+equal(await text("pnpm-workspace.yaml"), expectedPnpmWorkspace, "pnpm workspace policy");
 equal(rootManifest.scripts?.build, "node scripts/build.mjs", "root build script");
 equal(rootManifest.scripts?.["build:clean"], "pnpm clean && pnpm build", "clean build script");
+equal(rootManifest.scripts?.clean, "pnpm -r run clean", "root clean script");
 equal(rootManifest.scripts?.typecheck, "pnpm -r typecheck", "root typecheck script");
 equal(rootManifest.scripts?.["check:build-toolchain"], "node scripts/verify-build-toolchain.mjs", "toolchain check script");
 equal(rootManifest.scripts?.["check:docs"], "node scripts/verify-doc-links.mjs", "documentation check script");
@@ -55,6 +68,19 @@ equal(rootManifest.scripts?.["check:release"], "node scripts/verify-release-stat
 equal(rootManifest.scripts?.["check:security"], "pnpm audit --audit-level high", "security check script");
 equal(rootManifest.scripts?.["version-packages"], "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only", "version packages script");
 equal(rootManifest.scripts?.["ci:publish"], "pnpm check:release && changeset publish", "publish script");
+
+const ciWorkflow = await text(".github/workflows/ci.yml");
+const publishWorkflow = await text(".github/workflows/publish.yml");
+for (const [name, workflow, expectedSetups] of [["CI", ciWorkflow, 1], ["publish", publishWorkflow, 2]]) {
+  const setupBlocks = workflow.split(/(?=^\s*- uses:)/mu).filter(block => block.includes("pnpm/action-setup@"));
+  equal(setupBlocks.length, expectedSetups, `${name} pnpm setup count`);
+  for (const block of setupBlocks) assert(!/^\s+version:/mu.test(block), `${name} pnpm setup MUST use packageManager`);
+}
+assert(/^\s+PNPM_CONFIG_PROVENANCE: true$/mu.test(publishWorkflow), "publish workflow MUST enable pnpm provenance");
+assert(!/^\s+NPM_CONFIG_PROVENANCE:/mu.test(publishWorkflow), "publish workflow MUST NOT use npm provenance configuration");
+assert(publishWorkflow.includes('test "$(pnpm --version)" = "11.15.1"'), "publish workflow MUST verify the pnpm version");
+assert(publishWorkflow.includes('test "$(pnpm config get provenance)" = "true"'), "publish workflow MUST verify provenance");
+
 const cliManifest = manifests.get("cli");
 const skillVersion = (await text("packages/cli/skills/acpus/SKILL.md")).match(/^\s+acpus-version:\s*([^\s#]+)/mu)?.[1];
 equal(skillVersion, cliManifest.version, "bundled Acpus skill version");

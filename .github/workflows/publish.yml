@@ -38,8 +38,6 @@ jobs:
         run: test ! -f .changeset/pre.json
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.7.0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -64,6 +62,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PNPM_CONFIG_PROVENANCE: true
     environment:
       name: npm
     permissions:
@@ -80,14 +80,17 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.7.0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      - name: Verify pnpm publish configuration
+        run: |
+          test "$(pnpm --version)" = "11.15.1"
+          test "$(pnpm config get provenance)" = "true"
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
@@ -103,4 +106,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true

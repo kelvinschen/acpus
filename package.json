@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@9.7.0",
+  "packageManager": "pnpm@11.15.1",
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
   },
@@ -30,7 +30,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only",
     "ci:publish": "pnpm check:release && changeset publish",
-    "clean": "pnpm -r clean"
+    "clean": "pnpm -r run clean"
   },
   "devDependencies": {
     "@acpus/runtime": "workspace:*",

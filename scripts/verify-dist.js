@@ -120,10 +120,8 @@ async function verifyPackedWorkflowCompiler(packages) {
       dependencies: {
         "@acpus/workflow-compiler": fileSpecs["@acpus/workflow-compiler"],
       },
-      pnpm: {
-        overrides: fileSpecs,
-      },
     }, null, 2)}\n`);
+    await writePnpmWorkspace(consumerDirectory, fileSpecs);
     await writeFile(join(consumerDirectory, "valid.workflow.ts"), `import { defineWorkflow, z } from "acpus/core";
 
 export default defineWorkflow({
@@ -221,8 +219,8 @@ async function verifyPackedCli(packages) {
       private: true,
       type: "module",
       dependencies: { acpus: fileSpecs.acpus },
-      pnpm: { overrides: fileSpecs },
     }, null, 2)}\n`);
+    await writePnpmWorkspace(consumerDirectory, fileSpecs);
     await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
 
     const cliEntry = join(consumerDirectory, "node_modules", "acpus", "dist", "cli.js");
@@ -327,6 +325,10 @@ function runPnpm(args, cwd) {
   return process.platform === "win32"
     ? execFileAsync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm", ...args], options)
     : execFileAsync("pnpm", args, options);
+}
+
+function writePnpmWorkspace(directory, overrides) {
+  return writeFile(join(directory, "pnpm-workspace.yaml"), `${JSON.stringify({ overrides }, null, 2)}\n`);
 }
 
 function smokeEnvironment() {
