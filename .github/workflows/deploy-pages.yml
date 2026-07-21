@@ -1,13 +1,13 @@
 name: Deploy Pages
-run-name: Deploy Pages from ${{ inputs.release_sha }}
+run-name: Deploy Pages from ${{ github.sha }}
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - page/**
   workflow_dispatch:
-    inputs:
-      release_sha:
-        description: Full published commit SHA currently at origin/main
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -16,26 +16,20 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          ref: ${{ inputs.release_sha }}
+          ref: ${{ github.sha }}
 
-      - name: Verify published main commit
-        env:
-          RELEASE_SHA: ${{ inputs.release_sha }}
-        run: |
-          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          test "$(git rev-parse refs/remotes/origin/main)" = "$RELEASE_SHA"
+      - name: Verify main commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

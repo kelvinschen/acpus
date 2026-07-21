@@ -248,7 +248,8 @@ see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400
 
 - [Bundled Acpus Skill](packages/cli/skills/acpus/SKILL.md)
 - [Migration Guide](docs/migrate-to-next.md)
-- [Main Replacement Release Runbook](docs/main-replacement-release-runbook.md)
+- [Release Guide](docs/releasing.md)
+- [Acpus 0.6 Main Replacement Record](docs/main-replacement-release-runbook.md)
 - [Specs Index](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
