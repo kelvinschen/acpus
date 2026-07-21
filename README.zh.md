@@ -206,7 +206,7 @@ Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配
 
 - [内置 Acpus Skill](packages/cli/skills/acpus/SKILL.md)
 - [迁移指南](docs/migrate-to-next.md)
-- [完整替换 main 与发布操作手册](docs/main-replacement-release-runbook.md)
+- [发布指南](docs/releasing.md)
 - [Specs 索引](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
