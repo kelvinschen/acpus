@@ -45,7 +45,14 @@
 - The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
 - `SchemaIR` MUST be a core-owned recursive schema union rather than duplicating or overloading the expression value model.
+- `schemaToJsonSchema` MUST preserve `SchemaIR.description` as a JSON Schema annotation.
+- `schemaToJsonSchema` MUST preserve `SchemaIR.default` as a JSON Schema annotation.
+- `schemaToJsonSchema` MUST express a nullable schema as accepting `null`.
+- `schemaToJsonSchema` MUST represent optional object fields only by omission from the parent `required` array without introducing `undefined` semantics.
+- Schema lowering MUST preserve every authored JSON property name, including prototype-named keys, as own data properties.
+- JSON Schema rendering MUST preserve every declared JSON property name, including prototype-named keys, as own data properties.
 - `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
+- `validateWorkflowIR(ir)` MUST match required object-schema fields against own field properties only.
 
 ### Resolvable Values, Templates, And Helpers
 

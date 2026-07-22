@@ -175,7 +175,11 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
-  expectTypeOf<AgentOutputProcessing>().toMatchTypeOf<{ recovery: string; conformance: "accepted" | "rejected" }>();
+  expectTypeOf<AgentOutputProcessing>().toEqualTypeOf<
+    | { outcome: "accepted"; parsing: "direct" | "repaired"; projectionChanged: boolean }
+    | { outcome: "rejected"; phase: "framing" | "json" }
+    | { outcome: "rejected"; phase: "schema"; parsing: "direct" | "repaired"; projectionChanged: boolean }
+  >();
   expectTypeOf<Extract<AgentTraceRecord, { type: "turn_start" }>>().toMatchTypeOf<{ schemaVersion: 1; sequence: number; runId: string; nodeId: string }>();
   expectTypeOf<AgentTurnArtifact>().toEqualTypeOf<{
     schemaVersion: 1;

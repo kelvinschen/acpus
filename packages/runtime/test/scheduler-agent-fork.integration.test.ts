@@ -11,7 +11,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { tracedCompletedAgentTurn } from "./support/agent-turn.js";
+import { taggedAgentOutput, tracedCompletedAgentTurn } from "./support/agent-turn.js";
 
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -70,7 +70,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               turns.push(request);
-              return tracedCompletedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
@@ -364,7 +364,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               sourceTurns.push(request);
-              return tracedCompletedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
           expect(store.getRun(source.id)).toMatchObject({ status: "completed", output: {} });
@@ -383,7 +383,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               forkTurns.push(request);
-              return tracedCompletedAgentTurn("{\"ok\":true}");
+              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 

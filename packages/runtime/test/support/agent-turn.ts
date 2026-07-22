@@ -20,6 +20,10 @@ export function completedAgentTurn(responseText: string, stderr = "", summary = 
   return { status: "completed", responseText, stderr, summary, timing: agentTiming() };
 }
 
+export function taggedAgentOutput(payload: string): string {
+  return `<ACPUS_OUTPUT>\n${payload}\n</ACPUS_OUTPUT>`;
+}
+
 export function tracedCompletedAgentTurn(responseText: string): AgentTurnResult {
   return {
     ...completedAgentTurn(responseText),

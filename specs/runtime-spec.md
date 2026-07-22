@@ -31,6 +31,9 @@
 ### Values, Deadlines, And Scheduler
 
 - `tryNormalizeWorkflowInput` MUST validate against `WorkflowIR.inputSchema`; Signal control accepts raw strings without a schema and normalized schema-backed payloads otherwise, with invalid values rejected before mutation.
+- Runtime schema normalization MUST inspect object fields through own properties so inherited names never satisfy a declared field.
+- Runtime schema normalization MUST apply defaults as own data properties without mutating an object's prototype.
+- Runtime schema normalization MUST accept `null` for unknown, nullable, matching literal or enum, and matching union schemas.
 - Recoverable runtime boundaries MUST use tagged `Result` or `ResultAsync`; local absence uses `undefined`, while invariant, durable-corruption, unknown execution, SQLite, and non-absence filesystem failures throw or reject.
 - Result wrappers MUST NOT be written into WorkflowIR, Task IPC, daemon wire data, SQLite rows, runtime events, or public JSON.
 - Runtime expressions MUST adapt the canonical [Expression evaluator](expression-spec.md) to durable `input`, `workflow.input`, `nodes`, `meta`, `fanout`, and `loop` scope.
@@ -150,9 +153,34 @@
 - Runtime MUST translate each effective named or command Agent definition into the corresponding [Agent Executor](agent-executor-spec.md) request variant; absent permission defaults to `approve-all`.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `agentMode`, `cwd`, and `env`; identity replacement clears inherited model/mode, preserves permission, and never accepts `trace`.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume turns reuse it according to continuation policy.
-- Schema-less Agents MUST return raw text with zero response repairs; schema-backed Agents append schema instructions, recover one JSON value, accept extra keys for conformance, and project stored output to the declared shape.
+- Schema-less Agents MUST return raw text with zero response repairs.
+- Every schema-backed Agent prompt, including task, continuation, and response-repair turns, MUST state the Tagged JSON output contract.
+- Every schema-backed Agent prompt MUST include the declared output as JSON Schema.
+- A schema-backed Agent response MUST end with one `<ACPUS_OUTPUT>...</ACPUS_OUTPUT>` frame whose payload is one JSON value.
+- Text before the opening marker MAY contain commentary.
+- Only whitespace MAY follow the terminal closing marker.
+- The two Tagged JSON protocol markers MUST NOT appear in prefix text.
+- Marker text inside the payload MUST be treated as data only when the payload parses directly as one JSON value.
+- Tagged JSON framing MUST use the first opening marker and the terminal closing marker without depending on line boundaries.
+- A response containing more than one protocol frame MUST be rejected as ambiguous framing rather than selecting one frame.
+- Runtime MUST parse the framed payload as strict JSON first.
+- Runtime MAY make at most one local JSON-repair attempt on the payload after strict parsing fails.
+- Local JSON repair MUST NOT recover missing or ambiguous framing.
+- Local JSON repair MUST reject multiple root values rather than combine or select them.
+- A direct or locally repaired payload MUST be a durable JSON value.
+- A direct or locally repaired payload MUST conform to the declared schema.
+- Schema-backed Agents MUST accept extra object keys during conformance.
+- Runtime MUST project stored schema-backed Agent output to the declared shape.
+- Agent output-processing metadata MUST distinguish framing, JSON, and schema rejection.
+- Agent output-processing metadata MUST record whether accepted or schema-rejected JSON was parsed directly or locally repaired.
+- Agent output-processing metadata MUST NOT embed raw output.
 - The daemon MUST capture `ACPUS_AGENT_RESPONSE_REPAIR_MAX` at startup, default additional repair turns to two, accept canonical non-negative safe integers, and expose invalid configuration as `invalid_agent_response_repair_max` before provider invocation.
-- Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid mode reapplication, and never process backend failures as conformance failures.
+- Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid mode reapplication, and never process backend failures as output failures.
+- A response-repair prompt MUST request a complete replacement Tagged JSON frame.
+- A response-repair prompt MUST repeat the Tagged JSON output contract.
+- A response-repair prompt MUST repeat the declared output schema.
+- A response-repair prompt MUST identify only the bounded failure phase.
+- A response-repair prompt MUST omit the rejected response and its dynamic error text.
 - Each scheduler-backed turn MUST register `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
 - Turn metadata MUST reference the canonical artifact and compact summary without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr uses a separate artifact.
 - `ACPUS_AGENT_RAW_ACP_DEBUG=1` MUST be captured at daemon startup and optionally persist exact wire output without affecting execution or repair.

@@ -894,6 +894,22 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
+  it("does not satisfy a required constructor field through inheritance", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      inputSchema: {
+        kind: "object",
+        fields: {},
+        required: ["constructor"],
+        additionalProperties: false,
+      },
+    }));
+
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "SC001",
+      path: "inputSchema.required.0",
+    }));
+  });
+
   it("validates literal, enum, unknown, and closed schema variants", () => {
     const ir: WorkflowIR = {
       irVersion: 5,

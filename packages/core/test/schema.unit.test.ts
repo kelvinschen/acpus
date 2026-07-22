@@ -78,7 +78,53 @@ describe("schema boundary lowering", () => {
         required: ["label", "risk"],
         additionalProperties: false,
       },
+      description: "Three choices.",
     });
+  });
+
+  it("renders SchemaIR metadata without adding undefined to optional fields", () => {
+    const schema = z.object({
+      label: z.string(),
+      note: z.string().nullable().optional().describe("Optional note."),
+      retries: z.number().default(2).describe("Retry count."),
+    }).describe("Agent output.");
+
+    expect(schemaToJsonSchema(toSchemaIR(schema))).toEqual({
+      type: "object",
+      properties: {
+        label: { type: "string" },
+        note: {
+          anyOf: [{ type: "string" }, { type: "null" }],
+          description: "Optional note.",
+        },
+        retries: {
+          type: "number",
+          description: "Retry count.",
+          default: 2,
+        },
+      },
+      required: ["label"],
+      additionalProperties: false,
+      description: "Agent output.",
+    });
+  });
+
+  it("preserves prototype-named fields and defaults as own data properties", () => {
+    const schema = z.object({ ["__proto__"]: z.boolean() });
+    const ir = toSchemaIR(schema);
+    if (ir.kind !== "object") throw new Error("expected object schema");
+
+    expect(Object.keys(ir.fields)).toEqual(["__proto__"]);
+    expect(Object.hasOwn(ir.fields, "__proto__")).toBe(true);
+    const rendered = schemaToJsonSchema(ir) as { properties: Record<string, unknown> };
+    expect(Object.keys(rendered.properties)).toEqual(["__proto__"]);
+    expect(rendered.properties.__proto__).toEqual({ type: "boolean" });
+
+    const defaultValue = Object.fromEntries([["__proto__", true]]);
+    const defaulted = toSchemaIR(z.unknown().default(defaultValue));
+    expect(defaulted.default).toEqual(defaultValue);
+    expect(defaulted.default && typeof defaulted.default === "object" && Object.hasOwn(defaulted.default, "__proto__")).toBe(true);
+    expect(schemaToJsonSchema(defaulted)).toEqual({ default: defaultValue });
   });
 
   it("preserves the failing index path inside a homogeneous tuple candidate", () => {

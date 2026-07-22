@@ -45,10 +45,10 @@ export {
   type ArtifactRecord,
 } from "./runs/use-cases.js";
 export type {
-  AgentOutputProcessing,
   AgentTraceRecord,
   AgentTurnArtifact,
 } from "./execution/agent-node.js";
+export type { AgentOutputProcessing } from "./execution/agent-output.js";
 export {
   getRunInspection,
   followRunInspection,

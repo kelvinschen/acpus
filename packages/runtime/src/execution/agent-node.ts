@@ -1,22 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
-import { schemaToJsonSchema } from "@acpus/core/schema";
-import type { AgentDefinitionIR, AgentNodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import { executeAgentTurn, type AgentBackendFailure, type AgentToolCallSummary, type AgentTraceEvent, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
-import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
-import { jsonrepair } from "jsonrepair";
+import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { isArtifactRefCandidate, tryResolveArtifactPath, type ArtifactPathError } from "../artifacts/path.js";
 import type { AgentHostPolicy } from "../configuration.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
-import { tryNormalizeValue } from "../evaluation/schema.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
+import {
+  buildAgentOutputPrompt,
+  buildAgentOutputRepairPrompt,
+  conformAgentOutput,
+  type AgentOutputProcessing,
+} from "./agent-output.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
@@ -89,14 +91,6 @@ export type AgentTurnArtifact = {
   failure?: AgentBackendFailure;
   message?: string;
 };
-
-export type AgentOutputProcessing =
-  | { recovery: "empty" | "unrecoverable"; conformance: "rejected" }
-  | {
-      recovery: "direct" | "extracted" | "repaired";
-      conformance: "accepted" | "rejected";
-      projectionChanged: boolean;
-    };
 
 type AgentTraceRecordBase = {
   schemaVersion: 1;
@@ -215,9 +209,9 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       : renderAgentPrompt(node, scope, options);
     if (resolvedPrompt.isErr()) return finishFailure(resolutionFailure(resolvedPrompt.error));
     renderedPrompt = resolvedPrompt.value;
-    let prompt = plainContinuation
-      ? renderedPrompt
-      : buildAgentPrompt(renderedPrompt, node.outputSchema);
+    let prompt = node.outputSchema
+      ? buildAgentOutputPrompt(renderedPrompt, node.outputSchema)
+      : renderedPrompt;
     const captureRawDebug = options.hostPolicy.captureRawAcpDebug;
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
@@ -252,19 +246,21 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         return ok(result.responseText);
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
-      turns[turn] = { ...turns[turn]!, outputProcessing: conformed.outputProcessing };
-      if (conformed.ok) {
+      const outputProcessing = conformed.isOk() ? conformed.value.outputProcessing : conformed.error.outputProcessing;
+      turns[turn] = { ...turns[turn]!, outputProcessing };
+      if (conformed.isOk()) {
         await writeTerminalState("completed", undefined, result, turn + 1);
-        return ok(conformed.output);
+        return ok(conformed.value.output);
       }
-      turns[turn] = { ...turns[turn]!, failure: { kind: conformed.kind, message: conformed.message } };
+      const rejected = conformed.error;
+      turns[turn] = { ...turns[turn]!, failure: { kind: rejected.kind, message: rejected.message } };
       if (turn === maxRepairTurns) {
-        const failure: AgentNodeFailure = { origin: "provider", code: conformed.kind, message: conformed.message };
+        const failure: AgentNodeFailure = { origin: "provider", code: rejected.kind, message: rejected.message };
         return finishFailure({ type: "failed", failure, message: failure.message }, result, turn + 1);
       }
       const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
       if (delayed.isErr()) return finishFailure(delayed.error);
-      prompt = buildAgentPrompt(CONTINUATION_PROMPT, node.outputSchema);
+      prompt = buildAgentOutputRepairPrompt(node.outputSchema, rejected.phase);
     }
     throw new Error(`Agent node '${node.id}' exhausted response repair.`);
 }
@@ -364,136 +360,6 @@ function sessionName(runId: string | undefined, nodeKey: string, explicitKey: st
     ? { runId: runId ?? "local", nodeKey }
     : { runId: runId ?? "local", key: explicitKey };
   return `acpus-${Buffer.from(JSON.stringify(identity)).toString("base64url")}`;
-}
-
-function buildAgentPrompt(text: string, schema: SchemaIR | undefined): string {
-  if (!schema) return text;
-  return `${text}\n\n# OUTPUT SCHEMA\n**After completing the task, your final response MUST be exactly one JSON value that conforms to this schema, with no Markdown or prose.**\n${JSON.stringify(schemaToJsonSchema(schema), null, 2)}`;
-}
-
-type ConformanceResult =
-  | { ok: true; output: JsonValue; outputProcessing: AgentOutputProcessing }
-  | { ok: false; kind: "output_conformance" | "empty_response"; message: string; outputProcessing: AgentOutputProcessing };
-
-type RecoveredJson = {
-  value: JsonValue;
-  recovery: "direct" | "extracted" | "repaired";
-};
-
-export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: string): ConformanceResult {
-  if (text.trim().length === 0) return {
-    ok: false,
-    kind: "empty_response",
-    message: `Agent node '${nodeId}' returned an empty response.`,
-    outputProcessing: { recovery: "empty", conformance: "rejected" },
-  };
-  const recovered = recoverJson(text);
-  if (recovered === undefined) return {
-    ok: false,
-    kind: "output_conformance",
-    message: `Agent node '${nodeId}' response could not be recovered as JSON.`,
-    outputProcessing: { recovery: "unrecoverable", conformance: "rejected" },
-  };
-  const projected = projectToSchema(schema, recovered.value);
-  const projectionChanged = !isDeepStrictEqual(recovered.value, projected);
-  const normalized = tryNormalizeValue(schema, projected, `Node '${nodeId}' output`);
-  return normalized.isOk()
-    ? {
-        ok: true,
-        output: normalized.value,
-        outputProcessing: { recovery: recovered.recovery, conformance: "accepted", projectionChanged },
-      }
-    : {
-        ok: false,
-        kind: "output_conformance",
-        message: normalized.error.message,
-        outputProcessing: { recovery: recovered.recovery, conformance: "rejected", projectionChanged },
-      };
-}
-
-function recoverJson(text: string): RecoveredJson | undefined {
-  const trimmed = text.trim();
-  try {
-    const value = parsedJsonValue(JSON.parse(trimmed));
-    if (value !== undefined) return { value, recovery: "direct" };
-  } catch {}
-  const candidates = balancedJsonCandidates(text);
-  for (let i = candidates.length - 1; i >= 0; i -= 1) {
-    const candidate = candidates[i]!;
-    try {
-      const value = parsedJsonValue(JSON.parse(candidate));
-      if (value !== undefined) return { value, recovery: "extracted" };
-    } catch {}
-    if (/^[{[]/.test(candidate.trimStart())) {
-      try {
-        const value = parsedJsonValue(JSON.parse(jsonrepair(candidate)));
-        if (value !== undefined) return { value, recovery: "repaired" };
-      } catch {}
-    }
-  }
-  return undefined;
-}
-
-function parsedJsonValue(value: unknown): JsonValue | undefined {
-  return isJsonValue(value) ? value : undefined;
-}
-
-function balancedJsonCandidates(text: string): string[] {
-  const candidates: Array<{ start: number; end: number; value: string }> = [];
-  for (let start = 0; start < text.length; start += 1) {
-    if (text[start] !== "{" && text[start] !== "[") continue;
-    const end = balancedCandidateEnd(text, start);
-    if (end !== undefined) candidates.push({ start, end, value: text.slice(start, end) });
-  }
-  return candidates
-    .filter(candidate => !candidates.some(other => other !== candidate && other.start < candidate.start && candidate.end < other.end))
-    .sort((a, b) => a.end - b.end || a.start - b.start)
-    .map(candidate => candidate.value);
-}
-
-function balancedCandidateEnd(text: string, start: number): number | undefined {
-  const stack: string[] = [];
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index]!;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === "\"") inString = false;
-      continue;
-    }
-    if (char === "\"") inString = true;
-    else if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
-    else if (char === "}" || char === "]") {
-      if (stack.pop() !== char) return undefined;
-      if (stack.length === 0) return index + 1;
-    }
-  }
-  return undefined;
-}
-
-function projectToSchema(schema: SchemaIR, value: JsonValue): JsonValue {
-  if (value === null) return value;
-  if (schema.kind === "array" && Array.isArray(value)) return value.map(item => projectToSchema(schema.item as SchemaIR, item));
-  if (schema.kind === "record" && isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, projectToSchema(schema.value as SchemaIR, item)]));
-  if (schema.kind === "union") {
-    for (const variant of schema.variants) {
-      const projected = projectToSchema(variant as SchemaIR, value);
-      if (tryNormalizeValue(variant as SchemaIR, projected, "Agent union variant").isOk()) return projected;
-    }
-    return value;
-  }
-  if (schema.kind !== "object" || !isJsonObject(value)) return value;
-  const projected: Record<string, JsonValue> = schema.additionalProperties ? { ...value } : {};
-  for (const [key, field] of Object.entries(schema.fields)) {
-    if (key in value) projected[key] = projectToSchema(field as SchemaIR, value[key]!);
-  }
-  return projected;
-}
-
-function isJsonObject(value: JsonValue): value is Record<string, JsonValue> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 async function writeAgentTurnArtifacts(

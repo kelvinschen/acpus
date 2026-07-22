@@ -30,7 +30,7 @@ export function tryNormalizeValue(schema: SchemaIR | undefined, value: JsonValue
 }
 
 function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string): SchemaIssue | undefined {
-  if (value === null) return schema.nullable || schema.kind === "null" ? undefined : issue(path, schema.kind, "null");
+  if (value === null && schema.nullable) return undefined;
 
   switch (schema.kind) {
     case "unknown":
@@ -42,7 +42,7 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
     case "boolean":
       return typeof value === "boolean" ? undefined : issue(path, "boolean", jsonType(value));
     case "null":
-      return issue(path, "null", jsonType(value));
+      return value === null ? undefined : issue(path, "null", jsonType(value));
     case "literal":
       return Object.is(value, schema.value) ? undefined : customIssue(path, `literal ${JSON.stringify(schema.value)}`);
     case "enum":
@@ -59,15 +59,14 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
     case "object": {
       if (!isJsonObject(value)) return issue(path, "object", jsonType(value));
       for (const key of schema.required) {
-        if (!(key in value)) return customIssue(`${path}.${key}`, "required field", "missing", `${path}.${key} is required`);
+        if (!Object.hasOwn(value, key)) return customIssue(`${path}.${key}`, "required field", "missing", `${path}.${key} is required`);
       }
       for (const [key, item] of Object.entries(value)) {
-        const field = schema.fields[key];
-        if (!field) {
+        if (!Object.hasOwn(schema.fields, key)) {
           if (!schema.additionalProperties) return customIssue(`${path}.${key}`, "declared field", "additional property", `${path}.${key} is not allowed`);
           continue;
         }
-        const child = firstSchemaIssue(field as RuntimeSchema, item, `${path}.${key}`);
+        const child = firstSchemaIssue(schema.fields[key] as RuntimeSchema, item, `${path}.${key}`);
         if (child) return child;
       }
       return undefined;
@@ -89,10 +88,12 @@ function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string)
 function applyDefaults(schema: RuntimeSchema, value: JsonValue | undefined): JsonValue | undefined {
   if (value === undefined) return schema.default;
   if (schema.kind === "object" && isJsonObject(value)) {
-    const next: { [key: string]: JsonValue } = { ...value };
+    const next = Object.fromEntries(Object.entries(value)) as { [key: string]: JsonValue };
     for (const [key, field] of Object.entries(schema.fields)) {
-      const normalized = applyDefaults(field as RuntimeSchema, next[key]);
-      if (normalized !== undefined) next[key] = normalized;
+      const normalized = applyDefaults(field as RuntimeSchema, Object.hasOwn(next, key) ? next[key] : undefined);
+      if (normalized !== undefined) {
+        Object.defineProperty(next, key, { value: normalized, enumerable: true, configurable: true, writable: true });
+      }
     }
     return next;
   }

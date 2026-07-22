@@ -129,8 +129,6 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
   }
 }
 
-
-
 function objectToSchemaIR(schema: Schema<any>, path: string): Result<SchemaIR, SchemaLoweringError> {
   const def = defOf(schema);
   const shape = typeof def.shape === "function" ? def.shape() : def.shape;
@@ -139,7 +137,7 @@ function objectToSchemaIR(schema: Schema<any>, path: string): Result<SchemaIR, S
   for (const [key, child] of Object.entries(shape ?? {})) {
     const childIR = tryToSchemaIR(child as Schema<any>, `${path}.${key}`);
     if (childIR.isErr()) return childIR;
-    fields[key] = childIR.value;
+    setOwnProperty(fields, key, childIR.value);
     if (!childIR.value.optional && childIR.value.default === undefined) required.push(key);
   }
   const catchall = def.catchall;
@@ -181,7 +179,7 @@ function normalizeJsonValue(value: unknown): JsonValue | undefined {
     for (const [key, item] of Object.entries(value)) {
       const next = normalizeJsonValue(item);
       if (next === undefined) return undefined;
-      fields[key] = next;
+      setOwnProperty(fields, key, next);
     }
     return fields;
   }
@@ -189,21 +187,32 @@ function normalizeJsonValue(value: unknown): JsonValue | undefined {
 }
 
 export function schemaToJsonSchema(schema: SchemaIR): JsonValue {
+  let jsonSchema: Record<string, JsonValue>;
   switch (schema.kind) {
-    case "unknown": return {};
-    case "string": return { type: "string" };
-    case "number": return { type: "number" };
-    case "boolean": return { type: "boolean" };
-    case "null": return { type: "null" };
-    case "literal": return { const: schema.value };
-    case "enum": return { enum: schema.values };
-    case "array": return { type: "array", items: schemaToJsonSchema(schema.item as SchemaIR) };
-    case "record": return { type: "object", additionalProperties: schemaToJsonSchema(schema.value as SchemaIR) };
-    case "union": return { anyOf: schema.variants.map(v => schemaToJsonSchema(v as SchemaIR)) };
+    case "unknown": jsonSchema = {}; break;
+    case "string": jsonSchema = { type: "string" }; break;
+    case "number": jsonSchema = { type: "number" }; break;
+    case "boolean": jsonSchema = { type: "boolean" }; break;
+    case "null": jsonSchema = { type: "null" }; break;
+    case "literal": jsonSchema = { const: schema.value }; break;
+    case "enum": jsonSchema = { enum: schema.values }; break;
+    case "array": jsonSchema = { type: "array", items: schemaToJsonSchema(schema.item as SchemaIR) }; break;
+    case "record": jsonSchema = { type: "object", additionalProperties: schemaToJsonSchema(schema.value as SchemaIR) }; break;
+    case "union": jsonSchema = { anyOf: schema.variants.map(v => schemaToJsonSchema(v as SchemaIR)) }; break;
     case "object": {
       const properties: Record<string, JsonValue> = {};
-      for (const [key, value] of Object.entries(schema.fields)) properties[key] = schemaToJsonSchema(value as SchemaIR);
-      return { type: "object", properties, required: schema.required, additionalProperties: schema.additionalProperties };
+      for (const [key, value] of Object.entries(schema.fields)) setOwnProperty(properties, key, schemaToJsonSchema(value as SchemaIR));
+      jsonSchema = { type: "object", properties, required: schema.required, additionalProperties: schema.additionalProperties };
+      break;
     }
   }
+
+  if (schema.nullable && schema.kind !== "null") jsonSchema = { anyOf: [jsonSchema, { type: "null" }] };
+  if (schema.description !== undefined) jsonSchema.description = schema.description;
+  if (schema.default !== undefined) jsonSchema.default = schema.default;
+  return jsonSchema;
+}
+
+function setOwnProperty<T>(target: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
 }

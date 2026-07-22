@@ -609,7 +609,7 @@ function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: stri
       const required = Array.isArray(schema.required) ? schema.required : [];
       if (!Array.isArray(schema.required)) addError(diagnostics, "SC002", "Object schema required must be an array.", `${path}.required`);
       else forEachDense(required, diagnostics, `${path}.required`, (req, index) => {
-        if (typeof req !== "string" || !(req in fields)) addError(diagnostics, "SC001", `Required field '${String(req)}' is not present in object fields.`, `${path}.required.${index}`);
+        if (typeof req !== "string" || !Object.hasOwn(fields, req)) addError(diagnostics, "SC001", `Required field '${String(req)}' is not present in object fields.`, `${path}.required.${index}`);
       });
       if (typeof schema.additionalProperties !== "boolean") addError(diagnostics, "SC002", "Object schema additionalProperties must be a boolean.", `${path}.additionalProperties`);
       for (const [key, field] of Object.entries(fields)) validateSchema(field as SchemaIR, diagnostics, `${path}.fields.${key}`);
