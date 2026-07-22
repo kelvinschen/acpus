@@ -1,12 +1,5 @@
 # Authoring Workflows
 
-Contents:
-
-- Mental model and core rules
-- Expressions and durable shapes
-- Nodes, composites, and loop state
-- Late example selection and exact lookup
-
 ## Start
 
 Write the workflow and import only the symbols it uses:
@@ -88,11 +81,11 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 
 ## Nodes And Composites
 
-Leaves use the enclosing `step` dispatcher:
+Leaf nodes use the enclosing `step` dispatcher:
 
 ```ts
 const review = step("review").agent({
-  agent: agents.reviewer,
+  agent: agents.worker,
   prompt: template`Review ${input.topic}.`,
 });
 const facts = step("facts").task({
@@ -121,7 +114,32 @@ const detail = lift(gate.output, result =>
   result.status === "ready" ? result.detail : result.reason);
 ```
 
-`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access. Default parallel returns a branch-keyed record. Race returns `{ winner, result }` for the first successful branch and cancels the rest. Fanout uses `over` with `do({ item, itemIndex })`; `all` returns input-order results, while quorum returns accepted successes in completion order.
+`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access.
+
+`parallel` runs a fixed set of branches; `fanout` repeats one subgraph over a runtime array:
+
+```ts
+const checks = step("checks").parallel({
+  branches: {
+    security: () => step("security_review").agent({
+      agent: agents.worker, prompt: template`Review security for ${input.topic}.`,
+    }).output,
+    quality: () => step("quality_review").agent({
+      agent: agents.worker, prompt: template`Review quality for ${input.topic}.`,
+    }).output,
+  },
+});
+
+const reviews = step("reviews").fanout({
+  over: input.items,
+  maxConcurrency: 4,
+  do: ({ item, itemIndex }) => step("review_item").agent({
+    agent: agents.worker, prompt: template`Review item ${itemIndex}: ${item}.`,
+  }).output,
+});
+```
+
+Default parallel returns a branch-keyed record such as `checks.output.security`; `strategy: "race"` returns the first success as `{ winner, result }` and cancels the rest. Default fanout returns input-order results through `reviews.output`; `strategy: "quorum"` plus `count` returns accepted successes in completion order.
 
 **Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
 
@@ -156,7 +174,7 @@ Only after applying the rules above, choose the closest example by pattern and n
 
 ## Declaration Lookup
 
-When these rules and examples do not answer exact usage:
+Only look up declaration when the above rules and examples don't already answer the exact usage, since lookups consume context.
 
 1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
