@@ -5,7 +5,7 @@
     "customConditions": [],
     "tsBuildInfoFile": "./tsconfig.build.tsbuildinfo"
   },
-  "include": ["src/index.ts", "src/server/**/*.ts"],
+  "include": ["src/index.ts", "src/graph-types.ts", "src/server/**/*.ts"],
   "references": [
     { "path": "../core/tsconfig.build.json" },
     { "path": "../expression/tsconfig.build.json" },

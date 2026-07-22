@@ -1,87 +1,21 @@
 import type { WorkflowIR } from "@acpus/core/ir";
 import { createWorkflowVisualizationOverlay, type NodeDetail as RuntimeNodeDetail, type WorkflowVisualizationOverlay } from "@acpus/runtime";
 import type { ExprIR } from "@acpus/expression/ir";
+import type {
+  NodeDetail,
+  WebGraph,
+  WebGraphContainer,
+  WebGraphEdge,
+  WebGraphFanoutOccurrence,
+  WebGraphNode,
+  WebGraphRuntimeState,
+  WebGraphSelection,
+  WebGraphSelector,
+  WebGraphSelectorOption,
+} from "../graph-types.js";
 import { renderExpr } from "./expression-format.js";
 
-type NodeDetail =
-  | { kind: "task"; inputs: string[]; target: "inline" | "module" }
-  | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: string }
-  | { kind: "signal"; outputSchema?: string }
-  | { kind: "assert"; condition: string; message?: string }
-  | { kind: "if"; condition: string }
-  | { kind: "switch"; cases: string[]; hasDefault: boolean }
-  | { kind: "parallel"; branches: string[]; strategy: "all" | "race"; maxConcurrency?: string }
-  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: string; maxConcurrency?: string }
-  | { kind: "loop"; state: string };
-
-export type WebGraph = {
-  workflow: {
-    name: string;
-    runId?: string;
-    status?: string;
-  };
-  mode: "static" | "runtime";
-  nodes: WebGraphNode[];
-  containers: WebGraphContainer[];
-  edges: WebGraphEdge[];
-  selectors: WebGraphSelector[];
-  runtimeStates: WebGraphRuntimeState[];
-};
-
-type WebGraphNode = {
-  id: string;
-  nodeId: string;
-  kind: string;
-  label: string;
-  path: string[];
-  parentId?: string;
-  detail?: NodeDetail;
-  status: string;
-};
-
-type WebGraphContainer = {
-  id: string;
-  nodeId: string;
-  kind: "branch" | "scope";
-  label: string;
-  path: string[];
-  parentId: string;
-  status: string;
-};
-
-type WebGraphEdge = {
-  id: string;
-  source: string;
-  target: string;
-  kind: "sequence" | "branch" | "loop";
-};
-
-type WebGraphSelector = {
-  nodeId: string;
-  kind: "fanout" | "loop";
-  targetId: string;
-  defaultOptionId?: string;
-  options: WebGraphSelectorOption[];
-};
-
-type WebGraphSelectorOptionBase = {
-  id: string;
-  parentSelections: WebGraphSelection[];
-};
-
-type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { label: string; itemIndex: number };
-type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
-type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
-
-type WebGraphRuntimeState = {
-  targetId: string;
-  status: string;
-  selectors: WebGraphSelection[];
-};
-
-type WebGraphSelection =
-  | { nodeId: string; kind: "fanout"; itemIndex: number }
-  | { nodeId: string; kind: "loop"; iteration: number };
+export type { WebGraph } from "../graph-types.js";
 
 type OverlayNode = WorkflowVisualizationOverlay["nodes"][number];
 type OverlayFrame = OverlayNode["frames"][number];
@@ -103,6 +37,7 @@ export function graphFromOverlay(
   const containers = graphContainers(nodes, detailById, authoredParentByNodeId);
   const parentByNodeId = graphNodeParents(nodes, containers, authoredParentByNodeId);
   const edges = graphEdges(nodes, containers, parentByNodeId);
+  const fanoutOccurrences = mode === "runtime" ? graphFanoutOccurrences(source, containers) : [];
   const selectors = mode === "runtime" ? graphSelectors(source, containers) : [];
   const runtimeStates = mode === "runtime" ? graphRuntimeStates(source, containers, detailById) : [];
 
@@ -116,6 +51,7 @@ export function graphFromOverlay(
     nodes: nodes.map(node => graphNodeWithParent(node, parentByNodeId)),
     containers,
     edges,
+    fanoutOccurrences,
     selectors,
     runtimeStates,
   };
@@ -286,76 +222,115 @@ function graphEdges(
   return uniqueEdges(edges).filter(edge => ids.has(edge.source) && ids.has(edge.target));
 }
 
+function graphFanoutOccurrences(
+  source: WorkflowVisualizationOverlay,
+  containers: WebGraphContainer[],
+): WebGraphFanoutOccurrence[] {
+  const containerByOwnerAndSegment = containerLookup(containers);
+  return source.groups.flatMap(group => {
+    if (group.kind !== "fanout") return [];
+    const context = runtimeSelections(group.instancePath)
+      .filter(selection => selection.kind !== "fanout" || selection.nodeId !== group.nodeId);
+    return [{
+      id: group.groupKey,
+      nodeId: group.nodeId,
+      targetId: containerByOwnerAndSegment.get(containerKey(group.nodeId, "do"))?.id ?? group.nodeId,
+      context,
+      status: group.status,
+      items: group.members
+        .filter(member => member.memberKind === "fanout_item")
+        .sort((left, right) => left.itemIndex - right.itemIndex || left.memberKey.localeCompare(right.memberKey))
+        .map(member => ({
+          id: member.memberKey,
+          itemIndex: member.itemIndex,
+          label: `item[${member.itemIndex}]`,
+          status: member.status,
+          context: [...context, { nodeId: group.nodeId, kind: "fanout" as const, itemIndex: member.itemIndex }],
+        })),
+    }];
+  });
+}
+
 function graphSelectors(
   source: WorkflowVisualizationOverlay,
   containers: WebGraphContainer[],
 ): WebGraphSelector[] {
   const selectors: WebGraphSelector[] = [];
   const containerByOwnerAndSegment = containerLookup(containers);
-  const fanoutOptionsByNode = new Map<string, WebGraphFanoutSelectorOption[]>();
-  const fanoutStatusByOptionId = new Map<string, string>();
-
-  for (const group of source.groups) {
-    if (group.kind !== "fanout") continue;
-    const parentSelections = runtimeSelections(group.instancePath).filter(selection => selection.nodeId !== group.nodeId);
-    const members = group.members
-      .filter(member => member.memberKind === "fanout_item")
-      .sort((a, b) => a.itemIndex - b.itemIndex);
-    const options = members
-      .map(member => ({
-        id: member.memberKey,
-        label: `item[${member.itemIndex}]`,
-        itemIndex: member.itemIndex,
-        parentSelections,
-      }));
-    for (const member of members) fanoutStatusByOptionId.set(member.memberKey, member.status);
-    const current = fanoutOptionsByNode.get(group.nodeId) ?? [];
-    fanoutOptionsByNode.set(group.nodeId, [...current, ...options]);
-  }
-
-  for (const [nodeId, options] of fanoutOptionsByNode) {
-    const defaultOptionId = options.find(option => {
-      const status = fanoutStatusByOptionId.get(option.id);
-      return status === "running" || status === "awaiting";
-    })?.id ?? options.at(-1)?.id;
-    selectors.push({
-      nodeId,
-      kind: "fanout",
-      targetId: containerByOwnerAndSegment.get(containerKey(nodeId, "do"))?.id ?? nodeId,
-      ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
-      options,
-    });
-  }
 
   for (const node of source.nodes) {
     if (node.detail?.kind !== "loop") continue;
-    const frames = node.frames
-      .filter(frame => frame.frameKind === "loop_iteration")
-      .sort((a, b) => (loopIteration(a) ?? 0) - (loopIteration(b) ?? 0));
-    const options = frames
-      .flatMap(frame => {
-        const iteration = loopIteration(frame);
-        if (iteration === undefined) return [];
-        return [{
-          id: frame.frameKey,
-          iteration,
-          parentSelections: runtimeSelections(frame.instancePath).filter(selection => selection.nodeId !== node.nodeId),
-        }];
-      });
-    if (options.length > 0) {
-      const defaultOptionId = frames.find(frame => frame.status === "running" || frame.status === "awaiting")?.frameKey
-        ?? frames.at(-1)?.frameKey;
-      selectors.push({
-        nodeId: node.nodeId,
-        kind: "loop",
-        targetId: containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"))?.id ?? node.nodeId,
-        ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
-        options,
-      });
-    }
+    const targetId = containerByOwnerAndSegment.get(containerKey(node.nodeId, "do"))?.id ?? node.nodeId;
+    selectors.push(...loopSelectors(node, targetId));
   }
 
   return selectors;
+}
+
+type PendingLoopSelector = {
+  id: string;
+  context: WebGraphSelection[];
+  options: Array<WebGraphSelectorOption & { status: string }>;
+};
+
+function loopSelectors(node: OverlayNode, targetId: string): WebGraphSelector[] {
+  const selectors = new Map<string, PendingLoopSelector>();
+  const selectorByContext = new Map<string, PendingLoopSelector>();
+
+  for (const frame of node.frames) {
+    if (frame.frameKind !== "loop") continue;
+    const context = parentContext(frame.instancePath, node.nodeId, "loop");
+    const selector: PendingLoopSelector = { id: frame.frameKey, context, options: [] };
+    selectors.set(selector.id, selector);
+    selectorByContext.set(contextKey(context), selector);
+  }
+
+  for (const frame of node.frames) {
+    if (frame.frameKind !== "loop_iteration") continue;
+    const iteration = loopIteration(frame);
+    if (iteration === undefined) continue;
+    const context = parentContext(frame.instancePath, node.nodeId, "loop");
+    const selector = (frame.parentFrameKey ? selectors.get(frame.parentFrameKey) : undefined)
+      ?? selectorByContext.get(contextKey(context))
+      ?? createFallbackLoopSelector(node.nodeId, frame.parentFrameKey, context, selectors, selectorByContext);
+    selector.options.push({
+      id: frame.frameKey,
+      iteration,
+      context: [...context, { nodeId: node.nodeId, kind: "loop", iteration }],
+      status: frame.status,
+    });
+  }
+
+  return [...selectors.values()].flatMap(selector => {
+    if (selector.options.length === 0) return [];
+    const options = selector.options
+      .sort((left, right) => left.iteration - right.iteration || left.id.localeCompare(right.id));
+    const defaultOptionId = options.find(option => option.status === "running" || option.status === "awaiting")?.id
+      ?? options.at(-1)?.id;
+    return [{
+      id: selector.id,
+      nodeId: node.nodeId,
+      kind: "loop" as const,
+      targetId,
+      context: selector.context,
+      ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
+      options: options.map(({ status: _status, ...option }) => option),
+    }];
+  });
+}
+
+function createFallbackLoopSelector(
+  nodeId: string,
+  parentFrameKey: string | undefined,
+  context: WebGraphSelection[],
+  selectors: Map<string, PendingLoopSelector>,
+  selectorByContext: Map<string, PendingLoopSelector>,
+): PendingLoopSelector {
+  const id = parentFrameKey ?? `loop:${nodeId}:${encodeURIComponent(contextKey(context))}`;
+  const selector: PendingLoopSelector = { id, context, options: [] };
+  selectors.set(id, selector);
+  selectorByContext.set(contextKey(context), selector);
+  return selector;
 }
 
 function graphRuntimeStates(
@@ -365,6 +340,9 @@ function graphRuntimeStates(
 ): WebGraphRuntimeState[] {
   const states: WebGraphRuntimeState[] = [];
   const containerByOwnerAndSegment = containerLookup(containers);
+  const instancePathByNodeKey = new Map(source.nodes.flatMap(node => node.instances.flatMap(instance =>
+    instance.instancePath === undefined ? [] : [[instance.nodeKey, instance.instancePath] as const],
+  )));
 
   for (const node of source.nodes) {
     for (const frame of node.frames) {
@@ -387,7 +365,7 @@ function graphRuntimeStates(
       states.push(stateForInstance(node.nodeId, instance));
     }
     for (const wait of node.signalWaits) {
-      states.push(stateForSignalWait(node.nodeId, wait));
+      states.push(stateForSignalWait(node.nodeId, wait, instancePathByNodeKey.get(wait.nodeKey)));
     }
   }
 
@@ -398,7 +376,7 @@ function stateForFrame(targetId: string, frame: OverlayFrame): WebGraphRuntimeSt
   return {
     targetId,
     status: frame.status,
-    selectors: runtimeSelections(frame.instancePath),
+    context: runtimeSelections(frame.instancePath),
   };
 }
 
@@ -406,15 +384,19 @@ function stateForInstance(targetId: string, instance: OverlayInstance): WebGraph
   return {
     targetId,
     status: instance.status,
-    selectors: runtimeSelections(instance.instancePath),
+    context: runtimeSelections(instance.instancePath),
   };
 }
 
-function stateForSignalWait(targetId: string, wait: OverlaySignalWait): WebGraphRuntimeState {
+function stateForSignalWait(
+  targetId: string,
+  wait: OverlaySignalWait,
+  instancePath: InstancePath | undefined,
+): WebGraphRuntimeState {
   return {
     targetId,
     status: wait.status,
-    selectors: [],
+    context: runtimeSelections(instancePath),
   };
 }
 
@@ -438,6 +420,18 @@ function runtimeSelections(path: InstancePath | undefined): WebGraphSelection[] 
     }
   }
   return selections;
+}
+
+function parentContext(
+  path: InstancePath | undefined,
+  nodeId: string,
+  kind: WebGraphSelection["kind"],
+): WebGraphSelection[] {
+  return runtimeSelections(path).filter(selection => selection.kind !== kind || selection.nodeId !== nodeId);
+}
+
+function contextKey(context: WebGraphSelection[]): string {
+  return JSON.stringify(context);
 }
 
 function branchEntry(path: InstancePath | undefined, nodeId: string | undefined): Extract<InstancePathEntry, { kind: "branch" }> | undefined {
@@ -487,8 +481,7 @@ function containerLabel(detail: NodeDetail | undefined, segment: string): string
   if (detail?.kind === "switch") {
     if (segment === "default") return "default";
     const index = Number(segment.replace(/^case:/, ""));
-    const when = detail.cases[index];
-    return when ? `case: ${when}` : segment;
+    return Number.isSafeInteger(index) && index >= 0 ? `case ${index}` : segment;
   }
   return segment;
 }

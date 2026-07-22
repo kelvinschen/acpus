@@ -167,6 +167,9 @@ describe("Inspector primitives", () => {
       InspectorPanel,
       {
         title: "Node A",
+        eyebrow: "Node",
+        subtitle: "jobs item[2]",
+        status: React.createElement("span", { className: "status-pill completed" }, "completed"),
         onClose,
         children: React.createElement(InspectorSection, {
           title: "Identity",
@@ -178,7 +181,11 @@ describe("Inspector primitives", () => {
     const dialog = container.querySelector<HTMLElement>("[role='dialog']")!;
     const keyValue = container.querySelector<HTMLElement>(".key-value")!;
     expect(dialog.getAttribute("aria-label")).toBe("Node A");
+    expect(dialog.querySelector(".inspector-card-head span")?.textContent).toBe("Node");
     expect(dialog.querySelector(".inspector-card-head strong")?.textContent).toBe("Node A");
+    expect(dialog.querySelector(".inspector-card-head small")?.textContent).toBe("jobs item[2]");
+    expect(dialog.querySelector(".inspector-card-status .status-pill")?.textContent).toBe("completed");
+    expect(dialog.querySelector(".inspector-card-body .status-pill")).toBeNull();
     expect(dialog.querySelector("h3")?.textContent).toBe("Identity");
     expect(keyValue.tabIndex).toBe(0);
     expect(keyValue.title).toBe("Node ID: node-a");
@@ -211,6 +218,25 @@ describe("Inspector primitives", () => {
 
     await act(async () => vi.advanceTimersByTime(1_400));
     expect(button.textContent).toContain("Copy JSON");
+  });
+
+  it("keeps nested JSON collapsed until the operator asks for detail", async () => {
+    await render(React.createElement(JsonSection, { title: "Payload", value: { outer: { inner: 1 } } }));
+
+    expect(container.querySelector(".json-viewer")?.textContent).toContain("outer");
+    expect(container.querySelector(".json-viewer")?.textContent).not.toContain("inner");
+    expect(container.querySelector(".json-ink-container")).not.toBeNull();
+    expect(container.querySelector(".json-ink-label")).not.toBeNull();
+  });
+
+  it("can expose nested authored definitions immediately", async () => {
+    await render(React.createElement(JsonSection, {
+      title: "Definition",
+      value: { kind: "switch", cases: ["input.mode === auto"] },
+      expandNested: true,
+    }));
+
+    expect(container.querySelector(".json-viewer")?.textContent).toContain("input.mode === auto");
   });
 
   it("shows and resets failed clipboard feedback", async () => {

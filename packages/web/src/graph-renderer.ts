@@ -4,11 +4,10 @@ import type {
   WebGraphContainer,
   WebGraphEdge,
   WebGraphNode,
-  WebGraphRuntimeState,
   WebGraphSelection,
   WebGraphSelector,
   WebGraphSelectorOption,
-} from "./client/api.js";
+} from "./graph-types.js";
 import { displayNodeStatus, displayRunStatus, isActiveDisplayStatus, type DisplayStatus } from "./runtime-status.js";
 
 const leafWidth = 200;
@@ -22,8 +21,8 @@ const headerHeight = 46;
 const padding = 18;
 const branchContainerPadding = 32;
 const scopeContainerPadding = 56;
-const verticalGap = 36;
-const branchGap = 36;
+const sequenceGap = 72;
+const laneGap = 36;
 const canvasPadding = 48;
 const visualOverflowPadding = 24;
 const minFitPadding = 12;
@@ -44,8 +43,24 @@ export function graphItemZIndex(depth: number): number {
   return graphItemZIndexBase + Math.min(Math.max(0, depth), graphItemZIndexMax - graphItemZIndexBase);
 }
 
+export function graphEdgeZIndex(edge: WebGraphEdge, parentOf: ReadonlyMap<string, string>): number {
+  const parentId = parentOf.get(edge.source);
+  if (parentId === undefined || parentId !== parentOf.get(edge.target)) return 0;
+  // Edge SVGs precede boxes in the DOM, so the sibling node layer still covers endpoints.
+  return graphItemZIndex(depth(parentId, parentOf) + 1);
+}
+
 export type GraphSelections = Record<string, string>;
 export type GraphViewport = { x: number; y: number; scale: number };
+
+export type GraphNodeTarget = {
+  renderId: string;
+  nodeId: string;
+  label: string;
+  context: WebGraphSelection[];
+  displayStatus: DisplayStatus;
+  detail?: NodeDetail;
+};
 
 export type RenderItem = {
   id: string;
@@ -55,15 +70,18 @@ export type RenderItem = {
   status: DisplayStatus;
   rawStatus: string;
   dimmed: boolean;
+  directActive: boolean;
   active: boolean;
   children: string[];
   path: string[];
+  context: WebGraphSelection[];
   nodeId: string;
   parentId?: string;
   node?: WebGraphNode;
   container?: WebGraphContainer;
   selector?: WebGraphSelector;
   selectedOptionId?: string;
+  occurrence?: { id: string; kind: "fanout-item"; itemIndex: number };
 };
 
 export type RenderModel = {
@@ -102,43 +120,8 @@ type Bounds = { x: number; y: number; width: number; height: number };
 type RectLike = { width: number; height: number };
 type ClosestLike = { closest(selector: string): unknown };
 
-export function leafSubtitle(detail: NodeDetail | undefined): string | undefined {
-  if (!detail) return undefined;
-  switch (detail.kind) {
-    case "assert":
-      return detail.condition;
-    case "signal":
-      return detail.outputSchema;
-    case "agent":
-      return [`use: ${detail.use ?? detail.command ?? detail.agent}`, detail.model].filter(Boolean).join(" · ");
-    case "task":
-      return detail.inputs.length > 0 ? `input: ${detail.inputs.join(", ")}` : undefined;
-    default:
-      return undefined;
-  }
-}
-
-export function compositeDescriptor(detail: NodeDetail | undefined): string | undefined {
-  if (!detail) return undefined;
-  switch (detail.kind) {
-    case "parallel":
-      return `${detail.branches.length} branch(es)`;
-    case "switch":
-      return `${detail.cases.length + (detail.hasDefault ? 1 : 0)} branch(es)`;
-    case "if":
-      return `Condition: ${detail.condition}`;
-    case "fanout":
-      return detail.over;
-    case "loop":
-      return undefined;
-    default:
-      return undefined;
-  }
-}
-
-export function selectorOptionLabel(selector: WebGraphSelector, option: WebGraphSelectorOption): string {
-  if (selector.kind === "loop" && "iteration" in option) return `iter ${option.iteration}`;
-  return "label" in option ? option.label : `iter ${option.iteration}`;
+export function selectorOptionLabel(_selector: WebGraphSelector, option: WebGraphSelectorOption): string {
+  return `iter ${option.iteration}`;
 }
 
 export function compositeBadge(kind: string): string {
@@ -153,104 +136,219 @@ export function compositeStrategy(detail: NodeDetail | undefined): string | unde
 export function toRenderModel(graph: WebGraph | undefined, selections: GraphSelections = {}): RenderModel {
   if (!graph) return { mode: "static", items: new Map(), rootIds: [], edges: [], parentOf: new Map() };
 
-  const { selectors, selectedOptions } = resolveGraphSelections(graph, selections);
-  const selectorByNodeId = new Map(selectors.map(selector => [selector.nodeId, selector]));
-  const ids = new Set([...graph.nodes.map(node => node.id), ...graph.containers.map(container => container.id)]);
-  const parentOf = safeParents([
+  const normalizedSelections = normalizeSelections(graph, selections);
+  const canonicalItems = new Map<string, WebGraphNode | WebGraphContainer>([
+    ...graph.nodes.map(node => [node.id, node] as const),
+    ...graph.containers.map(container => [container.id, container] as const),
+  ]);
+  const canonicalIds = new Set(canonicalItems.keys());
+  const canonicalParentOf = safeParents([
     ...graph.containers.map(container => ({ id: container.id, parentId: container.parentId })),
     ...graph.nodes.map(node => parentRef(node.id, node.parentId)),
-  ], ids);
-  const items = new Map<string, RenderItem>();
-
-  for (const container of graph.containers) {
-    const rawStatus = targetStatus(graph, container.id, container.status, selectedOptions);
-    const status = displayNodeStatus(rawStatus);
-    const parentId = parentOf.get(container.id);
-    items.set(container.id, {
-      id: container.id,
-      type: "container",
-      kind: container.kind,
-      label: container.label,
-      status,
-      rawStatus,
-      dimmed: false,
-      active: isActiveStatus(status),
-      children: [],
-      path: container.path,
-      nodeId: container.nodeId,
-      container: { ...container, status },
-      ...(parentId ? { parentId } : {}),
-    });
+  ], canonicalIds);
+  const canonicalChildrenByParent = new Map<string, string[]>();
+  for (const id of canonicalItems.keys()) {
+    const parentId = canonicalParentOf.get(id) ?? "";
+    canonicalChildrenByParent.set(parentId, [...(canonicalChildrenByParent.get(parentId) ?? []), id]);
+  }
+  const canonicalRank = rankItems(graph);
+  for (const [parentId, children] of canonicalChildrenByParent) {
+    canonicalChildrenByParent.set(parentId, orderChildren(children, graph.edges, canonicalRank));
   }
 
-  for (const node of graph.nodes) {
-    const rawStatus = targetStatus(graph, node.id, node.status, selectedOptions);
+  const items = new Map<string, RenderItem>();
+  const parentOf = new Map<string, string>();
+  const renderedChildrenByParent = new Map<string, string[]>();
+  const renderedByCanonicalContext = new Map<string, string>();
+  const renderRank = new Map<string, number>();
+  let nextRank = 0;
+
+  const addItem = (item: RenderItem, parentId: string | undefined) => {
+    items.set(item.id, item);
+    renderRank.set(item.id, nextRank++);
+    if (parentId) parentOf.set(item.id, parentId);
+    const key = parentId ?? "";
+    renderedChildrenByParent.set(key, [...(renderedChildrenByParent.get(key) ?? []), item.id]);
+  };
+
+  const instantiate = (canonicalId: string, context: WebGraphSelection[], parentId?: string): void => {
+    const canonical = canonicalItems.get(canonicalId);
+    if (!canonical) return;
+    const id = renderItemId(canonical.id, context);
+    if (items.has(id)) return;
+    const type = isWebGraphNode(canonical) ? "node" : "container";
+    const rawStatus = targetStatus(graph, canonical.id, canonical.status, context);
     const status = displayNodeStatus(rawStatus);
-    const selector = selectorByNodeId.get(node.id);
-    const selectedOptionId = selector ? selectedOptions.get(selector.nodeId)?.id ?? selector.defaultOptionId : undefined;
-    const parentId = parentOf.get(node.id);
-    items.set(node.id, {
-      id: node.id,
-      type: "node",
-      kind: node.kind,
-      label: node.label,
+    const selector = type === "node" ? selectorFor(graph, canonical.nodeId, context) : undefined;
+    const selectedOptionId = selector ? normalizedSelections[selector.id] : undefined;
+    const item: RenderItem = {
+      id,
+      type,
+      kind: canonical.kind,
+      label: canonical.label,
       status,
       rawStatus,
       dimmed: false,
+      directActive: isActiveStatus(status),
       active: isActiveStatus(status),
       children: [],
-      path: node.path,
-      nodeId: node.nodeId,
-      node: { ...node, status },
+      path: canonical.path,
+      context,
+      nodeId: canonical.nodeId,
+      ...(type === "node" ? { node: { ...canonical, status } as WebGraphNode } : { container: { ...canonical, status } as WebGraphContainer }),
       ...(parentId ? { parentId } : {}),
       ...(selector ? { selector } : {}),
       ...(selectedOptionId ? { selectedOptionId } : {}),
-    });
-  }
+    };
+    addItem(item, parentId);
+    renderedByCanonicalContext.set(canonicalContextKey(canonical.id, context), id);
 
-  const childrenByParent = new Map<string, string[]>();
-  for (const id of items.keys()) {
-    const parentId = parentOf.get(id) ?? "";
-    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), id]);
-  }
-  const rank = rankItems(graph);
+    const children = canonicalChildrenByParent.get(canonical.id) ?? [];
+    if (type === "container" && canonical.kind === "scope") {
+      const owner = graph.nodes.find(node => node.id === canonical.nodeId);
+      if (owner?.detail?.kind === "fanout") {
+        const occurrence = graph.fanoutOccurrences.find(candidate =>
+          candidate.nodeId === owner.nodeId
+          && candidate.targetId === canonical.id
+          && sameContext(candidate.context, context),
+        );
+        if (occurrence && occurrence.items.length > 0) {
+          for (const fanoutItem of [...occurrence.items].sort((a, b) => a.itemIndex - b.itemIndex)) {
+            const occurrenceId = fanoutItemId(fanoutItem.id, fanoutItem.context);
+            const occurrenceStatus = displayNodeStatus(fanoutItem.status);
+            addItem({
+              id: occurrenceId,
+              type: "container",
+              kind: "fanout-item",
+              label: fanoutItem.label,
+              status: occurrenceStatus,
+              rawStatus: fanoutItem.status,
+              dimmed: false,
+              directActive: isActiveStatus(occurrenceStatus),
+              active: isActiveStatus(occurrenceStatus),
+              children: [],
+              path: [...canonical.path, fanoutItem.label],
+              context: fanoutItem.context,
+              nodeId: owner.nodeId,
+              parentId: id,
+              occurrence: { id: fanoutItem.id, kind: "fanout-item", itemIndex: fanoutItem.itemIndex },
+            }, id);
+            for (const childId of children) instantiate(childId, fanoutItem.context, occurrenceId);
+          }
+          return;
+        }
+      }
+      if (owner?.detail?.kind === "loop") {
+        const loopSelector = selectorFor(graph, owner.nodeId, context);
+        const selected = loopSelector?.options.find(option => option.id === normalizedSelections[loopSelector.id]);
+        const bodyContext = selected?.context ?? context;
+        for (const childId of children) instantiate(childId, bodyContext, id);
+        return;
+      }
+    }
+    for (const childId of children) instantiate(childId, context, id);
+  };
+
+  for (const rootId of canonicalChildrenByParent.get("") ?? []) instantiate(rootId, []);
+
+  const edges = graph.edges.flatMap(edge => {
+    const rendered: WebGraphEdge[] = [];
+    for (const source of items.values()) {
+      if (source.occurrence || source.node?.id !== edge.source && source.container?.id !== edge.source) continue;
+      const targetId = renderedByCanonicalContext.get(canonicalContextKey(edge.target, source.context));
+      if (!targetId) continue;
+      rendered.push({
+        ...edge,
+        id: source.context.length === 0 ? edge.id : `${edge.id}@${contextKey(source.context)}`,
+        source: source.id,
+        target: targetId,
+      });
+    }
+    return rendered;
+  });
+
   for (const [id, item] of items) {
-    item.children = orderChildren(childrenByParent.get(id) ?? [], graph.edges, rank);
+    item.children = orderChildren(renderedChildrenByParent.get(id) ?? [], edges, renderRank);
   }
   applyDisplayRuntimeState(graph, items, parentOf);
 
   return {
     mode: graph.mode,
     items,
-    rootIds: orderChildren(childrenByParent.get("") ?? [], graph.edges, rank),
-    edges: graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)),
+    rootIds: orderChildren(renderedChildrenByParent.get("") ?? [], edges, renderRank),
+    edges,
     parentOf,
   };
 }
 
 export function normalizeSelections(graph: WebGraph, current: GraphSelections): GraphSelections {
   const next: GraphSelections = {};
-  const { selectors, selectedOptions } = resolveGraphSelections(graph, current);
-  for (const selector of selectors) {
-    const option = selectedOptions.get(selector.nodeId);
-    if (option) next[selector.nodeId] = option.id;
+  for (const selector of graph.selectors) {
+    const option = selector.options.find(candidate => candidate.id === current[selector.id])
+      ?? selector.options.find(candidate => candidate.id === selector.defaultOptionId)
+      ?? selector.options.at(-1);
+    if (option) next[selector.id] = option.id;
   }
   return next;
 }
 
-export function selectionContext(
-  graph: WebGraph | undefined,
-  selections: GraphSelections,
-  targetId?: string,
-  parentOf?: ReadonlyMap<string, string>,
-): WebGraphSelection[] {
-  if (!graph || graph.mode === "static") return [];
-  const resolved = resolveGraphSelections(graph, selections);
-  return resolved.selectors.flatMap(selector => {
-    if (targetId && parentOf && targetId !== selector.targetId && !isAncestor(selector.targetId, targetId, parentOf)) return [];
-    const option = resolved.selectedOptions.get(selector.nodeId);
-    return option ? [selectionFromOption(selector, option)] : [];
-  });
+export function selectionsForActiveRuntime(graph: WebGraph, current: GraphSelections): GraphSelections {
+  const next = normalizeSelections(graph, current);
+  if (graph.mode !== "runtime") return next;
+  const activeContexts = graph.runtimeStates
+    .filter(state => isActiveStatus(displayNodeStatus(state.status)))
+    .map(state => state.context);
+
+  for (const selector of graph.selectors) {
+    const option = selector.options
+      .filter(candidate => activeContexts.some(context => isContextPrefix(candidate.context, context)))
+      .sort((left, right) => left.iteration - right.iteration)
+      .at(-1);
+    if (option) next[selector.id] = option.id;
+  }
+  return next;
+}
+
+export function graphNodeTarget(item: RenderItem | undefined): GraphNodeTarget | undefined {
+  if (!item || item.type !== "node") return undefined;
+  return {
+    renderId: item.id,
+    nodeId: item.nodeId,
+    label: item.label,
+    context: item.context,
+    displayStatus: item.status,
+    ...(item.node?.detail === undefined ? {} : { detail: item.node.detail }),
+  };
+}
+
+export function graphContextLabel(context: readonly WebGraphSelection[]): string | undefined {
+  if (context.length === 0) return undefined;
+  return context.map(selection => selection.kind === "fanout"
+    ? `${selection.nodeId} item[${selection.itemIndex}]`
+    : `${selection.nodeId} iter ${selection.iteration}`).join(" / ");
+}
+
+export type ActiveFocus = {
+  reason: "single-active" | "multiple-active";
+  targetId?: string;
+  activeRenderIds: string[];
+};
+
+export function activeFocus(model: RenderModel): ActiveFocus | undefined {
+  const candidates = [...model.items.values()].filter(item => item.directActive);
+  const frontier = candidates.filter(candidate =>
+    !candidates.some(other => other.id !== candidate.id && isAncestor(candidate.id, other.id, model.parentOf)),
+  );
+  if (frontier.length === 0) return undefined;
+  if (frontier.length === 1) {
+    return { reason: "single-active", targetId: frontier[0]!.id, activeRenderIds: [frontier[0]!.id] };
+  }
+  const targetId = deepestCommonAncestor(frontier.map(item => item.id), model.parentOf);
+  return {
+    reason: "multiple-active",
+    ...(targetId ? { targetId } : {}),
+    activeRenderIds: frontier.map(item => item.id),
+  };
 }
 
 export function safeParents(nodes: Array<{ id: string; parentId?: string }>, ids: Set<string>): Map<string, string> {
@@ -307,22 +405,23 @@ export function layoutWorkflow(model: RenderModel): RenderLayout {
 
   function innerPaddingFor(item: RenderItem): number {
     if (item.type !== "container") return padding;
+    if (item.occurrence) return padding;
     return item.container?.kind === "scope" ? scopeContainerPadding : branchContainerPadding;
   }
 
   const measureChildren = (ids: string[], items: ReadonlyMap<string, RenderItem>): Size => {
     if (ids.length === 0) return { width: 0, height: 0 };
-    const layout = branchLayout(ids, items);
+    const layout = childLayout(ids, items);
     const childSizes = ids.map(measureItem);
     if (layout === "horizontal") {
       return {
-        width: childSizes.reduce((sum, size) => sum + size.width, 0) + branchGap * (childSizes.length - 1),
+        width: childSizes.reduce((sum, size) => sum + size.width, 0) + sequenceGap * (childSizes.length - 1),
         height: Math.max(...childSizes.map(size => size.height)),
       };
     }
     return {
       width: Math.max(...childSizes.map(size => size.width)),
-      height: childSizes.reduce((sum, size) => sum + size.height, 0) + verticalGap * (childSizes.length - 1),
+      height: childSizes.reduce((sum, size) => sum + size.height, 0) + laneGap * (childSizes.length - 1),
     };
   };
 
@@ -339,31 +438,30 @@ export function layoutWorkflow(model: RenderModel): RenderLayout {
       item.children,
       x + (size.width - childrenSize.width) / 2,
       y + headerHeight + innerPadding,
-      childrenSize.width,
-      "center",
+      childrenSize,
     );
   };
 
-  const placeChildren = (ids: string[], x: number, y: number, groupWidth: number, align: "left" | "center") => {
-    const layout = branchLayout(ids, model.items);
+  const placeChildren = (ids: string[], x: number, y: number, group: Size) => {
+    const layout = childLayout(ids, model.items);
     if (layout === "horizontal") {
       let cursor = x;
       for (const id of ids) {
         const size = measureItem(id);
-        placeItem(id, cursor, y);
-        cursor += size.width + branchGap;
+        placeItem(id, cursor, y + (group.height - size.height) / 2);
+        cursor += size.width + sequenceGap;
       }
       return;
     }
     let cursor = y;
     for (const id of ids) {
       const size = measureItem(id);
-      placeItem(id, align === "center" ? x + (groupWidth - size.width) / 2 : x, cursor);
-      cursor += size.height + verticalGap;
+      placeItem(id, x + (group.width - size.width) / 2, cursor);
+      cursor += size.height + laneGap;
     }
   };
 
-  placeChildren(model.rootIds, canvasPadding, canvasPadding, rootSize.width, "center");
+  placeChildren(model.rootIds, canvasPadding, canvasPadding, rootSize);
 
   const width = Math.max(rootSize.width + canvasPadding * 2, 960);
   const height = Math.max(rootSize.height + canvasPadding * 2, 540);
@@ -387,9 +485,9 @@ function buildEdgePaths(
     const target = boxes.get(edge.target);
     if (!source || !target) continue;
 
-    const start = { x: source.x + source.width / 2, y: source.y + source.height };
-    const end = { x: target.x + target.width / 2, y: target.y };
-    const d = edge.kind === "loop" || end.y < start.y
+    const start = { x: source.x + source.width, y: source.y + source.height / 2 };
+    const end = { x: target.x, y: target.y + target.height / 2 };
+    const d = edge.kind === "loop" || end.x < start.x
       ? loopPath(start.x, start.y, end.x, end.y, source, target)
       : flowPath(start.x, start.y, end.x, end.y);
 
@@ -421,9 +519,9 @@ export function projectEdgePath(
   if (!source || !target) return undefined;
   const sourceBox = projectBox(source, viewport);
   const targetBox = projectBox(target, viewport);
-  const start = projectPoint({ x: source.x + source.width / 2, y: source.y + source.height }, viewport);
-  const end = projectPoint({ x: target.x + target.width / 2, y: target.y }, viewport);
-  const d = edge.kind === "loop" || end.y < start.y
+  const start = projectPoint({ x: source.x + source.width, y: source.y + source.height / 2 }, viewport);
+  const end = projectPoint({ x: target.x, y: target.y + target.height / 2 }, viewport);
+  const d = edge.kind === "loop" || end.x < start.x
     ? loopPath(start.x, start.y, end.x, end.y, sourceBox, targetBox)
     : flowPath(start.x, start.y, end.x, end.y);
   return { id: edge.id, kind: edge.kind, d };
@@ -491,6 +589,18 @@ export function fitView(
   };
 }
 
+export function focusView(box: PlacedBox | undefined, rect: RectLike, padding = 56): GraphViewport | undefined {
+  if (!box || box.width <= 0 || box.height <= 0 || rect.width <= 0 || rect.height <= 0) return undefined;
+  const availableWidth = Math.max(1, rect.width - padding * 2);
+  const availableHeight = Math.max(1, rect.height - padding * 2);
+  const scale = clamp(Math.min(availableWidth / box.width, availableHeight / box.height, 1.15), 0.05, maxScale);
+  return {
+    x: rect.width / 2 - (box.x + box.width / 2) * scale,
+    y: rect.height / 2 - (box.y + box.height / 2) * scale,
+    scale,
+  };
+}
+
 export function fitScale(
   layout: Pick<RenderLayout, "width" | "height">,
   rect: RectLike,
@@ -529,6 +639,15 @@ export function zoomViewport(viewport: GraphViewport, scale: number, px: number,
     x: px - ((px - viewport.x) / viewport.scale) * scale,
     y: py - ((py - viewport.y) / viewport.scale) * scale,
     scale,
+  };
+}
+
+export function centerViewportAt(viewport: GraphViewport, rect: RectLike, point: Point): GraphViewport {
+  if (viewport.scale <= 0 || rect.width <= 0 || rect.height <= 0) return viewport;
+  return {
+    ...viewport,
+    x: rect.width / 2 - point.x * viewport.scale,
+    y: rect.height / 2 - point.y * viewport.scale,
   };
 }
 
@@ -598,83 +717,79 @@ function targetStatus(
   graph: WebGraph,
   targetId: string,
   fallback: string,
-  selectedOptions: ReadonlyMap<string, WebGraphSelectorOption>,
+  context: readonly WebGraphSelection[],
 ): string {
   if (graph.mode === "static") return fallback;
   const states = graph.runtimeStates.filter(state => state.targetId === targetId);
   if (states.length === 0) return fallback;
-  return states.find(state => runtimeStateMatches(state, selectedOptions))?.status ?? "not_started";
+  for (let index = states.length - 1; index >= 0; index -= 1) {
+    const state = states[index]!;
+    if (sameContext(state.context, context)) return state.status;
+  }
+  return "not_started";
 }
 
-function runtimeStateMatches(
-  state: WebGraphRuntimeState,
-  selectedOptions: ReadonlyMap<string, WebGraphSelectorOption>,
-): boolean {
-  return state.selectors.every(selection => {
-    const option = selectedOptions.get(selection.nodeId);
-    return option !== undefined && sameSelection(selection, option);
+function selectorFor(graph: WebGraph, nodeId: string, context: readonly WebGraphSelection[]): WebGraphSelector | undefined {
+  return graph.selectors.find(selector => selector.nodeId === nodeId && sameContext(selector.context, context));
+}
+
+function sameContext(left: readonly WebGraphSelection[], right: readonly WebGraphSelection[]): boolean {
+  return left.length === right.length && left.every((selection, index) => sameSelection(selection, right[index]!));
+}
+
+function isContextPrefix(prefix: readonly WebGraphSelection[], context: readonly WebGraphSelection[]): boolean {
+  return prefix.length <= context.length && prefix.every((selection, index) => sameSelection(selection, context[index]!));
+}
+
+function sameSelection(left: WebGraphSelection, right: WebGraphSelection): boolean {
+  if (left.kind !== right.kind || left.nodeId !== right.nodeId) return false;
+  return left.kind === "fanout"
+    ? left.itemIndex === (right as Extract<WebGraphSelection, { kind: "fanout" }>).itemIndex
+    : left.iteration === (right as Extract<WebGraphSelection, { kind: "loop" }>).iteration;
+}
+
+function isWebGraphNode(item: WebGraphNode | WebGraphContainer): item is WebGraphNode {
+  return item.parentId === undefined || "detail" in item || item.kind !== "branch" && item.kind !== "scope";
+}
+
+function renderItemId(canonicalId: string, context: readonly WebGraphSelection[]): string {
+  return context.length === 0 ? canonicalId : `${canonicalId}@${contextKey(context)}`;
+}
+
+function fanoutItemId(id: string, context: readonly WebGraphSelection[]): string {
+  return `fanout-item:${encodeURIComponent(id)}@${contextKey(context)}`;
+}
+
+function canonicalContextKey(canonicalId: string, context: readonly WebGraphSelection[]): string {
+  return `${canonicalId}\0${contextKey(context)}`;
+}
+
+function contextKey(context: readonly WebGraphSelection[]): string {
+  return context.map(selection => selection.kind === "fanout"
+    ? `f:${encodeURIComponent(selection.nodeId)}:${selection.itemIndex}`
+    : `l:${encodeURIComponent(selection.nodeId)}:${selection.iteration}`).join("/");
+}
+
+function deepestCommonAncestor(ids: string[], parentOf: ReadonlyMap<string, string>): string | undefined {
+  const paths = ids.map(id => {
+    const path = [id];
+    const visited = new Set(path);
+    let current = parentOf.get(id);
+    while (current && !visited.has(current)) {
+      path.push(current);
+      visited.add(current);
+      current = parentOf.get(current);
+    }
+    return path.reverse();
   });
-}
-
-function sameSelection(selection: WebGraphSelection, option: WebGraphSelectorOption): boolean {
-  if (selection.kind === "fanout") {
-    return "itemIndex" in option && selection.itemIndex === option.itemIndex;
+  const shortest = Math.min(...paths.map(path => path.length));
+  let common: string | undefined;
+  for (let index = 0; index < shortest; index += 1) {
+    const candidate = paths[0]?.[index];
+    if (!candidate || paths.some(path => path[index] !== candidate)) break;
+    common = candidate;
   }
-  return "iteration" in option && selection.iteration === option.iteration;
-}
-
-function selectionFromOption(selector: WebGraphSelector, option: WebGraphSelectorOption): WebGraphSelection {
-  if ("itemIndex" in option) {
-    return {
-      nodeId: selector.nodeId,
-      kind: "fanout",
-      itemIndex: option.itemIndex,
-    };
-  }
-  return {
-    nodeId: selector.nodeId,
-    kind: "loop",
-    iteration: option.iteration,
-  };
-}
-
-function resolveGraphSelections(
-  graph: WebGraph,
-  selections: GraphSelections,
-): { selectors: WebGraphSelector[]; selectedOptions: Map<string, WebGraphSelectorOption> } {
-  const pending = [...graph.selectors];
-  const selectors: WebGraphSelector[] = [];
-  const selectedOptions = new Map<string, WebGraphSelectorOption>();
-
-  while (pending.length > 0) {
-    const index = pending.findIndex(selector =>
-      selector.options.every(option => option.parentSelections.every(parent => selectedOptions.has(parent.nodeId))),
-    );
-    if (index < 0) break;
-    const selector = pending.splice(index, 1)[0]!;
-    const options = selector.options.filter(option => option.parentSelections.every(parent => {
-      const selected = selectedOptions.get(parent.nodeId);
-      return selected !== undefined && sameSelection(parent, selected);
-    }));
-    const option = options.find(candidate => candidate.id === selections[selector.nodeId])
-      ?? options.find(candidate => candidate.id === selector.defaultOptionId)
-      ?? options.at(-1)
-      ?? options[0];
-    if (!option) continue;
-    const defaultOptionId = options.some(candidate => candidate.id === selector.defaultOptionId)
-      ? selector.defaultOptionId
-      : options.at(-1)?.id;
-    selectors.push({
-      nodeId: selector.nodeId,
-      kind: selector.kind,
-      targetId: selector.targetId,
-      options,
-      ...(defaultOptionId === undefined ? {} : { defaultOptionId }),
-    });
-    selectedOptions.set(selector.nodeId, option);
-  }
-
-  return { selectors, selectedOptions };
+  return common;
 }
 
 function rankItems(graph: WebGraph): Map<string, number> {
@@ -713,13 +828,13 @@ function orderChildren(ids: string[], edges: WebGraphEdge[], rank: ReadonlyMap<s
   return ordered.length === ids.length ? ordered : [...ids].sort(byRank);
 }
 
-function branchLayout(ids: string[], items: ReadonlyMap<string, RenderItem>): "horizontal" | "vertical" {
-  if (ids.length <= 1) return "vertical";
-  const allBranches = ids.every(id => {
+function childLayout(ids: string[], items: ReadonlyMap<string, RenderItem>): "horizontal" | "vertical" {
+  if (ids.length <= 1) return "horizontal";
+  const allLanes = ids.every(id => {
     const item = items.get(id);
-    return item?.type === "container" && item.container?.kind === "branch";
+    return item?.type === "container" && (item.container?.kind === "branch" || item.occurrence?.kind === "fanout-item");
   });
-  return allBranches ? "horizontal" : "vertical";
+  return allLanes ? "vertical" : "horizontal";
 }
 
 function applyDisplayRuntimeState(graph: WebGraph, items: Map<string, RenderItem>, parentOf: ReadonlyMap<string, string>): void {
@@ -788,11 +903,13 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function flowPath(sx: number, sy: number, tx: number, ty: number): string {
-  const midY = sy + Math.max(24, (ty - sy) / 2);
-  return `M ${sx} ${sy} V ${midY} H ${tx} V ${ty - 1}`;
+  if (Math.abs(ty - sy) < 1) return `M ${sx} ${sy} H ${tx - 1}`;
+  const midX = sx + Math.max(24, (tx - sx) / 2);
+  return `M ${sx} ${sy} H ${midX} V ${ty} H ${tx - 1}`;
 }
 
 function loopPath(sx: number, sy: number, tx: number, ty: number, source: PlacedBox, target: PlacedBox): string {
   const sideX = Math.max(source.x + source.width, target.x + target.width) + 22;
-  return `M ${sx} ${sy} V ${sy + 24} H ${sideX} V ${ty - 24} H ${tx} V ${ty - 1}`;
+  const lowerY = Math.max(source.y + source.height, target.y + target.height) + 22;
+  return `M ${sx} ${sy} H ${sideX} V ${lowerY} H ${tx - 24} V ${ty} H ${tx - 1}`;
 }

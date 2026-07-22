@@ -10,6 +10,7 @@ import CircleX from "lucide-react/dist/esm/icons/circle-x.js";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch.js";
 import GitFork from "lucide-react/dist/esm/icons/git-fork.js";
 import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
+import LocateFixed from "lucide-react/dist/esm/icons/locate-fixed.js";
 import Minus from "lucide-react/dist/esm/icons/minus.js";
 import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Radio from "lucide-react/dist/esm/icons/radio.js";
@@ -20,19 +21,24 @@ import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.js";
 import SkipForward from "lucide-react/dist/esm/icons/skip-forward.js";
 import Split from "lucide-react/dist/esm/icons/split.js";
 import Terminal from "lucide-react/dist/esm/icons/terminal.js";
-import type { WebGraph, WebGraphSelection } from "../api.js";
+import type { WebGraph } from "../api.js";
 import {
+  activeFocus,
   activeEdgeIds,
   buildProjectedEdgePaths,
   canStartPan,
+  centerViewportAt,
   compositeBadge,
-  compositeDescriptor,
   compositeStrategy,
   depth,
   fitScale,
   fitView,
+  focusView,
   graphCanvasPadding,
+  graphContextLabel,
+  graphEdgeZIndex,
   graphItemZIndex,
+  graphNodeTarget,
   graphMaxScale,
   graphSelectedVisibilityMargin,
   isCompositeKind,
@@ -40,22 +46,23 @@ import {
   isPanPastThreshold,
   keepBoxInViewport,
   layoutWorkflow,
-  leafSubtitle,
   minZoomScale,
   normalizeSelections,
   projectBoxes,
-  selectionContext,
+  selectionsForActiveRuntime,
   selectorOptionLabel,
   toRenderModel,
   wheelZoomScale,
   zoomViewport,
   type GraphSelections,
+  type GraphNodeTarget,
+  type EdgePath,
   type GraphViewport,
   type PlacedBox,
   type RenderItem,
 } from "../../graph-renderer.js";
 import { normalizeRuntimeStatus, runtimeStatusLabel } from "../../runtime-status.js";
-import type { DisplayStatus } from "../../runtime-status.js";
+import { GraphMinimap, GraphNodeNavigator, GraphPathBreadcrumb } from "./GraphNavigation.js";
 import { Button } from "./shadcn/button.js";
 import {
   Select,
@@ -70,7 +77,7 @@ type LucideIcon = React.ComponentType<React.SVGProps<SVGSVGElement> & {
   strokeWidth?: number | string;
 }>;
 
-type DragState = { pointerId: number; startX: number; startY: number; viewport: GraphViewport; moved: boolean; selectNodeId?: string };
+type DragState = { pointerId: number; startX: number; startY: number; viewport: GraphViewport; moved: boolean; selectRenderId?: string };
 
 const KIND_ICONS: Record<string, LucideIcon> = {
   task: Terminal,
@@ -100,14 +107,14 @@ const STATUS_ICONS: Record<string, LucideIcon> = {
   skipped: SkipForward,
 };
 
-function StatusGlyph({ status }: { status: string }) {
+function StatusStamp({ status }: { status: string }) {
   const display = normalizeRuntimeStatus(status);
   if (display === "not_started") return null;
   const Icon = STATUS_ICONS[display] ?? CircleDashed;
   const emphatic = display === "completed" || display === "failed";
   return (
-    <span className={`runtime-status-glyph ${display}`} title={runtimeStatusLabel(display)} aria-label={runtimeStatusLabel(display)}>
-      <Icon size={emphatic ? 15 : 14} strokeWidth={emphatic ? 3 : 2.15} />
+    <span className={`runtime-status-stamp ${display}`} role="img" title={runtimeStatusLabel(display)} aria-label={runtimeStatusLabel(display)}>
+      <Icon size={20} strokeWidth={emphatic ? 2.8 : 2.15} />
     </span>
   );
 }
@@ -124,24 +131,25 @@ function GraphEmptyState() {
 
 export function RunGraph({
   graph,
-  selectedNodeId,
+  selectedRenderId,
   onSelectNode,
   onSelectWorkflow,
 }: {
   graph: WebGraph | undefined;
-  selectedNodeId?: string;
-  onSelectNode(id: string | undefined, context?: WebGraphSelection[], displayStatus?: DisplayStatus): void;
+  selectedRenderId?: string;
+  onSelectNode(target: GraphNodeTarget | undefined): void;
   onSelectWorkflow?(): void;
 }) {
   const [selections, setSelections] = useState<GraphSelections>({});
   const [viewport, setViewport] = useState<GraphViewport>({ x: 0, y: 0, scale: 1 });
   const [viewportAnimating, setViewportAnimating] = useState(false);
+  const [shellSize, setShellSize] = useState({ width: 0, height: 0 });
   const shellRef = useRef<HTMLDivElement | null>(null);
   const selectionsRef = useRef<GraphSelections>({});
   const viewportRef = useRef<GraphViewport>({ x: 0, y: 0, scale: 1 });
   const dragRef = useRef<DragState | undefined>(undefined);
   const suppressClickRef = useRef(false);
-  const userViewportRef = useRef(false);
+  const initializedGraphKeyRef = useRef<string | undefined>(undefined);
   const viewportAnimationTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -158,10 +166,15 @@ export function RunGraph({
   }, [viewport]);
 
   const model = useMemo(() => toRenderModel(graph, selections), [graph, selections]);
-  const contextForTarget = (targetId: string | undefined) => targetId ? selectionContext(graph, selections, targetId, model.parentOf) : [];
-  const displayStatusForTarget = (targetId: string | undefined): DisplayStatus | undefined => targetId ? model.items.get(targetId)?.status : undefined;
   const layout = useMemo(() => layoutWorkflow(model), [model]);
-  const layoutKey = `${graph?.mode ?? "none"}:${graph?.workflow.runId ?? graph?.workflow.name ?? "graph"}:${layout.width}x${layout.height}`;
+  const runningSelections = useMemo(
+    () => graph ? selectionsForActiveRuntime(graph, selections) : selections,
+    [graph, selections],
+  );
+  const runningModel = useMemo(() => toRenderModel(graph, runningSelections), [graph, runningSelections]);
+  const runningLayout = useMemo(() => layoutWorkflow(runningModel), [runningModel]);
+  const graphKey = `${graph?.mode ?? "none"}:${graph?.workflow.runId ?? graph?.workflow.name ?? "graph"}`;
+  const currentFocus = useMemo(() => activeFocus(runningModel), [runningModel]);
   const activeEdges = useMemo(() => activeEdgeIds(model), [model]);
   const losslessZoom = isLosslessZoom(viewport.scale);
   const renderedBoxes = useMemo(() => losslessZoom ? projectBoxes(layout.boxes, viewport) : layout.boxes, [layout.boxes, losslessZoom, viewport]);
@@ -169,6 +182,18 @@ export function RunGraph({
     () => losslessZoom ? buildProjectedEdgePaths(model.edges, layout.boxes, model.parentOf, viewport, activeEdges) : layout.edgePaths,
     [activeEdges, layout.boxes, layout.edgePaths, losslessZoom, model.edges, model.parentOf, viewport],
   );
+  const renderedEdgeLayers = useMemo(() => {
+    const edgeById = new Map(model.edges.map(edge => [edge.id, edge]));
+    const pathsByLayer = new Map<number, EdgePath[]>([[0, []]]);
+    for (const path of renderedEdgePaths) {
+      const edge = edgeById.get(path.id);
+      const layer = edge ? graphEdgeZIndex(edge, model.parentOf) : 0;
+      const paths = pathsByLayer.get(layer) ?? [];
+      paths.push(path);
+      pathsByLayer.set(layer, paths);
+    }
+    return [...pathsByLayer].sort(([left], [right]) => left - right);
+  }, [model.edges, model.parentOf, renderedEdgePaths]);
   const canvasWidth = losslessZoom ? Math.max(layout.width * viewport.scale + Math.abs(viewport.x) + graphCanvasPadding, 960) : layout.width;
   const canvasHeight = losslessZoom ? Math.max(layout.height * viewport.scale + Math.abs(viewport.y) + graphCanvasPadding, 540) : layout.height;
 
@@ -193,52 +218,82 @@ export function RunGraph({
     setViewportWithOptionalAnimation(fitView(layout, shell.getBoundingClientRect()), animate);
   };
 
+  const focusRenderedItem = (id: string, inspect: boolean, animate = true) => {
+    const shell = shellRef.current;
+    const item = model.items.get(id);
+    if (!shell || !item) return;
+    const next = focusView(layout.boxes.get(id), shell.getBoundingClientRect());
+    if (next) setViewportWithOptionalAnimation(next, animate);
+    if (inspect) onSelectNode(graphNodeTarget(item));
+  };
+
+  const recenterGraphAt = (point: { x: number; y: number }) => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    setViewportWithOptionalAnimation(centerViewportAt(viewportRef.current, shell.getBoundingClientRect(), point), true);
+  };
+
+  const applyActiveFocus = (animate = false) => {
+    const shell = shellRef.current;
+    if (!shell || !currentFocus) return;
+    selectionsRef.current = runningSelections;
+    setSelections(runningSelections);
+    const next = currentFocus.targetId
+      ? focusView(runningLayout.boxes.get(currentFocus.targetId), shell.getBoundingClientRect())
+      : fitView(runningLayout, shell.getBoundingClientRect());
+    if (next) setViewportWithOptionalAnimation(next, animate);
+  };
+
   const zoomLowerBound = () => {
     const shell = shellRef.current;
     return minZoomScale(shell ? fitScale(layout, shell.getBoundingClientRect()) : viewport.scale);
   };
 
   useEffect(() => {
-    userViewportRef.current = false;
-    requestAnimationFrame(() => applyFit(false));
-  }, [layoutKey]);
+    if (!graph || initializedGraphKeyRef.current === graphKey) return;
+    const frame = requestAnimationFrame(() => {
+      initializedGraphKeyRef.current = graphKey;
+      if (currentFocus) applyActiveFocus(false);
+      else applyFit(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentFocus, graph, graphKey, layout, runningLayout, runningSelections]);
 
   useEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
-    const observer = new ResizeObserver(() => {
+    const updateShell = () => {
       const rect = shell.getBoundingClientRect();
-      if (!userViewportRef.current) {
-        setViewportWithOptionalAnimation(fitView(layout, rect), true);
-        return;
-      }
-      if (selectedNodeId) {
+      setShellSize(current => current.width === rect.width && current.height === rect.height ? current : { width: rect.width, height: rect.height });
+      if (selectedRenderId) {
         setViewportWithOptionalAnimation(
-          keepBoxInViewport(viewportRef.current, rect, layout.boxes.get(selectedNodeId), graphSelectedVisibilityMargin),
+          keepBoxInViewport(viewportRef.current, rect, layout.boxes.get(selectedRenderId), graphSelectedVisibilityMargin),
           true,
         );
       }
-    });
+    };
+    const observer = new ResizeObserver(updateShell);
     observer.observe(shell);
+    updateShell();
     return () => observer.disconnect();
-  }, [layout, selectedNodeId]);
+  }, [layout, selectedRenderId]);
 
   useEffect(() => {
     const shell = shellRef.current;
-    if (!shell || !selectedNodeId) return;
+    if (!shell || !selectedRenderId) return;
     const frame = requestAnimationFrame(() => {
       setViewportWithOptionalAnimation(
-        keepBoxInViewport(viewportRef.current, shell.getBoundingClientRect(), layout.boxes.get(selectedNodeId), graphSelectedVisibilityMargin),
+        keepBoxInViewport(viewportRef.current, shell.getBoundingClientRect(), layout.boxes.get(selectedRenderId), graphSelectedVisibilityMargin),
         true,
       );
     });
     return () => cancelAnimationFrame(frame);
-  }, [layout, selectedNodeId]);
+  }, [layout, selectedRenderId]);
 
   useEffect(() => {
-    if (!selectedNodeId) return;
-    onSelectNode(selectedNodeId, contextForTarget(selectedNodeId), displayStatusForTarget(selectedNodeId));
-  }, [model, selectedNodeId]);
+    if (!selectedRenderId) return;
+    onSelectNode(graphNodeTarget(model.items.get(selectedRenderId)));
+  }, [model, selectedRenderId]);
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -250,7 +305,6 @@ export function RunGraph({
       const scale = wheelZoomScale(current.scale, event.deltaY, zoomLowerBound(), graphMaxScale);
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
-      userViewportRef.current = true;
       setViewportWithOptionalAnimation(zoomViewport(current, scale, px, py), false);
     };
     shell.addEventListener("wheel", onWheel, { passive: false });
@@ -283,7 +337,7 @@ export function RunGraph({
           startY: event.clientY,
           viewport,
           moved: false,
-          ...(box?.dataset.selectNodeId === undefined ? {} : { selectNodeId: box.dataset.selectNodeId }),
+          ...(box?.dataset.selectRenderId === undefined ? {} : { selectRenderId: box.dataset.selectRenderId }),
         };
       }}
       onPointerMove={event => {
@@ -295,7 +349,6 @@ export function RunGraph({
         event.preventDefault();
         if (!drag.moved) event.currentTarget.setPointerCapture(event.pointerId);
         drag.moved = true;
-        userViewportRef.current = true;
         setViewport({
           ...drag.viewport,
           x: drag.viewport.x + dx,
@@ -305,19 +358,43 @@ export function RunGraph({
       onPointerUp={event => {
         const drag = dragRef.current;
         if (drag?.pointerId !== event.pointerId) return;
-        suppressClickRef.current = drag.moved || Boolean(drag.selectNodeId);
-        if (!drag.moved && drag.selectNodeId) onSelectNode(drag.selectNodeId, contextForTarget(drag.selectNodeId), displayStatusForTarget(drag.selectNodeId));
+        suppressClickRef.current = drag.moved || Boolean(drag.selectRenderId);
+        if (!drag.moved && drag.selectRenderId) onSelectNode(graphNodeTarget(model.items.get(drag.selectRenderId)));
         dragRef.current = undefined;
       }}
       onPointerCancel={() => {
         dragRef.current = undefined;
       }}
     >
+      <GraphPathBreadcrumb
+        model={model}
+        selectedRenderId={selectedRenderId}
+        onNavigate={(item, inspect) => focusRenderedItem(item.id, inspect)}
+      />
       <div className="graph-toolbar" onClick={event => event.stopPropagation()}>
         {onSelectWorkflow && (
-          <Button type="button" variant="tool" className="graph-tool-button workflow-io" title="Workflow I/O" aria-label="Workflow I/O: open workflow input and output" onClick={onSelectWorkflow}>
+          <Button type="button" variant="tool" className="graph-tool-button workflow-io" title="Workflow data" aria-label="Open workflow input and output" onClick={onSelectWorkflow}>
             <Braces size={14} />
-            <span>Workflow I/O</span>
+            <span>Workflow data</span>
+          </Button>
+        )}
+        <GraphNodeNavigator model={model} selectedRenderId={selectedRenderId} onNavigate={item => focusRenderedItem(item.id, true)} />
+        {graph.mode === "runtime" && (
+          <Button
+            type="button"
+            variant="tool"
+            className="graph-tool-button locate-active"
+            title={currentFocus ? "Locate current work" : "No current work to locate"}
+            aria-label={currentFocus ? `Locate current ${currentFocus.activeRenderIds.length} running node${currentFocus.activeRenderIds.length === 1 ? "" : "s"}` : "No current work to locate"}
+            disabled={!currentFocus}
+            onClick={() => applyActiveFocus(true)}
+          >
+            <LocateFixed size={14} />
+          </Button>
+        )}
+        {selectedRenderId && (
+          <Button type="button" variant="tool" className="graph-tool-button" title="Focus selected node" aria-label="Focus selected graph node" onClick={() => focusRenderedItem(selectedRenderId, false)}>
+            <LocateFixed size={14} />
           </Button>
         )}
         <Button type="button" variant="tool" className="graph-tool-button" title="Fit view" aria-label="Fit graph to view" onClick={() => applyFit(true)}>
@@ -330,7 +407,6 @@ export function RunGraph({
           title="Zoom out"
           aria-label="Zoom graph out"
           onClick={() => {
-            userViewportRef.current = true;
             const current = viewportRef.current;
             setViewportWithOptionalAnimation({ ...current, scale: clamp(current.scale * 0.85, zoomLowerBound(), graphMaxScale) }, false);
           }}
@@ -344,7 +420,6 @@ export function RunGraph({
           title="Zoom in"
           aria-label="Zoom graph in"
           onClick={() => {
-            userViewportRef.current = true;
             const current = viewportRef.current;
             setViewportWithOptionalAnimation({ ...current, scale: clamp(current.scale * 1.15, zoomLowerBound(), graphMaxScale) }, false);
           }}
@@ -352,6 +427,14 @@ export function RunGraph({
           <Plus size={14} />
         </Button>
       </div>
+      <GraphMinimap
+        model={model}
+        layout={layout}
+        viewport={viewport}
+        shellSize={shellSize}
+        selectedRenderId={selectedRenderId}
+        onNavigate={recenterGraphAt}
+      />
       <div
         className="graph-canvas"
         style={{
@@ -360,16 +443,9 @@ export function RunGraph({
           transform: losslessZoom ? undefined : `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
         }}
       >
-        <svg className="graph-edges" width={canvasWidth} height={canvasHeight} viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}>
-          <defs>
-            <marker id="graph-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-              <path d="M 0 0 L 10 5 L 0 10 z" />
-            </marker>
-          </defs>
-          {renderedEdgePaths.map(edge => (
-            <path key={edge.id} className={`graph-edge ${edge.kind} ${edge.active ? "active" : ""}`} d={edge.d} markerEnd={edge.kind === "loop" ? undefined : "url(#graph-arrow)"} />
-          ))}
-        </svg>
+        {renderedEdgeLayers.map(([zIndex, edgePaths]) => (
+          <GraphEdgeLayer key={zIndex} edgePaths={edgePaths} width={canvasWidth} height={canvasHeight} zIndex={zIndex} />
+        ))}
         {[...renderedBoxes.values()]
           .sort((a, b) => depth(a.id, model.parentOf) - depth(b.id, model.parentOf))
           .map(box => {
@@ -380,15 +456,16 @@ export function RunGraph({
                 key={item.id}
                 box={box}
                 item={item}
-                selected={selectedNodeId === item.id || (item.type === "container" && selectedNodeId === item.nodeId)}
+                mode={model.mode}
+                selected={selectedRenderId === item.id}
                 depth={depth(item.id, model.parentOf)}
-                onSelectNode={id => onSelectNode(id, contextForTarget(id), displayStatusForTarget(id))}
-                onSelectOption={(nodeId, optionId) => {
-                  const next = { ...selectionsRef.current, [nodeId]: optionId };
+                onSelectNode={selected => onSelectNode(graphNodeTarget(selected))}
+                onSelectOption={(selectorId, optionId) => {
+                  const next = { ...selectionsRef.current, [selectorId]: optionId };
                   selectionsRef.current = next;
                   setSelections(next);
                   const nextModel = toRenderModel(graph, next);
-                  if (selectedNodeId) onSelectNode(selectedNodeId, selectionContext(graph, next, selectedNodeId, nextModel.parentOf), nextModel.items.get(selectedNodeId)?.status);
+                  if (selectedRenderId) onSelectNode(graphNodeTarget(nextModel.items.get(selectedRenderId)));
                 }}
               />
             );
@@ -398,9 +475,36 @@ export function RunGraph({
   );
 }
 
+function GraphEdgeLayer({
+  edgePaths,
+  width,
+  height,
+  zIndex,
+}: {
+  edgePaths: EdgePath[];
+  width: number;
+  height: number;
+  zIndex: number;
+}) {
+  const markerId = zIndex === 0 ? "graph-arrow" : `graph-arrow-${String(zIndex).replace(".", "-")}`;
+  return (
+    <svg className="graph-edges" data-edge-layer={zIndex} style={{ zIndex }} width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <defs>
+        <marker id={markerId} viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" stroke="none" />
+        </marker>
+      </defs>
+      {edgePaths.map(edge => (
+        <path key={edge.id} className={`graph-edge ${edge.kind} ${edge.active ? "active" : ""}`} d={edge.d} markerEnd={edge.kind === "loop" ? undefined : `url(#${markerId})`} />
+      ))}
+    </svg>
+  );
+}
+
 const GraphBox = memo(function GraphBox({
   box,
   item,
+  mode,
   selected,
   depth,
   onSelectNode,
@@ -408,11 +512,14 @@ const GraphBox = memo(function GraphBox({
 }: {
   box: PlacedBox;
   item: RenderItem;
+  mode: WebGraph["mode"];
   selected: boolean;
   depth: number;
-  onSelectNode(id: string | undefined): void;
-  onSelectOption(nodeId: string, optionId: string): void;
+  onSelectNode(item: RenderItem): void;
+  onSelectOption(selectorId: string, optionId: string): void;
 }) {
+  const hasCompositeHeader = item.children.length > 0 || isCompositeKind(item.kind);
+  const accessibleLabel = graphNodeAccessibleLabel(item, mode);
   const className = [
     "graph-box",
     item.type === "container" ? "graph-container" : "node",
@@ -428,77 +535,92 @@ const GraphBox = memo(function GraphBox({
   return (
     <div
       className={className}
-      data-select-node-id={item.type === "node" ? item.id : item.nodeId}
-      role="button"
-      tabIndex={0}
-      aria-label={`${item.type === "node" ? "Node" : "Container"} ${item.label}`}
+      {...(item.type === "node"
+        ? hasCompositeHeader
+          ? { "data-select-render-id": item.id, role: "group", "aria-label": accessibleLabel }
+          : { "data-select-render-id": item.id, role: "button", tabIndex: 0, "aria-label": accessibleLabel }
+        : { role: "group", "aria-label": `Structure ${item.label}` })}
       style={{ left: box.x, top: box.y, width: box.width, height: box.height, zIndex: graphItemZIndex(depth) }}
-      onClick={event => {
+      onClick={item.type === "node" && !hasCompositeHeader ? event => {
         event.stopPropagation();
-        onSelectNode(item.type === "node" ? item.id : item.nodeId);
-      }}
-      onKeyDown={event => {
+        onSelectNode(item);
+      } : undefined}
+      onKeyDown={item.type === "node" && !hasCompositeHeader ? event => {
         if (event.currentTarget !== event.target) return;
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         event.stopPropagation();
-        onSelectNode(item.type === "node" ? item.id : item.nodeId);
-      }}
+        onSelectNode(item);
+      } : undefined}
     >
-      {item.type === "container" ? (
-        <ContainerContent item={item} />
-      ) : item.children.length > 0 || isCompositeKind(item.kind) ? (
-        <CompositeContent item={item} onSelectOption={onSelectOption} />
-      ) : (
-        <LeafContent item={item} />
+      {item.type === "container" ? <ContainerContent item={item} /> : (
+        <>
+          {item.children.length > 0 || isCompositeKind(item.kind) ? (
+            <CompositeContent item={item} accessibleLabel={accessibleLabel} onSelectNode={() => onSelectNode(item)} onSelectOption={onSelectOption} />
+          ) : (
+            <LeafContent item={item} />
+          )}
+          <StatusStamp status={item.status} />
+        </>
       )}
     </div>
   );
 });
 
 function LeafContent({ item }: { item: RenderItem }) {
-  const subtitle = leafSubtitle(item.node?.detail);
   return (
     <div className="node-card">
       <div className="node-card-head">
         <span className={`type-badge ${item.kind}`}>{item.kind.toUpperCase()}</span>
         <KindIcon kind={item.kind} size={14} />
         <strong>{item.label}</strong>
-        <StatusGlyph status={item.status} />
       </div>
-      {subtitle && <div className="node-detail">{subtitle}</div>}
     </div>
   );
 }
 
 function CompositeContent({
   item,
+  accessibleLabel,
+  onSelectNode,
   onSelectOption,
 }: {
   item: RenderItem;
-  onSelectOption(nodeId: string, optionId: string): void;
+  accessibleLabel: string;
+  onSelectNode(): void;
+  onSelectOption(selectorId: string, optionId: string): void;
 }) {
-  const descriptor = compositeDescriptor(item.node?.detail);
   const strategy = compositeStrategy(item.node?.detail);
+  const title = (
+    <>
+      <KindIcon kind={item.kind} size={14} />
+      <strong>{item.label}</strong>
+      <span className={`type-badge ${item.kind}`}>{compositeBadge(item.kind)}</span>
+      {strategy && <span className="strategy-badge">{strategy}</span>}
+    </>
+  );
   return (
     <div className="graph-box-header">
-      <span className="composite-title">
-        <KindIcon kind={item.kind} size={14} />
-        <strong>{item.label}</strong>
-        <span className={`type-badge ${item.kind}`}>{compositeBadge(item.kind)}</span>
-        {strategy && <span className="strategy-badge">{strategy}</span>}
-        <StatusGlyph status={item.status} />
-        {descriptor && <span className="composite-descriptor">{descriptor}</span>}
-      </span>
+      <button
+        type="button"
+        className="composite-title composite-open"
+        aria-label={accessibleLabel}
+        onClick={event => {
+          event.stopPropagation();
+          onSelectNode();
+        }}
+      >
+        {title}
+      </button>
       {item.selector && item.selector.options.length > 0 && (
         <span className={`graph-selector-wrap ${item.selector.kind}`}>
           <Select
             value={item.selectedOptionId ?? item.selector.defaultOptionId ?? item.selector.options[0]?.id ?? ""}
-            onValueChange={optionId => onSelectOption(item.selector!.nodeId, optionId)}
+            onValueChange={optionId => onSelectOption(item.selector!.id, optionId)}
           >
             <SelectTrigger
               className={`graph-selector ${item.selector.kind}`}
-              aria-label={`${item.selector.kind === "loop" ? "Loop iteration" : "Fanout item"} for ${item.label}`}
+              aria-label={`Loop iteration for ${item.label}`}
               onClick={event => event.stopPropagation()}
             >
               <SelectValue />
@@ -515,11 +637,19 @@ function CompositeContent({
   );
 }
 
+function graphNodeAccessibleLabel(item: RenderItem, mode: WebGraph["mode"]): string {
+  return [
+    `Node ${item.label}`,
+    graphContextLabel(item.context),
+    mode === "runtime" ? runtimeStatusLabel(item.status) : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
 function ContainerContent({ item }: { item: RenderItem }) {
   return (
     <>
       <span className="branch-pill">{item.label}</span>
-      {item.children.length === 0 && <div className="empty-branch">{item.kind === "scope" ? "empty scope" : "empty branch"}</div>}
+      {item.children.length === 0 && <div className="empty-branch">{item.kind === "scope" ? "empty scope" : item.kind === "fanout-item" ? "not started" : "empty branch"}</div>}
     </>
   );
 }

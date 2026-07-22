@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitScale, fitView, fitViewportPadding, isLosslessZoom, keepBoxInViewport, layoutWorkflow, minZoomScale, projectBox, projectEdgePath, projectPoint, renderableEdges, toRenderModel, visualBoundsForLayout, wheelZoomScale } from "../src/graph-renderer.js";
+import { centerViewportAt, fitScale, fitView, fitViewportPadding, focusView, isLosslessZoom, keepBoxInViewport, layoutWorkflow, minZoomScale, projectBox, projectEdgePath, projectPoint, renderableEdges, toRenderModel, visualBoundsForLayout, wheelZoomScale } from "../src/graph-renderer.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 
 describe("workflow graph layout", () => {
@@ -30,7 +30,7 @@ describe("workflow graph layout", () => {
     }
   });
 
-  it("keeps the top-level workflow as a vertical control-flow spine", () => {
+  it("keeps the top-level workflow as a horizontal control-flow spine", () => {
     const model = toRenderModel(compositeGraph());
     const layout = layoutWorkflow(model);
     const execution = layout.boxes.get("execution")!;
@@ -38,13 +38,15 @@ describe("workflow graph layout", () => {
     const finalGate = layout.boxes.get("final_gate")!;
 
     expect(model.rootIds).toEqual(["execution", "operator_gate", "final_gate"]);
-    expect(execution.y).toBeLessThan(operatorGate.y);
-    expect(operatorGate.y).toBeLessThan(finalGate.y);
-    expect(Math.abs(centerX(execution) - centerX(operatorGate))).toBeLessThan(1);
-    expect(Math.abs(centerX(operatorGate) - centerX(finalGate))).toBeLessThan(1);
+    expect(execution.x).toBeLessThan(operatorGate.x);
+    expect(operatorGate.x).toBeLessThan(finalGate.x);
+    expect(operatorGate.x - (execution.x + execution.width)).toBeGreaterThanOrEqual(72);
+    expect(finalGate.x - (operatorGate.x + operatorGate.width)).toBeGreaterThanOrEqual(72);
+    expect(Math.abs(centerY(execution) - centerY(operatorGate))).toBeLessThan(1);
+    expect(Math.abs(centerY(operatorGate) - centerY(finalGate))).toBeLessThan(1);
   });
 
-  it("lays every branch set horizontally without stacking", () => {
+  it("stacks every parallel and selection branch set vertically", () => {
     const model = toRenderModel(compositeGraph());
     const layout = layoutWorkflow(model);
     const laneMatrix = layout.boxes.get("execution::branch%3Alane_matrix")!;
@@ -55,25 +57,44 @@ describe("workflow graph layout", () => {
     const raceCache = layout.boxes.get("race::branch%3Acache")!;
     const raceCompute = layout.boxes.get("race::branch%3Acompute")!;
 
-    expect(laneMatrix.x).toBeLessThan(agentPreview.x);
-    expect(agentPreview.x).toBeLessThan(racePreview.x);
-    expect(Math.abs(laneMatrix.y - agentPreview.y)).toBeLessThan(1);
-    expect(Math.abs(agentPreview.y - racePreview.y)).toBeLessThan(1);
-    expect(agentThen.x).toBeLessThan(agentElse.x);
-    expect(Math.abs(agentThen.y - agentElse.y)).toBeLessThan(1);
-    expect(raceCache.x).toBeLessThan(raceCompute.x);
-    expect(Math.abs(raceCache.y - raceCompute.y)).toBeLessThan(1);
+    expect(laneMatrix.y).toBeLessThan(agentPreview.y);
+    expect(agentPreview.y).toBeLessThan(racePreview.y);
+    expect(Math.abs(centerX(laneMatrix) - centerX(agentPreview))).toBeLessThan(1);
+    expect(Math.abs(centerX(agentPreview) - centerX(racePreview))).toBeLessThan(1);
+    expect(agentThen.y).toBeLessThan(agentElse.y);
+    expect(Math.abs(centerX(agentThen) - centerX(agentElse))).toBeLessThan(1);
+    expect(raceCache.y).toBeLessThan(raceCompute.y);
+    expect(Math.abs(centerX(raceCache) - centerX(raceCompute))).toBeLessThan(1);
   });
 
-  it("keeps branch lanes wide enough for truncated labels", () => {
-    const model = toRenderModel(longBranchLabelGraph());
+  it("stacks materialized fanout items while keeping each item flow horizontal", () => {
+    const model = toRenderModel(fanoutItemsGraph());
+    const layout = layoutWorkflow(model);
+    const itemIds = model.items.get("jobs::do")!.children;
+    const firstItem = layout.boxes.get(itemIds[0]!)!;
+    const secondItem = layout.boxes.get(itemIds[1]!)!;
+    const first = layout.boxes.get("prepare@f:jobs:0")!;
+    const second = layout.boxes.get("review@f:jobs:0")!;
+
+    expect(firstItem.y).toBeLessThan(secondItem.y);
+    expect(Math.abs(centerX(firstItem) - centerX(secondItem))).toBeLessThan(1);
+    expect(first.x).toBeLessThan(second.x);
+    expect(Math.abs(centerY(first) - centerY(second))).toBeLessThan(1);
+    expect(layout.edgePaths.map(edge => edge.id)).toEqual(expect.arrayContaining([
+      "prepare->review@f:jobs:0",
+      "prepare->review@f:jobs:1",
+    ]));
+  });
+
+  it("keeps switch branch lanes at the stable minimum width", () => {
+    const model = toRenderModel(switchBranchGraph());
     const layout = layoutWorkflow(model);
     const caseBranch = layout.boxes.get("route::case%3A0")!;
     const defaultBranch = layout.boxes.get("route::default")!;
 
     expect(caseBranch.width).toBeGreaterThanOrEqual(220);
     expect(defaultBranch.width).toBeGreaterThanOrEqual(220);
-    expect(defaultBranch.x - (caseBranch.x + caseBranch.width)).toBeGreaterThanOrEqual(36);
+    expect(defaultBranch.y - (caseBranch.y + caseBranch.height)).toBeGreaterThanOrEqual(36);
   });
 
   it("keeps loop composites wide enough for their id and compact iteration selector", () => {
@@ -105,14 +126,13 @@ describe("workflow graph layout", () => {
     }
   });
 
-  it("keeps composite children near the header", () => {
+  it("keeps composite branch lanes near the header", () => {
     const model = toRenderModel(compositeGraph());
     const layout = layoutWorkflow(model);
     const execution = layout.boxes.get("execution")!;
     const laneMatrix = layout.boxes.get("execution::branch%3Alane_matrix")!;
 
     expect(laneMatrix.y - execution.y).toBeLessThan(80);
-    expect(execution.height).toBeLessThan(1180);
   });
 
   it("renders arrows for sibling control flow but not containment", () => {
@@ -150,6 +170,17 @@ describe("workflow graph layout", () => {
     expect(minZoomScale(0.5676)).toBeCloseTo(0.4257);
   });
 
+  it("centers a running target at a readable scale", () => {
+    const focused = focusView(
+      { id: "running", x: 100, y: 80, width: 200, height: 72 },
+      { width: 800, height: 600 },
+    )!;
+    expect(focused.scale).toBe(1.15);
+    expect(focused.x).toBeCloseTo(170);
+    expect(focused.y).toBeCloseTo(166.6);
+    expect(focusView(undefined, { width: 800, height: 600 })).toBeUndefined();
+  });
+
   it("uses precise wheel zoom and preserves clamp boundaries", () => {
     expect(wheelZoomScale(1, -100, 0.2, 2)).toBeGreaterThan(1);
     expect(wheelZoomScale(1, -100, 0.2, 2)).toBeLessThan(1.1);
@@ -173,6 +204,19 @@ describe("workflow graph layout", () => {
     });
   });
 
+  it("recenters the local viewport at a graph coordinate without changing zoom", () => {
+    expect(centerViewportAt(
+      { x: 12, y: 20, scale: 0.8 },
+      { width: 900, height: 600 },
+      { x: 500, y: 300 },
+    )).toEqual({ x: 50, y: 60, scale: 0.8 });
+    expect(centerViewportAt(
+      { x: 12, y: 20, scale: 0 },
+      { width: 900, height: 600 },
+      { x: 500, y: 300 },
+    )).toEqual({ x: 12, y: 20, scale: 0 });
+  });
+
   it("expands visual fit bounds for labels, borders, shadows, and arrows", () => {
     expect(visualBoundsForLayout({ width: 1000, height: 500 })).toEqual({
       x: -24,
@@ -187,7 +231,7 @@ describe("workflow graph layout", () => {
     const box = { id: "a", x: 100, y: 80, width: 200, height: 72 };
     const boxes = new Map([
       ["a", box],
-      ["b", { id: "b", x: 100, y: 220, width: 200, height: 72 }],
+      ["b", { id: "b", x: 380, y: 80, width: 200, height: 72 }],
     ]);
 
     expect(isLosslessZoom(0.99)).toBe(false);
@@ -195,12 +239,16 @@ describe("workflow graph layout", () => {
     expect(projectPoint({ x: 20, y: 30 }, viewport)).toEqual({ x: 40, y: 65 });
     expect(projectBox(box, viewport)).toEqual({ id: "a", x: 160, y: 140, width: 300, height: 108 });
     expect(projectEdgePath({ id: "a->b", source: "a", target: "b", kind: "sequence" }, boxes, viewport)?.d)
-      .toBe("M 310 248 V 299 H 310 V 349");
+      .toBe("M 460 194 H 579");
   });
 });
 
 function centerX(box: { x: number; width: number }): number {
   return box.x + box.width / 2;
+}
+
+function centerY(box: { y: number; height: number }): number {
+  return box.y + box.height / 2;
 }
 
 function node(partial: Partial<WebGraphNode> & { id: string; kind?: string; path?: string[] }): WebGraphNode {
@@ -216,7 +264,7 @@ function node(partial: Partial<WebGraphNode> & { id: string; kind?: string; path
   };
 }
 
-function longBranchLabelGraph(): WebGraph {
+function switchBranchGraph(): WebGraph {
   return {
     workflow: { name: "long-label" },
     mode: "runtime",
@@ -226,10 +274,41 @@ function longBranchLabelGraph(): WebGraph {
       node({ id: "manual_route", parentId: "route::default", path: ["root", "route", "default", "manual_route"] }),
     ],
     containers: [
-      { id: "route::case%3A0", nodeId: "route", kind: "branch", label: 'case: fanout.lanes.item.mode == "auto" && input.reallyLongDecisionExpression', path: ["root", "route", "case:0"], parentId: "route", status: "completed" },
+      { id: "route::case%3A0", nodeId: "route", kind: "branch", label: "case 0", path: ["root", "route", "case:0"], parentId: "route", status: "completed" },
       { id: "route::default", nodeId: "route", kind: "branch", label: "default", path: ["root", "route", "default"], parentId: "route", status: "completed" },
     ],
     edges: [],
+    fanoutOccurrences: [],
+    selectors: [],
+    runtimeStates: [],
+  };
+}
+
+function fanoutItemsGraph(): WebGraph {
+  const itemContext = (itemIndex: number) => [{ nodeId: "jobs", kind: "fanout" as const, itemIndex }];
+  return {
+    workflow: { name: "fanout-items", status: "running" },
+    mode: "runtime",
+    nodes: [
+      node({ id: "jobs", kind: "fanout", detail: { kind: "fanout", over: "input.jobs", strategy: "all" } }),
+      node({ id: "prepare", parentId: "jobs::do", path: ["root", "jobs", "do", "prepare"] }),
+      node({ id: "review", parentId: "jobs::do", path: ["root", "jobs", "do", "review"] }),
+    ],
+    containers: [
+      { id: "jobs::do", nodeId: "jobs", kind: "scope", label: "do", path: ["root", "jobs", "do"], parentId: "jobs", status: "running" },
+    ],
+    edges: [{ id: "prepare->review", source: "prepare", target: "review", kind: "sequence" }],
+    fanoutOccurrences: [{
+      id: "jobs",
+      nodeId: "jobs",
+      targetId: "jobs::do",
+      context: [],
+      status: "running",
+      items: [
+        { id: "jobs.0", itemIndex: 0, label: "item[0]", status: "running", context: itemContext(0) },
+        { id: "jobs.1", itemIndex: 1, label: "item[1]", status: "running", context: itemContext(1) },
+      ],
+    }],
     selectors: [],
     runtimeStates: [],
   };
@@ -253,8 +332,8 @@ function wideFanoutSwitchGraph(): WebGraph {
     ],
     containers: [
       { id: "candidate_matrix::do", nodeId: "candidate_matrix", kind: "scope", label: "do", path: ["root", "candidate_matrix", "do"], parentId: "candidate_matrix", status: "completed" },
-      { id: "route_candidate::case%3A0", nodeId: "route_candidate", kind: "branch", label: 'case: candidate.kind == "research"', path: ["root", "candidate_matrix", "do", "route_candidate", "case:0"], parentId: "route_candidate", status: "completed" },
-      { id: "route_candidate::case%3A1", nodeId: "route_candidate", kind: "branch", label: "case: candidate.ready && candidate.score >= minScore", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1"], parentId: "route_candidate", status: "completed" },
+      { id: "route_candidate::case%3A0", nodeId: "route_candidate", kind: "branch", label: "case 0", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0"], parentId: "route_candidate", status: "completed" },
+      { id: "route_candidate::case%3A1", nodeId: "route_candidate", kind: "branch", label: "case 1", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1"], parentId: "route_candidate", status: "completed" },
       { id: "route_candidate::default", nodeId: "route_candidate", kind: "branch", label: "default", path: ["root", "candidate_matrix", "do", "route_candidate", "default"], parentId: "route_candidate", status: "completed" },
       { id: "research_lane::branch%3Ascorecard", nodeId: "research_lane", kind: "branch", label: "branch: scorecard", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:scorecard"], parentId: "research_lane", status: "completed" },
       { id: "research_lane::branch%3Aconvergence", nodeId: "research_lane", kind: "branch", label: "branch: convergence", path: ["root", "candidate_matrix", "do", "route_candidate", "case:0", "research_lane", "branch:convergence"], parentId: "research_lane", status: "completed" },
@@ -263,6 +342,7 @@ function wideFanoutSwitchGraph(): WebGraph {
       { id: "standard_lane::else", nodeId: "standard_lane", kind: "branch", label: "else", path: ["root", "candidate_matrix", "do", "route_candidate", "case:1", "standard_lane", "else"], parentId: "standard_lane", status: "completed" },
     ],
     edges: [],
+    fanoutOccurrences: [],
     selectors: [],
     runtimeStates: [],
   };
@@ -296,7 +376,7 @@ function compositeGraph(): WebGraph {
       { id: "execution::branch%3Aagent_preview", nodeId: "execution", kind: "branch", label: "branch: agent_preview", path: ["root", "execution", "branch:agent_preview"], parentId: "execution", status: "completed" },
       { id: "execution::branch%3Arace_preview", nodeId: "execution", kind: "branch", label: "branch: race_preview", path: ["root", "execution", "branch:race_preview"], parentId: "execution", status: "completed" },
       { id: "lanes::do", nodeId: "lanes", kind: "scope", label: "do", path: ["root", "execution", "branch:lane_matrix", "lanes", "do"], parentId: "lanes", status: "completed" },
-      { id: "route::case%3A0", nodeId: "route", kind: "branch", label: "case: auto", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0"], parentId: "route", status: "completed" },
+      { id: "route::case%3A0", nodeId: "route", kind: "branch", label: "case 0", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0"], parentId: "route", status: "completed" },
       { id: "route::default", nodeId: "route", kind: "branch", label: "default", path: ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "default"], parentId: "route", status: "completed" },
       { id: "agent_gate::then", nodeId: "agent_gate", kind: "branch", label: "then", path: ["root", "execution", "branch:agent_preview", "agent_gate", "then"], parentId: "agent_gate", status: "not_started" },
       { id: "agent_gate::else", nodeId: "agent_gate", kind: "branch", label: "else", path: ["root", "execution", "branch:agent_preview", "agent_gate", "else"], parentId: "agent_gate", status: "completed" },
@@ -314,6 +394,7 @@ function compositeGraph(): WebGraph {
       { id: "execution->agent_preview", source: "execution", target: "execution::branch%3Aagent_preview", kind: "branch" },
       { id: "execution->race_preview", source: "execution", target: "execution::branch%3Arace_preview", kind: "branch" },
     ],
+    fanoutOccurrences: [],
     selectors: [],
     runtimeStates: [],
   };

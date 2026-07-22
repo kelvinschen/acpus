@@ -22,6 +22,7 @@ describe("graphFromOverlay", () => {
     expect(graph.nodes).toHaveLength(17);
     expect(graph.nodes.map(node => [node.id, node.kind])).toContainEqual(["execution", "parallel"]);
     expect(graph.nodes.map(node => [node.id, node.kind])).toContainEqual(["repair_loop", "loop"]);
+    expect(graph.fanoutOccurrences).toEqual([]);
     expect(graph.selectors).toEqual([]);
     expect(graph.runtimeStates).toEqual([]);
     expect(graph.nodes.every(node => node.status === "not_started")).toBe(true);
@@ -37,7 +38,7 @@ describe("graphFromOverlay", () => {
       ["execution", "branch: agent_preview"],
       ["execution", "branch: race_preview"],
       ["lanes", "do"],
-      ["route", 'case: lift(fanout.lanes.item.mode, "mode => mode === \\"auto\\"")'],
+      ["route", "case 0"],
       ["route", "default"],
       ["repair_loop", "do"],
       ["race", "branch: cache"],
@@ -53,31 +54,61 @@ describe("graphFromOverlay", () => {
     ]));
     expect(graph.edges.every(edge => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
     expect(graph.edges.some(edge => edge.kind === "branch")).toBe(true);
+    expect(graph.nodes.find(node => node.id === "route")?.detail).toEqual({
+      kind: "switch",
+      cases: ['lift(fanout.lanes.item.mode, "mode => mode === \\"auto\\"")'],
+      hasDefault: true,
+    });
   });
 
-  it("surfaces runtime fanout and loop selectors with scoped options", () => {
+  it("surfaces fanout occurrences and occurrence-scoped loop selectors", () => {
     const graph = graphFromOverlay(compositeRunOverlay(), "runtime");
-    const fanout = graph.selectors.find(selector => selector.nodeId === "lanes");
-    const loop = graph.selectors.find(selector => selector.nodeId === "repair_loop");
+    expect(graph.fanoutOccurrences).toEqual([{
+      id: "lanes",
+      nodeId: "lanes",
+      targetId: "lanes::do",
+      context: [],
+      status: "completed",
+      items: [
+        { id: "lanes.alpha", itemIndex: 0, label: "item[0]", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+        { id: "lanes.beta", itemIndex: 1, label: "item[1]", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      ],
+    }]);
 
-    expect(fanout).toMatchObject({ kind: "fanout" });
-    expect(fanout?.options.map(option => ({
-      label: "label" in option ? option.label : undefined,
-      itemIndex: "itemIndex" in option ? option.itemIndex : undefined,
-    }))).toEqual([
-      { label: "item[0]", itemIndex: 0 },
-      { label: "item[1]", itemIndex: 1 },
+    expect(graph.selectors).toEqual([
+      {
+        id: "repair.alpha",
+        nodeId: "repair_loop",
+        kind: "loop",
+        targetId: "repair_loop::do",
+        context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }],
+        defaultOptionId: "repair.alpha.0",
+        options: [{
+          id: "repair.alpha.0",
+          iteration: 0,
+          context: [
+            { nodeId: "lanes", kind: "fanout", itemIndex: 0 },
+            { nodeId: "repair_loop", kind: "loop", iteration: 0 },
+          ],
+        }],
+      },
+      {
+        id: "repair.beta",
+        nodeId: "repair_loop",
+        kind: "loop",
+        targetId: "repair_loop::do",
+        context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
+        defaultOptionId: "repair.beta.0",
+        options: [{
+          id: "repair.beta.0",
+          iteration: 0,
+          context: [
+            { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
+            { nodeId: "repair_loop", kind: "loop", iteration: 0 },
+          ],
+        }],
+      },
     ]);
-    expect(fanout?.defaultOptionId).toBe("lanes.beta");
-
-    expect(loop).toMatchObject({ kind: "loop" });
-    expect(loop?.targetId).toBe("repair_loop::do");
-    expect(loop?.options).toHaveLength(2);
-    expect(loop?.options.map(option => option.parentSelections[0])).toEqual([
-      { nodeId: "lanes", kind: "fanout", itemIndex: 0 },
-      { nodeId: "lanes", kind: "fanout", itemIndex: 1 },
-    ]);
-    expect(loop?.options.every(option => "iteration" in option && option.iteration === 0)).toBe(true);
   });
 
   it("emits runtime states scoped to selected fanout items and branches", () => {
@@ -87,30 +118,67 @@ describe("graphFromOverlay", () => {
     const defaultContainer = graph.containers.find(container => container.nodeId === "route" && container.label === "default");
 
     expect(autoRoute?.status).toBe("completed");
-    expect(autoRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }]);
-    expect(manualRoute?.selectors).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }]);
+    expect(autoRoute?.context).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }]);
+    expect(manualRoute?.context).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }]);
     expect(defaultContainer).toBeDefined();
     expect(graph.runtimeStates).toContainEqual(expect.objectContaining({
       targetId: defaultContainer!.id,
       status: "completed",
-      selectors: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
+      context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
     }));
   });
 
-  it("aggregates nested fanout occurrences without colliding on local item indexes", () => {
+  it("keeps nested fanout occurrences distinct by stable id and exact ancestor context", () => {
     const graph = graphFromOverlay(nestedFanoutOverlay(), "runtime");
-    const inner = graph.selectors.find(selector => selector.nodeId === "items");
-
-    expect(graph.selectors.filter(selector => selector.nodeId === "items")).toHaveLength(1);
-    expect(inner?.options.map(option => ({
-      id: option.id,
-      itemIndex: "itemIndex" in option ? option.itemIndex : undefined,
-      parentSelections: option.parentSelections,
-    }))).toEqual([
-      { id: "items.0.0", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
-      { id: "items.0.1", itemIndex: 1, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }] },
-      { id: "items.1.0", itemIndex: 0, parentSelections: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }] },
+    expect(graph.selectors).toEqual([]);
+    expect(graph.fanoutOccurrences.filter(occurrence => occurrence.nodeId === "items")).toEqual([
+      {
+        id: "items.0",
+        nodeId: "items",
+        targetId: "items::do",
+        context: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }],
+        status: "completed",
+        items: [
+          { id: "items.0.0", itemIndex: 0, label: "item[0]", status: "completed", context: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }, { nodeId: "items", kind: "fanout", itemIndex: 0 }] },
+          { id: "items.0.1", itemIndex: 1, label: "item[1]", status: "completed", context: [{ nodeId: "groups", kind: "fanout", itemIndex: 0 }, { nodeId: "items", kind: "fanout", itemIndex: 1 }] },
+        ],
+      },
+      {
+        id: "items.1",
+        nodeId: "items",
+        targetId: "items::do",
+        context: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }],
+        status: "running",
+        items: [
+          { id: "items.1.0", itemIndex: 0, label: "item[0]", status: "running", context: [{ nodeId: "groups", kind: "fanout", itemIndex: 1 }, { nodeId: "items", kind: "fanout", itemIndex: 0 }] },
+        ],
+      },
     ]);
+  });
+
+  it("uses the matching node instance path for signal wait runtime context", () => {
+    const overlay = nestedFanoutOverlay();
+    overlay.nodes.push(node("approval", "signal", ["root", "groups", "do", "items", "do", "approval"], {
+      parentNodeId: "items",
+      detail: { kind: "signal" },
+      instances: [instance("approval.1.0", "approval", "awaiting", [
+        { kind: "fanout", nodeId: "groups", itemIndex: 1 },
+        { kind: "fanout", nodeId: "items", itemIndex: 0 },
+        { kind: "node", nodeId: "approval" },
+      ])],
+      signalWaits: [{ nodeKey: "approval.1.0", nodeId: "approval", status: "awaiting", ...timing }],
+    }));
+
+    const waits = graphFromOverlay(overlay, "runtime").runtimeStates
+      .filter(state => state.targetId === "approval" && state.status === "awaiting");
+    expect(waits).toContainEqual({
+      targetId: "approval",
+      status: "awaiting",
+      context: [
+        { nodeId: "groups", kind: "fanout", itemIndex: 1 },
+        { nodeId: "items", kind: "fanout", itemIndex: 0 },
+      ],
+    });
   });
 });
 

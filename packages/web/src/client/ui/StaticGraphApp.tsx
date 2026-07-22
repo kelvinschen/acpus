@@ -1,9 +1,9 @@
 import { useState } from "react";
 import Boxes from "lucide-react/dist/esm/icons/boxes.js";
-import type { WebGraph, WebGraphSelection, WorkflowVisualizationResult } from "../api.js";
-import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
-import { RunGraph } from "./RunGraph.js";
-import { useInspectorPresence } from "./useInspectorPresence.js";
+import type { WebGraph, WorkflowVisualizationResult } from "../api.js";
+import { graphContextLabel } from "../../graph-renderer.js";
+import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
+import { InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
 
 export type StaticGraphData = {
   graph: WebGraph;
@@ -12,36 +12,25 @@ export type StaticGraphData = {
   sourceGraphDigest: string;
 };
 
-type GraphInspectionTarget =
-  | { kind: "workflow" }
-  | { kind: "node"; id: string; context: WebGraphSelection[] };
-
 export function StaticGraphApp({ data }: { data: StaticGraphData }) {
   const [selectedTarget, setSelectedTarget] = useState<GraphInspectionTarget | undefined>();
-  const { exiting, close, layoutState } = useInspectorPresence(selectedTarget, () => setSelectedTarget(undefined));
-  const selectedNodeId = selectedTarget?.kind === "node" ? selectedTarget.id : undefined;
 
   return (
     <div className="static-viz-root">
-      <div className={`graph-inspection-layout ${layoutState === "open" ? "with-inspector" : layoutState === "closing" ? "closing-inspector" : ""}`}>
-        <section className="graph-panel">
-          <RunGraph
-            graph={data.graph}
-            {...(selectedNodeId === undefined ? {} : { selectedNodeId })}
-            onSelectNode={(id, context = []) => setSelectedTarget(id ? { kind: "node", id, context } : undefined)}
-            onSelectWorkflow={() => setSelectedTarget({ kind: "workflow" })}
-          />
-        </section>
-        {selectedTarget && (
-          <div className="inspector-slot">
-            <InspectorPanel title={selectedTarget.kind === "workflow" ? "Workflow I/O" : selectedNodeId ?? "Node"} exiting={exiting} onClose={close}>
-              {selectedTarget.kind === "workflow"
-                ? <StaticWorkflowInspector data={data} />
-                : <StaticGraphInspector graph={data.graph} target={selectedNodeId} />}
-            </InspectorPanel>
-          </div>
-        )}
-      </div>
+      <GraphWorkspace
+        graph={data.graph}
+        target={selectedTarget}
+        onTargetChange={setSelectedTarget}
+        heading={target => {
+          if (target.kind === "workflow") return { eyebrow: "Workflow", title: "Contract", subtitle: data.workflow.name };
+          const context = graphContextLabel(target.node.context);
+          return { eyebrow: "Node", title: target.node.label, ...(context ? { subtitle: context } : {}) };
+        }}
+      >
+        {target => target.kind === "workflow"
+          ? <StaticWorkflowInspector data={data} />
+          : <StaticGraphInspector graph={data.graph} target={target.node.nodeId} />}
+      </GraphWorkspace>
     </div>
   );
 }
@@ -82,12 +71,12 @@ function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; 
   if (!node && !container) return <StateBlock title="No graph detail" detail="The selected graph target is no longer available." />;
   return (
     <div className="inspector-stack">
-      <InspectorSection title="Identity">
+      <InspectorSection title="Node">
         <KeyValue label="Kind" value={node?.kind ?? container?.kind ?? "unknown"} />
         <KeyValue label="Node ID" value={node?.nodeId ?? container?.nodeId ?? target} />
         <KeyValue label="Path" value={(node?.path ?? container?.path ?? []).join(" / ")} />
       </InspectorSection>
-      {node?.detail && <JsonSection title="Definition" value={node.detail} />}
+      {node?.detail && <JsonSection title="Definition" value={node.detail} expandNested />}
     </div>
   );
 }

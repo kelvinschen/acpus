@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useEffect, useState } from "react";
-import { allExpanded, defaultStyles, JsonView } from "react-json-view-lite";
+import { collapseAllNested, darkStyles, JsonView } from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
 import Copy from "lucide-react/dist/esm/icons/copy.js";
 import XCircle from "lucide-react/dist/esm/icons/circle-x.js";
@@ -9,11 +9,17 @@ import { Card } from "./shadcn/card.js";
 
 export function InspectorPanel({
   title,
+  eyebrow = "Inspector",
+  subtitle,
+  status,
   exiting = false,
   onClose,
   children,
 }: {
   title: string;
+  eyebrow?: string;
+  subtitle?: string;
+  status?: React.ReactNode;
   exiting?: boolean;
   onClose(): void;
   children: React.ReactNode;
@@ -30,9 +36,13 @@ export function InspectorPanel({
     <Card asChild className={`inspector-card ${exiting ? "exiting" : ""}`}>
       <aside role="dialog" aria-label={title}>
         <div className="inspector-card-head">
-          <div>
-            <span>Inspector</span>
-            <strong>{title}</strong>
+          <div className="inspector-card-title">
+            <span className="inspector-card-eyebrow">{eyebrow}</span>
+            <div className="inspector-card-title-line">
+              <strong>{title}</strong>
+              {status && <div className="inspector-card-status">{status}</div>}
+            </div>
+            {subtitle && <small>{subtitle}</small>}
           </div>
           <Button variant="ghost" className="close-button" onClick={onClose} aria-label="Close inspector">
             <XCircle size={16} />
@@ -56,10 +66,10 @@ export function InspectorSection({ title, action, children }: { title: string; a
   );
 }
 
-export function JsonSection({ title, value }: { title: string; value: unknown }) {
+export function JsonSection({ title, value, expandNested = false }: { title: string; value: unknown; expandNested?: boolean }) {
   return (
     <InspectorSection title={title} action={<JsonCopyButton value={value} />}>
-      <JsonBlock value={value} />
+      <JsonBlock value={value} expandNested={expandNested} />
     </InspectorSection>
   );
 }
@@ -88,13 +98,32 @@ function JsonCopyButton({ value }: { value: unknown }) {
   );
 }
 
-export function JsonBlock({ value }: { value: unknown }) {
+export function JsonBlock({ value, expandNested = false }: { value: unknown; expandNested?: boolean }) {
   return (
     <div className="json-viewer">
-      <JsonView data={jsonViewData(value)} shouldExpandNode={allExpanded} style={defaultStyles} />
+      <JsonView data={jsonViewData(value)} shouldExpandNode={expandNested ? expandAllNodes : collapseAllNested} clickToExpandNode style={inkJsonStyles} />
     </div>
   );
 }
+
+const expandAllNodes = () => true;
+
+const inkJsonStyles = {
+  ...darkStyles,
+  container: `${darkStyles.container} json-ink-container`,
+  label: `${darkStyles.label} json-ink-label`,
+  clickableLabel: `${darkStyles.clickableLabel} json-ink-label`,
+  nullValue: `${darkStyles.nullValue} json-ink-null`,
+  undefinedValue: `${darkStyles.undefinedValue} json-ink-null`,
+  stringValue: `${darkStyles.stringValue} json-ink-string`,
+  numberValue: `${darkStyles.numberValue} json-ink-number`,
+  booleanValue: `${darkStyles.booleanValue} json-ink-boolean`,
+  otherValue: `${darkStyles.otherValue} json-ink-other`,
+  punctuation: `${darkStyles.punctuation} json-ink-punctuation`,
+  collapseIcon: `${darkStyles.collapseIcon} json-ink-expander`,
+  expandIcon: `${darkStyles.expandIcon} json-ink-expander`,
+  collapsedContent: `${darkStyles.collapsedContent} json-ink-punctuation`,
+};
 
 function jsonViewData(value: unknown): object | unknown[] {
   return value !== null && typeof value === "object" ? value as object | unknown[] : { value };

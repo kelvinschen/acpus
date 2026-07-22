@@ -79,6 +79,7 @@ describe("runtime run controls", () => {
     expect(commandForControl("resume", undefined, undefined)).toEqual({ type: "resume" });
     expect(commandForControl("cancel", undefined, "node_a")).toEqual({ type: "cancel", target: "node_a" });
     expect(commandForControl("cancel", undefined, undefined)).toEqual({ type: "cancel" });
+    expect(commandForControl("cancel", undefined, null)).toBeUndefined();
     expect(commandForControl("retry", "node_a", undefined)).toEqual({ type: "retry", target: "node_a" });
     expect(commandForControl("retry", undefined, undefined)).toBeUndefined();
   });

@@ -23,7 +23,6 @@ import Radio from "lucide-react/dist/esm/icons/radio.js";
 import RotateCcw from "lucide-react/dist/esm/icons/rotate-ccw.js";
 import Search from "lucide-react/dist/esm/icons/search.js";
 import Square from "lucide-react/dist/esm/icons/square.js";
-import Workflow from "lucide-react/dist/esm/icons/workflow.js";
 import XCircle from "lucide-react/dist/esm/icons/circle-x.js";
 import {
   getConfig,
@@ -40,6 +39,7 @@ import {
   type ArtifactReference,
   type HealthReport,
   type NodeExecutionInspection,
+  type NodeDetail,
   type NodeInspection,
   type ProjectWorkflowCatalogEntry,
   type RunDetails,
@@ -51,11 +51,10 @@ import {
   type WorkflowVisualizationResult,
   type WorkflowVisualizationSource,
 } from "../api.js";
-import { RunGraph } from "./RunGraph.js";
-import { InspectorPanel, InspectorSection, JsonBlock, JsonSection, KeyValue } from "./Inspector.js";
+import { InspectorSection, JsonBlock, JsonSection, KeyValue } from "./Inspector.js";
+import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
 import { StaticGraphApp } from "./StaticGraphApp.js";
 import { ToastViewport, useToasts } from "./Toast.js";
-import { useInspectorPresence } from "./useInspectorPresence.js";
 import { Button } from "./shadcn/button.js";
 import { Alert } from "./shadcn/alert.js";
 import { Badge } from "./shadcn/badge.js";
@@ -94,18 +93,17 @@ import {
   TabsTrigger,
 } from "./shadcn/tabs.js";
 import { Textarea } from "./shadcn/textarea.js";
-import { normalizeRuntimeStatus, runtimeStatusLabel, type DisplayStatus } from "../../runtime-status.js";
+import { normalizeRuntimeStatus, runtimeStatusLabel } from "../../runtime-status.js";
+import { graphContextLabel } from "../../graph-renderer.js";
 
-type GraphInspectionTarget =
-  | { kind: "workflow" }
-  | { kind: "node"; id: string; context: WebGraphSelection[]; displayStatus?: DisplayStatus };
+const logoLockupUrl = new URL("../assets/logo-lockup.svg", import.meta.url).href;
 
 export function App() {
   const [page, setPage] = useState("runtime");
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
   const [graphTarget, setGraphTarget] = useState<GraphInspectionTarget | undefined>();
   const [statusOpen, setStatusOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const runs = useQuery({
     queryKey: ["runs"],
@@ -131,10 +129,7 @@ export function App() {
       <aside className="sidebar">
         <div className="sidebar-head">
           <div className="brand">
-            <div className="brand-mark"><Workflow size={19} /></div>
-            <div className="brand-copy">
-              <h1>Acpus</h1>
-            </div>
+            <img className="brand-lockup" src={logoLockupUrl} alt="Acpus" draggable={false} />
           </div>
           <Button
             type="button"
@@ -193,10 +188,9 @@ function RuntimePage({
 }) {
   const queryClient = useQueryClient();
   const { toasts, push, dismiss } = useToasts();
-  const { exiting, close, layoutState } = useInspectorPresence(selectedTarget, () => onSelectTarget(undefined));
-  const selectedNodeId = selectedTarget?.kind === "node" ? selectedTarget.id : undefined;
-  const selectedNodeContext = selectedTarget?.kind === "node" ? selectedTarget.context : [];
-  const selectedNodeDisplayStatus = selectedTarget?.kind === "node" ? selectedTarget.displayStatus : undefined;
+  const selectedNode = selectedTarget?.kind === "node" ? selectedTarget.node : undefined;
+  const selectedNodeId = selectedNode?.nodeId;
+  const selectedNodeContext = selectedNode?.context ?? [];
   const snapshot = useQuery({
     queryKey: ["run-runtime-snapshot", runId],
     queryFn: () => getRunRuntimeSnapshot(runId!),
@@ -209,6 +203,13 @@ function RuntimePage({
     enabled: Boolean(runId && selectedNodeId),
     refetchInterval: nodeInspectionRefetchInterval(snapshot.data?.run.status),
   });
+  const inspectedCancelTarget = inspection.data?.summary.nodeKey ?? inspection.data?.summary.frameKey;
+  const selectedCancelTarget = selectedNode
+    ? inspectedCancelTarget ?? (selectedNode.context.length === 0 ? selectedNode.nodeId : null)
+    : undefined;
+  const selectedCancelLabel = selectedNode
+    ? [selectedNode.label, graphContextLabel(selectedNode.context)].filter(Boolean).join(" · ")
+    : undefined;
   const command = useMutation({
     mutationFn: (input: Record<string, unknown>) => submitRunCommand(runId!, input),
     onSuccess: async (_data, variables) => {
@@ -263,7 +264,8 @@ function RuntimePage({
           <RunControls
             disabled={!runDetails || command.isPending}
             status={runDetails?.status}
-            selectedNodeId={selectedNodeId}
+            selectedCancelTarget={selectedCancelTarget}
+            selectedCancelLabel={selectedCancelLabel}
             retryTargets={retryTargets}
             selectedRetryTarget={retryTarget}
             onSelectRetryTarget={setRetryTarget}
@@ -272,38 +274,35 @@ function RuntimePage({
         </div>
       </header>
 
-      <div className={`graph-inspection-layout ${layoutState === "open" ? "with-inspector" : layoutState === "closing" ? "closing-inspector" : ""}`}>
-        <section className="graph-panel">
-          <RunGraph
-            graph={snapshot.data?.graph}
-            {...(selectedNodeId === undefined ? {} : { selectedNodeId })}
-            onSelectNode={(id, context = [], displayStatus) => onSelectTarget(id ? { kind: "node", id, context, ...(displayStatus ? { displayStatus } : {}) } : undefined)}
-            onSelectWorkflow={() => onSelectTarget({ kind: "workflow" })}
-          />
-        </section>
-
-        {selectedTarget && (
-          <div className="inspector-slot">
-            <InspectorPanel
-              title={selectedTarget.kind === "workflow" ? "Workflow I/O" : inspection.data?.summary.nodeId ?? selectedNodeId ?? "Node"}
-              exiting={exiting}
-              onClose={close}
-            >
-              {selectedTarget.kind === "workflow" ? (
-                <RuntimeWorkflowInspector run={runDetails} />
-              ) : (
-                <Inspector runId={runId} target={selectedNodeId} context={selectedNodeContext} displayStatus={selectedNodeDisplayStatus} inspection={inspection.data} loading={inspection.isLoading} />
-              )}
-              {selectedTarget.kind === "node" && signalWait && (
-                <SignalBox
-                  wait={signalWait}
-                  onSubmit={payload => command.mutate({ type: "signal", target: signalWait.nodeKey, payload })}
-                />
-              )}
-            </InspectorPanel>
-          </div>
+      <GraphWorkspace
+        graph={snapshot.data?.graph}
+        target={selectedTarget}
+        onTargetChange={onSelectTarget}
+        heading={target => {
+          if (target.kind === "workflow") return { eyebrow: "Workflow", title: "Input & output", subtitle: runId };
+          const context = graphContextLabel(target.node.context);
+          return {
+            eyebrow: "Node",
+            title: inspection.data?.summary.nodeId ?? target.node.label,
+            status: <StatusPill status={target.node.displayStatus} />,
+            ...(context ? { subtitle: context } : {}),
+          };
+        }}
+      >
+        {target => target.kind === "workflow" ? (
+          <RuntimeWorkflowInspector run={runDetails} />
+        ) : (
+          <>
+            <Inspector runId={runId} target={selectedNodeId} context={selectedNodeContext} definition={selectedNode?.detail} inspection={inspection.data} loading={inspection.isLoading} />
+            {signalWait && (
+              <SignalBox
+                wait={signalWait}
+                onSubmit={payload => command.mutate({ type: "signal", target: signalWait.nodeKey, payload })}
+              />
+            )}
+          </>
         )}
-      </div>
+      </GraphWorkspace>
 
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
@@ -691,7 +690,8 @@ function RuntimeWorkflowInspector({ run }: { run: RunDetails | undefined }) {
 function RunControls({
   disabled,
   status,
-  selectedNodeId,
+  selectedCancelTarget,
+  selectedCancelLabel,
   retryTargets,
   selectedRetryTarget,
   onSelectRetryTarget,
@@ -699,7 +699,8 @@ function RunControls({
 }: {
   disabled: boolean;
   status: string | undefined;
-  selectedNodeId: string | undefined;
+  selectedCancelTarget: string | null | undefined;
+  selectedCancelLabel: string | undefined;
   retryTargets: RetryTarget[];
   selectedRetryTarget: string | undefined;
   onSelectRetryTarget(value: string): void;
@@ -727,8 +728,8 @@ function RunControls({
         </Select>
       )}
       {controls.map(control => {
-        const command = commandForControl(control.id, retryTarget, selectedNodeId);
-        const commandDisabled = control.id === "retry" && !command;
+        const command = commandForControl(control.id, retryTarget, selectedCancelTarget);
+        const commandDisabled = (control.id === "retry" || control.id === "cancel") && !command;
         return (
           <IconButton
             key={control.id}
@@ -742,7 +743,7 @@ function RunControls({
               setPendingControl({
                 control,
                 command,
-                targetLabel: control.id === "retry" ? retryTargetLabel : selectedNodeId,
+                targetLabel: control.id === "retry" ? retryTargetLabel : selectedCancelLabel,
                 restoreFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
               });
             }}
@@ -899,9 +900,10 @@ export function retryCommandTarget(
 export function commandForControl(
   controlId: RunControlId,
   retryTarget: string | undefined,
-  selectedNodeId: string | undefined,
+  selectedNodeId: string | null | undefined,
 ): Record<string, unknown> | undefined {
   if (controlId === "retry") return retryTarget ? { type: "retry", target: retryTarget } : undefined;
+  if (controlId === "cancel" && selectedNodeId === null) return undefined;
   if (controlId === "cancel") return selectedNodeId ? { type: "cancel", target: selectedNodeId } : { type: "cancel" };
   return { type: controlId };
 }
@@ -995,14 +997,14 @@ function Inspector({
   runId,
   target,
   context,
-  displayStatus,
+  definition,
   inspection,
   loading,
 }: {
   runId: string | undefined;
   target: string | undefined;
   context: WebGraphSelection[];
-  displayStatus: DisplayStatus | undefined;
+  definition: NodeDetail | undefined;
   inspection: NodeInspection | undefined;
   loading: boolean;
 }) {
@@ -1020,28 +1022,26 @@ function Inspector({
   if (loading) return <StateBlock tone="loading" title="Loading node details" />;
   if (!inspection) return <StateBlock tone="empty" title="Select a graph node" detail="Node runtime details appear here after selection." />;
   const summary = inspection.summary;
-  const runtimeStatus = displayStatus ?? normalizeRuntimeStatus(summary.nodeStatus ?? summary.runStatus);
   const hasArtifacts = summary.artifacts.length > 0;
   const hasExecution = summary.staticKind === "agent";
   return (
     <div className="inspector-stack">
-      <div className="inspector-runtime-head">
-        <StatusPill status={runtimeStatus} />
-        <div>
+      {(summary.runStartedAt || summary.runDurationMs !== undefined) && (
+        <div className="inspector-runtime-meta" aria-label="Run metadata">
           {summary.runStartedAt && (
-            <>
-              <span>Start</span>
+            <div className="inspector-runtime-meta-item">
+              <span>Run start</span>
               <strong>{formatDate(summary.runStartedAt)}</strong>
-            </>
+            </div>
           )}
           {summary.runDurationMs !== undefined && (
-            <>
-              <span>Duration</span>
+            <div className="inspector-runtime-meta-item duration">
+              <span>Run duration</span>
               <strong>{formatDuration(summary.runDurationMs)}</strong>
-            </>
+            </div>
           )}
         </div>
-      </div>
+      )}
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as InspectorTabId)}>
         <TabsList className="inspector-tabs" aria-label="Inspector sections">
           <InspectorTab id="overview">Overview</InspectorTab>
@@ -1053,15 +1053,14 @@ function Inspector({
           <>
           {summary.agent && <AgentOverview agent={summary.agent} />}
 
-          <InspectorSection title="Identity">
-            {summary.nodeId && <KeyValue label="Node ID" value={summary.nodeId} />}
+          <InspectorSection title="Runtime target">
             {summary.nodeKey && <KeyValue label="Node Key" value={summary.nodeKey} />}
             {summary.frameKey && <KeyValue label="Frame Key" value={summary.frameKey} />}
             {summary.staticKind && <KeyValue label="Kind" value={summary.staticKind} />}
-            {summary.staticOrder !== undefined && <KeyValue label="Static order" value={String(summary.staticOrder)} />}
-            <KeyValue label="Runtime" value={runtimeStatus} />
             {summary.latestAttempt && <KeyValue label="Latest attempt" value={`${summary.latestAttempt.attemptNo} · ${summary.latestAttempt.status}`} />}
           </InspectorSection>
+
+          {definition && <JsonSection title="Definition" value={definition} expandNested />}
 
           {summary.input && (
             <JsonSection title={summary.input.kind === "runtime" ? "Input" : "Authored Input"} value={summary.input.value} />

@@ -1,6 +1,20 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
 import type { ExprIR, StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import type { WebGraph, WebGraphSelection } from "../graph-types.js";
+export type {
+  NodeDetail,
+  WebGraph,
+  WebGraphContainer,
+  WebGraphEdge,
+  WebGraphFanoutItemOccurrence,
+  WebGraphFanoutOccurrence,
+  WebGraphNode,
+  WebGraphRuntimeState,
+  WebGraphSelection,
+  WebGraphSelector,
+  WebGraphSelectorOption,
+} from "../graph-types.js";
 
 export type RunRecord = {
   id: string;
@@ -46,87 +60,6 @@ export type ArtifactReference = {
   path: string;
   createdAt?: string;
 };
-
-export type WebGraph = {
-  workflow: {
-    name: string;
-    runId?: string;
-    status?: string;
-  };
-  mode: "static" | "runtime";
-  nodes: WebGraphNode[];
-  containers: WebGraphContainer[];
-  edges: WebGraphEdge[];
-  selectors: WebGraphSelector[];
-  runtimeStates: WebGraphRuntimeState[];
-};
-
-// Compact, display-only summary of a node's authored configuration.
-export type NodeDetail =
-  | { kind: "task"; inputs: string[]; target: "inline" | "module" }
-  | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: string }
-  | { kind: "signal"; outputSchema?: string }
-  | { kind: "assert"; condition: string; message?: string }
-  | { kind: "if"; condition: string }
-  | { kind: "switch"; cases: string[]; hasDefault: boolean }
-  | { kind: "parallel"; branches: string[]; strategy: "all" | "race"; maxConcurrency?: string }
-  | { kind: "fanout"; over: string; strategy: "all" | "quorum"; count?: string; maxConcurrency?: string }
-  | { kind: "loop"; state: string };
-
-export type WebGraphNode = {
-  id: string;
-  nodeId: string;
-  kind: string;
-  label: string;
-  path: string[];
-  parentId?: string;
-  detail?: NodeDetail;
-  status: string;
-};
-
-export type WebGraphContainer = {
-  id: string;
-  nodeId: string;
-  kind: "branch" | "scope";
-  label: string;
-  path: string[];
-  parentId: string;
-  status: string;
-};
-
-export type WebGraphEdge = {
-  id: string;
-  source: string;
-  target: string;
-  kind: "sequence" | "branch" | "loop";
-};
-
-export type WebGraphSelector = {
-  nodeId: string;
-  kind: "fanout" | "loop";
-  targetId: string;
-  defaultOptionId?: string;
-  options: WebGraphSelectorOption[];
-};
-
-type WebGraphSelectorOptionBase = {
-  id: string;
-  parentSelections: WebGraphSelection[];
-};
-
-type WebGraphFanoutSelectorOption = WebGraphSelectorOptionBase & { label: string; itemIndex: number };
-type WebGraphLoopSelectorOption = WebGraphSelectorOptionBase & { iteration: number };
-export type WebGraphSelectorOption = WebGraphFanoutSelectorOption | WebGraphLoopSelectorOption;
-
-export type WebGraphRuntimeState = {
-  targetId: string;
-  status: string;
-  selectors: WebGraphSelection[];
-};
-
-export type WebGraphSelection =
-  | { nodeId: string; kind: "fanout"; itemIndex: number }
-  | { nodeId: string; kind: "loop"; iteration: number };
 
 export type NodeInspection = RunInspectionTargetDocument;
 
