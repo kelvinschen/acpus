@@ -50,6 +50,7 @@ Choose the operation by intent:
 - Inline Task `exec` must be self-contained. Bind data through Task `input` and use only its context.
 - Use an inline Task first. Upgrade at the second authored call site or when module/third-party imports are required; loop/fanout runtime instances do not count.
 - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+- Set a stable, non-empty `sessionKey` for agent step only when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it.
 - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`.
 - Never add `outputSchema` to Task or composite nodes; their outputs are TypeScript-inferred.
 
@@ -105,7 +106,7 @@ const approval = step("approval").signal({
 step("require_approval").assert({ condition: approval.output.approved });
 ```
 
-Read `acpx-agents.md` before choosing agent backends/models or using raw `{ command: "..." }`. Read `advanced-authoring.md` only for reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing. Read `signal-authoring.md` for parallel waits, payload, or timeout semantics.
+Read `acpx-agents.md` before choosing agent backends/models or using raw `{ command: "..." }`. Read `advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing. Read `signal-authoring.md` for parallel waits, payload, or timeout semantics.
 
 Composite callbacks return one durable value; return `{}` for control-only scopes:
 

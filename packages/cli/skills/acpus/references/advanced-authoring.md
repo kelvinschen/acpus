@@ -1,6 +1,6 @@
 # Advanced Authoring
 
-Use it only for reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, cooperative Task cancellation, or Agent tracing configuration. Ordinary Task logic belongs in inline `exec`.
+Use it only for Agent session reuse, reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, cooperative Task cancellation, or Agent tracing configuration. Ordinary Task logic belongs in inline `exec`.
 
 Contents:
 
@@ -8,6 +8,7 @@ Contents:
 - Define reusable Tasks
 - Write and consume artifacts
 - Configure Task processes
+- Reuse Agent sessions
 - Configure Agent tracing
 
 ## Choose Task Form
@@ -116,6 +117,31 @@ const inspect = step("inspect").task({
 ```
 
 Task `timeout` aborts and terminates the whole attempt; `execution.defaultCommandTimeout` is only the default for individual `$` commands. `$` also supports per-command timeout, `.allowExitCode(...)`, `.nothrow()`, `.json<T>()`, `.text()`, and `.lines()`. Interpolate argument arrays instead of assembling shell strings. Use `abortSignal` for cooperative cancellation in non-command async work.
+
+## Agent Session Reuse
+
+Set `sessionKey` only when Agent occurrences must continue the same conversation, such as across loop rounds or intentionally across different steps. Omit it for one-shot or independent work. Keys are run-local and must be stable, non-empty, and distinct for each independent conversation.
+
+In a fix/review loop, reuse the fixer session across rounds but omit `sessionKey` for the reviewer so each review starts fresh. Do not use an empty string; it is invalid.
+
+```ts
+const cycle = step("fix_review").loop({
+  state: { approved: false, feedback: input.request },
+  do({ state }) {
+    const fix = step("fix").agent({
+      agent: agents.fixer,
+      sessionKey: "fix-review:fixer",
+      prompt: md`Apply this feedback: ${state.feedback}`,
+    });
+    const review = step("review").agent({
+      agent: agents.reviewer,
+      prompt: md`Review this fix: ${fix.output}`,
+      outputSchema: z.object({ approved: z.boolean(), feedback: z.string() }),
+    });
+    return { state: review.output, stop: review.output.approved };
+  },
+});
+```
 
 ## Agent Tracing
 

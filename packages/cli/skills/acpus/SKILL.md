@@ -16,7 +16,7 @@ When invoked with a task, accomplish it with acpus: own the full loop of *author
 ## Route the request
 
 - **Author or adapt:** Read `references/authoring.md` completely before editing, then write the target workflow module directly.
-- **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cooperative Task cancellation, or Agent tracing configuration.
+- **Advanced authoring:** **DO NOT read `references/advanced-authoring.md` by default.** Read it only when the requirement needs Agent session reuse, reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cooperative Task cancellation, or Agent tracing configuration.
 - **Signal authoring:** **DO NOT read `references/signal-authoring.md` by default.** Read it only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
 - **Run, observe, or control:** Read `references/cli-operations.md` for live workflow/Agent status, overrides, signal, pause, resume, or cancel; use `acpus <cmd> --help` for exact syntax.
 - **Advanced CLI operations:** **DO NOT read `references/advanced-cli-operations.md` by default.** Read it only when the requirement needs catalogs, import, static visualization, WebUI, bundled-skill management, standalone artifact lookup, run deletion, version lookup, or structured CLI automation.
@@ -24,7 +24,7 @@ When invoked with a task, accomplish it with acpus: own the full loop of *author
 - **Review Agent history:** Read `references/agent-tracing.md` for persisted turns/traces and raw ACP. Use `references/cli-operations.md` for live status.
 - **Configure hooks:** Read `references/hooks-json.md`.
 - **Choose an agent:** Read `references/acpx-agents.md` when built-in or local agent availability matters.
-- **Explain concepts:** Use `references/authoring.md` for workflow, node, expression, schema, or inline Task semantics. Use `references/advanced-authoring.md` only for its gated topics and `references/agent-tracing.md` for Agent tracing semantics.
+- **Explain concepts:** Use `references/authoring.md` for workflow, node, expression, schema, or inline Task semantics. Use `references/advanced-authoring.md` only for its gated topics, including Agent session reuse, and `references/agent-tracing.md` for Agent tracing semantics.
 
 Re-route when the request changes materially.
 
