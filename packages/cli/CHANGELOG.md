@@ -1,5 +1,19 @@
 # acpus
 
+## 0.7.1
+
+### Patch Changes
+
+- 079e1ee: Add occurrence-aware run inspection trees and bounded live Agent pulses while keeping the default operator view compact and actionable.
+- Updated dependencies [152303a]
+- Updated dependencies [079e1ee]
+  - @acpus/core@0.8.0
+  - @acpus/runtime@0.10.0
+  - @acpus/loader@0.1.3
+  - @acpus/tasks@0.1.3
+  - @acpus/web@0.1.3
+  - @acpus/workflow-compiler@0.1.3
+
 ## 0.7.0
 
 ### Minor Changes
