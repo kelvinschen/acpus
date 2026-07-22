@@ -86,11 +86,6 @@
         "scripts/*.mjs"
       ],
       "vitest": false,
-      "ignoreDependencies": [
-        // Tailwind is imported from CSS and consumed by the Vite plugin rather
-        // than through a JavaScript module edge.
-        "tailwindcss"
-      ],
       "ignoreIssues": {
         // Tailwind is a bundle-time CSS input.
         "src/client/styles.css": ["unlisted"]

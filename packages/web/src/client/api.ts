@@ -5,15 +5,8 @@ import type { WebGraph, WebGraphSelection } from "../graph-types.js";
 export type {
   NodeDetail,
   WebGraph,
-  WebGraphContainer,
-  WebGraphEdge,
-  WebGraphFanoutItemOccurrence,
-  WebGraphFanoutOccurrence,
   WebGraphNode,
-  WebGraphRuntimeState,
   WebGraphSelection,
-  WebGraphSelector,
-  WebGraphSelectorOption,
 } from "../graph-types.js";
 
 export type RunRecord = {

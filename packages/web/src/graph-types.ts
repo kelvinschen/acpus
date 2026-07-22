@@ -66,7 +66,7 @@ export type WebGraphFanoutOccurrence = {
   items: WebGraphFanoutItemOccurrence[];
 };
 
-export type WebGraphFanoutItemOccurrence = {
+type WebGraphFanoutItemOccurrence = {
   id: string;
   itemIndex: number;
   label: string;
