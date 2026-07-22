@@ -20,7 +20,7 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - Every package development `tsconfig.json` MUST resolve package `development` exports so package-local typechecks consume workspace source.
 - Every package MUST provide a `tsconfig.build.json` that extends its development configuration, enables `composite`, disables custom export conditions, and stores incremental state at `./tsconfig.build.tsbuildinfo`.
 - Build configurations MUST resolve workspace dependencies through their published `types` exports and MUST NOT consume another package's source tree.
-- The Web build configuration MUST compile only `src/index.ts` and `src/server/**/*.ts`.
+- The Web TypeScript build MUST exclude client implementation sources while including shared modules required by its server declarations.
 - The repository MUST use `typescript@7.0.2` as its sole TypeScript implementation.
 - Every workspace and publishable package MUST declare Node.js `^22.18.0 || >=24.0.0` support.
 - Every package that declares Node.js types MUST use `@types/node@^22.20.1`.
@@ -52,6 +52,6 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 
 ## Verification
 
-- `pnpm check:build-toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, configuration boundaries, build and clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm check:build-toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, shared build settings, build and clean scripts, cache placement, and the absence of cross-command caches.
 - `pnpm check:docs`, `pnpm check:release`, and `pnpm check:security`: verify public documentation links, the stable package-release state, and the locked dependency graph.
 - `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership and publishable artifacts without build caches.

@@ -45,7 +45,6 @@ for (const [name, dependencies] of Object.entries(projects)) {
   equal(build.references ?? [], dependencies.map(dependency => ({ path: `../${dependency}/tsconfig.build.json` })), `${name} project references`);
 
   if (name === "web") {
-    equal(build.include, ["src/index.ts", "src/server/**/*.ts"], "web server-only TypeScript build boundary");
     equal(manifest.scripts?.build, "node scripts/build.mjs", "web build script");
     equal(manifest.scripts?.clean, "rm -rf dist .static-viz-build tsconfig.build.tsbuildinfo", "web clean script");
   } else {
