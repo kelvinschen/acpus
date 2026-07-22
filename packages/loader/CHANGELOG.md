@@ -1,5 +1,13 @@
 # @acpus/loader
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [152303a]
+  - @acpus/core@0.8.0
+  - @acpus/tasks@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes

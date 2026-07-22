@@ -1,5 +1,18 @@
 # @acpus/runtime
 
+## 0.10.0
+
+### Minor Changes
+
+- 152303a: Parse schema-backed Agent results from terminal Tagged JSON frames advertised by a concise mandatory output contract, retain one bounded local JSON repair pass, and render complete nullable/default/description metadata in output JSON Schema prompts. `AgentOutputProcessing` now reports `outcome`, failure `phase`, parsing mode, and projection changes instead of the previous recovery/conformance fields.
+- 079e1ee: Add occurrence-aware run inspection trees and bounded live Agent pulses while keeping the default operator view compact and actionable.
+
+### Patch Changes
+
+- Updated dependencies [152303a]
+  - @acpus/core@0.8.0
+  - @acpus/loader@0.1.3
+
 ## 0.9.2
 
 ### Patch Changes
