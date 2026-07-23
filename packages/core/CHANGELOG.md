@@ -1,5 +1,11 @@
 # @acpus/core
 
+## 0.9.0
+
+### Minor Changes
+
+- c809bff: Add static Agent ACP config profiles, including model and adapter-specific session options, across authoring, IR, execution, and Agent configuration guidance.
+
 ## 0.8.0
 
 ### Minor Changes
