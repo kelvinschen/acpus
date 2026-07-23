@@ -83,7 +83,7 @@ describe("scheduler agent overrides and forks", () => {
             permissionMode: "deny-all",
           });
           expect(turns[0]!.model).toBeUndefined();
-          expect(turns[0]!.agentMode).toBeUndefined();
+          expect(turns[0]!.config).toBeUndefined();
           expect(turns[0]!.captureTrace).toBe(true);
         } finally {
           store.close();
@@ -104,7 +104,7 @@ describe("scheduler agent overrides and forks", () => {
               reviewer: {
                 use: "claude",
                 model: "sonnet",
-                agentMode: "plan",
+                config: { mode: "plan", effort: "high" },
                 permissionMode: "deny-all",
               },
               auditor: { use: "codex", model: "audit-model" },
@@ -116,7 +116,7 @@ describe("scheduler agent overrides and forks", () => {
             reviewer: {
               use: "claude",
               model: "sonnet",
-              agentMode: "plan",
+              config: { mode: "plan", effort: "high" },
               permissionMode: "deny-all",
             },
             auditor: { use: "codex", model: "audit-model" },
@@ -125,10 +125,29 @@ describe("scheduler agent overrides and forks", () => {
             kind: "agent_definition",
             use: "claude",
             model: "sonnet",
-            agentMode: "plan",
+            config: { mode: "plan", effort: "high" },
             permissionMode: "deny-all",
             trace: true,
           });
+
+          const reconfigured = await forkRuntimeRun(store, source.id, {
+            agentOverrides: { reviewer: { config: { mode: "agent" } } },
+          });
+          expect(store.getRun(reconfigured.id)?.agentOverrides?.reviewer).toMatchObject({
+            use: "claude",
+            model: "sonnet",
+            config: { mode: "agent" },
+            permissionMode: "deny-all",
+          });
+          expect(store.getFrozenRun(reconfigured.id)?.ir.agents.reviewer).toMatchObject({
+            config: { mode: "agent" },
+          });
+
+          const cleared = await forkRuntimeRun(store, source.id, {
+            agentOverrides: { reviewer: { config: {} } },
+          });
+          expect(store.getRun(cleared.id)?.agentOverrides?.reviewer).toMatchObject({ config: {} });
+          expect(store.getFrozenRun(cleared.id)?.ir.agents.reviewer).toMatchObject({ config: {} });
 
           const replaced = await forkRuntimeRun(store, source.id, {
             agentOverrides: { reviewer: { command: "custom-acp-server" } },
@@ -145,7 +164,7 @@ describe("scheduler agent overrides and forks", () => {
             trace: true,
           });
           expect(effective && "model" in effective ? effective.model : undefined).toBeUndefined();
-          expect(effective && "agentMode" in effective ? effective.agentMode : undefined).toBeUndefined();
+          expect(effective && "config" in effective ? effective.config : undefined).toBeUndefined();
           expect(store.getFrozenRun(replaced.id)?.ir.agents.auditor).toMatchObject({
             kind: "agent_definition",
             use: "codex",
@@ -424,9 +443,11 @@ describe("scheduler agent overrides and forks", () => {
             [{ reviewer: { kind: "agent_definition" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { timeout: "1s" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { trace: true } }, "$.reviewer Unrecognized key"],
+            [{ reviewer: { agentMode: "plan" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { use: "codex", command: "custom-acp-server" } }, "must not specify both use and command"],
             [{ reviewer: { cwd: 123 } }, "$.reviewer.cwd"],
             [{ reviewer: { env: { FLAG: true } } }, "$.reviewer.env.FLAG"],
+            [{ reviewer: { config: { mode: true } } }, "$.reviewer.config.mode"],
           ] as Array<[any, string]>) {
             expect((await store.admitRun({
               prepared,
@@ -453,7 +474,7 @@ function overrideAgentWorkflow() {
         use: "codex",
         model: "old-model",
         permissionMode: "approve-reads",
-        agentMode: "agent",
+        config: { mode: "agent" },
         trace: true,
       },
       auditor: { use: "claude" },

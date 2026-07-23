@@ -21,7 +21,7 @@ agents: none
 
   it("renders every remaining node kind, detached roots, arrays, and Agent disclosure", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "semantic-fixture",
       agents: {
         triager: {
@@ -29,7 +29,7 @@ agents: none
           use: "codex",
           model: "gpt-5",
           permissionMode: "approve-all",
-          agentMode: "plan",
+          config: { mode: "plan" },
         },
       },
       root: scope([
@@ -81,7 +81,7 @@ input {}
 output { ok, items: …[] }
 agents: triager (codex, gpt-5, plan)
 
-┌─ ✦ plan · triager
+┌─ ✦ plan · agent(triager)
 ├─ $ fetch · task
 ├─ ◌ approve · signal
 ├─ ◈ require · assert
@@ -92,13 +92,14 @@ agents: triager (codex, gpt-5, plan)
 │     └─ $ else_task · task
 ├─ ⎇ route · switch
 │  ├┄ case 1
-│  │  └─ ✦ case_agent · triager
+│  │  └─ ✦ case_agent · agent(triager)
 │  └┄ default
 │     └─ ◌ default_signal · signal
 ├─ ✣ items · fanout
 │  └─ $ handle_item · task
 └─ ↻ repeat · loop
    └─ $ repeat_task · task`);
+    expect(renderWorkflowTerminalViz(ir, { color: true })).toContain("\u001b[2m · agent(triager)\u001b[0m");
   });
 
   it("applies ANSI only when requested and leaves an empty workflow compact", () => {
@@ -107,7 +108,7 @@ agents: triager (codex, gpt-5, plan)
     expect(colored).toContain("\u001b[96m≡\u001b[0m approvals\u001b[2m · parallel\u001b[0m");
 
     const empty: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "empty-workflow",
       agents: {},
       root: scope([]),
@@ -135,7 +136,7 @@ function parallelApprovals(): WorkflowIR {
     nodeOutput(id),
   );
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "parallel-approvals",
     inputSchema: {
       kind: "object",

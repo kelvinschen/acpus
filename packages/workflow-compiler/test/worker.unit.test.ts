@@ -8,7 +8,7 @@ import {
 const compiled = {
   sourceDigest: `sha256:${"a".repeat(64)}`,
   ir: {
-    irVersion: 5 as const,
+    irVersion: 6 as const,
     name: "worker-result",
     agents: {},
     root: { nodes: [], output: { kind: "literal" as const, value: null } },

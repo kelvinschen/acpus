@@ -26,8 +26,8 @@ export type AgentDefinitionIR =
       kind: "agent_definition";
       use: string;
       model?: string;
+      config?: Record<string, string>;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-      agentMode?: string;
       trace?: boolean;
       cwd?: string;
       env?: Record<string, string>;
@@ -36,8 +36,8 @@ export type AgentDefinitionIR =
       kind: "agent_command";
       command: string;
       model?: string;
+      config?: Record<string, string>;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-      agentMode?: string;
       trace?: boolean;
       cwd?: string;
       env?: Record<string, string>;
@@ -181,7 +181,7 @@ export type SourceLocationIR = {
 };
 
 export type WorkflowIR = {
-  irVersion: 5;
+  irVersion: 6;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;

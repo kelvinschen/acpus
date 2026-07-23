@@ -21,7 +21,7 @@ describe.concurrent("workflow module compiler", () => {
     const compiled = await compileFixtureResult("release.workflow.ts");
     const { ir } = compiled;
 
-    expect(ir.irVersion).toBe(5);
+    expect(ir.irVersion).toBe(6);
     expect(ir.name).toBe("release-readiness");
     expect(ir.diagnostics).toEqual([]);
     expect(compiled.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);

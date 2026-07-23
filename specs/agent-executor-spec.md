@@ -11,7 +11,7 @@
 - The package MUST expose `executeAgentTurn(request)` plus public request, result, progress, timing, summary, tool, and normalized trace types without a binary.
 - Public operational types MUST use `AgentTurnSummary`, `AgentContextSummary`, `AgentTokenUsageSummary`, `AgentToolCallSummary`, `AgentToolsSummary`, and `AgentTurnTiming`.
 - Terminal results MUST contain UTC `startedAt`/`finishedAt` and finite non-negative monotonic `elapsedMs`; progress and summary omit terminal timing.
-- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model/mode, numeric timeout, optional abort, and optional observation callbacks.
+- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model and string `config` map, numeric timeout, optional abort, and optional observation callbacks. `config.model`, when present, MUST override `model` for acpx invocation and MUST NOT be sent through `set`.
 - The executor MUST resolve its bundled `acpx` internally and reject request-level binary/path/provider-command overrides.
 - Named `claude` requests MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` only when absent; custom commands never receive that default by string matching.
 - `timeoutMs` MUST be a non-negative safe integer, with invalid values returning `config` before spawn and zero timing out immediately.
@@ -21,10 +21,10 @@
 
 ### Command Sequence And Settlement
 
-- Every turn MUST execute `sessions ensure --name <session>`, optional `set-mode <mode> -s <session>`, then `prompt -s <session> -f -` with prompt on stdin.
+- Every turn MUST execute `sessions ensure --name <session>`, then one `set <key> <value> -s <session>` command for each `config` entry except `model`, in lexical key order, then `prompt -s <session> -f -` with prompt on stdin.
 - Permission MUST map only to `--approve-reads`, `--approve-all`, or `--deny-all`; no synthetic policy flags are passed.
 - Prompt commands MUST use `--format json --json-strict`, positional named agents, and `--agent <command>` for custom agents.
-- `set-mode` rejection MUST return `config` without prompting.
+- A rejected config `set` MUST return `config` with `session.set_config_option` upstream attribution without prompting.
 - Prompt timeout or abort MUST best-effort invoke `cancel -s <session>` before force-killing the prompt process.
 - Abort and expired deadlines MUST win settlement races, including synchronous startup; when both occur at one boundary, abort wins and cancellation errors remain handled.
 - Stdin failure after spawn MUST preserve child stderr/exit classification; settled invocations ignore later stdout/progress.

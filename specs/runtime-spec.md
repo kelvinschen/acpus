@@ -148,11 +148,15 @@
 
 ### Agents
 
-- Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and mode values, resolving a directly interpolated ArtifactRef to its verified absolute path.
+- Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and static Agent `config` values, resolving a directly interpolated ArtifactRef to its verified absolute path.
 - Runtime MUST call the [Agent Executor](agent-executor-spec.md) for normalized acpx execution/progress and never parse raw ACP JSON for decisions, summaries, or progress.
 - Runtime MUST translate each effective named or command Agent definition into the corresponding [Agent Executor](agent-executor-spec.md) request variant; absent permission defaults to `approve-all`.
-- Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `agentMode`, `cwd`, and `env`; identity replacement clears inherited model/mode, preserves permission, and never accepts `trace`.
+- Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
+- The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
+- Runtime MUST pass `config` only on an initial normal Agent turn; response-repair and plain-continuation turns MUST omit it.
+- Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, identity replacement clears inherited model/config, preserves permission, and never accepts `trace`.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume turns reuse it according to continuation policy.
+- Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime documents this unsupported-conflict constraint without coordinating or detecting conflicts.
 - Schema-less Agents MUST return raw text with zero response repairs.
 - Every schema-backed Agent prompt, including task, continuation, and response-repair turns, MUST state the Tagged JSON output contract.
 - Every schema-backed Agent prompt MUST include the declared output as JSON Schema.
@@ -175,7 +179,7 @@
 - Agent output-processing metadata MUST record whether accepted or schema-rejected JSON was parsed directly or locally repaired.
 - Agent output-processing metadata MUST NOT embed raw output.
 - The daemon MUST capture `ACPUS_AGENT_RESPONSE_REPAIR_MAX` at startup, default additional repair turns to two, accept canonical non-negative safe integers, and expose invalid configuration as `invalid_agent_response_repair_max` before provider invocation.
-- Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid mode reapplication, and never process backend failures as output failures.
+- Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid generic config-option reapplication, and never process backend failures as output failures.
 - A response-repair prompt MUST request a complete replacement Tagged JSON frame.
 - A response-repair prompt MUST repeat the Tagged JSON output contract.
 - A response-repair prompt MUST repeat the declared output schema.

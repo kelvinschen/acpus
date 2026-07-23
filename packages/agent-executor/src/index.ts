@@ -24,7 +24,7 @@ export type AgentTurnRequest = {
   sessionName: string;
   permissionMode: AgentPermissionMode;
   model?: string;
-  agentMode?: string;
+  config?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
   captureRawDebug?: boolean;
@@ -45,7 +45,7 @@ export type AgentBackendFailure = {
   message: string;
   upstream?: {
     source: "acpx";
-    operation: "sessions.ensure" | "session.set_mode" | "prompt";
+    operation: "sessions.ensure" | "session.set_config_option" | "prompt";
     exitCode?: number;
     code?: string;
     origin?: string;
@@ -321,21 +321,19 @@ async function executeAgentTurnInternal(request: AgentTurnRequest, trace: TraceC
     return failedControlResult("sessions.ensure", ensure, "provider_exit", request.timeoutMs);
   }
 
-  if (request.agentMode) {
-    // Current known adapter modes, for operators only: claude default/acceptEdits/dontAsk/bypassPermissions/auto/plan; codex read-only/agent.
-    // Do not validate against this list; acpx and the selected agent own mode support.
-    const setModeBudget = turnBudget(deadline, request.signal);
-    if (setModeBudget.type === "abort") return cancelledResult("Agent turn was aborted before dispatch.");
-    if (setModeBudget.type === "expired") return timeoutResult(request.timeoutMs);
-    const setMode = await runAcpx({
-      args: buildAcpxArgs(request, ["set-mode", request.agentMode, "-s", request.sessionName], setModeBudget.timeoutMs),
+  for (const [key, value] of configEntries(request.config)) {
+    const setBudget = turnBudget(deadline, request.signal);
+    if (setBudget.type === "abort") return cancelledResult("Agent turn was aborted before dispatch.");
+    if (setBudget.type === "expired") return timeoutResult(request.timeoutMs);
+    const set = await runAcpx({
+      args: buildAcpxArgs(request, ["set", key, value, "-s", request.sessionName], setBudget.timeoutMs),
       cwd: request.cwd,
       env,
       ...(deadline === undefined ? {} : { deadline }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
-    if (setMode.exitCode !== 0 || setMode.stdinError !== undefined || setMode.spawnError || setMode.timedOut || setMode.aborted) {
-      return failedControlResult("session.set_mode", setMode, "config", request.timeoutMs);
+    if (set.exitCode !== 0 || set.stdinError !== undefined || set.spawnError || set.timedOut || set.aborted) {
+      return failedControlResult("session.set_config_option", set, "config", request.timeoutMs);
     }
   }
 
@@ -476,12 +474,19 @@ function buildAcpxArgs(request: AgentTurnRequest, command: string[], timeoutMs: 
     "--json-strict",
     permissionFlag(request.permissionMode),
   ];
-  if (request.model) args.push("--model", request.model);
+  const model = request.config?.model ?? request.model;
+  if (model) args.push("--model", model);
   if (timeoutMs !== undefined) args.push("--timeout", acpxTimeoutSeconds(timeoutMs));
   if (request.agent.kind === "command") args.push("--agent", request.agent.command);
   else args.push(request.agent.name);
   args.push(...command);
   return args;
+}
+
+function configEntries(config: Record<string, string> | undefined): Array<[string, string]> {
+  return Object.entries(config ?? {})
+    .filter(([key]) => key !== "model")
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
 }
 
 function permissionFlag(mode: AgentPermissionMode): string {

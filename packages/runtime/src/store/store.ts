@@ -170,7 +170,7 @@ type AgentOverrideSpec = {
   command?: string;
   model?: string;
   permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-  agentMode?: string;
+  config?: Record<string, string>;
   cwd?: string;
   env?: Record<string, string>;
 };
@@ -4063,7 +4063,7 @@ function mergeAgentOverride(declared: AgentDefinitionIR, previous: AgentOverride
     ? before.kind !== after.kind || before.value !== after.value
     : false;
   const merged = changedIdentity
-    ? { ...previous, model: undefined, agentMode: undefined, ...incoming }
+    ? { ...previous, model: undefined, config: undefined, ...incoming }
     : { ...previous, ...incoming };
   if (incoming.use !== undefined) delete merged.command;
   if (incoming.command !== undefined) delete merged.use;
@@ -4090,7 +4090,7 @@ function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverri
   const shared = {
     model: override.model ?? (identityChanged ? undefined : definition.model),
     permissionMode: override.permissionMode ?? definition.permissionMode,
-    agentMode: override.agentMode ?? (identityChanged ? undefined : definition.agentMode),
+    config: override.config ?? (identityChanged ? undefined : definition.config),
     trace: definition.trace,
     cwd: override.cwd ?? definition.cwd,
     env: override.env ?? definition.env,

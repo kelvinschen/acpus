@@ -7,7 +7,7 @@ const AgentOverrideSchema = z.object({
   command: z.string().min(1).optional(),
   model: z.string().optional(),
   permissionMode: z.enum(["approve-reads", "approve-all", "deny-all"]).optional(),
-  agentMode: z.string().min(1).optional(),
+  config: z.record(z.string(), z.string()).optional(),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
 }).strict().refine(value => value.use === undefined || value.command === undefined, {

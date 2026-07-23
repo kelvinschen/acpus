@@ -77,7 +77,7 @@ describe("workflow visualization helpers", () => {
 
 function preparedWorkflow(): PreparedWorkflow {
   const ir: WorkflowIR = {
-    irVersion: 5,
+    irVersion: 6,
     name: "prepared-static",
     description: "Prepared workflow description.",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

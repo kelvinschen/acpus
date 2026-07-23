@@ -1163,13 +1163,14 @@ function agentDetails(
   progress: RunNodeProgress | undefined,
 ): NonNullable<RunInspectionItem["agent"]> {
   const configured = ir.agents[node.run.agent];
+  const model = configured?.config?.model ?? configured?.model;
   const agentState = agentInspectionState(metadata, progress);
   return {
     key: node.run.agent,
     ...(configured?.kind === "agent_definition" ? { backend: { kind: "use" as const, name: configured.use } }
       : configured?.kind === "agent_command" ? { backend: { kind: "command" as const } }
         : {}),
-    ...(configured?.model ? { model: configured.model } : {}),
+    ...(model === undefined ? {} : { model }),
     ...agentState,
   };
 }

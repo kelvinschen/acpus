@@ -1269,7 +1269,7 @@ function workflowWithRootNode(node: NodeIR): WorkflowIR {
 
 function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "test",
     inputSchema: objectSchema(),
     root: { nodes, output: { kind: "object", fields: {} } },

@@ -51,7 +51,7 @@ describe("workflow compilation", () => {
         reviewer: {
           use: "codex",
           permissionMode: "approve-reads",
-          agentMode: "agent",
+          config: { model: "gpt-5.4", mode: "agent" },
           trace: true,
           env: { REVIEW_PROFILE: "strict" },
         },
@@ -110,7 +110,7 @@ describe("workflow compilation", () => {
     const ir = compileWorkflowDefinition(definition, { validate: false });
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.irVersion).toBe(5);
+    expect(ir.irVersion).toBe(6);
     expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
@@ -132,7 +132,7 @@ describe("workflow compilation", () => {
         kind: "agent_definition",
         use: "codex",
         permissionMode: "approve-reads",
-        agentMode: "agent",
+        config: { model: "gpt-5.4", mode: "agent" },
         trace: true,
         env: {
           REVIEW_PROFILE: "strict",
@@ -883,7 +883,7 @@ describe("workflow compilation", () => {
           command: "acpx worker",
           model: "gpt-5.4",
           permissionMode: "approve-all",
-          agentMode: "bypassPermissions",
+          config: { model: "gpt-5.5", mode: "bypassPermissions" },
           trace: false,
           cwd: "/tmp/work",
           env: {
@@ -908,7 +908,7 @@ describe("workflow compilation", () => {
         command: "acpx worker",
         model: "gpt-5.4",
         permissionMode: "approve-all",
-        agentMode: "bypassPermissions",
+        config: { model: "gpt-5.5", mode: "bypassPermissions" },
         trace: false,
         cwd: "/tmp/work",
         env: {
@@ -927,6 +927,8 @@ describe("workflow compilation", () => {
         missing_use: { model: "gpt-5.4" },
         mixed: { use: "codex", command: "acpx worker" },
         ir_shaped: { kind: "agent_definition", use: "codex" },
+        legacy_agent_mode: { use: "codex", agentMode: "plan" },
+        bad_config: { use: "codex", config: { mode: true } },
         bad_trace: { use: "codex", trace: "yes" },
       } as any,
     }).build(() => ({}));
@@ -946,6 +948,14 @@ describe("workflow compilation", () => {
       expect.objectContaining({
         code: "A002",
         path: "agents.ir_shaped.kind",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.legacy_agent_mode.agentMode",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.bad_config.config.mode",
       }),
       expect.objectContaining({
         code: "A002",

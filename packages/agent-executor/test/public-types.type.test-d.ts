@@ -17,6 +17,7 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   }>();
   expectTypeOf<AgentToolsSummary["calls"][number]>().toEqualTypeOf<AgentToolCallSummary>();
   expectTypeOf<AgentTurnRequest["timeoutMs"]>().toEqualTypeOf<number | undefined>();
+  expectTypeOf<AgentTurnRequest["config"]>().toEqualTypeOf<Record<string, string> | undefined>();
   assertType<AgentBackendFailureKind>("config");
   assertType<AgentBackendFailureKind>("spawn");
   assertType<AgentBackendFailureKind>("provider_exit");
@@ -41,7 +42,7 @@ test("@acpus/agent-executor public types accept only resolved execution requests
     sessionName: "session",
     permissionMode: "approve-all",
     model: "gpt-5.4",
-    agentMode: "agent",
+    config: { model: "gpt-5.4", mode: "agent" },
     timeoutMs: 30_000,
     captureRawDebug: true,
     captureTrace: true,

@@ -222,8 +222,10 @@ describe("agent node execution", () => {
             expect(turns).toHaveLength(2);
             expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
             expect(turns[0]).toMatchObject({ agent: { kind: "command" }, permissionMode: "approve-all" });
-            expect(turns[0]!.agentMode).toBe("agent");
-            expect(turns[1]!.agentMode).toBeUndefined();
+            expect(turns[0]!.model).toBe("profile-model");
+            expect(turns[0]!.config).toEqual({ effort: "high", mode: "agent", model: "profile-model" });
+            expect(turns[1]!.model).toBe("profile-model");
+            expect(turns[1]!.config).toBeUndefined();
             expect(turns[1]!.prompt).toContain("# OUTPUT REPAIR");
             expect(turns[1]!.prompt).toContain("JSON Schema:");
             expect(turns[1]!.prompt).not.toContain("{\"attempt\":1,\"extra\":\"drop\"}");
@@ -1779,7 +1781,7 @@ describe("agent node execution", () => {
 
             expect(turns).toHaveLength(2);
             expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
-            expect(turns[1]!.agentMode).toBeUndefined();
+            expect(turns[1]!.config).toBeUndefined();
             const metadataEntries = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
             expect(metadataEntries).toEqual([
               expect.objectContaining({ status: "cancelled", sessionName: turns[0]!.sessionName, turnCount: 0 }),
@@ -2020,7 +2022,7 @@ describe("agent node execution", () => {
 
             expect(turns).toHaveLength(4);
             expect(turns[3]!.sessionName).toBe(turns[0]!.sessionName);
-            expect(turns[3]!.agentMode).toBeUndefined();
+            expect(turns[3]!.config).toBeUndefined();
             expect(turns[3]!.prompt).toContain("Continue the previous task from where you left off.");
             expect(turns[3]!.prompt).toContain("JSON Schema:");
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
@@ -2089,7 +2091,11 @@ function retryingAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-retry",
     agents: {
-      reviewer: { command: "custom-acp-server", agentMode: "agent" },
+      reviewer: {
+        command: "custom-acp-server",
+        model: "default-model",
+        config: { effort: "high", mode: "agent", model: "profile-model" },
+      },
     },
   }).build(({ agents, step }) => {
     step("review").agent({

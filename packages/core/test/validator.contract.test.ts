@@ -3,7 +3,7 @@ import { validateWorkflowIR, type WorkflowIR } from "../src/ir.js";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "minimal",
     agents: {},
     root: { output: { kind: "object", fields: {} }, nodes: [] },
@@ -43,6 +43,16 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(validateWorkflowIR(minimalWorkflow({
       description: "Summarize workflow intent for operators.",
     }))).toEqual([]);
+  });
+
+  it("requires WorkflowIR version 6", () => {
+    expect(validateWorkflowIR({ ...minimalWorkflow(), irVersion: 5 } as any)).toEqual([
+      expect.objectContaining({
+        code: "IR002",
+        path: "irVersion",
+        message: "WorkflowIR irVersion must be 6.",
+      }),
+    ]);
   });
 
   it("accepts agent sessionKey templates", () => {
@@ -165,7 +175,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("accepts expression callback-source calls through the workflow validator", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "callback_expression",
       agents: {},
       root: {
@@ -190,7 +200,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns stable diagnostic codes and paths for invalid IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad workflow name",
       inputSchema: {
         kind: "object",
@@ -245,7 +255,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates parallel and fanout strategy invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_strategy",
       agents: {},
       root: {
@@ -290,7 +300,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates agent definition IR invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_agents",
       agents: {
         missing_use: {
@@ -317,10 +327,15 @@ describe("WorkflowIR diagnostics contract", () => {
           use: "codex",
           permissionMode: "full",
         },
-        bad_mode: {
+        legacy_agent_mode: {
           kind: "agent_command",
           command: "acpx worker",
           agentMode: "",
+        },
+        bad_config: {
+          kind: "agent_definition",
+          use: "codex",
+          config: { mode: true },
         },
         bad_trace: {
           kind: "agent_definition",
@@ -344,6 +359,7 @@ describe("WorkflowIR diagnostics contract", () => {
       "IR001",
       "IR001",
       "A002",
+      "IR001",
       "A002",
       "A002",
       "A002",
@@ -365,8 +381,12 @@ describe("WorkflowIR diagnostics contract", () => {
       path: "agents.bad_permission.permissionMode",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "IR001",
+      path: "agents.legacy_agent_mode.agentMode",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
-      path: "agents.bad_mode.agentMode",
+      path: "agents.bad_config.config.mode",
     }));
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
@@ -558,7 +578,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates signal timeout invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_completion",
       agents: {},
       root: {
@@ -590,7 +610,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates required aligned IR fields", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_required_fields",
       agents: {},
       root: {
@@ -649,7 +669,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("rejects fields outside the closed IR shape", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "closed_shape",
       agents: { reviewer: { kind: "agent_definition", use: "codex" } },
       root: {
@@ -754,7 +774,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns diagnostics for malformed expr, template, and env IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "malformed_nested_ir",
       agents: {
         worker: {
@@ -862,7 +882,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates SchemaIR as a closed recursive union", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_schema",
       inputSchema: {
         kind: "object",
@@ -912,7 +932,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates literal, enum, unknown, and closed schema variants", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "bad_schema_variants",
       inputSchema: {
         kind: "union",
@@ -939,7 +959,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("accepts valid recursive core-only SchemaIR", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "valid_recursive_schema",
       inputSchema: {
         kind: "object",
@@ -1240,7 +1260,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns diagnostics instead of throwing for malformed top-level containers", () => {
     const malformed = {
-      irVersion: 5,
+      irVersion: 6,
       name: "malformed",
       agents: [],
       root: "bad",

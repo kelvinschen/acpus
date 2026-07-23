@@ -385,8 +385,19 @@ function normalizeAgentDefinition(name: string, value: unknown, diagnostics: Dia
     invalid = true;
     invalidAgentDefinition(diagnostics, fieldPath, message);
   };
-  if (value.agentMode !== undefined && (typeof value.agentMode !== "string" || value.agentMode.length === 0)) {
-    reject(`${path}.agentMode`, `Agent '${name}' agentMode must be a non-empty string.`);
+  if (value.agentMode !== undefined) {
+    reject(`${path}.agentMode`, `Agent '${name}' agentMode is not supported.`);
+  }
+  if (value.config !== undefined) {
+    if (!isRecord(value.config)) {
+      reject(`${path}.config`, `Agent '${name}' config must be an object.`);
+    } else {
+      for (const [key, configValue] of Object.entries(value.config)) {
+        if (typeof configValue !== "string") {
+          reject(`${path}.config.${key}`, `Agent '${name}' config '${key}' must be a string.`);
+        }
+      }
+    }
   }
   if (value.permissionMode !== undefined && value.permissionMode !== "approve-reads" && value.permissionMode !== "approve-all" && value.permissionMode !== "deny-all") {
     reject(`${path}.permissionMode`, `Agent '${name}' permissionMode must be approve-reads, approve-all, or deny-all.`);
@@ -440,7 +451,7 @@ export function compileWorkflowDefinition(definition: WorkflowDefinition<any, an
   }
 
   const ir = stripUndefined({
-    irVersion: 5,
+    irVersion: 6,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,

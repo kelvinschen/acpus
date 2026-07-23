@@ -35,12 +35,16 @@ test("agent tokens are typed from top-level agent keys", () => {
     reviewer: { use: "codex", permissionMode: "approve-reads" },
   } satisfies AgentMap;
 
-  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", agentMode: "agent", trace: true });
-  assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", agentMode: "bypassPermissions" });
+  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", config: { mode: "agent" }, trace: true });
+  assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", config: { model: "gpt-5.4", mode: "bypassPermissions" } });
   // @ts-expect-error trace is a top-level boolean policy.
   assertType<AgentDefinitionSpec>({ use: "codex", trace: "yes" });
   // @ts-expect-error agent definitions must use either use or command, not both.
   assertType<AgentDefinitionSpec>({ use: "codex", command: "acpx worker" });
+  // @ts-expect-error agentMode was replaced by the config map.
+  assertType<AgentDefinitionSpec>({ use: "codex", agentMode: "agent" });
+  // @ts-expect-error agent config values are strings.
+  assertType<AgentDefinitionSpec>({ use: "codex", config: { fast: true } });
 
   defineWorkflow({ name: "typed-agent-keys", agents: extractedAgents }).build(({ agents, step }) => {
     assertType<AgentToken<"reviewer">>(agents.reviewer);
@@ -381,8 +385,8 @@ test("declaration-time structure stays plain", () => {
   assertType<AgentDefinitionSpec>({ use: "codex", env: { VALUE: dynamicString } });
   // @ts-expect-error agent model is declaration-time structure.
   assertType<AgentDefinitionSpec>({ use: "codex", model: dynamicString });
-  // @ts-expect-error agent mode is declaration-time structure.
-  assertType<AgentDefinitionSpec>({ use: "codex", agentMode: dynamicString });
+  // @ts-expect-error agent config is declaration-time structure.
+  assertType<AgentDefinitionSpec>({ use: "codex", config: { mode: dynamicString } });
   // @ts-expect-error permission mode is declaration-time structure.
   assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: dynamicString });
 

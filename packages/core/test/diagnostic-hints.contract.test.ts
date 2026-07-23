@@ -3,7 +3,7 @@ import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "../src/i
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "diagnostic_hints",
     agents: {},
     root: { output: { kind: "object", fields: {} }, nodes: [] },

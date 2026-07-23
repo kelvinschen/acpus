@@ -11,7 +11,7 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     return diagnostics;
   }
   validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "diagnostics"], diagnostics, "");
-  if (ir.irVersion !== 5) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 5.", "irVersion");
+  if (ir.irVersion !== 6) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 6.", "irVersion");
   if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
     addWarning(diagnostics, "W002", `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.`);
   }
@@ -55,10 +55,10 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
     const path = `agents.${name}`;
     if (!requireRecord(agent, diagnostics, path, "A002", `Agent '${name}' definition must be an object.`)) continue;
     if (agent.kind === "agent_definition") {
-      validateKnownFields(agent, ["kind", "use", "model", "permissionMode", "agentMode", "trace", "cwd", "env"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "use", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.use, diagnostics, `${path}.use`, "A002", `Agent '${name}' use must be a non-empty string.`);
+      validateAgentConfig(agent.config, diagnostics, `${path}.config`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
-      validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
       if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
       validateStaticEnv(agent.env, diagnostics, `${path}.env`);
@@ -66,10 +66,10 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
     }
 
     if (agent.kind === "agent_command") {
-      validateKnownFields(agent, ["kind", "command", "model", "permissionMode", "agentMode", "trace", "cwd", "env"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "command", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.command, diagnostics, `${path}.command`, "A002", `Command-backed agent '${name}' command must be a non-empty string.`);
+      validateAgentConfig(agent.config, diagnostics, `${path}.config`);
       validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
-      validateAgentMode(agent.agentMode, diagnostics, `${path}.agentMode`);
       validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
       if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
       validateStaticEnv(agent.env, diagnostics, `${path}.env`);
@@ -271,10 +271,13 @@ function validatePermissionMode(value: unknown, diagnostics: DiagnosticIR[], pat
   validateOptionalEnum(value, ["approve-reads", "approve-all", "deny-all"], diagnostics, path, "A002", "Agent permissionMode must be approve-reads, approve-all, or deny-all.");
 }
 
-function validateAgentMode(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
+function validateAgentConfig(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
   if (value === undefined) return;
-  if (typeof value !== "string" || value.length === 0) {
-    addError(diagnostics, "A002", "Agent agentMode must be a non-empty string.", path);
+  if (!requireRecord(value, diagnostics, path, "A002", "Agent config must be an object.")) return;
+  for (const [key, configValue] of Object.entries(value)) {
+    if (typeof configValue !== "string") {
+      addError(diagnostics, "A002", `Agent config '${key}' must be a string.`, `${path}.${key}`);
+    }
   }
 }
 

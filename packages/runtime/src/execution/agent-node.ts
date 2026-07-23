@@ -192,16 +192,17 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     if (resolvedSessionKey.isErr()) return finishFailure(resolutionFailure(resolvedSessionKey.error));
     explicitSessionKey = resolvedSessionKey.value;
     sessionNameForMetadata = sessionName(options.runId, options.nodeKey ?? node.id, explicitSessionKey);
+    const effectiveModel = definition.config?.model ?? definition.model;
     const turnBase = {
       agent: agentSelector(definition),
       cwd: cwd.value,
       env,
       sessionName: sessionNameForMetadata,
       permissionMode: node.run.permissionMode ?? definition.permissionMode ?? "approve-all",
-      ...(definition.model ? { model: definition.model } : {}),
+      ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
       ...(options.signal ? { signal: options.signal } : {}),
       ...(definition.trace === true ? { captureTrace: true } : {}),
-    } satisfies Omit<AgentTurnRequest, "prompt" | "agentMode">;
+    } satisfies Omit<AgentTurnRequest, "prompt" | "config">;
     const maxRepairTurns = responseRepairMax;
     const plainContinuation = options.initialPromptKind === "plain_continuation";
     const resolvedPrompt = plainContinuation
@@ -221,7 +222,7 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         ...turnBase,
         prompt,
         ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
-        ...(turn === 0 && !plainContinuation && definition.agentMode ? { agentMode: definition.agentMode } : {}),
+        ...(turn === 0 && !plainContinuation && definition.config !== undefined ? { config: definition.config } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(onProgress ? { onProgress } : {}),
       } satisfies AgentTurnRequest;

@@ -27,6 +27,8 @@
 - Agent definition `use` and `command` MUST be mutually exclusive.
 - Top-level agent definitions MUST be authoring specs without an IR `kind` field.
 - Named and custom command agent definitions MAY declare `model`.
+- Named and custom command agent definitions MAY declare `config?: Record<string, string>` as a declaration-time static Agent profile. Core MUST preserve it as an opaque string map; it is not an ACP `configOptions` snapshot, and adapter-specific key/value validation belongs outside Core.
+- Agent definitions MUST NOT declare `agentMode`.
 - Named and custom command agent definitions MAY declare `trace?: boolean`; it is valid only at the top-level Agent definition, defaults to disabled, and is absent from Agent nodes.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
 - Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
@@ -70,7 +72,7 @@
 - TypeScript-owned Task outputs MUST be inferred from `exec` without an author-facing `outputSchema`.
 - Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
 - Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
-- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"`, `agentMode?: string`, and `trace?: boolean`.
+- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"` and `trace?: boolean`.
 - Signal nodes MUST use `step("id").signal({ prompt, outputSchema?, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
 - Signal `onTimeout`, when present, MUST use `{ message? }`.
 - Signal `onTimeout` MUST NOT be present unless `timeout` is present.
@@ -136,19 +138,19 @@
 
 ### IR And Validation
 
-- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 5`.
+- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 6`.
 - If an internal caller bypasses the public TypeScript interface, workflow and composite outputs containing a `NodeRef` or a non-durable value MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
 - Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
 - `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, and `diagnostics`.
 - Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
 - `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `AgentDefinitionIR` MUST retain optional boolean `trace` in IR version 5. Agent node and Agent run IR MUST remain closed shapes without a `trace` field.
+- `AgentDefinitionIR` MUST retain optional boolean `trace` and optional `config: Record<string, string>` in IR version 6. It MUST NOT retain `agentMode`. Agent node and Agent run IR MUST remain closed shapes without a `trace` or `config` field.
 - `childScopes(node)` MUST return every direct composite child scope and none for leaf nodes, ordered as `then` before `else`, authored switch cases before `default`, authored parallel keys, then fanout or loop body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
-- `validateWorkflowIR(ir)` MUST require IR version 5 and diagnose unknown fields, malformed agent definitions, malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST require IR version 6 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
 - Node builders MUST NOT emit `ID001`.
 - `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation.

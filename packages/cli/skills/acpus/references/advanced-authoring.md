@@ -122,6 +122,10 @@ Task `timeout` aborts and terminates the whole attempt; `execution.defaultComman
 
 Set `sessionKey` only when Agent occurrences must continue the same conversation, such as across loop rounds or intentionally across different steps. Omit it for one-shot or independent work. Keys are run-local and must be stable, non-empty, and distinct for each independent conversation.
 
+An Agent definition's `config` is a reusable, frozen string-to-string ACP option profile, not an ACP `configOptions` snapshot or shared mutable session state. For example: `agents: { planner: { use: "codex", config: { mode: "plan" } } }`. `config.model` overrides top-level `model`; do not place secrets in it. Every consumer of one shared `sessionKey` must resolve to the same backend, effective model, and config; Acpus does not detect conflicts.
+
+When a specific Agent needs acpx-side configuration, rather than a workflow profile, eg: configure a named agent using exsiting acp adapter, consult the [acpx configuration guide](https://github.com/openclaw/acpx/blob/main/docs/config.md).
+
 In a fix/review loop, reuse the fixer session across rounds but omit `sessionKey` for the reviewer so each review starts fresh. Do not use an empty string; it is invalid.
 
 ```ts

@@ -85,7 +85,7 @@ describe("workflow visualization overlay", () => {
       kind: "agent",
       agent: "reviewer",
       use: "codex",
-      model: "sonnet",
+      model: "opus",
       outputSchema: { kind: "object", required: ["ok"], fields: { ok: { kind: "boolean" }, note: { kind: "string", optional: true } } },
     });
     expect(detailById.get("gate")).toEqual({ kind: "assert", condition: call("gte", ref("input", "score"), lit(50)) });
@@ -126,7 +126,7 @@ describe("workflow visualization overlay", () => {
 
 function compositePathWorkflow(): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "composite-paths",
     agents: {},
     root: {
@@ -173,10 +173,10 @@ function compositePathWorkflow(): WorkflowIR {
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-    agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet" } },
+    agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet", config: { model: "opus" } } },
     root: {
       output: { kind: "object", fields: {} },
       nodes: [
@@ -239,7 +239,7 @@ function call(fn: string, ...args: ExprIR[]): ExprIR {
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},

@@ -167,7 +167,7 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "release",
     agents: {},
     root: {

@@ -5,7 +5,7 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ## Agent overrides
 
-`workflow run` and `runs fork` accept a JSON object keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `permissionMode`, `agentMode`, `cwd`, and `env`; they reject unknown Agents, extra fields, simultaneous `use`/`command`, and tracing policy. Changing identity clears inherited `model` and `agentMode` unless replaced, while `permissionMode` remains inherited.
+`workflow run` and `runs fork` accept a JSON object keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, and `env`; they reject unknown Agents, extra fields, simultaneous `use`/`command`, and tracing policy.
 
 ## Run and observe
 

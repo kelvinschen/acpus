@@ -500,7 +500,7 @@ describe("executeAgentTurn", () => {
     expect(fake.state.calls.map(call => call.options.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS)).toEqual([undefined, undefined]);
   });
 
-  it("shares one local timeout budget across ensure, set-mode, and prompt", async () => {
+  it("shares one local timeout budget across ensure, config set, and prompt", async () => {
     vi.useFakeTimers();
     try {
       fake.state.scenarios.push(
@@ -517,7 +517,7 @@ describe("executeAgentTurn", () => {
         env: {},
         sessionName: "session",
         permissionMode: "approve-all",
-        agentMode: "plan",
+        config: { mode: "plan" },
         timeoutMs: 5,
       });
       await vi.runAllTimersAsync();
@@ -528,7 +528,7 @@ describe("executeAgentTurn", () => {
       });
       expect(fake.state.calls.map(call => tailFromAgent(call.args, "claude"))).toEqual([
         ["claude", "sessions", "ensure", "--name", "session"],
-        ["claude", "set-mode", "plan", "-s", "session"],
+        ["claude", "set", "mode", "plan", "-s", "session"],
         ["claude", "prompt", "-s", "session", "-f", "-"],
         ["claude", "cancel", "-s", "session"],
       ]);
@@ -1219,7 +1219,7 @@ describe("executeAgentTurn", () => {
     expect(fake.state.calls[0]!.args).not.toContain("--approve-reads");
   });
 
-  it("applies agentMode only before the initial prompt turn", async () => {
+  it("sets config options in lexical order and routes config.model through --model", async () => {
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
     await executeAgentTurn({
@@ -1229,17 +1229,21 @@ describe("executeAgentTurn", () => {
       env: {},
       sessionName: "session",
       permissionMode: "approve-reads",
-      agentMode: "bypassPermissions",
+      model: "fallback-model",
+      config: { reasoning_effort: "high", mode: "plan", model: "configured-model" },
     });
 
     expect(fake.state.calls.map(call => tailFromAgent(call.args, "claude"))).toEqual([
       ["claude", "sessions", "ensure", "--name", "session"],
-      ["claude", "set-mode", "bypassPermissions", "-s", "session"],
+      ["claude", "set", "mode", "plan", "-s", "session"],
+      ["claude", "set", "reasoning_effort", "high", "-s", "session"],
       ["claude", "prompt", "-s", "session", "-f", "-"],
     ]);
+    expect(fake.state.calls.every(call => call.args.includes("configured-model"))).toBe(true);
+    expect(fake.state.calls.some(call => tailFromAgent(call.args, "claude").slice(1, 3).join(" ") === "set model")).toBe(false);
   });
 
-  it("classifies rejected set-mode as config without sending a prompt", async () => {
+  it("classifies rejected config set as config without sending a prompt", async () => {
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.exit(1, "Invalid params: unsupported mode"));
     const { executeAgentTurn } = await import("@acpus/agent-executor");
 
@@ -1250,10 +1254,14 @@ describe("executeAgentTurn", () => {
       env: {},
       sessionName: "session",
       permissionMode: "approve-all",
-      agentMode: "missing-mode",
+      config: { mode: "missing-mode" },
     })).resolves.toMatchObject({
       status: "failed",
-      failure: { kind: "config", message: "Invalid params: unsupported mode" },
+      failure: {
+        kind: "config",
+        message: "Invalid params: unsupported mode",
+        upstream: { operation: "session.set_config_option" },
+      },
     });
     expect(fake.state.calls).toHaveLength(2);
   });

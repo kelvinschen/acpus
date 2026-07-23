@@ -230,7 +230,7 @@ function agentSummary(agents: WorkflowIR["agents"]): string {
   const entries = Object.entries(agents);
   if (entries.length === 0) return "none";
   return entries.map(([name, agent]) =>
-    `${name} (${[agentTarget(agent), agent.model, agent.agentMode]
+    `${name} (${[agentTarget(agent), agent.config?.model ?? agent.model, agent.config?.mode]
       .filter(value => value !== undefined).join(", ")})`).join(" · ");
 }
 
@@ -253,7 +253,7 @@ function renderScope(scope: ScopeIR, prefix: string, lines: string[], color: boo
 }
 
 function renderNode(node: NodeIR, linePrefix: string, childPrefix: string, lines: string[], color: boolean): void {
-  const detail = node.kind === "agent" ? node.run.agent : node.kind;
+  const detail = node.kind === "agent" ? `agent(${node.run.agent})` : node.kind;
   lines.push(`${linePrefix}${ansi(TYPE_ICONS[node.kind], TYPE_COLORS[node.kind], color)} ${node.id}${ansi(` · ${detail}`, 2, color)}`);
 
   switch (node.kind) {

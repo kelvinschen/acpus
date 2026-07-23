@@ -78,8 +78,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Foreground run MUST follow the read-only inspection stream to terminal status; background run returns after daemon acceptance.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
-- Terminal visualization Agent bindings MUST use `name (target, optional model/agent mode)` and MUST omit permission mode.
-- Terminal visualization Agent nodes MUST show their referenced Agent binding key as dim metadata instead of the generic `agent` node type.
+- Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.
+- Terminal visualization Agent nodes MUST show `agent(<referenced Agent binding key>)` as dim metadata.
 - Terminal visualization MUST enable ANSI styling only for a TTY when `NO_COLOR` is absent; non-TTY visualization MUST contain no ANSI sequences.
 - `workflow viz --out <file.html>` MUST write one offline HTML graph through WebUI rendering helpers and MUST refuse an existing output unless `--force` is present.
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.

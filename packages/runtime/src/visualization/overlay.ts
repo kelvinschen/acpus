@@ -148,12 +148,13 @@ function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
       return { kind: "task", inputs: Object.keys(node.run.input), target: node.run.target.kind };
     case "agent": {
       const definition: AgentDefinitionIR | undefined = agents[node.run.agent];
+      const model = definition?.config?.model ?? definition?.model;
       return {
         kind: "agent",
         agent: node.run.agent,
         ...(definition?.kind === "agent_definition" ? { use: definition.use } : {}),
         ...(definition?.kind === "agent_command" ? { command: definition.command } : {}),
-        ...(definition?.model === undefined ? {} : { model: definition.model }),
+        ...(model === undefined ? {} : { model }),
         ...(node.outputSchema === undefined ? {} : { outputSchema: node.outputSchema }),
       };
     }

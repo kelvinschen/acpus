@@ -939,7 +939,7 @@ function rootScope() {
 
 function workflow(nodes: NodeIR[], agents: WorkflowIR["agents"] = {}): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "fork-seed-test",
     agents,
     root: { output: { kind: "object", fields: {} }, nodes },

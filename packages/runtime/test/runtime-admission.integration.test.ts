@@ -277,7 +277,7 @@ describe.concurrent("runtime admission use cases", () => {
       const packageLockDigest = digest(packageLock);
       const task = prepared.ir.root.nodes.find(node => node.id === "normalize_path");
 
-      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 5, name: "runtime-same-file-reusable" });
+      expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 6, name: "runtime-same-file-reusable" });
       expect(prepared.lock.workflow.sourceDigest).toBe(sourceDigest);
       expect(prepared.packageLockDigest).toBe(packageLockDigest);
       expect(prepared.lock.packageLockDigest).toBe(packageLockDigest);

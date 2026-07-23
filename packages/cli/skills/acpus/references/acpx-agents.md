@@ -4,7 +4,7 @@ Use named acpx agents with `use` whenever acpx exposes the agent by name:
 
 ```ts
 agents: {
-  reviewer: { use: "codex" },
+  reviewer: { use: "codex", config: { mode: "full-access", reasoning_effort: "high" } },
 }
 ```
 
@@ -18,33 +18,11 @@ agents: {
 
 ## Built-in Agents
 
-The upstream acpx built-ins are:
-
-| Agent | Default command |
-| --- | --- |
-| `pi` | `npx pi-acp` |
-| `openclaw` | `openclaw acp` |
-| `codex` | `npx -y @agentclientprotocol/codex-acp` |
-| `claude` | `npx -y @agentclientprotocol/claude-agent-acp` |
-| `gemini` | `gemini --acp` |
-| `cursor` | `cursor-agent acp` |
-| `copilot` | `copilot --acp --stdio` |
-| `droid` | `droid exec --output-format acp` |
-| `fast-agent` | `uvx fast-agent-mcp acp` |
-| `grok-build` | `grok agent stdio` |
-| `iflow` | `iflow --experimental-acp` |
-| `kilocode` | `npx -y @kilocode/cli acp` |
-| `kimi` | `kimi acp` |
-| `kiro` | `kiro-cli-chat acp` |
-| `mux` | `npx -y mux@^0.27.0 acp` |
-| `opencode` | `npx -y opencode-ai acp` |
-| `qoder` | `qodercli --acp` |
-| `qwen` | `qwen --acp` |
-| `trae` | `traecli acp serve` |
+The upstream acpx built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `qoder`, `qwen`, and `trae`.
 
 `factory-droid` and `factorydroid` also resolve to `droid`.
 
-For any built-in agent, declare `{ use: "<agent>" }`. Do not spell its default command manually in workflow source.
+**For any built-in agent, declare `{ use: "<agent>" }`.** Only when the user explicitly needs to override a built-in ACP command or arguments, or the adapter is outdated, configure acpx according to [acpx agents](https://github.com/openclaw/acpx/blob/main/docs/agents.md).
 
 ## Local Named Agents
 
@@ -64,6 +42,10 @@ acpx --help | sed -n '/^Commands:/,/^$/p' | grep -E '^[[:space:]]+[[:alnum:]_-]+
 
 If the agent appears in that command list, or is configured under `~/.acpx/config.json` `agents`, use `{ use: "<agent>" }`. Use `{ command: "..." }` only when the agent is a raw ACP server command and acpx has no named token for it.
 
+## ACP Agent Config 
+Use top-level `config` for a static string map: `config.model` selects the model, and every other key is applied with `acpx set`.
+Verified keys: Codex `model`, `reasoning_effort`; Claude `model`, `effort`; TraeX `model`, `reasoning_effort`.
+
 ## Claude User Settings
 
-Acpus sets `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` for `claude`, so user settings load by default. Set the Agent `env` value to `"0"` to retain upstream isolation when user explicitly asked.
+Acpus sets `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` for `claude`, so user settings load by default. Set `0` to retain upstream isolation when user explicitly asked.

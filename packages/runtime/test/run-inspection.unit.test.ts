@@ -87,7 +87,7 @@ describe("run inspection projection", () => {
 
   it("keeps a partial outer occurrence while folding over-budget inner items", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "nested-context-budget",
       agents: { reviewer: { kind: "agent_definition", use: "claude" } },
       root: {
@@ -193,7 +193,7 @@ describe("run inspection projection", () => {
 
   it("counts every repeated Assert frame as a distinct execution context", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "repeated-assert",
       agents: {},
       root: {
@@ -346,7 +346,7 @@ describe("run inspection projection", () => {
 
   it("emits failed scope-frame changes with exact occurrence identity while suppressing terminal bookkeeping", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "scope-frame-changes",
       agents: {},
       root: {
@@ -495,7 +495,7 @@ describe("run inspection projection", () => {
 
   it("keeps materialized Assert nodes in the authored compact tree", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "assert-inspection",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "require_ready", kind: "assert", condition: { kind: "literal", value: true } }] },
@@ -573,6 +573,23 @@ describe("run inspection projection", () => {
     });
   });
 
+  it("projects config.model as the effective Agent model", () => {
+    const ir = compositeWorkflow({
+      kind: "agent_definition",
+      use: "claude",
+      model: "sonnet",
+      config: { model: "opus", mode: "plan" },
+    });
+    const run = repeatedAgentRun(1);
+    const document = projectRunInspection({ ir, run, artifacts: [], cursor: { eventSequence: 1, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
+    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
+
+    expect(document.items.find(item => item.nodeKey === "review~0")?.agent).toMatchObject({
+      backend: { kind: "use", name: "claude" },
+      model: "opus",
+    });
+  });
+
   it("uses terminal turn summary metadata as the Agent inspection fallback", () => {
     const run = repeatedAgentRun(1);
     delete run.dynamic!.progress[0]!.context;
@@ -630,7 +647,7 @@ describe("run inspection projection", () => {
     const fields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`field_${index}`, { kind: "string" as const }]));
     const outputSchema: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "signal-inspection",
       agents: {},
       root: {
@@ -694,7 +711,7 @@ describe("run inspection projection", () => {
 
   it("aggregates repeated Signal targets from normalized wait status", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "repeated-signal-inspection",
       agents: {},
       root: {
@@ -746,7 +763,7 @@ describe("run inspection projection", () => {
 
   it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "signal-timeout",
       agents: {},
       root: {
@@ -859,7 +876,7 @@ describe("run inspection projection", () => {
     });
 
     const taskIr: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "task-failure",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
@@ -919,7 +936,7 @@ describe("run inspection projection", () => {
 
   it("keeps conditional selection and empty branches local to each repeated occurrence", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "repeated-routes",
       agents: {},
       root: {
@@ -1029,7 +1046,7 @@ describe("run inspection projection", () => {
 
   it("targets the deepest failed or timed-out scope without repeating its failed ancestor", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "scope-root-cause",
       agents: {},
       root: {
@@ -1088,7 +1105,7 @@ describe("run inspection projection", () => {
   it("keeps switch route order undecided and collapsed when condition evaluation fails", () => {
     const task = (id: string) => ({ id, kind: "task" as const, run: { input: {}, target: { kind: "inline" as const, source: "async function task() {}" } } });
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "failed-switch",
       agents: {},
       root: {
@@ -1135,7 +1152,7 @@ describe("run inspection projection", () => {
 
   it("keeps the derived node item key stable when a placeholder materializes and retries", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "stable-node-key",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
@@ -1158,7 +1175,7 @@ describe("run inspection projection", () => {
 
   it("orders only persisted loop rounds and preserves empty rounds", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "persisted-loop-rounds",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "repeat", kind: "loop", state: { kind: "object", fields: {} }, do: { output: { kind: "object", fields: { state: { kind: "object", fields: {} }, stop: { kind: "literal", value: true } } }, nodes: [] } }] },
@@ -1184,7 +1201,7 @@ describe("run inspection projection", () => {
 
   it("selects composite member counts from the matching repeated group instance", () => {
     const ir: WorkflowIR = {
-      irVersion: 5,
+      irVersion: 6,
       name: "repeated-composite",
       agents: {},
       root: {
@@ -1256,7 +1273,7 @@ describe("run inspection projection", () => {
 
 function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_definition", use: "claude", model: "sonnet" }): WorkflowIR {
   return {
-    irVersion: 5,
+    irVersion: 6,
     name: "inspection-composite",
     agents: { reviewer: agent },
     root: {
