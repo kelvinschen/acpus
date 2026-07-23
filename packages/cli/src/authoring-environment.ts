@@ -1,10 +1,10 @@
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { officialAuthoringEnvironment } from "@acpus/loader";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getCliPackageInfo } from "./package-info.js";
-import { existingSkillRootTargets, readAcpusSkillMetadata, type SkillAgent, type SkillScope } from "./skill-installation.js";
+import { bundledAcpusSkillLocation, bundledAcpusSkillPath, readAcpusSkillMetadata } from "./skill-content.js";
+import { existingSkillRootTargets, type SkillAgent, type SkillScope } from "./skill-installation.js";
 
 type HealthStatus = "ok" | "warn" | "fail";
 
@@ -69,8 +69,7 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
         details: { mismatches },
       });
 
-  const bundledPath = fileURLToPath(new URL("../skills/acpus", import.meta.url));
-  const bundled = await bundledSkill(bundledPath, cli.version);
+  const bundled = await bundledSkill(cli.version);
   checks.push({
     area: "skill",
     status: bundled.status === "aligned" ? "ok" : "fail",
@@ -129,7 +128,10 @@ export async function inspectInstalledAcpusSkills(
   })));
 }
 
-async function bundledSkill(path: string, expectedVersion: string): Promise<AuthoringEnvironment["skills"]["bundled"]> {
+async function bundledSkill(expectedVersion: string): Promise<AuthoringEnvironment["skills"]["bundled"]> {
+  const verified = await bundledAcpusSkillPath(expectedVersion);
+  if (verified.isOk()) return { path: verified.value, version: expectedVersion, status: "aligned" };
+  const path = bundledAcpusSkillLocation();
   try {
     const metadata = await readAcpusSkillMetadata(path);
     const status: SkillStatus = metadata.name !== "acpus"

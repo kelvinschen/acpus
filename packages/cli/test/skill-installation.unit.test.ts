@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join, resolve } from "node:path";
-import { parseAcpusSkillMetadata, skillTargets } from "../src/skill-installation.js";
+import { parseAcpusSkillMetadata } from "../src/skill-content.js";
+import { skillTargets } from "../src/skill-installation.js";
 
 describe("Acpus skill targets", () => {
   it("maps every scope and agent to fixed roots without consulting agent-specific home variables", () => {

@@ -63,6 +63,7 @@ npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 ```
 
 在交互式终端中，`acpus skill install` 可以提示选择 scope 和 Agent 目标。脚本中必须同时传入 `--project` 或 `--global`，以及 `--agent universal`、`--agent claude` 或 `--agent universal,claude`。安装会自动创建所选目录，并把 Skill 写入项目或操作系统 home 下的 `.agents/skills/acpus` 和/或 `.claude/skills/acpus`。
+如果你不想要安装 acpus skill 也没有问题，agent 可以通过 `acpus skill read` 获取内置使用指南，在你的 prompt 里加上 "使用 acpus" 即可。
 
 ### 2. 从目标开始
 

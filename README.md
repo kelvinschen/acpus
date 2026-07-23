@@ -62,7 +62,8 @@ acpus skill install
 npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 ```
 
-`acpus skill install` can prompt for scope and Agent targets in an interactive terminal. For scripts, pass `--project` or `--global` together with `--agent universal`, `--agent claude`, or `--agent universal,claude`. Install creates the selected roots and writes the Skill to `.agents/skills/acpus` and/or `.claude/skills/acpus` under the project or operating-system home directory.
+`acpus skill install` can prompt for scope and Agent targets in an interactive terminal. For scripts, pass `--project` or `--global` together with `--agent universal`, `--agent claude`, or `--agent universal,claude`. Install creates the selected roots and writes the Skill to `.agents/skills/acpus` and/or `.claude/skills/acpus` under the project or operating-system home directory. 
+If you don't want to install the acpus skill, it's ok, agent can use `acpus skill read` to get its bundled usage guide without installing it, just add "use acpus" in your prompt.
 
 ### 2. Start with the outcome
 

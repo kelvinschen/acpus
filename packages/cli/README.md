@@ -28,4 +28,5 @@ creates selected skills roots when needed. Interactive terminals prompt for
 missing selections; scripts must pass `--project` or `--global` together with
 `--agent universal`, `--agent claude`, or `--agent universal,claude`.
 `acpus skill uninstall` removes only installed targets that can be identified
-as the Acpus skill.
+as the Acpus skill. For an Agent that has not loaded the Skill,
+If the Acpus Skill is not loaded, use `acpus skill read` to get its bundled usage guide without installing it.

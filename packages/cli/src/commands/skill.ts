@@ -1,5 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { homedir } from "node:os";
+import { posix } from "node:path";
 import { isCancel, multiselect, select } from "@clack/prompts";
 import { Command } from "commander";
 import { skillError, usageError } from "../errors.js";
@@ -7,6 +8,11 @@ import { writeResult, type SkillCommandResult } from "../output.js";
 import { getCliPackageInfo } from "../package-info.js";
 import {
   bundledAcpusSkillPath,
+  readAcpusSkillResource,
+  type SkillResourceRead,
+  type SkillResourceTreeNode,
+} from "../skill-content.js";
+import {
   installAcpusSkill,
   skillAgents,
   skillTargets,
@@ -41,16 +47,32 @@ type SkillOptions = {
 export function createSkillCommand(ctx: SkillCommandContext): Command {
   const command = new Command("skill")
     .exitOverride()
-    .description("Install or uninstall the bundled Acpus agent skill.");
+    .description("Read, install, or uninstall the bundled Acpus agent skill.");
+
+  command.addCommand(new Command("read")
+    .exitOverride()
+    .description("Read a bundled Acpus skill file or list a directory.")
+    .argument("[path]", "canonical skill-root-relative file or directory path")
+    .action(async (resourcePath?: string) => {
+      const rootPath = await resolveBundledSkillRoot();
+      const resource = await readAcpusSkillResource(rootPath, resourcePath);
+      if (resource.isErr()) throw skillError(resource.error.message);
+      ctx.stdout.write(formatSkillResource(resource.value));
+      if (resource.value.kind === "file") {
+        ctx.stdout.write(resource.value.content);
+      } else if (resource.value.entries.length > 0) {
+        ctx.stdout.write(`${resource.value.entries.map(entry => `${entry.kind}\t${entry.path}`).join("\n")}\n`);
+      }
+      ctx.setExitCode(0);
+    }));
 
   command.addCommand(skillLeaf("install")
     .description("Install or update the bundled Acpus skill.")
     .action(async (options: SkillOptions) => {
       const selection = await resolveSelection(options, "install", ctx);
-      const source = await bundledAcpusSkillPath(getCliPackageInfo().version);
-      if (source.isErr()) throw skillError(source.error.message);
+      const source = await resolveBundledSkillRoot();
       const targets = skillTargets(ctx.cwd, homedir(), selection);
-      const installations = await installAcpusSkill(source.value, targets, options.dryRun === true);
+      const installations = await installAcpusSkill(source, targets, options.dryRun === true);
       const ok = installations.every(result => result.status !== "failed");
       ctx.setExitCode(writeResult({
         ok,
@@ -76,6 +98,38 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     }));
 
   return command;
+}
+
+async function resolveBundledSkillRoot(): Promise<string> {
+  const source = await bundledAcpusSkillPath(getCliPackageInfo().version);
+  if (source.isErr()) throw skillError(source.error.message);
+  return source.value;
+}
+
+function formatSkillResource(resource: SkillResourceRead): string {
+  const lines = [
+    "[acpus skill resource]",
+    `path: ${resource.absolutePath}`,
+    `kind: ${resource.kind}`,
+    ...(resource.kind !== "file" || resource.tree === undefined
+      ? []
+      : ["tree (relative to skill root):", ...formatSkillResourceTree(resource.tree)]),
+    "[/acpus skill resource]",
+  ];
+  return `${lines.join("\n")}\n\n`;
+}
+
+function formatSkillResourceTree(tree: readonly SkillResourceTreeNode[]): string[] {
+  const lines: string[] = [];
+  for (const [index, node] of tree.entries()) {
+    const last = index === tree.length - 1;
+    lines.push(`${last ? "└──" : "├──"} ${posix.basename(node.path)}`);
+    for (const [childIndex, child] of node.children.entries()) {
+      const childLast = childIndex === node.children.length - 1;
+      lines.push(`${last ? "    " : "│   "}${childLast ? "└──" : "├──"} ${posix.basename(child.path)}`);
+    }
+  }
+  return lines;
 }
 
 function skillLeaf(name: "install" | "uninstall"): Command {

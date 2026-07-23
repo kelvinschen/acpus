@@ -1,8 +1,7 @@
-import { constants } from "node:fs";
-import { access, cp, lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readlink, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { readAcpusSkillMetadata } from "./skill-content.js";
 
 const ACPUS_SKILL = "acpus";
 
@@ -39,22 +38,12 @@ export type SkillRemoval = {
   error?: string;
 };
 
-export type AcpusSkillMetadata = {
-  name?: string;
-  version?: string;
-};
-
 export type SkillReplaceFailure = {
   type: "skill-replace-failed";
   stage: "stage" | "backup" | "publish" | "restore" | "cleanup";
   message: string;
   recoveryPath: string;
   published: boolean;
-};
-
-export type BundledSkillFailure = {
-  type: "bundled-skill-invalid";
-  message: string;
 };
 
 export function skillTargets(cwd: string, home: string, selection: SkillSelection): SkillTarget[] {
@@ -76,21 +65,6 @@ export async function existingSkillRootTargets(
     if (await isDirectory(candidate.rootPath)) existing.push(candidate);
   }
   return existing;
-}
-
-export function bundledAcpusSkillPath(expectedVersion: string): ResultAsync<string, BundledSkillFailure> {
-  const sourcePath = fileURLToPath(new URL("../skills/acpus", import.meta.url));
-  return ResultAsync.fromPromise((async () => {
-    await access(join(sourcePath, "SKILL.md"), constants.R_OK);
-    const metadata = await readAcpusSkillMetadata(sourcePath);
-    if (metadata.name !== ACPUS_SKILL || metadata.version !== expectedVersion) {
-      throw new Error("bundled skill identity mismatch");
-    }
-    return sourcePath;
-  })(), () => ({
-    type: "bundled-skill-invalid" as const,
-    message: "Bundled Acpus skill is missing or does not match this acpus package version.",
-  }));
 }
 
 export async function installAcpusSkill(
@@ -172,33 +146,6 @@ export async function uninstallAcpusSkill(
     }
   }
   return results;
-}
-
-export async function readAcpusSkillMetadata(path: string): Promise<AcpusSkillMetadata> {
-  return parseAcpusSkillMetadata(await readFile(join(path, "SKILL.md"), "utf8"));
-}
-
-export function parseAcpusSkillMetadata(source: string): AcpusSkillMetadata {
-  const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
-  if (frontmatter === undefined) return {};
-  const lines = frontmatter.split(/\r?\n/);
-  const name = lines.find(line => /^name:\s*/.test(line))?.replace(/^name:\s*/, "").trim();
-  const metadataIndex = lines.findIndex(line => /^metadata:\s*$/.test(line));
-  let version: string | undefined;
-  if (metadataIndex >= 0) {
-    for (const line of lines.slice(metadataIndex + 1)) {
-      if (/^\S/.test(line)) break;
-      const match = line.match(/^\s+acpus-version:\s*([^\s#]+)\s*(?:#.*)?$/);
-      if (match) {
-        version = match[1];
-        break;
-      }
-    }
-  }
-  return {
-    ...(name ? { name } : {}),
-    ...(version ? { version } : {}),
-  };
 }
 
 export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): ResultAsync<void, SkillReplaceFailure> {

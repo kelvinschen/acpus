@@ -1,5 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TextDecoder } from "node:util";
 import { walkNodes, type NodeVisit, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
@@ -24,6 +26,22 @@ describe("skill workflow contracts", () => {
       readFile(skillReferencePath("authoring"), "utf8"),
     ]);
     expect(sources.reduce((bytes, source) => bytes + Buffer.byteLength(source), 0)).toBeLessThanOrEqual(defaultRouteByteBudget);
+  });
+
+  it("does not publish symlinks, special files, or invalid UTF-8 skill resources", async () => {
+    const root = skillFilePath("");
+    const resources = await walkSkillResources(root);
+
+    expect(resources.length).toBeGreaterThan(0);
+    for (const resource of resources) {
+      const stats = await lstat(resource.path);
+      expect(stats.isSymbolicLink(), resource.relativePath).toBe(false);
+      expect(stats.isDirectory() || stats.isFile(), resource.relativePath).toBe(true);
+      if (stats.isFile()) {
+        const content = await readFile(resource.path);
+        expect(() => new TextDecoder("utf-8", { fatal: true }).decode(content)).not.toThrow();
+      }
+    }
   });
 
   it("labels all checked scenario examples and covers every workflow node kind", async () => {
@@ -183,4 +201,20 @@ function uniqueNode(ir: WorkflowIR, id: string): NodeVisit {
   const matches = [...walkNodes(ir.root)].filter(({ node }) => node.id === id);
   if (matches.length !== 1) throw new Error(`Expected exactly one '${id}' node, found ${matches.length}.`);
   return matches[0]!;
+}
+
+async function walkSkillResources(
+  root: string,
+  relativePath = "",
+): Promise<Array<{ path: string; relativePath: string }>> {
+  const entries = await readdir(join(root, relativePath));
+  const resources: Array<{ path: string; relativePath: string }> = [];
+  for (const name of entries.sort()) {
+    const childRelative = relativePath.length === 0 ? name : `${relativePath}/${name}`;
+    const path = join(root, childRelative);
+    const stats = await lstat(path);
+    resources.push({ path, relativePath: childRelative });
+    if (stats.isDirectory()) resources.push(...await walkSkillResources(root, childRelative));
+  }
+  return resources;
 }

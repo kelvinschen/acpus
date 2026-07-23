@@ -64,6 +64,37 @@ describe("CLI program usage contracts", () => {
     expect(stderr.text).toContain("version");
   });
 
+  it("does not omit or move the documented unloaded-Skill guidance below the command list", async () => {
+    const rootStdout = new CaptureStream();
+    const rootStderr = new CaptureStream();
+    expect(await runCli(["--help"], {
+      cwd: process.cwd(),
+      stdout: rootStdout,
+      stderr: rootStderr,
+    })).toBe(0);
+
+    const start = rootStdout.text.indexOf(
+      "If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.",
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(start).toBeLessThan(rootStdout.text.indexOf("Commands:"));
+    expect(rootStderr.text).toBe("");
+  });
+
+  it("does not hide any public skill leaf from skill help", async () => {
+    const skillStdout = new CaptureStream();
+    const skillStderr = new CaptureStream();
+    expect(await runCli(["skill", "--help"], {
+      cwd: process.cwd(),
+      stdout: skillStdout,
+      stderr: skillStderr,
+    })).toBe(0);
+    for (const command of ["read", "install", "uninstall"]) {
+      expect(skillStdout.text).toMatch(new RegExp(`^  ${command}(?: |$)`, "mu"));
+    }
+    expect(skillStderr.text).toBe("");
+  });
+
   it("reports absolute authoring authority without initializing runtime state", async () => {
     await withTestWorkspace("doctor-authoring", async workspace => {
       const previousHome = process.env.HOME;

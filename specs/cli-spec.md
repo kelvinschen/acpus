@@ -25,6 +25,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
 | `doctor` | Read-only runtime and authoring health. |
+| `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
 | `skill install` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
 | `skill uninstall` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
@@ -32,8 +33,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
 - `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs and hooks leaf; doctor; and web.
-- Root, group, version, and workflow visualization surfaces MUST reject `--json` and MUST omit it from help.
+- Root, group, version, workflow visualization, and every skill surface MUST reject `--json` and MUST omit it from help.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
+- Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
@@ -85,7 +87,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST use Runtime read APIs without starting the daemon or creating Runtime or workspace state; this includes inspect, artifacts, catalog reads, hook reads, and Doctor.
+- Read-only commands MUST NOT start the daemon or create Runtime or workspace state; this includes inspect, artifacts, catalog reads, hook reads, Doctor, and skill read.
+- Runtime-backed read-only commands MUST use Runtime read APIs.
 - Artifact listing MUST present Runtime-owned registry records without reading bodies; absent artifacts produce `No artifacts.` in text and an empty array in JSON.
 - Inspect MUST map default, `--all`, `--target`, and `--raw --json` to the corresponding Runtime query modes. Target/all conflict; raw requires JSON and conflicts with target, all, and follow.
 - Inspect interval MUST require follow, default to 1s, and reject values below 250ms.
@@ -103,14 +106,21 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
 - Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with remediation `acpus skill install --<scope> --agent <agent>`, while a simply missing installed copy remains structured `missing` without a warning.
 - Doctor installed-skill records MUST inspect only existing fixed skills roots and identify the target with `agent: "universal" | "claude"`.
-- In an interactive stdin/stdout/stderr TTY, skill commands MUST prompt on stderr only for a missing scope or Agent selection; project and both Agents are initially selected, and cancellation fails as usage before mutation.
-- Outside such a TTY, skill commands MUST require exactly one explicit scope and an explicit `--agent` value before mutation.
+- Skill read MUST resolve resources only from the `acpus` skill bundled in the running CLI package.
+- `skill read` MUST select `SKILL.md` when `path` is omitted and otherwise select the exact directory or regular UTF-8 file named by the skill-root-relative path.
+- Skill read text MUST identify the resource's canonical absolute path and kind before its payload; file payloads preserve the original content, while the default read also includes a two-level resource tree.
+- Directory payloads MUST contain stable, non-recursive `<kind>\t<skill-root-relative-path>` rows for their direct children.
+- Skill resource resolution MUST remain inside the canonical bundled root and reject symbolic links, special files, and path traversal.
+- Skill read MUST NOT prompt.
+- Skill resource failures MUST use phase `skill` and exit 1.
+- In an interactive stdin/stdout/stderr TTY, skill install/uninstall MUST prompt on stderr only for a missing scope or Agent selection; project and both Agents are initially selected, and cancellation fails as usage before mutation.
+- Outside such a TTY, skill install/uninstall MUST require exactly one explicit scope and an explicit `--agent` value before mutation.
 - `--agent` MUST parse a comma-separated list by trimming and deduplicating values, reject empty or unknown values, and process selected values in `universal`, `claude` order.
 - Project skill targets MUST be `<cwd>/.agents/skills/acpus` for `universal` and `<cwd>/.claude/skills/acpus` for `claude`.
 - Global skill targets MUST be `<home>/.agents/skills/acpus` for `universal` and `<home>/.claude/skills/acpus` for `claude`.
 - Skill install MUST recursively create each selected missing skills root immediately before installation; dry-run reports `would-install` without creating it.
 - A selected install root that is a file, an invalid symlink, or cannot be created MUST fail that target without preventing other selected targets from being processed.
-- Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.
+- Skill install/uninstall MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.
 - Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
 - Skill uninstall MUST NOT create skills roots; an absent target reports `missing`, while unrelated content reports `skipped` and makes the command fail.
 - The bundled skill MUST separate compact authoring examples under `workflows/examples/` from complete directly runnable workflow packages under `workflows/library/`.

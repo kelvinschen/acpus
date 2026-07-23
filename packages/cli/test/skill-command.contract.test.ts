@@ -33,6 +33,18 @@ describe("skill CLI contracts", () => {
     osMocks.homedir.mockReset();
   });
 
+  it("does not prompt when a TTY reads either a file or directory", async () => {
+    await withTestWorkspace("skill-content-tty", async workspace => {
+      const file = await runCommand(workspace, ["skill", "read", "references/authoring.md"], true);
+      const directory = await runCommand(workspace, ["skill", "read", "references"], true);
+
+      expect(file.exitCode).toBe(0);
+      expect(directory.exitCode).toBe(0);
+      expect(promptMocks.select).not.toHaveBeenCalled();
+      expect(promptMocks.multiselect).not.toHaveBeenCalled();
+    });
+  });
+
   it("prompts for a complete TTY selection with project and both agents as defaults", async () => {
     await withTestWorkspace("skill-tty-full", async workspace => {
       promptMocks.select.mockResolvedValueOnce("project");

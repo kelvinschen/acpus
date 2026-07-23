@@ -56,7 +56,11 @@ function createProgram(
   const packageInfo = getCliPackageInfo();
   const program = new Command()
     .name("acpus")
-    .description("Acpus TypeScript workflow CLI.")
+    .description([
+      "Acpus TypeScript workflow CLI.",
+      "",
+      "If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.",
+    ].join("\n"))
     .option("-V, --version", "output the version number")
     .enablePositionalOptions()
     .exitOverride()
