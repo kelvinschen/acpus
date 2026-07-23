@@ -9,6 +9,8 @@ Runtime hooks run configured shell commands as side effects when durable runtime
 
 Project and global hook entries are merged by direct union. Both run when both match.
 
+Use [`hooks/examples.json`](../hooks/examples.json) as the bundled example.
+
 ## Shape
 
 A hooks file is an event map. Do not wrap it in a top-level `hooks` field.

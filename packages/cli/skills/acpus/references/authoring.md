@@ -161,16 +161,16 @@ return rounds.output;
 
 ## Choose An Example
 
-Only after applying the rules above, choose the closest example by pattern and node coverage:
+Only after applying the rules above, choose the closest compact teaching example by pattern and node coverage:
 
 | Example | Nodes | Pattern |
 | --- | --- | --- |
-| [`typed-loop-state`](../examples/workflows/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
-| [`adversarial-review`](../examples/workflows/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
-| [`change-approval`](../examples/workflows/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
-| [`issue-triage`](../examples/workflows/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
-| [`multi-aspect-brainstorm`](../examples/workflows/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel perspectives in a bounded synthesis loop. |
-| [`worktree-tournament`](../examples/workflows/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Build parallel worktree candidates and judge them. |
+| [`typed-loop-state`](../workflows/examples/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
+| [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
+| [`change-approval`](../workflows/examples/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
+| [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
+| [`multi-aspect-brainstorm`](../workflows/examples/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel perspectives in a bounded synthesis loop. |
+| [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Build parallel worktree candidates and judge them. |
 
 ## Declaration Lookup
 

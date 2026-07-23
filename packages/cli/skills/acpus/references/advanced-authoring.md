@@ -71,7 +71,7 @@ const worktree = step("create_worktree").task({
 });
 ```
 
-For a checked reusable Task with a stable result type and artifact output, use [`reusable-task-artifact`](../examples/workflows/reusable-task-artifact/workflow.ts).
+For a checked reusable Task with a stable result type and artifact output, use [`reusable-task-artifact`](../workflows/examples/reusable-task-artifact/workflow.ts).
 
 ## Artifacts
 

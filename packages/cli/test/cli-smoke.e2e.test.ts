@@ -4,7 +4,7 @@ import { getRunInspection } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
 import { repoRoot, runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
-import { skillWorkflowPath } from "./support/skill-workflow-examples.js";
+import { skillExampleWorkflowPath } from "./support/skill-workflow-examples.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
@@ -45,7 +45,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
 
   it("checks a representative skill example workflow", async () => {
     await withTestWorkspace("e2e-check-skill-example", async workspace => {
-      const sourceWorkflow = skillWorkflowPath("reusable-task-artifact");
+      const sourceWorkflow = skillExampleWorkflowPath("reusable-task-artifact");
       const targetDir = join(workspace, basename(dirname(sourceWorkflow)));
       await cp(dirname(sourceWorkflow), targetDir, { recursive: true });
       const workflow = join(targetDir, "workflow.ts");

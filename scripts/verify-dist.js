@@ -249,7 +249,7 @@ async function verifyPackedCli(packages) {
       assert.equal(existsSync(authority.typesPath), true);
     }
 
-    const examplesRoot = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "examples", "workflows");
+    const examplesRoot = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "workflows", "examples");
     for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const workflow = join(examplesRoot, entry.name, "workflow.ts");
@@ -383,7 +383,21 @@ async function verifyPackage(packageDirectory, manifest) {
   }
 
   if (name === "acpus") {
-    for (const path of ["skills/acpus/SKILL.md", "dist/commands/skill.js", "dist/commands/skill.d.ts"]) {
+    for (const path of [
+      "skills/acpus/SKILL.md",
+      "skills/acpus/hooks/examples.json",
+      "skills/acpus/workflows/examples/typed-loop-state/workflow.ts",
+      "skills/acpus/workflows/library/deep-research/README.md",
+      "skills/acpus/workflows/library/deep-research/contracts.ts",
+      "skills/acpus/workflows/library/deep-research/tasks/editorial-evidence.ts",
+      "skills/acpus/workflows/library/deep-research/tasks/evidence-ledger.ts",
+      "skills/acpus/workflows/library/deep-research/tasks/report-delivery.ts",
+      "skills/acpus/workflows/library/deep-research/tasks/research-selection.ts",
+      "skills/acpus/workflows/library/deep-research/tasks/verification.ts",
+      "skills/acpus/workflows/library/deep-research/workflow.ts",
+      "dist/commands/skill.js",
+      "dist/commands/skill.d.ts",
+    ]) {
       assert.ok(packed.has(path), `${name}: required package path is not packed: ${path}`);
     }
     for (const { target } of binTargets(manifest.bin)) {

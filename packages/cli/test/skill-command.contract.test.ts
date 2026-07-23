@@ -156,6 +156,10 @@ describe("skill CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout.text).toContain(`installed\tuniversal\t${universal}\ninstalled\tclaude\t${claude}`);
+      expect(await readFile(join(universal, "SKILL.md"), "utf8"))
+        .toContain("`deep-research`");
+      expect(await readFile(join(universal, "workflows", "library", "deep-research", "workflow.ts"), "utf8"))
+        .toContain('name: "deep-research"');
     });
   });
 

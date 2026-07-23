@@ -71,8 +71,20 @@ export const skillWorkflowExamples = [
   },
 ] as const;
 
-export function skillWorkflowPath(directory: string): string {
-  return fileURLToPath(new URL(`../../skills/acpus/examples/workflows/${directory}/workflow.ts`, import.meta.url));
+export const skillWorkflowLibrary = [
+  {
+    name: "deep research",
+    directory: "deep-research",
+    purpose: "Investigate complex questions with verified evidence",
+  },
+] as const;
+
+export function skillExampleWorkflowPath(directory: string): string {
+  return fileURLToPath(new URL(`../../skills/acpus/workflows/examples/${directory}/workflow.ts`, import.meta.url));
+}
+
+export function skillLibraryWorkflowPath(directory: string, relativePath = "workflow.ts"): string {
+  return fileURLToPath(new URL(`../../skills/acpus/workflows/library/${directory}/${relativePath}`, import.meta.url));
 }
 
 export function skillReferencePath(reference: string): string {

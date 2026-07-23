@@ -27,13 +27,13 @@
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",
         "src/daemon-entry.ts!",
-        "skills/acpus/examples/workflows/**/*.ts!",
+        "skills/acpus/workflows/**/*.ts!",
         "test/fixtures/**/*.ts"
       ],
       "project": [
         "src/**/*.ts!",
         "test/**/*.ts",
-        "skills/acpus/examples/workflows/**/*.ts!"
+        "skills/acpus/workflows/**/*.ts!"
       ],
       "vitest": false,
       "ignoreIssues": {
@@ -41,7 +41,7 @@
         "src/commands/daemon.ts": ["unlisted"],
         // These modules are loaded by path and their default exports are the
         // workflow compiler contract, not statically imported symbols.
-        "skills/acpus/examples/workflows/**/workflow.ts": ["exports"],
+        "skills/acpus/workflows/**/workflow.ts": ["exports"],
         "test/fixtures/**/*.workflow.ts": ["exports"]
       }
     },

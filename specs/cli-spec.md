@@ -113,6 +113,12 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Skill commands MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.
 - Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
 - Skill uninstall MUST NOT create skills roots; an absent target reports `missing`, while unrelated content reports `skipped` and makes the command fail.
+- The bundled skill MUST separate compact authoring examples under `workflows/examples/` from complete directly runnable workflow packages under `workflows/library/`.
+- Bundled authoring guidance MUST NOT route authoring requests to workflow-library implementation files.
+- `SKILL.md` MUST expose a compact workflow-library inventory and route a matching request through the selected workflow README before implementation files.
+- The bundled skill MUST treat `/wf:<hint>` and `/workflow:<hint>` as equivalent heuristic requests to look for a likely existing workflow in the library and catalog before authoring.
+- The bundled skill MUST NOT route unmarked requests to catalog inspection by default.
+- Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 
@@ -164,5 +170,5 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
 - Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, hooks, Doctor, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime state.
-- Contract-test bundled lifecycle routing and example disclosure; typecheck and apply native authoring checks to official workflow examples across every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
+- Contract-test bundled lifecycle routing, example disclosure, and workflow-library isolation; typecheck and apply native authoring checks to official examples and library workflows, require examples to cover every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, collisions, and mutation-free failures.
