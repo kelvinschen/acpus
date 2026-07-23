@@ -6,6 +6,10 @@ import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withTestWorkspace } from "./support/workspace.js";
 
+class TtyCaptureStream extends CaptureStream {
+  isTTY = true;
+}
+
 describe("CLI program usage contracts", () => {
   it("prints the package version through conventional version flags", async () => {
     const version = getCliPackageInfo().version;
@@ -88,6 +92,7 @@ describe("CLI program usage contracts", () => {
           expect(isAbsolute(authority.typesPath)).toBe(true);
         }
         await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(join(workspace, "home", ".acpus", ".local", "update-awareness"))).rejects.toMatchObject({ code: "ENOENT" });
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -138,6 +143,66 @@ describe("CLI program usage contracts", () => {
         else process.env.HOME = previousHome;
         if (previousUserProfile === undefined) delete process.env.USERPROFILE;
         else process.env.USERPROFILE = previousUserProfile;
+      }
+    });
+  });
+
+  it("prints only a cached CLI update after an interactive Doctor report", async () => {
+    await withTestWorkspace("doctor-update-awareness", async workspace => {
+      const previousHome = process.env.HOME;
+      const previousUserProfile = process.env.USERPROFILE;
+      const previousNodeEnv = process.env.NODE_ENV;
+      const previousCi = process.env.CI;
+      const previousLifecycle = process.env.npm_lifecycle_event;
+      const previousNotifier = process.env.NO_UPDATE_NOTIFIER;
+      const previousNoColor = process.env.NO_COLOR;
+      const home = join(workspace, "home");
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      process.env.NODE_ENV = "development";
+      delete process.env.CI;
+      delete process.env.npm_lifecycle_event;
+      delete process.env.NO_UPDATE_NOTIFIER;
+      process.env.NO_COLOR = "1";
+      try {
+        const cache = join(home, ".acpus", ".local", "update-awareness");
+        const skill = join(workspace, ".agents", "skills", "acpus");
+        await mkdir(cache, { recursive: true });
+        await mkdir(skill, { recursive: true });
+        await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
+        await writeFile(join(cache, "available.json"), JSON.stringify({
+          checkedAt: "2026-07-23T00:00:00.000Z",
+          version: "99.0.0",
+        }));
+        await writeFile(join(skill, "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
+
+        const stdout = new TtyCaptureStream();
+        const stderr = new TtyCaptureStream();
+        const exitCode = await runCli(["doctor"], { cwd: workspace, stdout, stderr });
+
+        expect(exitCode).toBe(0);
+        expect(stdout.text).toContain("Doctor checks passed.");
+        expect(stdout.text).toContain("Installed universal Acpus skill is stale; run 'acpus skill install --project --agent universal'.");
+        expect(stderr.text).toBe([
+          `Update available: acpus ${getCliPackageInfo().version} → 99.0.0`,
+          "Run: npm install -g acpus@latest",
+          "",
+        ].join("\n"));
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = previousUserProfile;
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        if (previousCi === undefined) delete process.env.CI;
+        else process.env.CI = previousCi;
+        if (previousLifecycle === undefined) delete process.env.npm_lifecycle_event;
+        else process.env.npm_lifecycle_event = previousLifecycle;
+        if (previousNotifier === undefined) delete process.env.NO_UPDATE_NOTIFIER;
+        else process.env.NO_UPDATE_NOTIFIER = previousNotifier;
+        if (previousNoColor === undefined) delete process.env.NO_COLOR;
+        else process.env.NO_COLOR = previousNoColor;
       }
     });
   });

@@ -6,7 +6,7 @@ Researches a question across public sources, verifies claims, preserves conflict
 
 - `question` is required.
 - `context` adds optional constraints, background, time ranges, or source preferences.
-- `depth` is `quick`, `standard`, or `deep`; the default is `standard`.
+- `depth` is `quick`, `standard`, or `deep`; the default is `standard`. **use deep only if user explicitly request**
 - `reportLanguage` is `auto`, `zh-CN`, or `en`; the default is `auto`.
 - `maxAgentConcurrency` controls local fanout burst size; the default is `12`.
 - `reportFormat` is `none`, `md`, or `html`; the default is `html`.

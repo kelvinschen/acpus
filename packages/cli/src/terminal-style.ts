@@ -5,6 +5,6 @@ export function supportsColor(stream: Writable): boolean {
     && process.env.NO_COLOR === undefined;
 }
 
-export function ansi(text: string, code: number, enabled: boolean): string {
+export function ansi(text: string, code: number | string, enabled: boolean): string {
   return enabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 }

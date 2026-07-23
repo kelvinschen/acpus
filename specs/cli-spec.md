@@ -85,7 +85,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST use Runtime read APIs without starting the daemon or creating state; this includes inspect, artifacts, catalog reads, hook reads, and Doctor.
+- Read-only commands MUST use Runtime read APIs without starting the daemon or creating Runtime or workspace state; this includes inspect, artifacts, catalog reads, hook reads, and Doctor.
 - Artifact listing MUST present Runtime-owned registry records without reading bodies; absent artifacts produce `No artifacts.` in text and an empty array in JSON.
 - Inspect MUST map default, `--all`, `--target`, and `--raw --json` to the corresponding Runtime query modes. Target/all conflict; raw requires JSON and conflicts with target, all, and follow.
 - Inspect interval MUST require follow, default to 1s, and reject values below 250ms.
@@ -121,6 +121,18 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
+
+### Update Awareness
+
+- An eligible update-awareness invocation MUST be a command action with TTY stdout and stderr, no `--json`, `--help`, or `-h` argument, and none of `CI`, `NODE_ENV=test`, `npm_lifecycle_event`, or `NO_UPDATE_NOTIFIER` set.
+- An ineligible invocation MUST NOT make an update-awareness network request or create update-awareness cache state.
+- Update-awareness persistence MUST be confined to `$HOME/.acpus/.local/update-awareness`; it MUST NOT create workspace `.acpus` state or modify a workspace.
+- An eligible invocation MAY launch a detached, unrefed update worker before the command action; the worker MUST attempt the public npm `https://registry.npmjs.org/acpus/latest` endpoint at most once per rolling 24-hour period and MUST use a 10-second request deadline.
+- The worker MUST retain a cached release only when it is a non-deprecated stable SemVer version newer than the running CLI and its declared Node engine supports the running Node version.
+- After a successful eligible command's ordinary output, the CLI MUST write an available-release reminder only to stderr at most once for each cached daily result; network and cache failures MUST NOT change the command output or exit code.
+- After a successful eligible non-Doctor command, the CLI MUST inspect existing fixed Skill roots with the same status rules as Doctor and MAY remind users once per day to refresh non-aligned, non-missing installed Skills with `acpus skill install`.
+- Update-awareness text MUST use ANSI emphasis only when stderr is a TTY and `NO_COLOR` is unset.
+- An eligible Doctor invocation MUST use only the available-release portion of update awareness; it MUST NOT perform a second installed-Skill inspection or emit the generic Skill-refresh reminder because Doctor already reports target-specific Skill remediation.
 
 ### Output And Exit Codes
 
@@ -172,3 +184,4 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Prove that read-only commands do not start the daemon or create runtime state.
 - Contract-test bundled lifecycle routing, example disclosure, and workflow-library isolation; typecheck and apply native authoring checks to official examples and library workflows, require examples to cover every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, collisions, and mutation-free failures.
+- Cover update-awareness eligibility, daily worker caching, SemVer/Node-engine filtering, the interactive Skill-refresh reminder, and the Doctor available-release reminder without using a network service.

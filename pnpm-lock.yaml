@@ -78,6 +78,9 @@ importers:
       neverthrow:
         specifier: ^8.2.0
         version: 8.2.0
+      semver:
+        specifier: ^7.8.4
+        version: 7.8.4
       tar:
         specifier: ^7.5.20
         version: 7.5.20
@@ -85,6 +88,9 @@ importers:
       '@types/node':
         specifier: ^22.20.1
         version: 22.20.1
+      '@types/semver':
+        specifier: ^7.7.1
+        version: 7.7.1
       tsx:
         specifier: ^4.23.0
         version: 4.23.0
@@ -1459,6 +1465,9 @@ packages:
 
   '@types/react@19.2.17':
     resolution: {integrity: sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==}
+
+  '@types/semver@7.7.1':
+    resolution: {integrity: sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA==}
 
   '@types/unist@2.0.11':
     resolution: {integrity: sha512-CmBKiL6NNo/OqgmMn95Fk9Whlp2mtvIv+KNpQKN2F4SjvrEesubTRWGYSg+BnWZOnlCaSTU1sMpsBOzgbYhnsA==}
@@ -3915,6 +3924,8 @@ snapshots:
   '@types/react@19.2.17':
     dependencies:
       csstype: 3.2.3
+
+  '@types/semver@7.7.1': {}
 
   '@types/unist@2.0.11': {}
 

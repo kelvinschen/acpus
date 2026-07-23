@@ -10,6 +10,7 @@ import { createWorkflowCommand } from "./commands/workflow.js";
 import { CliError, usageError } from "./errors.js";
 import { writeResult } from "./output.js";
 import { getCliPackageInfo } from "./package-info.js";
+import { createUpdateAwareness } from "./update-awareness.js";
 
 export type CliIo = {
   cwd: string;
@@ -20,12 +21,14 @@ export type CliIo = {
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
+  const awareness = createUpdateAwareness({ argv, ...io });
   const program = createProgram(io, code => {
     exitCode = code;
-  });
+  }, command => awareness.start(command));
 
   try {
     await program.parseAsync(argv, { from: "user" });
+    await awareness.finish(exitCode);
     return exitCode;
   } catch (error) {
     const format = selectedOutputFormat(program);
@@ -44,7 +47,11 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   }
 }
 
-function createProgram(io: CliIo, setExitCode: (code: number) => void): Command {
+function createProgram(
+  io: CliIo,
+  setExitCode: (code: number) => void,
+  startUpdateAwareness: (command: Command) => void,
+): Command {
   const stdin = io.stdin ?? process.stdin;
   const packageInfo = getCliPackageInfo();
   const program = new Command()
@@ -63,6 +70,9 @@ function createProgram(io: CliIo, setExitCode: (code: number) => void): Command 
     if (command.opts<{ version?: boolean }>().version === true) {
       throw usageError("--version cannot be combined with a command.");
     }
+  });
+  program.hook("preAction", (_program, command) => {
+    startUpdateAwareness(command);
   });
 
   program.addCommand(createWorkflowCommand({

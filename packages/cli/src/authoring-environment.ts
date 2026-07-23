@@ -18,6 +18,14 @@ export type AuthoringHealthCheck = {
 type SkillStatus = "aligned" | "stale" | "unversioned" | "invalid";
 type InstalledSkillStatus = "aligned" | "stale" | "unversioned" | "missing" | "conflict" | "unreadable";
 
+export type InstalledAcpusSkill = {
+  scope: SkillScope;
+  agent: SkillAgent;
+  path: string;
+  version?: string;
+  status: InstalledSkillStatus;
+};
+
 export type AuthoringEnvironment = {
   cli: {
     version: string;
@@ -31,14 +39,7 @@ export type AuthoringEnvironment = {
       version?: string;
       status: SkillStatus;
     };
-    installed: Array<{
-      scope: SkillScope;
-      agent: SkillAgent;
-      path: string;
-      version?: string;
-      status: InstalledSkillStatus;
-      remediation?: string;
-    }>;
+    installed: Array<InstalledAcpusSkill & { remediation?: string }>;
   };
 };
 
@@ -79,37 +80,53 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
     details: { path: bundled.path, status: bundled.status, ...(bundled.version ? { version: bundled.version } : {}) },
   });
 
-  const targets = await existingSkillRootTargets(cwd, homedir(), ["project", "global"]);
-  const installed = await Promise.all(targets.map(async target => {
-    const inspected = await installedSkill(target.targetPath, cli.version);
-    const remediation = `acpus skill install --${target.scope} --agent ${target.agent}`;
-    const needsRepair = inspected.status !== "aligned" && inspected.status !== "missing";
+  const installed = await inspectInstalledAcpusSkills(cwd, homedir(), cli.version);
+  const doctorInstalled = installed.map(installedSkill => {
+    const remediation = `acpus skill install --${installedSkill.scope} --agent ${installedSkill.agent}`;
+    const needsRepair = installedSkill.status !== "aligned" && installedSkill.status !== "missing";
     if (needsRepair) {
       checks.push({
         area: "skill",
         status: "warn",
-        message: `Installed ${target.agent} Acpus skill is ${inspected.status}; run '${remediation}'.`,
-        details: { path: target.targetPath, scope: target.scope, agent: target.agent, status: inspected.status, remediation },
+        message: `Installed ${installedSkill.agent} Acpus skill is ${installedSkill.status}; run '${remediation}'.`,
+        details: {
+          path: installedSkill.path,
+          scope: installedSkill.scope,
+          agent: installedSkill.agent,
+          status: installedSkill.status,
+          remediation,
+        },
       });
     }
     return {
-      scope: target.scope,
-      agent: target.agent,
-      path: target.targetPath,
-      ...inspected,
+      ...installedSkill,
       ...(needsRepair ? { remediation } : {}),
     };
-  }));
+  });
 
   return {
     ok: checks.every(check => check.status !== "fail"),
     environment: {
       cli: { version: cli.version, entry: cli.entry, packageRoot: cli.packageRoot },
       imports: authority.imports,
-      skills: { bundled, installed },
+      skills: { bundled, installed: doctorInstalled },
     },
     checks,
   };
+}
+
+export async function inspectInstalledAcpusSkills(
+  cwd: string,
+  home: string,
+  expectedVersion: string,
+): Promise<InstalledAcpusSkill[]> {
+  const targets = await existingSkillRootTargets(cwd, home, ["project", "global"]);
+  return Promise.all(targets.map(async target => ({
+    scope: target.scope,
+    agent: target.agent,
+    path: target.targetPath,
+    ...(await installedSkill(target.targetPath, expectedVersion)),
+  })));
 }
 
 async function bundledSkill(path: string, expectedVersion: string): Promise<AuthoringEnvironment["skills"]["bundled"]> {

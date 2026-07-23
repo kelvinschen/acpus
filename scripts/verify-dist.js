@@ -397,6 +397,8 @@ async function verifyPackage(packageDirectory, manifest) {
       "skills/acpus/workflows/library/deep-research/workflow.ts",
       "dist/commands/skill.js",
       "dist/commands/skill.d.ts",
+      "dist/update-awareness-worker.js",
+      "dist/update-awareness-worker.d.ts",
     ]) {
       assert.ok(packed.has(path), `${name}: required package path is not packed: ${path}`);
     }

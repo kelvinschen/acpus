@@ -27,6 +27,7 @@
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",
         "src/daemon-entry.ts!",
+        "src/update-awareness-worker.ts!",
         "skills/acpus/workflows/**/*.ts!",
         "test/fixtures/**/*.ts"
       ],
