@@ -1,5 +1,11 @@
 # acpus
 
+## 0.7.2
+
+### Patch Changes
+
+- a69b4db: Add the bundled deep-research library workflow with configurable depth, language, and optional report rendering, separate reusable workflows from teaching examples, and recognize `/wf:` or `/workflow:` hints for library and catalog reuse.
+
 ## 0.7.1
 
 ### Patch Changes
