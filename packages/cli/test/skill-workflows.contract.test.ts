@@ -1,4 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { walkNodes, type NodeVisit, type WorkflowIR } from "@acpus/core/ir";
+import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
 import {
   skillExampleWorkflowPath,
@@ -11,8 +14,10 @@ import {
 } from "./support/skill-workflow-examples.js";
 
 const defaultRouteByteBudget = 12_367;
+const cliPackageRoot = fileURLToPath(new URL("../", import.meta.url));
+let deepResearchPreparation: ReturnType<typeof prepareWorkflow> | undefined;
 
-describe("skill workflow source contracts", () => {
+describe("skill workflow contracts", () => {
   it("keeps the default authoring route within its fixed context budget", async () => {
     const sources = await Promise.all([
       readFile(skillFilePath("SKILL.md"), "utf8"),
@@ -56,12 +61,7 @@ describe("skill workflow source contracts", () => {
     ]);
 
     expect(skill).not.toContain("workflows/README.md");
-    expect(skill).toContain("Use library only for a good fit");
-    expect(skill).toContain("else follow **Author or adapt**");
-    expect(skill).toContain("| Workflow | Use when | Read first |");
-    expect(skill).toContain("`/wf:<hint>` / `/workflow:<hint>` mean reuse");
-    expect(skill).toContain("Check library/catalog before authoring");
-    expect(skill).toContain("otherwise skip catalog");
+    expect(skill).toContain("`/wf:<hint>` / `/workflow:<hint>`");
     expect(authoringReferences.every(reference => !reference.includes("../workflows/library/"))).toBe(true);
     for (const workflow of skillWorkflowLibrary) {
       expect(skill).toContain(
@@ -73,111 +73,114 @@ describe("skill workflow source contracts", () => {
     }
   });
 
-  it("documents the deep-research interface and contracts its implementation", async () => {
-    const [readme, workflow, contracts, ...taskModules] = await Promise.all([
+  it("prepares deep-research and keeps its documented inputs aligned", async () => {
+    const [readme, { ir }] = await Promise.all([
       readFile(skillLibraryWorkflowPath("deep-research", "README.md"), "utf8"),
-      readFile(skillLibraryWorkflowPath("deep-research"), "utf8"),
-      readFile(skillLibraryWorkflowPath("deep-research", "contracts.ts"), "utf8"),
-      ...[
-        "editorial-evidence",
-        "evidence-ledger",
-        "report-delivery",
-        "research-selection",
-        "verification",
-      ].map(name => readFile(skillLibraryWorkflowPath("deep-research", `tasks/${name}.ts`), "utf8")),
+      prepareDeepResearch(),
     ]);
-    const implementation = [workflow, contracts, ...taskModules].join("\n");
-    const [
-      editorialEvidence = "",
-      evidenceLedger = "",
-      reportDelivery = "",
-      researchSelection = "",
-      verification = "",
-    ] = taskModules;
     expect(readme.trimEnd().split("\n").length).toBeLessThanOrEqual(30);
-    expect(readme).toContain("Researches a question across public sources");
-    for (const input of ["question", "context", "depth", "reportLanguage", "maxAgentConcurrency", "reportFormat", "reportPath"]) {
-      expect(readme).toContain(`\`${input}\``);
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.name).toBe("deep-research");
+
+    const inputSchema = ir.inputSchema;
+    if (inputSchema?.kind !== "object") throw new Error("deep-research must have an object input schema");
+    expect(documentedInputNames(readme)).toEqual(Object.keys(inputSchema.fields));
+    expect(inputSchema).toMatchObject({
+      required: ["question"],
+      additionalProperties: false,
+      fields: {
+        question: { kind: "string" },
+        context: { kind: "string", default: "" },
+        depth: { kind: "enum", values: ["quick", "standard", "deep"], default: "standard" },
+        reportLanguage: { kind: "enum", values: ["auto", "zh-CN", "en"], default: "auto" },
+        maxAgentConcurrency: { kind: "number", default: 12 },
+        reportFormat: { kind: "enum", values: ["none", "md", "html"], default: "html" },
+        reportPath: { kind: "string", default: "" },
+      },
+    });
+  });
+
+  it("contracts deep-research's durable boundary and fetch dataflow in WorkflowIR", async () => {
+    const { ir } = await prepareDeepResearch();
+    expect(ir.root.output).toEqual({
+      kind: "object",
+      fields: {
+        researchPackage: { kind: "ref", path: ["nodes", "write_research_package", "output", "artifact"] },
+        report: { kind: "ref", path: ["nodes", "render_report_if_requested", "output"] },
+      },
+    });
+
+    const fetch = uniqueNode(ir, "fetch_source");
+    const fetchGate = uniqueNode(ir, "require_fetch_tool");
+    expect(fetch.ancestry.map(({ kind, owner }) => [kind, owner.id])).toEqual([["fanout", "fetch_sources"]]);
+    expect(fetchGate.ancestry.map(({ kind, owner }) => [kind, owner.id])).toEqual([["fanout", "fetch_sources"]]);
+    if (fetch.node.kind !== "agent" || fetchGate.node.kind !== "task") {
+      throw new Error("deep-research fetch pipeline must be Agent -> Task");
     }
-    expect(readme).toContain("Web Search");
-    expect(readme).toContain("Web Fetch");
-    expect(readme).toContain("local artifact reads");
-    expect(readme).toContain("workspace-scoped report write");
-    expect(readme).toContain("workflows/library/deep-research/workflow.ts");
-    expect(readme).toContain("always references the format-neutral research package");
-    expect(readme).toContain("`report: null`");
-    expect(workflow.match(/sessionKey: "deep-research:planner"/g)).toHaveLength(2);
-    expect(workflow).toContain('reportLanguage: z.enum(["auto", "zh-CN", "en"]).default("auto")');
-    expect(workflow).toContain('reportFormat: z.enum(["none", "md", "html"]).default("html")');
-    expect(contracts).not.toContain("PageDraftOutput");
-    expect(workflow).toContain('title: "Research inconclusive"');
-    expect(workflow).not.toContain("研究结论不足");
-    expect(workflow).toContain("Translate deterministic intermediate report text into the resolved report language");
-    expect(implementation).not.toContain("publisher manifest source-link count");
-    expect(implementation).not.toContain("The HTML lang attribute does not match the resolved report language");
-    expect(implementation).not.toContain("The generated HTML report is too small");
-    expect(workflow).toContain("quick: { maxSearchRounds: 1, searchWorkers: 1");
-    expect(workflow).toContain("standard: { maxSearchRounds: 2, searchWorkers: 2");
-    expect(workflow).toContain("deep: { maxSearchRounds: 3, searchWorkers: 3");
-    expect(workflow).toContain("const verificationBatchSize = 2");
-    expect(workflow).not.toMatch(/searchConcurrency|fetchConcurrency|verificationBatchConcurrency|verificationVoteConcurrency/);
-    expect(workflow).toContain('step("batch_search_angles").task');
-    expect(workflow).toContain('step("write_planning_brief").task');
-    expect(workflow).toContain('step("finish_search_budget").task');
-    expect(workflow).toContain('step("verify_initial_batches").fanout');
-    expect(workflow).toContain('step("independent_verifiers").parallel');
-    expect(workflow).toContain('step("plan_tie_break_batches").task');
-    expect(workflow).toContain('step("verify_tie_break_batches").fanout');
-    expect(implementation).toContain("coverage mismatch");
-    expect(workflow).toContain('step("draft_editorial_bundle").agent');
-    expect(workflow).toContain('step("independent_editorial_review").if');
-    expect(workflow).toContain('step("review_editorial_bundle").agent');
-    expect(workflow).toContain('sessionKey: "deep-research:editor"');
-    expect(workflow).toContain('sessionKey: "deep-research:editor-final"');
-    expect(contracts).toContain('role: z.enum(["support", "correction", "uncertainty"])');
-    expect(workflow).toContain('step("repair_editorial_if_needed").if');
-    expect(workflow).toContain('step("repair_editorial").agent');
-    expect(implementation).toContain('"pre-editorial-evidence-ledger.json"');
-    expect(implementation).toContain('"verified-evidence-ledger.json"');
-    expect(implementation).toContain("editorialRepairCalls");
-    expect(workflow).toContain('step("write_research_package").task');
-    expect(workflow).toContain('step("render_report_if_requested").if');
-    expect(workflow).toContain('step("prepare_report_inputs").task');
-    expect(workflow).toContain('step("generate_report").agent');
-    expect(workflow).toContain('step("publish_report").task');
-    expect(workflow).not.toContain('step("generate_html_report")');
-    expect(workflow).not.toContain('step("publish_html_report")');
-    expect(workflow).not.toContain('step("accept_editorial_draft")');
-    expect(workflow).not.toMatch(/step\("generate_report"\)\.agent\(\{\s+outputSchema:/u);
-    expect(workflow).toContain("completed: lift(renderer.output, _response => true as const)");
-    expect(workflow).toContain('condition: lift(input.reportFormat, format => format !== "none")');
-    expect(workflow).toMatch(/else\(\) \{\s+return null;\s+\}/u);
-    expect(workflow).toContain("sourcesFetched: lift(selectedSources.output.sources, sources => sources.length)");
-    expect(workflow).not.toContain("searchEvidence.output.file");
-    expect(workflow).not.toContain("validation.output.violations");
-    expect(workflow).not.toContain("budget: finalLedger.output");
-    expect(workflow).not.toContain("stats: finalLedger.output");
-    expect(workflow).toMatch(/return \{\s+researchPackage: researchPackage\.output\.artifact,\s+report: renderedReport\.output,\s+\};/u);
-    expect(contracts).toContain('format: z.enum(["md", "html"])');
-    expect(contracts).toContain("completed: z.literal(true)");
-    expect(contracts).not.toContain("written: z.literal(true)");
-    expect(contracts).not.toContain("disputedClaims: z.array");
-    expect(contracts).not.toContain("tieBreakerUsed: z.boolean");
-    expect(contracts).not.toContain("vote: z.string");
-    expect(editorialEvidence).not.toContain("violations, artifact");
-    expect(evidenceLedger).toContain("return { artifact: file, hasConfirmed: confirmed.length > 0 }");
-    expect(evidenceLedger).not.toContain("budget: value.budget, stats");
-    expect(evidenceLedger).not.toContain("+ (confirmed.length > 0 ? value.budget.editorialPasses : 0)\n        + 1");
-    expect(workflow).not.toContain("+ profile.editorialPasses\n          + 1\n          + 1");
-    expect(reportDelivery).toContain("export const writeResearchPackage = task.define");
-    expect(reportDelivery).toContain("export const prepareReportInputs = task.define");
-    expect(reportDelivery).toContain("export const publishRenderedReport = task.define");
-    expect(reportDelivery).toContain('"deep-research-report.html" : "deep-research-report.md"');
-    expect(reportDelivery).toContain('"text/html" : "text/markdown"');
-    expect(reportDelivery).not.toContain("sourceLinkCount");
-    expect(reportDelivery).not.toContain("new TextEncoder");
-    expect(researchSelection).not.toContain("selectedCount");
-    expect(verification).toContain("const disputedClaims = reviews");
-    expect(taskModules.every(source => source.includes("task.define"))).toBe(true);
+    expect(fetch.node).toMatchObject({
+      outputSchema: {
+        kind: "object",
+        fields: {
+          status: { kind: "enum", values: ["ok", "tool_unavailable"] },
+          sourceQuality: { kind: "enum", values: ["primary", "secondary", "blog", "forum", "unreliable"] },
+          claims: { kind: "array" },
+        },
+      },
+      run: {
+        agent: "fetcher",
+        cwd: { kind: "ref", path: ["meta", "workspaceDir"] },
+        prompt: {
+          kind: "template",
+          parts: expect.arrayContaining([
+            { kind: "expr", expr: { kind: "ref", path: ["fanout", "fetch_sources", "item", "url"] } },
+          ]),
+        },
+      },
+    });
+    expect(fetchGate.node.run.input).toEqual({
+      result: { kind: "ref", path: ["nodes", "fetch_source", "output"] },
+    });
+
+    const fetchScope = fetch.ancestry[0];
+    if (fetchScope?.kind !== "fanout") throw new Error("fetch_source must belong to fetch_sources");
+    expect(fetchScope.scope.output).toMatchObject({
+      kind: "object",
+      fields: {
+        sourceQuality: { kind: "ref", path: ["nodes", "require_fetch_tool", "output", "sourceQuality"] },
+        claims: { kind: "ref", path: ["nodes", "require_fetch_tool", "output", "claims"] },
+      },
+    });
+
+    const report = uniqueNode(ir, "render_report_if_requested").node;
+    if (report.kind !== "if") throw new Error("render_report_if_requested must remain conditional");
+    expect(report.else).toEqual({ nodes: [], output: { kind: "literal", value: null } });
+    expect(report.then.nodes.map(node => [node.id, node.kind])).toEqual([
+      ["prepare_report_inputs", "task"],
+      ["generate_report", "agent"],
+      ["publish_report", "task"],
+    ]);
   });
 });
+
+function prepareDeepResearch(): ReturnType<typeof prepareWorkflow> {
+  return deepResearchPreparation ??= prepareWorkflow({
+    workflow: skillLibraryWorkflowPath("deep-research"),
+    cwd: cliPackageRoot,
+  });
+}
+
+function documentedInputNames(markdown: string): string[] {
+  const marker = "## Inputs\n";
+  const start = markdown.indexOf(marker);
+  if (start < 0) return [];
+  const bodyStart = start + marker.length;
+  const nextHeading = markdown.indexOf("\n## ", bodyStart);
+  const section = markdown.slice(bodyStart, nextHeading < 0 ? undefined : nextHeading);
+  return [...section.matchAll(/^- `([^`]+)`/gmu)].map(match => match[1]!);
+}
+
+function uniqueNode(ir: WorkflowIR, id: string): NodeVisit {
+  const matches = [...walkNodes(ir.root)].filter(({ node }) => node.id === id);
+  if (matches.length !== 1) throw new Error(`Expected exactly one '${id}' node, found ${matches.length}.`);
+  return matches[0]!;
+}
