@@ -1,5 +1,11 @@
 # acpus
 
+## 0.7.3
+
+### Patch Changes
+
+- 4275f6e: Add passive daily npm update awareness and installed Skill refresh reminders for interactive CLI use, including available-release reminders after successful interactive Doctor reports.
+
 ## 0.7.2
 
 ### Patch Changes
