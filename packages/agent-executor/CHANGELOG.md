@@ -1,5 +1,11 @@
 # @acpus/agent-executor
 
+## 0.2.1
+
+### Patch Changes
+
+- 1318af2: Update the bundled acpx dependency to 0.12.1.
+
 ## 0.2.0
 
 ### Minor Changes

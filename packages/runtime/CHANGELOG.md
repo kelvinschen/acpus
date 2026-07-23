@@ -1,5 +1,12 @@
 # @acpus/runtime
 
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [1318af2]
+  - @acpus/agent-executor@0.2.1
+
 ## 0.11.0
 
 ### Minor Changes
