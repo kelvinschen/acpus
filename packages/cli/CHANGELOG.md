@@ -1,5 +1,16 @@
 # acpus
 
+## 0.8.0
+
+### Minor Changes
+
+- 1b50e21: Add a text-only `acpus skill read` command that progressively reads files or lists directories from the version-matched bundled Skill without installing it.
+
+### Patch Changes
+
+- @acpus/runtime@0.11.1
+- @acpus/web@0.1.5
+
 ## 0.7.4
 
 ### Patch Changes
