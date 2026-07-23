@@ -22,7 +22,7 @@ const expectedPnpmWorkspace = `packages:
 allowBuilds:
   esbuild: true
 blockExoticSubdeps: true
-minimumReleaseAge: 1440
+minimumReleaseAge: 0
 strictDepBuilds: true
 trustLockfile: false
 `;

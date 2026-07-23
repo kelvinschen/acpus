@@ -11,7 +11,8 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - The workspace MUST pin `pnpm@11.15.1`, and GitHub Actions MUST derive that version from the root `packageManager` field rather than duplicate it in workflow inputs.
 - Pull request, main-branch, and manually dispatched CI MUST run on Node.js `22.18.0` and the latest Node.js 24 release.
 - Dependency lifecycle scripts MUST fail installation unless explicitly approved; `esbuild` MUST be the sole approved dependency build.
-- Dependency resolution MUST block exotic subdependencies and versions published less than 1,440 minutes ago.
+- Dependency resolution MUST block exotic subdependencies.
+- Dependency resolution MUST NOT enforce a minimum package release age.
 - Frozen installs MUST revalidate the committed lockfile against the active supply-chain policies rather than trust it without verification.
 - The stable publish job MUST enable npm provenance through `PNPM_CONFIG_PROVENANCE` and MUST reject a mismatched pnpm version before publishing.
 
