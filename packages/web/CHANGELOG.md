@@ -1,5 +1,15 @@
 # @acpus/web
 
+## 0.1.4
+
+### Patch Changes
+
+- c809bff: Add static Agent ACP config profiles, including model and adapter-specific session options, across authoring, IR, execution, and Agent configuration guidance.
+- Updated dependencies [c809bff]
+  - @acpus/core@0.9.0
+  - @acpus/runtime@0.11.0
+  - @acpus/workflow-compiler@0.2.0
+
 ## 0.1.3
 
 ### Patch Changes
