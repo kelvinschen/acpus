@@ -192,6 +192,7 @@ export const groundEditorialCitations = task.define({
       language: value.reportLanguage,
       title: value.narrative.title,
       deck: value.narrative.deck,
+      throughline: value.narrative.throughline,
       executiveSummary: value.narrative.executiveSummary,
       findings: narrativeItems.filter(item => item.kind === "finding"),
       corrections: narrativeItems.filter(item => item.kind === "correction"),

@@ -161,6 +161,7 @@ export const EvidenceRef = z.object({
 const NarrativeOutput = z.object({
   title: z.string(),
   deck: z.string(),
+  throughline: z.string(),
   executiveSummary: z.string(),
   findings: z.array(z.object({
     kind: z.enum(["finding", "correction"]),
