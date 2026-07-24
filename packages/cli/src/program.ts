@@ -21,7 +21,7 @@ export type CliIo = {
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
-  const awareness = createUpdateAwareness({ argv, ...io });
+  const awareness = createUpdateAwareness({ argv, stdout: io.stdout, stderr: io.stderr });
   const program = createProgram(io, code => {
     exitCode = code;
   }, command => awareness.start(command));

@@ -178,7 +178,7 @@ describe("CLI program usage contracts", () => {
     });
   });
 
-  it("prints only a cached CLI update after an interactive Doctor report", async () => {
+  it("prints cached CLI update actions after an interactive Doctor report without an installed Skill", async () => {
     await withTestWorkspace("doctor-update-awareness", async workspace => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
@@ -197,15 +197,12 @@ describe("CLI program usage contracts", () => {
       process.env.NO_COLOR = "1";
       try {
         const cache = join(home, ".acpus", ".local", "update-awareness");
-        const skill = join(workspace, ".agents", "skills", "acpus");
         await mkdir(cache, { recursive: true });
-        await mkdir(skill, { recursive: true });
         await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
         await writeFile(join(cache, "available.json"), JSON.stringify({
           checkedAt: "2026-07-23T00:00:00.000Z",
           version: "99.0.0",
         }));
-        await writeFile(join(skill, "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
 
         const stdout = new TtyCaptureStream();
         const stderr = new TtyCaptureStream();
@@ -213,10 +210,10 @@ describe("CLI program usage contracts", () => {
 
         expect(exitCode).toBe(0);
         expect(stdout.text).toContain("Doctor checks passed.");
-        expect(stdout.text).toContain("Installed universal Acpus skill is stale; run 'acpus skill install --project --agent universal'.");
         expect(stderr.text).toBe([
           `Update available: acpus ${getCliPackageInfo().version} → 99.0.0`,
           "Run: npm install -g acpus@latest",
+          "Refresh skill: acpus skill install",
           "",
         ].join("\n"));
       } finally {

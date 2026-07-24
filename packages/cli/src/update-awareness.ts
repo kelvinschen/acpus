@@ -6,13 +6,21 @@ import { dirname, extname, join } from "node:path";
 import type { Writable } from "node:stream";
 import type { Command } from "commander";
 import { gt, prerelease, satisfies, valid } from "semver";
-import { inspectInstalledAcpusSkills, type InstalledAcpusSkill } from "./authoring-environment.js";
 import { getCliPackageInfo } from "./package-info.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
-const DAY_MS = 24 * 60 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
 const REGISTRY_URL = "https://registry.npmjs.org";
 const UPDATE_CACHE_DIRECTORY = [".acpus", ".local", "update-awareness"];
+
+// Adjust this single policy when Acpus release cadence changes.
+const UPDATE_AWARENESS_POLICY = {
+  checkIntervalMs: 4 * HOUR_MS,
+  updateNotice: {
+    maxPerInstalledVersion: 4,
+    cooldownMs: 2 * HOUR_MS,
+  },
+} as const;
 
 export type AvailableUpdate = {
   checkedAt: string;
@@ -28,7 +36,7 @@ export type UpdateAwarenessEligibility = {
   env?: NodeJS.ProcessEnv;
 };
 
-type UpdateAwarenessInput = Omit<UpdateAwarenessEligibility, "topLevelCommand"> & { cwd: string };
+type UpdateAwarenessInput = Omit<UpdateAwarenessEligibility, "topLevelCommand">;
 
 type CachePaths = {
   directory: string;
@@ -37,9 +45,14 @@ type CachePaths = {
   notices: string;
 };
 
+type UpdateNoticeState = {
+  installedVersion: string;
+  count: number;
+  notifiedAt: string;
+};
+
 type NoticeState = {
-  remoteCheckedAt?: string;
-  skills: Record<string, { fingerprint: string; notifiedAt: string }>;
+  update?: UpdateNoticeState;
 };
 
 export type UpdateAwareness = {
@@ -48,7 +61,7 @@ export type UpdateAwareness = {
 };
 
 export function createUpdateAwareness(input: UpdateAwarenessInput): UpdateAwareness {
-  let session: { currentVersion: string; paths: CachePaths; includeSkillRefresh: boolean } | undefined;
+  let session: { currentVersion: string; paths: CachePaths } | undefined;
 
   return {
     start(command) {
@@ -62,11 +75,11 @@ export function createUpdateAwareness(input: UpdateAwarenessInput): UpdateAwaren
       const packageInfo = getCliPackageInfo();
       const paths = updateAwarenessCachePaths(home);
       startUpdateWorker(packageInfo.packageName, packageInfo.version, packageInfo.entry, paths);
-      session = { currentVersion: packageInfo.version, paths, includeSkillRefresh: topLevelCommand !== "doctor" };
+      session = { currentVersion: packageInfo.version, paths };
     },
     async finish(exitCode) {
       if (session === undefined || exitCode !== 0) return;
-      await showUpdateAwareness(input.cwd, session.currentVersion, session.paths, input.stderr, session.includeSkillRefresh);
+      await showUpdateAwareness(session.currentVersion, session.paths, input.stderr);
     },
   };
 }
@@ -89,9 +102,14 @@ export function isUpdateAwarenessEligible({
 }
 
 export function isUpdateCheckDue(checkedAt: string | undefined, now = new Date()): boolean {
-  if (checkedAt === undefined) return true;
+  const elapsed = elapsedSince(checkedAt, now);
+  return elapsed === undefined || elapsed >= UPDATE_AWARENESS_POLICY.checkIntervalMs;
+}
+
+function elapsedSince(checkedAt: string | undefined, now: Date): number | undefined {
+  if (checkedAt === undefined) return undefined;
   const timestamp = Date.parse(checkedAt);
-  return !Number.isFinite(timestamp) || timestamp > now.getTime() || now.getTime() - timestamp >= DAY_MS;
+  return Number.isFinite(timestamp) && timestamp <= now.getTime() ? now.getTime() - timestamp : undefined;
 }
 
 function parseAvailableUpdate(value: unknown): AvailableUpdate | undefined {
@@ -126,22 +144,17 @@ export function isAvailableUpdate(
 
 export function formatUpdateNotice(input: {
   currentVersion: string;
-  update?: AvailableUpdate;
-  needsSkillRefresh: boolean;
+  update: AvailableUpdate;
   color: boolean;
 }): string {
-  const lines: string[] = [];
   const label = (text: string): string => ansi(text, "1;33", input.color);
   const command = (text: string): string => ansi(text, "1;36", input.color);
-  if (input.update !== undefined) {
-    lines.push(`${label("Update available:")} acpus ${input.currentVersion} → ${input.update.version}`);
-    lines.push(`${label("Run:")} ${command("npm install -g acpus@latest")}`);
-  }
-
-  if (input.needsSkillRefresh) {
-    lines.push(`${label("Refresh skill:")} ${command("acpus skill install")}`);
-  }
-  return `${lines.join("\n")}\n`;
+  return [
+    `${label("Update available:")} acpus ${input.currentVersion} → ${input.update.version}`,
+    `${label("Run:")} ${command("npm install -g acpus@latest")}`,
+    `${label("Refresh skill:")} ${command("acpus skill install")}`,
+    "",
+  ].join("\n");
 }
 
 export async function runUpdateAwarenessWorker(args: readonly string[]): Promise<void> {
@@ -197,33 +210,26 @@ function startUpdateWorker(packageName: string, version: string, cliEntry: strin
 }
 
 async function showUpdateAwareness(
-  cwd: string,
   currentVersion: string,
   paths: CachePaths,
   stderr: Writable,
-  includeSkillRefresh: boolean,
 ): Promise<void> {
   try {
-    const [cachedUpdate, notices, installed] = await Promise.all([
+    const [cachedUpdate, notices] = await Promise.all([
       readAvailableUpdate(paths.available),
       readNoticeState(paths.notices),
-      includeSkillRefresh ? inspectInstalledAcpusSkills(cwd, homedir(), currentVersion).catch(() => []) : [],
     ]);
     const update = cachedUpdate !== undefined && isAvailableUpdate(cachedUpdate, currentVersion) ? cachedUpdate : undefined;
-    const repairs = installed.filter(skill => skill.status !== "aligned" && skill.status !== "missing");
     const now = new Date();
-    const remoteNotice = update !== undefined && notices.remoteCheckedAt !== update.checkedAt ? update : undefined;
-    const newRepairs = repairs.filter(skill => skillNoticeDue(notices, skill, now));
-    const repairsToShow = remoteNotice === undefined ? newRepairs : repairs;
-    if (remoteNotice === undefined && repairsToShow.length === 0) return;
+    const updateNotice = update !== undefined && updateNoticeDue(notices.update, currentVersion, now) ? update : undefined;
+    if (updateNotice === undefined) return;
 
     stderr.write(formatUpdateNotice({
       currentVersion,
-      ...(remoteNotice === undefined ? {} : { update: remoteNotice }),
-      needsSkillRefresh: repairsToShow.length > 0,
+      update: updateNotice,
       color: supportsColor(stderr),
     }));
-    await writeJson(paths.notices, updatedNoticeState(notices, remoteNotice, repairsToShow, now));
+    await writeJson(paths.notices, updatedNoticeState(notices, currentVersion, now));
   } catch {
     // Update awareness must never affect the command result.
   }
@@ -296,47 +302,40 @@ async function readAvailableUpdate(path: string): Promise<AvailableUpdate | unde
 
 async function readNoticeState(path: string): Promise<NoticeState> {
   const record = recordOf(await readJson(path));
-  const skills = Object.fromEntries(Object.entries(recordOf(record?.skills) ?? {}).flatMap(([path, value]) => {
-    const notice = recordOf(value);
-    return notice !== undefined && typeof notice.fingerprint === "string" && typeof notice.notifiedAt === "string"
-      ? [[path, { fingerprint: notice.fingerprint, notifiedAt: notice.notifiedAt }]]
-      : [];
-  }));
+  const update = recordOf(record?.update);
   return {
-    ...(typeof record?.remoteCheckedAt === "string" ? { remoteCheckedAt: record.remoteCheckedAt } : {}),
-    skills,
+    ...(update !== undefined
+      && typeof update.installedVersion === "string"
+      && typeof update.count === "number"
+      && Number.isSafeInteger(update.count)
+      && update.count > 0
+      && typeof update.notifiedAt === "string"
+      && Number.isFinite(Date.parse(update.notifiedAt))
+      ? { update: { installedVersion: update.installedVersion, count: update.count, notifiedAt: update.notifiedAt } }
+      : {}),
   };
 }
 
-function skillNoticeDue(notices: NoticeState, skill: InstalledAcpusSkill, now: Date): boolean {
-  const previous = notices.skills[skill.path];
+function updateNoticeDue(previous: UpdateNoticeState | undefined, currentVersion: string, now: Date): boolean {
+  const elapsed = elapsedSince(previous?.notifiedAt, now);
   return previous === undefined
-    || previous.fingerprint !== skillFingerprint(skill)
-    || isUpdateCheckDue(previous.notifiedAt, now);
+    || previous.installedVersion !== currentVersion
+    || (previous.count < UPDATE_AWARENESS_POLICY.updateNotice.maxPerInstalledVersion
+      && (elapsed === undefined || elapsed >= UPDATE_AWARENESS_POLICY.updateNotice.cooldownMs));
 }
 
 function updatedNoticeState(
   notices: NoticeState,
-  update: AvailableUpdate | undefined,
-  repairs: readonly InstalledAcpusSkill[],
+  currentVersion: string,
   now: Date,
 ): NoticeState {
-  const skills = { ...notices.skills };
-  for (const skill of repairs) {
-    skills[skill.path] = { fingerprint: skillFingerprint(skill), notifiedAt: now.toISOString() };
-  }
-  const retainedSkills = Object.fromEntries(Object.entries(skills)
-    .sort(([, left], [, right]) => Date.parse(right.notifiedAt) - Date.parse(left.notifiedAt))
-    .slice(0, 64));
-  const remoteCheckedAt = update?.checkedAt ?? notices.remoteCheckedAt;
   return {
-    ...(remoteCheckedAt === undefined ? {} : { remoteCheckedAt }),
-    skills: retainedSkills,
+    update: {
+      installedVersion: currentVersion,
+      count: notices.update?.installedVersion === currentVersion ? notices.update.count + 1 : 1,
+      notifiedAt: now.toISOString(),
+    },
   };
-}
-
-function skillFingerprint(skill: InstalledAcpusSkill): string {
-  return `${skill.status}:${skill.version ?? ""}`;
 }
 
 async function readJson(path: string): Promise<unknown> {

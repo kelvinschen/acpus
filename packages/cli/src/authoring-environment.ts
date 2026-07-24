@@ -18,7 +18,7 @@ export type AuthoringHealthCheck = {
 type SkillStatus = "aligned" | "stale" | "unversioned" | "invalid";
 type InstalledSkillStatus = "aligned" | "stale" | "unversioned" | "missing" | "conflict" | "unreadable";
 
-export type InstalledAcpusSkill = {
+type InstalledAcpusSkill = {
   scope: SkillScope;
   agent: SkillAgent;
   path: string;
@@ -114,7 +114,7 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
   };
 }
 
-export async function inspectInstalledAcpusSkills(
+async function inspectInstalledAcpusSkills(
   cwd: string,
   home: string,
   expectedVersion: string,

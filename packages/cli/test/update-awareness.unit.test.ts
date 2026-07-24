@@ -19,6 +19,7 @@ class TtyCaptureStream extends CaptureStream {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("update awareness", () => {
@@ -52,19 +53,18 @@ describe("update awareness", () => {
     expect(isAvailableUpdate(update, "0.8.0", "22.18.0")).toBe(false);
   });
 
-  it("waits a full day before another remote attempt", () => {
+  it("waits four hours before another remote attempt", () => {
     const now = new Date("2026-07-23T12:00:00.000Z");
 
     expect(isUpdateCheckDue(undefined, now)).toBe(true);
-    expect(isUpdateCheckDue("2026-07-23T11:59:59.999Z", now)).toBe(false);
-    expect(isUpdateCheckDue("2026-07-22T12:00:00.000Z", now)).toBe(true);
+    expect(isUpdateCheckDue("2026-07-23T08:00:00.001Z", now)).toBe(false);
+    expect(isUpdateCheckDue("2026-07-23T08:00:00.000Z", now)).toBe(true);
   });
 
   it("uses the interactive Skill refresh command", () => {
     expect(formatUpdateNotice({
       currentVersion: "0.7.2",
       update: { checkedAt: "2026-07-23T00:00:00.000Z", version: "0.8.0" },
-      needsSkillRefresh: true,
       color: false,
     })).toBe([
       "Update available: acpus 0.7.2 → 0.8.0",
@@ -78,7 +78,6 @@ describe("update awareness", () => {
     expect(formatUpdateNotice({
       currentVersion: "0.7.2",
       update: { checkedAt: "2026-07-23T00:00:00.000Z", version: "0.8.0" },
-      needsSkillRefresh: true,
       color: true,
     })).toBe([
       "\u001b[1;33mUpdate available:\u001b[0m acpus 0.7.2 → 0.8.0",
@@ -106,7 +105,6 @@ describe("update awareness", () => {
       program.addCommand(doctor);
       const awareness = createUpdateAwareness({
         argv: ["doctor"],
-        cwd: home,
         stdout,
         stderr,
         env: {} as NodeJS.ProcessEnv,
@@ -126,7 +124,158 @@ describe("update awareness", () => {
     }
   });
 
-  it("records a fetched update once per day in its supplied global cache", async () => {
+  it("limits update notices per installed version while retaining the budget across releases", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-23T00:00:00.000Z"));
+    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const notices = join(cache, "notices.json");
+    const program = new Command("acpus");
+    const doctor = new Command("doctor");
+    program.addCommand(doctor);
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+
+    try {
+      await mkdir(cache, { recursive: true });
+      const show = async (version: string): Promise<string> => {
+        await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
+        await writeFile(join(cache, "available.json"), JSON.stringify({ checkedAt: new Date().toISOString(), version }));
+        const stdout = new TtyCaptureStream();
+        const stderr = new TtyCaptureStream();
+        const awareness = createUpdateAwareness({
+          argv: ["doctor"],
+          stdout,
+          stderr,
+          env: {} as NodeJS.ProcessEnv,
+        });
+        awareness.start(doctor);
+        await awareness.finish(0);
+        return stderr.text;
+      };
+
+      const firstNotice = await show("99.0.0");
+      expect(firstNotice).toContain("→ 99.0.0");
+      expect(firstNotice).toContain("Refresh skill: acpus skill install");
+      expect(await show("99.0.0")).toBe("");
+      for (const version of ["100.0.0", "101.0.0", "102.0.0"]) {
+        await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);
+        expect(await show(version)).toContain(`→ ${version}`);
+      }
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);
+      expect(await show("103.0.0")).toBe("");
+      expect(JSON.parse(await readFile(notices, "utf8"))).toMatchObject({ update: { count: 4 } });
+
+      await writeFile(notices, JSON.stringify({
+        update: { installedVersion: "0.0.0", count: 4, notifiedAt: new Date().toISOString() },
+        skills: {},
+      }));
+      expect(await show("104.0.0")).toContain("→ 104.0.0");
+      expect(JSON.parse(await readFile(notices, "utf8"))).toMatchObject({ update: { count: 1 } });
+      expect(JSON.parse(await readFile(notices, "utf8"))).not.toHaveProperty("skills");
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does not notify for a stale Skill without a CLI update", async () => {
+    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "acpus-update-awareness-workspace-"));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const notices = join(cache, "notices.json");
+    const program = new Command("acpus");
+    const workflow = new Command("workflow");
+    program.addCommand(workflow);
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+
+    try {
+      await mkdir(cache, { recursive: true });
+      const skill = join(workspace, ".agents", "skills", "acpus");
+      await mkdir(skill, { recursive: true });
+      await writeFile(join(skill, "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
+      const show = async (): Promise<string> => {
+        await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
+        const stdout = new TtyCaptureStream();
+        const stderr = new TtyCaptureStream();
+        const awareness = createUpdateAwareness({
+          argv: ["workflow", "catalog"],
+          stdout,
+          stderr,
+          env: {} as NodeJS.ProcessEnv,
+        });
+        awareness.start(workflow);
+        await awareness.finish(0);
+        return stderr.text;
+      };
+
+      expect(await show()).toBe("");
+      await expect(readFile(notices, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the refresh command for a CLI update without an installed Skill", async () => {
+    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const program = new Command("acpus");
+    const workflow = new Command("workflow");
+    program.addCommand(workflow);
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+
+    try {
+      await mkdir(cache, { recursive: true });
+      await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
+      await writeFile(join(cache, "available.json"), JSON.stringify({
+        checkedAt: new Date().toISOString(),
+        version: "99.0.0",
+      }));
+      const stdout = new TtyCaptureStream();
+      const stderr = new TtyCaptureStream();
+      const awareness = createUpdateAwareness({
+        argv: ["workflow", "catalog"],
+        stdout,
+        stderr,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      awareness.start(workflow);
+      await awareness.finish(0);
+
+      expect(stderr.text).toContain("Update available:");
+      expect(stderr.text).toContain("Run: npm install -g acpus@latest");
+      expect(stderr.text).toContain("Refresh skill: acpus skill install");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("records a fetched update once per four hours in its supplied global cache", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-23T00:00:00.000Z"));
     const cache = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({
       version: "0.8.0",
@@ -136,9 +285,13 @@ describe("update awareness", () => {
 
     try {
       await runUpdateAwarenessWorker(["acpus", "0.7.2", cache]);
+      await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1_000 - 1);
       await runUpdateAwarenessWorker(["acpus", "0.7.2", cache]);
 
       expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await runUpdateAwarenessWorker(["acpus", "0.7.2", cache]);
+      expect(fetch).toHaveBeenCalledTimes(2);
       expect(JSON.parse(await readFile(join(cache, "available.json"), "utf8"))).toMatchObject({
         version: "0.8.0",
         engines: { node: ">=22.18.0" },
