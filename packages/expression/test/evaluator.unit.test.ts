@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateExpr, ExpressionEvaluationError, renderTemplate } from "@acpus/expression/evaluator";
+import { evaluateExpr, ExpressionEvaluationError, loadSerializedFunction, renderTemplate } from "@acpus/expression/evaluator";
 import { and, eq, gt, gte, lift, lt, lte, ne, not, or } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 
@@ -65,6 +65,37 @@ describe("expression evaluator", () => {
     expect(evaluateExpr(lift(refExpr<string>(["input", "title"]), value => value.trim().replace(/\s+/g, " ")).__ir, adapter)).toBe("Ship now");
     expect(evaluateExpr(lift(refExpr<readonly { id: string; done: boolean }[]>(["input", "items"]), items => items.filter(item => item.done).map(item => item.id)).__ir, adapter))
       .toEqual(["a"]);
+  });
+
+  it("restores callbacks containing the supported transpiler name helper", () => {
+    const expression: ExprIR = {
+      kind: "call",
+      fn: "lift",
+      args: [
+        { kind: "literal", value: "  Ship  " },
+        {
+          kind: "literal",
+          value: `value => {
+            const normalize = __name(text => text.trim(), "normalize");
+            return normalize(value);
+          }`,
+        },
+      ],
+    };
+
+    expect(evaluateExpr(expression, adapter)).toBe("Ship");
+  });
+
+  it("rejects serialized sources that do not evaluate to functions", () => {
+    expect(() => loadSerializedFunction("42")).toThrow("Serialized source did not evaluate to a function.");
+    expect(() => evaluateExpr({
+      kind: "call",
+      fn: "lift",
+      args: [
+        { kind: "literal", value: 1 },
+        { kind: "literal", value: "value => value, 42" },
+      ],
+    }, adapter)).toThrow("lift(...) source did not evaluate to a function.");
   });
 
   it("evaluates every lift overload over explicit dependencies", () => {

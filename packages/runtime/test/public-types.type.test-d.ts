@@ -149,6 +149,7 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     tools?: { totalCallCount: number; recent: Array<{ command: string; status?: string }> };
   }>();
   expectTypeOf<RunInspectionRunSummary["agentUsage"]>().toEqualTypeOf<{ instances: number; attempts: number; turns: number } | undefined>();
+  expectTypeOf<RunInspectionRunSummary["failure"]>().toEqualTypeOf<RunInspectionItem["failure"]>();
   expectTypeOf<RunInspectionRunSummary["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
   expectTypeOf<NonNullable<RunInspectionItem["scope"]>>().toEqualTypeOf<RunInspectionScopeState>();
   expectTypeOf<Extract<RunInspectionAction, { kind: "inspect-target" | "signal" | "retry" }>>().toMatchTypeOf<{ itemKey: string }>();

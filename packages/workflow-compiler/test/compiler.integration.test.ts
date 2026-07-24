@@ -10,6 +10,7 @@ import {
   type CompiledWorkflowModule,
 } from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { evaluateExpr } from "@acpus/expression/evaluator";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -269,6 +270,10 @@ export default defineWorkflow({ name: "throws" }).build(() => {
     expect(ir.name).toBe("orchestration-fixture");
     expect(ir.diagnostics).toEqual([]);
     expect(ir.root.output).toMatchObject({ kind: "object", fields: { run_id: { kind: "ref", path: ["meta", "runId"] } } });
+    if (ir.root.output.kind !== "object") throw new Error("expected object root output");
+    expect(evaluateExpr(ir.root.output.fields.first_lane!, {
+      resolveRef: path => path.join(".") === "nodes.lanes.output" ? [{ lane: "lane-a" }] : undefined,
+    })).toBe("lane-a");
 
     const fanout = getNode(ir.root, "lanes");
     expect(fanout).toMatchObject({

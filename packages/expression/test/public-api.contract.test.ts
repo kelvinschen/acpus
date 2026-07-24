@@ -40,6 +40,7 @@ describe("@acpus/expression public API", () => {
     expect(Object.keys(evaluator).sort()).toEqual([
       "ExpressionEvaluationError",
       "evaluateExpr",
+      "loadSerializedFunction",
       "renderTemplate",
     ]);
     expect(ir.EXPRESSION_OPERATORS).toEqual({

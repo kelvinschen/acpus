@@ -14,6 +14,16 @@ export class ExpressionEvaluationError extends Error {
   }
 }
 
+class SerializedFunctionTypeError extends TypeError {}
+
+export function loadSerializedFunction(source: string): (...args: unknown[]) => unknown {
+  const value: unknown = Function(`"use strict";
+const __name = (target, _name) => target;
+return (${source});`)();
+  if (typeof value !== "function") throw new SerializedFunctionTypeError("Serialized source did not evaluate to a function.");
+  return value as (...args: unknown[]) => unknown;
+}
+
 const MISSING = Symbol("acpus.expression.missing");
 type Missing = typeof MISSING;
 
@@ -98,11 +108,11 @@ function loadCallback(source: string, operator: string, expectedParams: number):
   const issue = callbackSourceIssue(source, expectedParams);
   if (issue) throw new ExpressionEvaluationError(`${operator}(...) ${issue}`);
   try {
-    const fn = Function(`"use strict";\nreturn (${source});`)();
-    if (typeof fn !== "function") throw new ExpressionEvaluationError(`${operator}(...) source did not evaluate to a function.`);
-    return fn as (...args: unknown[]) => unknown;
+    return loadSerializedFunction(source);
   } catch (error) {
-    if (error instanceof ExpressionEvaluationError) throw error;
+    if (error instanceof SerializedFunctionTypeError) {
+      throw new ExpressionEvaluationError(`${operator}(...) source did not evaluate to a function.`);
+    }
     throw new ExpressionEvaluationError(`${operator}(...) source could not be loaded: ${causeMessage(error)}`);
   }
 }

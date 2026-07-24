@@ -34,14 +34,23 @@ export function formatRunInspectionChanges(
   context: {
     run: RunInspectionRunSummary;
     items: readonly RunInspectionItem[];
-    actions?: readonly RunInspectionAction[];
     nowMs?: number;
-  },
+  } & (
+    | { kind: "snapshot"; actions: readonly RunInspectionAction[] }
+    | { kind: "target" }
+  ),
 ): string {
   const nowMs = context.nowMs ?? Date.now();
   const items = new Map(context.items.map(item => [item.key, item]));
-  const actions = indexActions(context.actions ?? []);
-  const visible = changes.filter(change => !(change.entity.kind === "run" && ["completed", "failed", "cancelled"].includes(change.action)));
+  const actions = indexActions(context.kind === "snapshot" ? context.actions : []);
+  const suppressRootFailure = context.kind === "snapshot"
+    && rootFailureWasPropagated(context.items, deepestAttentionCandidates(context.items, actions));
+  const visible = changes.filter(change => {
+    if (change.entity.kind !== "run") return true;
+    if (change.action === "completed" || change.action === "cancelled") return false;
+    if (change.action !== "failed" && change.action !== "timed_out") return true;
+    return context.kind === "snapshot" && !suppressRootFailure;
+  });
   const lines: string[] = [];
   let runLevelRecoveryTransition = false;
   for (const change of visible) {
@@ -50,8 +59,12 @@ export function formatRunInspectionChanges(
     const subject = change.subject || item?.label || change.entity.nodeId || change.entity.id;
     const state = changeState(change);
     const attempt = change.attemptNo === undefined ? "" : `  attempt=${change.attemptNo}`;
-    const failure = item?.failure && (change.action === "failed" || change.action === "timed_out")
-      ? `  ${formatFailure(item.failure, 160)}`
+    const structuredFailure = item?.failure
+      ?? (change.entity.kind === "run" && (change.action === "failed" || change.action === "timed_out")
+        ? context.run.failure
+        : undefined);
+    const failure = structuredFailure && (change.action === "failed" || change.action === "timed_out")
+      ? `  ${formatFailure(structuredFailure, 160)}`
       : "";
     const message = failure || (change.message ? `  ${oneLine(change.message, 160)}` : "");
     const agent = item?.agent ? `  ${formatAgentProgress(item.agent, nowMs)}` : "";
@@ -60,6 +73,10 @@ export function formatRunInspectionChanges(
     if (item && actionable) {
       runLevelRecoveryTransition ||= (actions.byItem.get(item.key) ?? []).some(action => action.kind === "retry");
       lines.push(...formatActionCommands(item, actions, context.run.id).map(line => `  ${line}`));
+    } else if (context.kind === "snapshot"
+      && change.entity.kind === "run"
+      && (change.action === "failed" || change.action === "timed_out")) {
+      lines.push(`  Inspect: acpus runs inspect ${context.run.id} --target root`);
     }
   }
   if (runLevelRecoveryTransition) lines.push(...formatRunLevelActionCommands(actions, context.run.id).map(line => `  ${line}`));
@@ -324,22 +341,15 @@ function formatAgentPulse(agent: AgentInspectionState, nowMs: number): string {
 function formatAttention(document: RunInspectionSnapshot): string[] {
   const byKey = new Map(document.items.map(item => [item.key, item]));
   const actions = indexActions(document.actions);
-  const exceptional = document.items.filter(item => item.role !== "fold"
-    && (item.status === "awaiting" || item.status === "failed" || item.status === "timed_out")
-    && (item.role !== "context" || item.failure !== undefined || actions.byItem.has(item.key)));
-  const exceptionalAncestors = new Set<string>();
-  for (const item of exceptional) {
-    let parentKey = item.parentKey;
-    while (parentKey && !exceptionalAncestors.has(parentKey)) {
-      exceptionalAncestors.add(parentKey);
-      parentKey = byKey.get(parentKey)?.parentKey;
-    }
-  }
-  const candidates = exceptional.filter(item => !exceptionalAncestors.has(item.key));
+  const candidates = deepestAttentionCandidates(document.items, actions);
   const lines: string[] = [];
   if (document.run.execution.state === "stale") {
     const reason = document.run.execution.reason?.replaceAll("_", " ") ?? "execution inactive";
     lines.push(`  ◆ run — stale: ${reason}`);
+  }
+  if (document.run.failure && !rootFailureWasPropagated(document.items, candidates)) {
+    lines.push(`  ◆ run — ${formatFailure(document.run.failure, 240)}`);
+    lines.push(`     Inspect: acpus runs inspect ${document.run.id} --target root`);
   }
   for (const item of candidates) {
     const breadcrumb = itemBreadcrumb(item, byKey);
@@ -359,6 +369,47 @@ function formatAttention(document: RunInspectionSnapshot): string[] {
   }
   lines.push(...formatRunLevelActionCommands(actions, document.run.id).map(command => `  ${command}`));
   return lines;
+}
+
+function deepestAttentionCandidates(
+  items: readonly RunInspectionItem[],
+  actions: ActionIndex,
+): RunInspectionItem[] {
+  const byKey = new Map(items.map(item => [item.key, item]));
+  const exceptional = items.filter(item => item.role !== "fold"
+    && (item.status === "awaiting" || failureStatus(item.status))
+    && (item.role !== "context" || item.failure !== undefined || actions.byItem.has(item.key)));
+  const exceptionalAncestors = new Set<string>();
+  for (const item of exceptional) {
+    let parentKey = item.parentKey;
+    while (parentKey && !exceptionalAncestors.has(parentKey)) {
+      exceptionalAncestors.add(parentKey);
+      parentKey = byKey.get(parentKey)?.parentKey;
+    }
+  }
+  return exceptional.filter(item => !exceptionalAncestors.has(item.key));
+}
+
+function rootFailureWasPropagated(
+  items: readonly RunInspectionItem[],
+  candidates: readonly RunInspectionItem[],
+): boolean {
+  const byKey = new Map(items.map(item => [item.key, item]));
+  return candidates.some(candidate => {
+    if (!failureStatus(candidate.status) || candidate.failure === undefined) return false;
+    const seen = new Set<string>();
+    let current = candidate;
+    while (current.parentKey && byKey.has(current.parentKey)) {
+      if (!failureStatus(current.status) || seen.has(current.key)) return false;
+      seen.add(current.key);
+      current = byKey.get(current.parentKey)!;
+    }
+    return failureStatus(current.status);
+  });
+}
+
+function failureStatus(status: RunInspectionStatus): boolean {
+  return status === "failed" || status === "timed_out";
 }
 
 function formatActionCommands(
@@ -419,7 +470,7 @@ function itemBreadcrumb(item: RunInspectionItem, byKey: ReadonlyMap<string, RunI
   return oneLine(labels.reverse().join(" › "), 200);
 }
 
-function formatFailure(failure: NonNullable<RunInspectionItem["failure"]>, messageLimit: number): string {
+function formatFailure(failure: NonNullable<RunInspectionRunSummary["failure"]>, messageLimit: number): string {
   const layers = [
     `${failure.origin}${failure.code ? ` ${failure.code}` : ""}`,
     failure.upstream ? `acpx${failure.upstream.code ? ` ${failure.upstream.code}` : ""}` : undefined,

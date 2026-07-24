@@ -1096,6 +1096,9 @@ function targetInspectionItems(
 
 function runSummary(ir: WorkflowIR, run: RunDetails): RunInspectionRunSummary {
   const agentUsage = runAgentUsage(ir, run);
+  const rootFrame = run.status === "failed"
+    ? run.dynamic?.frames.find(frame => frame.frameKind === "root")
+    : undefined;
   return {
     id: run.id,
     name: run.name,
@@ -1105,6 +1108,7 @@ function runSummary(ir: WorkflowIR, run: RunDetails): RunInspectionRunSummary {
     updatedAt: run.updatedAt,
     ...(terminalRun(run.status) ? { durationMs: durationMs(run.createdAt, run.updatedAt) } : {}),
     execution: run.execution,
+    ...(rootFrame ? failureDetails(undefined, rootFrame.error, rootFrame.terminalReason) : {}),
     ...(run.fork ? { fork: run.fork } : {}),
     ...(agentUsage ? { agentUsage } : {}),
   };

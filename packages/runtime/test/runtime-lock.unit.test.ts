@@ -11,6 +11,23 @@ import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 
 describe("runtime maintenance lock", () => {
+  it("allows concurrent runtime users to initialize an absent lock tree", async () => {
+    await withStorageWorkspace("runtime-lock-concurrent-init", async workspace => {
+      const layout = resolveRuntimeLayout(workspace);
+
+      const locks = await Promise.all([
+        acquireRuntimeSharedLock(layout),
+        acquireRuntimeSharedLock(layout),
+      ]);
+      try {
+        const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
+        expect(await readdir(holders)).toHaveLength(2);
+      } finally {
+        for (const lock of locks) lock.release();
+      }
+    });
+  });
+
   it("serializes maintenance owners without using a real polling delay", async () => {
     await withStorageWorkspace("runtime-lock-maintenance", async workspace => {
       const layout = resolveRuntimeLayout(workspace);

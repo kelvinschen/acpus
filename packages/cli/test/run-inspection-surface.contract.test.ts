@@ -166,8 +166,10 @@ describe("compact run inspection surface", () => {
       status: "running",
       attemptNo: 2,
     }], {
+      kind: "snapshot",
       run: snapshot().run,
       items: [],
+      actions: [],
       nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
     });
 
@@ -209,7 +211,13 @@ describe("compact run inspection surface", () => {
       action: "failed",
       status: "failed",
       message: "failed to reload config",
-    }], { run: document.run, items: [failed], nowMs: Date.parse("2026-07-11T00:00:02.000Z") });
+    }], {
+      kind: "snapshot",
+      run: document.run,
+      items: [failed],
+      actions: document.actions,
+      nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
+    });
 
     expect(tree).toContain("Error (provider provider_exit · acpx RUNTIME): failed to reload config");
     expect(tree).not.toContain("failed  1s  provider_exit");
@@ -232,8 +240,10 @@ describe("compact run inspection surface", () => {
       action: "progress",
       status: "running",
     }], {
+      kind: "snapshot",
       run: document.run,
       items: [item],
+      actions: document.actions,
       nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
     });
 
@@ -612,9 +622,8 @@ Attention:
   });
 
   it("renders terminal Signal timeout evidence with retry and fork recovery", () => {
-    const document: RunInspectionSnapshot = {
-      ...snapshot(),
-      run: { ...snapshot().run, status: "failed", execution: { state: "terminal", lastStatus: "failed", reason: "terminal" } },
+    const document = failedSnapshot({
+      failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
       counts: { total: 1, timedOut: 1 },
       actions: [
         { kind: "inspect-target", target: "approve~abc", itemKey: "approve~abc" },
@@ -637,9 +646,7 @@ Attention:
           schemaSummary: "{ ok: boolean }",
         },
       }],
-    };
-    delete document.output;
-    delete document.omitted;
+    });
 
     const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:01:01.000Z"));
     expect(output).toContain("Error (scheduler signal_timeout): Approval timed out.");
@@ -651,8 +658,26 @@ Attention:
     expect(output).toContain("Fork: acpus runs fork run_1");
     expect(output).toContain("\n  Fork: acpus runs fork run_1\n");
     expect(output).not.toContain("\n     Fork: acpus runs fork run_1\n");
+    expect(output).not.toContain("--target root");
     expect(output).not.toContain("Expected payload:");
     expect(output).not.toContain("acpus runs signal");
+  });
+
+  it("falls back to the root failure and root inspection when no item explains a failed run", () => {
+    const document = failedSnapshot({
+      failure: { origin: "scheduler", code: "root_failed", message: "Workflow output failed." },
+      actions: [],
+    });
+
+    const output = formatRunInspectionDocument(document);
+    const attention = output.slice(output.indexOf("Attention:"));
+
+    expect(attention).toBe([
+      "Attention:",
+      "  ◆ run — Error (scheduler root_failed): Workflow output failed.",
+      "     Inspect: acpus runs inspect run_1 --target root",
+      "",
+    ].join("\n"));
   });
 
   it("keeps failed context rows from suppressing the actionable owning node", () => {
@@ -690,8 +715,9 @@ Attention:
   });
 
   it("surfaces a failed scope frame as the deepest actionable root cause", () => {
-    const document: RunInspectionSnapshot = {
-      ...snapshot(),
+    const propagatedFailure = { origin: "scheduler" as const, code: "root_failed", message: "The root propagated a child failure." };
+    const document = failedSnapshot({
+      failure: propagatedFailure,
       counts: { total: 1, failed: 1 },
       items: [{
         key: "node:batch",
@@ -715,15 +741,175 @@ Attention:
         scope: { kind: "fanout_item", itemIndex: 0, empty: true },
       }],
       actions: [{ kind: "inspect-target", target: "batch~abc:item:0", itemKey: "scope:batch:0" }],
-    };
-    delete document.output;
-    delete document.omitted;
+    });
 
     const output = formatRunInspectionDocument(document);
     const attention = output.slice(output.indexOf("Attention:"));
     expect(attention).toContain("◆ batch › item[0] — Error (scheduler expression_failed): Item output failed.");
     expect(attention).toContain("Inspect: acpus runs inspect run_1 --target batch~abc:item:0");
     expect(attention).not.toContain("◆ batch — Error (scheduler group_failed)");
+    expect(attention).not.toContain("The root propagated a child failure.");
+    expect(attention).not.toContain("--target root");
+  });
+
+  it("keeps an independent root failure beside a tolerated failed descendant", () => {
+    const failure = { origin: "scheduler" as const, code: "expression_failed", message: "Item output failed." };
+    const document = failedSnapshot({
+      failure,
+      counts: { total: 2, completed: 1, failed: 1 },
+      items: [{
+        key: "node:batch",
+        role: "frame",
+        path: ["batch"],
+        label: "batch",
+        kind: "parallel",
+        status: "completed",
+        frameKey: "batch~abc",
+      }, {
+        key: "node:item",
+        role: "instance",
+        parentKey: "node:batch",
+        path: ["batch", "item"],
+        label: "item",
+        kind: "task",
+        status: "failed",
+        nodeKey: "item~abc",
+        failure,
+      }],
+      actions: [{ kind: "inspect-target", target: "item~abc", itemKey: "node:item" }],
+    });
+
+    const output = formatRunInspectionDocument(document);
+    const attention = output.slice(output.indexOf("Attention:"));
+    expect(attention.match(/Error \(scheduler expression_failed\): Item output failed\./g)).toHaveLength(2);
+    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target root");
+    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target item~abc");
+  });
+
+  it("does not pair a structured failure with an unrelated failed top-level item", () => {
+    const document = failedSnapshot({
+      failure: { origin: "scheduler", code: "root_failed", message: "Root output failed." },
+      counts: { total: 3, completed: 1, failed: 2 },
+      items: [{
+        key: "node:tolerant",
+        role: "frame",
+        path: ["tolerant"],
+        label: "tolerant",
+        kind: "parallel",
+        status: "completed",
+        frameKey: "tolerant~abc",
+      }, {
+        key: "node:tolerated-child",
+        role: "instance",
+        parentKey: "node:tolerant",
+        path: ["tolerant", "child"],
+        label: "child",
+        kind: "task",
+        status: "failed",
+        nodeKey: "child~abc",
+        failure: { origin: "task", code: "task_failed", message: "Tolerated child failed." },
+      }, {
+        key: "node:unexplained",
+        role: "instance",
+        path: ["unexplained"],
+        label: "unexplained",
+        kind: "task",
+        status: "failed",
+        nodeKey: "unexplained~abc",
+      }],
+      actions: [],
+    });
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("◆ run — Error (scheduler root_failed): Root output failed.");
+    expect(output).toContain("Inspect: acpus runs inspect run_1 --target root");
+  });
+
+  it("does not propagate a descendant failure through a completed intermediate composite", () => {
+    const document = failedSnapshot({
+      failure: { origin: "scheduler", code: "root_failed", message: "Outer output failed." },
+      counts: { total: 3, completed: 1, failed: 2 },
+      items: [{
+        key: "node:outer",
+        role: "frame",
+        path: ["outer"],
+        label: "outer",
+        kind: "parallel",
+        status: "failed",
+        frameKey: "outer~abc",
+      }, {
+        key: "node:tolerant",
+        role: "frame",
+        parentKey: "node:outer",
+        path: ["outer", "tolerant"],
+        label: "tolerant",
+        kind: "parallel",
+        status: "completed",
+        frameKey: "tolerant~abc",
+      }, {
+        key: "node:tolerated-child",
+        role: "instance",
+        parentKey: "node:tolerant",
+        path: ["outer", "tolerant", "child"],
+        label: "child",
+        kind: "task",
+        status: "failed",
+        nodeKey: "child~abc",
+        failure: { origin: "task", code: "task_failed", message: "Tolerated child failed." },
+      }],
+      actions: [],
+    });
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("◆ run — Error (scheduler root_failed): Outer output failed.");
+    expect(output).toContain("Inspect: acpus runs inspect run_1 --target root");
+  });
+
+  it("excludes run-wide failure fallbacks from target documents and changes", () => {
+    const base = snapshot();
+    const run = failedSnapshot({
+      failure: { origin: "scheduler" as const, code: "root_failed", message: "Workflow output failed." },
+    }).run;
+    const document: RunInspectionTargetDocument = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: base.cursor,
+      run,
+      target: { kind: "static-node", id: "review" },
+      summary: {
+        targetKind: "static-node",
+        targetId: "review",
+        runStatus: "failed",
+        runStartedAt: run.createdAt,
+        nodeId: "review",
+        nodeStatus: "completed",
+        artifacts: [],
+      },
+      items: [],
+      instances: [],
+      frames: [],
+      attempts: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [],
+    };
+    const rootChange = {
+      sequence: 9,
+      at: "2026-07-11T00:00:02.000Z",
+      entity: { kind: "run" as const, id: "run_1" },
+      subject: "run_1",
+      action: "failed" as const,
+      status: "failed" as const,
+      message: "Workflow output failed.",
+    };
+
+    const output = formatRunInspectionDocument(document);
+    expect(output).not.toContain("Attention:");
+    expect(output).not.toContain("--target root");
+    expect(formatRunInspectionChanges([rootChange], { kind: "target", run, items: [] })).toBe("");
   });
 
   it("bounds failure previews and strips terminal control sequences from text output", () => {
@@ -758,7 +944,7 @@ Attention:
       action: "failed",
       status: "failed",
       message,
-    }], { run: document.run, items: document.items });
+    }], { kind: "snapshot", run: document.run, items: document.items, actions: document.actions });
     expect(transcript).not.toContain("\u001b");
     expect(transcript).not.toContain("[31m");
   });
@@ -786,6 +972,27 @@ Attention:
     expect(output.indexOf("Output:")).toBeLessThan(output.indexOf("Hooks:"));
   });
 });
+
+function failedSnapshot(options: {
+  failure: NonNullable<RunInspectionSnapshot["run"]["failure"]>;
+  counts?: RunInspectionSnapshot["counts"];
+  items?: RunInspectionSnapshot["items"];
+  actions?: RunInspectionSnapshot["actions"];
+}): RunInspectionSnapshot {
+  const { output: _output, omitted: _omitted, ...document } = snapshot();
+  return {
+    ...document,
+    run: {
+      ...document.run,
+      status: "failed",
+      execution: { state: "terminal", lastStatus: "failed", reason: "terminal" },
+      failure: options.failure,
+    },
+    ...(options.counts ? { counts: options.counts } : {}),
+    ...(options.items ? { items: options.items } : {}),
+    ...(options.actions ? { actions: options.actions } : {}),
+  };
+}
 
 function snapshot(): RunInspectionSnapshot {
   return {

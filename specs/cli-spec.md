@@ -192,6 +192,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - The Active section MUST contain only starting/running executable leaves in stable Tree order, MUST contain at most three rows in both overview and all mode, and MUST summarize any additional active rows.
 - The Agent pulse in Active and text checkpoints MUST contain at most the known turn, one Runtime-normalized recent tool intent, and the age of its latest visible Agent update, or `no update yet` when none is available; it MUST omit tool arguments/output, context, tokens, and model, and MUST NOT interpret age as liveness or `stalled`.
 - The Attention section MUST select the deepest failed/timed-out/awaiting root causes, suppress propagated failed ancestors and expected race/quorum cancellations, and contain stale state plus applicable inspect, Signal, retry, and fork guidance separately from the structural tree.
+- Overview/all Attention MUST show the Runtime-projected run failure with `acpus runs inspect <run-id> --target root` unless that failure is propagated through the visible item tree.
+- A run failure is propagated for text presentation only when a deepest actionable item has structured failure evidence and that item plus every visible ancestor through the top level is failed or timed out.
+- A completed top-level composite with a tolerated failed descendant MUST NOT suppress an independently projected run failure, even when their failure fields are equal.
 - Attention prompt, schema, and error previews MUST each be limited to 240 visible characters.
 - Overview/all text inspection MUST expose copyable dynamic targets only in Attention guidance; Active MUST remain human-readable and omit internal keys. Exact input, output, prompt, attempt, Agent, Signal, and artifact detail remains owned by `--target`.
 - Compact run headers MUST show direct fork source with optional target/unsafe-reuse and one `instances`/`attempts`/`turns` Agent usage line when present; unavailable Agent telemetry MUST remain explicit in JSON and MUST NOT add text lines or inferred values.
@@ -202,6 +205,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Completed workflow output MUST appear once as pretty JSON whenever the value is present, including `{}`; only `undefined` output is omitted.
 - Default inspection JSON MUST use the Runtime compact projection; target JSON adds exact attempt/signal/artifact detail, while raw JSON adds the unbounded run and frozen `WorkflowIR`.
 - Inspection JSON/NDJSON MUST contain only structured envelope values and MUST NOT contain terminal connectors, section headings, or ANSI escapes added by text presentation.
+- Non-TTY overview/all follow MUST append a direct run failure and root inspection command unless the current snapshot satisfies the same propagated-failure rule; target follow MUST omit that run-wide fallback.
 - Non-TTY text follow MUST append the applicable operation command immediately after an awaiting, failed, or timed-out transition and MUST remain free of ANSI escapes.
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
@@ -216,7 +220,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 - Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
-- Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
+- Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime shards.
 - Contract-test bundled lifecycle routing, example disclosure, and workflow-library isolation; typecheck and apply native authoring checks to official examples and library workflows, require examples to cover every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, private home/project staging, cleanup on success and failure, collisions, and mutation-free failures.

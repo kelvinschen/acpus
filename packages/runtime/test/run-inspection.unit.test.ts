@@ -1044,6 +1044,71 @@ describe("run inspection projection", () => {
     expect(document.items.filter(item => item.nodeId === "fallback")).toHaveLength(1);
   });
 
+  it("projects a failed root frame as run-level failure without inventing an overview item", () => {
+    const ir: WorkflowIR = {
+      irVersion: 6,
+      name: "root-output-failure",
+      agents: {},
+      root: { output: { kind: "object", fields: {} }, nodes: [] },
+      diagnostics: [],
+    };
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+    run.status = "failed";
+    run.execution = { state: "terminal", lastStatus: "failed", reason: "terminal" };
+    run.dynamic!.frames = [{
+      frameKey: "root",
+      frameKind: "root",
+      status: "failed",
+      terminalReason: "expression_failed",
+      error: {
+        reason: "expression_failed",
+        message: "Root output callback failed.",
+        upstream: {
+          source: "acpx",
+          operation: "expression.evaluate",
+          data: { detail: "exact root failure" },
+        },
+      },
+      createdAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:02.000Z",
+    }];
+
+    const overview = projectRunInspection({
+      ir,
+      run,
+      artifacts: [],
+      cursor: { eventSequence: 2, progressVersion: 0 },
+      query: { runId: run.id, mode: "overview" },
+    });
+    const target = projectRunInspection({
+      ir,
+      run,
+      artifacts: [],
+      cursor: { eventSequence: 2, progressVersion: 0 },
+      query: { runId: run.id, mode: "target", target: "root" },
+    });
+
+    if (overview?.kind !== "snapshot" || target?.kind !== "target") throw new Error("expected inspection documents");
+    expect(overview.run.failure).toEqual({
+      origin: "scheduler",
+      code: "expression_failed",
+      message: "Root output callback failed.",
+      upstream: { source: "acpx", operation: "expression.evaluate" },
+    });
+    expect(overview.items).toEqual([]);
+    expect(target.summary.failure).toEqual({
+      origin: "scheduler",
+      code: "expression_failed",
+      message: "Root output callback failed.",
+      upstream: {
+        source: "acpx",
+        operation: "expression.evaluate",
+        data: { detail: "exact root failure" },
+      },
+    });
+  });
+
   it("targets the deepest failed or timed-out scope without repeating its failed ancestor", () => {
     const ir: WorkflowIR = {
       irVersion: 6,

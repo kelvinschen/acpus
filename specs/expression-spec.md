@@ -12,7 +12,7 @@
 - The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
 - The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
 - `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `isJsonValue`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
-- `@acpus/expression/evaluator` MUST expose generic expression and template evaluators.
+- `@acpus/expression/evaluator` MUST expose generic expression and template evaluators plus `loadSerializedFunction(source)`.
 - `@acpus/expression/validator` MUST expose `validateExprIR`.
 
 ### IR And Type Model
@@ -77,6 +77,10 @@
 - Callback load and execution diagnostics MUST safely render thrown non-`Error` values.
 - Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope.
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
+- Serialized function loading MUST evaluate one function source in strict mode.
+- Serialized function loading MUST reject a source whose evaluated value is not a function.
+- Serialized function loading MUST provide `__name` as an identity compatibility binding for compiler-emitted name preservation.
+- `lift` callbacks and frozen inline Task functions MUST execute through this same serialized-function loading environment.
 - The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, and non-primitive literal values.
 - The validator MUST reject malformed callback helper calls whose callback source argument is not a string literal expression.
 - Validator/evaluator callback-source checks MUST remain IR backstops for synchronous arrow source shape and arity; source-level callback complexity and lexical capture diagnostics belong to the [Workflow Compiler](workflow-compiler-spec.md).
@@ -84,4 +88,4 @@
 ## Verification
 
 - Contract and type tests cover public exports, `lift` inference/rejection, structured dependencies, predicates, templates, and accessors.
-- JSON guard, lowering, evaluator, and validator tests cover the WorkflowData boundary, every IR kind and operator, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.
+- JSON guard, lowering, evaluator, and validator tests cover the WorkflowData boundary, every IR kind and operator, serialized-function compatibility bindings, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.

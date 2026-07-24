@@ -179,7 +179,10 @@ export default defineWorkflow({
   return {
     approved: approval.output.approved,
     notes: approval.output.notes,
-    first_lane: lift(lanes.output, lanes => lanes[0]?.lane ?? "(none)"),
+    first_lane: lift(lanes.output, lanes => {
+      const laneAt = (index: number) => lanes[index]?.lane ?? "(none)";
+      return laneAt(0);
+    }),
     first_route: lift(lanes.output, lanes => lanes[0]?.route ?? "(none)"),
     first_review_ok: lift(lanes.output, lanes => lanes[0]?.review_ok === true),
     run_id: meta.runId,

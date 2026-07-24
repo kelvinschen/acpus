@@ -261,6 +261,7 @@ function sourcePackageResolverImport(): string {
     ["@acpus/core", new URL("../../../core/src/index.ts", import.meta.url).href],
     ["@acpus/core/runtime", new URL("../../../core/src/runtime.ts", import.meta.url).href],
     ["@acpus/expression", new URL("../../../expression/src/index.ts", import.meta.url).href],
+    ["@acpus/expression/evaluator", new URL("../../../expression/src/evaluator.ts", import.meta.url).href],
     ["@acpus/expression/ir", new URL("../../../expression/src/ir.ts", import.meta.url).href],
     ["@acpus/expression/validator", new URL("../../../expression/src/validator.ts", import.meta.url).href],
   ];

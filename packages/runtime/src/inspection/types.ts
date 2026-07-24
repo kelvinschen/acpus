@@ -47,6 +47,7 @@ export type RunInspectionRunSummary = {
   updatedAt: string;
   durationMs?: number;
   execution: RunDetails["execution"];
+  failure?: RunInspectionFailure;
   fork?: RunForkInfo;
   agentUsage?: {
     instances: number;

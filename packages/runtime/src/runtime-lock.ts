@@ -112,14 +112,12 @@ async function ensureLockPaths(layout: RuntimeLayout): Promise<{ holders: string
   const root = join(locks, layout.workspaceKey);
   const holders = join(root, "holders");
   for (const path of [layout.home, tmp, locks, root, holders]) {
-    let info;
     try {
-      info = await lstat(path);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
       await mkdir(path, { mode: 0o700 });
-      info = await lstat(path);
+    } catch (error) {
+      if (!hasErrorCode(error, "EEXIST")) throw error;
     }
+    const info = await lstat(path);
     if (info.isSymbolicLink() || !info.isDirectory()) {
       throw new Error(`Runtime lock directory '${path}' is not a regular directory.`);
     }

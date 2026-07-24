@@ -75,6 +75,63 @@ describe("run inspection follow output", () => {
     expect(stdout.text).toContain("Output:\n  {}");
   });
 
+  it.each([
+    { name: "prints a root-only failure in snapshot follow", mode: "overview" as const, propagated: false, visible: true },
+    { name: "suppresses a propagated root failure in snapshot follow", mode: "overview" as const, propagated: true, visible: false },
+    { name: "suppresses a root failure in target follow", mode: "target" as const, propagated: false, visible: false },
+  ])("$name", async ({ mode, propagated, visible }) => {
+    const initial = snapshot("running");
+    const failedRun = failedRunSummary();
+    const failedItem = {
+      ...initial.items[0]!,
+      status: "failed" as const,
+      failure: { origin: "task" as const, code: "task_failed", message: "Task failed." },
+    };
+    const document = mode === "target" ? targetDocument(initial) : initial;
+    runtime.followRunInspection.mockImplementation(() => emissions([
+      { schemaVersion: 1, kind: "snapshot", cursor: cursor(1), document },
+      {
+        schemaVersion: 1,
+        kind: "update",
+        cursor: cursor(2),
+        run: failedRun,
+        changes: [{
+          sequence: 2,
+          at: "2026-07-11T00:00:01.000Z",
+          entity: { kind: "run", id: "run_1" },
+          subject: "run_1",
+          action: "failed",
+          status: "failed",
+          message: "Workflow output failed.",
+        }],
+        patch: {
+          upsertItems: propagated ? [failedItem] : [],
+          removeItemKeys: [],
+        },
+      },
+      { schemaVersion: 1, kind: "done", cursor: cursor(3), run: failedRun },
+    ]));
+    const stdout = new CaptureStream();
+    const query: FollowRunInspectionQuery = mode === "target"
+      ? { runId: "run_1", mode, target: "observe" }
+      : { runId: "run_1", mode };
+
+    await followRun("/workspace", query, {
+      phase: "inspect", format: "text", stdout, stderr: new CaptureStream(),
+    });
+
+    const direct = [
+      "+1s  run_1  failed  Error (scheduler root_failed): Workflow output failed.",
+      "  Inspect: acpus runs inspect run_1 --target root",
+      "",
+    ].join("\n");
+    if (visible) expect(stdout.text).toContain(direct);
+    else {
+      expect(stdout.text).not.toContain("Error (scheduler root_failed): Workflow output failed.");
+      expect(stdout.text).not.toContain("--target root");
+    }
+  });
+
   it("appends the actionable command immediately after an awaiting pipe transition", async () => {
     const initial = snapshot("running");
     const approval: RunInspectionSnapshot["items"][number] = {
@@ -920,6 +977,15 @@ function runSummary(status: "running" | "completed"): RunInspectionSnapshot["run
     updatedAt: "2026-07-11T00:00:02.000Z",
     durationMs: 2_000,
     execution: status === "completed" ? { state: "terminal", lastStatus: status, reason: "terminal" } : { state: "active", lastStatus: status, reason: "daemon_alive" },
+  };
+}
+
+function failedRunSummary(): RunInspectionSnapshot["run"] {
+  return {
+    ...runSummary("completed"),
+    status: "failed",
+    execution: { state: "terminal", lastStatus: "failed", reason: "terminal" },
+    failure: { origin: "scheduler", code: "root_failed", message: "Workflow output failed." },
   };
 }
 

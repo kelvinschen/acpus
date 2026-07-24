@@ -206,6 +206,7 @@ type PruneReport = {
 ### Task, Signal, And Artifact Execution
 
 - Task runs MUST execute the frozen inline or reusable target; reusable module resolution delegates to the [Loader](loader-spec.md) from the recorded source-root-relative workflow referrer.
+- Frozen inline Task functions MUST use the serialized-function execution environment owned by the [Expression spec](expression-spec.md).
 - Every Task attempt MUST use a fresh Node process; module caching is attempt-local and separate tasks/retries share no module globals.
 - Task cwd MUST default to workspace, resolve relative values from workspace, and be observed by process code, filesystem access, module initialization, and the default command wrapper without changing module resolution.
 - Task environment MUST start from host environment plus evaluated overrides and remain live for process code, task context, modules, and later command invocations.
@@ -363,6 +364,9 @@ type RunInspectionScopeState =
 - Overview MUST bound ordinary expanded dynamic leaf contexts to 20 while retaining every failed, timed-out, awaiting, or retried occurrence and its ancestry outside that budget.
 - Overview MUST compact repeated completed or cancelled occurrences when needed to preserve its bounded presentation and MUST retain valid parent links after compaction. Each fold MUST replace one contiguous run of hidden sibling occurrences under the same parent and MUST NOT aggregate across an outer occurrence.
 - Inspection run summaries MUST expose `agentUsage` for workflows containing Agent nodes, including zero values before materialization; instances count materialized Agent nodes, attempts count all scheduler attempts for those nodes, and turns use durable attempt metadata supplemented by newer active progress without double counting.
+- A failed inspection run summary MUST expose the compact failure from its persisted root frame when that frame contains an error.
+- A root-frame failure MUST NOT create a synthetic overview/all item.
+- Target `root` MUST retain the exact root-frame failure detail.
 - A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its detailed projection and zero matches remain `not_started`.
 - Public artifact records MUST expose absolute `path` without exposing internal relative storage coordinates.
 - `listArtifacts` MUST return registry metadata without reading file bodies.
@@ -396,7 +400,7 @@ type RunInspectionScopeState =
 - `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, daemon session wiring, and progress beyond internal count limits.
 - `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, retry replay behavior, rejection of non-terminal execution without a durable wake source, attempt/artifact/progress fences, due-Signal scale, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
-- Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing; integration tests MUST NOT reproduce those rule matrices through fresh databases.
+- Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
 - Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.
 - Database tests assert current format markers and persisted Runtime semantics; they MUST NOT snapshot table/column inventories or assert the absence of fields from historical schemas.
 - A fresh-process Runtime integration test verifies that SQLite initialization is quiet while an unrelated experimental warning remains observable.

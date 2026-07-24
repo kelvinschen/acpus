@@ -59,11 +59,16 @@ export async function followRun(
     controller.abort();
   };
   process.once("SIGINT", onAbort);
-  const presenter = new RunFollowPresenter(options, query.mode === "overview", async () => {
-    const result = await getRunInspection(cwd, inspectionQuery(query));
-    if (result.isErr() || result.value.kind === "raw") return undefined;
-    return withoutTerminalOutput(result.value);
-  });
+  const presenter = new RunFollowPresenter(
+    options,
+    query.mode === "target" ? "target" : "snapshot",
+    query.mode === "overview",
+    async () => {
+      const result = await getRunInspection(cwd, inspectionQuery(query));
+      if (result.isErr() || result.value.kind === "raw") return undefined;
+      return withoutTerminalOutput(result.value);
+    },
+  );
   try {
     const source = followRunInspection(cwd, { ...query, signal: controller.signal });
     for await (const event of withPresentationTicks(source, options.format === "ndjson" ? undefined : 1_000)) {
@@ -123,6 +128,7 @@ class RunFollowPresenter {
 
   constructor(
     private readonly options: FollowOptions,
+    private readonly documentKind: FollowDocument["kind"],
     private readonly budgetOverviewTranscript: boolean,
     private readonly readCheckpointDocument: () => Promise<FollowDocument | undefined>,
   ) {}
@@ -149,10 +155,15 @@ class RunFollowPresenter {
       const transcript = this.budgetOverviewTranscript && !isTty(this.options.stdout)
         ? this.limitTranscriptChanges(textChanges, items)
         : { changes: textChanges, omitted: [], shownContextKeys: [] };
-      const changes = formatRunInspectionChanges(transcript.changes, {
+      const changes = formatRunInspectionChanges(transcript.changes, this.documentKind === "snapshot" ? {
+        kind: "snapshot",
         run: emission.run,
         items,
-        ...(this.document?.kind === "snapshot" ? { actions: this.document.actions } : {}),
+        actions: this.document?.kind === "snapshot" ? this.document.actions : [],
+      } : {
+        kind: "target",
+        run: emission.run,
+        items,
       }) + this.recordTranscriptOmissions(transcript.omitted, transcript.shownContextKeys, emission.run.id);
       if (isTty(this.options.stdout)) {
         if (changes) this.targetChanges = [...this.targetChanges, ...changes.trimEnd().split("\n")].slice(-20);
