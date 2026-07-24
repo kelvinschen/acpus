@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 const promptMocks = vi.hoisted(() => ({
   cancel: Symbol("cancel"),
@@ -34,7 +34,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("does not prompt when a TTY reads either a file or directory", async () => {
-    await withTestWorkspace("skill-content-tty", async workspace => {
+    await withPlainTestWorkspace("skill-content-tty", async workspace => {
       const file = await runCommand(workspace, ["skill", "read", "references/authoring.md"], true);
       const directory = await runCommand(workspace, ["skill", "read", "references"], true);
 
@@ -46,7 +46,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("prompts for a complete TTY selection with project and both agents as defaults", async () => {
-    await withTestWorkspace("skill-tty-full", async workspace => {
+    await withPlainTestWorkspace("skill-tty-full", async workspace => {
       promptMocks.select.mockResolvedValueOnce("project");
       promptMocks.multiselect.mockResolvedValueOnce(["claude", "universal"]);
 
@@ -75,7 +75,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("prompts only for parameters missing from a TTY invocation", async () => {
-    await withTestWorkspace("skill-tty-partial", async workspace => {
+    await withPlainTestWorkspace("skill-tty-partial", async workspace => {
       const home = join(workspace, "home");
       osMocks.homedir.mockReturnValue(home);
       promptMocks.multiselect.mockResolvedValueOnce(["claude"]);
@@ -98,7 +98,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("skips prompts when a TTY invocation already provides scope and agents", async () => {
-    await withTestWorkspace("skill-tty-complete", async workspace => {
+    await withPlainTestWorkspace("skill-tty-complete", async workspace => {
       const result = await runSkill(workspace, ["--project", "--agent", "universal"], true);
 
       expect(result.exitCode).toBe(0);
@@ -110,7 +110,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("maps TTY cancellation to usage without creating files", async () => {
-    await withTestWorkspace("skill-tty-cancel", async workspace => {
+    await withPlainTestWorkspace("skill-tty-cancel", async workspace => {
       promptMocks.select.mockResolvedValueOnce(promptMocks.cancel);
 
       const result = await runSkill(workspace, ["--agent", "universal"], true);
@@ -123,7 +123,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("requires an explicit scope and agent selection outside a TTY", async () => {
-    await withTestWorkspace("skill-non-tty-required", async workspace => {
+    await withPlainTestWorkspace("skill-non-tty-required", async workspace => {
       for (const args of [[], ["--project"], ["--agent", "universal"]]) {
         const result = await runSkill(workspace, args);
         expect(result.exitCode).toBe(2);
@@ -135,7 +135,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("rejects conflicting scopes, invalid agents, and removed options as usage", async () => {
-    await withTestWorkspace("skill-invalid-options", async workspace => {
+    await withPlainTestWorkspace("skill-invalid-options", async workspace => {
       const invalid = [
         { args: ["--project", "--global", "--agent", "universal"], message: "Pass only one of --project or --global." },
         { args: ["--project", "--agent", "universal,,claude"], message: "without empty values" },
@@ -161,7 +161,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("trims, deduplicates, and canonically orders comma-separated agents", async () => {
-    await withTestWorkspace("skill-agent-order", async workspace => {
+    await withPlainTestWorkspace("skill-agent-order", async workspace => {
       const result = await runSkill(workspace, ["--project", "--agent", " claude, universal,claude "]);
       const universal = join(workspace, ".agents", "skills", "acpus");
       const claude = join(workspace, ".claude", "skills", "acpus");
@@ -176,7 +176,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("uses the operating-system home for exact global targets", async () => {
-    await withTestWorkspace("skill-global-targets", async workspace => {
+    await withPlainTestWorkspace("skill-global-targets", async workspace => {
       const home = join(workspace, "isolated-home");
       osMocks.homedir.mockReturnValue(home);
 
@@ -190,7 +190,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("reports missing roots in dry-run without creating them", async () => {
-    await withTestWorkspace("skill-install-dry-run", async workspace => {
+    await withPlainTestWorkspace("skill-install-dry-run", async workspace => {
       const result = await runSkill(workspace, ["--project", "--agent", "universal,claude", "--dry-run"]);
 
       expect(result.exitCode).toBe(0);
@@ -202,7 +202,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("updates an owned target and replaces an owned target symlink atomically", async () => {
-    await withTestWorkspace("skill-update", async workspace => {
+    await withPlainTestWorkspace("skill-update", async workspace => {
       const target = join(workspace, ".agents", "skills", "acpus");
       const linked = join(workspace, "linked-acpus");
       await writeSkill(linked, "0.0.0");
@@ -221,7 +221,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("continues other targets when one root or target is unsafe", async () => {
-    await withTestWorkspace("skill-partial-failure", async workspace => {
+    await withPlainTestWorkspace("skill-partial-failure", async workspace => {
       await mkdir(join(workspace, ".agents"));
       await writeFile(join(workspace, ".agents", "skills"), "not a directory");
 
@@ -238,7 +238,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("rejects dangling skills-root symlinks without replacing them", async () => {
-    await withTestWorkspace("skill-dangling-root", async workspace => {
+    await withPlainTestWorkspace("skill-dangling-root", async workspace => {
       await mkdir(join(workspace, ".agents"));
       const root = join(workspace, ".agents", "skills");
       await symlink(join(workspace, "missing-skills"), root, "dir");
@@ -252,7 +252,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("supports symlinked skills roots for install and uninstall", async () => {
-    await withTestWorkspace("skill-symlink-root", async workspace => {
+    await withPlainTestWorkspace("skill-symlink-root", async workspace => {
       const realRoot = join(workspace, "real-skills");
       await mkdir(realRoot);
       await mkdir(join(workspace, ".agents"));
@@ -270,7 +270,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("does not create roots during uninstall and preserves unsafe targets", async () => {
-    await withTestWorkspace("skill-uninstall-safety", async workspace => {
+    await withPlainTestWorkspace("skill-uninstall-safety", async workspace => {
       const missing = await runSkill(workspace, ["--project", "--agent", "claude"], false, "uninstall");
       expect(missing.exitCode).toBe(0);
       expect(missing.stdout.text).toContain("missing\tclaude");
@@ -287,7 +287,7 @@ describe("skill CLI contracts", () => {
   });
 
   it("keeps an installed skill during uninstall dry-run", async () => {
-    await withTestWorkspace("skill-uninstall-dry-run", async workspace => {
+    await withPlainTestWorkspace("skill-uninstall-dry-run", async workspace => {
       const target = join(workspace, ".agents", "skills", "acpus");
       await writeSkill(target, getCliPackageInfo().version);
 

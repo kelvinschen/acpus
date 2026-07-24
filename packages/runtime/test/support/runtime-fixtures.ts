@@ -23,16 +23,22 @@ function fixturePath(relativePath: string): string {
   return join(runtimeFixtureRoot, relativePath);
 }
 
-export async function withRuntimeWorkspace<T>(name: string, fn: (workspace: string) => Promise<T>): Promise<T> {
+export async function withRuntimeWorkspace<T>(
+  name: string,
+  fn: (workspace: string) => Promise<T>,
+  options: { authoringEnvironment?: boolean } = {},
+): Promise<T> {
   const root = join(repoRoot, ".tmp-tests");
   await mkdir(root, { recursive: true });
   const workspace = await mkdtemp(join(root, `${name}-`));
   const home = await mkdtemp(join(root, `${name}-home-`));
   const restoreHome = setRuntimeHomeForTest(workspace, home);
   try {
-    await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
-    await linkWorkspaceCore(workspace);
-    await writeWorkspaceTsconfig(workspace);
+    if (options.authoringEnvironment) {
+      await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
+      await linkWorkspaceCore(workspace);
+      await writeWorkspaceTsconfig(workspace);
+    }
     return await fn(workspace);
   } finally {
     restoreHome();

@@ -31,22 +31,34 @@ describe("startWebServer access policy", () => {
     await server.close();
   });
 
-  it("forwards the asynchronous daemon readiness barrier to control requests", async () => {
+  it("forwards asynchronous daemon readiness failures through the server error boundary", async () => {
+    const cause = new Error("daemon readiness failed");
     const ensureDaemonRunning = vi.fn(async () => {
-      throw new Error("daemon readiness failed");
+      throw cause;
     });
-    const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const response = await fetch(`${server.url}/api/runs/run_1/controls`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "pause" }),
-      });
+      const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning });
+      try {
+        const response = await fetch(`${server.url}/api/runs/run_1/controls`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ type: "pause" }),
+        });
 
-      expect(response.status).toBe(500);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({
+          ok: false,
+          error: { code: "internal_error", message: "Internal server error." },
+        });
+      } finally {
+        await server.close();
+      }
       expect(ensureDaemonRunning).toHaveBeenCalledWith(process.cwd());
+      expect(logged).toHaveBeenCalledOnce();
+      expect(logged).toHaveBeenCalledWith("Acpus WebUI request failed:", cause);
     } finally {
-      await server.close();
+      logged.mockRestore();
     }
   });
 

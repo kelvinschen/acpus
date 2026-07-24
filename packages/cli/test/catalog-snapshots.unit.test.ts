@@ -2,11 +2,11 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveWorkflowReference } from "../src/catalog.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("global workflow catalog snapshots", () => {
   it("materializes one private snapshot with a durable source ref and removes it on cleanup", async () => {
-    await withTestWorkspace("catalog-snapshot", async (workspace, home) => {
+    await withPlainTestWorkspace("catalog-snapshot", async (workspace, home) => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
       process.env.HOME = home;

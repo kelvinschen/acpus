@@ -7,11 +7,11 @@ import { CliError } from "../src/errors.js";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("skill content CLI contracts", () => {
   it("does not alter the default entry while exposing its canonical path and discovery tree", async () => {
-    await withTestWorkspace("skill-content-read", async workspace => {
+    await withPlainTestWorkspace("skill-content-read", async workspace => {
       const root = await realpath(join(getCliPackageInfo().packageRoot, "skills", "acpus"));
       const entryPath = await realpath(join(root, "SKILL.md"));
       const body = await readFile(entryPath, "utf8");
@@ -38,7 +38,7 @@ describe("skill content CLI contracts", () => {
   });
 
   it("does not create runtime or installed-skill state while reading files or directories", async () => {
-    await withTestWorkspace("skill-content-read-only", async workspace => {
+    await withPlainTestWorkspace("skill-content-read-only", async workspace => {
       expect((await runCommand(workspace, ["skill", "read"])).exitCode).toBe(0);
       expect((await runCommand(workspace, ["skill", "read", "references"])).exitCode).toBe(0);
 
@@ -49,7 +49,7 @@ describe("skill content CLI contracts", () => {
   });
 
   it("does not emit unstable, recursive, or non-round-trippable directory entries", async () => {
-    await withTestWorkspace("skill-content-directory", async workspace => {
+    await withPlainTestWorkspace("skill-content-directory", async workspace => {
       const root = await realpath(join(getCliPackageInfo().packageRoot, "skills", "acpus"));
       const workflowsPath = await realpath(join(root, "workflows"));
       const workflowRead = await runCommand(workspace, ["skill", "read", "workflows"]);
@@ -114,7 +114,7 @@ describe("skill content CLI contracts", () => {
   });
 
   it("does not accept structured, bulk, raw, recursive, or excess-argument forms", async () => {
-    await withTestWorkspace("skill-content-usage", async workspace => {
+    await withPlainTestWorkspace("skill-content-usage", async workspace => {
       for (const option of ["--json", "--all", "--full", "--raw", "--recursive"]) {
         const result = await runCommand(workspace, ["skill", "read", option]);
         expect(result.exitCode, option).toBe(2);

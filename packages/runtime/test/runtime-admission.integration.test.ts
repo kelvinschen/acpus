@@ -301,7 +301,7 @@ describe.concurrent("runtime admission use cases", () => {
       await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
         output: { normalized: "src/workflow.ts" },
       });
-    });
+    }, { authoringEnvironment: true });
   });
 
   it("fails task attempts for live reusable module load failures", async () => {
@@ -368,7 +368,7 @@ describe.concurrent("runtime admission use cases", () => {
         },
       });
       await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
-    });
+    }, { authoringEnvironment: true });
   });
 
   it("loads package task source without ambient development conditions", async () => {

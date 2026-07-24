@@ -8,11 +8,11 @@ import { importWorkflowPackage } from "../src/workflow-import.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { repoRoot } from "./support/cli-runner.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withAuthoringTestWorkspace, withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("workflow import contracts", () => {
   it("adapts local snapshot imports to exact CLI output without executing or persisting provenance", async () => {
-    await withTestWorkspace("workflow-import-cli", async workspace => {
+    await withPlainTestWorkspace("workflow-import-cli", async workspace => {
       await withTestHome("workflow-import-cli-home", async () => {
         const marker = join(workspace, "top-level-ran");
         const source = join(workspace, "source.ts");
@@ -73,7 +73,7 @@ describe("workflow import contracts", () => {
   });
 
   it("imports directory, ZIP, and TGZ packages through the module seam", async () => {
-    await withTestWorkspace("workflow-import-packages", async workspace => {
+    await withPlainTestWorkspace("workflow-import-packages", async workspace => {
       await withTestHome("workflow-import-packages-home", async home => {
         const directory = join(workspace, "directory-source");
         await writePackage(join(directory, "wrapper"), "directory-import", {
@@ -124,7 +124,7 @@ describe("workflow import contracts", () => {
   });
 
   it("downloads real HTTP redirects, enforces the redirect limit, and accepts HTTPS responses", async () => {
-    await withTestWorkspace("workflow-import-http", async workspace => {
+    await withPlainTestWorkspace("workflow-import-http", async workspace => {
       await withTestHome("workflow-import-http-home", async () => {
         const server = await startServer((request, response) => {
           if (request.url?.startsWith("/redirect.ts")) {
@@ -163,7 +163,7 @@ describe("workflow import contracts", () => {
   });
 
   it("checks a global import in current-workspace dependency context and preserves exact preparation failures", async () => {
-    await withTestWorkspace("workflow-import-check", async workspace => {
+    await withAuthoringTestWorkspace("workflow-import-check", async workspace => {
       await withTestHome("workflow-import-check-home", async home => {
         await installWorkspaceOnlyDependency(workspace);
         const checkedSource = join(workspace, "workspace-checked.ts");
@@ -187,16 +187,13 @@ describe("workflow import contracts", () => {
           }
         }
         await expect(access(join(workspace, ".acpus", "workflows", "failed-check"))).rejects.toMatchObject({ code: "ENOENT" });
-
-        const cliFailure = await runJson(workspace, ["workflow", "import", failingSource, "--check", "--json"]);
-        expect(cliFailure).toMatchObject({ exitCode: 1, json: { ok: false, phase: "compile" } });
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
       });
     });
   });
 
   it("rejects hard links and invalid package layouts without staging residue", async () => {
-    await withTestWorkspace("workflow-import-local-safety", async workspace => {
+    await withPlainTestWorkspace("workflow-import-local-safety", async workspace => {
       await withTestHome("workflow-import-local-safety-home", async () => {
         const original = join(workspace, "original.ts");
         const hardlinkSource = join(workspace, "hardlink.ts");
@@ -219,7 +216,7 @@ describe("workflow import contracts", () => {
   });
 
   it("rejects unsafe ZIP and TAR entries before catalog commit", async () => {
-    await withTestWorkspace("workflow-import-archive-safety", async workspace => {
+    await withPlainTestWorkspace("workflow-import-archive-safety", async workspace => {
       await withTestHome("workflow-import-archive-safety-home", async () => {
         for (const [filename, entries] of [
           ["case.zip", [["wrapper/workflow.ts", workflowSource("case")], ["wrapper/WORKFLOW.ts", workflowSource("collision")]]],

@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebGraph } from "../src/graph-types.js";
 import { RunGraph } from "../src/client/ui/RunGraph.js";
+import { installReactActEnvironment } from "./support/react-act-environment.js";
 
 const context = [{ nodeId: "jobs", kind: "fanout" as const, itemIndex: 0 }];
 
@@ -37,8 +38,11 @@ const graph: WebGraph = {
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
+let restoreReactActEnvironment = () => {};
 
 beforeEach(() => {
+  restoreReactActEnvironment = installReactActEnvironment();
+  vi.spyOn(console, "error");
   Object.defineProperty(globalThis, "ResizeObserver", {
     configurable: true,
     value: class {
@@ -72,8 +76,11 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  const consoleErrors = [...vi.mocked(console.error).mock.calls];
   container.remove();
   vi.restoreAllMocks();
+  restoreReactActEnvironment();
+  expect(consoleErrors).toEqual([]);
 });
 
 describe("RunGraph interaction semantics", () => {

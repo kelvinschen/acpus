@@ -3,11 +3,11 @@ import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { discoverWorkflowCatalog } from "../src/catalog.js";
 import { repoRoot } from "./support/cli-runner.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("workflow catalog discovery", () => {
   it("discovers first-level project and global workflow packages", async () => {
-    await withTestWorkspace("catalog-discovery", async workspace => {
+    await withPlainTestWorkspace("catalog-discovery", async workspace => {
       const home = await testHome("catalog-discovery-home");
       await withHome(home, async () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "release");
@@ -44,7 +44,7 @@ describe("workflow catalog discovery", () => {
   });
 
   it("filters by explicit catalog scope", async () => {
-    await withTestWorkspace("catalog-scope", async workspace => {
+    await withPlainTestWorkspace("catalog-scope", async workspace => {
       const home = await testHome("catalog-scope-home");
       await withHome(home, async () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "project-only");
@@ -61,7 +61,7 @@ describe("workflow catalog discovery", () => {
   });
 
   it("maps each static metadata failure to its stable catalog error code", async () => {
-    await withTestWorkspace("catalog-metadata-errors", async workspace => {
+    await withPlainTestWorkspace("catalog-metadata-errors", async workspace => {
       const root = join(workspace, ".acpus", "workflows");
       await rawWorkflowPackage(root, "syntax", "export default (");
       await rawWorkflowPackage(root, "missing-default", 'import { defineWorkflow } from "acpus/core";');

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { Command } from "commander";
 import {
   createUpdateAwareness,
@@ -153,7 +154,7 @@ describe("update awareness", () => {
         });
         awareness.start(doctor);
         await awareness.finish(0);
-        return stderr.text;
+        return stripVTControlCharacters(stderr.text);
       };
 
       const firstNotice = await show("99.0.0");
@@ -261,9 +262,10 @@ describe("update awareness", () => {
       awareness.start(workflow);
       await awareness.finish(0);
 
-      expect(stderr.text).toContain("Update available:");
-      expect(stderr.text).toContain("Run: npm install -g acpus@latest");
-      expect(stderr.text).toContain("Refresh skill: acpus skill install");
+      const notice = stripVTControlCharacters(stderr.text);
+      expect(notice).toContain("Update available:");
+      expect(notice).toContain("Run: npm install -g acpus@latest");
+      expect(notice).toContain("Refresh skill: acpus skill install");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

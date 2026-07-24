@@ -7,18 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentOverview } from "../src/client/ui/App.js";
 import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/client/ui/Inspector.js";
 import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
+import { installReactActEnvironment } from "./support/react-act-environment.js";
 
 type Target = { id: string };
 type Presence = ReturnType<typeof useInspectorPresence<Target>>;
 
-const reactGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-const originalActEnvironment = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 
 let container: HTMLDivElement;
 let root: Root | undefined;
 let presence: Presence | undefined;
+let restoreReactActEnvironment = () => {};
 
 function PresenceHarness({ target, onExited }: { target: Target | undefined; onExited(): void }) {
   presence = useInspectorPresence(target, onExited);
@@ -63,7 +63,7 @@ function restoreProperty(target: object, key: PropertyKey, descriptor: PropertyD
 }
 
 beforeEach(() => {
-  reactGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+  restoreReactActEnvironment = installReactActEnvironment();
   vi.useFakeTimers();
   setReducedMotion(false);
   container = document.createElement("div");
@@ -79,7 +79,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   restoreProperty(window, "matchMedia", originalMatchMedia);
   restoreProperty(navigator, "clipboard", originalClipboard);
-  restoreProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", originalActEnvironment);
+  restoreReactActEnvironment();
 });
 
 describe("Inspector presence", () => {

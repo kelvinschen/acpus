@@ -11,6 +11,7 @@ const mockGetRunInspection = vi.fn();
 const mockReadArtifact = vi.fn();
 const mockRequestDaemonControl = vi.fn();
 const mockEnsureDaemonRunning = vi.fn();
+const mockVisualizeWorkflowSource = vi.fn();
 
 vi.mock("@acpus/runtime", () => ({
   getRuntimeHealth: (...args: unknown[]) => mockGetRuntimeHealth(...args),
@@ -20,6 +21,11 @@ vi.mock("@acpus/runtime", () => ({
   getRunInspection: (...args: unknown[]) => mockGetRunInspection(...args),
   readArtifact: (...args: unknown[]) => mockReadArtifact(...args),
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
+}));
+
+vi.mock("../src/server/workflows.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/server/workflows.js")>(),
+  visualizeWorkflowSource: (...args: unknown[]) => mockVisualizeWorkflowSource(...args),
 }));
 
 import { createWebApp } from "../src/server/app.js";
@@ -614,26 +620,31 @@ describe("web API contract", () => {
       }
     });
 
-    it("returns static workflow contract data from visualization", async () => {
-      const visualizeApp = createWebApp({ cwd: process.cwd(), ensureDaemonRunning: mockEnsureDaemonRunning });
+    it("delegates a validated source and returns its visualization", async () => {
+      const result = {
+        status: "ready",
+        graph: { nodes: [], edges: [] },
+        workflow: { name: "release", irVersion: 6, nodeCount: 0 },
+        contract: {
+          output: { kind: "object", fields: {} },
+          outputShape: { kind: "object", possibleKeys: [] },
+        },
+        sourceGraphDigest: "sha256:source",
+      };
+      mockVisualizeWorkflowSource.mockResolvedValue(result);
+      const cwd = "/virtual/acpus-web-visualize";
+      const visualizeApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
+      const source = { kind: "file", path: "release.workflow.ts" };
       const res = await visualizeApp.request("/api/workflows/visualize", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          source: {
-            kind: "file",
-            path: "packages/workflow-compiler/test/fixtures/workflows/orchestration.workflow.ts",
-          },
-        }),
+        body: JSON.stringify({ source }),
       });
+
       expect(res.status).toBe(200);
-      const body = await res.json() as JsonBody;
-      expect(body.result.status).toBe("ready");
-      expect(body.result.contract).toMatchObject({
-        inputSchema: { kind: "object" },
-        output: { kind: "object" },
-        outputShape: { kind: "object" },
-      });
+      expect(await res.json()).toEqual({ ok: true, result });
+      expect(mockVisualizeWorkflowSource).toHaveBeenCalledOnce();
+      expect(mockVisualizeWorkflowSource).toHaveBeenCalledWith(cwd, source);
     });
 
     it("rejects invalid visualization bodies", async () => {

@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 class TtyCaptureStream extends CaptureStream {
   isTTY = true;
@@ -96,7 +96,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("reports absolute authoring authority without initializing runtime state", async () => {
-    await withTestWorkspace("doctor-authoring", async (workspace, home) => {
+    await withPlainTestWorkspace("doctor-authoring", async (workspace, home) => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
       process.env.HOME = home;
@@ -139,7 +139,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("warns for repairable installed skills but treats missing skills as neutral", async () => {
-    await withTestWorkspace("doctor-installed-skills", async workspace => {
+    await withPlainTestWorkspace("doctor-installed-skills", async workspace => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
       const home = join(workspace, "home");
@@ -183,7 +183,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("prints cached CLI update actions after an interactive Doctor report without an installed Skill", async () => {
-    await withTestWorkspace("doctor-update-awareness", async workspace => {
+    await withPlainTestWorkspace("doctor-update-awareness", async workspace => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
       const previousNodeEnv = process.env.NODE_ENV;
@@ -359,7 +359,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("resolves .json input files before workflow preparation or runtime mutation", async () => {
-    await withTestWorkspace("input-files", async workspace => {
+    await withPlainTestWorkspace("input-files", async workspace => {
       await writeFile(join(workspace, "empty.json"), "  \n");
       await writeFile(join(workspace, "invalid.json"), "{\"ready\":}");
       await writeFile(join(workspace, "input.txt"), "{\"ready\":true}\n");
@@ -432,7 +432,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("queries an empty workflow catalog", async () => {
-    await withTestWorkspace("catalog-empty", async workspace => {
+    await withPlainTestWorkspace("catalog-empty", async workspace => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       const previousHome = process.env.HOME;
@@ -460,7 +460,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("accepts wf as the workflow command alias", async () => {
-    await withTestWorkspace("catalog-empty-alias", async workspace => {
+    await withPlainTestWorkspace("catalog-empty-alias", async workspace => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       const previousHome = process.env.HOME;
@@ -488,7 +488,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("validates and lists project hooks", async () => {
-    await withTestWorkspace("hooks-project", async workspace => {
+    await withPlainTestWorkspace("hooks-project", async workspace => {
       await mkdir(join(workspace, ".acpus"), { recursive: true });
       await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
         "run.completed": [{ id: "notify", command: "echo ok", match: { workflow: "^release$" } }],
@@ -523,7 +523,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("lists project and global hooks by scope with stable JSON fields", async () => {
-    await withTestWorkspace("hooks-scoped", async workspace => {
+    await withPlainTestWorkspace("hooks-scoped", async workspace => {
       const previousHome = process.env.HOME;
       const home = join(workspace, "home");
       process.env.HOME = home;
@@ -647,7 +647,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("reports hook validation failures through the validate phase", async () => {
-    await withTestWorkspace("hooks-invalid", async workspace => {
+    await withPlainTestWorkspace("hooks-invalid", async workspace => {
       await mkdir(join(workspace, ".acpus"), { recursive: true });
       await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
         "run.completed": [{ command: "", match: { workflow: "[" } }],

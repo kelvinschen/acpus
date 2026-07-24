@@ -4,8 +4,30 @@ import { getRuntimeHealth, requestDaemonShutdown } from "@acpus/runtime";
 import { setRuntimeHomeForTest } from "../../../runtime/src/runtime-layout.js";
 import { registerTestProcessHome, repoRoot } from "./cli-runner.js";
 
-export async function withTestWorkspace<T>(
+export async function withPlainTestWorkspace<T>(
   name: string,
+  fn: (workspace: string, home: string) => Promise<T>,
+): Promise<T> {
+  return withWorkspace(name, "plain", fn);
+}
+
+export async function withAuthoringTestWorkspace<T>(
+  name: string,
+  fn: (workspace: string, home: string) => Promise<T>,
+): Promise<T> {
+  return withWorkspace(name, "authoring", fn);
+}
+
+export async function withDaemonTestWorkspace<T>(
+  name: string,
+  fn: (workspace: string, home: string) => Promise<T>,
+): Promise<T> {
+  return withWorkspace(name, "daemon", fn);
+}
+
+async function withWorkspace<T>(
+  name: string,
+  kind: "plain" | "authoring" | "daemon",
   fn: (workspace: string, home: string) => Promise<T>,
 ): Promise<T> {
   const root = join(repoRoot, ".tmp-tests");
@@ -13,15 +35,17 @@ export async function withTestWorkspace<T>(
   const workspace = await mkdtemp(join(root, `${name}-`));
   const home = await mkdtemp(join(root, `${name}-home-`));
   const restoreRuntimeHome = setRuntimeHomeForTest(workspace, join(home, ".acpus"));
-  const restoreProcessHome = registerTestProcessHome(workspace, home);
+  const restoreProcessHome = kind === "plain" ? undefined : registerTestProcessHome(workspace, home);
   try {
-    await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
-    await linkWorkspaceCore(workspace);
-    await writeWorkspaceTsconfig(workspace);
+    if (kind !== "plain") {
+      await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
+      await linkWorkspaceCore(workspace);
+      await writeWorkspaceTsconfig(workspace);
+    }
     return await fn(workspace, home);
   } finally {
-    await stopWorkspaceDaemon(workspace);
-    restoreProcessHome();
+    if (kind === "daemon") await stopWorkspaceDaemon(workspace);
+    restoreProcessHome?.();
     restoreRuntimeHome();
     await Promise.all([
       rm(workspace, { recursive: true, force: true }),

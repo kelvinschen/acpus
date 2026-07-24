@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { repoRoot } from "./support/cli-runner.js";
-import { withTestWorkspace } from "./support/workspace.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 const promptMocks = vi.hoisted(() => ({
   cancel: Symbol("cancel"),
@@ -25,7 +25,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("queries the catalog collection or one named entry with stable JSON fields", async () => {
-    await withTestWorkspace("catalog-cli", async workspace => {
+    await withPlainTestWorkspace("catalog-cli", async workspace => {
       await withTestHome("catalog-cli-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "release");
         await workflowPackage(join(workspace, ".acpus", "workflows"), "poison", [
@@ -118,7 +118,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("reports catalog scope and lookup failures with stable phases", async () => {
-    await withTestWorkspace("catalog-cli-errors", async workspace => {
+    await withPlainTestWorkspace("catalog-cli-errors", async workspace => {
       await withTestHome("catalog-cli-errors-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
@@ -162,7 +162,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("lists invalid packages after available entries and excludes them from lookup", async () => {
-    await withTestWorkspace("catalog-cli-invalid", async workspace => {
+    await withPlainTestWorkspace("catalog-cli-invalid", async workspace => {
       await withTestHome("catalog-cli-invalid-home", async () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "available");
         await workflowPackage(join(workspace, ".acpus", "workflows"), "wrong-directory", [
@@ -193,7 +193,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("selects a duplicate-scope workflow in a TTY and reuses scoped named lookup", async () => {
-    await withTestWorkspace("catalog-cli-picker", async workspace => {
+    await withPlainTestWorkspace("catalog-cli-picker", async workspace => {
       await withTestHome("catalog-cli-picker-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
@@ -234,7 +234,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("does not prompt for JSON or when no available workflow can be selected", async () => {
-    await withTestWorkspace("catalog-cli-picker-fallback", async workspace => {
+    await withPlainTestWorkspace("catalog-cli-picker-fallback", async workspace => {
       await withTestHome("catalog-cli-picker-fallback-home", async () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "available");
         const jsonStdout = new TtyCaptureStream();
@@ -265,7 +265,7 @@ describe("workflow catalog CLI contracts", () => {
   });
 
   it("maps interactive catalog cancellation to usage", async () => {
-    await withTestWorkspace("catalog-cli-picker-cancel", async workspace => {
+    await withPlainTestWorkspace("catalog-cli-picker-cancel", async workspace => {
       await withTestHome("catalog-cli-picker-cancel-home", async () => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "available");
         promptMocks.select.mockResolvedValueOnce(promptMocks.cancel);
