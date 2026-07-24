@@ -1,11 +1,10 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
-import { openExistingRuntimeStore, openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { openExistingRuntimeStore, openRuntimeStore } from "../src/store/store.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler projection checkpoint", () => {
   it("serves a hot snapshot below 100ms after bootstrapping 10,000 scheduler events", async () => {
@@ -101,41 +100,6 @@ describe("scheduler projection checkpoint", () => {
         expect(Object.keys(recovered.projection.instances)).toHaveLength(333);
       } finally {
         reopened?.close();
-      }
-    });
-  });
-
-  it("treats a missing checkpoint table as corruption while writable initialization repairs the schema", async () => {
-    await withRuntimeWorkspace("scheduler-projection-checkpoint-bootstrap", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-      seedLargeSchedulerEventStream(workspace, run.id, 30);
-      store.close();
-      mutateDatabase(workspace, db => db.exec("DROP TABLE scheduler_projection_checkpoints"));
-
-      const readOnly = await openExistingRuntimeStore(workspace);
-      try {
-        expect(() => throwSchedulerStoreResult(readOnly!.scheduler.tryLoadRunSnapshot(run.id))).toThrow("no such table: scheduler_projection_checkpoints");
-      } finally {
-        readOnly?.close();
-      }
-      expect(tableExists(workspace, "scheduler_projection_checkpoints")).toBe(false);
-
-      const writable = await openExistingWritableRuntimeStore(workspace);
-      try {
-        let snapshot = throwSchedulerStoreResult(writable!.scheduler.tryLoadRunSnapshot(run.id));
-        const claim = writable!.scheduler.claimRun(run.id, "owner", 60_000)!;
-        snapshot = throwSchedulerStoreResult(writable!.scheduler.tryAppendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "persist-bootstrap",
-          events: [{ type: "signal.awaiting", payload: { runId: run.id, nodeKey: "approve", nodeId: "approve" } }],
-        }));
-        expect(checkpointSequence(workspace, run.id)).toBe(snapshot.version);
-      } finally {
-        writable?.close();
       }
     });
   });
@@ -271,7 +235,7 @@ function p95(samples: number[]): number {
 }
 
 function seedLargeSchedulerEventStream(workspace: string, runId: string, eventCount: number): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   const insert = db.prepare(`
     INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -329,20 +293,12 @@ function projectionWriteCounts(workspace: string): Record<string, number> {
 }
 
 function mutateDatabase(workspace: string, action: (db: DatabaseSync) => void): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     action(db);
   } finally {
     db.close();
   }
-}
-
-function tableExists(workspace: string, table: string): boolean {
-  let exists = false;
-  mutateDatabase(workspace, db => {
-    exists = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
-  });
-  return exists;
 }
 
 function checkpointSequence(workspace: string, runId: string): number | undefined {

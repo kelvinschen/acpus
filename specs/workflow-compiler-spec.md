@@ -12,6 +12,7 @@
 - The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `extractWorkflowMetadata(source, fileName)` as a `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
+- The package MUST expose `WorkflowSourceRef`.
 - The package MUST expose `CompileWorkerFailure` and `PackageLockFailure` as public failure types without exposing the worker process entrypoint.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
@@ -29,7 +30,7 @@
 ### Internal Module Compilation
 
 - The preparation compile worker MUST read and import the workflow source file and require its default export to be an Acpus workflow definition.
-- Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside workspace.
+- Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside its source root.
 - Internal module compilation MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
 - Internal module compilation MUST return a `sha256:` source digest alongside the compiled IR, computed from the workflow source text without embedding it in `WorkflowIR`.
 - Internal module compilation MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
@@ -127,7 +128,7 @@
 - The analyzer MUST match direct flat inline `step("id").task({ input, exec, ... })` and reusable `step("id").task({ task, input, ... })` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
 - Reusable task analysis MUST consume the [Core-owned Task token contract](core-spec.md#task-authoring-and-runtime-context-types) and retain only compiler-owned module-reference metadata.
-- Reusable module metadata MUST identify the source-level specifier, export name, and workflow source referrer needed for runtime import.
+- Reusable module metadata MUST identify the source-level specifier, export name, and source-root-relative workflow referrer needed for runtime import.
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Same-file reusable task metadata MUST identify the workflow source module and exported task name.
 - Imported reusable task metadata MUST keep the workflow import specifier rather than a resolved absolute filesystem path.
@@ -146,19 +147,36 @@
 
 ### Prepared Workflow Data
 
-- `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock metadata.
+- `WorkflowSourceRef` MUST use the following closed union.
+
+```ts
+type WorkflowSourceRef =
+  | { kind: "workspace"; entry: string }
+  | { kind: "global_catalog"; name: string; digest: string; entry: string };
+```
+
+- `prepareWorkflow(options)` MUST accept optional `source` and `sourceRoot` values for a caller-owned source snapshot.
+- Preparation MUST default `sourceRoot` to the workspace and `source` to a workspace reference for the workflow entry relative to that root.
+- Preparation MUST keep `cwd` as the dependency-resolution authority when a caller-owned source snapshot is outside the workspace.
+- A prepared source entry and each reusable-task referrer MUST be portable relative paths physically contained by the selected source root.
+- A global-catalog source reference MUST preserve the caller-provided catalog name, package digest, and package-relative entry.
+- Absolute temporary source roots MUST remain in-memory admission inputs.
+- `WorkflowIR` and preparation-lock metadata MUST NOT contain an absolute temporary source root.
+- `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, source reference, optional temporary source root, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock metadata.
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
 - The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
 - Package lock discovery MUST continue to the next candidate only when the current path fails with `ENOENT` or `ENOTDIR`.
 - An unreadable package lock, directory in place of a lockfile, or symlink-resolution failure MUST return `PackageLockFailure` rather than being treated as absence.
 - The lock metadata MUST use kind `acpus_workflow_preparation_lock`.
-- The lock metadata MUST reference workflow entry, workflow source digest, IR digest, source graph digest, and optional package lock digest.
+- The lock metadata MUST reference the closed workflow source, workflow source digest, IR digest, source graph digest, and optional package lock digest.
 - Preparation lock metadata MUST be deterministic for identical workflow source, IR, and package lock inputs; it MUST NOT contain a generation timestamp.
-- Workflow preparation MUST NOT write `.acpus/.local/preflight/**` artifacts.
+- Workflow preparation scratch data MUST use a private system temporary directory.
+- Workflow preparation MUST remove its scratch data after success or failure.
+- Workflow preparation MUST NOT create an Acpus runtime shard.
 
 ## Verification
 
-- Contract and integration tests cover metadata extraction, phase ordering, prepared workflow data, deterministic locks/digests, and tagged failures.
+- Contract and integration tests cover metadata extraction, phase ordering, source-root containment, portable source/referrer metadata, prepared workflow data, deterministic locks/digests, scratch cleanup, and tagged failures.
 - Authoring-rule tests cover diagnostic ownership, declaration provenance, callback serialization, `any` rejection, stable ordering, and metadata boundaries.
 - Task-analysis tests cover inline capture, reusable references, stable module metadata, unsupported callsites, and validation backstops.

@@ -132,8 +132,9 @@ export const prepareReportInputs = task.define({
   inputSchema: PrepareReportInputsInput,
   exec: async ({ input, artifact }): Promise<PrepareReportInputsResult> => {
     const value: PrepareReportInputsInput = input;
-    const { mkdir } = await import("node:fs/promises");
-    const { extname, isAbsolute, relative, resolve } = await import("node:path");
+    const { chmod, lstat, mkdir } = await import("node:fs/promises");
+    const { homedir } = await import("node:os");
+    const { extname, isAbsolute, join, relative, resolve, sep } = await import("node:path");
     const delivery = value.format === "html"
       ? {
           design: HTML_REPORT_DESIGN,
@@ -156,7 +157,13 @@ export const prepareReportInputs = task.define({
     );
 
     const workspaceDir = resolve(value.workspaceDir);
-    const draftDir = resolve(workspaceDir, ".acpus", ".local", "report-drafts", value.runId);
+    const acpusHome = resolve(homedir(), ".acpus");
+    const draftRoot = resolve(acpusHome, "tmp", "report-drafts");
+    const draftDir = resolve(draftRoot, value.runId);
+    const relativeDraft = relative(draftRoot, draftDir);
+    if (!relativeDraft || relativeDraft === ".." || relativeDraft.startsWith(`..${sep}`) || isAbsolute(relativeDraft)) {
+      throw new Error("runId must identify one internal report draft directory.");
+    }
     const draftPath = resolve(draftDir, delivery.draftName);
     const requested = value.reportPath.trim();
     const outputPath = resolve(workspaceDir, requested || delivery.defaultPath);
@@ -170,7 +177,24 @@ export const prepareReportInputs = task.define({
     if (outputPath === draftPath) {
       throw new Error("reportPath must not target the internal report draft.");
     }
-    await mkdir(draftDir, { recursive: true });
+    for (const directory of [
+      acpusHome,
+      join(acpusHome, "tmp"),
+      draftRoot,
+      draftDir,
+    ]) {
+      try {
+        await mkdir(directory, { mode: 0o700 });
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (code !== "EEXIST") throw error;
+      }
+      const item = await lstat(directory);
+      if (item.isSymbolicLink() || !item.isDirectory()) {
+        throw new Error(`Acpus-owned path '${directory}' is not a regular directory.`);
+      }
+      if (process.platform !== "win32") await chmod(directory, 0o700);
+    }
 
     return {
       format: value.format,

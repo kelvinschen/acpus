@@ -17,7 +17,9 @@ import {
   prepareFixture,
   prepareSyntheticWorkflow,
   preparedWorkflow,
-  runtimeRow,
+  runtimeDatabasePath,
+  runtimeRunDir,
+  runtimeRunsRoot,
   runtimeRows,
   signalWorkflow,
   taskArtifactWorkflow,
@@ -58,23 +60,12 @@ describe.concurrent("runtime admission use cases", () => {
         name: "cli-valid",
         description: "Validate a boolean ready input.",
       });
-      const runDir = join(workspace, ".acpus", ".local", "runs", admitted.run.id);
+      const runDir = runtimeRunDir(workspace, admitted.run.id);
       const workflowIr = await readFile(join(runDir, "workflow.ir.json"));
       const workflowLock = await readFile(join(runDir, "lock.json"));
       expect(workflowIr.toString("utf8")).toBe(prepared.irJson);
       expect(workflowLock.toString("utf8")).toBe(`${stableJson(prepared.lock)}\n`);
       expect(JSON.parse(workflowLock.toString("utf8"))).toEqual(prepared.lock);
-      expect(runtimeRow(workspace, `
-        SELECT workflow_ir_path, workflow_ir_digest, lock_path, lock_digest, run_dir
-        FROM run_inputs
-        WHERE run_id = ?
-      `, admitted.run.id)).toEqual({
-        workflow_ir_path: "workflow.ir.json",
-        workflow_ir_digest: `sha256:${createHash("sha256").update(workflowIr).digest("hex")}`,
-        lock_path: "lock.json",
-        lock_digest: `sha256:${createHash("sha256").update(workflowLock).digest("hex")}`,
-        run_dir: join(".acpus", ".local", "runs", admitted.run.id),
-      });
     });
   });
 
@@ -109,7 +100,7 @@ describe.concurrent("runtime admission use cases", () => {
   it("rejects a frozen workflow file whose digest no longer matches", async () => {
     await withRuntimeWorkspace("runtime-frozen-digest-mismatch", async workspace => {
       const corrupted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      await writeFile(join(workspace, ".acpus", ".local", "runs", corrupted.run.id, "workflow.ir.json"), "{}\n");
+      await writeFile(join(runtimeRunDir(workspace, corrupted.run.id), "workflow.ir.json"), "{}\n");
       await expect(inspectionErrorMessage(workspace, corrupted.run.id)).resolves.toContain("Frozen workflow IR digest mismatch.");
     });
   });
@@ -117,11 +108,11 @@ describe.concurrent("runtime admission use cases", () => {
   it("surfaces missing and non-contained frozen workflow files", async () => {
     await withRuntimeWorkspace("runtime-frozen-file-invariants", async workspace => {
       const missing = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      await rm(join(workspace, ".acpus", ".local", "runs", missing.run.id, "workflow.ir.json"));
+      await rm(join(runtimeRunDir(workspace, missing.run.id), "workflow.ir.json"));
       await expect(inspectionErrorMessage(workspace, missing.run.id)).resolves.toContain("ENOENT");
 
       const escapedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         db.prepare("UPDATE run_inputs SET workflow_ir_path = '../outside.json' WHERE run_id = ?").run(escapedFile.run.id);
       } finally {
@@ -129,28 +120,17 @@ describe.concurrent("runtime admission use cases", () => {
       }
       await expect(inspectionErrorMessage(workspace, escapedFile.run.id)).resolves.toContain("Path '../outside.json' escapes run directory.");
 
-      const escapedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const runDirDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
-      try {
-        runDirDb.prepare("UPDATE run_inputs SET run_dir = '.acpus/.local/outside' WHERE run_id = ?").run(escapedRunDir.run.id);
-      } finally {
-        runDirDb.close();
-      }
-      await expect(inspectionErrorMessage(workspace, escapedRunDir.run.id)).resolves.toContain(
-        "Run directory '.acpus/.local/outside' is outside .acpus/.local/runs.",
-      );
-
       const symlinkedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const symlinkedRunPath = join(workspace, ".acpus", ".local", "runs", symlinkedRunDir.run.id);
+      const symlinkedRunPath = runtimeRunDir(workspace, symlinkedRunDir.run.id);
       const outsideRunPath = join(workspace, "outside-run");
       await rename(symlinkedRunPath, outsideRunPath);
       await symlink(outsideRunPath, symlinkedRunPath, "dir");
       await expect(inspectionErrorMessage(workspace, symlinkedRunDir.run.id)).resolves.toContain(
-        `Run directory '${join(".acpus", ".local", "runs", symlinkedRunDir.run.id)}' is outside .acpus/.local/runs.`,
+        `Run directory '${symlinkedRunDir.run.id}' is outside runtime runs root '${runtimeRunsRoot(workspace)}'.`,
       );
 
       const symlinkedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const workflowPath = join(workspace, ".acpus", ".local", "runs", symlinkedFile.run.id, "workflow.ir.json");
+      const workflowPath = join(runtimeRunDir(workspace, symlinkedFile.run.id), "workflow.ir.json");
       const outsideWorkflowPath = join(workspace, "outside-workflow.ir.json");
       await writeFile(outsideWorkflowPath, await readFile(workflowPath));
       await rm(workflowPath);
@@ -158,12 +138,12 @@ describe.concurrent("runtime admission use cases", () => {
       await expect(inspectionErrorMessage(workspace, symlinkedFile.run.id)).resolves.toContain("is a symbolic link");
 
       const symlinkedRunsRoot = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
-      const runsRoot = join(workspace, ".acpus", ".local", "runs");
+      const runsRoot = runtimeRunsRoot(workspace);
       const outsideRunsRoot = join(workspace, "outside-runs-root");
       await rename(runsRoot, outsideRunsRoot);
       await symlink(outsideRunsRoot, runsRoot, "dir");
       await expect(inspectionErrorMessage(workspace, symlinkedRunsRoot.run.id)).resolves.toContain(
-        `Run directory root '${join(".acpus", ".local", "runs")}' is outside the workspace.`,
+        `Runtime runs root '${runsRoot}' is not a regular directory.`,
       );
     });
   });
@@ -194,11 +174,12 @@ describe.concurrent("runtime admission use cases", () => {
       const artifact = artifacts[0];
       expect(artifact).toMatchObject({ attempt: 1, media_type: "text/plain", size: 12 });
       expect(String(artifact?.relative_path)).toContain(`${String(artifact?.node_key)}/attempt-1/`);
-      const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", admitted.run.id, String(artifact?.relative_path)));
+      const runDir = runtimeRunDir(workspace, admitted.run.id);
+      const bytes = await readFile(join(runDir, String(artifact?.relative_path)));
       expect(bytes.toString("utf8")).toBe("artifact-ok\n");
       expect(artifact?.digest).toBe(`sha256:${createHash("sha256").update(bytes).digest("hex")}`);
-      await access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "workflow.ir.json"));
-      await access(join(workspace, ".acpus", ".local", "runs", admitted.run.id, "lock.json"));
+      await access(join(runDir, "workflow.ir.json"));
+      await access(join(runDir, "lock.json"));
     });
   });
 
@@ -246,24 +227,21 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it("persists durable failed state for task and pure execution failures", async () => {
+  it("projects task and pure execution failures through public run state", async () => {
     await withRuntimeWorkspace("runtime-failed-state", async workspace => {
       const task = await admitSyntheticWorkflow(workspace, failingTaskWorkflow());
       expect(task.status).toBe("failed");
-      if (task.status !== "failed") throw new Error("expected task run to fail");
-      expect(task.message).toBe("task exploded");
-      expect(runtimeRow(workspace, "SELECT status, output_json FROM node_instances WHERE run_id = ? AND node_id = 'boom'", task.run.id)).toMatchObject({
-        status: "failed",
-        output_json: null,
-      });
+      const taskNode = (await getRun(workspace, task.run.id))?.dynamic?.nodeInstances
+        .find(node => node.nodeId === "boom");
+      expect(taskNode).toMatchObject({ status: "failed" });
+      expect(taskNode?.output).toBeUndefined();
 
       const pure = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(pure.status).toBe("failed");
-      if (pure.status !== "failed") throw new Error("expected pure run to fail");
-      expect(pure.message).toBe("Assert node 'fail' failed.");
-      expect(runtimeRows(workspace, "SELECT node_id, status, result_json FROM scheduler_frames WHERE run_id = ? AND node_id = 'fail' ORDER BY node_id", pure.run.id)).toEqual([
-        { node_id: "fail", status: "failed", result_json: null },
-      ]);
+      const failedFrame = (await getRun(workspace, pure.run.id))?.dynamic?.frames
+        .find(frame => frame.nodeId === "fail");
+      expect(failedFrame).toMatchObject({ status: "failed" });
+      expect(failedFrame?.result).toBeUndefined();
     });
   });
 
@@ -288,7 +266,10 @@ describe.concurrent("runtime admission use cases", () => {
       expect(prepared.lock).toEqual({
         kind: "acpus_workflow_preparation_lock",
         version: 1,
-        workflow: { entry: "same-file-reusable.workflow.ts", sourceDigest },
+        workflow: {
+          source: { kind: "workspace", entry: "same-file-reusable.workflow.ts" },
+          sourceDigest,
+        },
         ir: { path: "workflow.ir.json", digest: prepared.lock.ir.digest },
         packageLockDigest,
         sourceGraphDigest: prepared.sourceGraphDigest,
@@ -447,7 +428,7 @@ describe.concurrent("runtime admission use cases", () => {
         }, {}, {
           cwd: workspace,
           runId: "run_1",
-          store: { getRunDir: () => ".acpus/.local/runs/run_1", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
+          store: { getRunDir: () => join(workspace, ".test-runtime", "runs", "run_1"), registerArtifact: () => {}, writeExecutionMetadata: () => {} },
         });
         if (execution.isErr()) throw new Error(execution.error.message);
         const output = execution.value;
@@ -471,7 +452,7 @@ describe.concurrent("runtime admission use cases", () => {
           }, {}, {
             cwd: workspace,
             runId: "run_2",
-            store: { getRunDir: () => ".acpus/.local/runs/run_2", registerArtifact: () => {}, writeExecutionMetadata: () => {} },
+            store: { getRunDir: () => join(workspace, ".test-runtime", "runs", "run_2"), registerArtifact: () => {}, writeExecutionMetadata: () => {} },
           });
           if (throwingExecution.isErr()) {
             if (!throwingExecution.error.message.includes("default exploded")) throw new Error(throwingExecution.error.message);

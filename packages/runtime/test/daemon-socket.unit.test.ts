@@ -1,15 +1,73 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
+import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { err, ok, ResultAsync } from "neverthrow";
 
+const runtimeHomeCleanups: Array<() => Promise<void>> = [];
+
+afterEach(async () => {
+  await Promise.all(runtimeHomeCleanups.splice(0).map(cleanup => cleanup()));
+});
+
 describe("daemon socket server", () => {
+  it.skipIf(process.platform === "win32")("binds a private Unix socket inside a private directory", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-mode-");
+    const endpoint = daemonEndpoint(workspace);
+    const server = await startDaemonServer(workspace, testHandlers());
+    try {
+      const [parent, socket] = await Promise.all([
+        lstat(dirname(endpoint)),
+        lstat(endpoint),
+      ]);
+      expect(parent.isDirectory()).toBe(true);
+      expect(parent.mode & 0o777).toBe(0o700);
+      expect(socket.isSocket()).toBe(true);
+      expect(socket.mode & 0o777).toBe(0o600);
+    } finally {
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a symbolic link at the Unix socket path", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-symlink-");
+    const layout = await ensureRuntimeLayout(workspace);
+    if (layout.isErr()) throw new Error(layout.error.message);
+    const target = join(layout.value.workspaceRoot, "socket-target");
+    await writeFile(target, "preserve");
+    await symlink(target, layout.value.daemonEndpoint);
+    try {
+      await expect(startDaemonServer(workspace, testHandlers())).rejects.toBeInstanceOf(Error);
+      await expect(readFile(target, "utf8")).resolves.toBe("preserve");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a symbolic-link Unix socket parent", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-parent-symlink-");
+    const layout = resolveRuntimeLayout(workspace);
+    const redirected = join(layout.home, "redirected-workspace");
+    await Promise.all([
+      mkdir(dirname(layout.workspaceRoot), { recursive: true }),
+      mkdir(redirected),
+    ]);
+    await symlink(redirected, layout.workspaceRoot, "dir");
+    try {
+      await expect(startDaemonServer(workspace, testHandlers())).rejects.toBeInstanceOf(Error);
+      await expect(readdir(redirected)).resolves.toEqual([]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("tracks a connection while its request handler is active", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-");
     const shutdownStarted = deferred();
     const releaseShutdown = deferred();
     const server = await startDaemonServer(workspace, {
@@ -40,7 +98,7 @@ describe("daemon socket server", () => {
   });
 
   it("tracks sockets while a request is still uploading", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-upload-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-upload-");
     const server = await startDaemonServer(workspace, testHandlers());
     const socket = connect(daemonEndpoint(workspace));
     try {
@@ -64,7 +122,7 @@ describe("daemon socket server", () => {
   });
 
   it("preserves the status readiness error code", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-readiness-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-readiness-");
     const server = await startDaemonServer(workspace, {
       ...testHandlers(),
       status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
@@ -78,7 +136,7 @@ describe("daemon socket server", () => {
   });
 
   it("sanitizes unknown handler failures as internal errors", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-internal-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-internal-");
     const server = await startDaemonServer(workspace, {
       ...testHandlers(),
       control: () => {
@@ -98,9 +156,11 @@ describe("daemon socket server", () => {
   });
 
   it.skipIf(process.platform === "win32")("classifies an ENOTDIR socket path as not found", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-enotdir-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-enotdir-");
     try {
-      await writeFile(join(workspace, ".acpus"), "not a directory");
+      const layout = resolveRuntimeLayout(workspace);
+      await mkdir(dirname(layout.workspaceRoot), { recursive: true });
+      await writeFile(layout.workspaceRoot, "not a directory");
       expect(await requestDaemonStatus(workspace)).toEqual(err({
         type: "transport",
         reason: "not-found",
@@ -114,7 +174,7 @@ describe("daemon socket server", () => {
   });
 
   it("keeps a live pre-lease socket bound when another server starts", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-prelease-live-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-prelease-live-");
     const first = await startDaemonServer(workspace, {
       ...testHandlers(),
       status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
@@ -129,7 +189,7 @@ describe("daemon socket server", () => {
   });
 
   it.skipIf(process.platform === "win32")("keeps an occupied socket when pid liveness is unknown", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-unknown-pid-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-unknown-pid-");
     const endpoint = daemonEndpoint(workspace);
     const store = await openRuntimeStore(workspace);
     const daemon = store.claimDaemon({
@@ -142,6 +202,7 @@ describe("daemon socket server", () => {
       idleStopMs: 30_000,
     });
     store.close();
+    await mkdir(dirname(endpoint), { recursive: true });
     await writeFile(endpoint, "occupied");
     const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(daemon.heartbeatAt));
     const kill = vi.spyOn(process, "kill").mockImplementation(() => {
@@ -158,7 +219,7 @@ describe("daemon socket server", () => {
   });
 
   it("accepts only closed current request shapes", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-protocol-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-protocol-");
     const server = await startDaemonServer(workspace, testHandlers());
     try {
       const invalidRequests = [
@@ -188,7 +249,7 @@ describe("daemon socket server", () => {
   });
 
   it("rejects a response outside the closed envelope", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-response-"));
+    const workspace = await testWorkspace("acpus-daemon-socket-response-");
     const server = await startRawResponseServer(workspace, {
       ok: true,
       result: { status: "shutdown" },
@@ -203,7 +264,7 @@ describe("daemon socket server", () => {
   });
 
   it("accepts only closed result shapes", async () => {
-    const shutdownWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-shutdown-result-"));
+    const shutdownWorkspace = await testWorkspace("acpus-daemon-socket-shutdown-result-");
     const shutdownServer = await startRawResponseServer(shutdownWorkspace, {
       ok: true,
       result: { status: "shutdown", extra: true },
@@ -232,7 +293,7 @@ describe("daemon socket server", () => {
       },
     ];
     for (const result of invalidControlResults) {
-      const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-result-"));
+      const controlWorkspace = await testWorkspace("acpus-daemon-socket-control-result-");
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
         expect((await requestDaemonControl(controlWorkspace, controlIntent(result.type))).isErr()).toBe(true);
@@ -242,7 +303,7 @@ describe("daemon socket server", () => {
       }
     }
 
-    const mismatchedWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-control-mismatch-"));
+    const mismatchedWorkspace = await testWorkspace("acpus-daemon-socket-control-mismatch-");
     const mismatchedServer = await startRawResponseServer(mismatchedWorkspace, {
       ok: true,
       result: { type: "resume", state: "applied", run },
@@ -284,7 +345,7 @@ describe("daemon socket server", () => {
       },
     ];
     for (const result of validControlResults) {
-      const controlWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-valid-control-result-"));
+      const controlWorkspace = await testWorkspace("acpus-daemon-socket-valid-control-result-");
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
         expect(await requestDaemonControl(controlWorkspace, controlIntent(result.type))).toEqual(ok(result));
@@ -294,7 +355,7 @@ describe("daemon socket server", () => {
       }
     }
 
-    const admissionWorkspace = await mkdtemp(join(tmpdir(), "acpus-daemon-socket-admission-result-"));
+    const admissionWorkspace = await testWorkspace("acpus-daemon-socket-admission-result-");
     const admissionServer = await startRawResponseServer(admissionWorkspace, {
       ok: true,
       result: { id: "run_1", status: "running" },
@@ -420,4 +481,20 @@ async function startRawResponseServer(workspace: string, response: unknown): Pro
 
 async function closeRawResponseServer(server: ReturnType<typeof createServer>): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+}
+
+async function testWorkspace(prefix: string): Promise<string> {
+  const [workspace, home] = await Promise.all([
+    mkdtemp(join(tmpdir(), prefix)),
+    mkdtemp(join(tmpdir(), "acpus-daemon-home-")),
+  ]);
+  const restoreHome = setRuntimeHomeForTest(workspace, home);
+  runtimeHomeCleanups.push(async () => {
+    restoreHome();
+    await Promise.all([
+      rm(workspace, { recursive: true, force: true }),
+      rm(home, { recursive: true, force: true }),
+    ]);
+  });
+  return workspace;
 }

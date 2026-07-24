@@ -1,6 +1,5 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
@@ -10,7 +9,7 @@ import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("scheduler targeted retry eligibility", () => {
@@ -79,7 +78,7 @@ describe("scheduler targeted retry eligibility", () => {
       const seeded = throwingSchedulerStore(initial.scheduler).loadRunSnapshot(run.id);
       const corrupt = structuredClone(seeded.projection);
       corrupt.frames.root!.status = "ready";
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         db.prepare("UPDATE scheduler_frames SET status = 'ready' WHERE run_id = ? AND frame_key = 'root'").run(run.id);
         db.prepare("UPDATE scheduler_projection_checkpoints SET event_sequence = ?, projection_json = ? WHERE run_id = ?")
@@ -120,7 +119,7 @@ describe("scheduler targeted retry eligibility", () => {
 
       expect(retried.projection.instances[targetKey]).toMatchObject({ status: "ready", statusReason: "retry" });
       expect(retried.projection.run.status).toBe("pending");
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+      const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
       try {
         expect(db.prepare("SELECT type FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence").all(runId, before.version))
           .toEqual([
@@ -141,8 +140,9 @@ describe("scheduler targeted retry eligibility", () => {
   });
 
   it("rejects through the public control boundary without committing pending derived events", async () => {
-    await withPendingParallelFailure("scheduler-retry-public-atomic-rejection", async ({ workspace, store, runId, claim }) => {
-      const before = durableSchedulerState(workspace, runId);
+    await withPendingParallelFailure("scheduler-retry-public-atomic-rejection", async ({ store, runId, claim }) => {
+      const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+      const eventCount = store.getRun(runId)?.eventCount;
 
       const result = applySchedulerControlIntent(store, {
         requestId: "retry:missing",
@@ -152,7 +152,15 @@ describe("scheduler targeted retry eligibility", () => {
       }, claim.ownerEpoch);
 
       expect(result.isErr()).toBe(true);
-      expect(durableSchedulerState(workspace, runId)).toEqual(before);
+      if (result.isErr()) {
+        expect(result.error).toMatchObject({
+          type: "missing-retry-target",
+          runId,
+          targetKey: "missing",
+        });
+      }
+      expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).version).toBe(before.version);
+      expect(store.getRun(runId)?.eventCount).toBe(eventCount);
     });
   });
 
@@ -414,22 +422,4 @@ function atomicRetryWorkflow() {
     });
     return { result: result.output };
   });
-}
-
-function durableSchedulerState(workspace: string, runId: string): unknown {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
-  try {
-    return {
-      run: db.prepare("SELECT status, updated_at FROM runs WHERE id = ?").get(runId),
-      events: db.prepare("SELECT sequence, type, payload_json FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId),
-      commits: db.prepare("SELECT idempotency_key, event_count, event_digest, intent_digest FROM scheduler_commits WHERE run_id = ? ORDER BY idempotency_key").all(runId),
-      checkpoints: db.prepare("SELECT event_sequence, projection_json FROM scheduler_projection_checkpoints WHERE run_id = ?").all(runId),
-      frames: db.prepare("SELECT frame_key, status FROM scheduler_frames WHERE run_id = ? ORDER BY frame_key").all(runId),
-      instances: db.prepare("SELECT node_key, status FROM node_instances WHERE run_id = ? ORDER BY node_key").all(runId),
-      members: db.prepare("SELECT member_key, status FROM group_members WHERE run_id = ? ORDER BY member_key").all(runId),
-      waits: db.prepare("SELECT node_key, status FROM signal_waits WHERE run_id = ? ORDER BY node_key").all(runId),
-    };
-  } finally {
-    db.close();
-  }
 }

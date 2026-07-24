@@ -1,5 +1,5 @@
 import { createServer, type RequestListener, type Server } from "node:http";
-import { access, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { create as createTar } from "tar";
@@ -95,6 +95,11 @@ describe("workflow import contracts", () => {
         await writePackage(join(tarSource, "package"), "tar-import", { "data/value.txt": "tar" });
         const tarPath = join(workspace, "source.tGz");
         createTar({ cwd: tarSource, file: tarPath, gzip: true, sync: true }, ["package"]);
+        await mkdir(join(home, ".acpus", "tmp"), { recursive: true });
+        if (process.platform !== "win32") {
+          await chmod(join(home, ".acpus"), 0o777);
+          await chmod(join(home, ".acpus", "tmp"), 0o755);
+        }
         const tarImport = await importDirect(workspace, tarPath, { scope: "global" });
         expectOk(tarImport, "tar-import", "global");
 
@@ -103,6 +108,17 @@ describe("workflow import contracts", () => {
         expect(await readNames(join(workspace, ".acpus", "workflows", "zip-import", "bin"))).toEqual(["run.sh"]);
         expect((await stat(join(workspace, ".acpus", "workflows", "zip-import", "bin", "run.sh"))).mode & 0o7777).toBe(0o755);
         expect(await readNames(join(home, ".acpus", "workflows", "tar-import", "data"))).toEqual(["value.txt"]);
+        if (process.platform !== "win32") {
+          for (const directory of [
+            join(home, ".acpus"),
+            join(home, ".acpus", "tmp"),
+            globalImportRoot(home),
+            join(home, ".acpus", "workflows"),
+            join(home, ".acpus", "workflows", "tar-import"),
+          ]) {
+            expect((await stat(directory)).mode & 0o777).toBe(0o700);
+          }
+        }
       });
     });
   });
@@ -156,6 +172,8 @@ describe("workflow import contracts", () => {
         const checked = await importDirect(workspace, checkedSource, { scope: "global", check: true });
         expectOk(checked, "workspace-checked", "global", true);
         await expect(access(join(home, ".acpus", "workflows", "workspace-checked", "workflow.ts"))).resolves.toBeUndefined();
+        expect(await readNames(globalImportRoot(home))).toEqual([]);
+        expect(await readNames(projectImportRoot(workspace))).toEqual([]);
 
         const failingSource = join(workspace, "failing.ts");
         await writeFile(failingSource, ["throw new Error('top-level import failure');", workflowSource("failed-check")].join("\n"));
@@ -172,6 +190,7 @@ describe("workflow import contracts", () => {
 
         const cliFailure = await runJson(workspace, ["workflow", "import", failingSource, "--check", "--json"]);
         expect(cliFailure).toMatchObject({ exitCode: 1, json: { ok: false, phase: "compile" } });
+        expect(await readNames(projectImportRoot(workspace))).toEqual([]);
       });
     });
   });
@@ -347,7 +366,11 @@ async function readNames(path: string): Promise<string[]> {
 }
 
 function projectImportRoot(workspace: string): string {
-  return join(workspace, ".acpus", ".local", "workflow-imports");
+  return join(workspace, ".acpus", "tmp");
+}
+
+function globalImportRoot(home: string): string {
+  return join(home, ".acpus", "tmp", "workflow-imports");
 }
 
 async function withTestHome<T>(name: string, fn: (home: string) => Promise<T>): Promise<T> {

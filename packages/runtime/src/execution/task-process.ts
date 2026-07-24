@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { JsonValue } from "@acpus/expression/ir";
+import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
 import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
 
@@ -292,13 +293,25 @@ function assertArtifactIdentity(request: TaskProcessRequest, artifact: TaskArtif
     || artifact.ownerEpoch !== request.artifact.ownerEpoch) {
     throw new Error("Task process artifact identity does not match its attempt.");
   }
+  const path = resolveArtifactRegistrationPath({
+    runDir: request.artifact.runDir,
+    nodeKey: artifact.nodeKey,
+    attempt: artifact.attempt,
+    relativePath: artifact.relativePath,
+  });
+  if (!path || typeof artifact.id !== "string" || !basename(path).startsWith(`${artifact.id}-`)) {
+    throw new Error("Task process artifact path is outside its attempt artifact directory.");
+  }
 }
 
 async function removeRejectedArtifact(request: TaskProcessRequest, artifact: TaskArtifactRegistration): Promise<void> {
-  const runDir = resolve(request.artifact.runDir);
-  const path = resolve(runDir, artifact.relativePath);
-  const fromRun = relative(runDir, path);
-  if (fromRun === "" || fromRun === ".." || fromRun.startsWith(`..${sep}`) || isAbsolute(fromRun)) return;
+  const path = resolveArtifactRegistrationPath({
+    runDir: request.artifact.runDir,
+    nodeKey: artifact.nodeKey,
+    attempt: artifact.attempt,
+    relativePath: artifact.relativePath,
+  });
+  if (!path) return;
   await rm(path, { force: true });
 }
 

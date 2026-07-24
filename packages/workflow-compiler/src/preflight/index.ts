@@ -10,13 +10,19 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 export type WorkflowPreparationOptions = {
   workflow: string;
   cwd: string;
+  source?: WorkflowSourceRef;
+  sourceRoot?: string;
 };
+
+export type WorkflowSourceRef =
+  | { kind: "workspace"; entry: string }
+  | { kind: "global_catalog"; name: string; digest: string; entry: string };
 
 export type WorkflowPreparationLock = {
   kind: "acpus_workflow_preparation_lock";
   version: 1;
   workflow: {
-    entry: string;
+    source: WorkflowSourceRef;
     sourceDigest: string;
   };
   ir: {
@@ -29,6 +35,8 @@ export type WorkflowPreparationLock = {
 
 export type PreparedWorkflow = {
   workflowPath: string;
+  source: WorkflowSourceRef;
+  sourceRoot?: string;
   ir: WorkflowIR;
   irJson: string;
   sourceGraphDigest: string;
@@ -66,10 +74,20 @@ export async function prepareWorkflow(options: WorkflowPreparationOptions): Prom
 
 export function tryPrepareWorkflow(options: WorkflowPreparationOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
   const workflowPath = resolve(options.cwd, options.workflow);
-  return new ResultAsync(prepareWorkflowResult(options, workflowPath));
+  const sourceRoot = resolve(options.sourceRoot ?? options.cwd);
+  const source = options.source ?? {
+    kind: "workspace",
+    entry: toPortablePath(relative(sourceRoot, workflowPath)),
+  };
+  return new ResultAsync(prepareWorkflowResult(options, workflowPath, sourceRoot, source));
 }
 
-async function prepareWorkflowResult(options: WorkflowPreparationOptions, workflowPath: string): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
+async function prepareWorkflowResult(
+  options: WorkflowPreparationOptions,
+  workflowPath: string,
+  sourceRoot: string,
+  source: WorkflowSourceRef,
+): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
   const scratchDir = await createScratchDir();
   try {
     const check = await checkWorkflow(workflowPath, options.cwd, scratchDir);
@@ -82,7 +100,7 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
       });
     }
 
-    const compiled = await compileWorkflow(workflowPath, options.cwd, scratchDir);
+    const compiled = await compileWorkflow(workflowPath, sourceRoot, scratchDir, options.cwd);
     if (compiled.isErr()) {
       return err({
         type: "compile-failed",
@@ -114,23 +132,25 @@ async function prepareWorkflowResult(options: WorkflowPreparationOptions, workfl
 
     return ok({
       workflowPath,
+      source,
+      ...(source.kind === "global_catalog" ? { sourceRoot } : {}),
       ir: compiled.value.ir,
       irJson,
       sourceGraphDigest,
       ...(packageLock ? { packageLockDigest: packageLock } : {}),
-      lock: buildLock(workflowPath, options.cwd, compiled.value.sourceDigest, irFileDigest, sourceGraphDigest, packageLock),
+      lock: buildLock(source, compiled.value.sourceDigest, irFileDigest, sourceGraphDigest, packageLock),
     });
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-function buildLock(workflowPath: string, cwd: string, sourceDigest: string, irFileDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
+function buildLock(source: WorkflowSourceRef, sourceDigest: string, irFileDigest: string, sourceGraphDigest: string, packageLock: string | undefined): WorkflowPreparationLock {
   return {
     kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
-      entry: relative(cwd, workflowPath),
+      source,
       sourceDigest,
     },
     ir: {
@@ -140,6 +160,10 @@ function buildLock(workflowPath: string, cwd: string, sourceDigest: string, irFi
     ...(packageLock ? { packageLockDigest: packageLock } : {}),
     sourceGraphDigest,
   };
+}
+
+function toPortablePath(path: string): string {
+  return path.split(/[\\/]/).join("/");
 }
 
 export function tryReadPackageLockDigest(cwd: string): ResultAsync<string | undefined, PackageLockFailure> {

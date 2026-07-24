@@ -1,13 +1,12 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import type { Result } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { followRunInspection } from "../src/inspection/use-cases.js";
 import type { RunInspectionEmission, RunInspectionError } from "../src/inspection/types.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 
@@ -347,7 +346,7 @@ describe("run inspection follow", () => {
       try {
         const initial = await nextEmission(iterator);
         const previousSequence = initial.cursor.eventSequence;
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare(`
             INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)

@@ -1,10 +1,9 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { advanceRun, type NodeExecutor } from "../src/scheduler/advance.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { completed } from "./support/scheduler.js";
 
@@ -209,7 +208,7 @@ describe("durable scheduler advance with store", () => {
         expect(peakExecutors).toBe(1);
         expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === "old").map(attempt => attempt.attemptNo).sort()).toEqual([1, 2]);
 
-        const eventsDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const eventsDb = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           const attemptEvents = eventsDb.prepare(`
             SELECT sequence, type, payload_json
@@ -431,7 +430,7 @@ describe("durable scheduler advance with store", () => {
 });
 
 function expireLease(workspace: string, runId: string): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), runId);
   } finally {

@@ -26,7 +26,7 @@ import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import { applySchedulerEvents, cancellationEventsForNode, nextGroupCompletionBatchEvents } from "../src/scheduler/transitions.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, prepareSyntheticWorkflow, runtimeRow, runtimeRows, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
@@ -127,7 +127,7 @@ describe.concurrent("runtime daemon ticks", () => {
             ...prepared,
             lock: {
               ...prepared.lock,
-              workflow: { entry: prepared.lock.workflow.entry },
+              workflow: { source: prepared.lock.workflow.source },
             },
           },
           {
@@ -190,8 +190,17 @@ describe.concurrent("runtime daemon ticks", () => {
             message: "lock package lock digest",
           },
           {
-            candidate: { ...prepared, lock: { ...prepared.lock, workflow: { ...prepared.lock.workflow, entry: "other.workflow.ts" } } },
-            message: "lock entry",
+            candidate: {
+              ...prepared,
+              lock: {
+                ...prepared.lock,
+                workflow: {
+                  ...prepared.lock.workflow,
+                  source: { kind: "workspace" as const, entry: "other.workflow.ts" },
+                },
+              },
+            },
+            message: "lock source",
           },
         ];
         for (const { candidate, message } of inconsistent) {
@@ -293,7 +302,7 @@ describe.concurrent("runtime daemon ticks", () => {
       } finally {
         store.close();
       }
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         db.prepare("UPDATE signal_waits SET deadline_at = 'not-a-deadline' WHERE run_id = ?").run(runId!);
       } finally {
@@ -322,19 +331,19 @@ describe.concurrent("runtime daemon ticks", () => {
     await withRuntimeWorkspace("runtime-daemon-idle-diagnostics", async workspace => {
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
-        idleStopMs: 500,
+        idleStopMs: 60_000,
         packageVersion: "test",
       });
       try {
         await waitUntil(() => {
           const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM daemon_lease") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
-          return row?.idle_since_at !== null && row?.idle_stop_ms === 500;
+          return row !== undefined && row.idle_since_at !== null && row.idle_stop_ms === 60_000;
         });
         const store = await openRuntimeStore(workspace);
         try {
           expect(store.getRuntimeDiagnostics().daemon).toMatchObject({
             idleSinceAt: expect.any(String),
-            idleStopMs: 500,
+            idleStopMs: 60_000,
           });
         } finally {
           store.close();
@@ -348,7 +357,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("cleans stale staging once at startup and preserves all other run directories", async () => {
     await withRuntimeWorkspace("runtime-daemon-cleanup", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const runsRoot = join(workspace, ".acpus", ".local", "runs");
+      const runsRoot = runtimeRunsRoot(workspace);
       const stale = join(runsRoot, ".staging-old");
       const fresh = join(runsRoot, ".staging-fresh");
       const late = join(runsRoot, ".staging-late");
@@ -363,7 +372,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
-        idleStopMs: 1_000,
+        idleStopMs: 60_000,
         packageVersion: "test",
       });
       try {

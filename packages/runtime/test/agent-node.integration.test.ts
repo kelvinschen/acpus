@@ -279,7 +279,7 @@ describe("agent node execution", () => {
             expectAgentArtifactRef(metadata?.turns?.[1]?.stderrArtifact, "artifacts/review.dynamic/attempt-1/agent/turn-002.stderr.log", "text/plain", artifactRows);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
-            const turnArtifact = await readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.json"));
+            const turnArtifact = await readJsonFile(join(runDir, "artifacts/review.dynamic/attempt-1/agent/turn-001.json"));
             expect(turnArtifact).toMatchObject({
               schemaVersion: 1,
               runId: run.id,
@@ -318,7 +318,7 @@ describe("agent node execution", () => {
             expect(turnArtifact).not.toHaveProperty("summary.response");
             expect(turnArtifact).not.toHaveProperty("summary.thinking");
             expect(turnArtifact).not.toHaveProperty("summary.rawOutput");
-            await expect(readJsonFile(join(workspace, runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.json"))).resolves.toMatchObject({
+            await expect(readJsonFile(join(runDir, "artifacts/review.dynamic/attempt-1/agent/turn-002.json"))).resolves.toMatchObject({
               turn: 2,
               timing: agentTiming(),
             });
@@ -454,7 +454,7 @@ describe("agent node execution", () => {
             expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".trace.jsonl"))).toBe(false);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run directory");
-            const files = await readdir(join(workspace, runDir), { recursive: true });
+            const files = await readdir(runDir, { recursive: true });
             expect(files.some(path => path.endsWith(".trace.jsonl"))).toBe(false);
           } finally {
             registration.mockRestore();
@@ -1076,7 +1076,7 @@ describe("agent node execution", () => {
             expectAgentArtifactRef(metadata?.turns?.[0]?.rawAcpDebugArtifact, rawAcpPath, "application/x-ndjson", artifactRows);
             const runDir = store.getRunDir(enabled.id);
             if (!runDir) throw new Error("expected run dir");
-            await expect(readFile(join(workspace, runDir, rawAcpPath), "utf8")).resolves.toBe(rawStdout);
+            await expect(readFile(join(runDir, rawAcpPath), "utf8")).resolves.toBe(rawStdout);
 
             const failed = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
             await expect(advanceFrozenRun({
@@ -1229,7 +1229,7 @@ describe("agent node execution", () => {
             if (!runDir) throw new Error("expected run directory");
             const artifactId = "artifact_prompt_input";
             const relativePath = join("artifacts", "produce", "attempt-1", "patch.diff");
-            const artifactPath = join(workspace, runDir, relativePath);
+            const artifactPath = join(runDir, relativePath);
             await mkdir(dirname(artifactPath), { recursive: true });
             await writeFile(artifactPath, "diff\n");
             const producerAttempt = ensureTestAttempt(store, run.id, "produce", "produce");
@@ -1747,7 +1747,7 @@ describe("agent node execution", () => {
             expect(artifactRows).toEqual([]);
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
-            const files = await readdir(join(workspace, runDir), { recursive: true });
+            const files = await readdir(runDir, { recursive: true });
             expect(files).not.toContain(turnPath);
             expect(files).not.toContain(stderrPath);
 

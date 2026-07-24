@@ -1,9 +1,22 @@
-import { tryPrepareWorkflow, type PreparedWorkflow, type WorkflowPreparationFailure } from "@acpus/workflow-compiler";
+import {
+  tryPrepareWorkflow,
+  type PreparedWorkflow,
+  type WorkflowPreparationFailure,
+  type WorkflowSourceRef,
+} from "@acpus/workflow-compiler";
 import { CliError } from "./errors.js";
 import { summarizeWorkflow } from "./output.js";
 
-export async function prepareWorkflowForCli(workflow: string, cwd: string): Promise<PreparedWorkflow> {
-  const result = await tryPrepareWorkflow({ workflow, cwd });
+export async function prepareWorkflowForCli(
+  workflow: string,
+  cwd: string,
+  source?: { ref: WorkflowSourceRef; root: string },
+): Promise<PreparedWorkflow> {
+  const result = await tryPrepareWorkflow({
+    workflow,
+    cwd,
+    ...(source === undefined ? {} : { source: source.ref, sourceRoot: source.root }),
+  });
   return result.match(
     prepared => prepared,
     failure => {

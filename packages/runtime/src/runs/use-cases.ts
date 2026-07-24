@@ -3,6 +3,8 @@ import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
+import { readVerifiedArtifactBytes } from "../artifacts/path.js";
+import { resolveRuntimeLayout } from "../runtime-layout.js";
 import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
@@ -29,12 +31,21 @@ export type RuntimeHealthCheck = {
   details?: Record<string, JsonValue>;
 };
 
-export type RuntimeHealthReport = {
+export type RuntimePersistence = {
+  path: string;
+};
+
+type RuntimeHealthReportBase = {
   ok: boolean;
   phase: "doctor";
-  state: "not-initialized" | "ready" | "unreadable";
   checks: RuntimeHealthCheck[];
 };
+
+export type RuntimeHealthReport = RuntimeHealthReportBase & (
+  | { state: "not-initialized"; persistence: RuntimePersistence }
+  | { state: "ready"; persistence: RuntimePersistence }
+  | { state: "unreadable"; persistence?: RuntimePersistence }
+);
 
 export type ForkInputNormalizationFailure =
   | { type: "run-not-found"; runId: string; message: string }
@@ -77,6 +88,25 @@ export async function getArtifact(cwd: string, runId: string, artifactId: string
   if (!store) return undefined;
   try {
     return store.getArtifact(runId, artifactId);
+  } finally {
+    store.close();
+  }
+}
+
+export async function readArtifact(
+  cwd: string,
+  runId: string,
+  artifactId: string,
+): Promise<{ artifact: ArtifactRecord; bytes: Buffer } | undefined> {
+  const store = await openExistingRuntimeStore(cwd);
+  if (!store) return undefined;
+  try {
+    const artifact = store.getArtifact(runId, artifactId);
+    if (!artifact) return undefined;
+    return {
+      artifact,
+      bytes: readVerifiedArtifactBytes({ cwd, runId, store }, artifactId),
+    };
   } finally {
     store.close();
   }
@@ -126,9 +156,9 @@ export function tryNormalizeForkInput(cwd: string, runId: string, input: JsonVal
 }
 
 export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport> {
-  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
+  let persistence: RuntimePersistence;
   try {
-    store = await openExistingRuntimeStore(cwd);
+    persistence = { path: resolveRuntimeLayout(cwd).workspaceRoot };
   } catch (error) {
     return {
       ok: false,
@@ -141,11 +171,29 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
       }],
     };
   }
+
+  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
+  try {
+    store = await openExistingRuntimeStore(cwd);
+  } catch (error) {
+    return {
+      ok: false,
+      phase: "doctor",
+      state: "unreadable",
+      persistence,
+      checks: [{
+        area: "store",
+        status: "fail",
+        message: error instanceof Error ? error.message : String(error),
+      }],
+    };
+  }
   if (!store) {
     return {
       ok: true,
       phase: "doctor",
       state: "not-initialized",
+      persistence,
       checks: [{
         area: "workspace",
         status: "ok",
@@ -176,12 +224,19 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
         details: { staleRunLeases: diagnostics.leases.stale },
       });
     }
-    return { ok: checks.every(check => check.status !== "fail"), phase: "doctor", state: "ready", checks };
+    return {
+      ok: checks.every(check => check.status !== "fail"),
+      phase: "doctor",
+      state: "ready",
+      persistence,
+      checks,
+    };
   } catch (error) {
     return {
       ok: false,
       phase: "doctor",
       state: "unreadable",
+      persistence,
       checks: [{
         area: "store",
         status: "fail",

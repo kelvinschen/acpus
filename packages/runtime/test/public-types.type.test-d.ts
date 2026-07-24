@@ -29,6 +29,7 @@ import type {
   RunWorkflowLockArtifact,
   RuntimeHealthCheck,
   RuntimeHealthReport,
+  RuntimePersistence,
   RuntimeConfiguration,
   RuntimeConfigurationFailure,
   AgentHostPolicy,
@@ -175,6 +176,10 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
+  expectTypeOf<RuntimeHealthReport["persistence"]>().toEqualTypeOf<RuntimePersistence | undefined>();
+  expectTypeOf<Extract<RuntimeHealthReport, { state: "not-initialized" }>["persistence"]>().toEqualTypeOf<RuntimePersistence>();
+  expectTypeOf<Extract<RuntimeHealthReport, { state: "ready" }>["persistence"]>().toEqualTypeOf<RuntimePersistence>();
+  expectTypeOf<RuntimePersistence>().toEqualTypeOf<{ path: string }>();
   expectTypeOf<AgentOutputProcessing>().toEqualTypeOf<
     | { outcome: "accepted"; parsing: "direct" | "repaired"; projectionChanged: boolean }
     | { outcome: "rejected"; phase: "framing" | "json" }

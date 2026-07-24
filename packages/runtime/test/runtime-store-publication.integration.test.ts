@@ -1,9 +1,9 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeRunsRoot, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 const runIdBytes = vi.hoisted(() => ({ values: [] as number[] }));
 vi.mock("node:crypto", async importOriginal => ({
@@ -47,7 +47,7 @@ describe("runtime run directory publication", () => {
         }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-overrides-invalid" });
 
         expect(store.listRuns()).toEqual([]);
-        await expect(access(join(workspace, ".acpus", ".local", "runs"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readdir(runtimeRunsRoot(workspace))).resolves.toEqual([]);
       } finally {
         store.close();
       }
@@ -76,7 +76,7 @@ describe("runtime run directory publication", () => {
     await withRuntimeWorkspace("runtime-admission-path-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
-      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runsDir = runtimeRunsRoot(workspace);
       await mkdir(runsDir, { recursive: true });
       try {
         const stagingRunId = deterministicRunId(0xaa);
@@ -110,7 +110,7 @@ describe("runtime run directory publication", () => {
     await withRuntimeWorkspace("runtime-fork-path-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
-      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runsDir = runtimeRunsRoot(workspace);
       try {
         runIdBytes.values.push(0xaa);
         const source = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });

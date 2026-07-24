@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { type Dirent } from "node:fs";
-import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { extractWorkflowMetadata, type WorkflowMetadataError } from "@acpus/workflow-compiler";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { extractWorkflowMetadata, type WorkflowMetadataError, type WorkflowSourceRef } from "@acpus/workflow-compiler";
 import { ResultAsync, type Result } from "neverthrow";
 import { CliError, usageError } from "./errors.js";
+import { ensurePrivateAcpusDirectory, ensurePrivateDirectory, removePrivateTree } from "./private-directory.js";
+import { exposeWorkspaceDependencies } from "./workspace-dependencies.js";
 
 export type WorkflowCatalogScope = "project" | "global";
 
@@ -50,6 +52,9 @@ export type WorkflowCatalogEntry = AvailableWorkflowCatalogEntry | InvalidWorkfl
 export type ResolvedWorkflowReference = {
   workflow: string;
   catalog?: AvailableWorkflowCatalogEntry;
+  source?: WorkflowSourceRef;
+  sourceRoot?: string;
+  cleanup?: () => Promise<void>;
 };
 
 type WorkflowCatalogCommitFailure = {
@@ -114,7 +119,7 @@ export async function resolveWorkflowReference(cwd: string, workflow: string, op
   if (!hasSelectedScope(options) && await isPathLikeWorkflowReference(cwd, workflow)) return { workflow };
   const catalog = await lookupWorkflowCatalogEntry(cwd, workflow, options);
   if (catalog.scope === "project") return { workflow: catalog.entryPath, catalog };
-  return { workflow: await materializeGlobalCatalogEntry(cwd, catalog), catalog };
+  return { ...(await materializeGlobalCatalogEntry(cwd, catalog)), catalog };
 }
 
 export function prepareWorkflowCatalogCommit(
@@ -138,7 +143,11 @@ async function prepareCatalogCommit(cwd: string, scope: WorkflowCatalogScope, na
     .some(entry => entry.status === "available" && entry.name === name);
   return {
     commit: stagedPackage => ResultAsync.fromPromise((async () => {
-      await mkdir(root, { recursive: true });
+      if (scope === "global") {
+        await ensurePrivateAcpusDirectory(root);
+        await ensurePrivateDirectory(stagedPackage);
+      }
+      else await mkdir(root, { recursive: true });
       if (await pathExists(packagePath)) abortCatalogCommit("collision", `Workflow '${name}' already exists in the ${scope} catalog.`);
       try {
         await rename(stagedPackage, packagePath);
@@ -154,7 +163,7 @@ async function prepareCatalogCommit(cwd: string, scope: WorkflowCatalogScope, na
 function catalogRoot(cwd: string, scope: WorkflowCatalogScope): string {
   return scope === "project"
     ? resolve(cwd, ".acpus", "workflows")
-    : resolve(process.env.HOME || homedir(), ".acpus", "workflows");
+    : resolve(homedir(), ".acpus", "workflows");
 }
 
 function selectedScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope | undefined {
@@ -265,23 +274,41 @@ async function isPathLikeWorkflowReference(cwd: string, workflow: string): Promi
   return isFile(resolve(cwd, workflow));
 }
 
-async function materializeGlobalCatalogEntry(cwd: string, entry: AvailableWorkflowCatalogEntry): Promise<string> {
+async function materializeGlobalCatalogEntry(cwd: string, entry: AvailableWorkflowCatalogEntry): Promise<ResolvedWorkflowReference> {
+  let snapshotRoot: string | undefined;
   try {
-    const digest = await digestDirectory(entry.packagePath);
-    const target = join(cwd, ".acpus", ".local", "catalog-cache", "global", entry.name, digest);
+    const digest = await digestWorkflowPackage(entry.packagePath);
+    const stagingRoot = join(homedir(), ".acpus", "tmp", "catalog-snapshots");
+    await ensurePrivateAcpusDirectory(stagingRoot);
+    snapshotRoot = await mkdtemp(join(stagingRoot, `${entry.name}-`));
+    const target = join(snapshotRoot, "package");
     const targetEntry = join(target, catalogWorkflowEntry);
-    if (await isFile(targetEntry)) return targetEntry;
-    await rm(target, { recursive: true, force: true });
-    await mkdir(dirname(target), { recursive: true });
     await cp(entry.packagePath, target, { recursive: true, dereference: true });
+    await ensurePrivateDirectory(target);
     if (!await isFile(targetEntry)) throw new Error(`materialized package is missing ${catalogWorkflowEntry}`);
-    return targetEntry;
+    if (await digestWorkflowPackage(target) !== digest) {
+      throw new Error("catalog package changed while its snapshot was being created");
+    }
+    await exposeWorkspaceDependencies(snapshotRoot, cwd);
+    return {
+      workflow: targetEntry,
+      sourceRoot: target,
+      source: { kind: "global_catalog", name: entry.name, digest, entry: catalogWorkflowEntry },
+      cleanup: () => removePrivateTree(snapshotRoot!),
+    };
   } catch (error) {
+    if (snapshotRoot) {
+      try {
+        await removePrivateTree(snapshotRoot);
+      } catch (cleanupError) {
+        throw inspectError(`Workflow catalog entry '${entry.name}' could not be materialized: ${causeMessage(error)} Snapshot cleanup also failed: ${causeMessage(cleanupError)}`);
+      }
+    }
     throw inspectError(`Workflow catalog entry '${entry.name}' could not be materialized: ${causeMessage(error)}`);
   }
 }
 
-async function digestDirectory(root: string): Promise<string> {
+export async function digestWorkflowPackage(root: string): Promise<string> {
   const hash = createHash("sha256");
   await addToDigest(hash, root, "");
   return hash.digest("hex");

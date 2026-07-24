@@ -110,6 +110,7 @@ function preparedWorkflow(): PreparedWorkflow {
   };
   return {
     workflowPath: "/workspace/workflow.ts",
+    source: { kind: "workspace", entry: "workflow.ts" },
     ir,
     irJson: `${JSON.stringify(ir, null, 2)}\n`,
     sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -117,7 +118,7 @@ function preparedWorkflow(): PreparedWorkflow {
       kind: "acpus_workflow_preparation_lock",
       version: 1,
       workflow: {
-        entry: "workflow.ts",
+        source: { kind: "workspace", entry: "workflow.ts" },
         sourceDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       },
       ir: { path: "workflow.ir.json", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },

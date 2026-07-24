@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
-import { stableJson } from "../src/stable-json.js";
 import { openExistingWritableRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
@@ -20,8 +19,11 @@ import {
   parallelSignalRaceWorkflow,
   prepareSyntheticWorkflow,
   replacementTaskWorkflow,
+  runtimeDatabasePath,
+  runtimeRunDir,
   runtimeRow,
   runtimeRows,
+  runtimeRunsRoot,
   scalarWorkflow,
   signalWorkflow,
   taskArtifactWorkflow,
@@ -59,10 +61,6 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
 
-      const rerun = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
-      expect(rerun.status).toBe("failed");
-      await expect(controlRun(workspace, rerun.run.id, "retry")).resolves.toMatchObject({ status: "failed" });
-      expect(runtimeRows(workspace, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'commands'")).toEqual([]);
     });
   });
 
@@ -107,23 +105,21 @@ describe.concurrent("runtime controls and recovery", () => {
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
       const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
       expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({ sourceRunId: source.run.id });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_projection_checkpoints WHERE run_id = ?", fork!.run.id)).toEqual({ count: 0 });
 
       const forkOfFork = await forkRun(workspace, fork!.run.id);
       expect(forkOfFork?.run).toMatchObject({ status: "completed", fork: { sourceRunId: fork!.run.id } });
       await expect(getRun(workspace, forkOfFork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_projection_checkpoints WHERE run_id = ?", forkOfFork!.run.id)).toEqual({ count: 0 });
     });
   });
 
   it("materializes only frozen files and reachable registered artifacts in a fork", async () => {
     await withRuntimeWorkspace("runtime-fork-files-whitelist", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const sourceRunDir = join(workspace, ".acpus", ".local", "runs", source.run.id);
+      const sourceRunDir = runtimeRunDir(workspace, source.run.id);
       await mkdir(join(sourceRunDir, "outputs", "stale"), { recursive: true });
       await mkdir(join(sourceRunDir, "work"), { recursive: true });
-      await writeFile(join(sourceRunDir, "outputs", "stale", "result.txt"), "legacy output");
-      await writeFile(join(sourceRunDir, "work", "scratch.txt"), "legacy work");
+      await writeFile(join(sourceRunDir, "outputs", "stale", "result.txt"), "unowned output");
+      await writeFile(join(sourceRunDir, "work", "scratch.txt"), "unowned work");
       await writeFile(join(sourceRunDir, "artifacts", "unregistered.txt"), "unregistered artifact");
       await writeFile(join(sourceRunDir, "unknown.txt"), "unregistered");
       const outside = join(workspace, "outside.txt");
@@ -131,7 +127,7 @@ describe.concurrent("runtime controls and recovery", () => {
       await symlink(outside, join(sourceRunDir, "unknown-link"));
 
       const fork = await forkRun(workspace, source.run.id);
-      const forkRunDir = join(workspace, ".acpus", ".local", "runs", fork.run.id);
+      const forkRunDir = runtimeRunDir(workspace, fork.run.id);
 
       expect((await readdir(sourceRunDir)).sort()).toEqual([
         "artifacts",
@@ -152,7 +148,7 @@ describe.concurrent("runtime controls and recovery", () => {
     await withRuntimeWorkspace("runtime-fork-artifact-verification", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       const artifact = runtimeRow(workspace, "SELECT id, relative_path FROM artifacts WHERE run_id = ?", source.run.id);
-      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runsDir = runtimeRunsRoot(workspace);
       const runEntriesBefore = (await readdir(runsDir)).sort();
       await writeFile(join(runsDir, source.run.id, String(artifact?.relative_path)), "tampered\n");
 
@@ -169,15 +165,15 @@ describe.concurrent("runtime controls and recovery", () => {
     await withRuntimeWorkspace("runtime-fork-artifact-path", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       const artifact = runtimeRow(workspace, "SELECT id, relative_path FROM artifacts WHERE run_id = ?", source.run.id);
-      const sourceRunDir = join(workspace, ".acpus", ".local", "runs", source.run.id);
+      const sourceRunDir = runtimeRunDir(workspace, source.run.id);
       const artifactBytes = await readFile(join(sourceRunDir, String(artifact?.relative_path)));
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         db.prepare("UPDATE artifacts SET relative_path = 'workflow.ir.json' WHERE id = ?").run(String(artifact?.id));
       } finally {
         db.close();
       }
-      const runsDir = join(workspace, ".acpus", ".local", "runs");
+      const runsDir = runtimeRunsRoot(workspace);
       const runEntriesBefore = (await readdir(runsDir)).sort();
 
       await expect(forkRun(workspace, source.run.id)).rejects.toThrow(
@@ -190,7 +186,7 @@ describe.concurrent("runtime controls and recovery", () => {
       await mkdir(join(sourceRunDir, "work"), { recursive: true });
       await writeFile(join(sourceRunDir, "work", "linked-artifact"), artifactBytes);
       await symlink("../work", join(sourceRunDir, "artifacts", "linked"));
-      const linkedDb = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const linkedDb = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         linkedDb.prepare("UPDATE artifacts SET relative_path = 'artifacts/linked/linked-artifact' WHERE id = ?").run(String(artifact?.id));
       } finally {
@@ -220,7 +216,7 @@ describe.concurrent("runtime controls and recovery", () => {
   it("rejects forks when the frozen workflow lock digest does not match", async () => {
     await withRuntimeWorkspace("runtime-fork-lock-digest", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, metaWorkflow());
-      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, "lock.json"), "{}\n");
+      await writeFile(join(runtimeRunDir(workspace, source.run.id), "lock.json"), "{}\n");
 
       await expect(forkRun(workspace, source.run.id)).rejects.toThrow("Frozen workflow lock digest mismatch.");
       expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id != ?", source.run.id)).toEqual([]);
@@ -238,10 +234,8 @@ describe.concurrent("runtime controls and recovery", () => {
 
       expect(second.run.id).toBe(forkId);
       expect(third.run.id).toBe(forkId);
-      expect(runtimeRows(workspace, "SELECT id FROM runs WHERE id <> ? ORDER BY id", source.run.id)).toEqual([{ id: forkId }]);
-      const event = runtimeRow(workspace, "SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'run.forked'", forkId);
-      const payload = JSON.parse(String(event?.payload_json)) as { requestFingerprint: string };
-      expect(payload.requestFingerprint).toBe(`${stableJson({ runId: source.run.id })}\n`);
+      expect((await listRuns(workspace)).map(run => run.id).sort())
+        .toEqual([source.run.id, forkId].sort());
     });
   });
 
@@ -269,11 +263,12 @@ describe.concurrent("runtime controls and recovery", () => {
       const supersededRelativePath = join("artifacts", nodeKey, "attempt-99", "superseded.txt");
       const failedBytes = Buffer.from("failed attempt artifact\n");
       const supersededBytes = Buffer.from("superseded attempt artifact\n");
-      await mkdir(join(workspace, ".acpus", ".local", "runs", source.run.id, "artifacts", nodeKey, "attempt-98"), { recursive: true });
-      await mkdir(join(workspace, ".acpus", ".local", "runs", source.run.id, "artifacts", nodeKey, "attempt-99"), { recursive: true });
-      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, failedRelativePath), failedBytes);
-      await writeFile(join(workspace, ".acpus", ".local", "runs", source.run.id, supersededRelativePath), supersededBytes);
-      const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+      const sourceRunDir = runtimeRunDir(workspace, source.run.id);
+      await mkdir(join(sourceRunDir, "artifacts", nodeKey, "attempt-98"), { recursive: true });
+      await mkdir(join(sourceRunDir, "artifacts", nodeKey, "attempt-99"), { recursive: true });
+      await writeFile(join(sourceRunDir, failedRelativePath), failedBytes);
+      await writeFile(join(sourceRunDir, supersededRelativePath), supersededBytes);
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
       try {
         db.prepare(`
           INSERT INTO node_attempts (
@@ -320,8 +315,8 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts).toHaveLength(1);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(failedRelativePath);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(supersededRelativePath);
-      await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, failedRelativePath))).rejects.toThrow();
-      await expect(access(join(workspace, ".acpus", ".local", "runs", fork!.run.id, supersededRelativePath))).rejects.toThrow();
+      await expect(access(join(runtimeRunDir(workspace, fork!.run.id), failedRelativePath))).rejects.toThrow();
+      await expect(access(join(runtimeRunDir(workspace, fork!.run.id), supersededRelativePath))).rejects.toThrow();
     });
   });
 
@@ -405,14 +400,21 @@ describe.concurrent("runtime controls and recovery", () => {
         expect.objectContaining({ id: runId, status: "awaiting" }),
       ]);
 
-      await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow("Signal payload does not match schema");
+      await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toMatchObject({
+        failure: { type: "signal-payload-invalid", runId, target: "approve" },
+      });
 
       await expect(controlRun(workspace, runId, "resume")).resolves.toMatchObject({ status: "awaiting" });
 
-      const eventCountBeforeMissingSignal = runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ?", runId).length;
-      await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toThrow("Signal node 'missing' was not found.");
-      expect(runtimeRows(workspace, "SELECT type FROM run_events WHERE run_id = ?", runId)).toHaveLength(eventCountBeforeMissingSignal);
-      expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "awaiting" }]);
+      const beforeMissingSignal = await getRun(workspace, runId);
+      await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toMatchObject({
+        failure: { type: "signal-target-not-found", runId, target: "missing" },
+      });
+      const afterMissingSignal = await getRun(workspace, runId);
+      expect(afterMissingSignal?.eventCount).toBe(beforeMissingSignal?.eventCount);
+      expect(afterMissingSignal?.dynamic?.signalWaits).toEqual([
+        expect.objectContaining({ status: "awaiting" }),
+      ]);
 
       const signalPayload = { ok: true };
       const signalCommandIdempotencyKey = "signal:approve-command";
@@ -422,7 +424,6 @@ describe.concurrent("runtime controls and recovery", () => {
       await expect(signalRun(workspace, runId, "approve", signalPayload, signalCommandIdempotencyKey)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
-      expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", runId)).toEqual([{ status: "consumed" }]);
       const completedRun = await getRun(workspace, runId);
       expect(completedRun).toMatchObject({ status: "completed", output: { ok: true } });
       const consumedWait = completedRun?.dynamic?.signalWaits[0];

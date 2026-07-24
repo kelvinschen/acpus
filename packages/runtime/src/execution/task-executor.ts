@@ -13,6 +13,7 @@ import { runTaskAttempt, type TaskAttemptFailure } from "./task-process.js";
 
 export type TaskExecutorOptions = {
   cwd: string;
+  sourceRoot?: string;
   runId: string;
   store: Pick<RuntimeStore, "getRunDir" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
   nodeKey?: string;
@@ -37,7 +38,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
   const runDir = options.store.getRunDir(options.runId);
   if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
   const workspaceDir = resolve(options.cwd);
-  const absoluteRunDir = resolve(workspaceDir, runDir);
+  const absoluteRunDir = resolve(runDir);
   const input = evaluateTaskInput(node, scope);
   if (input.isErr()) return err(input.error);
   const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, workspaceDir, options);
@@ -82,6 +83,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
       target: node.run.target,
       input: input.value,
       workspaceDir,
+      sourceRoot: options.sourceRoot ?? workspaceDir,
       ...(execution === undefined ? {} : { execution }),
       artifact: { runId: options.runId, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, runDir: absoluteRunDir, paths: artifactPaths.value },
     },

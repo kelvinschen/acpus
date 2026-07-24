@@ -37,11 +37,13 @@ export {
   getRunVisualizationSnapshot,
   listArtifacts,
   listRuns,
+  readArtifact,
   tryNormalizeForkInput,
   type ForkInputNormalizationFailure,
   type RunDeleteFailure,
   type RuntimeHealthCheck,
   type RuntimeHealthReport,
+  type RuntimePersistence,
   type ArtifactRecord,
 } from "./runs/use-cases.js";
 export type {
@@ -129,4 +131,7 @@ export {
   type RunRecord,
   type RunStatus,
   type RunWorkflowLockArtifact,
+  type WorkflowSourceRef,
 } from "./store/store.js";
+export { prepareRuntimeForNewRun } from "./storage/maintenance.js";
+export { pruneRuns, type PruneReport } from "./runs/prune.js";

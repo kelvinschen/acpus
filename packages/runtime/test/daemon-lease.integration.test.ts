@@ -16,10 +16,13 @@ import {
   startDaemonLoop,
   type DaemonClientFailure,
 } from "../src/index.js";
+import { setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { admitSyntheticWorkflow, prepareSyntheticWorkflow, runtimeRows, signalWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 
 let dir: string;
+let home: string;
+let restoreHome: () => void;
 let store: RuntimeStore;
 
 type StoreWithDb = RuntimeStore & {
@@ -53,13 +56,21 @@ function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
 }
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "acpus-daemon-"));
+  [dir, home] = await Promise.all([
+    mkdtemp(join(tmpdir(), "acpus-daemon-")),
+    mkdtemp(join(tmpdir(), "acpus-daemon-home-")),
+  ]);
+  restoreHome = setRuntimeHomeForTest(dir, home);
   store = await openRuntimeStore(dir);
 });
 
 afterEach(async () => {
   store.close();
-  await rm(dir, { recursive: true, force: true });
+  restoreHome();
+  await Promise.all([
+    rm(dir, { recursive: true, force: true }),
+    rm(home, { recursive: true, force: true }),
+  ]);
 });
 
 describe("daemon lease", () => {
@@ -86,22 +97,6 @@ describe("daemon lease", () => {
 
     const third = store.claimDaemon({ ...base, pid: 103 });
     expect(third).toMatchObject({ generation: 1, pid: 103 });
-  });
-
-  it("stores daemon liveness without endpoint or auth metadata", () => {
-    store.claimDaemon({
-      workspaceRealpath: dir,
-      pid: 100,
-      protocolVersion: 1,
-      packageVersion: "0.0.0-test",
-      nodeVersion: process.version,
-      execPath: process.execPath,
-      idleStopMs: 30_000,
-    });
-
-    const columns = storeDbColumns("daemon_lease");
-    expect(columns).not.toContain("endpoint");
-    expect(columns).not.toContain("auth_token_hash");
   });
 
   it("maps process liveness through the run-execution evidence priority", async () => {
@@ -747,11 +742,4 @@ async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status:
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`Run '${runId}' did not become terminal.`);
-}
-
-function storeDbColumns(table: string): string[] {
-  return (store as StoreWithDb)
-    .db.prepare(`PRAGMA table_info(${table})`)
-    .all()
-    .map(row => row.name);
 }

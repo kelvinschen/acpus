@@ -281,7 +281,7 @@ describe("run inspection projection", () => {
       mediaType: "application/json",
       digest: "sha256:abc",
       size: 42,
-      path: "/workspace/.acpus/.local/runs/run_1/artifacts/review~0/attempt-1/agent/turn-001.json",
+      path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~0/attempt-1/agent/turn-001.json",
     };
     const overview = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
     const target = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], cursor: { eventSequence: 80, progressVersion: 1 }, query: { runId: run.id, mode: "target", target: "review" } });

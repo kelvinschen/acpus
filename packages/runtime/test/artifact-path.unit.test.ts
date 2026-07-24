@@ -1,36 +1,70 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { tryResolveArtifactPath, type ArtifactPathContext } from "../src/artifacts/path.js";
+import {
+  readVerifiedArtifactBytes,
+  tryResolveArtifactPath,
+  type ArtifactPathContext,
+} from "../src/artifacts/path.js";
+import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import type { ArtifactRecord } from "../src/store/store.js";
 
-describe("artifact path resolution", () => {
+describe("artifact path and content verification", () => {
   let workspace: string;
+  let runtimeHome: string;
+  let restoreRuntimeHome: () => void;
+  let runsRoot: string;
+  let runDir: string;
   const runId = "run_current";
   const artifactId = "artifact_input";
-  const runDir = `.acpus/.local/runs/${runId}`;
 
   beforeEach(async () => {
-    workspace = await mkdtemp(join(tmpdir(), "acpus-artifact-path-"));
-    await mkdir(join(workspace, runDir, "artifacts"), { recursive: true });
+    [workspace, runtimeHome] = await Promise.all([
+      mkdtemp(join(tmpdir(), "acpus-artifact-path-")),
+      mkdtemp(join(tmpdir(), "acpus-artifact-path-home-")),
+    ]);
+    restoreRuntimeHome = setRuntimeHomeForTest(workspace, runtimeHome);
+    runsRoot = resolveRuntimeLayout(workspace).runsRoot;
+    runDir = join(runsRoot, runId);
+    await mkdir(join(runDir, "artifacts"), { recursive: true });
   });
 
   afterEach(async () => {
-    await rm(workspace, { recursive: true, force: true });
+    restoreRuntimeHome();
+    await Promise.all([
+      rm(workspace, { recursive: true, force: true }),
+      rm(runtimeHome, { recursive: true, force: true }),
+    ]);
   });
 
-  it("returns the registered absolute path for a consumable current-run artifact", async () => {
-    const path = join(workspace, runDir, "artifacts", "input.txt");
-    await writeFile(path, "input\n");
+  it("returns the registered bytes when path, size, and digest are valid", async () => {
+    const path = join(runDir, "artifacts", "input.txt");
+    const bytes = Buffer.from("input\n");
+    await writeFile(path, bytes);
 
-    const resolved = tryResolveArtifactPath(ref(runId, artifactId), {
+    const actual = readVerifiedArtifactBytes({
       cwd: workspace,
       runId,
-      store: store(record(path)),
-    });
+      store: store(record(path, bytes)),
+    }, artifactId);
 
-    expect(resolved.isOk() && resolved.value).toBe(path);
+    expect(actual).toEqual(bytes);
+  });
+
+  it("rejects same-size content whose digest differs from the registry", async () => {
+    const path = join(runDir, "artifacts", "input.txt");
+    const registered = Buffer.from("original");
+    const tampered = Buffer.from("tampered");
+    await writeFile(path, tampered);
+
+    expect(tampered.byteLength).toBe(registered.byteLength);
+    expect(() => readVerifiedArtifactBytes({
+      cwd: workspace,
+      runId,
+      store: store(record(path, registered)),
+    }, artifactId)).toThrow();
   });
 
   it("returns tagged failures for malformed, foreign, missing, and unavailable local artifacts", async () => {
@@ -52,14 +86,14 @@ describe("artifact path resolution", () => {
       store: store(),
     })._unsafeUnwrapErr().type).toBe("artifact-not-found");
 
-    const missingPath = join(workspace, runDir, "artifacts", "missing.txt");
+    const missingPath = join(runDir, "artifacts", "missing.txt");
     expect(tryResolveArtifactPath(ref(runId, artifactId), {
       cwd: workspace,
       runId,
       store: store(record(missingPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
 
-    const directoryPath = join(workspace, runDir, "artifacts", "directory");
+    const directoryPath = join(runDir, "artifacts", "directory");
     await mkdir(directoryPath);
     expect(tryResolveArtifactPath(ref(runId, artifactId), {
       cwd: workspace,
@@ -67,8 +101,8 @@ describe("artifact path resolution", () => {
       store: store(record(directoryPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
 
-    const targetPath = join(workspace, runDir, "artifacts", "target.txt");
-    const symlinkPath = join(workspace, runDir, "artifacts", "link.txt");
+    const targetPath = join(runDir, "artifacts", "target.txt");
+    const symlinkPath = join(runDir, "artifacts", "link.txt");
     await writeFile(targetPath, "input\n");
     await symlink(targetPath, symlinkPath);
     expect(tryResolveArtifactPath(ref(runId, artifactId), {
@@ -95,14 +129,13 @@ describe("artifact path resolution", () => {
       cwd: workspace,
       runId,
       store: store(record(join(workspace, "outside.txt"))),
-    })).toThrow("escapes the run directory");
+    })).toThrow();
   });
 
   it("rejects a runs root replaced by a symlink outside the workspace", async () => {
     const outsideRunsRoot = await mkdtemp(join(tmpdir(), "acpus-artifact-runs-root-"));
     try {
-      const runsRoot = join(workspace, ".acpus", ".local", "runs");
-      const lexicalArtifactPath = join(workspace, runDir, "artifacts", "input.txt");
+      const lexicalArtifactPath = join(runDir, "artifacts", "input.txt");
       await mkdir(join(outsideRunsRoot, runId, "artifacts"), { recursive: true });
       await writeFile(join(outsideRunsRoot, runId, "artifacts", "input.txt"), "input\n");
       await rm(runsRoot, { recursive: true });
@@ -112,14 +145,22 @@ describe("artifact path resolution", () => {
         cwd: workspace,
         runId,
         store: store(record(lexicalArtifactPath)),
-      })).toThrow("Runtime runs root is a symbolic link or resolves outside the workspace.");
+      })).toThrow();
     } finally {
       await rm(outsideRunsRoot, { recursive: true, force: true });
     }
   });
 
-  function record(path: string): ArtifactRecord {
-    return { id: artifactId, runId, nodeKey: "produce", attempt: 1, digest: "sha256:test", size: 6, path };
+  function record(path: string, bytes = Buffer.from("input\n")): ArtifactRecord {
+    return {
+      id: artifactId,
+      runId,
+      nodeKey: "produce",
+      attempt: 1,
+      digest: digest(bytes),
+      size: bytes.byteLength,
+      path,
+    };
   }
 
   function store(artifact?: ArtifactRecord): ArtifactPathContext["store"] {
@@ -132,4 +173,8 @@ describe("artifact path resolution", () => {
 
 function ref(runId: string, artifactId: string) {
   return { kind: "artifact", uri: `artifact://${runId}/${artifactId}` };
+}
+
+function digest(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }

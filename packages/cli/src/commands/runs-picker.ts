@@ -58,9 +58,13 @@ export async function pickRunsToDelete(choices: DeleteRunChoice[], io: PromptIo)
   return { runIds: selectedAll ? deletable : picked, selectedAll };
 }
 
-export async function confirmDelete(count: number, io: PromptIo): Promise<boolean | undefined> {
+export async function confirmDelete(count: number, io: PromptIo, noun = "run"): Promise<boolean | undefined> {
+  return confirmAction(`Delete ${count} ${noun}${count === 1 ? "" : "s"}?`, io);
+}
+
+export async function confirmAction(message: string, io: PromptIo): Promise<boolean | undefined> {
   const confirmed = await confirm({
-    message: `Delete ${count} ${count === 1 ? "run" : "runs"}?`,
+    message,
     initialValue: false,
     input: io.stdin,
     output: io.stderr,

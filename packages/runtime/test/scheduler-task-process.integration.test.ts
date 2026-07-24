@@ -8,7 +8,7 @@ import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeRunDir, runtimeRow, runtimeRows, taskArtifactWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 import { loadAgentHostPolicy } from "../src/configuration.js";
@@ -155,7 +155,7 @@ describe("runtime scheduler task process", () => {
         const artifact = runtimeRow(workspace, "SELECT attempt, relative_path FROM artifacts WHERE run_id = ? AND node_key = ?", run.id, "context_task.dynamic");
         expect(artifact).toMatchObject({ attempt: 1 });
         expect(String(artifact?.relative_path)).toContain("artifacts/context_task.dynamic/attempt-1/");
-        const bytes = await readFile(join(workspace, ".acpus", ".local", "runs", run.id, String(artifact?.relative_path)));
+        const bytes = await readFile(join(runtimeRunDir(workspace, run.id), String(artifact?.relative_path)));
         expect(bytes.toString("utf8")).toBe("dynamic artifact\n");
         const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt");
         expect(metadata).toMatchObject({

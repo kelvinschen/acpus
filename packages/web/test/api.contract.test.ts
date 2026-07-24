@@ -1,7 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errAsync, okAsync } from "neverthrow";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +8,7 @@ const mockGetRuntimeHealth = vi.fn();
 const mockListRuns = vi.fn();
 const mockGetRunVisualizationSnapshot = vi.fn();
 const mockGetRunInspection = vi.fn();
-const mockGetArtifact = vi.fn();
+const mockReadArtifact = vi.fn();
 const mockRequestDaemonControl = vi.fn();
 const mockEnsureDaemonRunning = vi.fn();
 
@@ -19,7 +18,7 @@ vi.mock("@acpus/runtime", () => ({
   createWorkflowVisualizationOverlay: (ir: any) => ({ workflow: { name: ir.name }, nodes: [], groups: [] }),
   getRunVisualizationSnapshot: (...args: unknown[]) => mockGetRunVisualizationSnapshot(...args),
   getRunInspection: (...args: unknown[]) => mockGetRunInspection(...args),
-  getArtifact: (...args: unknown[]) => mockGetArtifact(...args),
+  readArtifact: (...args: unknown[]) => mockReadArtifact(...args),
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
 }));
 
@@ -33,6 +32,10 @@ describe("web API contract", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })));
   });
 
   describe("GET /api/health", () => {
@@ -222,20 +225,17 @@ describe("web API contract", () => {
     });
 
     it("loads the exact prompt field from a turn artifact without the preview size limit", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-turn-prompt-"));
-      const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
-      const path = join(artifactDir, "turn-001.json");
+      const cwd = "/virtual/acpus-web-turn-prompt";
+      const path = `${cwd}/runs/run_1/artifacts/turn-001.json`;
       const prompt = `${"p".repeat(130 * 1024)}PROMPT_TAIL`;
       const bytes = Buffer.from(JSON.stringify({ prompt, response: "done", summary: {} }));
-      await mkdir(artifactDir, { recursive: true });
-      await writeFile(path, bytes);
       const artifact = {
         id: "turn-1",
         runId: "run_1",
         nodeKey: "review~abc",
         attempt: 1,
         mediaType: "application/json",
-        digest: sha256(bytes),
+        digest: "sha256:verified",
         size: bytes.byteLength,
         path,
       };
@@ -243,6 +243,7 @@ describe("web API contract", () => {
         prompt: { kind: "artifact", artifactId: artifact.id, path, mediaType: artifact.mediaType, field: "prompt" },
         artifacts: [artifact],
       })));
+      mockReadArtifact.mockResolvedValue({ artifact, bytes });
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request("/api/runs/run_1/nodes/review~abc");
@@ -312,21 +313,19 @@ describe("web API contract", () => {
 
   describe("GET /api/runs/:id/artifacts/:artifactId/preview", () => {
     it("returns at most 128 KiB with the artifact media type", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-artifact-preview-"));
-      const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
-      const path = join(artifactDir, "output.txt");
+      const cwd = "/virtual/acpus-web-artifact-preview";
+      const path = `${cwd}/runs/run_1/artifacts/output.txt`;
       const bytes = Buffer.alloc(128 * 1024 + 7, "a");
-      await mkdir(artifactDir, { recursive: true });
-      await writeFile(path, bytes);
-      mockGetArtifact.mockResolvedValue({
+      const artifact = {
         id: "artifact_1",
         runId: "run_1",
         nodeKey: "task_1",
         attempt: 1,
-        digest: sha256(bytes),
+        digest: "sha256:verified",
         size: bytes.byteLength,
         path,
-      });
+      };
+      mockReadArtifact.mockResolvedValue({ artifact, bytes });
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request("/api/runs/run_1/artifacts/artifact_1/preview");
@@ -334,19 +333,20 @@ describe("web API contract", () => {
       expect(res.status).toBe(200);
       expect(Object.fromEntries(res.headers)).toEqual({ "content-type": "text/plain; charset=utf-8" });
       expect(Buffer.from(await res.arrayBuffer())).toEqual(bytes.subarray(0, 128 * 1024));
-      expect(mockGetArtifact).toHaveBeenCalledWith(cwd, "run_1", "artifact_1");
+      expect(mockReadArtifact).toHaveBeenCalledWith(cwd, "run_1", "artifact_1");
     });
 
-    it("treats a missing registered artifact file as server corruption", async () => {
-      mockGetArtifact.mockResolvedValue({
-        id: "artifact_1",
-        runId: "run_1",
-        nodeKey: "task_1",
-        attempt: 1,
-        digest: sha256(Buffer.from("missing")),
-        size: 7,
-        path: "/definitely-missing/acpus-artifact.txt",
-      });
+    it("returns 404 when the verified reader finds no registered artifact", async () => {
+      mockReadArtifact.mockResolvedValue(undefined);
+
+      const res = await app.request("/api/runs/run_1/artifacts/artifact_1/preview");
+
+      expect(res.status).toBe(404);
+      expect((await res.json() as JsonBody).error.code).toBe("artifact_not_found");
+    });
+
+    it("redacts verified reader failures as internal errors", async () => {
+      mockReadArtifact.mockRejectedValue(new Error("/secret/artifacts/output.txt failed verification"));
       const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
       try {
         const res = await app.request("/api/runs/run_1/artifacts/artifact_1/preview");
@@ -355,32 +355,7 @@ describe("web API contract", () => {
           ok: false,
           error: { code: "internal_error", message: "Internal server error." },
         });
-      } finally {
-        logged.mockRestore();
-      }
-    });
-
-    it("treats a tampered registered artifact as server corruption", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-artifact-tampered-"));
-      const artifactDir = join(cwd, ".acpus", ".local", "runs", "run_1", "artifacts");
-      const path = join(artifactDir, "output.txt");
-      await mkdir(artifactDir, { recursive: true });
-      await writeFile(path, "tampered");
-      mockGetArtifact.mockResolvedValue({
-        id: "artifact_1",
-        runId: "run_1",
-        nodeKey: "task_1",
-        attempt: 1,
-        digest: sha256(Buffer.from("original")),
-        size: 8,
-        path,
-      });
-      const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
-      const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-      try {
-        const res = await artifactApp.request("/api/runs/run_1/artifacts/artifact_1/preview");
-        expect(res.status).toBe(500);
-        expect((await res.json() as JsonBody).error).toEqual({ code: "internal_error", message: "Internal server error." });
+        expect(logged).toHaveBeenCalledOnce();
       } finally {
         logged.mockRestore();
       }
@@ -559,7 +534,7 @@ describe("web API contract", () => {
 
   describe("workflow visualization APIs", () => {
     it("lists project catalog entries without importing workflows", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-catalog-"));
+      const cwd = await temporaryDirectory("acpus-web-catalog-");
       await mkdir(join(cwd, ".acpus", "workflows", "release"), { recursive: true });
       await writeFile(join(cwd, ".acpus", "workflows", "release", "workflow.ts"), "throw new Error('must not import');\n");
       const catalogApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
@@ -574,7 +549,7 @@ describe("web API contract", () => {
     });
 
     it("does not treat a catalog symlink loop as an absent workflow", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-catalog-loop-"));
+      const cwd = await temporaryDirectory("acpus-web-catalog-loop-");
       const packageRoot = join(cwd, ".acpus", "workflows", "loop");
       await mkdir(packageRoot, { recursive: true });
       await symlink("workflow.ts", join(packageRoot, "workflow.ts"));
@@ -590,7 +565,7 @@ describe("web API contract", () => {
     });
 
     it("lists only safe workflow files under the workspace", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-"));
+      const cwd = await temporaryDirectory("acpus-web-files-");
       await writeFile(join(cwd, "workflow.ts"), "export default {};\n");
       await writeFile(join(cwd, "README.md"), "ignore\n");
       await mkdir(join(cwd, "nested"), { recursive: true });
@@ -614,8 +589,8 @@ describe("web API contract", () => {
     });
 
     it("rejects file-browser symlinks that resolve outside the workspace", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-symlink-"));
-      const outside = await mkdtemp(join(tmpdir(), "acpus-web-files-outside-"));
+      const cwd = await temporaryDirectory("acpus-web-files-symlink-");
+      const outside = await temporaryDirectory("acpus-web-files-outside-");
       await symlink(outside, join(cwd, "outside"));
       const filesApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
@@ -626,7 +601,7 @@ describe("web API contract", () => {
     });
 
     it("does not report a file-browser symlink loop as a user path error", async () => {
-      const cwd = await mkdtemp(join(tmpdir(), "acpus-web-files-loop-"));
+      const cwd = await temporaryDirectory("acpus-web-files-loop-");
       await symlink("loop", join(cwd, "loop"));
       const filesApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
       const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -693,8 +668,12 @@ describe("web API contract", () => {
   });
 });
 
-function sha256(bytes: Uint8Array): string {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const temporaryDirectories: string[] = [];
+
+async function temporaryDirectory(prefix: string): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(path);
+  return path;
 }
 
 function inspectionOk(value: JsonBody) {

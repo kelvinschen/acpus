@@ -6,6 +6,7 @@ const mock = vi.hoisted(() => ({
   spawn: vi.fn(),
   unref: vi.fn(),
   getRun: vi.fn(),
+  prepareRuntimeForNewRun: vi.fn(),
   requestDaemonAdmitRun: vi.fn(),
   requestDaemonControl: vi.fn(),
   requestDaemonStatus: vi.fn(),
@@ -15,6 +16,7 @@ const mock = vi.hoisted(() => ({
 vi.mock("node:child_process", () => ({ spawn: mock.spawn }));
 vi.mock("@acpus/runtime", () => ({
   getRun: mock.getRun,
+  prepareRuntimeForNewRun: mock.prepareRuntimeForNewRun,
   requestDaemonAdmitRun: mock.requestDaemonAdmitRun,
   requestDaemonControl: mock.requestDaemonControl,
   requestDaemonStatus: mock.requestDaemonStatus,
@@ -184,6 +186,10 @@ describe("CLI daemon client", () => {
     const result = await sendDaemonAdmitRun("/workspace", input);
     expect(result.isOk()).toBe(true);
     if (result.isOk()) expect(result.value).toBe(run);
+    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledOnce();
+    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledWith("/workspace");
+    expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
+    expect(mock.requestDaemonAdmitRun).toHaveBeenCalledWith("/workspace", input);
   });
 
   it("enriches a daemon control failure with current run state", async () => {

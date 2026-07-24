@@ -34,6 +34,7 @@ export function createDoctorCommand(ctx: DoctorCommandContext): Command {
         ok,
         phase: "doctor",
         message: ok ? "Doctor checks passed." : "Doctor checks failed.",
+        ...(report.persistence ? { persistence: report.persistence } : {}),
         checks: [...report.checks, ...(authoring?.checks ?? []), ...(authoringFailure ? [authoringFailure] : [])],
         ...(authoring ? { authoring: authoring.environment } : {}),
       }, outputFormatFor(options), ctx, ok ? 0 : 1));

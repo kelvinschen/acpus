@@ -10,7 +10,7 @@
 
 - The package MUST expose `officialAuthoringTypeScriptPaths(fromDir)`.
 - The package MUST expose `officialAuthoringEnvironment()` as the single resolved authority for official facade implementation package names, versions, package roots, and TypeScript authority paths.
-- The package MUST expose `importAuthoringModule(specifier, { parentURL })`.
+- The package MUST expose `importAuthoringModule(specifier, { parentURL, sourceRoot?, dependencyRoot? })`.
 - The package MUST NOT expose user-facing CLI commands, runtime state, workflow compilation APIs, or task execution APIs.
 - The package MUST keep TypeScript loader implementation details private to this package.
 
@@ -33,7 +33,11 @@
 
 - `importAuthoringModule(...)` MUST lazily register the TypeScript authoring loader, official facade mappings, CommonJS `_resolveFilename` fallback, ESM loader resolution, and feature-detected synchronous `module.registerHooks` resolution at most once per process.
 - The synchronous `module.registerHooks` hook MUST be optional and MUST NOT raise on Node versions that do not provide it.
-- `importAuthoringModule(specifier, { parentURL })` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the referrer.
+- `importAuthoringModule(specifier, options)` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the source referrer.
+- When `sourceRoot` and `dependencyRoot` are present, failed bare-package resolution originating beneath that source root MUST fall back to the dependency root; relative and absolute source resolution MUST remain anchored to `parentURL`.
+- The loader MUST NOT substitute process cwd or infer a workspace dependency root.
+- Source-root and referrer construction are owned by the [Workflow Compiler](workflow-compiler-spec.md#prepared-workflow-data) and [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
+- The loader MUST NOT persist, copy, identify, or clean source roots.
 - Relative `.js` source-level specifiers MUST continue to load matching TypeScript source files through the authoring loader.
 - TypeScript authoring modules MUST load when their workspace has no nearest `package.json` or its package type is CommonJS.
 - Bare package specifiers SHOULD use ESM import resolution semantics, including nested `node`, `node-addons`, `import`, `module-sync`, and `default` export conditions in declaration order. CommonJS-transformed paths MAY use the registered CommonJS fallback.
@@ -46,4 +50,4 @@
 ## Verification
 
 - Integration tests cover official facade and TypeScript module loading in clean source and built-package environments without ambient workspace dependencies.
-- Resolver tests cover ESM/CJS hooks, relative `.js` to TypeScript, `development` fallback boundaries, normal import conditions, and usable scratch-config paths.
+- Resolver tests cover explicit source and dependency authorities, ESM/CJS hooks, relative `.js` to TypeScript, `development` fallback boundaries, normal import conditions, and usable scratch-config paths.

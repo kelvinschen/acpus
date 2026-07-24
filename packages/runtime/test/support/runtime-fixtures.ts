@@ -12,6 +12,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { tryNormalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
+import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
 import { advanceRuntimeRun } from "./scheduler.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
 
@@ -26,13 +27,17 @@ export async function withRuntimeWorkspace<T>(name: string, fn: (workspace: stri
   const root = join(repoRoot, ".tmp-tests");
   await mkdir(root, { recursive: true });
   const workspace = await mkdtemp(join(root, `${name}-`));
+  const home = await mkdtemp(join(root, `${name}-home-`));
+  const restoreHome = setRuntimeHomeForTest(workspace, home);
   try {
     await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
     await linkWorkspaceCore(workspace);
     await writeWorkspaceTsconfig(workspace);
     return await fn(workspace);
   } finally {
+    restoreHome();
     await rm(workspace, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 }
 
@@ -373,11 +378,12 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
   const irFileDigest = digest(irJson);
   const sourceDigest = digest(irJson);
   const sourceGraphDigest = digest(`${sourceDigest}\n`);
+  const source = { kind: "workspace" as const, entry: workflowPath.slice(cwd.length + 1) };
   const lock: RunWorkflowLockArtifact = {
     kind: "acpus_workflow_preparation_lock",
     version: 1,
     workflow: {
-      entry: workflowPath.slice(cwd.length + 1),
+      source,
       sourceDigest,
     },
     ir: {
@@ -388,6 +394,7 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
   };
   return {
     workflowPath,
+    source,
     ir,
     irJson,
     sourceGraphDigest,
@@ -400,7 +407,7 @@ function digest(value: string | Uint8Array): string {
 }
 
 export function runtimeRow(workspace: string, sql: string, ...params: string[]): Record<string, unknown> | undefined {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
   try {
     return db.prepare(sql).get(...params);
   } finally {
@@ -409,10 +416,22 @@ export function runtimeRow(workspace: string, sql: string, ...params: string[]):
 }
 
 export function runtimeRows(workspace: string, sql: string, ...params: string[]): Array<Record<string, unknown>> {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
   try {
     return db.prepare(sql).all(...params);
   } finally {
     db.close();
   }
+}
+
+export function runtimeDatabasePath(workspace: string): string {
+  return resolveRuntimeLayout(workspace).databasePath;
+}
+
+export function runtimeRunsRoot(workspace: string): string {
+  return resolveRuntimeLayout(workspace).runsRoot;
+}
+
+export function runtimeRunDir(workspace: string, runId: string): string {
+  return join(runtimeRunsRoot(workspace), runId);
 }

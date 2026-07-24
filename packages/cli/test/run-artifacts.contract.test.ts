@@ -23,7 +23,7 @@ const artifacts: ArtifactRecord[] = [{
   mediaType: "application/x-ndjson",
   digest: "sha256:abc",
   size: 42,
-  path: "/workspace/.acpus/.local/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.trace.jsonl",
+  path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.trace.jsonl",
 }];
 
 describe("runs artifacts", () => {

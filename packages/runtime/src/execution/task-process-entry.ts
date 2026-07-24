@@ -46,7 +46,11 @@ process.on("message", (message: TaskProcessParentMessage) => {
 
 async function execute(request: TaskProcessRequest): Promise<void> {
   try {
-    const fn = await loadTaskFunction(request.target, request.workspaceDir);
+    const fn = await loadTaskFunction(
+      request.target,
+      request.sourceRoot ?? request.workspaceDir,
+      request.workspaceDir,
+    );
     const output = await fn({
       input: request.input,
       $: createTaskDollar(request.execution, controller.signal),
@@ -74,11 +78,19 @@ async function execute(request: TaskProcessRequest): Promise<void> {
   }
 }
 
-async function loadTaskFunction(target: TaskExecutionTargetIR, workspaceDir: string): Promise<TaskFunction<unknown, unknown>> {
+async function loadTaskFunction(
+  target: TaskExecutionTargetIR,
+  sourceRoot: string,
+  workspaceDir: string,
+): Promise<TaskFunction<unknown, unknown>> {
   if (target.kind === "inline") return loadInlineTaskFunction(target.source);
 
-  const parentURL = pathToFileURL(join(workspaceDir, target.referrer.path)).href;
-  const mod = await importAuthoringModule(target.specifier, { parentURL });
+  const parentURL = pathToFileURL(join(sourceRoot, target.referrer.path)).href;
+  const mod = await importAuthoringModule(target.specifier, {
+    parentURL,
+    sourceRoot,
+    dependencyRoot: workspaceDir,
+  });
   const token = mod[target.exportName];
   if (!task.isToken(token)) throw new Error(`Reusable task module '${target.specifier}' export '${target.exportName}' is not an Acpus task.`);
   return token.fn as TaskFunction<unknown, unknown>;
@@ -100,8 +112,8 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
     const relativePath = join("artifacts", args.nodeKey, `attempt-${args.attempt}`, `${id}-${safeArtifactName(name)}`);
     const absolutePath = join(args.runDir, relativePath);
     try {
-      await mkdir(join(args.runDir, "artifacts", args.nodeKey, `attempt-${args.attempt}`), { recursive: true });
-      await writeFile(absolutePath, bytes);
+      await mkdir(join(args.runDir, "artifacts", args.nodeKey, `attempt-${args.attempt}`), { recursive: true, mode: 0o700 });
+      await writeFile(absolutePath, bytes, { mode: 0o600 });
     } catch (cause) {
       throw rememberSystemFailure(`Task artifact write failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
     }

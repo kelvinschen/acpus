@@ -65,7 +65,10 @@
 - Browser HTTP transport MUST distinguish network failure, invalid JSON, invalid envelopes, and application request failures before the React Query adapter converts them to thrown query errors.
 - Recoverable workflow browsing and preparation failures MUST remain tagged Results until the Hono adapter converts them to an HTTP response; permission, I/O, and other unknown failures MUST propagate to the redacted `500` boundary.
 - Workflow browsing and file visualization MUST reject lexical or symlink-resolved paths outside the workspace.
-- An unregistered artifact request MUST return `404`; a registered artifact whose file is missing, non-regular, escapes its run, or fails its recorded size/digest MUST be treated as server corruption and return the fixed, redacted `500` envelope.
+- WebUI server code MUST read artifact bodies only through the [Runtime verified artifact reader](runtime-spec.md#read-apis-and-daemon-lifecycle).
+- A Runtime artifact-read absence MUST map to `404`.
+- A Runtime artifact durable-corruption rejection MUST map to the fixed, redacted `500` envelope.
+- WebUI server code MUST NOT independently open an artifact record's public path or duplicate Runtime containment, file-type, size, or digest validation.
 - Core, expression, and runtime packages MUST NOT expose public display-formatting APIs solely for WebUI graph labels.
 - The graph API MUST NOT persist, store, or return layout coordinates. The browser owns deterministic layout, viewport, zoom, pan, and local selector state.
 - The browser graph MUST expose local navigation through a searchable directory of rendered node occurrences, a selected-node containment breadcrumb, and a clickable minimap. These controls MUST update only local graph viewport or selection state.
@@ -141,12 +144,14 @@
 - Node inspection MUST present a low-noise Overview with identity, status, prompt, input, output, and the shared structured failure where relevant. It MUST preserve upstream acpx/RPC cause fields without independently parsing provider error text, and MUST NOT expose generic raw `Instances`, `Frames`, `Signals`, or `Metadata` tabs.
 - Artifact content MUST appear in a lazy-loaded `Artifacts` tab only for leaf nodes with artifacts; rows truncate long titles with hover/focus disclosure, and previews stay within the Inspector width.
 - WebUI artifact rows MUST project the public `path` from the [Runtime-owned artifact record](runtime-spec.md#read-apis-and-daemon-lifecycle) and MUST omit internal storage coordinates.
-- Artifact preview responses MUST cap the body at 128 KiB and MUST expose the preview media type through `Content-Type`.
+- Artifact preview responses MUST cap the body at 128 KiB.
+- Artifact preview `Content-Type` MUST prefer the registered media type and otherwise fall back to the public path extension.
 - Agent execution details MUST be shown in a conditional `Execution` tab for Agent nodes.
 - The Agent Execution tab MUST use semantic `agent_attempt` execution metadata.
 - The Agent Execution tab MUST refresh only while active.
 - The Web server MUST load complete tool summaries only through the active Execution-tab path.
-- An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be resolved through the existing JSON artifact loader and rendered as exact Markdown text. This field read MUST NOT use the 128 KiB generic artifact preview limit.
+- An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be resolved through the Runtime verified artifact reader and rendered as exact Markdown text.
+- An artifact-backed Agent prompt read MUST NOT use the 128 KiB generic artifact preview limit.
 - Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw turn JSON as the primary UI.
 - Agent execution responses MUST contain only availability/reason, summary, last-active time, context-window usage, input/output/total token usage with source, streamed-output summary, tool-call count, and the recent tool-call fields rendered by the Execution tab.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
@@ -161,5 +166,5 @@
 ## Verification
 
 - `pnpm test:unit -- packages/web`: verifies canonical static/runtime topology, single-scope fanout expansion, exact loop and Inspector contexts, deterministic layout, running-node focus, viewport preservation, and structural-container semantics.
-- `pnpm test:contract -- packages/web`: verifies graph response shapes, unified runtime snapshots, workflow browsing, inspection context, controls, artifacts, and access behavior.
+- `pnpm test:contract -- packages/web`: verifies graph response shapes, unified runtime snapshots, workflow browsing, inspection context, controls, verified artifact-reader delegation and error mapping, and access behavior.
 - Manual browser review verifies representative graph, Inspector, dynamic fanout, running focus, and reduced-motion states.

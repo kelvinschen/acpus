@@ -109,7 +109,7 @@ bindings.
 | Replay | Read-only topology replay command | No replay product surface | Use inspect for evidence, retry for the same frozen plan, and fork for a changed plan; none is a replay alias |
 | Visualization | TUI and served visualizer | Compact CLI inspection, static offline HTML, and local Web operator console | Replace old visualization commands and operational habits |
 | Catalog | YAML specs under catalog roots | `.acpus/workflows/<name>/workflow.ts` packages, with the directory and workflow names matching | Repackage catalog entries; YAML is not a valid 0.6 entry |
-| Durable state | 0.5 `.acpus/state/...` layout | Workspace-local `.acpus/.local/state/runtime.db` and `.acpus/.local/runs/<run-id>/` | Do not copy 0.5 state files into 0.6 storage |
+| Durable state | 0.5 `.acpus/state/...` layout | Per-workspace shards under `$HOME/.acpus/workspaces/<workspace-key>/runtime/` | Do not copy 0.5 state files; the current runtime creates its own database and run directories |
 
 0.5 already had ACP Agents, frozen workflow state, pause/resume, retry,
 Signal, fork, and visualization. Those are retained product foundations, not

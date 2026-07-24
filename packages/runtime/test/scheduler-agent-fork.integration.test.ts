@@ -1,6 +1,5 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
@@ -9,7 +8,7 @@ import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/sched
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
-import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { taggedAgentOutput, tracedCompletedAgentTurn } from "./support/agent-turn.js";
 
@@ -340,7 +339,7 @@ describe("scheduler agent overrides and forks", () => {
         });
 
         const runIdsBefore = new Set(runtimeRows(workspace, "SELECT id FROM runs").map(row => String(row.id)));
-        const runDirsBefore = (await readdir(join(workspace, ".acpus", ".local", "runs"))).sort();
+        const runDirsBefore = (await readdir(runtimeRunsRoot(workspace))).sort();
 
         const forkStore = await openRuntimeStore(workspace);
         try {
@@ -364,7 +363,7 @@ describe("scheduler agent overrides and forks", () => {
           nodeStates: [],
           artifacts: [],
         });
-        await expect(readdir(join(workspace, ".acpus", ".local", "runs")).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
+        await expect(readdir(runtimeRunsRoot(workspace)).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
       });
     });
 
@@ -611,7 +610,7 @@ function targetedForkCompletedSourceWorkflow() {
 }
 
 function replaceCompletedInstanceEventOutput(workspace: string, runId: string, nodeKey: string, output: unknown): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare("UPDATE run_events SET payload_json = ? WHERE run_id = ? AND type = 'instance.completed' AND node_key = ?").run(
       JSON.stringify({ schedulerEventVersion: 1, payload: { nodeKey, output } }),

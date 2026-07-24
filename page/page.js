@@ -11,7 +11,7 @@ const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const SPEED = REDUCED ? 2.5 : 1.5; // run-timeline pace
 /* real acpus shapes: <timestamp><20 hex> run id, frame#scope/leaf~digest nodeKey */
 const RUN_ID = "20260717143052A91F3E7C42D08B6E5F";
-const RUN_DIR = `.acpus/.local/runs/${RUN_ID}`;
+const RUN_DIR = `~/.acpus/workspaces/<workspace-key>/runtime/runs/${RUN_ID}`;
 const RETRY_KEY = "verify_claims#1/verify~8d2b4f6a0c18";
 
 const $ = (sel) => document.querySelector(sel);

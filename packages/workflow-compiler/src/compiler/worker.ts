@@ -29,15 +29,25 @@ export type CompileWorkerEnvelope =
 
 type CompletedProcess = Extract<ProcessResult, { ok: true }>;
 
-export function compileWorkflow(entry: string, cwd: string, scratchDir: string): ResultAsync<CompiledWorkflowModule, CompileWorkerFailure> {
-  return new ResultAsync(compileWorkflowResult(entry, cwd, scratchDir));
+export function compileWorkflow(
+  entry: string,
+  sourceRoot: string,
+  scratchDir: string,
+  dependencyRoot = sourceRoot,
+): ResultAsync<CompiledWorkflowModule, CompileWorkerFailure> {
+  return new ResultAsync(compileWorkflowResult(entry, sourceRoot, scratchDir, dependencyRoot));
 }
 
-async function compileWorkflowResult(entry: string, cwd: string, scratchDir: string): Promise<Result<CompiledWorkflowModule, CompileWorkerFailure>> {
+async function compileWorkflowResult(
+  entry: string,
+  sourceRoot: string,
+  scratchDir: string,
+  dependencyRoot: string,
+): Promise<Result<CompiledWorkflowModule, CompileWorkerFailure>> {
   const out = join(scratchDir, "compile-result.json");
   const isSourceWorker = import.meta.url.endsWith(".ts");
   const worker = fileURLToPath(new URL(isSourceWorker ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
-  const args = [worker, entry, out, cwd];
+  const args = [worker, entry, out, sourceRoot, dependencyRoot];
   if (isSourceWorker) {
     args.unshift("--import", await import.meta.resolve("tsx"));
     // Workspace development should compile workflows against live core source.

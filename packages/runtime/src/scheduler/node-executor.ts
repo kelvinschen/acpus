@@ -15,6 +15,7 @@ import type { AgentHostPolicy } from "../configuration.js";
 
 export type RuntimeNodeExecutorInput = {
   cwd: string;
+  sourceRoot?: string;
   ir: WorkflowIR;
   scope: EvaluationScope;
   store: RuntimeStore;
@@ -91,6 +92,7 @@ async function executeTask(
 ): Promise<Result<JsonValue | undefined, TaskNodeFailure>> {
   return executeTaskNode(node, scope, {
     cwd: input.cwd,
+    sourceRoot: input.sourceRoot ?? input.cwd,
     runId: context.runId,
     attemptId: context.attemptId,
     store: input.store,

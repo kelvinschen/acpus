@@ -562,10 +562,10 @@ async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, n
   const attempt = options.attemptNo ?? 1;
   const id = `artifact_${randomUUID()}`;
   const relativePath = join("artifacts", nodeKey, `attempt-${attempt}`, "agent", `turn-${String(turn).padStart(3, "0")}.${name}`);
-  const absolutePath = join(options.cwd, runDir, relativePath);
+  const absolutePath = join(runDir, relativePath);
   const bytes = Buffer.from(content, "utf8");
-  await mkdir(join(options.cwd, runDir, "artifacts", nodeKey, `attempt-${attempt}`, "agent"), { recursive: true });
-  await writeFile(absolutePath, bytes);
+  await mkdir(join(runDir, "artifacts", nodeKey, `attempt-${attempt}`, "agent"), { recursive: true, mode: 0o700 });
+  await writeFile(absolutePath, bytes, { mode: 0o600 });
   try {
     throwSchedulerStoreResult(options.store.registerArtifact({
       id,

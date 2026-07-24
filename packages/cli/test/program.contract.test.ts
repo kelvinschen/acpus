@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -96,10 +96,10 @@ describe("CLI program usage contracts", () => {
   });
 
   it("reports absolute authoring authority without initializing runtime state", async () => {
-    await withTestWorkspace("doctor-authoring", async workspace => {
+    await withTestWorkspace("doctor-authoring", async (workspace, home) => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
-      process.env.HOME = join(workspace, "home");
+      process.env.HOME = home;
       process.env.USERPROFILE = process.env.HOME;
       try {
         const stdout = new CaptureStream();
@@ -111,11 +111,14 @@ describe("CLI program usage contracts", () => {
         expect(result).toMatchObject({
           ok: true,
           phase: "doctor",
+          persistence: { path: expect.any(String) },
           authoring: {
             cli: { version: getCliPackageInfo().version },
             skills: { bundled: { version: getCliPackageInfo().version, status: "aligned" }, installed: [] },
           },
         });
+        expect(dirname(result.persistence.path)).toBe(join(home, ".acpus", "workspaces"));
+        expect(basename(result.persistence.path)).toMatch(/^[a-f0-9]{32}$/);
         expect(isAbsolute(result.authoring.cli.entry)).toBe(true);
         expect(isAbsolute(result.authoring.cli.packageRoot)).toBe(true);
         for (const authority of Object.values(result.authoring.imports) as Array<{ packageRoot: string; typesPath: string }>) {
@@ -123,7 +126,8 @@ describe("CLI program usage contracts", () => {
           expect(isAbsolute(authority.typesPath)).toBe(true);
         }
         await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(lstat(join(workspace, "home", ".acpus", ".local", "update-awareness"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(join(home, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(join(home, ".acpus", "cache", "update-awareness"))).rejects.toMatchObject({ code: "ENOENT" });
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -196,7 +200,7 @@ describe("CLI program usage contracts", () => {
       delete process.env.NO_UPDATE_NOTIFIER;
       process.env.NO_COLOR = "1";
       try {
-        const cache = join(home, ".acpus", ".local", "update-awareness");
+        const cache = join(home, ".acpus", "cache", "update-awareness");
         await mkdir(cache, { recursive: true });
         await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
         await writeFile(join(cache, "available.json"), JSON.stringify({

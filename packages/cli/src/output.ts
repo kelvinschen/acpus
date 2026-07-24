@@ -2,7 +2,14 @@ import type { Writable } from "node:stream";
 import { basename, isAbsolute, relative } from "node:path";
 import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
-import type { HookConfigScope, LoadedHookConfig, RunRecord, RuntimeHealthCheck } from "@acpus/runtime";
+import type {
+  HookConfigScope,
+  LoadedHookConfig,
+  PruneReport,
+  RunRecord,
+  RuntimeHealthCheck,
+  RuntimePersistence,
+} from "@acpus/runtime";
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
 import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "./skill-installation.js";
@@ -42,12 +49,14 @@ type CliControl = CliAppliedControl | CliUnappliedControl;
 
 type CliResultFields = {
   message?: string;
+  persistence?: RuntimePersistence;
   workflow?: WorkflowSummary;
   diagnostics?: DiagnosticIR[];
   sourceGraphDigest?: string;
   run?: RunRecord;
   deletedRuns?: RunRecord[];
   skippedRuns?: RunRecord[];
+  prune?: PruneReport;
   catalogEntries?: WorkflowCatalogEntry[];
   followRunId?: string;
   checks?: Array<RuntimeHealthCheck | AuthoringHealthCheck>;
@@ -107,8 +116,9 @@ export type CliResult =
   | ControlSuccessCliResult
   | ControlFailureCliResult
   | ResultRecord<"delete", true, "message" | "run" | "deletedRuns" | "skippedRuns", "message" | "deletedRuns" | "skippedRuns">
-  | ResultRecord<"delete", false, "message" | "run" | "errorCode", "message">
-  | ResultRecord<"doctor", boolean, "message" | "checks" | "authoring", "message" | "checks">
+  | ResultRecord<"delete", true, "message" | "prune", "message" | "prune">
+  | ResultRecord<"delete", false, "message" | "run" | "errorCode" | "prune", "message">
+  | ResultRecord<"doctor", boolean, "message" | "persistence" | "checks" | "authoring", "message" | "checks">
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "visualization", "message" | "workflow" | "visualization">
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
   | ResultRecord<"viz", false, "message", "message">
@@ -167,6 +177,11 @@ export function writeResult(
       : result.message;
     stream.write(`${message}\n`);
   }
+  if (result.persistence) {
+    const label = ansi("Persistence:", 36, doctorColor);
+    const path = ansi(result.persistence.path, 1, doctorColor);
+    stream.write(`${label} ${path}\n`);
+  }
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
@@ -190,6 +205,7 @@ export function writeResult(
   if (result.skippedRuns?.length) {
     for (const run of result.skippedRuns) stream.write(`Skipped: ${run.id}\t${run.status}\t${run.name}\n`);
   }
+  if (result.prune) writePruneReport(stream, result.prune);
   if (result.followRunId) stream.write(`Next: acpus runs inspect ${result.followRunId} --follow\n`);
   if (result.checks) {
     const statusWidth = result.checks.reduce((width, check) => Math.max(width, check.status.length), 0);
@@ -329,6 +345,19 @@ function writeRun(stream: Writable, run: RunRecord, control: CliControl | undefi
   }
   stream.write(`Status: ${run.status}\n`);
   stream.write(`Workflow entry: ${run.workflowEntry}\n`);
+}
+
+function writePruneReport(stream: Writable, report: PruneReport): void {
+  stream.write(`Selected: ${formatCount(report.selected.workspaces, "workspace")}, ${formatCount(report.selected.runs, "run")}, ${formatCount(report.selected.archives, "archive")}, ${report.selected.bytes} bytes\n`);
+  if (!report.dryRun) {
+    stream.write(`Deleted: ${formatCount(report.deleted.workspaces, "workspace")}, ${formatCount(report.deleted.runs, "run")}, ${formatCount(report.deleted.archives, "archive")}, ${formatCount(report.deleted.sources, "source")}, ${report.deleted.bytes} bytes\n`);
+    stream.write(`Removed workspaces: ${report.removedWorkspaces}\n`);
+  }
+  for (const failure of report.failures) stream.write(`Failed: ${failure.workspaceKey}\t${failure.message}\n`);
+}
+
+function formatCount(count: number, name: string): string {
+  return `${count} ${name}${count === 1 ? "" : "s"}`;
 }
 
 function writeSkillResult(stream: Writable, result: SkillCommandResult): void {

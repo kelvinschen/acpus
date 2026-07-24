@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RegisterArtifactInput, type RuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler store attempt fences", () => {
   it("starts against one snapshot version and binds replay identity to that admission version", async () => {
@@ -218,6 +218,27 @@ describe("scheduler store attempt fences", () => {
     });
   });
 
+  it("rejects artifact registry paths outside the owning attempt directory", async () => {
+    await withRuntimeWorkspace("scheduler-store-artifact-path", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
+        const artifact = artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_escape");
+
+        expect(() => store.registerArtifact({
+          ...artifact,
+          relativePath: "workflow.ir.json",
+        })).toThrow("inside its attempt artifact directory");
+        expect(store.listArtifacts(run.id)).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("silently drops progress from the wrong owner and cannot overwrite current-attempt progress", async () => {
     await withRuntimeWorkspace("scheduler-store-progress-owner-fence", async workspace => {
       const store = await openedStore(workspace);
@@ -379,7 +400,7 @@ function artifactInput(runId: string, attemptId: string, ownerEpoch: number, id:
 }
 
 function expireRunLease(workspace: string, runId: string): void {
-  const db = new DatabaseSync(`${workspace}/.acpus/.local/state/runtime.db`);
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run("2000-01-01T00:00:00.000Z", runId);
   } finally {

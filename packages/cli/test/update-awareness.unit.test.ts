@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -91,7 +91,7 @@ describe("update awareness", () => {
     const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const cache = join(home, ".acpus", "cache", "update-awareness");
     await mkdir(cache, { recursive: true });
     await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
     process.env.HOME = home;
@@ -130,7 +130,7 @@ describe("update awareness", () => {
     const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const cache = join(home, ".acpus", "cache", "update-awareness");
     const notices = join(cache, "notices.json");
     const program = new Command("acpus");
     const doctor = new Command("doctor");
@@ -190,7 +190,7 @@ describe("update awareness", () => {
     const workspace = await mkdtemp(join(tmpdir(), "acpus-update-awareness-workspace-"));
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const cache = join(home, ".acpus", "cache", "update-awareness");
     const notices = join(cache, "notices.json");
     const program = new Command("acpus");
     const workflow = new Command("workflow");
@@ -235,7 +235,7 @@ describe("update awareness", () => {
     const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", ".local", "update-awareness");
+    const cache = join(home, ".acpus", "cache", "update-awareness");
     const program = new Command("acpus");
     const workflow = new Command("workflow");
     program.addCommand(workflow);
@@ -276,7 +276,14 @@ describe("update awareness", () => {
   it("records a fetched update once per four hours in its supplied global cache", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-23T00:00:00.000Z"));
-    const cache = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
+    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
+    const cache = join(home, ".acpus", "cache", "update-awareness");
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    await mkdir(cache, { recursive: true });
+    if (process.platform !== "win32") await chmod(cache, 0o755);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({
       version: "0.8.0",
       engines: { node: ">=22.18.0" },
@@ -297,8 +304,18 @@ describe("update awareness", () => {
         engines: { node: ">=22.18.0" },
       });
       expect(JSON.parse(await readFile(join(cache, "last-attempt.json"), "utf8"))).toHaveProperty("checkedAt");
+      if (process.platform !== "win32") {
+        expect((await stat(cache)).mode & 0o777).toBe(0o700);
+        for (const file of ["available.json", "last-attempt.json"]) {
+          expect((await stat(join(cache, file))).mode & 0o777).toBe(0o600);
+        }
+      }
     } finally {
-      await rm(cache, { recursive: true, force: true });
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

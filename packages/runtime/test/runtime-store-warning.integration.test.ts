@@ -7,16 +7,19 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
-const workspaces: string[] = [];
+const temporaryPaths: string[] = [];
 
 describe("runtime SQLite warning", () => {
   afterEach(async () => {
-    await Promise.all(workspaces.splice(0).map(workspace => rm(workspace, { recursive: true, force: true })));
+    await Promise.all(temporaryPaths.splice(0).map(path => rm(path, { recursive: true, force: true })));
   });
 
   it("suppresses only the SQLite experimental warning during store initialization", async () => {
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-runtime-sqlite-warning-"));
-    workspaces.push(workspace);
+    const [workspace, home] = await Promise.all([
+      mkdtemp(join(tmpdir(), "acpus-runtime-sqlite-warning-")),
+      mkdtemp(join(tmpdir(), "acpus-runtime-sqlite-warning-home-")),
+    ]);
+    temporaryPaths.push(workspace, home);
     const storeModule = pathToFileURL(join(import.meta.dirname, "../src/store/store.ts")).href;
     const script = `
       import { openRuntimeStore } from ${JSON.stringify(storeModule)};
@@ -26,7 +29,7 @@ describe("runtime SQLite warning", () => {
       if (process.emitWarning !== emitWarning) throw new Error("process.emitWarning was not restored");
       process.emitWarning("Acpus warning sentinel", "ExperimentalWarning");
     `;
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
     delete env.NODE_NO_WARNINGS;
     delete env.NODE_OPTIONS;
 

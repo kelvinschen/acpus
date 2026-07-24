@@ -23,6 +23,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `runs inspect [run-id]` | `--all`, `--target`, `--follow`, `--interval`, and `--raw` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
+| `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
 | `doctor` | Read-only runtime and authoring health. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
@@ -57,10 +58,15 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - A catalog prompt selection MUST perform named lookup with the selected entry's scope; prompt cancellation is a usage failure.
 - Unscoped lookup MUST require a name unique across project and global catalogs; scoped lookup searches only the selected scope.
 - Path-like workflow arguments MUST use direct preparation unless a scope flag is present; other arguments resolve as catalog names.
-- Global catalog preparation MUST use a content-addressed `.acpus/.local/catalog-cache/global/<name>/<digest>/` snapshot that follows symlinks and copies their target content; run records omit catalog metadata.
+- Global catalog preparation MUST materialize one private `$HOME/.acpus/tmp/catalog-snapshots/<name>-*/package/` snapshot that follows symlinks and copies their target content.
+- Global catalog preparation MUST remove its temporary snapshot after check, visualization, admission, or failure.
+- A global catalog preparation MUST pass the compiler-owned source reference and snapshot root to preparation; durable source ownership after admission delegates to the [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
 - Import MUST accept local regular `.ts`, `.zip`, `.tar.gz`, and `.tgz` files, local directories, and anonymous HTTP(S) URLs with those suffixes, matched case-insensitively from the URL pathname.
 - Remote import MUST follow no more than five anonymous HTTP(S) redirects; unsupported suffixes, URL credentials, non-HTTP(S) URLs, and conflicting scopes are usage errors.
 - Import MUST create a one-time snapshot without dependency installation, provenance/update metadata, identical-content special cases, or replacement of an existing same-scope name.
+- Project import staging MUST be confined to `<workspace>/.acpus/tmp/`.
+- Global import staging MUST be confined to `$HOME/.acpus/tmp/workflow-imports/`.
+- A checked global import MUST prepare its package from `$HOME/.acpus/tmp/workflow-imports/` with current-workspace dependency authority and MUST NOT stage beneath the workspace.
 - A single source file MUST become `workflow.ts`; a directory or archive contains it at package root or beneath exactly one wrapper directory and contributes every ordinary file in that root.
 - Private staging MUST be removed after success or failure. ZIP uses `@zip.js/zip.js`, TAR uses `tar`, and every archive entry is validated before extraction.
 - Import MUST reject links, special files, absolute or parent-traversing paths, NUL, duplicates, and paths colliding after Unicode NFC normalization or case-folding.
@@ -87,13 +93,25 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST NOT start the daemon or create Runtime or workspace state; this includes inspect, artifacts, catalog reads, hook reads, Doctor, and skill read.
+- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifacts, `runs prune --dry-run`, catalog reads, hook reads, Doctor, and skill read.
 - Runtime-backed read-only commands MUST use Runtime read APIs.
-- Artifact listing MUST present Runtime-owned registry records without reading bodies; absent artifacts produce `No artifacts.` in text and an empty array in JSON.
+- Artifact listing MUST present Runtime-owned registry records, including each absolute public path, without reading bodies.
+- An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
 - Inspect MUST map default, `--all`, `--target`, and `--raw --json` to the corresponding Runtime query modes. Target/all conflict; raw requires JSON and conflicts with target, all, and follow.
 - Inspect interval MUST require follow, default to 1s, and reject values below 250ms.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
+- `runs prune` MUST delegate eligible-run, archive, source, trash, and empty-shard semantics to the [Runtime](runtime-spec.md#pruning) without starting the daemon.
+- `runs prune --older-than` MUST accept a Core duration.
+- An invalid prune duration MUST fail as usage before reading runtime state.
+- Omitting `--older-than` MUST select every Runtime-eligible terminal run and archive in scope.
+- `runs prune` MUST default to the current workspace; `--all-workspaces` explicitly broadens maintenance to every known workspace shard.
+- `runs prune --dry-run` MUST emit the Runtime selection report without prompting or deleting.
+- Real pruning in JSON or a non-interactive terminal MUST require `--yes` before reading runtime state.
+- Real interactive text pruning without `--yes` MUST show one aggregate dry-run preview and require one confirmation before deletion.
+- Preview and deletion MUST use the same absolute selection cutoff so a run or archive that becomes eligible while confirmation is pending is not deleted without appearing in the preview.
+- With `--yes`, a zero-run/zero-archive preview MUST still execute the writable Runtime pass so orphan sources and an already-empty shard can be collected; an interactive invocation without `--yes` MAY return success without that maintenance pass.
+- A prune report containing any shard failure MUST use phase `delete`, set `ok: false`, and exit 1 while preserving the complete Runtime report.
 
 ### Controls, Doctor, Skills, And Hooks
 
@@ -104,6 +122,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
 - Foreground run and follow `Ctrl-C` MUST detach without canceling the run; foreground run prints its run id and an explicit cancel command. No hidden double-`Ctrl-C` control exists.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
+- Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
+- On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
+- JSON Doctor output MUST expose that workspace shard root as `persistence.path`.
 - Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with remediation `acpus skill install --<scope> --agent <agent>`, while a simply missing installed copy remains structured `missing` without a warning.
 - Doctor installed-skill records MUST inspect only existing fixed skills roots and identify the target with `agent: "universal" | "claude"`.
 - Skill read MUST resolve resources only from the `acpus` skill bundled in the running CLI package.
@@ -129,6 +150,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - The bundled skill MUST treat `/wf:<hint>` and `/workflow:<hint>` as equivalent heuristic requests to look for a likely existing workflow in the library and catalog before authoring.
 - The bundled skill MUST NOT route unmarked requests to catalog inspection by default.
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
+- Bundled deep-research report drafts MUST be confined to `$HOME/.acpus/tmp/report-drafts/<run-id>/`.
+- An explicit deep-research report destination MUST remain inside the workflow workspace.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 
@@ -136,7 +159,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 - An eligible update-awareness invocation MUST be a command action with TTY stdout and stderr, no `--json`, `--help`, or `-h` argument, and none of `CI`, `NODE_ENV=test`, `npm_lifecycle_event`, or `NO_UPDATE_NOTIFIER` set.
 - An ineligible invocation MUST NOT make an update-awareness network request or create update-awareness cache state.
-- Update-awareness persistence MUST be confined to `$HOME/.acpus/.local/update-awareness`; it MUST NOT create workspace `.acpus` state or modify a workspace.
+- Update-awareness persistence MUST be confined to `$HOME/.acpus/cache/update-awareness`.
+- Update awareness MUST NOT create workspace `.acpus` state or modify a workspace.
 - Update-awareness timing MUST be controlled by one internal policy: the current defaults are a 4-hour remote-check interval, four available-release reminders per installed CLI version, and a 2-hour available-release reminder cooldown.
 - An eligible invocation MAY launch a detached, unrefed update worker before the command action; the worker MUST attempt the public npm `https://registry.npmjs.org/acpus/latest` endpoint at most once per rolling 4-hour period and MUST use a 10-second request deadline.
 - The worker MUST retain a cached release only when it is a non-deprecated stable SemVer version newer than the running CLI and its declared Node engine supports the running Node version.
@@ -191,8 +215,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 ## Verification
 
 - Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
-- Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, hooks, Doctor, and skills at their delegated boundaries.
-- Prove that read-only commands do not start the daemon or create runtime state.
+- CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
+- Exercise preparation, admission, catalog/import, visualization, inspection, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
+- Prove that read-only commands do not start the daemon or create runtime shards.
 - Contract-test bundled lifecycle routing, example disclosure, and workflow-library isolation; typecheck and apply native authoring checks to official examples and library workflows, require examples to cover every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
-- Cover input mode selection, archive safety, workspace containment, collisions, and mutation-free failures.
+- Cover input mode selection, archive safety, workspace containment, private home/project staging, cleanup on success and failure, collisions, and mutation-free failures.
 - Cover update-awareness eligibility, 4-hour worker caching, available-release reminder budget/cooldown, SemVer/Node-engine filtering, the CLI-update-attached Skill-refresh command, and the Doctor available-release reminder without using a network service.

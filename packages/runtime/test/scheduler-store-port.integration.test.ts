@@ -2,14 +2,13 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { getRunInspection } from "../src/inspection/use-cases.js";
 import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { stableJson } from "../src/stable-json.js";
-import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("scheduler store port", () => {
@@ -80,7 +79,7 @@ describe("scheduler store port", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const databasePath = join(workspace, ".acpus", ".local", "state", "runtime.db");
+        const databasePath = runtimeDatabasePath(workspace);
         const worker = new Worker(`
           const { parentPort, workerData } = require("node:worker_threads");
           const { DatabaseSync } = require("node:sqlite");
@@ -1442,7 +1441,7 @@ describe("scheduler store port", () => {
           expectedVersion: attempt.snapshot.version,
         })).toThrow("still active");
 
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), run.id);
         } finally {
@@ -1518,7 +1517,7 @@ describe("scheduler store port", () => {
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), run.id);
         } finally {
@@ -2488,7 +2487,7 @@ function dbScalar(workspace: string, sql: string, ...params: SQLInputValue[]): u
 }
 
 function dbRow(workspace: string, sql: string, ...params: SQLInputValue[]): Record<string, unknown> | undefined {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
   try {
     return db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
   } finally {
@@ -2497,7 +2496,7 @@ function dbRow(workspace: string, sql: string, ...params: SQLInputValue[]): Reco
 }
 
 function dbRows(workspace: string, sql: string, ...params: SQLInputValue[]): Array<Record<string, unknown>> {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
   try {
     return db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   } finally {
@@ -2506,7 +2505,7 @@ function dbRows(workspace: string, sql: string, ...params: SQLInputValue[]): Arr
 }
 
 function dbRun(workspace: string, sql: string, ...params: SQLInputValue[]): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare(sql).run(...params);
   } finally {
@@ -2515,7 +2514,7 @@ function dbRun(workspace: string, sql: string, ...params: SQLInputValue[]): void
 }
 
 function setSchedulerEventTypesCreatedAt(workspace: string, runId: string, types: string[], createdAt: string): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     const placeholders = types.map(() => "?").join(", ");
     db.prepare(`UPDATE run_events SET created_at = ? WHERE run_id = ? AND type IN (${placeholders})`).run(createdAt, runId, ...types);
@@ -2525,7 +2524,7 @@ function setSchedulerEventTypesCreatedAt(workspace: string, runId: string, types
 }
 
 function writeMalformedSchedulerEvent(workspace: string, runId: string, type: string, nodeKey: string): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     const sequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as { count: number };
     db.prepare(`
@@ -2538,7 +2537,7 @@ function writeMalformedSchedulerEvent(workspace: string, runId: string, type: st
 }
 
 function writeSchedulerEventPayload(workspace: string, runId: string, type: string, nodeKey: string, payload: Record<string, unknown>): void {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     const sequence = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as { count: number };
     db.prepare(`

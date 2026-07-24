@@ -122,7 +122,7 @@ describe("task process timeout budget", () => {
         ownerEpoch: 1,
         digest: "sha256:late",
         size: 1,
-        relativePath: "artifacts/late.txt",
+        relativePath: "artifacts/late_message/attempt-1/artifact_1-late.txt",
       },
     });
     child.emit("message", { type: "completed", hasOutput: true, output: { late: true } });
@@ -130,7 +130,10 @@ describe("task process timeout budget", () => {
 
     expect((await result)._unsafeUnwrapErr()).toMatchObject({ type: "timed_out" });
     expect(registerArtifact).not.toHaveBeenCalled();
-    expect(removeRejectedArtifact).toHaveBeenCalledWith("/repo/.acpus/run_1/artifacts/late.txt", { force: true });
+    expect(removeRejectedArtifact).toHaveBeenCalledWith(
+      "/repo/.acpus/run_1/artifacts/late_message/attempt-1/artifact_1-late.txt",
+      { force: true },
+    );
     expect(child.sent).toContainEqual(expect.objectContaining({ type: "artifact_result", requestId: "artifact_1", ok: false }));
     expect(child.sent).toContainEqual({ type: "abort" });
   });
@@ -237,7 +240,7 @@ describe("task process timeout budget", () => {
         ownerEpoch: 1,
         digest: "sha256:artifact",
         size: 1,
-        relativePath: "artifacts/output.txt",
+        relativePath: "artifacts/artifact_store_failure/attempt-1/artifact_1-output.txt",
       },
     });
 

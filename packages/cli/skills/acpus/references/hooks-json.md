@@ -20,7 +20,7 @@ A hooks file is an event map. Do not wrap it in a top-level `hooks` field.
   "run.completed": [
     {
       "id": "record-completion",
-      "command": "mkdir -p .acpus/.local/hook-samples && cat > .acpus/.local/hook-samples/last-run-completed.json",
+      "command": "mkdir -p .acpus/hook-samples && cat > .acpus/hook-samples/last-run-completed.json",
       "timeout": "10s"
     }
   ],
@@ -28,7 +28,7 @@ A hooks file is an event map. Do not wrap it in a top-level `hooks` field.
     {
       "id": "record-failed-agent",
       "match": { "kind": "agent" },
-      "command": "mkdir -p .acpus/.local/hook-samples && cat > .acpus/.local/hook-samples/last-agent-failure.json"
+      "command": "mkdir -p .acpus/hook-samples && cat > .acpus/hook-samples/last-agent-failure.json"
     }
   ]
 }

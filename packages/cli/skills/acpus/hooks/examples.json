@@ -2,7 +2,7 @@
   "run.completed": [
     {
       "id": "record-completion",
-      "command": "mkdir -p .acpus/.local/hook-samples && cat > .acpus/.local/hook-samples/last-run-completed.json",
+      "command": "mkdir -p .acpus/hook-samples && cat > .acpus/hook-samples/last-run-completed.json",
       "timeout": "10s"
     }
   ],
@@ -10,7 +10,7 @@
     {
       "id": "record-failed-agent",
       "match": { "kind": "agent" },
-      "command": "mkdir -p .acpus/.local/hook-samples && cat > .acpus/.local/hook-samples/last-agent-failure.json",
+      "command": "mkdir -p .acpus/hook-samples && cat > .acpus/hook-samples/last-agent-failure.json",
       "timeout": "10s"
     }
   ]

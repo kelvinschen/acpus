@@ -10,7 +10,7 @@ import type { HookContext } from "../src/hooks/context.js";
 import type { HookRunner } from "../src/hooks/runner.js";
 import { createRuntimeRunScheduler, dispatchCommittedHooksForRun } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRunDir, runtimeRow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
 describe("runtime hook integration", () => {
@@ -50,7 +50,7 @@ describe("runtime hook integration", () => {
         }
         const row = runtimeRow(workspace, "SELECT sequence FROM run_events WHERE run_id = ? AND type = 'instance.completed'", run.id);
         if (!row) throw new Error("expected completed instance event");
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare("UPDATE run_events SET payload_json = ? WHERE run_id = ? AND sequence = ?").run("{\"bad\":true}", run.id, Number(row.sequence));
           db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(Number(row.sequence) - 1, run.id);
@@ -79,7 +79,7 @@ describe("runtime hook integration", () => {
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const lastSequence = store.getLastRunEventSequence(run.id);
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(lastSequence + 1, run.id);
         } finally {
@@ -113,10 +113,10 @@ describe("runtime hook integration", () => {
         const artifactId = "hook-agent-turn";
         const relativePath = "artifacts/hook-agent-turn.json";
         const original = Buffer.from('{"prompt":"original"}');
-        const artifactPath = join(workspace, ".acpus", ".local", "runs", run.id, relativePath);
+        const artifactPath = join(runtimeRunDir(workspace, run.id), relativePath);
         await mkdir(join(artifactPath, ".."), { recursive: true });
         await writeFile(artifactPath, original);
-        const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"));
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare(`
             INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)

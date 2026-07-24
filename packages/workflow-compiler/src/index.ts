@@ -4,6 +4,7 @@ export {
   type PreparedWorkflow,
   type WorkflowPreparationLock,
   type WorkflowPreparationOptions,
+  type WorkflowSourceRef,
   type PackageLockFailure,
   WorkflowPreparationError,
   type WorkflowPreparationFailure,

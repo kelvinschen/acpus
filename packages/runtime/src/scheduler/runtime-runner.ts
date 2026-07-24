@@ -207,6 +207,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       ir: frozen.ir,
       scope,
       store: input.store,
+      sourceRoot: frozen.sourceRoot ?? input.cwd,
       agentHostPolicy,
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
     }),

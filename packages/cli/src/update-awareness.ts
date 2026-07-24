@@ -7,11 +7,12 @@ import type { Writable } from "node:stream";
 import type { Command } from "commander";
 import { gt, prerelease, satisfies, valid } from "semver";
 import { getCliPackageInfo } from "./package-info.js";
+import { ensurePrivateAcpusDirectory, ensurePrivateDirectory } from "./private-directory.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const REGISTRY_URL = "https://registry.npmjs.org";
-const UPDATE_CACHE_DIRECTORY = [".acpus", ".local", "update-awareness"];
+const UPDATE_CACHE_DIRECTORY = [".acpus", "cache", "update-awareness"];
 
 // Adjust this single policy when Acpus release cadence changes.
 const UPDATE_AWARENESS_POLICY = {
@@ -164,7 +165,7 @@ export async function runUpdateAwarenessWorker(args: readonly string[]): Promise
 
   const paths = updateAwarenessCachePaths(directory, true);
   try {
-    await mkdir(paths.directory, { recursive: true });
+    await ensurePrivateUpdateCacheDirectory(paths.directory);
     if (!await claimUpdateCheck(paths.attempt, new Date())) return;
     const update = await fetchLatestUpdate(packageName, currentVersion);
     if (update === undefined) await rm(paths.available, { force: true });
@@ -229,6 +230,7 @@ async function showUpdateAwareness(
       update: updateNotice,
       color: supportsColor(stderr),
     }));
+    await ensurePrivateUpdateCacheDirectory(paths.directory);
     await writeJson(paths.notices, updatedNoticeState(notices, currentVersion, now));
   } catch {
     // Update awareness must never affect the command result.
@@ -273,7 +275,7 @@ async function claimUpdateCheck(path: string, now: Date): Promise<boolean> {
     }
 
     try {
-      const marker = await open(path, "wx");
+      const marker = await open(path, "wx", 0o600);
       try {
         await marker.writeFile(JSON.stringify({ checkedAt: now.toISOString() }));
       } finally {
@@ -350,11 +352,17 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(value)}\n`);
+    await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function ensurePrivateUpdateCacheDirectory(directory: string): Promise<void> {
+  const expected = join(homedir(), ...UPDATE_CACHE_DIRECTORY);
+  if (directory === expected) await ensurePrivateAcpusDirectory(directory);
+  else await ensurePrivateDirectory(directory);
 }
 
 function parseAttempt(value: unknown): string | undefined {

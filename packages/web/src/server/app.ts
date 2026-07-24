@@ -1,16 +1,14 @@
 import { Hono } from "hono";
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
+import { extname } from "node:path";
 import {
-  getArtifact,
   getRunInspection,
   getRunVisualizationSnapshot,
   getRuntimeHealth,
   listRuns,
+  readArtifact,
   requestDaemonControl,
   type DaemonControlIntent,
-  type ArtifactRecord,
   type RunInspectionContext,
   type RunInspectionError,
   type RunInspectionTargetDocument,
@@ -135,10 +133,10 @@ export function createWebApp(options: WebAppOptions): Hono {
   app.get("/api/runs/:id/artifacts/:artifactId/preview", async (context) => {
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
-    const artifact = await getArtifact(options.cwd, runId, artifactId);
-    if (!artifact) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
-    const bytes = await readRegisteredArtifact(options.cwd, artifact);
-    context.header("content-type", mediaType(artifact.path));
+    const verified = await readArtifact(options.cwd, runId, artifactId);
+    if (!verified) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
+    const { artifact, bytes } = verified;
+    context.header("content-type", artifact.mediaType ?? mediaType(artifact.path));
     return context.newResponse(Uint8Array.from(bytes.subarray(0, 128 * 1024)));
   });
 
@@ -273,7 +271,9 @@ async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDo
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
   const artifact = artifacts.find(item => item.id === artifactId);
   if (!artifact) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the run projection.`);
-  const parsed = JSON.parse((await readRegisteredArtifact(cwd, artifact)).toString("utf8")) as unknown;
+  const verified = await readArtifact(cwd, artifact.runId, artifact.id);
+  if (!verified) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the runtime registry.`);
+  const parsed = JSON.parse(verified.bytes.toString("utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`Registered Agent artifact '${artifactId}' is not a JSON object.`);
   }
@@ -293,46 +293,6 @@ async function loadInspectionPrompt(cwd: string, inspection: RunInspectionTarget
     ...inspection,
     summary: { ...inspection.summary, prompt: { ...prompt, text } },
   };
-}
-
-async function readRegisteredArtifact(cwd: string, artifact: ArtifactRecord): Promise<Buffer> {
-  const runsRoot = resolve(cwd, ".acpus", ".local", "runs");
-  const runRoot = resolve(runsRoot, artifact.runId);
-  const artifactPath = resolve(artifact.path);
-  if (!isContainedPath(runRoot, artifactPath)) {
-    throw new Error(`Registered artifact '${artifact.id}' escapes run '${artifact.runId}'.`);
-  }
-  const [workspaceReal, runsRootInfo, runsRootReal, runRootInfo, runRootReal, fileInfo, artifactReal] = await Promise.all([
-    realpath(resolve(cwd)),
-    lstat(runsRoot),
-    realpath(runsRoot),
-    lstat(runRoot),
-    realpath(runRoot),
-    lstat(artifactPath),
-    realpath(artifactPath),
-  ]);
-  if (runsRootInfo.isSymbolicLink()
-    || !runsRootInfo.isDirectory()
-    || !isContainedPath(workspaceReal, runsRootReal)
-    || runRootInfo.isSymbolicLink()
-    || !runRootInfo.isDirectory()
-    || dirname(runRootReal) !== runsRootReal
-    || fileInfo.isSymbolicLink()
-    || !fileInfo.isFile()
-    || !isContainedPath(runRootReal, artifactReal)) {
-    throw new Error(`Registered artifact '${artifact.id}' is not a contained regular file.`);
-  }
-  const bytes = await readFile(artifactPath);
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  if (bytes.byteLength !== artifact.size || digest !== artifact.digest) {
-    throw new Error(`Registered artifact '${artifact.id}' failed size or digest verification.`);
-  }
-  return bytes;
-}
-
-function isContainedPath(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 async function readNodeInspection(

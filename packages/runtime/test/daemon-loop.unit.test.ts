@@ -1,30 +1,57 @@
-import { access, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonEndpoint } from "../src/daemon/socket.js";
 import type { DaemonTickResult } from "../src/daemon/tick.js";
+import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 
 const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
+const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
 
 vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
+vi.mock("../src/store/store.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/store/store.js")>();
+  return {
+    ...actual,
+    openRuntimeStore: async (cwd: string) => {
+      const store = await actual.openRuntimeStore(cwd);
+      const cleanup = store.cleanupStagedRunDirectories.bind(store);
+      store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
+        ? cleanup()
+        : Promise.reject(startupCleanup.failure);
+      return store;
+    },
+  };
+});
 
 const { startDaemonLoop } = await import("../src/daemon/loop.js");
 
 let dir: string;
+let runtimeHome: string;
+let restoreRuntimeHome: () => void;
 const runMaxLeafConcurrency = process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
 
 beforeEach(async () => {
   delete process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
-  dir = await mkdtemp(join(tmpdir(), "acpus-daemon-loop-"));
+  [dir, runtimeHome] = await Promise.all([
+    mkdtemp(join(tmpdir(), "acpus-daemon-loop-")),
+    mkdtemp(join(tmpdir(), "ah-")),
+  ]);
+  restoreRuntimeHome = setRuntimeHomeForTest(dir, runtimeHome);
+  startupCleanup.failure = undefined;
   runDaemonTick.mockReset();
 });
 
 afterEach(async () => {
   if (runMaxLeafConcurrency === undefined) delete process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY;
   else process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY = runMaxLeafConcurrency;
-  await rm(dir, { recursive: true, force: true });
+  restoreRuntimeHome();
+  await Promise.all([
+    rm(dir, { recursive: true, force: true }),
+    rm(runtimeHome, { recursive: true, force: true }),
+  ]);
 });
 
 describe("daemon loop", () => {
@@ -34,21 +61,18 @@ describe("daemon loop", () => {
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
       "Environment variable ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY must be a canonical positive decimal safe integer",
     );
-    await expect(access(join(dir, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(runtimeHome, "workspaces"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("releases its lease and closes the server when startup cleanup fails", async () => {
-    const localRoot = join(dir, ".acpus", ".local");
-    const actualRuns = join(dir, "actual-runs");
-    await mkdir(localRoot, { recursive: true });
-    await mkdir(actualRuns);
-    await symlink(actualRuns, join(localRoot, "runs"), "dir");
+    const layout = resolveRuntimeLayout(dir);
+    startupCleanup.failure = new Error("startup cleanup failed");
 
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
-      "Run directory root '.acpus/.local/runs' is outside the workspace.",
+      "startup cleanup failed",
     );
 
-    const db = new DatabaseSync(join(localRoot, "state", "runtime.db"), { readOnly: true });
+    const db = new DatabaseSync(layout.databasePath, { readOnly: true });
     try {
       expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
     } finally {
@@ -134,7 +158,7 @@ describe("daemon loop", () => {
       onShutdown: notify,
     });
     await waitUntil(() => runDaemonTick.mock.calls.length > 0);
-    const db = new DatabaseSync(join(dir, ".acpus", ".local", "state", "runtime.db"));
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath);
     db.exec("DROP TABLE daemon_lease");
     db.close();
 
@@ -162,7 +186,7 @@ async function waitUntilValue<T>(read: () => T | undefined): Promise<T> {
 }
 
 function daemonHeartbeat(workspace: string): string | undefined {
-  const db = new DatabaseSync(join(workspace, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+  const db = new DatabaseSync(resolveRuntimeLayout(workspace).databasePath, { readOnly: true });
   try {
     const row = db.prepare("SELECT heartbeat_at FROM daemon_lease").get() as { heartbeat_at: string | null } | undefined;
     return row?.heartbeat_at ?? undefined;

@@ -1,4 +1,4 @@
-import { cp, writeFile } from "node:fs/promises";
+import { access, cp, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getRunInspection } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
@@ -63,7 +63,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
   });
 
   it("runs a workflow path in foreground JSON mode", async () => {
-    await withTestWorkspace("e2e-run-path", async workspace => {
+    await withTestWorkspace("e2e-run-path", async (workspace, home) => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
       const input = "sample input.JSON";
       await writeFile(join(workspace, input), "{\"ready\":true}\n");
@@ -86,6 +86,8 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         output: { ready: true },
       });
       expect(records.filter(record => record.output !== undefined)).toHaveLength(1);
+      await expect(access(join(home, ".acpus", "workspaces"))).resolves.toBeUndefined();
+      await expect(access(join(workspace, ".acpus", ".local"))).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 

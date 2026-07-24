@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { err, ok, okAsync } from "neverthrow";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { executeTaskNode as executeTaskNodeResult } from "../src/execution/task-executor.js";
+import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import type { ArtifactRecord, RegisterArtifactInput } from "../src/store/store.js";
 import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";
 
@@ -26,16 +27,26 @@ vi.mock("../src/execution/task-process.js", async importOriginal => {
 });
 
 let workspace: string;
+let runtimeHome: string;
+let restoreRuntimeHome: () => void;
 
 beforeEach(async () => {
-  workspace = await mkdtemp(join(tmpdir(), "acpus-task-executor-"));
+  [workspace, runtimeHome] = await Promise.all([
+    mkdtemp(join(tmpdir(), "acpus-task-executor-")),
+    mkdtemp(join(tmpdir(), "acpus-task-executor-home-")),
+  ]);
+  restoreRuntimeHome = setRuntimeHomeForTest(workspace, runtimeHome);
   if (!taskProcessMocks.actualRunTaskAttempt) throw new Error("Expected the production Task attempt runner.");
   taskProcessMocks.runTaskAttempt.mockReset().mockImplementation(taskProcessMocks.actualRunTaskAttempt);
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await rm(workspace, { recursive: true, force: true });
+  restoreRuntimeHome();
+  await Promise.all([
+    rm(workspace, { recursive: true, force: true }),
+    rm(runtimeHome, { recursive: true, force: true }),
+  ]);
 });
 
 describe("task executor", () => {
@@ -77,7 +88,7 @@ describe("task executor", () => {
       attemptNo: 1,
       ownerEpoch: 1,
       store: {
-        getRunDir: () => ".acpus/.local/runs/run_1",
+        getRunDir: () => runtimeRunDir("run_1"),
         getArtifact: () => undefined,
         registerArtifact: () => ok(undefined),
         writeExecutionMetadata: (input: unknown) => metadata.push(input),
@@ -101,7 +112,7 @@ describe("task executor", () => {
 
   it("does not create implicit output or work directories", async () => {
     const runId = "run_plain";
-    const runDir = join(workspace, ".acpus", ".local", "runs", runId);
+    const runDir = runtimeRunDir(runId);
     await mkdir(runDir, { recursive: true });
     await Promise.all([
       writeFile(join(runDir, "workflow.ir.json"), "{}\n"),
@@ -119,7 +130,7 @@ describe("task executor", () => {
 
   it("gives task code, Node APIs, artifacts, env, and $ one live process context", async () => {
     const workDir = join(workspace, "worktree");
-    const runDir = join(workspace, ".acpus", ".local", "runs", "run_context");
+    const runDir = runtimeRunDir("run_context");
     await mkdir(join(workDir, "nested"), { recursive: true });
     await mkdir(runDir, { recursive: true });
     await Promise.all([
@@ -171,9 +182,9 @@ describe("task executor", () => {
   it("resolves bound input artifacts to an absolute path that survives process.chdir", async () => {
     const runId = "run_input_path";
     const artifactId = "artifact_input";
-    const runDir = `.acpus/.local/runs/${runId}`;
-    const path = join(workspace, runDir, "artifacts", "input.txt");
-    await mkdir(join(workspace, runDir, "artifacts"), { recursive: true });
+    const runDir = runtimeRunDir(runId);
+    const path = join(runDir, "artifacts", "input.txt");
+    await mkdir(join(runDir, "artifacts"), { recursive: true });
     await writeFile(path, "input\n");
     const ref = { kind: "artifact", uri: `artifact://${runId}/${artifactId}`, mediaType: "text/plain" } as const;
     const artifact: ArtifactRecord = {
@@ -300,6 +311,48 @@ describe("task executor", () => {
     await expect(executeTaskNode(node, {}, taskOptions("run_counter_2"))).resolves.toEqual({ count: 1, loadedCwd: moduleCwd, loadedEnv: "module-env" });
   });
 
+  it("loads frozen catalog reusable tasks with workspace dependency authority", async () => {
+    const sourceRoot = join(resolveRuntimeLayout(workspace).sourcesRoot, "catalog", "sample", "digest");
+    const packageDir = join(workspace, "node_modules", "workspace-only-package");
+    await Promise.all([
+      mkdir(join(sourceRoot, "tasks"), { recursive: true }),
+      mkdir(packageDir, { recursive: true }),
+    ]);
+    await writeFile(join(sourceRoot, "workflow.ts"), "");
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      name: "workspace-only-package",
+      type: "module",
+      exports: "./index.mjs",
+    }));
+    await writeFile(join(packageDir, "index.mjs"), "export const decorate = value => `workspace:${value}`;\n");
+    await writeFile(join(sourceRoot, "tasks", "catalog-task.mjs"), [
+      `import { task, z } from ${JSON.stringify(import.meta.resolve("@acpus/core"))};`,
+      "import { decorate } from 'workspace-only-package';",
+      "export const catalogTask = task.define({",
+      "  inputSchema: z.object({ value: z.string() }),",
+      "  exec: async ({ input }) => ({ value: decorate(input.value) }),",
+      "});",
+    ].join("\n"));
+    const node = {
+      id: "catalog_task",
+      kind: "task",
+      run: {
+        input: { value: { kind: "literal", value: "frozen" } },
+        target: {
+          kind: "module",
+          specifier: "./tasks/catalog-task.mjs",
+          exportName: "catalogTask",
+          referrer: { path: "workflow.ts" },
+        },
+      },
+    } satisfies TaskNodeIR;
+
+    await expect(executeTaskNode(node, {}, {
+      ...taskOptions("run_catalog_task"),
+      sourceRoot,
+    })).resolves.toEqual({ value: "workspace:frozen" });
+  });
+
   it("fails only the attempt when cwd is missing or task code exits", async () => {
     const missing = join(workspace, "missing");
     await expect(executeTaskNode(inlineTask("missing", "async () => ({ ok: true })", {
@@ -365,7 +418,7 @@ describe("task executor", () => {
 
   it("rejects runtime artifact filesystem failures instead of returning a Task failure", async () => {
     const runId = "run_artifact_filesystem_failure";
-    const runDir = join(workspace, ".acpus", ".local", "runs", runId);
+    const runDir = runtimeRunDir(runId);
     await mkdir(runDir, { recursive: true });
     await writeFile(join(runDir, "artifacts"), "blocks the artifact directory");
     let caught: unknown;
@@ -431,7 +484,7 @@ describe("task executor", () => {
       failure: { type: "terminal-attempt", message: "attempt is already cancelled" },
     });
 
-    const artifactDir = join(workspace, ".acpus/.local/runs/run_fenced_artifact", "artifacts", "fenced_artifact", "attempt-1");
+    const artifactDir = join(runtimeRunDir("run_fenced_artifact"), "artifacts", "fenced_artifact", "attempt-1");
     await expect(readdir(artifactDir)).resolves.toEqual([]);
   });
 });
@@ -456,7 +509,7 @@ function taskOptions(runId: string, registerArtifact: (artifact: RegisterArtifac
     attemptNo: 1,
     ownerEpoch: 1,
     store: {
-      getRunDir: () => `.acpus/.local/runs/${runId}`,
+      getRunDir: () => runtimeRunDir(runId),
       getArtifact: () => undefined,
       registerArtifact: (input: RegisterArtifactInput) => {
         registerArtifact(input);
@@ -465,4 +518,8 @@ function taskOptions(runId: string, registerArtifact: (artifact: RegisterArtifac
       writeExecutionMetadata: () => {},
     },
   };
+}
+
+function runtimeRunDir(runId: string): string {
+  return join(resolveRuntimeLayout(workspace).runsRoot, runId);
 }

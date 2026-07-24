@@ -18,6 +18,7 @@ export type TaskProcessRequest = {
   target: TaskExecutionTargetIR;
   input: Record<string, JsonValue>;
   workspaceDir: string;
+  sourceRoot?: string;
   execution?: {
     defaultCommandTimeout?: string;
   };

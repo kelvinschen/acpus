@@ -2,15 +2,15 @@ import { writeFile } from "node:fs/promises";
 import { tryCompileWorkflowModule } from "./module.js";
 import type { CompileWorkerEnvelope } from "./worker.js";
 
-const [entry, out, cwd] = process.argv.slice(2);
+const [entry, out, sourceRoot, dependencyRoot] = process.argv.slice(2);
 
-if (!entry || !out || !cwd) {
-  console.error("Usage: compile-worker <entry> <out> <cwd>");
+if (!entry || !out || !sourceRoot || !dependencyRoot) {
+  console.error("Usage: compile-worker <entry> <out> <source-root> <dependency-root>");
   process.exit(2);
 }
 
 try {
-  const result = await tryCompileWorkflowModule(entry, cwd);
+  const result = await tryCompileWorkflowModule(entry, sourceRoot, dependencyRoot);
   const envelope: CompileWorkerEnvelope = result.match(
     value => ({ schemaVersion: 1, ok: true, result: value }),
     error => ({ schemaVersion: 1, ok: false, error }),

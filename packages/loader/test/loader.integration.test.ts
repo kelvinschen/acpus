@@ -134,6 +134,47 @@ console.log(JSON.stringify({ selected: mod.selected }));
     }
   });
 
+  it("loads workspace dependencies for authoring sources outside the workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-authoring-dependency-authority-"));
+    try {
+      const workspace = join(root, "workspace");
+      const sourceRoot = join(root, "outside-source");
+      const packageDir = join(workspace, "node_modules", "workspace-only-package");
+      await Promise.all([
+        mkdir(join(sourceRoot, "tasks"), { recursive: true }),
+        mkdir(packageDir, { recursive: true }),
+      ]);
+      await writeFile(join(sourceRoot, "workflow.ts"), "");
+      await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        name: "workspace-only-package",
+        type: "module",
+        exports: "./index.mjs",
+      }));
+      await writeFile(join(packageDir, "index.mjs"), "export const value = 'from-workspace';\n");
+      await writeFile(join(sourceRoot, "tasks", "relative.mjs"), [
+        "import { value } from 'workspace-only-package';",
+        "export const nestedValue = value;",
+      ].join("\n"));
+
+      const stdout = await runNodeLoaderScript(`
+import { importAuthoringModule } from ${JSON.stringify(loaderEntry)};
+
+const options = {
+  parentURL: ${JSON.stringify(pathToFileURL(join(sourceRoot, "workflow.ts")).href)},
+  sourceRoot: ${JSON.stringify(sourceRoot)},
+  dependencyRoot: ${JSON.stringify(workspace)},
+};
+const bare = await importAuthoringModule("workspace-only-package", options);
+const relative = await importAuthoringModule("./tasks/relative.mjs", options);
+console.log(JSON.stringify({ bare: bare.value, nested: relative.nestedValue }));
+`);
+
+      expect(JSON.parse(stdout)).toEqual({ bare: "from-workspace", nested: "from-workspace" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not fallback when a nested normal target exists but its dependency is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-transitive-miss-"));
     try {

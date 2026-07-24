@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "neverthrow";
+import { resolveRuntimeLayout } from "../runtime-layout.js";
 import type { ArtifactRecord, RuntimeStore } from "../store/store.js";
 
 export type ArtifactPathError =
@@ -68,18 +69,17 @@ function validateRegisteredArtifactPath(
 ): Result<string, ArtifactPathError> {
   const runDir = context.store.getRunDir(context.runId);
   if (!runDir) throw new Error(`Run '${context.runId}' has no run directory for registered artifact '${artifact.id}'.`);
-  const root = resolve(context.cwd, runDir);
-  const runsRoot = resolve(context.cwd, ".acpus", ".local", "runs");
+  const root = resolve(runDir);
+  const runsRoot = resolveRuntimeLayout(context.cwd).runsRoot;
   if (dirname(root) !== runsRoot) throw new Error(`Registered artifact '${artifact.id}' run directory escapes the runtime runs root.`);
   if (!isAbsolute(artifact.path) || !isContainedPath(root, artifact.path)) {
     throw new Error(`Registered artifact '${artifact.id}' path escapes the run directory.`);
   }
   const runsRootInfo = lstatSync(runsRoot);
-  const realWorkspace = realpathSync(resolve(context.cwd));
-  const realRunsRoot = realpathSync(runsRoot);
-  if (runsRootInfo.isSymbolicLink() || !runsRootInfo.isDirectory() || !isContainedPath(realWorkspace, realRunsRoot)) {
-    throw new Error("Runtime runs root is a symbolic link or resolves outside the workspace.");
+  if (runsRootInfo.isSymbolicLink() || !runsRootInfo.isDirectory()) {
+    throw new Error("Runtime runs root is a symbolic link or is not a directory.");
   }
+  const realRunsRoot = realpathSync(runsRoot);
   const rootInfo = lstatSync(root);
   if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
     throw new Error(`Run directory for registered artifact '${artifact.id}' is not a regular directory.`);

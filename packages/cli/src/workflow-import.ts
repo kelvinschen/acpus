@@ -1,5 +1,5 @@
 import { constants, createWriteStream } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, type FileHandle } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -10,9 +10,12 @@ import { ResultAsync } from "neverthrow";
 import { extract as extractTar, list as listTar, type ReadEntry } from "tar";
 import {
   prepareWorkflowCatalogCommit,
+  digestWorkflowPackage,
   type AvailableWorkflowCatalogEntry,
   type WorkflowCatalogScope,
 } from "./catalog.js";
+import { ensurePrivateAcpusDirectory, removePrivateTree } from "./private-directory.js";
+import { exposeWorkspaceDependencies } from "./workspace-dependencies.js";
 
 export type WorkflowImportFailure =
   | { type: "usage"; message: string }
@@ -53,9 +56,11 @@ export function importWorkflowPackage(options: ImportOptions): ResultAsync<Workf
 async function runImport(options: ImportOptions): Promise<WorkflowImportResult> {
   const source = await classifySource(options.cwd, options.source);
   const importRoot = workflowImportRoot(options.cwd, options.scope);
-  await mkdir(importRoot, { recursive: true });
+  if (options.scope === "global") await ensurePrivateAcpusDirectory(importRoot);
+  else await mkdir(importRoot, { recursive: true });
   const stagingRoot = await mkdtemp(join(importRoot, "import-"));
   const stagedPackage = join(stagingRoot, "package");
+  let outcome: { ok: true; value: WorkflowImportResult } | { ok: false; error: ImportAbort };
   try {
     await stageSource(source, stagingRoot, stagedPackage);
     const entryPath = join(stagedPackage, "workflow.ts");
@@ -68,13 +73,25 @@ async function runImport(options: ImportOptions): Promise<WorkflowImportResult> 
     if (options.check) await checkStagedWorkflow(options.cwd, options.scope, stagedPackage, name);
     const committed = await commit.value.commit(stagedPackage);
     if (committed.isErr()) abortImport(catalogImportErrorCode(committed.error.type), committed.error.message);
-    return { checked: options.check, catalog: committed.value };
+    outcome = { ok: true, value: { checked: options.check, catalog: committed.value } };
   } catch (error) {
-    if (error instanceof ImportAbort) throw error;
-    abortImport("IMPORT_FAILED", `Workflow import failed: ${causeMessage(error)}`);
-  } finally {
-    await removePrivateTree(stagingRoot).catch(() => undefined);
+    outcome = {
+      ok: false,
+      error: error instanceof ImportAbort
+        ? error
+        : new ImportAbort({ type: "import", errorCode: "IMPORT_FAILED", message: `Workflow import failed: ${causeMessage(error)}` }),
+    };
   }
+  try {
+    await removePrivateTree(stagingRoot);
+  } catch (cleanupError) {
+    outcome = {
+      ok: false,
+      error: importCleanupFailure(outcome.ok ? undefined : outcome.error, cleanupError, outcome.ok ? outcome.value : undefined),
+    };
+  }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }
 
 async function classifySource(cwd: string, source: string): Promise<ClassifiedSource> {
@@ -397,24 +414,23 @@ async function copyDirectory(source: string, target: string, relativePath: strin
 }
 
 async function checkStagedWorkflow(cwd: string, scope: WorkflowCatalogScope, stagedPackage: string, expectedName: string): Promise<void> {
-  let checkRoot: string | undefined;
-  let entryPath = join(stagedPackage, "workflow.ts");
-  try {
-    if (scope === "global") {
-      const localRoot = resolve(cwd, ".acpus", ".local");
-      await mkdir(localRoot, { recursive: true });
-      checkRoot = await mkdtemp(join(localRoot, "workflow-import-check-"));
-      const localPackage = join(checkRoot, "package");
-      await copyValidatedTree(stagedPackage, localPackage);
-      entryPath = join(localPackage, "workflow.ts");
-    }
-    const prepared = await tryPrepareWorkflow({ workflow: entryPath, cwd });
-    if (prepared.isErr()) throw new ImportAbort({ type: "preparation", failure: prepared.error });
-    if (prepared.value.ir.name !== expectedName) {
-      abortImport("IMPORT_CHECK_NAME_MISMATCH", `Prepared workflow name '${prepared.value.ir.name}' does not match static authored name '${expectedName}'.`);
-    }
-  } finally {
-    if (checkRoot) await removePrivateTree(checkRoot).catch(() => undefined);
+  if (scope === "global") await exposeWorkspaceDependencies(dirname(stagedPackage), cwd);
+  const prepared = await tryPrepareWorkflow({
+    workflow: join(stagedPackage, "workflow.ts"),
+    cwd,
+    ...(scope === "global" ? {
+      sourceRoot: stagedPackage,
+      source: {
+        kind: "global_catalog" as const,
+        name: expectedName,
+        digest: await digestWorkflowPackage(stagedPackage),
+        entry: "workflow.ts",
+      },
+    } : {}),
+  });
+  if (prepared.isErr()) throw new ImportAbort({ type: "preparation", failure: prepared.error });
+  if (prepared.value.ir.name !== expectedName) {
+    abortImport("IMPORT_CHECK_NAME_MISMATCH", `Prepared workflow name '${prepared.value.ir.name}' does not match static authored name '${expectedName}'.`);
   }
 }
 
@@ -427,30 +443,36 @@ async function isRegularFile(path: string): Promise<boolean> {
   }
 }
 
-async function removePrivateTree(root: string): Promise<void> {
-  try {
-    await rm(root, { recursive: true, force: true });
-    return;
-  } catch {
-    await makeRemovable(root);
-    await rm(root, { recursive: true, force: true });
+function importCleanupFailure(
+  operation: ImportAbort | undefined,
+  cleanupError: unknown,
+  committed: WorkflowImportResult | undefined,
+): ImportAbort {
+  const cleanupCause = causeMessage(cleanupError);
+  const cleanup = `Temporary import cleanup failed: ${cleanupCause}`;
+  if (operation === undefined) {
+    const completed = committed === undefined
+      ? "Workflow import completed"
+      : `Workflow '${committed.catalog.scope}/${committed.catalog.name}' was imported`;
+    return new ImportAbort({
+      type: "import",
+      errorCode: "IMPORT_CLEANUP_FAILED",
+      message: `${completed}, but temporary import cleanup failed: ${cleanupCause}`,
+    });
   }
-}
-
-async function makeRemovable(path: string): Promise<void> {
-  let item;
-  try {
-    item = await lstat(path);
-  } catch (error) {
-    if (isMissingPath(error)) return;
-    throw error;
+  if (operation.failure.type === "preparation") {
+    return new ImportAbort({
+      type: "preparation",
+      failure: {
+        ...operation.failure.failure,
+        message: `${operation.failure.failure.message} ${cleanup}`,
+      },
+    });
   }
-  if (!item.isDirectory()) {
-    if (!item.isSymbolicLink()) await chmod(path, 0o600);
-    return;
-  }
-  await chmod(path, 0o700);
-  for (const name of await readdir(path)) await makeRemovable(join(path, name));
+  return new ImportAbort({
+    ...operation.failure,
+    message: `${operation.failure.message} ${cleanup}`,
+  });
 }
 
 function abortUsage(message: string): never {
@@ -471,8 +493,8 @@ function causeMessage(cause: unknown): string {
 
 function workflowImportRoot(cwd: string, scope: WorkflowCatalogScope): string {
   return scope === "project"
-    ? resolve(cwd, ".acpus", ".local", "workflow-imports")
-    : resolve(process.env.HOME || homedir(), ".acpus", ".local", "workflow-imports");
+    ? resolve(cwd, ".acpus", "tmp")
+    : resolve(homedir(), ".acpus", "tmp", "workflow-imports");
 }
 
 function catalogImportErrorCode(type: "invalid-name" | "collision" | "commit-failed"): string {

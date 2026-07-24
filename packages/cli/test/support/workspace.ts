@@ -1,20 +1,32 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getRuntimeHealth, requestDaemonShutdown } from "@acpus/runtime";
-import { repoRoot } from "./cli-runner.js";
+import { setRuntimeHomeForTest } from "../../../runtime/src/runtime-layout.js";
+import { registerTestProcessHome, repoRoot } from "./cli-runner.js";
 
-export async function withTestWorkspace<T>(name: string, fn: (workspace: string) => Promise<T>): Promise<T> {
+export async function withTestWorkspace<T>(
+  name: string,
+  fn: (workspace: string, home: string) => Promise<T>,
+): Promise<T> {
   const root = join(repoRoot, ".tmp-tests");
   await mkdir(root, { recursive: true });
   const workspace = await mkdtemp(join(root, `${name}-`));
+  const home = await mkdtemp(join(root, `${name}-home-`));
+  const restoreRuntimeHome = setRuntimeHomeForTest(workspace, join(home, ".acpus"));
+  const restoreProcessHome = registerTestProcessHome(workspace, home);
   try {
     await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
     await linkWorkspaceCore(workspace);
     await writeWorkspaceTsconfig(workspace);
-    return await fn(workspace);
+    return await fn(workspace, home);
   } finally {
     await stopWorkspaceDaemon(workspace);
-    await rm(workspace, { recursive: true, force: true });
+    restoreProcessHome();
+    restoreRuntimeHome();
+    await Promise.all([
+      rm(workspace, { recursive: true, force: true }),
+      rm(home, { recursive: true, force: true }),
+    ]);
   }
 }
 

@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
-import { mkdir, open, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rm } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname } from "node:path";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { probeProcessLiveness } from "../process-liveness.js";
+import { ensureRuntimeLayout, resolveRuntimeLayout } from "../runtime-layout.js";
 import { openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
 
 export type DaemonStatus = {
@@ -79,21 +78,16 @@ export type DaemonServerHandle = {
 };
 
 export function daemonEndpoint(cwd: string): string {
-  const workspace = resolve(cwd);
-  const digest = createHash("sha256").update(workspace).digest("hex").slice(0, 24);
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\acpus-daemon-${digest}`;
-  }
-  const workspaceEndpoint = join(workspace, ".acpus", ".local", "daemon.sock");
-  if (Buffer.byteLength(workspaceEndpoint) < 100) return workspaceEndpoint;
-  if (process.platform === "linux") return `\0acpus-daemon-${digest}`;
-  return join(tmpdir(), `acpus-daemon-${digest}.sock`);
+  return resolveRuntimeLayout(cwd).daemonEndpoint;
 }
 
 export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): Promise<DaemonServerHandle> {
-  const endpoint = daemonEndpoint(cwd);
+  const layout = await ensureRuntimeLayout(cwd);
+  if (layout.isErr()) throw new Error(layout.error.message);
+  const endpoint = layout.value.daemonEndpoint;
   if (isFilesystemSocket(endpoint)) {
-    await mkdir(dirname(endpoint), { recursive: true });
+    await ensurePrivateSocketParent(endpoint);
+    await rejectSocketSymlink(endpoint);
   }
 
   const sockets = new Set<Socket>();
@@ -109,10 +103,19 @@ export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): 
   });
 
   try {
-    await listen(server, endpoint);
+    try {
+      await listen(server, endpoint);
+    } catch (error) {
+      if (!isFilesystemSocket(endpoint) || !isAddressInUse(error)) throw error;
+      await recoverStaleFilesystemSocket(cwd, endpoint, server, error);
+    }
+    if (isFilesystemSocket(endpoint)) await secureFilesystemSocket(endpoint);
   } catch (error) {
-    if (!isFilesystemSocket(endpoint) || !isAddressInUse(error)) throw error;
-    await recoverStaleFilesystemSocket(cwd, endpoint, server, error);
+    if (server.listening) {
+      await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+      if (isFilesystemSocket(endpoint)) await rm(endpoint, { force: true });
+    }
+    throw error;
   }
 
   return {
@@ -128,6 +131,39 @@ export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): 
       if (isFilesystemSocket(endpoint)) await rm(endpoint, { force: true });
     },
   };
+}
+
+async function ensurePrivateSocketParent(endpoint: string): Promise<void> {
+  const parent = dirname(endpoint);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const info = await lstat(parent);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`Daemon socket parent '${parent}' must be a private directory.`);
+  }
+  await chmod(parent, 0o700);
+}
+
+async function rejectSocketSymlink(endpoint: string): Promise<void> {
+  try {
+    if ((await lstat(endpoint)).isSymbolicLink()) {
+      throw new Error(`Daemon socket '${endpoint}' must not be a symbolic link.`);
+    }
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+}
+
+async function secureFilesystemSocket(endpoint: string): Promise<void> {
+  const before = await lstat(endpoint);
+  if (before.isSymbolicLink() || !before.isSocket()) {
+    throw new Error(`Daemon socket '${endpoint}' is not a Unix socket.`);
+  }
+  await chmod(endpoint, 0o600);
+  const after = await lstat(endpoint);
+  if (after.isSymbolicLink() || !after.isSocket()) {
+    throw new Error(`Daemon socket '${endpoint}' was replaced while securing it.`);
+  }
 }
 
 async function recoverStaleFilesystemSocket(cwd: string, endpoint: string, server: ReturnType<typeof createServer>, originalError: unknown): Promise<void> {
@@ -517,9 +553,11 @@ function isAdmitRunRequest(value: Record<string, unknown>): value is DaemonAdmit
 
 function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["workflowPath", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"])) return false;
+    || !hasExactKeys(value, ["workflowPath", "source", "ir", "irJson", "sourceGraphDigest", "lock"], ["sourceRoot", "packageLockDigest"])) return false;
   const ir = value.ir;
   return typeof value.workflowPath === "string"
+    && isWorkflowSourceRef(value.source)
+    && (value.sourceRoot === undefined || typeof value.sourceRoot === "string")
     && isPlainRecord(ir)
     && typeof ir.name === "string"
     && isPlainRecord(ir.root)
@@ -537,14 +575,23 @@ function isRunWorkflowLockArtifact(value: unknown): boolean {
     || typeof value.sourceGraphDigest !== "string"
     || (value.packageLockDigest !== undefined && typeof value.packageLockDigest !== "string")
     || !isPlainRecord(value.workflow)
-    || !hasExactKeys(value.workflow, ["entry", "sourceDigest"])
-    || typeof value.workflow.entry !== "string"
+    || !hasExactKeys(value.workflow, ["source", "sourceDigest"])
+    || !isWorkflowSourceRef(value.workflow.source)
     || typeof value.workflow.sourceDigest !== "string"
     || !isPlainRecord(value.ir)
     || !hasExactKeys(value.ir, ["path", "digest"])
     || value.ir.path !== "workflow.ir.json"
     || typeof value.ir.digest !== "string") return false;
   return true;
+}
+
+function isWorkflowSourceRef(value: unknown): boolean {
+  if (!isPlainRecord(value) || typeof value.entry !== "string") return false;
+  if (value.kind === "workspace") return hasExactKeys(value, ["kind", "entry"]);
+  return value.kind === "global_catalog"
+    && hasExactKeys(value, ["kind", "name", "digest", "entry"])
+    && typeof value.name === "string"
+    && /^[a-f0-9]{64}$/.test(String(value.digest));
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -572,6 +619,10 @@ function isAddressInUse(error: unknown): boolean {
 
 function isFileExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "EEXIST";
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
 
 async function hasStaleDaemonEvidence(cwd: string): Promise<boolean> {

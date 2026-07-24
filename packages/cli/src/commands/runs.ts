@@ -1,14 +1,15 @@
 import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
+import { tryParseDurationMs } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, pruneRuns as pruneRuntimeRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type PruneReport, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
-import { confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
+import { confirmAction, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { canPrompt } from "./prompt-io.js";
 import { daemonControlRequestId, sendDaemonControl, type DaemonControlFailure } from "./daemon.js";
 import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
@@ -54,6 +55,13 @@ type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
 };
 
+type PruneRunOptions = JsonOutputOptions & {
+  olderThan?: string;
+  allWorkspaces?: boolean;
+  dryRun?: boolean;
+  yes?: boolean;
+};
+
 type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 type RunMutation =
   | { type: "pause" | "resume" }
@@ -93,6 +101,17 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .argument("[run-id]", "run id")
     ).action(async (runId: string | undefined, options: JsonOutputOptions) => {
       await deleteRunCommand(ctx, runId, outputFormatFor(options));
+    }));
+
+  command.addCommand(withJsonOutput(new Command("prune")
+    .exitOverride()
+    .description("Delete terminal runs selected by age.")
+    .option("--older-than <duration>", "select runs older than a duration such as 30d")
+    .option("--all-workspaces", "select runs from every known workspace")
+    .option("--dry-run", "report selected runs without deleting them")
+    .option("--yes", "skip the interactive confirmation")
+    ).action(async (options: PruneRunOptions) => {
+      await pruneRunsCommand(ctx, options);
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
@@ -319,6 +338,65 @@ async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<Run
   }
   if (!deleted.value) throw deleteError(`Run '${runId}' was not found.`);
   return deleted.value;
+}
+
+async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOptions): Promise<void> {
+  const format = outputFormatFor(options);
+  const olderThanMs = parsePruneAge(options.olderThan);
+  const selectionCutoff = new Date(Date.now() - (olderThanMs ?? 0)).toISOString();
+  const request = {
+    ...(olderThanMs === undefined ? {} : { olderThanMs }),
+    allWorkspaces: options.allWorkspaces ?? false,
+    selectionCutoff,
+  };
+  if (!options.dryRun && !options.yes && (format === "json" || !canPrompt(ctx))) {
+    throw usageError("--yes is required to prune runs without an interactive terminal.");
+  }
+  const preview = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: true });
+  const selectedItems = preview.selected.runs + preview.selected.archives;
+  if (options.dryRun) {
+    writePruneResult(ctx, preview, "Prune preview.", format);
+    return;
+  }
+  if (selectedItems === 0 && preview.failures.length === 0 && !options.yes) {
+    writePruneResult(ctx, preview, "No runs to prune.", format);
+    return;
+  }
+  if (!options.yes) {
+    writeResult({
+      ok: preview.failures.length === 0,
+      phase: "delete",
+      message: "Prune preview.",
+      prune: preview,
+    }, "text", ctx, preview.failures.length === 0 ? 0 : 1);
+    const confirmed = preview.failures.length === 0
+      ? await confirmDelete(selectedItems, ctx, "item")
+      : await confirmAction(
+          `Prune ${selectedItems} selected item${selectedItems === 1 ? "" : "s"} and retry ${preview.failures.length} unresolved workspace${preview.failures.length === 1 ? "" : "s"}?`,
+          ctx,
+        );
+    if (confirmed !== true) throw usageError("Run pruning cancelled.");
+  }
+
+  const report = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: false });
+  writePruneResult(ctx, report, report.failures.length === 0 ? "Runs pruned." : "Run pruning completed with failures.", format);
+}
+
+function parsePruneAge(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = tryParseDurationMs(value);
+  if (parsed.isErr()) throw usageError("--older-than must be a duration such as 30d, 24h, or 15m.");
+  return parsed.value;
+}
+
+function writePruneResult(ctx: RunsCommandContext, report: PruneReport, message: string, format: OutputFormat): void {
+  const exitCode = report.failures.length === 0 ? 0 : 1;
+  ctx.setExitCode(writeResult({
+    ok: exitCode === 0,
+    phase: "delete",
+    message,
+    prune: report,
+  }, format, ctx, exitCode));
 }
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions, format: OutputFormat): Promise<void> {

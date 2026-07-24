@@ -91,7 +91,7 @@ describe("compact run inspection surface", () => {
   });
 
   it("renders only the public absolute artifact path", () => {
-    const path = "/workspace/.acpus/.local/runs/run_1/artifacts/output.txt";
+    const path = "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/output.txt";
     const document = {
       schemaVersion: 1,
       kind: "target",

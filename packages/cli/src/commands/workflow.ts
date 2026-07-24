@@ -185,22 +185,26 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
   const input = options.input === undefined ? undefined : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
-  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  if (input !== undefined) {
-    const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
-    if (normalized.isErr()) throw validationError(normalized.error.message);
+  try {
+    const prepared = await prepareResolvedWorkflow(resolved, ctx.cwd);
+    if (input !== undefined) {
+      const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
+      if (normalized.isErr()) throw validationError(normalized.error.message);
+    }
+    const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
+    if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
+    ctx.setExitCode(writeResult({
+      ok: true,
+      phase: "check",
+      message: "Workflow check passed.",
+      workflow: summarizeWorkflow(prepared.ir),
+      diagnostics: prepared.ir.diagnostics,
+      sourceGraphDigest: prepared.sourceGraphDigest,
+      ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+    }, outputFormatFor(options), ctx, 0));
+  } finally {
+    await resolved.cleanup?.();
   }
-  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
-  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "check",
-    message: "Workflow check passed.",
-    workflow: summarizeWorkflow(prepared.ir),
-    diagnostics: prepared.ir.diagnostics,
-    sourceGraphDigest: prepared.sourceGraphDigest,
-    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
-  }, outputFormatFor(options), ctx, 0));
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
@@ -209,16 +213,32 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
-  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
-  if (normalizedInput.isErr()) throw validationError(normalizedInput.error.message);
-  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
-  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
-  const admittedInput = normalizedInput.value;
-  const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
+  let prepared: PreparedRunWorkflow;
+  let admitted: RunDetails | undefined;
+  try {
+    prepared = await prepareResolvedWorkflow(resolved, ctx.cwd);
+    const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
+    if (normalizedInput.isErr()) throw validationError(normalizedInput.error.message);
+    const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
+    if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
+    const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
+    admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, normalizedInput.value, admittedOverrides);
+  } finally {
+    try {
+      await resolved.cleanup?.();
+    } catch (error) {
+      if (admitted !== undefined) {
+        throw runError(`Run '${admitted.id}' was admitted, but its temporary workflow snapshot could not be cleaned up: ${causeMessage(error)}`, {
+          errorCode: "TEMPORARY_SOURCE_CLEANUP_FAILED",
+          run: toRunRecord(admitted),
+        });
+      }
+      throw error;
+    }
+  }
+  if (admitted === undefined) throw new Error("Run admission completed without returning a run.");
 
   if (options.background) {
-    const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, admittedOverrides);
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
@@ -233,7 +253,6 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     return;
   }
 
-  const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, admittedInput, admittedOverrides);
   const structured = outputFormatFor(options) === "json";
   if (structured) writeJsonLine(ctx.stdout, { schemaVersion: 1, ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const outcome = await followRun(ctx.cwd, { runId: admitted.id, mode: "overview", intervalMs }, {
@@ -269,61 +288,77 @@ function daemonFailureCode(failure: CliDaemonFailure): string {
 async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, options: VizWorkflowOptions): Promise<void> {
   if (options.force && options.out === undefined) throw usageError("--force requires --out.");
   const resolved = await resolveWorkflowReference(ctx.cwd, workflow, options);
-  const prepared = await prepareWorkflowForCli(resolved.workflow, ctx.cwd);
-  if (options.out === undefined) {
-    const visualization = renderWorkflowTerminalViz(prepared.ir, {
-      color: supportsColor(ctx.stdout),
+  try {
+    const prepared = await prepareResolvedWorkflow(resolved, ctx.cwd);
+    if (options.out === undefined) {
+      const visualization = renderWorkflowTerminalViz(prepared.ir, {
+        color: supportsColor(ctx.stdout),
+      });
+      ctx.setExitCode(writeResult({
+        ok: true,
+        phase: "viz",
+        message: "Workflow visualization rendered.",
+        visualization,
+        workflow: summarizeWorkflow(prepared.ir),
+        diagnostics: prepared.ir.diagnostics,
+        sourceGraphDigest: prepared.sourceGraphDigest,
+        ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
+      }, "text", ctx, 0));
+      return;
+    }
+
+    const { renderWorkflowVizHtml, workflowIrToWebGraph } = await import("@acpus/web");
+    const outputPath = resolve(ctx.cwd, options.out);
+    const graph = workflowIrToWebGraph(prepared.ir);
+    const html = renderWorkflowVizHtml({
+      graph,
+      workflow: {
+        name: prepared.ir.name,
+        ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
+        irVersion: prepared.ir.irVersion,
+        nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
+      },
+      contract: {
+        ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
+        output: prepared.ir.root.output,
+        outputShape: staticExprShape(prepared.ir.root.output),
+      },
+      sourceGraphDigest: prepared.sourceGraphDigest,
     });
+    try {
+      await mkdir(dirname(outputPath), { recursive: true });
+      if (options.force) await writeFile(outputPath, html);
+      else await writeFile(outputPath, html, { flag: "wx" });
+    } catch (error) {
+      const ioError = error as NodeJS.ErrnoException;
+      if (!options.force && ioError.code === "EEXIST" && ioError.path === outputPath) {
+        throw usageError(`Output file already exists: ${outputPath}`);
+      }
+      throw vizError(error instanceof Error ? error.message : String(error));
+    }
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "viz",
-      message: "Workflow visualization rendered.",
-      visualization,
+      message: "Workflow visualization written.",
       workflow: summarizeWorkflow(prepared.ir),
       diagnostics: prepared.ir.diagnostics,
       sourceGraphDigest: prepared.sourceGraphDigest,
+      outputPath,
       ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
     }, "text", ctx, 0));
-    return;
+  } finally {
+    await resolved.cleanup?.();
   }
+}
 
-  const { renderWorkflowVizHtml, workflowIrToWebGraph } = await import("@acpus/web");
-  const outputPath = resolve(ctx.cwd, options.out);
-  const graph = workflowIrToWebGraph(prepared.ir);
-  const html = renderWorkflowVizHtml({
-    graph,
-    workflow: {
-      name: prepared.ir.name,
-      ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
-      irVersion: prepared.ir.irVersion,
-      nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
-    },
-    contract: {
-      ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
-      output: prepared.ir.root.output,
-      outputShape: staticExprShape(prepared.ir.root.output),
-    },
-    sourceGraphDigest: prepared.sourceGraphDigest,
-  });
-  try {
-    await mkdir(dirname(outputPath), { recursive: true });
-    if (options.force) await writeFile(outputPath, html);
-    else await writeFile(outputPath, html, { flag: "wx" });
-  } catch (error) {
-    const ioError = error as NodeJS.ErrnoException;
-    if (!options.force && ioError.code === "EEXIST" && ioError.path === outputPath) {
-      throw usageError(`Output file already exists: ${outputPath}`);
-    }
-    throw vizError(error instanceof Error ? error.message : String(error));
-  }
-  ctx.setExitCode(writeResult({
-    ok: true,
-    phase: "viz",
-    message: "Workflow visualization written.",
-    workflow: summarizeWorkflow(prepared.ir),
-    diagnostics: prepared.ir.diagnostics,
-    sourceGraphDigest: prepared.sourceGraphDigest,
-    outputPath,
-    ...(resolved.catalog ? { catalog: resolved.catalog } : {}),
-  }, "text", ctx, 0));
+function prepareResolvedWorkflow(resolved: Awaited<ReturnType<typeof resolveWorkflowReference>>, cwd: string) {
+  return prepareWorkflowForCli(
+    resolved.workflow,
+    cwd,
+    resolved.source && resolved.sourceRoot ? { ref: resolved.source, root: resolved.sourceRoot } : undefined,
+  );
+}
+
+function causeMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

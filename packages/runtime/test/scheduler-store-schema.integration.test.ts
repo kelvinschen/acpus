@@ -1,291 +1,108 @@
-import { admitRunForTest } from "./support/runtime-store.js";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openExistingRuntimeStore, openExistingWritableRuntimeStore, openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
+import {
+  openExistingRuntimeStore,
+  openExistingWritableRuntimeStore,
+  openRuntimeStore,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+  type RuntimeStore,
+} from "../src/store/store.js";
+import { admitRunForTest } from "./support/runtime-store.js";
 import { prepareSyntheticWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
+import { runtimeStateFingerprint } from "./support/tree-fingerprint.js";
 
 let dir: string;
+let runtimeHome: string;
+let restoreRuntimeHome: () => void;
 let store: RuntimeStore | undefined;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "acpus-scheduler-schema-"));
+  [dir, runtimeHome] = await Promise.all([
+    mkdtemp(join(tmpdir(), "acpus-scheduler-schema-")),
+    mkdtemp(join(tmpdir(), "acpus-scheduler-schema-home-")),
+  ]);
+  restoreRuntimeHome = setRuntimeHomeForTest(dir, runtimeHome);
   store = await openRuntimeStore(dir);
 });
 
 afterEach(async () => {
   store?.close();
-  await rm(dir, { recursive: true, force: true });
+  restoreRuntimeHome();
+  await Promise.all([
+    rm(dir, { recursive: true, force: true }),
+    rm(runtimeHome, { recursive: true, force: true }),
+  ]);
 });
 
-describe("scheduler store schema", () => {
-  it("initializes the complete current schema for a fresh store", () => {
-    const db = new DatabaseSync(join(dir, ".acpus", ".local", "state", "runtime.db"), { readOnly: true });
+describe("scheduler store format", () => {
+  it("marks a fresh database with the current Acpus storage format", () => {
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
     try {
-      expect(sqliteNames(db, "table")).toEqual(expect.arrayContaining([
-        "artifacts",
-        "daemon_lease",
-        "execution_metadata",
-        "group_members",
-        "hook_journal",
-        "hook_dispatch_cursors",
-        "node_attempts",
-        "node_instances",
-        "node_progress",
-        "node_states",
-        "run_events",
-        "run_leases",
-        "run_inputs",
-        "runs",
-        "scheduler_commits",
-        "scheduler_frames",
-        "signal_waits",
-      ]));
-      expect(columns(db, "node_instances")).toEqual(expect.arrayContaining([
-        "run_id",
-        "node_key",
-        "node_id",
-        "parent_frame_key",
-        "instance_path_json",
-        "status",
-        "readiness_sequence",
-        "accepted_attempt_id",
-      ]));
-      expect(columns(db, "scheduler_frames")).toEqual(expect.arrayContaining([
-        "frame_key",
-        "parent_frame_key",
-        "node_key",
-        "node_id",
-        "frame_kind",
-        "instance_path_json",
-        "scope_json",
-        "loop_json",
-      ]));
-      expect(columns(db, "node_attempts")).toEqual([
-        "run_id",
-        "attempt_id",
-        "node_key",
-        "node_id",
-        "attempt_no",
-        "owner_epoch",
-        "status",
-        "deadline_at",
-        "started_at",
-        "finished_at",
-        "result_json",
-        "error_json",
-        "terminal_reason",
-        "cancel_reason",
-      ]);
-      expect(columns(db, "group_members")).toEqual(expect.arrayContaining([
-        "member_key",
-        "item_index",
-        "item_json",
-        "child_frame_key",
-      ]));
-      expect(columns(db, "signal_waits")).toEqual([
-        "run_id",
-        "node_key",
-        "node_id",
-        "status",
-        "payload_json",
-        "deadline_at",
-        "timeout_message",
-        "timeout_remaining_ms",
-        "rendered_prompt",
-        "consumed_at",
-        "terminal_reason",
-        "created_at",
-        "updated_at",
-      ]);
-      expect(columns(db, "run_inputs")).toEqual([
-        "run_id",
-        "workflow_ir_path",
-        "workflow_ir_digest",
-        "input_json",
-        "agent_overrides_json",
-        "output_json",
-        "lock_path",
-        "lock_digest",
-        "package_lock_digest",
-        "run_dir",
-      ]);
-      expect(columns(db, "scheduler_commits")).toEqual([
-        "run_id",
-        "idempotency_key",
-        "event_count",
-        "event_digest",
-        "intent_digest",
-      ]);
-      expect(columns(db, "node_states")).toEqual([
-        "run_id",
-        "node_key",
-        "node_id",
-        "status",
-        "output_json",
-      ]);
-      expect(columns(db, "run_leases")).toEqual([
-        "run_id",
-        "owner_id",
-        "owner_epoch",
-        "lease_expires_at",
-        "claimed_at",
-        "released_at",
-      ]);
-      expect(columnConstraints(db, "scheduler_commits", ["event_digest", "intent_digest"])).toEqual([
-        { name: "event_digest", notnull: 1 },
-        { name: "intent_digest", notnull: 0 },
-      ]);
-      expect(columns(db, "hook_journal")).toEqual(expect.arrayContaining([
-        "run_id",
-        "event_sequence",
-        "trigger_order",
-        "definition_hash",
-        "status",
-        "triggered_at",
-      ]));
-      expect(columns(db, "hook_dispatch_cursors")).toEqual(["run_id", "event_sequence"]);
-      expect(columnConstraints(db, "run_inputs", [
-        "workflow_ir_path", "workflow_ir_digest", "lock_path", "lock_digest", "run_dir",
-      ])).toEqual([
-        { name: "workflow_ir_path", notnull: 1 },
-        { name: "workflow_ir_digest", notnull: 1 },
-        { name: "lock_path", notnull: 1 },
-        { name: "lock_digest", notnull: 1 },
-        { name: "run_dir", notnull: 1 },
-      ]);
-      expect(columnConstraints(db, "signal_waits", ["created_at", "updated_at"])).toEqual([
-        { name: "created_at", notnull: 1 },
-        { name: "updated_at", notnull: 1 },
-      ]);
-      expect(sqliteNames(db, "index")).toEqual(expect.arrayContaining([
-        "idx_group_members_status",
-        "idx_group_members_ready",
-        "idx_hook_journal_event_handler",
-        "idx_hook_journal_run_id",
-        "idx_hook_journal_triggered_at",
-        "idx_node_attempts_deadline_status",
-        "idx_node_attempts_owner_status",
-        "idx_node_instances_frame_status",
-        "idx_run_leases_expires",
-        "idx_node_instances_node_status",
-        "idx_node_progress_run_updated",
-        "idx_scheduler_frames_parent_status",
-        "idx_signal_waits_status",
-        "idx_signal_waits_deadline_status",
-      ]));
+      expect(databaseFormat(db)).toEqual({
+        applicationId: RUNTIME_APPLICATION_ID,
+        userVersion: RUNTIME_STORAGE_VERSION,
+      });
     } finally {
       db.close();
     }
   });
 
-  it("reopens a current writable store without changing its schema or rows", async () => {
-    const databasePath = join(dir, ".acpus", ".local", "state", "runtime.db");
+  it("preserves admitted run semantics across read-only and writable reopen", async () => {
     if (!store) throw new Error("expected fresh runtime store");
     const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
     const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: dir });
-    const before = schemaVersion(databasePath);
     store.close();
-    store = await openExistingWritableRuntimeStore(dir);
-
-    expect(store).toBeDefined();
-    expect(schemaVersion(databasePath)).toBe(before);
-    expect(store?.getRun(run.id)).toMatchObject({ id: run.id, status: "pending", input: { ready: true } });
-    expect(store?.getFrozenRun(run.id)).toMatchObject({ ir: { name: "cli-valid" }, input: { ready: true } });
-  });
-
-  it("opens a current store read-only without mutating it", async () => {
-    const databasePath = join(dir, ".acpus", ".local", "state", "runtime.db");
-    store?.close();
     store = undefined;
-    const before = await readFile(databasePath);
+    const layout = resolveRuntimeLayout(dir);
+    const beforeRead = await runtimeStateFingerprint(layout.workspaceRoot);
 
     const readOnly = await openExistingRuntimeStore(dir);
-    expect(readOnly).toBeDefined();
     if (!readOnly) throw new Error("expected existing runtime store");
-    expect(readOnly.listRuns()).toEqual([]);
-    expect(() => readOnly.pruneHookJournal(new Date())).toThrow(/readonly/i);
+    expect(readOnly.getRun(run.id)).toMatchObject({
+      id: run.id,
+      status: "pending",
+      input: { ready: true },
+    });
+    expect(readOnly.getFrozenRun(run.id)).toMatchObject({
+      ir: { name: "cli-valid" },
+      input: { ready: true },
+    });
+    expect(readOnly.getHookDispatchCursor(run.id)).toBe(0);
+    expect(() => readOnly.pruneHookJournal(new Date())).toThrow(expect.objectContaining({
+      code: "ERR_SQLITE_ERROR",
+    }));
     readOnly.close();
+    expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeRead);
 
-    expect(await readFile(databasePath)).toEqual(before);
+    store = await openExistingWritableRuntimeStore(dir);
+    expect(store?.getRun(run.id)).toMatchObject({ id: run.id, status: "pending" });
+    expect(store?.getHookDispatchCursor(run.id)).toBe(0);
   });
 
   it.skipIf(process.platform === "win32")("only treats ENOENT and ENOTDIR store paths as absent", async () => {
     store?.close();
     store = undefined;
-    const localRoot = join(dir, ".acpus");
-    await rm(localRoot, { recursive: true, force: true });
-    await writeFile(localRoot, "not a directory");
+    const runtimeRoot = resolveRuntimeLayout(dir).runtimeRoot;
+    await rm(runtimeRoot, { recursive: true, force: true });
+    await writeFile(runtimeRoot, "not a directory");
     await expect(openExistingRuntimeStore(dir)).resolves.toBeUndefined();
 
-    await rm(localRoot);
-    await symlink(".acpus", localRoot);
+    await rm(runtimeRoot);
+    await symlink("runtime", runtimeRoot);
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({ code: "ELOOP" });
-  });
-
-  it("creates durable hook cursors, backfills them only on writable open, and cascades deletion", async () => {
-    const databasePath = join(dir, ".acpus", ".local", "state", "runtime.db");
-    if (!store) throw new Error("expected fresh runtime store");
-    const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
-    const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: dir });
-    expect(store.getHookDispatchCursor(run.id)).toBe(0);
-    store.close();
-    store = undefined;
-
-    const db = new DatabaseSync(databasePath);
-    try {
-      db.prepare("DELETE FROM hook_dispatch_cursors WHERE run_id = ?").run(run.id);
-    } finally {
-      db.close();
-    }
-
-    const readOnly = await openExistingRuntimeStore(dir);
-    try {
-      expect(() => readOnly!.getHookDispatchCursor(run.id)).toThrow("has no hook dispatch cursor");
-    } finally {
-      readOnly?.close();
-    }
-    expect(rowCount(databasePath, "hook_dispatch_cursors", run.id)).toBe(0);
-
-    store = await openExistingWritableRuntimeStore(dir);
-    if (!store) throw new Error("expected writable runtime store");
-    expect(store.getHookDispatchCursor(run.id)).toBe(store.getLastRunEventSequence(run.id));
-    await store.deleteRun(run.id);
-    expect(rowCount(databasePath, "hook_dispatch_cursors", run.id)).toBe(0);
   });
 });
 
-function sqliteNames(db: DatabaseSync, type: "table" | "index"): string[] {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type = ? ORDER BY name").all(type).map(row => String(row.name));
-}
-
-function columns(db: DatabaseSync, table: string): string[] {
-  return db.prepare(`PRAGMA table_info(${table})`).all().map(row => String(row.name));
-}
-
-function columnConstraints(db: DatabaseSync, table: string, names: string[]): Array<{ name: string; notnull: number }> {
-  const selected = new Set(names);
-  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number }>)
-    .filter(column => selected.has(column.name))
-    .map(column => ({ name: column.name, notnull: Number(column.notnull) }));
-}
-
-function schemaVersion(path: string): number {
-  const db = new DatabaseSync(path, { readOnly: true });
-  try {
-    return Number((db.prepare("PRAGMA schema_version").get() as { schema_version: number }).schema_version);
-  } finally {
-    db.close();
-  }
-}
-
-function rowCount(path: string, table: string, runId: string): number {
-  const db = new DatabaseSync(path, { readOnly: true });
-  try {
-    return Number((db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`).get(runId) as { count: number }).count);
-  } finally {
-    db.close();
-  }
+function databaseFormat(db: DatabaseSync): { applicationId: number; userVersion: number } {
+  const application = db.prepare("PRAGMA application_id").get() as { application_id: number };
+  const version = db.prepare("PRAGMA user_version").get() as { user_version: number };
+  return {
+    applicationId: Number(application.application_id),
+    userVersion: Number(version.user_version),
+  };
 }

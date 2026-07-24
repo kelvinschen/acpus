@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   getRun,
+  prepareRuntimeForNewRun,
   requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonStatus,
@@ -20,6 +21,7 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 
 export type CliDaemonFailure =
   | { type: "runtime-configuration-invalid"; message: string }
+  | { type: "runtime-preparation-failed"; message: string }
   | { type: "daemon-status-failed"; failure: DaemonClientFailure; message: string }
   | { type: "daemon-spawn-failed"; errno?: string; message: string }
   | { type: "daemon-exited-before-ready"; exitCode: number | null; signal: NodeJS.Signals | null; message: string }
@@ -115,12 +117,24 @@ export function sendDaemonAdmitRun(
   cwd: string,
   input: { prepared: PreparedRunWorkflow; input: JsonValue; agentOverrides?: AgentOverrideMap },
 ): ResultAsync<RunDetails, CliDaemonFailure> {
-  return ensureDaemonRunning(cwd).andThen(() => requestDaemonAdmitRun(cwd, input).mapErr(failure => ({
-    type: "request-failed" as const,
-    method: "admitRun" as const,
-    failure,
-    message: failure.message,
-  })));
+  return new ResultAsync((async () => {
+    try {
+      await prepareRuntimeForNewRun(cwd);
+    } catch (error) {
+      return err({
+        type: "runtime-preparation-failed" as const,
+        message: errorMessage(error, "Runtime storage could not be prepared for a new run."),
+      });
+    }
+    const ready = await ensureDaemonRunning(cwd);
+    if (ready.isErr()) return err(ready.error);
+    return requestDaemonAdmitRun(cwd, input).mapErr(failure => ({
+      type: "request-failed" as const,
+      method: "admitRun" as const,
+      failure,
+      message: failure.message,
+    }));
+  })());
 }
 
 export function daemonControlRequestId(): string {

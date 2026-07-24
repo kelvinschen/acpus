@@ -2,31 +2,119 @@
 
 ## Purpose
 
-`@acpus/runtime` owns workspace-local durable runs, frozen workflow execution, controls, inspection, and the local daemon. Prepared workflow data comes from the [Workflow Compiler](workflow-compiler-spec.md); IR/value semantics come from [Core](core-spec.md) and [Expression](expression-spec.md); authoring modules load through the [Loader](loader-spec.md); Agent turns delegate to the [Agent Executor](agent-executor-spec.md); side-effect observation delegates to [Runtime Hooks](hooks-spec.md).
+`@acpus/runtime` owns workspace-scoped durable runs in private user-level shards, frozen workflow execution, controls, inspection, pruning, and the local daemon. Prepared workflow data comes from the [Workflow Compiler](workflow-compiler-spec.md); IR/value semantics come from [Core](core-spec.md) and [Expression](expression-spec.md); authoring modules load through the [Loader](loader-spec.md); Agent turns delegate to the [Agent Executor](agent-executor-spec.md); side-effect observation delegates to [Runtime Hooks](hooks-spec.md).
 
 ## Requirements
 
-### Admission And Store
+### Workspace Shards, Admission, And Store
 
-- The runtime MUST store workspace state in `.acpus/.local/state/runtime.db`, initialize the complete current schema on first writable open, preserve current rows on reopen, and leave read-only opens unchanged.
+- Runtime MUST canonicalize the workspace through its real path before deriving runtime storage.
+- Runtime MUST resolve the Acpus home as `.acpus` beneath the running user's operating-system home directory without an environment-variable override.
+- A workspace key MUST be the first 32 lowercase hexadecimal characters of `sha256("acpus-workspace-v1\0" + platform + "\0" + canonicalRealpath)`.
+- Runtime MUST store a workspace shard at `$HOME/.acpus/workspaces/<workspace-key>/`.
+- Runtime MUST NOT create, read, migrate, or delete workspace-local `.acpus/.local` runtime state.
+- The active shard MUST use the following closed layout.
+
+| Coordinate | Shard-relative path |
+| --- | --- |
+| Manifest | `workspace.json` |
+| Daemon socket when the platform path fits | `daemon.sock` |
+| Active database | `runtime/runtime.db` |
+| Run capsule | `runtime/runs/<run-id>/` |
+| Durable global-catalog source | `runtime/sources/catalog/<name>/<digest>/` |
+| Interrupted deletion | `runtime/trash/` |
+| Archived storage generation | `archives/<utc>-v<storage-version>/` |
+
+- Runtime MUST coordinate destructive shard maintenance through a workspace-keyed lock beneath `$HOME/.acpus/tmp/runtime-locks/` that survives active-generation replacement.
+- Concurrent maintenance owners MUST serialize for a bounded maintenance wait; a live shared Runtime user MUST remain a distinct blocker, and new-run preparation MAY reuse a compatible generation completed by the competing owner.
+- Platform-global daemon endpoints (Windows named pipes, Linux abstract sockets, and temporary-directory Unix-socket fallbacks) MUST combine the fixed workspace key with a stable Acpus-home scope so different users or injected test homes cannot share an endpoint.
+- A temporary-directory Unix-socket fallback MUST live beneath a user-scoped private directory; every filesystem socket parent MUST reject symbolic-link or non-directory substitution and use mode `0700`, and the bound Unix socket MUST reject symbolic-link substitution and use mode `0600`.
+- Workspace-shard path and layout helpers MUST remain internal to Runtime rather than be exported from its package root.
+- The workspace manifest MUST have exactly `manifestVersion: 1`, `workspaceKey`, `canonicalPath`, `platform`, `createdAt`, and optional `filesystemIdentity`.
+- Manifest `createdAt` MUST be a canonical UTC ISO timestamp.
+- Manifest `filesystemIdentity`, when available, MUST be the decimal `device:inode` identity with an optional decimal birth-time component.
+- A writable open MUST create a missing shard and manifest with private user-only permissions where the platform supports POSIX modes.
+- Fresh database initialization MUST accept only an absent generation or a generation whose existing runtime directories are all empty.
+- A generation with `runtime.db` but a missing runtime child, or with durable run/source/trash state but no `runtime.db`, MUST fail as incomplete storage instead of being repaired in place.
+- A missing manifest beside a non-empty active generation MUST NOT cause that generation to be adopted under a newly written manifest.
+- Only new-run preparation and real pruning MAY archive an incomplete generation as one unit and rebuild current storage; read/control access and dry-run pruning MUST leave it unchanged.
+- Runtime-owned layout roots, manifests, databases, run capsules, sources, trash, and archives MUST reject symbolic-link substitution instead of following it.
+- An existing manifest whose key, canonical path, platform, or available filesystem identity disagrees with the current workspace MUST fail visibly instead of being adopted or rewritten.
+- A read-only open MUST locate only the current workspace shard.
+- A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
+- The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
+- The active database MUST use SQLite `user_version = 1` as the current storage version.
+- A first writable open MUST initialize the complete current schema.
+- Reopening a current-version database MUST preserve its rows.
+- New-run preparation and real pruning of an incompatible active database MUST archive every child of `runtime/` under one new `archives/<utc>-v<observed-storage-version>/` generation before creating an empty current database.
+- Control and single-delete access to an incompatible active database MUST fail without archiving or rebuilding it.
+- Runtime MUST NOT migrate or read rows from an archived incompatible storage generation.
+- A read-only open of an incompatible active database MUST fail visibly without archiving or rebuilding it.
 - Runtime-triggered loading of `node:sqlite` MUST NOT emit Node.js's SQLite experimental warning.
 - Runtime-triggered loading of `node:sqlite` MUST leave every other process warning observable.
 - An existing-store open MUST return absence only for `ENOENT` or `ENOTDIR`; permission, symlink-loop, I/O, and SQLite failures MUST remain system failures.
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
 - `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, and `AgentOverrideValidationFailure`; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
-- New-run and replacement-fork admission MUST validate the closed preparation-lock shape, canonical frozen IR, matching digests, workspace-relative entry, and `sha256([sourceDigest, packageLockDigest ?? ""].join("\n"))` source-graph digest before mutation; daemon failures use `INVALID_REQUEST`.
-- Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `.acpus/.local/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
+- New-run and replacement-fork admission MUST validate the closed preparation-lock shape, canonical frozen IR, matching digests, compiler-owned workflow source reference, and `sha256([sourceDigest, packageLockDigest ?? ""].join("\n"))` source-graph digest before mutation; daemon failures use `INVALID_REQUEST`.
+- A workspace source reference MUST resolve its portable entry and reusable-task referrers beneath the canonical workspace root.
+- A global-catalog source reference MUST identify its catalog name, package digest, and portable entry without persisting a temporary absolute source path.
+- Admission of a global-catalog source MUST verify the supplied package snapshot against its package digest before publishing or reusing `runtime/sources/catalog/<name>/<digest>/`.
+- Runtime execution MUST resolve frozen global-catalog reusable-task referrers from the Runtime-owned durable source snapshot.
+- Runtime execution MUST use the run workspace as the fallback dependency authority for bare imports originating in a frozen global-catalog source.
+- Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
 - Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, and the optional `artifacts/` tree.
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
-- Frozen files and registered artifacts MUST be regular non-symlinks beneath a non-symlinked runtime runs root physically contained by the workspace; missing, escaping, or mismatched files fail visibly rather than appearing absent.
+- Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
 - Admission MUST atomically persist `run.admitted`, run/public node projections, scheduler bootstrap state, and separately stored Agent overrides before daemon-owned advancement.
 - Execution MUST use frozen IR instead of live workflow source and never copy reusable task source or dependencies into the run directory.
 - Completed runs MUST persist normalized root output and `run.completed`; runtime failures after admission persist failed state and `run.failed`.
 - A run row without its required frozen input/files MUST fail as durable corruption rather than appear absent.
-- `deleteRun` MUST return `ResultAsync<RunRecord | undefined, RunDeleteFailure>`, with `undefined` for an absent store/run and `run-delete-active` as its only recoverable error; its active-lease check and database deletion MUST share one write transaction, while database and directory failures reject.
+- `deleteRun` MUST return `ResultAsync<RunRecord | undefined, RunDeleteFailure>`, with `undefined` for an absent store/run and `run-delete-active` as its only recoverable error.
+- Run deletion MUST move the run capsule into `runtime/trash/` before deleting its database rows in the same transaction as the active-lease check.
+- Run deletion MUST reject an unexpired unreleased lease even when the run projection is already terminal.
+- A successful run-deletion commit MUST remove its trashed capsule.
+- A failed run-deletion transaction MUST restore its trashed capsule before returning or rejecting.
+- On writable open, Runtime MUST restore a trashed capsule whose run row remains and finish deleting a trashed capsule whose run row is absent.
+- Trash reconciliation MUST accept only regular non-symbolic-link directories as trashed capsules.
+- A trash reconciliation collision or filesystem failure MUST fail visibly instead of discarding either path.
+
+### Pruning
+
+- `pruneRuns(cwd, options)` MUST select only runs whose status is `completed`, `failed`, or `canceled`.
+- With `olderThanMs`, pruning MUST select terminal runs whose `updatedAt` and archives whose creation time are strictly earlier than the runtime-computed cutoff.
+- Without `olderThanMs`, pruning MUST select every terminal run and every archive in scope.
+- Runtime MAY receive an internal canonical `selectionCutoff` from the CLI to fence a confirmed prune; when present it MUST replace the runtime-computed selection boundary without changing whether `PruneReport.cutoff` is exposed.
+- Pruning MUST default to the current workspace shard.
+- `allWorkspaces: true` MUST enumerate workspace shards beneath the same Acpus home.
+- Ordinary read APIs MUST NOT expose runs from another workspace shard.
+- `dryRun: true` MUST perform selection and size accounting without changing databases or files.
+- Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery, include those candidates in a failing dry-run report, and MUST NOT select an archive created by recovery during that same invocation.
+- Real pruning MUST delete selected runs through the Runtime-owned trash protocol.
+- Real pruning and generation archival MUST fail while another process holds the workspace runtime for writable use.
+- After selected run deletion, Runtime MUST delete only global-catalog source snapshots that no remaining run references.
+- A shard MUST be removed only when it has no runs, archives, catalog snapshots, unresolved trash, or live daemon.
+- Empty-shard removal MUST reject a `daemon.sock` entry unless the active layout uses that path and the entry is a Unix socket.
+- Removing an empty shard MUST remove its empty active database, manifest, and workspace-shard directory.
+- One malformed or failed shard MUST NOT prevent pruning of other selected shards.
+- A prune failure after one or more successful deletions MUST retain those completed counts and bytes in the final report.
+- For the current workspace, real pruning MAY archive and rebuild a generation whose available filesystem identity proves that the workspace path was recreated; dry-run MUST report that mismatch without mutation.
+- `PruneReport` MUST use the following closed shape.
+
+```ts
+type PruneReport = {
+  dryRun: boolean;
+  cutoff?: string;
+  selected: { workspaces: number; runs: number; archives: number; bytes: number };
+  deleted: { workspaces: number; runs: number; archives: number; sources: number; bytes: number };
+  removedWorkspaces: number;
+  failures: Array<{ workspaceKey: string; message: string }>;
+};
+```
+
+- `PruneReport.cutoff` MUST contain the runtime-computed canonical UTC ISO cutoff when `olderThanMs` is present and be omitted otherwise.
 
 ### Values, Deadlines, And Scheduler
 
@@ -117,7 +205,7 @@
 
 ### Task, Signal, And Artifact Execution
 
-- Task runs MUST execute the frozen inline or reusable target; reusable module resolution delegates to the [Loader](loader-spec.md) from the recorded workflow referrer.
+- Task runs MUST execute the frozen inline or reusable target; reusable module resolution delegates to the [Loader](loader-spec.md) from the recorded source-root-relative workflow referrer.
 - Every Task attempt MUST use a fresh Node process; module caching is attempt-local and separate tasks/retries share no module globals.
 - Task cwd MUST default to workspace, resolve relative values from workspace, and be observed by process code, filesystem access, module initialization, and the default command wrapper without changing module resolution.
 - Task environment MUST start from host environment plus evaluated overrides and remain live for process code, task context, modules, and later command invocations.
@@ -236,7 +324,8 @@
 
 ### Read APIs And Daemon Lifecycle
 
-- `listRuns`, `getRun`, inspection, health, and visualization overlays MUST read durable projections/frozen IR without live workflow source or daemon startup.
+- `listRuns`, `getRun`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
+- `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
 - `listRuns` MUST order by `updatedAt DESC, createdAt DESC`; `getRun` omits `dynamic` only when every dynamic collection is empty and fails visibly on decode/invariant errors.
 - `getRunInspection(cwd, query)` MUST return tagged `ResultAsync` results in the following modes.
 
@@ -275,7 +364,12 @@ type RunInspectionScopeState =
 - Overview MUST compact repeated completed or cancelled occurrences when needed to preserve its bounded presentation and MUST retain valid parent links after compaction. Each fold MUST replace one contiguous run of hidden sibling occurrences under the same parent and MUST NOT aggregate across an outer occurrence.
 - Inspection run summaries MUST expose `agentUsage` for workflows containing Agent nodes, including zero values before materialization; instances count materialized Agent nodes, attempts count all scheduler attempts for those nodes, and turns use durable attempt metadata supplemented by newer active progress without double counting.
 - A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its detailed projection and zero matches remain `not_started`.
-- Public artifacts MUST expose absolute `path` only and never read bodies; `listArtifacts` returns `[]` for an empty existing run and `undefined` for a missing run/store.
+- Public artifact records MUST expose absolute `path` without exposing internal relative storage coordinates.
+- `listArtifacts` MUST return registry metadata without reading file bodies.
+- `listArtifacts` MUST return `[]` for an empty existing run and `undefined` for a missing run or store.
+- `readArtifact(cwd, runId, artifactId): Promise<{ artifact: ArtifactRecord; bytes: Buffer } | undefined>` MUST return the artifact record and bytes after verifying the registered file's run containment, non-symlink regular-file identity, recorded size, and digest.
+- `readArtifact` MUST return `undefined` for a missing store, run, or artifact registry row.
+- A registered artifact that is missing, escapes its run, is a symlink or non-regular file, or fails its recorded size or digest MUST make `readArtifact` reject as durable corruption.
 - Runtime target inspection MUST represent a persisted canonical turn prompt as an artifact descriptor with `field: "prompt"` and MUST NOT embed the prompt body.
 - Repeated composite inspection MUST associate group membership by dynamic `nodeKey` and MUST NOT reuse a group matched only by static `nodeId`.
 - Compact Agent inspection MUST use the authored Agent key, typed effective backend/counters/activity, explicit context/token availability, and at most three bounded normalized tool commands without command text or payloads.
@@ -302,9 +396,12 @@ type RunInspectionScopeState =
 - `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, daemon session wiring, and progress beyond internal count limits.
 - `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, retry replay behavior, rejection of non-terminal execution without a durable wake source, attempt/artifact/progress fences, due-Signal scale, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
+- Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing; integration tests MUST NOT reproduce those rule matrices through fresh databases.
+- Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.
+- Database tests assert current format markers and persisted Runtime semantics; they MUST NOT snapshot table/column inventories or assert the absence of fields from historical schemas.
 - A fresh-process Runtime integration test verifies that SQLite initialization is quiet while an unrelated experimental warning remains observable.
-- Cover schema initialization, frozen-file integrity, run-directory entry limits, prepared-workflow consistency, collision-safe atomic admission, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
+- Cover workspace-key and manifest validation, private shard creation, database version archive/reset, frozen-file integrity, run-directory entry limits, prepared source consistency, durable global-catalog sources, collision-safe atomic admission, trash reconciliation, pruning, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
 - Prove deterministic scheduler recovery and every node/composite strategy, identity, resource, deadline, cancellation, retry, and projection rule.
 - Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, canonical turn records, and optional captures.
 - Cover control idempotency/targeting, fork safety, daemon fencing, sessions, socket ownership, heartbeat, idle-stop, and public error sanitization.
-- Verify inspection modes, artifacts, follow fidelity/resync, liveness, terminal output once, and read-only operation without daemon startup.
+- Verify inspection modes, verified artifact reads, health persistence projection, follow fidelity/resync, liveness, terminal output once, and read-only operation without daemon startup or shard creation.

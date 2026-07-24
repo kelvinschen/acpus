@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { createRequire, register } from "node:module";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { register as registerTsx, tsImport } from "tsx/esm/api";
 
@@ -47,6 +47,10 @@ type ModuleBuiltin = typeof import("node:module") & {
 
 let registered = false;
 const require = createRequire(import.meta.url);
+const dependencyAuthorities: Array<{
+  sourceRoot: string;
+  dependencyParentURL: string;
+}> = [];
 
 export function officialAuthoringTypeScriptPaths(fromDir: string): OfficialTypeScriptPaths {
   const paths: Record<string, string[]> = {};
@@ -87,13 +91,17 @@ function registerAuthoringModuleLoader(): void {
   registerEsmResolveLoader(entries);
 }
 
-export async function importAuthoringModule(specifier: string, options: { parentURL: string }): Promise<Record<string, unknown>> {
+export async function importAuthoringModule(
+  specifier: string,
+  options: { parentURL: string; sourceRoot?: string; dependencyRoot?: string },
+): Promise<Record<string, unknown>> {
+  registerDependencyAuthority(options);
   registerAuthoringModuleLoader();
   const officialURL = officialAuthoringImportURL(specifier);
   if (officialURL) return normalizeModule(await import(officialURL) as Record<string, unknown>);
-  const developmentURL = await developmentExportURL(specifier, options.parentURL);
+  const developmentURL = await developmentExportURL(specifier, options.parentURL, options.dependencyRoot);
   try {
-    return await importDefaultTarget(specifier, options.parentURL);
+    return await importDefaultTarget(specifier, options.parentURL, options.dependencyRoot);
   } catch (error) {
     if (!developmentURL || !isResolutionError(error)) throw error;
     return normalizeModule(await tsImport(developmentURL, { parentURL: options.parentURL }) as Record<string, unknown>);
@@ -150,7 +158,14 @@ function registerCommonJSResolver(imports: Map<string, string>): void {
   moduleBuiltin._resolveFilename = function resolveAcpusAuthoringImport(this: unknown, request: string, parent: unknown, isMain: boolean, options?: unknown): string {
     const url = imports.get(request);
     if (url) return fileURLToPath(url);
-    return original.call(this, request, parent, isMain, options);
+    try {
+      return original.call(this, request, parent, isMain, options);
+    } catch (error) {
+      const parentPath = isRecord(parent) && typeof parent.filename === "string" ? parent.filename : undefined;
+      const authority = parentPath ? dependencyAuthority(pathToFileURL(parentPath).href) : undefined;
+      if (!authority || !isBareSpecifier(request) || !isResolutionError(error)) throw error;
+      return createRequire(authority.dependencyParentURL).resolve(request);
+    }
   };
 }
 
@@ -161,7 +176,17 @@ function registerSyncResolveHook(imports: Map<string, string>): void {
     resolve(specifier, context, nextResolve) {
       const url = imports.get(specifier);
       if (url) return { url, shortCircuit: true };
-      return nextResolve(specifier, context);
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        const parentURL = isRecord(context) && typeof context.parentURL === "string" ? context.parentURL : undefined;
+        const authority = parentURL ? dependencyAuthority(parentURL) : undefined;
+        if (!authority || !isBareSpecifier(specifier) || !isResolutionError(error)) throw error;
+        return nextResolve(specifier, {
+          ...(context as unknown as Record<string, unknown>),
+          parentURL: authority.dependencyParentURL,
+        });
+      }
     },
   });
 }
@@ -178,12 +203,22 @@ export async function resolve(specifier, context, nextResolve) {
   register(`data:text/javascript,${encodeURIComponent(loader)}`, import.meta.url);
 }
 
-async function importDefaultTarget(specifier: string, parentURL: string): Promise<Record<string, unknown>> {
+async function importDefaultTarget(
+  specifier: string,
+  parentURL: string,
+  dependencyRoot?: string,
+): Promise<Record<string, unknown>> {
   const commonJsPath = await commonJsAuthoringPath(specifier, parentURL);
   if (commonJsPath) return normalizeModule(createRequire(parentURL)(commonJsPath) as Record<string, unknown>);
-  const mod = isBareSpecifier(specifier)
-    ? await tsImport(specifier, { parentURL }) as Record<string, unknown>
-    : await import(moduleURL(specifier, parentURL)) as Record<string, unknown>;
+  let mod: Record<string, unknown>;
+  try {
+    mod = isBareSpecifier(specifier)
+      ? await tsImport(specifier, { parentURL }) as Record<string, unknown>
+      : await import(moduleURL(specifier, parentURL)) as Record<string, unknown>;
+  } catch (error) {
+    if (!dependencyRoot || !isBareSpecifier(specifier) || !isResolutionError(error)) throw error;
+    mod = await tsImport(specifier, { parentURL: dependencyParentURL(dependencyRoot) }) as Record<string, unknown>;
+  }
   return normalizeModule(mod);
 }
 
@@ -221,10 +256,15 @@ function isBareSpecifier(specifier: string): boolean {
     && !specifier.startsWith("node:");
 }
 
-async function developmentExportURL(specifier: string, parentURL: string): Promise<string | undefined> {
+async function developmentExportURL(
+  specifier: string,
+  parentURL: string,
+  dependencyRoot?: string,
+): Promise<string | undefined> {
   const parts = packageSpecifierParts(specifier);
   if (!parts) return undefined;
-  const packageJson = await findPackageJson(parts.name, dirname(fileURLToPath(parentURL)));
+  const packageJson = await findPackageJson(parts.name, dirname(fileURLToPath(parentURL)))
+    ?? (dependencyRoot ? await findPackageJson(parts.name, dependencyRoot) : undefined);
   if (!packageJson) return undefined;
   const pkg = JSON.parse(await readFile(packageJson, "utf8")) as { exports?: unknown };
   const entry = exportEntry(pkg.exports, parts.subpath);
@@ -343,6 +383,47 @@ function isResolutionError(error: unknown): boolean {
     || code === "ERR_MODULE_NOT_FOUND"
     || code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
     || code === "ERR_PACKAGE_IMPORT_NOT_DEFINED";
+}
+
+function registerDependencyAuthority(options: {
+  parentURL: string;
+  sourceRoot?: string;
+  dependencyRoot?: string;
+}): void {
+  if (!options.dependencyRoot || !options.parentURL.startsWith("file:")) return;
+  const sourceRoot = canonicalPath(options.sourceRoot ?? dirname(fileURLToPath(options.parentURL)));
+  const dependencyParent = dependencyParentURL(options.dependencyRoot);
+  const existing = dependencyAuthorities.findIndex(authority =>
+    authority.sourceRoot === sourceRoot && authority.dependencyParentURL === dependencyParent);
+  if (existing !== -1) dependencyAuthorities.splice(existing, 1);
+  dependencyAuthorities.push({ sourceRoot, dependencyParentURL: dependencyParent });
+}
+
+function dependencyAuthority(parentURL: string): (typeof dependencyAuthorities)[number] | undefined {
+  if (!parentURL.startsWith("file:")) return undefined;
+  const parentPath = canonicalPath(fileURLToPath(parentURL));
+  for (let index = dependencyAuthorities.length - 1; index >= 0; index -= 1) {
+    const authority = dependencyAuthorities[index]!;
+    if (isContainedPath(authority.sourceRoot, parentPath)) return authority;
+  }
+  return undefined;
+}
+
+function dependencyParentURL(root: string): string {
+  return pathToFileURL(join(canonicalPath(root), "__acpus_dependency_authority__.mjs")).href;
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 function normalizeModule(mod: Record<string, unknown>): Record<string, unknown> {

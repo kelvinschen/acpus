@@ -62,6 +62,28 @@ Use the repository's package scripts rather than duplicating their underlying co
 
 Documentation-only changes may skip executable checks when they cannot affect behavior. State that decision explicitly. When generated artifacts are checked in, regenerate them through their owning script rather than editing them manually.
 
+### Semantic Test Oracles
+
+- Every test MUST name a concrete failure mode and assert the lowest stable
+  observable boundary that detects it.
+- Tests MUST assert semantic behavior, not incidental source representation.
+- A behavior-preserving synonymous rewrite MUST NOT fail a test unless the
+  exact wording is itself a documented product contract.
+- Tests MUST NOT use exact prompt, documentation, comment, source-code, or
+  human-facing error prose as a runtime-behavior oracle.
+- Prefer executable results, state transitions, typed errors, parsed schemas,
+  compiled IR, and explicit dataflow over source substring checks or snapshots.
+- Exact-text assertions MAY be used only when the bytes or tokens are the
+  contract, such as public syntax, protocol fields, machine-readable output,
+  legal copy, or localization fixtures. The test MUST identify the owning
+  contract.
+- Prompt semantics that cannot be verified hermetically MUST be reviewed or
+  evaluated in a dedicated eval suite; substring assertions MUST NOT pretend
+  to verify Agent behavior.
+- Negative source assertions MUST NOT memorialize deleted implementations or
+  historical wording unless they enforce a current closed-set or safety
+  boundary.
+
 ## Handoff Standard
 
 Before handing off a change, confirm that:

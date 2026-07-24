@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,7 +22,11 @@ export type CompileWorkflowModuleError =
   | { type: "task-analysis-failed"; entry: string; message: string }
   | { type: "workflow-outside-workspace"; workflowFile: string; cwd: string; message: string };
 
-export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsync<CompiledWorkflowModule, CompileWorkflowModuleError> {
+export function tryCompileWorkflowModule(
+  entry: string,
+  sourceRoot: string,
+  dependencyRoot = sourceRoot,
+): ResultAsync<CompiledWorkflowModule, CompileWorkflowModuleError> {
   const absolute = resolve(entry);
   return ResultAsync.fromPromise(
     readFile(absolute, "utf8"),
@@ -32,7 +37,7 @@ export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsyn
     } satisfies CompileWorkflowModuleError),
   ).andThen(source =>
     ResultAsync.fromPromise(
-      importWorkflowModule(absolute),
+      importWorkflowModule(absolute, sourceRoot, dependencyRoot),
       cause => ({
         type: "module-import-failed",
         entry,
@@ -68,7 +73,7 @@ export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsyn
         entry,
         message: `Workflow task analysis failed for '${entry}': ${failure.message}`,
       } satisfies CompileWorkflowModuleError))).andThen(analysis => {
-        const referrerPath = toContainedWorkspacePath(cwd, absolute);
+        const referrerPath = toContainedSourcePath(sourceRoot, absolute);
         if (referrerPath.isErr()) return err(referrerPath.error);
         applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), referrerPath.value);
         ir.diagnostics.push(...validateWorkflowIR(ir));
@@ -81,9 +86,13 @@ export function tryCompileWorkflowModule(entry: string, cwd: string): ResultAsyn
   );
 }
 
-function importWorkflowModule(absolute: string): Promise<Record<string, unknown>> {
+function importWorkflowModule(
+  absolute: string,
+  sourceRoot: string,
+  dependencyRoot: string,
+): Promise<Record<string, unknown>> {
   const url = pathToFileURL(absolute).href;
-  return importAuthoringModule(url, { parentURL: url });
+  return importAuthoringModule(url, { parentURL: url, sourceRoot, dependencyRoot });
 }
 
 function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {
@@ -100,17 +109,26 @@ function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskRe
   }
 }
 
-function toContainedWorkspacePath(cwd: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
-  const path = relative(cwd, workflowFile);
+function toContainedSourcePath(sourceRoot: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
+  let path: string;
+  try {
+    path = relative(realpathSync(sourceRoot), realpathSync(workflowFile));
+  } catch {
+    return err(outsideSourceRoot(workflowFile, sourceRoot));
+  }
   if (path.startsWith("..") || path === "" || path.split(/[\\/]/).includes("..")) {
-    return err({
-      type: "workflow-outside-workspace",
-      workflowFile,
-      cwd,
-      message: `Workflow file '${workflowFile}' must be inside workspace '${cwd}'.`,
-    });
+    return err(outsideSourceRoot(workflowFile, sourceRoot));
   }
   return ok(toWorkspacePath(path));
+}
+
+function outsideSourceRoot(workflowFile: string, sourceRoot: string): CompileWorkflowModuleError {
+  return {
+    type: "workflow-outside-workspace",
+    workflowFile,
+    cwd: sourceRoot,
+    message: `Workflow file '${workflowFile}' must be inside source root '${sourceRoot}'.`,
+  };
 }
 
 function toWorkspacePath(path: string): string {
