@@ -221,9 +221,18 @@ console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target
   });
 
   it("returns tagged errors for workflows outside the workspace", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "compiler-outside-workspace-"));
+    const [cwd, outside] = await Promise.all([
+      mkdtemp(join(tmpdir(), "compiler-source-root-")),
+      mkdtemp(join(tmpdir(), "compiler-outside-workspace-")),
+    ]);
     try {
-      const workflow = fixture("release.workflow.ts");
+      const workflow = join(outside, "throws.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow } from "acpus/core";
+
+export default defineWorkflow({ name: "outside" }).build(() => {
+  throw new Error("build callback must not win source containment");
+});
+`);
       const result = await tryCompileWorkflowModule(workflow, cwd);
 
       expect(result.isErr()).toBe(true);
@@ -233,6 +242,27 @@ console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target
         workflowFile: workflow,
         cwd,
       });
+    } finally {
+      await Promise.all([
+        rm(cwd, { recursive: true, force: true }),
+        rm(outside, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  it("accepts contained workflow names that begin with two dots", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-dot-prefix-"));
+    try {
+      const workflow = join(cwd, "..workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow } from "acpus/core";
+export default defineWorkflow({ name: "dot_prefix" }).build(() => ({}));
+`);
+
+      const result = await tryCompileWorkflowModule(workflow, cwd);
+
+      expect(result.isOk()).toBe(true);
+      if (result.isErr()) throw new Error(result.error.message);
+      expect(result.value.ir.name).toBe("dot_prefix");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -258,6 +288,39 @@ export default defineWorkflow({ name: "throws" }).build(() => {
         type: "workflow-build-failed",
         entry: workflow,
         message: expect.stringContaining("boom"),
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails compilation when a runtime reusable Task has no static source link", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-missing-task-link-"));
+    try {
+      await symlink(join(repoRoot, "node_modules"), join(cwd, "node_modules"), "dir");
+      const workflow = join(cwd, "missing-link.workflow.ts");
+      await writeFile(workflow, `import { defineWorkflow, task, z } from "acpus/core";
+
+const noop = task.define({
+  inputSchema: z.object({}),
+  exec: async () => ({ ok: true }),
+});
+const tasks = { noop };
+
+export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
+  step("run").task({ task: tasks.noop, input: {} });
+  return {};
+});
+`);
+
+      const result = await tryCompileWorkflowModule(workflow, cwd);
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected missing reusable Task link");
+      expect(result.error).toMatchObject({
+        type: "workflow-build-failed",
+        entry: workflow,
+        message: expect.stringContaining("Reusable Task node 'run' requires source link metadata"),
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });

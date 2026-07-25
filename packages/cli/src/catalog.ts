@@ -3,7 +3,7 @@ import { type Dirent } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { extractWorkflowMetadata, type WorkflowMetadataError, type WorkflowSourceRef } from "@acpus/workflow-compiler";
+import { extractWorkflowMetadata, type WorkflowMetadataError, type WorkflowPreparationSource } from "@acpus/workflow-compiler";
 import { ResultAsync, type Result } from "neverthrow";
 import { CliError, usageError } from "./errors.js";
 import { ensurePrivateAcpusDirectory, ensurePrivateDirectory, removePrivateTree } from "./private-directory.js";
@@ -52,7 +52,7 @@ export type WorkflowCatalogEntry = AvailableWorkflowCatalogEntry | InvalidWorkfl
 export type ResolvedWorkflowReference = {
   workflow: string;
   catalog?: AvailableWorkflowCatalogEntry;
-  source?: WorkflowSourceRef;
+  source?: WorkflowPreparationSource;
   sourceRoot?: string;
   cleanup?: () => Promise<void>;
 };
@@ -293,7 +293,7 @@ async function materializeGlobalCatalogEntry(cwd: string, entry: AvailableWorkfl
     return {
       workflow: targetEntry,
       sourceRoot: target,
-      source: { kind: "global_catalog", name: entry.name, digest, entry: catalogWorkflowEntry },
+      source: { kind: "global_catalog", name: entry.name, digest },
       cleanup: () => removePrivateTree(snapshotRoot!),
     };
   } catch (error) {

@@ -3,6 +3,11 @@ import { workflowPreparationCliError } from "../src/workflow-preparation.js";
 
 describe("workflow preparation CLI adapter", () => {
   it("preserves compile and package-lock phases", () => {
+    const sourceError = workflowPreparationCliError({
+      type: "source-invalid",
+      phase: "source",
+      message: "Workflow is outside source root.",
+    });
     const compileError = workflowPreparationCliError({
       type: "compile-failed",
       phase: "compile",
@@ -19,6 +24,11 @@ describe("workflow preparation CLI adapter", () => {
       message: "Package lock could not be read.",
     });
 
+    expect(sourceError.result).toEqual({
+      ok: false,
+      phase: "source",
+      message: "Workflow is outside source root.",
+    });
     expect(compileError.result).toEqual({
       ok: false,
       phase: "compile",

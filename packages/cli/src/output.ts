@@ -15,7 +15,7 @@ import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-env
 import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "./skill-installation.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
-export type ResultPhase = "usage" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
+export type ResultPhase = "usage" | "source" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
 
 export type WorkflowSummary = {
   name: string;
@@ -101,7 +101,7 @@ export type CliResult =
   | ResultRecord<"usage", false, "message", "message">
   | ResultRecord<"check", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog", "message" | "workflow">
   | ResultRecord<"check", false, "message" | "diagnostics", "message">
-  | ResultRecord<"compile" | "lock", false, "message", "message">
+  | ResultRecord<"source" | "compile" | "lock", false, "message", "message">
   | ResultRecord<"validate", true, "message" | "hookValidation", "message" | "hookValidation">
   | ResultRecord<"validate", false, "message" | "workflow" | "diagnostics", "message">
   | ImportSuccessCliResult

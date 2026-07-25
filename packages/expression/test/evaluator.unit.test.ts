@@ -29,6 +29,16 @@ describe("expression evaluator", () => {
     expect(() => evaluateExpr({ kind: "array", items: [missing] }, adapter)).toThrow("array(...) received missing value.");
   });
 
+  it("preserves evaluated object fields named __proto__", () => {
+    const value = evaluateExpr({
+      kind: "object",
+      fields: Object.fromEntries([["__proto__", { kind: "literal", value: "safe" }]]),
+    }, adapter) as Record<string, unknown>;
+
+    expect(Object.hasOwn(value, "__proto__")).toBe(true);
+    expect(value.__proto__).toBe("safe");
+  });
+
   it("formats template expression values", () => {
     expect(renderTemplate({
       kind: "template",
@@ -54,6 +64,21 @@ describe("expression evaluator", () => {
       resolveRef: path => path.at(-1) === "uri" ? artifact.uri : artifact,
       formatTemplateValue: value => value === artifact ? "/workspace/artifact.txt" : undefined,
     })).toBe(`/workspace/artifact.txt|${artifact.uri}|{\"artifact\":${JSON.stringify(artifact)}}`);
+  });
+
+  it("validates template values before invoking an adapter formatter", () => {
+    const template = {
+      kind: "template" as const,
+      parts: [{ kind: "expr" as const, expr: { kind: "ref" as const, path: ["input", "value"] } }],
+    };
+    const formatTemplateValue = () => "bypassed";
+
+    expect(() => renderTemplate(template, { resolveRef: () => undefined, formatTemplateValue }))
+      .toThrow("template(...) received missing value.");
+    expect(() => renderTemplate(template, { resolveRef: () => new Date(0), formatTemplateValue }))
+      .toThrow("template(...) expected JSON-compatible values.");
+    expect(() => renderTemplate(template, { resolveRef: () => Number.NaN, formatTemplateValue }))
+      .toThrow("template(...) expected JSON-compatible values.");
   });
 
   it("evaluates unary lift over JSON values", () => {
@@ -180,6 +205,34 @@ describe("expression evaluator", () => {
     const localAdapter = { resolveRef: () => items };
     expect(evaluateExpr(source, localAdapter)).toEqual([{ id: "changed", done: true }]);
     expect(items).toEqual([{ id: "a", done: true }]);
+  });
+
+  it("rejects cyclic callback inputs and clones shared subgraphs once", () => {
+    const expression = {
+      kind: "call" as const,
+      fn: "lift",
+      args: [
+        { kind: "ref" as const, path: ["input", "value"] },
+        { kind: "literal" as const, value: "value => value.left === value.right" },
+      ],
+    };
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => evaluateExpr(expression, { resolveRef: () => cyclic }))
+      .toThrow("lift(...) expected JSON-compatible values.");
+    expect(() => evaluateExpr(expression, { resolveRef: () => cyclic }))
+      .toThrow(ExpressionEvaluationError);
+
+    let reads = 0;
+    const shared = Object.defineProperty({}, "value", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return 1;
+      },
+    });
+    expect(evaluateExpr(expression, { resolveRef: () => ({ left: shared, right: shared }) })).toBe(true);
+    expect(reads).toBe(2);
   });
 
   it("rejects invalid callbacks and outputs", () => {

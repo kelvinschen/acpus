@@ -1,11 +1,13 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
-import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
+import { walkNodes } from "@acpus/core/ir";
+import { staticExprShape } from "@acpus/expression/ir";
 import { tryPrepareWorkflow, type PreparedWorkflow } from "@acpus/workflow-compiler";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import type { WorkflowVisualizationResult, WorkflowVisualizationSource } from "../api-types.js";
 import { workflowIrToWebGraph, type WebGraph } from "./graph.js";
 import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
+export type { WorkflowVisualizationResult, WorkflowVisualizationSource } from "../api-types.js";
 
 export type ProjectWorkflowCatalogEntry = {
   name: string;
@@ -17,24 +19,6 @@ export type WorkflowFileEntry = {
   path: string;
   kind: "directory" | "workflow";
 };
-
-export type WorkflowVisualizationSource =
-  | { kind: "catalog"; name: string }
-  | { kind: "file"; path: string };
-
-export type WorkflowVisualizationResult =
-  | {
-    status: "ready";
-    graph: WebGraph;
-    workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
-    contract: { inputSchema?: WorkflowIR["inputSchema"]; output: WorkflowIR["root"]["output"]; outputShape: StaticExprShape };
-    sourceGraphDigest: string;
-  }
-  | {
-    status: "failed";
-    phase: "check" | "compile" | "lock" | "validate";
-    message: string;
-  };
 
 export type WorkflowBrowseFailure = {
   type: "workflow-browse-invalid";

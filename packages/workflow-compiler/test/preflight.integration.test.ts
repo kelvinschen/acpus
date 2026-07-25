@@ -65,6 +65,96 @@ describe("workflow preparation", () => {
       });
     });
   });
+
+  it("derives one contained source entry from workflow path and source identity", async () => {
+    await withCompilerWorkspace("compiler-source-identity", async cwd => {
+      const sourceRoot = join(cwd, "snapshot");
+      const workflow = join(sourceRoot, "workflow.ts");
+      await mkdir(sourceRoot);
+      await writeFile(workflow, `import { defineWorkflow } from "acpus/core";
+export default defineWorkflow({ name: "source-identity" }).build(() => ({}));
+`);
+
+      const prepared = await tryPrepareWorkflow({
+        workflow,
+        cwd,
+        sourceRoot,
+        source: { kind: "global_catalog", name: "source-identity", digest: "sha256:test" },
+      });
+
+      expect(prepared.isOk()).toBe(true);
+      if (prepared.isErr()) throw new Error(prepared.error.message);
+      expect(prepared.value).toMatchObject({
+        workflowPath: workflow,
+        sourceRoot,
+        source: {
+          kind: "global_catalog",
+          name: "source-identity",
+          digest: "sha256:test",
+          entry: "workflow.ts",
+        },
+      });
+    });
+  });
+
+  it("rejects inconsistent source roots before check or compilation", async () => {
+    const cwd = "/workspace";
+    for (const options of [
+      {
+        workflow: "/snapshot/workflow.ts",
+        cwd,
+        source: { kind: "global_catalog" as const, name: "catalog", digest: "sha256:test" },
+      },
+      {
+        workflow: "/outside/workflow.ts",
+        cwd,
+        sourceRoot: "/snapshot",
+        source: { kind: "global_catalog" as const, name: "catalog", digest: "sha256:test" },
+      },
+      {
+        workflow: "/other/workflow.ts",
+        cwd,
+        sourceRoot: "/other",
+        source: { kind: "workspace" as const },
+      },
+    ]) {
+      const result = await tryPrepareWorkflow(options);
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source identity failure");
+      expect(result.error).toMatchObject({
+        type: "source-invalid",
+        phase: "source",
+      });
+    }
+  });
+
+  it("rejects a workflow symlink that resolves outside the source root", async () => {
+    const [cwd, outside] = await Promise.all([
+      mkdtemp(join(tmpdir(), "compiler-source-root-")),
+      mkdtemp(join(tmpdir(), "compiler-outside-source-")),
+    ]);
+    try {
+      const target = join(outside, "workflow.ts");
+      const workflow = join(cwd, "workflow.ts");
+      await writeFile(target, "throw new Error('outside workflow must not be checked or executed');\n");
+      await symlink(target, workflow);
+
+      const result = await tryPrepareWorkflow({ workflow, cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source containment failure");
+      expect(result.error).toMatchObject({
+        type: "source-invalid",
+        phase: "source",
+        message: expect.stringContaining("resolves outside source root"),
+      });
+    } finally {
+      await Promise.all([
+        rm(cwd, { recursive: true, force: true }),
+        rm(outside, { recursive: true, force: true }),
+      ]);
+    }
+  });
 });
 
 async function expectPreparationFailure(workflow: string, cwd: string): Promise<WorkflowPreparationFailure> {

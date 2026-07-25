@@ -2,6 +2,7 @@ import { isJsonValue } from "@acpus/expression/ir";
 import { validateExprIR, type ExpressionDiagnostic } from "@acpus/expression/validator";
 import { tryParseDurationMs } from "./duration.js";
 import { isPositiveInteger } from "./integer.js";
+import { isRootedPath } from "../internal/path.js";
 import type { DiagnosticIR, ExprIR, NodeIR, SchemaIR, TemplateIR, WorkflowIR } from "./types.js";
 
 export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
@@ -12,7 +13,9 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
   }
   validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "diagnostics"], diagnostics, "");
   if (ir.irVersion !== 6) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 6.", "irVersion");
-  if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
+  if (typeof ir.name !== "string") {
+    addError(diagnostics, "IR002", "WorkflowIR name must be a string.", "name");
+  } else if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
     addWarning(diagnostics, "W002", `Workflow name '${ir.name}' is not identifier-like. This is allowed but discouraged.`);
   }
   if (ir.description !== undefined && typeof ir.description !== "string") {
@@ -47,7 +50,28 @@ function validateDiagnostics(value: unknown, diagnostics: DiagnosticIR[], path: 
     validateRequiredNonEmptyString(diagnostic.code, diagnostics, `${path}.${index}.code`, "IR002", "WorkflowIR diagnostic code must be a non-empty string.");
     validateRequiredEnum(diagnostic.severity, ["error", "warning", "info"], diagnostics, `${path}.${index}.severity`, "IR002", "WorkflowIR diagnostic severity must be error, warning, or info.");
     validateRequiredNonEmptyString(diagnostic.message, diagnostics, `${path}.${index}.message`, "IR002", "WorkflowIR diagnostic message must be a non-empty string.");
+    if (diagnostic.path !== undefined && typeof diagnostic.path !== "string") {
+      addError(diagnostics, "IR002", "WorkflowIR diagnostic path must be a string.", `${path}.${index}.path`);
+    }
+    if (diagnostic.hint !== undefined && typeof diagnostic.hint !== "string") {
+      addError(diagnostics, "IR002", "WorkflowIR diagnostic hint must be a string.", `${path}.${index}.hint`);
+    }
+    validateSourceLocation(diagnostic.source, diagnostics, `${path}.${index}.source`);
   }, { code: "IR002" });
+}
+
+function validateSourceLocation(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
+  if (value === undefined) return;
+  if (!requireRecord(value, diagnostics, path, "IR002", "WorkflowIR diagnostic source must be an object.")) return;
+  validateKnownFields(value, ["file", "line", "column"], diagnostics, path);
+  if (value.file !== undefined && typeof value.file !== "string") {
+    addError(diagnostics, "IR002", "WorkflowIR diagnostic source file must be a string.", `${path}.file`);
+  }
+  for (const field of ["line", "column"] as const) {
+    if (value[field] !== undefined && (!Number.isInteger(value[field]) || Number(value[field]) < 1)) {
+      addError(diagnostics, "IR002", `WorkflowIR diagnostic source ${field} must be a positive integer.`, `${path}.${field}`);
+    }
+  }
 }
 
 function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[]): void {
@@ -57,27 +81,35 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
     if (agent.kind === "agent_definition") {
       validateKnownFields(agent, ["kind", "use", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.use, diagnostics, `${path}.use`, "A002", `Agent '${name}' use must be a non-empty string.`);
-      validateAgentConfig(agent.config, diagnostics, `${path}.config`);
-      validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
-      validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
-      if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
-      validateStaticEnv(agent.env, diagnostics, `${path}.env`);
+      validateAgentDefinitionOptions(agent, diagnostics, path, name);
       continue;
     }
 
     if (agent.kind === "agent_command") {
       validateKnownFields(agent, ["kind", "command", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.command, diagnostics, `${path}.command`, "A002", `Command-backed agent '${name}' command must be a non-empty string.`);
-      validateAgentConfig(agent.config, diagnostics, `${path}.config`);
-      validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
-      validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
-      if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
-      validateStaticEnv(agent.env, diagnostics, `${path}.env`);
+      validateAgentDefinitionOptions(agent, diagnostics, path, name);
       continue;
     }
 
     addError(diagnostics, "A002", `Agent '${name}' kind must be agent_definition or agent_command.`, path);
   }
+}
+
+function validateAgentDefinitionOptions(
+  agent: Record<string, unknown>,
+  diagnostics: DiagnosticIR[],
+  path: string,
+  name: string,
+): void {
+  if (agent.model !== undefined && typeof agent.model !== "string") {
+    addError(diagnostics, "A002", `Agent '${name}' model must be a string.`, `${path}.model`);
+  }
+  validateAgentConfig(agent.config, diagnostics, `${path}.config`);
+  validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
+  validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
+  if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
+  validateStaticEnv(agent.env, diagnostics, `${path}.env`);
 }
 
 type IrScopeContext = {
@@ -319,7 +351,7 @@ function validateTaskReferrer(referrer: unknown, diagnostics: DiagnosticIR[], pa
   validateKnownFields(referrer, ["path"], diagnostics, path);
   if (typeof referrer.path !== "string" || referrer.path.length === 0) {
     addError(diagnostics, "T007", "Module task target referrer path must be a non-empty string.", `${path}.path`);
-  } else if (referrer.path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(referrer.path)) {
+  } else if (isRootedPath(referrer.path)) {
     addError(diagnostics, "T007", "Module task target referrer path must be workspace-relative.", `${path}.path`);
   } else if (referrer.path.split(/[\\/]/).includes("..")) {
     addError(diagnostics, "T007", "Module task target referrer path must stay inside the workspace.", `${path}.path`);
@@ -543,6 +575,13 @@ function validateTemplateRefs(template: TemplateIR, diagnostics: DiagnosticIR[],
 
 function validateRefPath(refPath: string[], diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
   const [root, id] = refPath;
+  if (root === "input") return;
+  if (root === "meta") {
+    if (id !== "runId" && id !== "workflowPath" && id !== "workflowName" && id !== "workspaceDir") {
+      addError(diagnostics, "IR003", `Meta ref '${refPath.join(".")}' is not available.`, path);
+    }
+    return;
+  }
   if (root === "nodes") {
     if (typeof id !== "string" || !refs.visibleNodes.has(id)) {
       addError(diagnostics, "IR003", `Node ref '${refPath.join(".")}' is not visible from this scope.`, path);
@@ -573,11 +612,13 @@ function validateRefPath(refPath: string[], diagnostics: DiagnosticIR[], path: s
     if (member !== "index" && member !== "round" && member !== "state") {
       addError(diagnostics, "IR003", `Loop ref '${refPath.join(".")}' is not visible from this scope.`, path);
     }
+    return;
   }
+  addError(diagnostics, "IR003", `Ref '${refPath.join(".")}' uses an unknown root.`, path);
 }
 
 function validateSchema(schema: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (!schema) return;
+  if (schema === undefined) return;
   if (!isRecord(schema) || typeof schema.kind !== "string") {
     addError(diagnostics, "SC002", "Schema must be an object with kind.", path);
     return;

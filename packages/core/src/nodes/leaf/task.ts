@@ -5,10 +5,11 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import type { z } from "zod";
 import { type Schema } from "../../schema/index.js";
 import type { Resolvable } from "@acpus/expression";
-import type { DiagnosticIR, TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
+import type { TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
 import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
 import type { TaskOutputCheck } from "../../graph/scope.js";
+import { isRootedPath } from "../../internal/path.js";
 
 type BaseTaskToken<Input, Output> = {
   readonly [TASK]: true;
@@ -28,6 +29,40 @@ export type ReusableTaskToken<Input, Output> = BaseTaskToken<Input, Output> & {
 export type TaskToken<Input, Output> =
   | InlineTaskToken<Input, Output>
   | ReusableTaskToken<Input, Output>;
+
+export type ReusableTaskLink = Readonly<{
+  specifier: string;
+  exportName: string;
+}>;
+
+export type ReusableTaskLinkPlan = Readonly<{
+  referrerPath: string;
+  targets: ReadonlyMap<string, ReusableTaskLink>;
+}>;
+
+export type TaskCompilationFailure =
+  | {
+      type: "invalid-task-spec";
+      nodeId: string;
+      message: string;
+    }
+  | {
+      type: "reusable-task-target-missing";
+      nodeId: string;
+      message: string;
+    }
+  | {
+      type: "reusable-task-target-invalid";
+      nodeId: string;
+      field: "specifier" | "exportName" | "referrerPath";
+      message: string;
+    };
+
+export class TaskCompilationAbort extends Error {
+  constructor(readonly failure: TaskCompilationFailure) {
+    super(failure.message);
+  }
+}
 
 type TaskStepOptions = {
   cwd?: Resolvable<string>;
@@ -112,18 +147,22 @@ export const task: TaskFactory = {
 export function buildTaskNode<const Input extends StepInput>(
   id: string,
   spec: TaskStepSpec<Input>,
-  diagnostics: DiagnosticIR[],
+  links: ReusableTaskLinkPlan | undefined,
 ): TaskNodeIR {
   const parsed = taskSpecParts(spec);
   if (!parsed) {
-    diagnostics.push({ code: "T000", severity: "error", message: `Task node '${id}' must use inline { input, exec } or reusable { input, task }.` });
+    throw new TaskCompilationAbort({
+      type: "invalid-task-spec",
+      nodeId: id,
+      message: `Task node '${id}' must use inline { input, exec } or reusable { input, task }.`,
+    });
   }
   return stripUndefined({
     id,
     kind: "task",
-    run: parsed ? {
+    run: {
       input: bindingsToIR(parsed.inputBindings),
-      target: taskTarget(parsed.target),
+      target: taskTarget(id, parsed.target, links),
       cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
       env: envToIR(spec.env),
       execution: spec.execution === undefined ? undefined : {
@@ -131,9 +170,6 @@ export function buildTaskNode<const Input extends StepInput>(
           ? undefined
           : valueToExprIR(spec.execution.defaultCommandTimeout),
       },
-    } : {
-      input: {},
-      target: { kind: "inline", source: "" },
     },
     timeout: spec.timeout === undefined ? undefined : valueToExprIR(spec.timeout),
   }) as TaskNodeIR;
@@ -159,12 +195,62 @@ function taskSpecParts<const Input extends StepInput>(spec: TaskStepSpec<Input>)
   return undefined;
 }
 
-function taskTarget(target: TaskToken<any, any>): TaskExecutionTargetIR {
+function taskTarget(
+  id: string,
+  target: TaskToken<any, any>,
+  links: ReusableTaskLinkPlan | undefined,
+): TaskExecutionTargetIR {
   if (target.kind === "inline") return { kind: "inline", source: target.source };
+  if (!links) missingLink(id);
+  const link = links.targets.get(id);
+  if (!link) missingLink(id);
+  assertNonEmptyLinkField(id, "specifier", link.specifier);
+  assertNonEmptyLinkField(id, "exportName", link.exportName);
+  const referrerPath = links.referrerPath;
+  if (typeof referrerPath !== "string" || referrerPath.length === 0) {
+    invalidLink(id, "referrerPath", "Reusable Task referrer path must be a non-empty string.");
+  }
+  if (isRootedPath(referrerPath)) {
+    invalidLink(id, "referrerPath", "Reusable Task referrer path must be workspace-relative.");
+  }
+  if (referrerPath.split(/[\\/]/).includes("..")) {
+    invalidLink(id, "referrerPath", "Reusable Task referrer path must stay inside the workspace.");
+  }
   return {
     kind: "module",
-    specifier: "",
-    exportName: "",
-    referrer: { path: "" },
+    specifier: link.specifier,
+    exportName: link.exportName,
+    referrer: { path: referrerPath },
   };
+}
+
+function missingLink(nodeId: string): never {
+  throw new TaskCompilationAbort({
+    type: "reusable-task-target-missing",
+    nodeId,
+    message: `Reusable Task node '${nodeId}' requires source link metadata; compile the workflow module through @acpus/workflow-compiler or provide reusableTasks.`,
+  });
+}
+
+function assertNonEmptyLinkField(
+  id: string,
+  field: "specifier" | "exportName",
+  value: unknown,
+): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    invalidLink(id, field, `Reusable Task ${field} must be a non-empty string.`);
+  }
+}
+
+function invalidLink(
+  nodeId: string,
+  field: Extract<TaskCompilationFailure, { type: "reusable-task-target-invalid" }>["field"],
+  message: string,
+): never {
+  throw new TaskCompilationAbort({
+    type: "reusable-task-target-invalid",
+    nodeId,
+    field,
+    message,
+  });
 }

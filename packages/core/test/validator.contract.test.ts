@@ -880,6 +880,37 @@ describe("WorkflowIR diagnostics contract", () => {
     ]));
   });
 
+  it.each([
+    String.raw`\\server\share\workflow.ts`,
+    String.raw`\\?\C:\workspace\workflow.ts`,
+    String.raw`C:workflow.ts`,
+  ])("rejects rooted task referrer %s on every host platform", referrerPath => {
+    const ir = minimalWorkflow({
+      root: {
+        output: { kind: "object", fields: {} },
+        nodes: [{
+          id: "run_task",
+          kind: "task",
+          run: {
+            input: {},
+            target: {
+              kind: "module",
+              specifier: "./tasks.ts",
+              exportName: "run",
+              referrer: { path: referrerPath },
+            },
+          },
+        }],
+      },
+    });
+
+    expect(validateWorkflowIR(ir)).toContainEqual(expect.objectContaining({
+      code: "T007",
+      path: "root.nodes.run_task.run.target.referrer.path",
+      message: "Module task target referrer path must be workspace-relative.",
+    }));
+  });
+
   it("validates SchemaIR as a closed recursive union", () => {
     const ir: WorkflowIR = {
       irVersion: 6,
@@ -1014,6 +1045,30 @@ describe("WorkflowIR diagnostics contract", () => {
       code: "E001",
       path: "root.output.fields.bad.path",
     }));
+  });
+
+  it("accepts workflow roots and rejects unknown ref roots and meta fields", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      inputSchema: { kind: "object", fields: { value: { kind: "string" } }, required: ["value"], additionalProperties: false },
+      root: {
+        nodes: [],
+        output: {
+          kind: "object",
+          fields: {
+            input: { kind: "ref", path: ["input", "value"] },
+            runId: { kind: "ref", path: ["meta", "runId"] },
+            badMeta: { kind: "ref", path: ["meta", "missing"] },
+            badRoot: { kind: "ref", path: ["unknown", "value"] },
+          },
+        },
+      },
+    }));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR003", path: "root.output.fields.badMeta.path" }),
+      expect.objectContaining({ code: "IR003", path: "root.output.fields.badRoot.path" }),
+    ]));
+    expect(diagnostics.filter(diagnostic => diagnostic.code === "IR003")).toHaveLength(2);
   });
 
   it("rejects self, later sibling, and missing node refs", () => {
@@ -1272,6 +1327,45 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "IR002", path: "agents" }),
       expect.objectContaining({ code: "IR002", path: "diagnostics" }),
       expect.objectContaining({ code: "IR002", path: "root" }),
+    ]));
+  });
+
+  it("validates every allowed field in closed top-level structures", () => {
+    const diagnostics = validateWorkflowIR(minimalWorkflow({
+      name: 42 as any,
+      inputSchema: null as any,
+      agents: {
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+          model: 42,
+        } as any,
+      },
+      diagnostics: [{
+        code: "BAD",
+        severity: "error",
+        message: "malformed source",
+        path: 42,
+        hint: {},
+        source: {
+          file: 42,
+          line: 0,
+          column: "1",
+          extra: true,
+        },
+      } as any],
+    }));
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "IR002", path: "name" }),
+      expect.objectContaining({ code: "SC002", path: "inputSchema" }),
+      expect.objectContaining({ code: "A002", path: "agents.reviewer.model" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics.0.path" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics.0.hint" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics.0.source.file" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics.0.source.line" }),
+      expect.objectContaining({ code: "IR002", path: "diagnostics.0.source.column" }),
+      expect.objectContaining({ code: "IR001", path: "diagnostics.0.source.extra" }),
     ]));
   });
 

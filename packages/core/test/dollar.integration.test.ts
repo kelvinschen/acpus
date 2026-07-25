@@ -1,5 +1,6 @@
 import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
+import { quote, quotePowerShell } from "zx/core";
 import { createDollar } from "../src/runtime.js";
 
 describe("dollar runtime", () => {
@@ -18,6 +19,17 @@ describe("dollar runtime", () => {
     await expect($`${process.execPath} -e ${"process.stdout.write('text')"}`.text()).resolves.toBe("text");
     await expect($`${process.execPath} -e ${"process.stdout.write(JSON.stringify({ ok: true }))"}`.json<{ ok: boolean }>()).resolves.toEqual({ ok: true });
     await expect($`${process.execPath} -e ${"process.stdout.write('first\\n\\nsecond\\r\\n')"}`.lines()).resolves.toEqual(["first", "second"]);
+  });
+
+  it("reports the command that zx executes for array interpolation", async () => {
+    const $ = createDollar();
+    const source = "process.stdout.write(process.argv.slice(1).join('|'))";
+    const args = ["a b", "c"];
+    const result = await $`${process.execPath} -e ${source} ${args}`;
+
+    expect(result.stdout).toBe("a b|c");
+    const quoteArg = process.platform === "win32" ? quotePowerShell : quote;
+    expect(result.command).toBe([process.execPath, "-e", source, ...args].map(quoteArg).join(" "));
   });
 
   it("supports nonzero exit controls", async () => {

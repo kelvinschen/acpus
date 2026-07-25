@@ -60,7 +60,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Path-like workflow arguments MUST use direct preparation unless a scope flag is present; other arguments resolve as catalog names.
 - Global catalog preparation MUST materialize one private `$HOME/.acpus/tmp/catalog-snapshots/<name>-*/package/` snapshot that follows symlinks and copies their target content.
 - Global catalog preparation MUST remove its temporary snapshot after check, visualization, admission, or failure.
-- A global catalog preparation MUST pass the compiler-owned source reference and snapshot root to preparation; durable source ownership after admission delegates to the [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
+- A global catalog preparation MUST pass only the compiler-owned source identity and snapshot root to preparation; the compiler derives the entry, and durable source ownership after admission delegates to the [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
 - Import MUST accept local regular `.ts`, `.zip`, `.tar.gz`, and `.tgz` files, local directories, and anonymous HTTP(S) URLs with those suffixes, matched case-insensitively from the URL pathname.
 - Remote import MUST follow no more than five anonymous HTTP(S) redirects; unsupported suffixes, URL credentials, non-HTTP(S) URLs, and conflicting scopes are usage errors.
 - Import MUST create a one-time snapshot without dependency installation, provenance/update metadata, identical-content special cases, or replacement of an existing same-scope name.
@@ -73,7 +73,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Remote bodies and ZIP entries MUST stream through staging files; ordinary modes preserve permission/execute bits after removing special bits.
 - Import MAY operate without a download timeout, size/count limit, or decompression-ratio limit.
 - The authored name MUST be extracted and validated before commit; checked import prepares in the current workspace and verifies `WorkflowIR.name` before an atomic, collision-safe rename.
-- Import failures MUST use phase `import` and exit 1, while `--check` preparation failures retain their `check`, `compile`, or `validate` phase.
+- Import failures MUST use phase `import` and exit 1, while `--check` preparation failures retain their `source`, `check`, `compile`, `lock`, or `validate` phase.
 
 ### Preparation, Runtime, And Read Boundaries
 
@@ -81,7 +81,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `--input` values ending in `.json`, case-insensitively, MUST select a UTF-8 file resolved from CLI cwd; all other values are parsed as inline JSON without filesystem probing or fallback.
 - Input files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
 - `--agents` MUST parse as a JSON object before preparation or mutation.
-- Preparation failures MUST map to their compiler-owned `check`, `compile`, or `validate` phases.
+- Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
 - Foreground and background runs MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
 - Foreground run MUST follow the read-only inspection stream to terminal status; background run returns after daemon acceptance.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
@@ -171,7 +171,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 ### Output And Exit Codes
 
-- `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `lock` and `import` members.
+- `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
 - Every machine-readable record MUST contain `schemaVersion: 1`, `ok`, and `phase`.
 - Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
@@ -180,6 +180,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
 - Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
+- A foreground run admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
 - Non-TTY overview follow MUST emit its first dynamic-context omission summary immediately, retain only the latest omitted status per context during each subsequent 30-second window, and flush at the window, checkpoint, or terminal boundary; failures, timeouts, awaits, retries, and requeues remain immediate. TTY, JSON/NDJSON, `--all`, and `--target` follow MUST remain uncoalesced by this rule.
 - Non-TTY semantic lines MUST use only `+<elapsed>` as their leading marker and preserve intermediate transition order.

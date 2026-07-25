@@ -70,6 +70,39 @@ describe("expression lowering", () => {
     }));
   });
 
+  it("returns tagged errors for cyclic and uninspectable object graphs", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(tryValueToExprIR(cyclic)).toEqual(err({
+      type: "cyclic-value",
+      path: "$.self",
+      message: "Unsupported expression value: cyclic reference.",
+    }));
+
+    const uninspectable = new Proxy({}, {
+      getPrototypeOf() {
+        throw new Error("blocked");
+      },
+    });
+    expect(tryValueToExprIR(uninspectable)).toEqual(err({
+      type: "uninspectable-value",
+      path: "$",
+      message: "Unsupported expression value: object could not be inspected.",
+    }));
+  });
+
+  it("preserves object fields named __proto__", () => {
+    const ir = valueToExprIR(JSON.parse('{"__proto__":{"safe":true}}'));
+
+    expect(ir.kind).toBe("object");
+    if (ir.kind !== "object") throw new Error("expected object expression");
+    expect(Object.hasOwn(ir.fields, "__proto__")).toBe(true);
+    expect(ir.fields.__proto__).toEqual({
+      kind: "object",
+      fields: { safe: { kind: "literal", value: true } },
+    });
+  });
+
   it("flattens static access over refs", () => {
     const user = refExpr<{ profile: { name: string }; tags: readonly string[]; constructor: string }>(["input", "user"]);
     expect(user.profile.name.__ir).toEqual({ kind: "ref", path: ["input", "user", "profile", "name"] });

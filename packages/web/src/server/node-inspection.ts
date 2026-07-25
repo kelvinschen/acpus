@@ -1,42 +1,6 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
-
-export type NodeExecutionInspection = {
-  available: boolean;
-  reason?: string;
-  summary: {
-    status?: string;
-    sessionName?: string;
-    turnCount?: number;
-    message?: string;
-  };
-  lastActiveAt?: string;
-  contextWindow?: {
-    used?: number;
-    size?: number;
-    percent?: number;
-    updatedAt?: string;
-  };
-  tokenUsage?: {
-    source?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-  };
-  output?: {
-    tail: string;
-    totalBytes: number;
-    truncated: boolean;
-  };
-  toolCallCount?: number;
-  lastToolCalls: Array<{
-    turn: number;
-    toolCallId?: string;
-    toolName?: string;
-    status?: string;
-    durationMs?: number;
-    inputPreview?: string;
-  }>;
-};
+import type { NodeExecutionInspection } from "../api-types.js";
+export type { NodeExecutionInspection } from "../api-types.js";
 
 export async function inspectNodeExecution(
   inspection: RunInspectionTargetDocument,

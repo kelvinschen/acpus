@@ -1,4 +1,4 @@
-import { $ as zxDollar, quote as zxQuote } from "zx/core";
+import { $ as zxDollar } from "zx/core";
 import type { Options as ZxOptions, ProcessPromise } from "zx/core";
 
 export type CommandResult = {
@@ -39,12 +39,11 @@ export function createDollar(options: DollarOptions = {}, config: DollarConfig =
   const dollar = ((arg: TemplateStringsArray | DollarConfig, ...values: unknown[]): CommandBuilder | Dollar => {
     if (!Array.isArray(arg)) return createDollar(options, { ...config, ...(arg as DollarConfig) });
     const strings = arg as TemplateStringsArray;
-    const command = renderCommand(strings, values);
     const cwd = config.cwd ?? options.cwd ?? process.cwd();
     const env = config.env ?? options.env ?? process.env;
     const shell = zxDollar({ cwd, env: env as Record<string, string>, ...(options.signal ? { signal: options.signal } : {}) });
     const proc = shell(strings, ...values as any[]);
-    const builder = wrapProcess(proc, command);
+    const builder = wrapProcess(proc);
     if (config.timeout !== undefined) builder.timeout(config.timeout);
     if (config.nothrow) builder.nothrow();
     if (config.allowExitCode) builder.allowExitCode(config.allowExitCode);
@@ -53,7 +52,8 @@ export function createDollar(options: DollarOptions = {}, config: DollarConfig =
   return dollar;
 }
 
-function wrapProcess(proc: any, command: string): CommandBuilder {
+function wrapProcess(proc: ProcessPromise): CommandBuilder {
+  const command = proc.cmd;
   let allowCodes: number[] | undefined;
   let nothrow = false;
   let promise: Promise<CommandResult> | undefined;
@@ -95,13 +95,4 @@ function wrapProcess(proc: any, command: string): CommandBuilder {
     [Symbol.toStringTag]: "AcpusCommandBuilder",
   };
   return builder as CommandBuilder;
-}
-
-function renderCommand(strings: TemplateStringsArray, values: unknown[]): string {
-  let out = "";
-  for (let i = 0; i < strings.length; i += 1) {
-    out += strings[i] ?? "";
-    if (i < values.length) out += zxQuote(String(values[i]));
-  }
-  return out;
 }

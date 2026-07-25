@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { TaskNodeIR } from "@acpus/core/ir";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ok, okAsync } from "neverthrow";
 import type { TaskExecutorOptions } from "../src/execution/task-executor.js";
@@ -25,6 +26,32 @@ afterEach(() => {
 });
 
 describe("task executor rules", () => {
+  it("preserves an own __proto__ Task input field without changing its prototype", async () => {
+    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    const authoredInput: TaskNodeIR["run"]["input"] = Object.fromEntries([
+      ["__proto__", {
+        kind: "object",
+        fields: { safe: { kind: "literal", value: true } },
+      }] as const,
+    ]);
+
+    const result = await executeTaskNode(
+      inlineTask("proto_input", "async () => ({ ok: true })", {
+        input: authoredInput,
+      }),
+      {},
+      taskOptions("run_proto_input"),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const input = taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].request.input;
+    expect(input).toBeDefined();
+    if (input === undefined) throw new Error("Task attempt was not dispatched.");
+    expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
+    expect(Object.hasOwn(input, "__proto__")).toBe(true);
+    expect(JSON.stringify(input)).toBe('{"__proto__":{"safe":true}}');
+  });
+
   it("returns a typed resolution failure before starting a Task attempt", async () => {
     const result = await executeTaskNode(inlineTask("bad_cwd", "async () => undefined", {
       cwd: { kind: "literal", value: 42 },

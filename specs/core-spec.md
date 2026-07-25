@@ -10,7 +10,7 @@
 
 - The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, and `task`.
 - The root and workflow entrypoints MUST NOT expose standalone `OutputValue` or `OutputValues` authoring types; output constraints MUST remain behind workflow and node interfaces.
-- `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, and `isWorkflowDefinition`.
+- `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, `tryCompileWorkflowDefinition`, `isWorkflowDefinition`, and the workflow-compilation option, reusable-Task link, and failure types.
 - `@acpus/core/schema` MUST expose the native `z` authoring object, `toSchemaIR`, `tryToSchemaIR`, and `schemaToJsonSchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar` and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR`, `tryParseDurationMs`, `childScopes`, `walkNodes`, `DurationParseError`, and public IR and traversal types.
@@ -41,6 +41,7 @@
 - `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
+- A schema default MUST be JSON-compatible and copied with native structured-clone semantics; cyclic or uncloneable defaults MUST return `invalid-default` instead of throwing an untyped exception.
 - The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and non-empty homogeneous tuple schemas without rest items.
 - A supported tuple schema MUST lower to array `SchemaIR` using its shared lowered item schema without retaining tuple arity.
 - Graph-boundary schema lowering MUST reject empty, heterogeneous, and rest tuple schemas as unsupported.
@@ -135,10 +136,19 @@
 - Without an explicit per-call cwd or env override, the `$` wrapper MUST read the live process cwd and environment when each command starts rather than capturing them when the wrapper is created.
 - The wrapper MUST support `` $`cmd` ``, `$({ cwd, env, timeout, nothrow, allowExitCode })`, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
 - Programmatic arguments MUST use zx array interpolation.
+- `CommandResult.command` MUST equal zx's rendered command for the actual process invocation, including quoting and array expansion.
 
 ### IR And Validation
 
-- `compileWorkflowDefinition(definition)` MUST lower an in-memory workflow definition to serializable `WorkflowIR` with `irVersion: 6`.
+- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 6` on success.
+- `tryCompileWorkflowDefinition(...)` MUST retain an ordinary build/lowering exception as the `workflow-lowering-failed` cause.
+- `compileWorkflowDefinition(definition, options?)` MUST rethrow an ordinary build/lowering cause unchanged and MUST preserve a tagged Task/link failure as the thrown error's cause.
+- `WorkflowCompilationFailure` MUST distinguish workflow lowering failure, malformed Task authoring specs, missing reusable-Task links, and invalid reusable-Task link fields.
+- Source-independent workflows MUST compile without a reusable-Task link plan.
+- A workflow containing a reusable Task MUST receive `reusableTasks: { referrerPath, targets }`, where `referrerPath` is one source-root-relative workflow path and `targets` is a read-only map from globally unique node id to `{ specifier, exportName }`.
+- Core MUST copy reusable-Task link values into the constructed IR and MUST NOT retain caller-owned plan or target objects.
+- Every reusable Task actually declared by the workflow build callback MUST have one complete link. Unconsumed source-analysis links MAY be ignored.
+- Missing or invalid reusable-Task links and malformed Task specs MUST fail compilation; Core MUST NOT encode these failures as empty inline source or empty module target sentinels.
 - If an internal caller bypasses the public TypeScript interface, workflow and composite outputs containing a `NodeRef` or a non-durable value MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
 - Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
 - `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, and `diagnostics`.
@@ -153,7 +163,7 @@
 - `validateWorkflowIR(ir)` MUST require IR version 6 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
 - Node builders MUST NOT emit `ID001`.
-- `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation.
+- `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation but MUST NOT bypass Task spec or reusable-Task link completeness.
 - The default compilation path MUST append validator diagnostics once.
 - `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
 - Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
@@ -172,11 +182,12 @@
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", source }`, where `source` is the self-contained `exec` function source.
 - Reusable task targets MUST contain `{ kind: "module", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.
-- Runtime-admissible reusable task targets MUST be completed by `@acpus/workflow-compiler`; incomplete in-memory core reusable descriptors MUST fail `validateWorkflowIR(...)`.
-- Reusable task `exportName` MUST be `"default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
+- Core MUST construct reusable task targets from complete caller-provided links and MUST never publish an incomplete reusable descriptor. `validateWorkflowIR(...)` MUST continue to reject incomplete hand-authored or externally supplied IR.
+- Reusable task `exportName` MUST identify one exported binding; source-language derivation rules belong to [Workflow Compiler Task Analysis](workflow-compiler-spec.md#task-analysis-and-reusable-references).
 - Reusable task target referrers MUST use the closed shape `{ path: string }`.
 - Reusable task target referrer paths MUST be workspace-relative workflow paths, not absolute filesystem paths or paths that escape the workspace.
 - Serialized Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the serialized task node top level.
+- Workflow lowering MUST preserve every own field of authored object maps, including `__proto__`, as ordinary data without changing the lowered map's prototype.
 - Parallel node branch values MUST be child `ScopeIR` objects directly, without a single-field branch wrapper.
 
 ## Verification

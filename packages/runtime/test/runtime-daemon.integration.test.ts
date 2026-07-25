@@ -26,7 +26,7 @@ import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import { applySchedulerEvents, cancellationEventsForNode, nextGroupCompletionBatchEvents } from "../src/scheduler/transitions.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, preparedWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
@@ -105,6 +105,14 @@ describe.concurrent("runtime daemon ticks", () => {
         })).rejects.toMatchObject({
           code: "INVALID_REQUEST",
           message: expect.stringContaining("does not match prepared IR"),
+        });
+        const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
+        await expect(requestDaemonAdmitRun(workspace, {
+          prepared: preparedWorkflow(invalidIr, prepared.workflowPath, workspace),
+          input: { ready: true },
+        })).rejects.toMatchObject({
+          code: "INVALID_REQUEST",
+          message: expect.stringContaining("WorkflowIR irVersion must be 6"),
         });
         expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
       } finally {

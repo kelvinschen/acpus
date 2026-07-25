@@ -35,6 +35,7 @@
 - The synchronous `module.registerHooks` hook MUST be optional and MUST NOT raise on Node versions that do not provide it.
 - `importAuthoringModule(specifier, options)` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the source referrer.
 - When `sourceRoot` and `dependencyRoot` are present, failed bare-package resolution originating beneath that source root MUST fall back to the dependency root; relative and absolute source resolution MUST remain anchored to `parentURL`.
+- When registered source roots overlap, dependency fallback MUST use the most specific containing source root independent of registration order. Re-registering the same source root MUST replace its dependency authority.
 - The loader MUST NOT substitute process cwd or infer a workspace dependency root.
 - Source-root and referrer construction are owned by the [Workflow Compiler](workflow-compiler-spec.md#prepared-workflow-data) and [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
 - The loader MUST NOT persist, copy, identify, or clean source roots.

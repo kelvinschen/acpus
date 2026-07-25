@@ -168,4 +168,27 @@ describe("schema boundary lowering", () => {
       message: "$schema: default value is not JSON-serializable",
     }));
   });
+
+  it("returns a tagged lowering error for cyclic defaults instead of throwing", () => {
+    const value: Record<string, unknown> = {};
+    value.self = value;
+
+    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(err({
+      type: "invalid-default",
+      path: "$schema",
+      valueType: "object",
+      message: "$schema: default value is not JSON-serializable",
+    }));
+  });
+
+  it("returns a tagged lowering error when a JSON-like default cannot be cloned", () => {
+    const value = new Proxy({ label: "valid" }, {});
+
+    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(err({
+      type: "invalid-default",
+      path: "$schema",
+      valueType: "object",
+      message: "$schema: default value is not JSON-serializable",
+    }));
+  });
 });

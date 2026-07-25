@@ -424,7 +424,6 @@ async function checkStagedWorkflow(cwd: string, scope: WorkflowCatalogScope, sta
         kind: "global_catalog" as const,
         name: expectedName,
         digest: await digestWorkflowPackage(stagedPackage),
-        entry: "workflow.ts",
       },
     } : {}),
   });

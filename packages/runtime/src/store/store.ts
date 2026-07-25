@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
@@ -42,7 +42,7 @@ export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed"
 
 export type PreparedRunValidationFailure = {
   type: "prepared-workflow-invalid";
-  reason: "invalid-ir-json" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "package-lock-mismatch" | "entry-mismatch";
+  reason: "invalid-ir-json" | "invalid-ir" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "package-lock-mismatch" | "entry-mismatch";
   message: string;
 };
 
@@ -4562,6 +4562,15 @@ export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRu
   if (stableJsonLine(ir) !== stableJsonLine(prepared.ir)) {
     return preparedInvalid("ir-mismatch", "Prepared workflow IR JSON does not match prepared IR.");
   }
+  const parsedIr = ir as WorkflowIR;
+  const invalid = validateWorkflowIR(parsedIr).find(diagnostic => diagnostic.severity === "error");
+  if (invalid) {
+    return preparedInvalid("invalid-ir", `Prepared workflow IR is invalid: ${invalid.code}: ${invalid.message}`);
+  }
+  const existingError = parsedIr.diagnostics.find(diagnostic => diagnostic.severity === "error");
+  if (existingError) {
+    return preparedInvalid("invalid-ir", `Prepared workflow IR contains an error diagnostic: ${existingError.code}: ${existingError.message}`);
+  }
   if (digest(Buffer.from(prepared.irJson)) !== prepared.lock.ir.digest) {
     return preparedInvalid("ir-digest-mismatch", "Prepared workflow lock IR digest does not match IR JSON.");
   }
@@ -4585,7 +4594,7 @@ export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRu
   if (workflowEntry.startsWith("../") || workflowEntry === ".." || prepared.source.entry !== workflowEntry) {
     return preparedInvalid("entry-mismatch", "Prepared workflow source entry does not match prepared workflow path.");
   }
-  return ok({ ...prepared, ir: ir as WorkflowIR });
+  return ok({ ...prepared, ir: parsedIr });
 }
 
 function preparedInvalid(reason: PreparedRunValidationFailure["reason"], message: string): Result<never, PreparedRunValidationFailure> {

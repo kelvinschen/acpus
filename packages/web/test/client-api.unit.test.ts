@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getArtifactPreview, listRuns, WebApiError } from "../src/client/api.js";
+import { getArtifactPreview, listRuns, visualizeWorkflow, WebApiError } from "../src/client/api.js";
 
 describe("Web API transport", () => {
   afterEach(() => {
@@ -48,6 +48,20 @@ describe("Web API transport", () => {
     }), { status: 200 })));
 
     await expect(listRuns()).resolves.toEqual([{ id: "run_1", name: "test", status: "running" }]);
+  });
+
+  it("preserves source preparation failures from workflow visualization", async () => {
+    const result = {
+      status: "failed",
+      phase: "source",
+      message: "Workflow must be inside its source root.",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      result,
+    }), { status: 200 })));
+
+    await expect(visualizeWorkflow({ kind: "file", path: "workflow.ts" })).resolves.toEqual(result);
   });
 
   it("preserves the server error envelope for artifact previews", async () => {

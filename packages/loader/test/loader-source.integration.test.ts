@@ -174,6 +174,81 @@ console.log(JSON.stringify({ bare: bare.value, nested: relative.nestedValue }));
     }
   });
 
+  it("uses the most specific dependency authority for overlapping source roots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-overlapping-authorities-"));
+    try {
+      const sourceRoot = join(root, "sources");
+      const nestedSourceRoot = join(sourceRoot, "nested");
+      const broadDependencies = join(root, "broad-dependencies");
+      const nestedDependencies = join(root, "nested-dependencies");
+      for (const [dependencyRoot, selected] of [
+        [broadDependencies, "broad"],
+        [nestedDependencies, "nested"],
+      ] as const) {
+        const packageRoot = join(dependencyRoot, "node_modules", "authority-package");
+        await mkdir(packageRoot, { recursive: true });
+        await writeFile(join(packageRoot, "package.json"), JSON.stringify({
+          name: "authority-package",
+          type: "module",
+          exports: "./index.mjs",
+        }));
+        await writeFile(join(packageRoot, "index.mjs"), `export const selected = ${JSON.stringify(selected)};\n`);
+      }
+      await mkdir(nestedSourceRoot, { recursive: true });
+      await writeFile(join(sourceRoot, "register.mjs"), "export const registered = true;\n");
+      await writeFile(join(nestedSourceRoot, "deferred.mjs"), "export const load = () => import('authority-package');\n");
+
+      const stdout = await runNodeLoaderScript(`
+import { importAuthoringModule } from ${JSON.stringify(loaderEntry)};
+
+const nested = await importAuthoringModule("./deferred.mjs", {
+  parentURL: ${JSON.stringify(pathToFileURL(join(nestedSourceRoot, "workflow.ts")).href)},
+  sourceRoot: ${JSON.stringify(nestedSourceRoot)},
+  dependencyRoot: ${JSON.stringify(nestedDependencies)},
+});
+await importAuthoringModule("./register.mjs", {
+  parentURL: ${JSON.stringify(pathToFileURL(join(sourceRoot, "workflow.ts")).href)},
+  sourceRoot: ${JSON.stringify(sourceRoot)},
+  dependencyRoot: ${JSON.stringify(broadDependencies)},
+});
+console.log(JSON.stringify({ selected: (await nested.load()).selected }));
+`);
+
+      expect(JSON.parse(stdout)).toEqual({ selected: "nested" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates source-root symlink loops while registering dependency authority", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-authority-loop-"));
+    try {
+      const loop = join(root, "loop");
+      await symlink("loop", loop);
+      const stdout = await runNodeLoaderScript(`
+import { importAuthoringModule } from ${JSON.stringify(loaderEntry)};
+
+try {
+  await importAuthoringModule("data:text/javascript,export default true", {
+    parentURL: ${JSON.stringify(pathToFileURL(join(root, "workflow.ts")).href)},
+    sourceRoot: ${JSON.stringify(loop)},
+    dependencyRoot: ${JSON.stringify(root)},
+  });
+  console.log(JSON.stringify({ loaded: true }));
+} catch (error) {
+  console.log(JSON.stringify({
+    loaded: false,
+    code: error && typeof error === "object" && "code" in error ? error.code : undefined,
+  }));
+}
+`);
+
+      expect(JSON.parse(stdout)).toEqual({ loaded: false, code: "ELOOP" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not fallback when a nested normal target exists but its dependency is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-authoring-transitive-miss-"));
     try {

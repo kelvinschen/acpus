@@ -41,12 +41,12 @@ function evaluate(expr: ExprIR, adapter: ExpressionEvaluatorAdapter): unknown {
     case "array":
       return expr.items.map(item => requirePresent("array", evaluate(item, adapter)));
     case "object": {
-      const result: Record<string, unknown> = {};
+      const fields: Array<[string, unknown]> = [];
       for (const [key, value] of Object.entries(expr.fields)) {
         const evaluated = evaluate(value, adapter);
-        if (evaluated !== MISSING) result[key] = evaluated;
+        if (evaluated !== MISSING) fields.push([key, evaluated]);
       }
-      return result;
+      return Object.fromEntries(fields);
     }
     case "template":
       return renderTemplate(expr, adapter);
@@ -59,6 +59,7 @@ export function renderTemplate(template: TemplateIR, adapter: ExpressionEvaluato
   return template.parts.map(part => {
     if (part.kind === "text") return part.value;
     const value = evaluate(part.expr, adapter);
+    assertTemplateValue(value);
     return adapter.formatTemplateValue?.(value) ?? formatTemplateValue(value);
   }).join("");
 }
@@ -134,18 +135,28 @@ function causeMessage(cause: unknown): string {
 }
 
 function cloneCallbackInput(operator: string, value: unknown): unknown {
-  assertCallbackInputCompatible(value, operator);
-  return cloneJsonLikeWithUndefined(value);
+  try {
+    assertCallbackInputCompatible(value, operator);
+    return structuredClone(value);
+  } catch (error) {
+    if (error instanceof ExpressionEvaluationError) throw error;
+    throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  }
 }
 
 function formatTemplateValue(value: unknown): string {
-  requirePresent("template", value);
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return String(value);
-  assertJsonCompatible(value, "template");
   const rendered = JSON.stringify(value);
   if (rendered === undefined) throw new ExpressionEvaluationError("Template expression value is not JSON-serializable.");
   return rendered;
+}
+
+function assertTemplateValue(value: unknown): void {
+  requirePresent("template", value);
+  if (typeof value === "string" || typeof value === "boolean" || value === null) return;
+  if (typeof value === "number" && Number.isFinite(value)) return;
+  assertJsonCompatible(value, "template");
 }
 
 function resolvePath(root: unknown, path: string[]): unknown {
@@ -183,10 +194,7 @@ function normalizeMissing(value: unknown): unknown {
 }
 
 function missingToUndefined(value: unknown): unknown {
-  if (value === MISSING) return undefined;
-  if (Array.isArray(value)) return value.map(missingToUndefined);
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, missingToUndefined(item)]));
-  return value;
+  return value === MISSING ? undefined : value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -197,7 +205,12 @@ function assertJsonCompatible(value: unknown, operator: string): void {
   if (!isJsonValue(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
 }
 
-function assertCallbackInputCompatible(value: unknown, operator: string, seen = new Set<object>()): void {
+function assertCallbackInputCompatible(
+  value: unknown,
+  operator: string,
+  visiting = new WeakSet<object>(),
+  validated = new WeakSet<object>(),
+): void {
   if (value === undefined) return;
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
@@ -205,28 +218,25 @@ function assertCallbackInputCompatible(value: unknown, operator: string, seen = 
     throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
   }
   if (!value || typeof value !== "object") throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  if (seen.has(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) {
-      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-      assertCallbackInputCompatible(value[index], operator, seen);
+  if (validated.has(value)) return;
+  if (visiting.has(value)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+  visiting.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        if (!Object.prototype.hasOwnProperty.call(value, index)) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+        assertCallbackInputCompatible(value[index], operator, visiting, validated);
+      }
+    } else {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+      if (Object.getOwnPropertySymbols(value).length > 0) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
+      for (const item of Object.values(value)) assertCallbackInputCompatible(item, operator, visiting, validated);
     }
-    seen.delete(value);
-    return;
+    validated.add(value);
+  } finally {
+    visiting.delete(value);
   }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  if (Object.getOwnPropertySymbols(value).length > 0) throw new ExpressionEvaluationError(`${operator}(...) expected JSON-compatible values.`);
-  for (const item of Object.values(value)) assertCallbackInputCompatible(item, operator, seen);
-  seen.delete(value);
-}
-
-function cloneJsonLikeWithUndefined(value: unknown): unknown {
-  if (value === undefined || value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.map(cloneJsonLikeWithUndefined);
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneJsonLikeWithUndefined(item)]));
-  return value;
 }
 
 function formatArity(arity: readonly number[]): string {

@@ -3,7 +3,7 @@ import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRunsRoot, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { preparedWorkflow, prepareSyntheticWorkflow, runtimeRunsRoot, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 const runIdBytes = vi.hoisted(() => ({ values: [] as number[] }));
 vi.mock("node:crypto", async importOriginal => ({
@@ -27,6 +27,16 @@ describe("runtime run directory publication", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
+        const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
+        expect((await store.admitRun({
+          prepared: preparedWorkflow(invalidIr, prepared.workflowPath, workspace),
+          cwd: workspace,
+          input: { ready: true },
+        }))._unsafeUnwrapErr()).toMatchObject({
+          type: "prepared-workflow-invalid",
+          reason: "invalid-ir",
+        });
+
         expect((await store.admitRun({
           prepared: { ...prepared, irJson: "{}" },
           cwd: workspace,

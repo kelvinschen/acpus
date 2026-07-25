@@ -1,7 +1,16 @@
 import type { RunInspectionTargetDocument } from "@acpus/runtime";
-import type { ExprIR, StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import type {
+  NodeExecutionInspection,
+  WorkflowVisualizationResult,
+  WorkflowVisualizationSource,
+} from "../api-types.js";
 import type { WebGraph, WebGraphSelection } from "../graph-types.js";
+export type {
+  NodeExecutionInspection,
+  WorkflowVisualizationResult,
+  WorkflowVisualizationSource,
+};
 export type {
   NodeDetail,
   WebGraph,
@@ -56,44 +65,6 @@ export type ArtifactReference = {
 
 export type NodeInspection = RunInspectionTargetDocument;
 
-export type NodeExecutionInspection = {
-  available: boolean;
-  reason?: string;
-  summary: {
-    status?: string;
-    sessionName?: string;
-    turnCount?: number;
-    message?: string;
-  };
-  lastActiveAt?: string;
-  contextWindow?: {
-    used?: number;
-    size?: number;
-    percent?: number;
-    updatedAt?: string;
-  };
-  tokenUsage?: {
-    source?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-  };
-  output?: {
-    tail: string;
-    totalBytes: number;
-    truncated: boolean;
-  };
-  toolCallCount?: number;
-  lastToolCalls: Array<{
-    turn: number;
-    toolCallId?: string;
-    toolName?: string;
-    status?: string;
-    durationMs?: number;
-    inputPreview?: string;
-  }>;
-};
-
 export type ArtifactPreview = {
   text: string;
   mediaType: string;
@@ -114,24 +85,6 @@ export type WorkflowFiles = {
   dir: string;
   entries: WorkflowFileEntry[];
 };
-
-export type WorkflowVisualizationSource =
-  | { kind: "catalog"; name: string }
-  | { kind: "file"; path: string };
-
-export type WorkflowVisualizationResult =
-  | {
-    status: "ready";
-    graph: WebGraph;
-    workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
-    contract: { inputSchema?: unknown; output: ExprIR; outputShape: StaticExprShape };
-    sourceGraphDigest: string;
-  }
-  | {
-    status: "failed";
-    phase: "check" | "compile" | "lock" | "validate";
-    message: string;
-  };
 
 export type HealthReport = {
   checks: Array<{

@@ -23,7 +23,14 @@ import {
   type WorkflowIR,
 } from "@acpus/core/ir";
 import { createDollar, type Dollar } from "@acpus/core/runtime";
-import { compileWorkflowDefinition, type WorkflowDefinition } from "@acpus/core/workflow";
+import {
+  compileWorkflowDefinition,
+  tryCompileWorkflowDefinition,
+  type CompileWorkflowDefinitionOptions,
+  type ReusableTaskLinkPlan,
+  type WorkflowCompilationFailure,
+  type WorkflowDefinition,
+} from "@acpus/core/workflow";
 
 // @ts-expect-error expression helpers must not be exported from the root entrypoint.
 import { lift as rootLift } from "@acpus/core";
@@ -53,6 +60,12 @@ test("public package subpaths expose the intended type surface", () => {
   const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);
   assertType<WorkflowIR>(compileWorkflowDefinition(definition));
+  assertType<Result<WorkflowIR, WorkflowCompilationFailure>>(tryCompileWorkflowDefinition(definition));
+  assertType<CompileWorkflowDefinitionOptions>({ validate: false });
+  assertType<ReusableTaskLinkPlan>({
+    referrerPath: "workflow.ts",
+    targets: new Map([["task", { specifier: "./task.js", exportName: "default" }]]),
+  });
   assertType<ExprIR>({ kind: "literal", value: true });
   assertType<WorkflowIR["diagnostics"]>(validateWorkflowIR(compileWorkflowDefinition(definition)));
   expectTypeOf(tryParseDurationMs).toEqualTypeOf<(value: string) => Result<number, DurationParseError>>();

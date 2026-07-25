@@ -36,7 +36,6 @@ describe("global workflow catalog snapshots", () => {
           kind: "global_catalog",
           name: "snapshot-only",
           digest: "f9f748b6ff89cee7624c7d25bcf32080cfcfd6a997d2e4686e42c0984b51bf9e",
-          entry: "workflow.ts",
         });
         expect(basename(resolved.sourceRoot)).toBe("package");
         expect(resolved.sourceRoot.startsWith(

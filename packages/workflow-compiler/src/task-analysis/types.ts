@@ -8,8 +8,8 @@ export type AnalyzedTask = {
 };
 
 export type TaskReferenceMetadata = {
-  specifier?: string;
-  exportName?: string;
+  specifier: string;
+  exportName: string;
 };
 
 export type TaskAuthoringIssue =

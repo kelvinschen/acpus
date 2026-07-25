@@ -374,7 +374,7 @@ async function executeAgentTurnInternal(request: AgentTurnRequest, trace: TraceC
   if (prompt.timedOut) return withRawDebug(failedTurn("timeout", timeoutMessage(request.timeoutMs), prompt, summary, "prompt"), rawDebug);
   if (prompt.spawnError) return withRawDebug(failedTurn("spawn", prompt.spawnError, prompt, summary, "prompt"), rawDebug);
   if (summary.malformedLine) return withRawDebug(failedTurn("provider_exit", `Malformed acpx JSON output: ${boundedTail(summary.malformedLine)}`, prompt, summary, "prompt"), rawDebug);
-  if (promptRpc) return withRawDebug(failedTurn(failureKindForRpc(promptRpc, "provider_exit"), actionableRpcMessage(promptRpc), prompt, summary, "prompt", promptRpc), rawDebug);
+  if (promptRpc) return withRawDebug(failedTurn(failureKindForRpc(promptRpc), actionableRpcMessage(promptRpc), prompt, summary, "prompt", promptRpc), rawDebug);
   if (prompt.stdinError !== undefined || prompt.exitCode !== 0) return withRawDebug(failedTurn("provider_exit", failureMessage(prompt, summary, stderrEvidence), prompt, summary, "prompt"), rawDebug);
   return withRawDebug({ status: "completed", responseText: summary.responseText, stderr: prompt.stderr, summary: summary.summary }, rawDebug);
 }
@@ -984,7 +984,7 @@ function failedControlResult(
   const rpc = summary.error ?? stderrEvidence.error;
   if (result.timedOut) return failedTurn("timeout", timeoutMessage(timeoutMs), result, summary, operation, rpc);
   if (result.spawnError) return failedTurn("spawn", result.spawnError, result, summary, operation, rpc);
-  const kind = rpc ? failureKindForRpc(rpc, defaultKind) : defaultKind;
+  const kind = rpc ? failureKindForRpc(rpc) : defaultKind;
   return failedTurn(kind, rpc ? actionableRpcMessage(rpc) : failureMessage(result, summary, stderrEvidence), result, summary, operation, rpc);
 }
 
@@ -1032,8 +1032,8 @@ function cancelledResult(message: string): AgentTurnOutcome {
   return { status: "cancelled", message, responseText: "", stderr: "", summary: emptySummary() };
 }
 
-function failureKindForRpc(error: JsonRpcFailure, fallback: AgentBackendFailureKind): AgentBackendFailureKind {
-  return error.code === -32602 || error.code === "-32602" ? "config" : fallback;
+function failureKindForRpc(error: JsonRpcFailure): AgentBackendFailureKind {
+  return error.code === -32602 || error.code === "-32602" ? "config" : "provider_exit";
 }
 
 function failureMessage(result: Pick<AcpxProcessResult, "exitCode" | "stdinError">, stdout: FailureEvidence, stderr: FailureEvidence): string {

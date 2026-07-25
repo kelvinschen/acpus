@@ -31,9 +31,12 @@
 
 - The preparation compile worker MUST read and import the workflow source file and require its default export to be an Acpus workflow definition.
 - Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside its source root.
-- Internal module compilation MUST lower the workflow definition through `compileWorkflowDefinition(..., { validate: false })`.
+- After importing and verifying the workflow definition, internal module compilation MUST analyze Task call sites and verify the contained source-root-relative referrer before invoking the workflow build callback.
+- Internal module compilation MUST convert reusable-Task source facts into one immutable Core link plan and lower through `tryCompileWorkflowDefinition(...)`.
+- Task-analysis and source-containment failures MUST therefore take precedence over failures thrown by the workflow build callback.
 - Internal module compilation MUST return a `sha256:` source digest alongside the compiled IR, computed from the workflow source text without embedding it in `WorkflowIR`.
-- Internal module compilation MUST analyze task call sites, attach reusable task module reference metadata to lowered task runs, append `validateWorkflowIR(...)` diagnostics, and return `WorkflowIR`.
+- Core MUST construct complete reusable Task targets and append `validateWorkflowIR(...)` diagnostics exactly once before internal module compilation returns `WorkflowIR`.
+- Internal module compilation MUST NOT traverse or mutate a Core-produced `WorkflowIR` to attach source metadata or validation diagnostics.
 - Scope-ref legality diagnostics MUST come from `validateWorkflowIR(...)` so module compilation, `workflow check`, preparation, and runtime admission share the same backstop for malformed or hand-authored IR.
 - Internal module compilation MUST NOT run the preparation check phase itself.
 
@@ -128,7 +131,7 @@
 - The analyzer MUST match direct flat inline `step("id").task({ input, exec, ... })` and reusable `step("id").task({ task, input, ... })` call sites.
 - Reusable tasks MUST support direct default imports, named imports with aliases, barrel re-exports, same-file exported reusable tasks, and bare package specifiers that resolve to ESM modules at runtime.
 - Reusable task analysis MUST consume the [Core-owned Task token contract](core-spec.md#task-authoring-and-runtime-context-types) and retain only compiler-owned module-reference metadata.
-- Reusable module metadata MUST identify the source-level specifier, export name, and source-root-relative workflow referrer needed for runtime import.
+- Reusable module metadata MUST identify the source-level specifier and export name; the compiler MUST combine those facts with one source-root-relative workflow referrer in the Core link plan needed for runtime import.
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Same-file reusable task metadata MUST identify the workflow source module and exported task name.
 - Imported reusable task metadata MUST keep the workflow import specifier rather than a resolved absolute filesystem path.
@@ -142,7 +145,7 @@
 - Inline Task capture analysis MUST emit one diagnostic per Task with sorted unique names and the earliest offending source identifier.
 - A `TB003` hint MUST direct captured data through Task input and helper logic inside `exec` or a reusable Task.
 - Duplicate Task ids MUST retain the first and repeated callsite positions internally. `TB004` MUST point at the repeated declaration and include the first declaration's line and column in its hint without extending `DiagnosticIR`.
-- Internal module compilation MUST append validation diagnostics if compiled task runs lack valid inline or reusable execution targets.
+- Internal module compilation MUST fail as workflow lowering when an actually declared reusable Task cannot be joined to a complete source link; it MUST NOT return a `WorkflowIR` containing an empty execution target.
 - The task authoring diagnostic set MUST use `TB001` through `TB004` exactly as defined by the current authoring diagnostic table.
 
 ### Prepared Workflow Data
@@ -155,11 +158,24 @@ type WorkflowSourceRef =
   | { kind: "global_catalog"; name: string; digest: string; entry: string };
 ```
 
-- `prepareWorkflow(options)` MUST accept optional `source` and `sourceRoot` values for a caller-owned source snapshot.
-- Preparation MUST default `sourceRoot` to the workspace and `source` to a workspace reference for the workflow entry relative to that root.
+- Preparation input source identity MUST use the following closed union and MUST NOT accept an entry independently from the workflow path.
+
+```ts
+type WorkflowPreparationSource =
+  | { kind: "workspace" }
+  | { kind: "global_catalog"; name: string; digest: string };
+```
+
+- `prepareWorkflow(options)` MUST accept optional preparation source identity and `sourceRoot` values for a caller-owned source snapshot.
+- Preparation MUST derive the prepared source entry exactly once from the workflow path relative to the selected source root.
+- Workspace preparation MUST use `cwd` as its source root. An explicit workspace `sourceRoot` that differs from `cwd` MUST fail with type `source-invalid` and phase `source`.
+- Global-catalog preparation MUST require an explicit source root.
+- A workflow path that is lexically outside the selected source root MUST fail with type `source-invalid` and phase `source` before check or compilation; successful preparation remains subject to physical containment.
+- An existing workflow path whose resolved target is outside the resolved source root, including a symlink escape, MUST fail with type `source-invalid` and phase `source` before check or compilation.
 - Preparation MUST keep `cwd` as the dependency-resolution authority when a caller-owned source snapshot is outside the workspace.
 - A prepared source entry and each reusable-task referrer MUST be portable relative paths physically contained by the selected source root.
-- A global-catalog source reference MUST preserve the caller-provided catalog name, package digest, and package-relative entry.
+- Containment MUST reject an actual `..` parent segment, not a contained file or directory name that merely begins with two dots.
+- A global-catalog source reference MUST preserve the caller-provided catalog name and package digest and MUST use the compiler-derived package-relative entry.
 - Absolute temporary source roots MUST remain in-memory admission inputs.
 - `WorkflowIR` and preparation-lock metadata MUST NOT contain an absolute temporary source root.
 - `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, source reference, optional temporary source root, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock metadata.

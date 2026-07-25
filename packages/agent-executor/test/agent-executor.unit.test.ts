@@ -1266,6 +1266,47 @@ describe("executeAgentTurn", () => {
     expect(fake.state.calls).toHaveLength(2);
   });
 
+  it.each([
+    { code: -32603, expectedKind: "provider_exit" },
+    { code: "-32602", expectedKind: "config" },
+  ] as const)("classifies config set JSON-RPC $code as $expectedKind", async ({ code, expectedKind }) => {
+    const rpc = {
+      jsonrpc: "2.0",
+      error: {
+        code,
+        message: "Set option failed",
+        data: { details: "Provider rejected the set request." },
+      },
+    };
+    fake.state.scenarios.push(
+      fake.scenario.success,
+      fake.scenario.stdout(`${JSON.stringify(rpc)}\n`, 1),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "claude" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      config: { mode: "missing-mode" },
+    })).resolves.toMatchObject({
+      status: "failed",
+      failure: {
+        kind: expectedKind,
+        message: rpc.error.data.details,
+        upstream: {
+          operation: "session.set_config_option",
+          protocol: { name: "json-rpc", code, message: rpc.error.message },
+          data: rpc.error.data,
+        },
+      },
+    });
+    expect(fake.state.calls).toHaveLength(2);
+  });
+
   it("classifies spawn failures", async () => {
     fake.state.scenarios.push(fake.scenario.success, fake.scenario.error("spawn failed"));
     const { executeAgentTurn } = await import("@acpus/agent-executor");

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { readFile, realpath, rm } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { checkWorkflow } from "../check/runner.js";
 import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
@@ -10,9 +10,13 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 export type WorkflowPreparationOptions = {
   workflow: string;
   cwd: string;
-  source?: WorkflowSourceRef;
+  source?: WorkflowPreparationSource;
   sourceRoot?: string;
 };
+
+export type WorkflowPreparationSource =
+  | { kind: "workspace" }
+  | { kind: "global_catalog"; name: string; digest: string };
 
 export type WorkflowSourceRef =
   | { kind: "workspace"; entry: string }
@@ -45,6 +49,7 @@ export type PreparedWorkflow = {
 };
 
 export type WorkflowPreparationFailure =
+  | { type: "source-invalid"; phase: "source"; message: string }
   | { type: "check-failed"; phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
   | { type: "compile-failed"; phase: "compile"; message: string; failure: CompileWorkerFailure }
   | (PackageLockFailure & { phase: "lock" })
@@ -74,12 +79,67 @@ export async function prepareWorkflow(options: WorkflowPreparationOptions): Prom
 
 export function tryPrepareWorkflow(options: WorkflowPreparationOptions): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
   const workflowPath = resolve(options.cwd, options.workflow);
-  const sourceRoot = resolve(options.sourceRoot ?? options.cwd);
-  const source = options.source ?? {
-    kind: "workspace",
-    entry: toPortablePath(relative(sourceRoot, workflowPath)),
-  };
-  return new ResultAsync(prepareWorkflowResult(options, workflowPath, sourceRoot, source));
+  return new ResultAsync(resolvePreparationSource(options, workflowPath))
+    .andThen(source => new ResultAsync(
+      prepareWorkflowResult(options, workflowPath, source.sourceRoot, source.source),
+    ));
+}
+
+async function resolvePreparationSource(
+  options: WorkflowPreparationOptions,
+  workflowPath: string,
+): Promise<Result<{ sourceRoot: string; source: WorkflowSourceRef }, WorkflowPreparationFailure>> {
+  const identity = options.source ?? { kind: "workspace" as const };
+  if (identity.kind === "global_catalog" && options.sourceRoot === undefined) {
+    return err({
+      type: "source-invalid",
+      phase: "source",
+      message: "Global catalog workflow preparation requires sourceRoot.",
+    });
+  }
+  const cwd = resolve(options.cwd);
+  const sourceRoot = identity.kind === "global_catalog" ? resolve(options.sourceRoot!) : cwd;
+  if (identity.kind === "workspace" && options.sourceRoot !== undefined && resolve(options.sourceRoot) !== cwd) {
+    return err({
+      type: "source-invalid",
+      phase: "source",
+      message: "Workspace workflow preparation sourceRoot must match cwd.",
+    });
+  }
+  const relativeEntry = relative(sourceRoot, workflowPath);
+  if (relativeEntry === "" || isAbsolute(relativeEntry) || relativeEntry.split(/[\\/]/).includes("..")) {
+    return err({
+      type: "source-invalid",
+      phase: "source",
+      message: `Workflow '${workflowPath}' must be inside source root '${sourceRoot}'.`,
+    });
+  }
+  try {
+    const [physicalSourceRoot, physicalWorkflowPath] = await Promise.all([
+      realpath(sourceRoot),
+      realpath(workflowPath),
+    ]);
+    const physicalEntry = relative(physicalSourceRoot, physicalWorkflowPath);
+    if (physicalEntry === "" || isAbsolute(physicalEntry) || physicalEntry.split(/[\\/]/).includes("..")) {
+      return err({
+        type: "source-invalid",
+        phase: "source",
+        message: `Workflow '${workflowPath}' resolves outside source root '${sourceRoot}'.`,
+      });
+    }
+  } catch (error) {
+    if (!isMissingPathError(error)) {
+      return err({
+        type: "source-invalid",
+        phase: "source",
+        message: `Workflow source paths could not be resolved: ${causeMessage(error)}`,
+      });
+    }
+  }
+  return ok({
+    sourceRoot,
+    source: { ...identity, entry: toPortablePath(relativeEntry) },
+  });
 }
 
 async function prepareWorkflowResult(

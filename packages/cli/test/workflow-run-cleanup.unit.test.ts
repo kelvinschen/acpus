@@ -8,6 +8,7 @@ const mock = vi.hoisted(() => ({
   prepareWorkflowForCli: vi.fn(),
   resolveWorkflowReference: vi.fn(),
   sendDaemonAdmitRun: vi.fn(),
+  followRun: vi.fn(),
 }));
 
 vi.mock("../src/catalog.js", async importOriginal => ({
@@ -22,6 +23,10 @@ vi.mock("../src/commands/daemon.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/commands/daemon.js")>(),
   sendDaemonAdmitRun: mock.sendDaemonAdmitRun,
 }));
+vi.mock("../src/run-follow.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/run-follow.js")>(),
+  followRun: mock.followRun,
+}));
 
 import { createWorkflowCommand } from "../src/commands/workflow.js";
 
@@ -29,8 +34,8 @@ const globalSource = {
   kind: "global_catalog",
   name: "cleanup-run",
   digest: "a".repeat(64),
-  entry: "workflow.ts",
 } as const;
+const preparedGlobalSource = { ...globalSource, entry: "workflow.ts" } as const;
 
 describe("workflow run snapshot cleanup", () => {
   beforeEach(() => {
@@ -44,7 +49,7 @@ describe("workflow run snapshot cleanup", () => {
     });
     mock.prepareWorkflowForCli.mockResolvedValue({
       workflowPath: "/private/snapshot/package/workflow.ts",
-      source: globalSource,
+      source: preparedGlobalSource,
       ir: {
         irVersion: 6,
         name: "cleanup-run",
@@ -68,7 +73,26 @@ describe("workflow run snapshot cleanup", () => {
       createdAt: "2026-07-24T00:00:00.000Z",
       updatedAt: "2026-07-24T00:00:00.000Z",
       progressVersion: 0,
+      input: { secret: "must-not-leak" },
+      agentOverrides: {
+        reviewer: {
+          env: { TOKEN: "must-not-leak" },
+        },
+      },
+      hooks: [],
+      eventCount: 1,
+      nodeCount: 0,
+      execution: {
+        state: "inactive",
+        lastStatus: "pending",
+        reason: "daemon_alive",
+        daemonHeartbeatAt: "2026-07-24T00:00:00.000Z",
+      },
     }));
+    mock.followRun.mockResolvedValue({
+      kind: "done",
+      run: { status: "completed" },
+    });
   });
 
   it.each(["check", "viz"] as const)("cleans the global snapshot after workflow %s", async action => {
@@ -123,5 +147,43 @@ describe("workflow run snapshot cleanup", () => {
         run: { id: "run_admitted" },
       },
     });
+  });
+
+  it("projects foreground JSON admission to the public run record", async () => {
+    const stdout = new CaptureStream();
+    const setExitCode = vi.fn();
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode,
+    });
+
+    await command.parseAsync([
+      "run",
+      "cleanup-run",
+      "--global",
+      "--json",
+    ], { from: "user" });
+
+    const [admission] = stdout.text.trim().split("\n").map(line => JSON.parse(line));
+    expect(admission).toEqual({
+      schemaVersion: 1,
+      ok: true,
+      phase: "run",
+      kind: "admitted",
+      run: {
+        id: "run_admitted",
+        name: "cleanup-run",
+        status: "pending",
+        workflowEntry: "workflow.ts",
+        sourceGraphDigest: "sha256:graph",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        progressVersion: 0,
+      },
+    });
+    expect(setExitCode).toHaveBeenLastCalledWith(0);
   });
 });

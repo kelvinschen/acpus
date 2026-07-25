@@ -6,7 +6,7 @@ import {
   type StepFactory,
   z,
 } from "../src/index.js";
-import { compileWorkflowDefinition } from "../src/workflow.js";
+import { compileWorkflowDefinition, tryCompileWorkflowDefinition } from "../src/workflow.js";
 import { lift, template } from "@acpus/expression";
 
 const NormalizeInput = z.object({ packageName: z.string() });
@@ -107,7 +107,16 @@ describe("workflow compilation", () => {
       };
     });
 
-    const ir = compileWorkflowDefinition(definition, { validate: false });
+    const ir = compileWorkflowDefinition(definition, {
+      validate: false,
+      reusableTasks: {
+        referrerPath: "workflows/release.workflow.ts",
+        targets: new Map([[
+          "normalize_package",
+          { specifier: "./normalize-package.task.js", exportName: "normalizePackage" },
+        ]]),
+      },
+    });
 
     expect(ir.diagnostics).toEqual([]);
     expect(ir.irVersion).toBe(6);
@@ -144,9 +153,9 @@ describe("workflow compilation", () => {
       run: {
         target: {
           kind: "module",
-          specifier: "",
-          exportName: "",
-          referrer: { path: "" },
+          specifier: "./normalize-package.task.js",
+          exportName: "normalizePackage",
+          referrer: { path: "workflows/release.workflow.ts" },
         },
         input: {
           packageName: { kind: "ref", path: ["input", "packageName"] },
@@ -499,6 +508,34 @@ describe("workflow compilation", () => {
     });
   });
 
+  it("preserves own __proto__ fields through workflow object-map lowering", () => {
+    const taskInput = Object.fromEntries([["__proto__", "safe"]]);
+    const agents = Object.fromEntries([["__proto__", { use: "codex" }]]);
+    const definition = defineWorkflow({ name: "proto_fields", agents }).build(({ agents, step }) => {
+      step("inspect").task({
+        input: taskInput,
+        exec: async ({ input }) => input,
+      });
+      step("review").agent({
+        agent: agents.__proto__!,
+        prompt: "Review",
+      });
+      return {};
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    const task = ir.root.nodes[0];
+
+    expect(task?.kind).toBe("task");
+    if (!task || task.kind !== "task") throw new Error("Expected Task node.");
+    expect(Object.getPrototypeOf(task.run.input)).toBe(Object.prototype);
+    expect(Object.hasOwn(task.run.input, "__proto__")).toBe(true);
+    expect(task.run.input.__proto__).toEqual({ kind: "literal", value: "safe" });
+    expect(Object.getPrototypeOf(ir.agents)).toBe(Object.prototype);
+    expect(Object.hasOwn(ir.agents, "__proto__")).toBe(true);
+    expect(ir.agents.__proto__).toEqual({ kind: "agent_definition", use: "codex" });
+  });
+
   it("declares closed-over step calls in the active fanout scope", () => {
     const definition = defineWorkflow({
       name: "active_scope_fanout_step",
@@ -721,6 +758,9 @@ describe("workflow compilation", () => {
 
     compileWorkflowDefinition(definition);
 
+    expect(() => savedStep?.("bare_late")).toThrow(
+      "step() can only be called during workflow graph declaration.",
+    );
     expect(() => savedStep?.("late").task({
       input: {},
       exec: async () => ({}),
@@ -748,7 +788,30 @@ describe("workflow compilation", () => {
     expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
   });
 
-  it("diagnoses malformed task specs without crashing compilation", () => {
+  it("returns ordinary lowering failures without changing throwing-wrapper semantics", () => {
+    const cause = Object.assign(new Error("build failed"), { code: "BUILD_FAILED" });
+    const definition = defineWorkflow({ name: "throwing_build" }).build(() => {
+      throw cause;
+    });
+
+    const result = tryCompileWorkflowDefinition(definition);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected lowering failure");
+    expect(result.error).toEqual({
+      type: "workflow-lowering-failed",
+      message: "build failed",
+      cause,
+    });
+    try {
+      compileWorkflowDefinition(definition);
+      throw new Error("expected throwing compilation wrapper to fail");
+    } catch (error) {
+      expect(error).toBe(cause);
+    }
+  });
+
+  it("fails malformed Task specs instead of compiling an empty executable sentinel", () => {
     const definition = defineWorkflow({ name: "malformed_task" }).build(({ step }) => {
       step("bad_task").task({
         run: {
@@ -758,22 +821,95 @@ describe("workflow compilation", () => {
       return {};
     });
 
-    const ir = compileWorkflowDefinition(definition);
+    const result = tryCompileWorkflowDefinition(definition);
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected malformed Task failure");
+    expect(result.error).toEqual({
+      type: "invalid-task-spec",
+      nodeId: "bad_task",
+      message: "Task node 'bad_task' must use inline { input, exec } or reusable { input, task }.",
+    });
+    expect(() => compileWorkflowDefinition(definition)).toThrow(
+      "Task node 'bad_task' must use inline { input, exec } or reusable { input, task }.",
+    );
+  });
 
-    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
-      code: "T000",
-      severity: "error",
-    }));
-    expect(ir.diagnostics).toContainEqual(expect.objectContaining({
-      code: "T007",
-      path: "root.nodes.bad_task.run.target.source",
-    }));
-    expect(ir.root.nodes[0]).toMatchObject({
-      id: "bad_task",
-      kind: "task",
+  it("requires and copies complete source links for reusable Tasks", () => {
+    const definition = defineWorkflow({ name: "linked_task" }).build(({ step }) => {
+      step("linked").task({ task: normalizePackage, input: { packageName: "acpus" } });
+      return {};
+    });
+
+    for (const options of [undefined, { validate: false }]) {
+      const result = tryCompileWorkflowDefinition(definition, options);
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected missing reusable Task link");
+      expect(result.error).toMatchObject({
+        type: "reusable-task-target-missing",
+        nodeId: "linked",
+      });
+    }
+    try {
+      compileWorkflowDefinition(definition);
+      throw new Error("expected throwing compilation wrapper to fail");
+    } catch (error) {
+      expect((error as Error).cause).toMatchObject({
+        type: "reusable-task-target-missing",
+        nodeId: "linked",
+      });
+    }
+    const invalid = tryCompileWorkflowDefinition(definition, {
+      validate: false,
+      reusableTasks: {
+        referrerPath: "../release.ts",
+        targets: new Map([["linked", { specifier: "./tasks.ts", exportName: "normalizePackage" }]]),
+      },
+    });
+    expect(invalid.isErr()).toBe(true);
+    if (invalid.isOk()) throw new Error("expected invalid reusable Task link");
+    expect(invalid.error).toEqual({
+      type: "reusable-task-target-invalid",
+      nodeId: "linked",
+      field: "referrerPath",
+      message: "Reusable Task referrer path must stay inside the workspace.",
+    });
+    for (const path of [
+      String.raw`\\server\share\workflow.ts`,
+      String.raw`\\?\C:\workspace\workflow.ts`,
+      String.raw`C:workflow.ts`,
+    ]) {
+      const rooted = tryCompileWorkflowDefinition(definition, {
+        reusableTasks: {
+          referrerPath: path,
+          targets: new Map([["linked", { specifier: "./tasks.ts", exportName: "normalizePackage" }]]),
+        },
+      });
+      expect(rooted.isErr()).toBe(true);
+      if (rooted.isOk()) throw new Error("expected rooted reusable Task referrer failure");
+      expect(rooted.error).toMatchObject({
+        type: "reusable-task-target-invalid",
+        field: "referrerPath",
+        message: "Reusable Task referrer path must be workspace-relative.",
+      });
+    }
+
+    const link = { specifier: "./tasks.ts", exportName: "normalizePackage" };
+    const plan = {
+      referrerPath: "workflows/release.ts",
+      targets: new Map([["linked", link]]),
+    };
+    const compiled = compileWorkflowDefinition(definition, { reusableTasks: plan });
+    link.specifier = "./changed.ts";
+    plan.referrerPath = "changed.ts";
+
+    expect(compiled.root.nodes[0]).toMatchObject({
       run: {
-        input: {},
-        target: { kind: "inline", source: "" },
+        target: {
+          kind: "module",
+          specifier: "./tasks.ts",
+          exportName: "normalizePackage",
+          referrer: { path: "workflows/release.ts" },
+        },
       },
     });
   });

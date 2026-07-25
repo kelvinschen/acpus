@@ -56,7 +56,9 @@
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
 - `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, and `AgentOverrideValidationFailure`; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
+- `PreparedRunValidationFailure.reason` MUST distinguish `invalid-ir-json`, `invalid-ir`, `ir-mismatch`, `ir-digest-mismatch`, `source-graph-mismatch`, `package-lock-mismatch`, and `entry-mismatch`.
 - New-run and replacement-fork admission MUST validate the closed preparation-lock shape, canonical frozen IR, matching digests, compiler-owned workflow source reference, and `sha256([sourceDigest, packageLockDigest ?? ""].join("\n"))` source-graph digest before mutation; daemon failures use `INVALID_REQUEST`.
+- Canonical frozen-IR admission MUST delegate to Core `validateWorkflowIR(...)`, reject validator errors or existing error diagnostics as `invalid-ir`, accept warning-only diagnostics, and MUST NOT append to or mutate prepared diagnostics.
 - A workspace source reference MUST resolve its portable entry and reusable-task referrers beneath the canonical workspace root.
 - A global-catalog source reference MUST identify its catalog name, package digest, and portable entry without persisting a temporary absolute source path.
 - Admission of a global-catalog source MUST verify the supplied package snapshot against its package digest before publishing or reusing `runtime/sources/catalog/<name>/<digest>/`.
@@ -211,6 +213,7 @@ type PruneReport = {
 - Task cwd MUST default to workspace, resolve relative values from workspace, and be observed by process code, filesystem access, module initialization, and the default command wrapper without changing module resolution.
 - Task environment MUST start from host environment plus evaluated overrides and remain live for process code, task context, modules, and later command invocations.
 - Task input/cwd/env and default command timeout MUST resolve once before invocation and be recorded as effective attempt metadata where applicable.
+- Evaluated Task input MUST preserve every own WorkflowData field, including `__proto__`, without changing the input object's ordinary prototype.
 - Runtime output normalization MUST treat Task top-level `undefined` as no output, reject scope/array `undefined`, omit undefined object properties, and reject non-WorkflowData values without adding business schemas.
 - Task output MUST be normalized immediately before child-process IPC and again at durable result commit; the parent node-executor layer MUST NOT add another cloning or normalization pass.
 - Recoverable Task attempt failure MUST contain only `failed`, `cancelled`, or `timed_out` status plus a complete display message; cwd, errno, exit code, signal, and bounded process output details MUST be folded into that message when applicable.

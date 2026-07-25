@@ -5,6 +5,7 @@ import type {
   PackageLockFailure,
   WorkflowPreparationLock,
   WorkflowPreparationOptions,
+  WorkflowPreparationSource,
   WorkflowPreparationFailure,
   WorkflowMetadata,
   WorkflowMetadataError,
@@ -17,8 +18,12 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   expectTypeOf(tryPrepareWorkflow).toEqualTypeOf<(options: WorkflowPreparationOptions) => ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>>();
   expectTypeOf(extractWorkflowMetadata).toEqualTypeOf<(source: string, fileName: string) => ResultAsync<WorkflowMetadata, WorkflowMetadataError>>();
 
-  expectTypeOf<WorkflowPreparationFailure["type"]>().toEqualTypeOf<"check-failed" | "compile-failed" | "package-lock-read-failed" | "validate-failed">();
-  expectTypeOf<WorkflowPreparationFailure["phase"]>().toEqualTypeOf<"check" | "compile" | "lock" | "validate">();
+  expectTypeOf<WorkflowPreparationFailure["type"]>().toEqualTypeOf<"source-invalid" | "check-failed" | "compile-failed" | "package-lock-read-failed" | "validate-failed">();
+  expectTypeOf<WorkflowPreparationFailure["phase"]>().toEqualTypeOf<"source" | "check" | "compile" | "lock" | "validate">();
+  expectTypeOf<WorkflowPreparationSource>().toEqualTypeOf<
+    | { kind: "workspace" }
+    | { kind: "global_catalog"; name: string; digest: string }
+  >();
   expectTypeOf<PreparedWorkflow["lock"]>().toEqualTypeOf<WorkflowPreparationLock>();
   expectTypeOf<PackageLockFailure["type"]>().toEqualTypeOf<"package-lock-read-failed">();
   expectTypeOf<Extract<CompileWorkerFailure, { type: "worker-spawn-failed" }>[
@@ -28,4 +33,13 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   const failure = { type: "worker-system-failed", message: "failed" } satisfies CompileWorkerFailure;
   const error = new WorkflowPreparationError({ type: "compile-failed", phase: "compile", message: "failed", failure });
   expectTypeOf(error.failure).toEqualTypeOf<WorkflowPreparationFailure>();
+
+  const duplicateEntry: WorkflowPreparationOptions = {
+    workflow: "workflow.ts",
+    cwd: "/workspace",
+    sourceRoot: "/snapshot",
+    // @ts-expect-error preparation source identity is derived and cannot repeat entry.
+    source: { kind: "global_catalog", name: "catalog", digest: "sha256:test", entry: "workflow.ts" },
+  };
+  expectTypeOf(duplicateEntry).toEqualTypeOf<WorkflowPreparationOptions>();
 });

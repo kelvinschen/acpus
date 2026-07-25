@@ -47,10 +47,7 @@ type ModuleBuiltin = typeof import("node:module") & {
 
 let registered = false;
 const require = createRequire(import.meta.url);
-const dependencyAuthorities: Array<{
-  sourceRoot: string;
-  dependencyParentURL: string;
-}> = [];
+const dependencyAuthorities = new Map<string, string>();
 
 export function officialAuthoringTypeScriptPaths(fromDir: string): OfficialTypeScriptPaths {
   const paths: Record<string, string[]> = {};
@@ -392,21 +389,19 @@ function registerDependencyAuthority(options: {
 }): void {
   if (!options.dependencyRoot || !options.parentURL.startsWith("file:")) return;
   const sourceRoot = canonicalPath(options.sourceRoot ?? dirname(fileURLToPath(options.parentURL)));
-  const dependencyParent = dependencyParentURL(options.dependencyRoot);
-  const existing = dependencyAuthorities.findIndex(authority =>
-    authority.sourceRoot === sourceRoot && authority.dependencyParentURL === dependencyParent);
-  if (existing !== -1) dependencyAuthorities.splice(existing, 1);
-  dependencyAuthorities.push({ sourceRoot, dependencyParentURL: dependencyParent });
+  dependencyAuthorities.set(sourceRoot, dependencyParentURL(options.dependencyRoot));
 }
 
-function dependencyAuthority(parentURL: string): (typeof dependencyAuthorities)[number] | undefined {
+function dependencyAuthority(parentURL: string): { sourceRoot: string; dependencyParentURL: string } | undefined {
   if (!parentURL.startsWith("file:")) return undefined;
   const parentPath = canonicalPath(fileURLToPath(parentURL));
-  for (let index = dependencyAuthorities.length - 1; index >= 0; index -= 1) {
-    const authority = dependencyAuthorities[index]!;
-    if (isContainedPath(authority.sourceRoot, parentPath)) return authority;
+  let closest: { sourceRoot: string; dependencyParentURL: string } | undefined;
+  for (const [sourceRoot, dependencyParentURL] of dependencyAuthorities) {
+    if (isContainedPath(sourceRoot, parentPath) && (!closest || sourceRoot.length > closest.sourceRoot.length)) {
+      closest = { sourceRoot, dependencyParentURL };
+    }
   }
-  return undefined;
+  return closest;
 }
 
 function dependencyParentURL(root: string): string {
@@ -416,7 +411,8 @@ function dependencyParentURL(root: string): string {
 function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
-  } catch {
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
     return resolve(path);
   }
 }

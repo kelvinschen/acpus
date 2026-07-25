@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve, relative } from "node:path";
+import { isAbsolute, resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
-import { compileWorkflowDefinition, isWorkflowDefinition } from "@acpus/core/workflow";
-import { validateWorkflowIR, walkNodes, type WorkflowIR } from "@acpus/core/ir";
-import { analyzeWorkflowTasks, resolveTaskReferenceMetadata, type TaskReferenceMetadata } from "../task-analysis/index.js";
-import { err, ok, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
+import {
+  isWorkflowDefinition,
+  tryCompileWorkflowDefinition,
+  type ReusableTaskLinkPlan,
+} from "@acpus/core/workflow";
+import type { WorkflowIR } from "@acpus/core/ir";
+import { analyzeWorkflowTasks, resolveTaskReferenceMetadata } from "../task-analysis/index.js";
+import { err, ok, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
 export type CompiledWorkflowModule = {
   ir: WorkflowIR;
@@ -52,15 +56,6 @@ export function tryCompileWorkflowModule(
           message: `Default export of ${entry} is not an Acpus workflow definition.`,
         } satisfies CompileWorkflowModuleError);
       }
-      const built = Result.fromThrowable(() => {
-        return compileWorkflowDefinition(def, { validate: false });
-      }, cause => ({
-        type: "workflow-build-failed",
-        entry,
-        message: `Workflow '${entry}' could not be lowered: ${causeMessage(cause)}`,
-      } satisfies CompileWorkflowModuleError))();
-      if (built.isErr()) return err(built.error);
-      const ir = built.value;
       return ResultAsync.fromPromise(
         analyzeWorkflowTasks(absolute, source),
         cause => ({
@@ -75,10 +70,20 @@ export function tryCompileWorkflowModule(
       } satisfies CompileWorkflowModuleError))).andThen(analysis => {
         const referrerPath = toContainedSourcePath(sourceRoot, absolute);
         if (referrerPath.isErr()) return err(referrerPath.error);
-        applyTaskReferenceMetadata(ir, resolveTaskReferenceMetadata(analysis), referrerPath.value);
-        ir.diagnostics.push(...validateWorkflowIR(ir));
+        const reusableTasks: ReusableTaskLinkPlan = {
+          referrerPath: referrerPath.value,
+          targets: resolveTaskReferenceMetadata(analysis),
+        };
+        const built = tryCompileWorkflowDefinition(def, { reusableTasks });
+        if (built.isErr()) {
+          return err({
+            type: "workflow-build-failed",
+            entry,
+            message: `Workflow '${entry}' could not be lowered: ${built.error.message}`,
+          } satisfies CompileWorkflowModuleError);
+        }
         return ok({
-          ir,
+          ir: built.value,
           sourceDigest: `sha256:${createHash("sha256").update(source).digest("hex")}`,
         });
       });
@@ -95,20 +100,6 @@ function importWorkflowModule(
   return importAuthoringModule(url, { parentURL: url, sourceRoot, dependencyRoot });
 }
 
-function applyTaskReferenceMetadata(ir: WorkflowIR, metadata: Map<string, TaskReferenceMetadata>, referrerPath: string): void {
-  for (const { node } of walkNodes(ir.root)) {
-    if (node.kind !== "task" || node.run.target.kind !== "module") continue;
-    const task = metadata.get(node.id);
-    if (!task?.specifier || !task.exportName) continue;
-    node.run.target = {
-      kind: "module",
-      specifier: task.specifier,
-      exportName: task.exportName,
-      referrer: { path: referrerPath },
-    };
-  }
-}
-
 function toContainedSourcePath(sourceRoot: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
   let path: string;
   try {
@@ -116,7 +107,7 @@ function toContainedSourcePath(sourceRoot: string, workflowFile: string): Nevert
   } catch {
     return err(outsideSourceRoot(workflowFile, sourceRoot));
   }
-  if (path.startsWith("..") || path === "" || path.split(/[\\/]/).includes("..")) {
+  if (path === "" || isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
     return err(outsideSourceRoot(workflowFile, sourceRoot));
   }
   return ok(toWorkspacePath(path));

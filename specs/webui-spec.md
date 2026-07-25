@@ -28,6 +28,7 @@
 - The Workflows page MUST provide a dedicated workspace-only file picker for `.ts` and `.tsx` workflow sources, with breadcrumb navigation, current-directory filtering, and dense directory/workflow rows. It MUST reject path escapes.
 - Selecting a workflow source MUST NOT compile or import it until the user explicitly requests visualization.
 - Static workflow visualization APIs MUST run workflow preparation in memory and MUST NOT write durable preflight artifacts.
+- Static workflow visualization failures MUST preserve compiler-owned `source`, `check`, `compile`, `lock`, and `validate` phases.
 - The `@acpus/web` package root MUST expose only `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
 - `startWebServer` MUST return a tagged `listen-failed` Result when the requested listener cannot be established.
 - Self-contained workflow visualization HTML MUST use the same WebUI static graph React component as the browser Workflows graph. It MUST remain a single offline HTML bundle without live WebUI API calls, and it MUST embed only the static graph runtime needed for graph rendering, static inspection, and workflow I/O.

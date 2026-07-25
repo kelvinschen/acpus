@@ -68,7 +68,9 @@ export type ExprLoweringError =
   | { type: "unsupported-expression-value"; path: string; valueType: string; message: string }
   | { type: "sparse-array-hole"; path: string; message: string }
   | { type: "non-plain-object"; path: string; message: string }
-  | { type: "symbol-keys"; path: string; message: string };
+  | { type: "symbol-keys"; path: string; message: string }
+  | { type: "cyclic-value"; path: string; message: string }
+  | { type: "uninspectable-value"; path: string; message: string };
 
 export function valueToExprIR(value: unknown): ExprIR {
   return tryValueToExprIR(value).match(
@@ -80,6 +82,30 @@ export function valueToExprIR(value: unknown): ExprIR {
 }
 
 export function tryValueToExprIR(value: unknown, path = "$"): Result<ExprIR, ExprLoweringError> {
+  return lowerValueToExprIR(value, path, new WeakSet());
+}
+
+function lowerValueToExprIR(
+  value: unknown,
+  path: string,
+  visiting: WeakSet<object>,
+): Result<ExprIR, ExprLoweringError> {
+  try {
+    return lowerInspectableValue(value, path, visiting);
+  } catch {
+    return err({
+      type: "uninspectable-value",
+      path,
+      message: "Unsupported expression value: object could not be inspected.",
+    });
+  }
+}
+
+function lowerInspectableValue(
+  value: unknown,
+  path: string,
+  visiting: WeakSet<object>,
+): Result<ExprIR, ExprLoweringError> {
   if (isExpr(value)) return ok(value.__ir);
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return ok({ kind: "literal", value });
@@ -89,33 +115,45 @@ export function tryValueToExprIR(value: unknown, path = "$"): Result<ExprIR, Exp
   }
   if (value === undefined) return unsupportedExpressionValue(path, "undefined");
   if (typeof value === "bigint" || typeof value === "symbol" || typeof value === "function") return unsupportedExpressionValue(path, typeof value);
-  if (Array.isArray(value)) {
-    const items: ExprIR[] = [];
-    for (let index = 0; index < value.length; index++) {
-      const itemPath = `${path}[${index}]`;
-      if (!Object.prototype.hasOwnProperty.call(value, index)) return err({ type: "sparse-array-hole", path: itemPath, message: "Unsupported expression value: sparse array hole." });
-      const item = tryValueToExprIR(value[index], itemPath);
-      if (item.isErr()) return item;
-      items.push(item.value);
-    }
-    return ok({ kind: "array", items });
-  }
   if (value && typeof value === "object") {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return err({ type: "non-plain-object", path, message: "Unsupported expression value: non-plain object." });
-    if (Object.getOwnPropertySymbols(value).length > 0) return err({ type: "symbol-keys", path, message: "Unsupported expression value: symbol keys." });
-    const fields: Record<string, ExprIR> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      const child = tryValueToExprIR(item, `${path}.${key}`);
-      if (child.isErr()) {
-        if (child.error.type === "unsupported-expression-value" && child.error.valueType === "undefined" && child.error.path === `${path}.${key}`) {
-          return err({ ...child.error, message: `Unsupported expression value at key '${key}': undefined.` });
-        }
-        return child;
-      }
-      fields[key] = child.value;
+    if (visiting.has(value)) {
+      return err({
+        type: "cyclic-value",
+        path,
+        message: "Unsupported expression value: cyclic reference.",
+      });
     }
-    return ok({ kind: "object", fields });
+    visiting.add(value);
+    try {
+      if (Array.isArray(value)) {
+        const items: ExprIR[] = [];
+        for (let index = 0; index < value.length; index++) {
+          const itemPath = `${path}[${index}]`;
+          if (!Object.prototype.hasOwnProperty.call(value, index)) return err({ type: "sparse-array-hole", path: itemPath, message: "Unsupported expression value: sparse array hole." });
+          const item = lowerValueToExprIR(value[index], itemPath, visiting);
+          if (item.isErr()) return item;
+          items.push(item.value);
+        }
+        return ok({ kind: "array", items });
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) return err({ type: "non-plain-object", path, message: "Unsupported expression value: non-plain object." });
+      if (Object.getOwnPropertySymbols(value).length > 0) return err({ type: "symbol-keys", path, message: "Unsupported expression value: symbol keys." });
+      const fields: Array<[string, ExprIR]> = [];
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        const child = lowerValueToExprIR(item, `${path}.${key}`, visiting);
+        if (child.isErr()) {
+          if (child.error.type === "unsupported-expression-value" && child.error.valueType === "undefined" && child.error.path === `${path}.${key}`) {
+            return err({ ...child.error, message: `Unsupported expression value at key '${key}': undefined.` });
+          }
+          return child;
+        }
+        fields.push([key, child.value]);
+      }
+      return ok({ kind: "object", fields: Object.fromEntries(fields) });
+    } finally {
+      visiting.delete(value);
+    }
   }
   return unsupportedExpressionValue(path, String(value));
 }

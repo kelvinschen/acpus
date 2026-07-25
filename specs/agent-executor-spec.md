@@ -24,7 +24,10 @@
 - Every turn MUST execute `sessions ensure --name <session>`, then one `set <key> <value> -s <session>` command for each `config` entry except `model`, in lexical key order, then `prompt -s <session> -f -` with prompt on stdin.
 - Permission MUST map only to `--approve-reads`, `--approve-all`, or `--deny-all`; no synthetic policy flags are passed.
 - Prompt commands MUST use `--format json --json-strict`, positional named agents, and `--agent <command>` for custom agents.
-- A rejected config `set` MUST return `config` with `session.set_config_option` upstream attribution without prompting.
+- An unstructured rejected config `set`, or one carrying JSON-RPC `-32602`,
+  MUST return `config` with `session.set_config_option` upstream attribution
+  without prompting; other structured JSON-RPC failures remain
+  `provider_exit`.
 - Prompt timeout or abort MUST best-effort invoke `cancel -s <session>` before force-killing the prompt process.
 - Abort and expired deadlines MUST win settlement races, including synchronous startup; when both occur at one boundary, abort wins and cancellation errors remain handled.
 - Stdin failure after spawn MUST preserve child stderr/exit classification; settled invocations ignore later stdout/progress.

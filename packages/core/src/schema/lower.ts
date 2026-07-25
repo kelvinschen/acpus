@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import * as zod from "zod";
 import { err, ok, type Result } from "neverthrow";
+import { isJsonValue } from "@acpus/expression/ir";
 import type { JsonPrimitive, JsonValue, SchemaIR } from "../ir/types.js";
 import type { Schema } from "./zod.js";
 
@@ -10,11 +10,11 @@ export type SchemaLoweringError =
   | { type: "unsupported-schema"; path: string; schemaKind: string; message: string };
 
 function defOf(schema: Schema<any>): any {
-  return (schema as any).def ?? (schema as any)._def;
+  return schema.def;
 }
 
 function typeOf(schema: Schema<any>): string {
-  return String(defOf(schema)?.type ?? "unknown");
+  return schema.type;
 }
 
 export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
@@ -27,8 +27,7 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
 }
 
 function withSchemaMetadata(schema: Schema<any>, ir: SchemaIR): SchemaIR {
-  const meta = zod.globalRegistry.get(schema as zod.ZodTypeAny) as any;
-  return typeof meta?.description === "string" ? { ...ir, description: meta.description } : ir;
+  return schema.description === undefined ? ir : { ...ir, description: schema.description };
 }
 
 export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
@@ -160,30 +159,13 @@ function unsupported(path: string, schemaKind: string, message: string): Result<
 }
 
 function normalizeJsonValue(value: unknown): JsonValue | undefined {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
-  if (Array.isArray(value)) {
-    const items: JsonValue[] = [];
-    for (const item of value) {
-      const next = normalizeJsonValue(item);
-      if (next === undefined) return undefined;
-      items.push(next);
-    }
-    return items;
+  if (!isJsonValue(value)) return undefined;
+  try {
+    const clone: unknown = structuredClone(value);
+    return isJsonValue(clone) ? clone : undefined;
+  } catch {
+    return undefined;
   }
-  if (value && typeof value === "object") {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return undefined;
-    if (Object.getOwnPropertySymbols(value).length > 0) return undefined;
-    const fields: Record<string, JsonValue> = {};
-    for (const [key, item] of Object.entries(value)) {
-      const next = normalizeJsonValue(item);
-      if (next === undefined) return undefined;
-      setOwnProperty(fields, key, next);
-    }
-    return fields;
-  }
-  return undefined;
 }
 
 export function schemaToJsonSchema(schema: SchemaIR): JsonValue {

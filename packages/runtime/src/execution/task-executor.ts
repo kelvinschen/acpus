@@ -94,7 +94,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
 }
 
 function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<Record<string, JsonValue>, TaskNodeFailure> {
-  const input: Record<string, unknown> = {};
+  const entries: Array<[string, unknown]> = [];
   for (const [key, expression] of Object.entries(node.run.input)) {
     const evaluated = tryEvaluateExpr(expression, scope);
     if (evaluated.isErr()) {
@@ -104,8 +104,9 @@ function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<Rec
         message: evaluated.error.message,
       });
     }
-    input[key] = evaluated.value;
+    entries.push([key, evaluated.value]);
   }
+  const input = Object.fromEntries(entries);
   const normalized = tryNormalizeWorkflowData(input, `Task node '${node.id}' input`);
   return normalized.isErr()
     ? resolutionFailure({ type: "evaluation", field: `Task node '${node.id}' input`, message: normalized.error.message })

@@ -36,6 +36,8 @@
 - Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, bigint, and non-finite numbers.
 - `tryValueToExprIR(value)` MUST return a neverthrow `Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
 - `ExprLoweringError` MUST be a serializable tagged union with stable path fields.
+- Cyclic values MUST return `cyclic-value`, and object reflection failures MUST return `uninspectable-value`; neither case may leak a recursion or Proxy trap exception.
+- Lowering and object evaluation MUST preserve ordinary own data fields named `__proto__`.
 - `valueToExprIR(value)` MAY remain a throwing adapter over `tryValueToExprIR(value)` for authoring helpers.
 - Accessors MUST keep `__ir` and `__type` reserved for expression internals.
 - Accessors over refs MUST lower property access to extended `ref` paths.
@@ -75,7 +77,7 @@
 - Callback dependency input MAY contain `undefined` from missing projections, including nested object fields. Callback output MUST NOT contain `undefined`.
 - Callback evaluation MUST fail with `ExpressionEvaluationError` when the callback source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, or returns non-WorkflowData output.
 - Callback load and execution diagnostics MUST safely render thrown non-`Error` values.
-- Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope.
+- Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope. Cloning MUST preserve identity between shared non-cyclic subgraphs.
 - Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
 - Serialized function loading MUST evaluate one function source in strict mode.
 - Serialized function loading MUST reject a source whose evaluated value is not a function.

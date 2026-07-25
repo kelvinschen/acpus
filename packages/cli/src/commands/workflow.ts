@@ -254,7 +254,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   }
 
   const structured = outputFormatFor(options) === "json";
-  if (structured) writeJsonLine(ctx.stdout, { schemaVersion: 1, ok: true, phase: "run", kind: "admitted", run: admitted, ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
+  if (structured) writeJsonLine(ctx.stdout, { schemaVersion: 1, ok: true, phase: "run", kind: "admitted", run: toRunRecord(admitted), ...(resolved.catalog ? { catalog: resolved.catalog } : {}) });
   const outcome = await followRun(ctx.cwd, { runId: admitted.id, mode: "overview", intervalMs }, {
     phase: "run",
     format: structured ? "ndjson" : "text",

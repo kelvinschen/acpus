@@ -2,7 +2,7 @@ import {
   tryPrepareWorkflow,
   type PreparedWorkflow,
   type WorkflowPreparationFailure,
-  type WorkflowSourceRef,
+  type WorkflowPreparationSource,
 } from "@acpus/workflow-compiler";
 import { CliError } from "./errors.js";
 import { summarizeWorkflow } from "./output.js";
@@ -10,7 +10,7 @@ import { summarizeWorkflow } from "./output.js";
 export async function prepareWorkflowForCli(
   workflow: string,
   cwd: string,
-  source?: { ref: WorkflowSourceRef; root: string },
+  source?: { ref: WorkflowPreparationSource; root: string },
 ): Promise<PreparedWorkflow> {
   const result = await tryPrepareWorkflow({
     workflow,
@@ -26,6 +26,13 @@ export async function prepareWorkflowForCli(
 }
 
 export function workflowPreparationCliError(failure: WorkflowPreparationFailure): CliError {
+  if (failure.type === "source-invalid") {
+    return new CliError(1, {
+      ok: false,
+      phase: "source",
+      message: failure.message,
+    });
+  }
   if (failure.type === "check-failed") {
     return new CliError(1, {
       ok: false,

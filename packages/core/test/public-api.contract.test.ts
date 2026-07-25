@@ -31,6 +31,7 @@ describe("@acpus/core public API", () => {
       "compileWorkflowDefinition",
       "defineWorkflow",
       "isWorkflowDefinition",
+      "tryCompileWorkflowDefinition",
     ]);
   });
 
