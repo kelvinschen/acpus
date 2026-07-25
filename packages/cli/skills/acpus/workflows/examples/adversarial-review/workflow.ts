@@ -1,238 +1,158 @@
 /*
- * Pattern: Plan adversarial lenses, fan out reviews, cross-critique, and synthesize.
- * Nodes: agent, fanout
+ * Pattern: Iterate with resident and fresh reviewers in a bounded loop.
+ * Nodes: agent, parallel, fanout, loop
  */
 import { defineWorkflow, z } from "acpus/core";
-import { md } from "acpus/expression";
+import { gte, lift, md, or } from "acpus/expression";
 
-const Verdict = z.enum(["pass", "pass-with-nits", "needs-work", "block"]);
+const Decision = z.object({
+  approved: z.boolean(),
+  feedback: z.string(),
+});
+
+type ReviewState = z.infer<typeof Decision> & {
+  result: string;
+  rounds: number;
+};
 
 export default defineWorkflow({
-    name: "adversarial-review",
-    inputSchema: z.object({
-        subject: z.string().describe(
-            "The proposal, design, code change, workflow, plan, or decision to review adversarially.",
-        ),
-        rubric: z.string().describe(
-            "The review standard: what good looks like, what must be true, and which qualities matter most.",
-        ),
-        criteria: z.string().default("").describe(
-            "Optional comma-separated or natural-language review criteria, for example: correctness, DX, runtime safety.",
-        ),
-        context: z.string().default("").describe(
-            "Optional background the agents should consider, such as constraints, prior decisions, known risks, or local workspace context.",
-        ),
-        maxLenses: z.number().default(4).describe(
-            "Maximum number of distinct adversarial review lenses to create.",
-        ),
-    }),
-    agents: {
-        planner: {
-            use: "pi",
-        },
-        reviewer: {
-            use: "pi",
-        },
-        critic: {
-            use: "claude",
-        },
-        synthesizer: {
-            use: "claude",
-        },
-    },
+  name: "adversarial-review",
+  description: "Iterate on a task until adversarial review approves it or the round limit is reached.",
+  inputSchema: z.object({
+    task: z.string().describe("The task the worker should complete."),
+    rubric: z.string().describe("The requirements used to judge the result."),
+    context: z.string().default("").describe("Optional background or constraints."),
+    maxReviewers: z.number().default(3).describe("Maximum number of fresh review lenses."),
+    maxRounds: z.number().default(3).describe("Maximum worker-review rounds."),
+  }),
+  agents: {
+    planner: { use: "pi" },
+    worker: { use: "claude" },
+    reviewer: { use: "pi" },
+    judge: { use: "claude" },
+  },
 }).build(({ input, agents, meta, step }) => {
-    const plan = step("plan_lenses").agent({
-        outputSchema: z.object({
-            lenses: z.array(z.object({
-                id: z.string(),
-                prompt: z.string(),
-            })),
-        }),
-        agent: agents.planner,
+  const reviewerLimit = lift(input.maxReviewers, value => Math.max(1, Math.floor(value)));
+  const roundLimit = lift(input.maxRounds, value => Math.max(1, Math.floor(value)));
+
+  const plan = step("plan_reviews").agent({
+    agent: agents.planner,
+    cwd: meta.workspaceDir,
+    outputSchema: z.object({
+      lenses: z.array(z.object({ name: z.string(), focus: z.string() })),
+    }),
+    prompt: md`
+      Plan distinct adversarial review lenses for this task.
+
+      Task: ${input.task}
+      Rubric: ${input.rubric}
+      Context: ${input.context}
+      Maximum lenses: ${reviewerLimit}
+
+      Cover the most consequential failure modes without overlap. Return no more
+      than the requested maximum.`,
+    timeout: "15m",
+  });
+  const lenses = lift(plan.output.lenses, reviewerLimit, (items, limit) => items.slice(0, limit));
+
+  const initial: ReviewState = {
+    approved: false,
+    feedback: "Produce the first complete result.",
+    result: "",
+    rounds: 0,
+  };
+
+  const cycle = step("review_cycle").loop({
+    state: initial,
+    do({ round, state }) {
+      const work = step("work").agent({
+        agent: agents.worker,
         cwd: meta.workspaceDir,
+        sessionKey: "adversarial-review:worker",
         prompt: md`
-            You are planning a dynamic adversarial review.
+          Complete the task and return the full replacement result.
 
-            Subject:
-            ${input.subject}
-
-            Context:
-            ${input.context}
-
-            Rubric:
-            ${input.rubric}
-
-            Criteria:
-            ${input.criteria}
-
-            Maximum lenses:
-            ${input.maxLenses}
-
-            Create the smallest useful set of review lenses.
-
-            Rules:
-            - Use only the subject, context, rubric, criteria, and readable local workspace context.
-            - Prefer 3-5 lenses, but never exceed the maximum.
-            - Avoid duplicate lenses.
-            - Each lens must represent a distinct way the subject could fail.
-            - Each lens id must be short, lowercase, and stable within the review output.
-            - Each lens prompt must be a complete natural-language reviewer role, including focus and attack style.
-            - Good lenses include correctness, feasibility, risk, edge cases, rubric compliance, maintainability, authoring fit, runtime contract, testing, migration risk, and DX.`,
-        timeout: "15m",
-    });
-
-    const reviews = step("blind_reviews").fanout({
-        over: plan.output.lenses,
-        maxConcurrency: 4,
-        do({ item }) {
-            const review = step("blind_review").agent({
-                agent: agents.reviewer,
-                cwd: meta.workspaceDir,
-                prompt: md`
-                    You are a blind reviewer.
-
-                    Your lens:
-                    ${item.prompt}
-
-                    Subject:
-                    ${input.subject}
-
-                    Context:
-                    ${input.context}
-
-                    Rubric:
-                    ${input.rubric}
-
-                    Criteria:
-                    ${input.criteria}
-
-                    Rules:
-                    - Work independently.
-                    - Do not assume what other reviewers will say.
-                    - Judge only from the given subject, context, rubric, criteria, and readable local workspace context.
-                    - Be adversarial but fair.
-                    - Prefer concrete issues over broad complaints.
-                    - Mark uncertainty explicitly.
-                    - Do not block on nits.
-                    - Do not try to match a JSON schema.
-
-                    Return Markdown with these sections:
-                    - Summary
-                    - Strengths
-                    - Issues
-                    - Hidden assumptions
-                    - Verdict`,
-                timeout: "30m",
-            });
-
-            return review.output;
-        },
-    });
-
-    const critiques = step("cross_critiques").fanout({
-        over: plan.output.lenses,
-        maxConcurrency: 4,
-        do({ item }) {
-            const critique = step("critique_reviews").agent({
-                agent: agents.critic,
-                cwd: meta.workspaceDir,
-                prompt: md`
-                    You are now a red-team critic.
-
-                    Your lens:
-                    ${item.prompt}
-
-                    Subject:
-                    ${input.subject}
-
-                    Rubric:
-                    ${input.rubric}
-
-                    Criteria:
-                    ${input.criteria}
-
-                    Blind reviews:
-                    ${reviews.output}
-
-                    Attack the reviews, not the author.
-
-                    Look for:
-                    - Unsupported claims.
-                    - Missed risks.
-                    - Overconfidence.
-                    - Contradictions.
-                    - Rubric gaps.
-                    - Recommendations that do not follow from the issue.
-                    - Issues that are mislabeled as blocking or under-labeled as minor.
-
-                    Rules:
-                    - Do not merely summarize.
-                    - Concede points that are already strong.
-                    - Return only substantial objections.
-                    - Do not try to match a JSON schema.
-
-                    Return Markdown with these sections:
-                    - Objections
-                    - Contradictions
-                    - Concessions
-                    - Stronger alternatives`,
-                timeout: "30m",
-            });
-
-            return critique.output;
-        },
-    });
-
-    const synthesis = step("synthesize_result").agent({
-        outputSchema: z.object({
-            verdict: Verdict,
-            report: z.string(),
-        }),
-        agent: agents.synthesizer,
-        cwd: meta.workspaceDir,
-        prompt: md`
-            You are the judge for a dynamic adversarial review.
-
-            Subject:
-            ${input.subject}
-
-            Context:
-            ${input.context}
-
-            Rubric:
-            ${input.rubric}
-
-            Criteria:
-            ${input.criteria}
-
-            Lens plan:
-            ${plan.output}
-
-            Blind reviews:
-            ${reviews.output}
-
-            Cross critiques:
-            ${critiques.output}
-
-            Rules:
-            - Do not average opinions mechanically.
-            - Weigh concrete basis over reviewer confidence.
-            - In the report, separate consensus from unresolved disagreement.
-            - Blocking issues must be explicit.
-            - Nits must not block approval.
-            - Required actions must be concrete and actionable.
-            - Nice-to-have items must not be mixed into required actions.
-            - If the context is insufficient, say so directly instead of inventing evidence.
-            - Do not search the internet.
-            - The report should be natural-language Markdown containing: assessment, consensus, blocking issues, non-blocking issues, unresolved disagreements, required actions, and nice-to-have items.
-            - Return JSON matching the schema.`,
+          Task: ${input.task}
+          Rubric: ${input.rubric}
+          Context: ${input.context}
+          Round: ${round}
+          Previous result: ${state.result}
+          Feedback to address: ${state.feedback}`,
         timeout: "30m",
-    });
+      });
 
-    return {
-        plan: plan.output,
-        reviews: reviews.output,
-        critiques: critiques.output,
-        synthesis: synthesis.output,
-    };
+      const reviews = step("reviews").parallel({
+        branches: {
+          resident: () => step("resident_review").agent({
+            agent: agents.reviewer,
+            cwd: meta.workspaceDir,
+            sessionKey: "adversarial-review:resident",
+            prompt: md`
+              Track whether the result improves across rounds.
+              Task: ${input.task}
+              Rubric: ${input.rubric}
+              Context: ${input.context}
+              Round: ${round}
+              Result: ${work.output}
+              Report only concrete issues and regressions.`,
+            timeout: "20m",
+          }).output,
+          fresh: () => step("fresh_reviews").fanout({
+            over: lenses,
+            maxConcurrency: reviewerLimit,
+            do: ({ item }) => step("fresh_review").agent({
+              agent: agents.reviewer,
+              cwd: meta.workspaceDir,
+              prompt: md`
+                Review independently through the "${item.name}" lens.
+                Focus: ${item.focus}
+                Task: ${input.task}
+                Rubric: ${input.rubric}
+                Context: ${input.context}
+                Result: ${work.output}
+                Report blockers separately from non-blocking improvements.`,
+              timeout: "20m",
+            }).output,
+          }).output,
+        },
+      });
+
+      const decision = step("judge").agent({
+        agent: agents.judge,
+        cwd: meta.workspaceDir,
+        outputSchema: Decision,
+        prompt: md`
+          Decide whether the result satisfies the rubric.
+
+          Task: ${input.task}
+          Rubric: ${input.rubric}
+          Context: ${input.context}
+          Result: ${work.output}
+          Resident review: ${reviews.output.resident}
+          Fresh reviews: ${reviews.output.fresh}
+
+          Approve only when no blocking issue remains. Do not block on nits.
+          Feedback must explain the evidence and give actionable fixes.`,
+        timeout: "20m",
+      });
+
+      return {
+        state: {
+          approved: decision.output.approved,
+          feedback: decision.output.feedback,
+          result: work.output,
+          rounds: round,
+        },
+        stop: or(decision.output.approved, gte(round, roundLimit)),
+      };
+    },
+  });
+
+  return {
+    approved: cycle.output.approved,
+    feedback: cycle.output.feedback,
+    rounds: cycle.output.rounds,
+    result: cycle.output.result,
+    reviewLenses: lenses,
+  };
 });

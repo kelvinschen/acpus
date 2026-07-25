@@ -23,8 +23,8 @@ export const skillWorkflowExamples = [
   {
     name: "adversarial review",
     directory: "adversarial-review",
-    pattern: "Plan adversarial lenses, fan out reviews, cross-critique, and synthesize.",
-    nodes: ["agent", "fanout"],
+    pattern: "Iterate with resident and fresh reviewers in a bounded loop.",
+    nodes: ["agent", "parallel", "fanout", "loop"],
     reference: "authoring",
   },
   {

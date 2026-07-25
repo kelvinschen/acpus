@@ -166,7 +166,7 @@ Only after applying the rules above, choose the closest compact teaching example
 | Example | Nodes | Pattern |
 | --- | --- | --- |
 | [`typed-loop-state`](../workflows/examples/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
-| [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `fanout` | Plan adversarial lenses, fan out reviews, cross-critique, and synthesize. |
+| [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `parallel`, `fanout`, `loop` | Iterate with resident and fresh reviewers in a bounded loop. |
 | [`change-approval`](../workflows/examples/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
 | [`multi-aspect-brainstorm`](../workflows/examples/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel perspectives in a bounded synthesis loop. |
