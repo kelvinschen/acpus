@@ -39,7 +39,7 @@ Describe the task
 
 One orchestrator agent owns the work end to end: it decomposes the task, assigns roles, writes `workflow.ts`, starts the run, watches its progress, and intervenes through Acpus until the work converges. Worker agents stay focused on the research, implementation, review, or synthesis assigned to their nodes; they do not own the overall plan or run.
 
-Acpus is the durable execution and control boundary. It checks the authored graph, schedules nodes, records state, artifacts, and results, and exposes the controls the orchestrator uses to inspect, pause, resume, retry failed work, or fork the run.
+Acpus is the durable execution and control boundary. It checks the authored graph, schedules nodes, records state, artifacts, and results, and exposes the controls the orchestrator uses to inspect, steer active Agent work, pause, resume, retry failed work, or fork the run.
 
 Simple work should still go directly to one agent. Reach for Acpus when a task needs multiple independent contexts, different agent strengths, local commands or artifacts, human input, or recovery without starting over.
 
@@ -156,12 +156,13 @@ acpus runs inspect <run-id>
 acpus runs inspect <run-id> --follow
 acpus runs pause <run-id>
 acpus runs resume <run-id>
+acpus runs steer <run-id> --target <agent-attempt-or-node> --instruction "Correct course"
 acpus runs retry <run-id> --target <node-key-or-frame-key>
 acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-Retry targets a failed part of the current run. Fork creates a new run and can reuse completed work only within Acpus compatibility and dependency boundaries; it is not an unconditional cache.
+Steer fences one running Agent attempt and queues a correction in the same session. Retry targets a failed part of the current run. Fork creates a new run and can reuse completed work only within Acpus compatibility and dependency boundaries; it is not an unconditional cache.
 
 ## Configuring Agents
 

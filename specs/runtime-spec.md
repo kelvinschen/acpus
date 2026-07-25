@@ -245,12 +245,17 @@ type PruneReport = {
 - Runtime MUST translate each effective named or command Agent definition into the corresponding [Agent Executor](agent-executor-spec.md) request variant; absent permission defaults to `approve-all`.
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
-- Runtime MUST pass `config` only on an initial normal Agent turn; response-repair and plain-continuation turns MUST omit it.
+- Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, identity replacement clears inherited model/config, preserves permission, and never accepts `trace`.
-- Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume turns reuse it according to continuation policy.
-- Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime documents this unsupported-conflict constraint without coordinating or detecting conflicts.
+- Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
+- Runtime MUST serialize Agent executor admission by effective session identity within one run.
+- Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
+- Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
 - Schema-less Agents MUST return raw text with zero response repairs.
-- Every schema-backed Agent prompt, including task, continuation, and response-repair turns, MUST state the Tagged JSON output contract.
+- A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible correction before any schema-backed output contract.
+- A steering turn MUST NOT expose its Runtime steering identity to the Agent.
+- A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible correction.
+- Every schema-backed Agent prompt, including task, continuation, steering, and response-repair turns, MUST state the Tagged JSON output contract.
 - Every schema-backed Agent prompt MUST include the declared output as JSON Schema.
 - A schema-backed Agent response MUST end with one `<ACPUS_OUTPUT>...</ACPUS_OUTPUT>` frame whose payload is one JSON value.
 - Text before the opening marker MAY contain commentary.
@@ -286,7 +291,32 @@ type PruneReport = {
 
 ### Controls And Daemon
 
-- Runtime control intents MUST use closed `pause`, `resume`, `retry`, `cancel`, `fork`, and `signal` variants with run-scoped request identity.
+- Runtime control intents MUST use closed `pause`, `resume`, `retry`, `cancel`, `fork`, `signal`, and `steer` variants with run-scoped request identity.
+- The steer control wire variants MUST use the following closed shapes.
+
+```ts
+type DaemonSteerControlIntent = {
+  requestId: string;
+  type: "steer";
+  runId: string;
+  target: string;
+  instruction: string;
+};
+
+type DaemonSteerControlResult = {
+  type: "steer";
+  state: "applied";
+  run: RunDetails;
+  steerId: string;
+  requestedTarget: string;
+  target: string;
+  fencedAttemptId: string;
+  continuation: "queued";
+};
+```
+
+- A steer instruction MUST contain non-whitespace text.
+- Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
 - The daemon MUST expose `admitRun(prepared, input, agentOverrides?)`, `control(intent)`, `shutdown()`, and `status()` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
 - Requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message } }`.
 - Daemon client functions MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures while the socket wire remains ordinary JSON.
@@ -297,6 +327,28 @@ type PruneReport = {
 - The daemon MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
 - Session start MUST distinguish `started`, `already-active`, `terminal`, and `quarantined`; daemon tick activity counts only `started` executions and dispatched hook work.
 - Pause/cancel MUST durably fence their effect and abort only applicable active attempt controllers; late executor results cannot overwrite control state.
+- Steer MUST resolve an exact started Agent attempt from an `attemptId`, dynamic `nodeKey`, or unambiguous static Agent id within the control transaction.
+- An ambiguous static steer target MUST return `CONTROL_CONFLICT` with deterministically sorted candidate node keys.
+- A steer target that is absent, non-Agent, or no longer started MUST return `RUN_NOT_CONTROLLABLE`.
+- A rejected steer target MUST append no events.
+- An accepted steer MUST atomically persist `control.agent_steer_requested`, supersede the targeted attempt as `operator_steered`, and requeue its node instance as `steered`.
+- An accepted steer MUST fence the superseded attempt's result commits before returning its receipt.
+- An accepted steer MUST fence the superseded attempt's artifact commits before returning its receipt.
+- An accepted steer MUST fence the superseded attempt's progress commits before returning its receipt.
+- An accepted steer MUST request best-effort abort of the superseded Agent turn.
+- Runtime MUST NOT roll back external side effects already performed by a superseded Agent turn.
+- A steering replacement MUST reuse the frozen run, input, node configuration, Agent mapping, and output schema.
+- A steering replacement MUST reuse the effective ACP session.
+- A steering replacement MUST receive a newly resolved full attempt timeout.
+- When pause, owner loss, or daemon recovery interrupts a steering attempt, Runtime MUST preserve its steering identity and instruction for requeue.
+- Completion, failure, timeout, or explicit cancellation of a steering attempt MUST consume its pending steering directive.
+- Steering recovery MUST provide at-least-once instruction delivery and MAY redeliver the same instruction after an interruption.
+- A later steer of an active steering attempt MUST replace the earlier pending steering directive.
+- Replaying a steer with the same request identity, target, and instruction MUST return its original receipt without appending events.
+- Replaying a steer request identity with a different target or instruction MUST return `CONTROL_CONFLICT`.
+- A successful steer result MUST NOT expose the instruction.
+- Runtime MUST reject steer when another started attempt shares the target's effective session identity.
+- A rejected shared-session steer MUST NOT issue session-wide cancellation.
 - Pause and resume MUST be idempotent, with pause requeueing eligible canceled work and resume clearing the durable gate.
 - A paused run session MUST finish bounded executor cleanup before returning `paused`.
 - Resume MUST advance a run only through a new session with a newly claimed `ownerEpoch`.
@@ -378,6 +430,8 @@ type RunInspectionScopeState =
 - `readArtifact` MUST return `undefined` for a missing store, run, or artifact registry row.
 - A registered artifact that is missing, escapes its run, is a symlink or non-regular file, or fails its recorded size or digest MUST make `readArtifact` reject as durable corruption.
 - Runtime target inspection MUST represent a persisted canonical turn prompt as an artifact descriptor with `field: "prompt"` and MUST NOT embed the prompt body.
+- Attempt target inspection MUST select attempt-scoped prompt, metadata, and progress from that exact attempt.
+- Node target inspection MUST select attempt-scoped prompt, metadata, and progress from its latest matched attempt.
 - Repeated composite inspection MUST associate group membership by dynamic `nodeKey` and MUST NOT reuse a group matched only by static `nodeId`.
 - Compact Agent inspection MUST use the authored Agent key, typed effective backend/counters/activity, explicit context/token availability, and at most three bounded normalized tool commands without command text or payloads.
 - Compact Agent turn count MUST use the greatest value from persisted attempt metadata and live progress so polling cannot regress.
@@ -385,6 +439,9 @@ type RunInspectionScopeState =
 - Failure inspection MUST preserve stable origin/code and bounded upstream acpx/RPC cause without raw ACP lines or broad text-prefix reclassification.
 - `followRunInspection` MUST be a read-only async iterable beginning with a compact snapshot, preserving every durable transition in order, and terminating only on terminal state, caller abort, or tagged error.
 - Follow updates MUST use independent event/progress cursors and sparse keyed patches, resynchronize on cursor/projection gaps, suppress unchanged/clock-only observations, and emit terminal output exactly once.
+- Follow updates MUST project an accepted steer as one `steered` semantic change.
+- Follow updates MUST NOT expose a steering instruction.
+- Follow updates MUST suppress the supersede/requeue bookkeeping paired with an accepted steer.
 - Agent follow MUST emit meaningful attempt/turn/tool/status/failure changes immediately and coalesce counter-only changes to at most once per Agent per ten seconds.
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
@@ -400,8 +457,8 @@ type RunInspectionScopeState =
 
 ## Verification
 
-- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, daemon session wiring, and progress beyond internal count limits.
-- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, retry replay behavior, rejection of non-terminal execution without a durable wake source, attempt/artifact/progress fences, due-Signal scale, execution-metadata authority, and lease recovery ordering.
+- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, daemon session wiring, steer inspection/follow projection, and progress beyond internal count limits.
+- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact schema-less and schema-backed steering prompts, superseded attempt fences and settle gating, retry replay behavior, rejection of non-terminal execution without a durable wake source, due-Signal scale, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
 - Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.

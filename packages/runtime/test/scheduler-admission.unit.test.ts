@@ -122,6 +122,22 @@ describe("scheduler admission", () => {
       signalNodeIds: new Set(),
     })).toBeUndefined();
   });
+
+  it("skips an executor whose session resource is still occupied without blocking unrelated sessions", () => {
+    const projection = projected([
+      ready("same-session", 1),
+      ready("other-session", 2),
+    ]);
+
+    expect(selectNextAdmission({
+      projection,
+      maxLeafConcurrency: 2,
+      ownerLocalUnsettled: 1,
+      ownerLocalUnsettledExecutorResources: new Set(["session:shared"]),
+      executorResourceFor: instance => instance.nodeKey === "same-session" ? "session:shared" : "session:other",
+      signalNodeIds: new Set(),
+    })).toMatchObject({ kind: "executor", instance: { nodeKey: "other-session" } });
+  });
 });
 
 function projected(events: SchedulerEvent[]) {

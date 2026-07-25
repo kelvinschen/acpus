@@ -192,6 +192,9 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
   if (summary.failure !== undefined) lines.push(`  ${formatFailure(summary.failure, 240)}`);
   const agent = current?.agent ?? summary.agent;
   if (agent) lines.push(...formatAgent(agent, 1, nowMs));
+  if (summary.staticKind === "agent" && summary.latestAttempt?.status === "started") {
+    lines.push(`  Steer: acpus runs steer ${document.run.id} --target ${summary.latestAttempt.attemptId} --instruction '<correction>'`);
+  }
   if (summary.loopProgress) {
     lines.push(`  Loop: round ${summary.loopProgress.round}  index=${summary.loopProgress.index}${summary.loopProgress.stop ? "  stopping" : ""}`);
   }
@@ -214,7 +217,8 @@ function formatTarget(document: RunInspectionTargetDocument, nowMs: number): str
     lines.push("Attempts:");
     for (const attempt of document.attempts) {
       const duration = between(attempt.startedAt, attempt.finishedAt, nowMs);
-      lines.push(`  ${statusGlyph(normalizeStatus(attempt.status))} ${attempt.attemptId}  ${attempt.status}  attempt=${attempt.attemptNo}${duration ? `  ${duration}` : ""}`);
+      const status = attempt.cancelReason ? `${attempt.status} / ${attempt.cancelReason}` : attempt.status;
+      lines.push(`  ${statusGlyph(normalizeStatus(attempt.status))} ${attempt.attemptId}  ${status}  attempt=${attempt.attemptNo}${duration ? `  ${duration}` : ""}`);
       if (attempt.error !== undefined) lines.push(`    Error: ${oneLine(errorText(attempt.error), 240)}`);
     }
   }
@@ -616,6 +620,7 @@ function displayTreeStatus(status: RunInspectionStatus): string {
 }
 
 function changeState(change: RunInspectionChange): string {
+  if (change.action === "steered") return "steered";
   if (change.action === "retrying" || change.action === "requeued") return "retrying";
   if (change.action === "paused" || change.action === "resumed" || change.action === "advanced" || change.action === "consumed" || change.action === "admitted") return change.action;
   return displayStatus(change.status ?? statusForAction(change.action));
@@ -632,7 +637,7 @@ function statusForAction(action: RunInspectionChange["action"]): RunInspectionSt
 }
 
 function normalizeStatus(status: string): RunInspectionStatus {
-  if (status === "canceled") return "cancelled";
+  if (status === "canceled" || status === "superseded") return "cancelled";
   const known: RunInspectionStatus[] = ["not_started", "not_selected", "pending", "starting", "ready", "running", "awaiting", "completed", "failed", "timed_out", "cancelled", "mixed"];
   return known.includes(status as RunInspectionStatus) ? status as RunInspectionStatus : "mixed";
 }

@@ -1,7 +1,6 @@
 # CLI Operations
 
-Use this for the ordinary lifecycle: run, observe, interact, and stop, plus validation without execution. Use `acpus <cmd> --help` for exact options. For optional tooling or run deletion, read [Advanced CLI Operations](advanced-cli-operations.md); for retry/fork and failure diagnosis, read [Runtime Recovery](runtime-recovery.md).
-
+Use this for the ordinary lifecycle: run, observe, interact, and stop, plus validation without execution. Use `acpus <cmd> --help` for exact options. For control semantics, optional tooling, or run deletion, read [Advanced CLI Operations](advanced-cli-operations.md); for retry/fork and failure diagnosis, read [Runtime Recovery](runtime-recovery.md).
 
 ## Agent overrides
 
@@ -34,21 +33,20 @@ For structured output, locate the target in text first, then pipe JSON/NDJSON th
 
 Add `--follow` to any non-raw inspection view. Follow redraws a TTY; a pipe emits transitions and 30-second liveness checkpoints. It stays attached through paused, awaiting, inactive, or stale state and keeps 20 ordinary dynamic contexts visible unless `--all --follow` is used; failure, timeout, await, retry, and requeue stay immediate. Agent progress exposes bounded activity/tool intent, never tool arguments or output.
 
-## Signal and lifecycle controls
+## Runtime controls
 
 ```sh
 acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json>'
+acpus runs steer <run-id> --target <attemptId-or-nodeKey-or-static-agent> --instruction '<correction>'
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs cancel <run-id> [--target <target>]
 ```
 
-Signal target inspection exposes the complete persisted prompt/schema. Schema-backed signals validate JSON; schema-less signals require a JSON string such as `--payload '"approved"'`, whose decoded value is passed raw. A static alias must resolve to one open wait; use its dynamic `nodeKey` when multiple waits exist. Invalid payload never consumes the wait and may report `RUN_NOT_CONTROLLABLE` with a schema path. Success reports requested/resolved targets and validation, but not downstream completion. A timed-out wait is closed; use retry/fork rather than signaling it again.
+Inspect the target first and prefer its copyable command. Signal answers an open wait, steer corrects a started Agent, and pause/resume controls run admission. Cancel is destructive; ask first unless already requested. Controls confirm their immediate effect, not downstream completion.
 
-Pause records a durable gate and best-effort aborts active attempts; resume clears the gate and re-drives eligible work. Cancel terminalizes the run or selected scheduler subtree. Ask before canceling unless already explicitly requested. Controls return when their effect is confirmed, not when later work becomes terminal.
-
-Prefer text for people. Use a structured leaf's local `--json` option only for parsing; foreground run NDJSON uses `phase: "run"`, while inspect-follow uses `phase: "inspect"` over the same snapshot/update/resync/done model.
+Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for all control commands, targeting, fencing, reuse, receipts, and structured automation.
 
 ## Doctor
 
-Run `acpus doctor` when workspace health is uncertain; it is read-only.
+Run `acpus doctor` when acpus health is uncertain.

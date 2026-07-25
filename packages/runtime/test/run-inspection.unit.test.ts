@@ -303,6 +303,75 @@ describe("run inspection projection", () => {
     expect(JSON.stringify(overview).length).toBeLessThan(JSON.stringify(raw).length * 0.35);
   });
 
+  it("selects Agent prompt and metadata from the targeted attempt", () => {
+    const run = repeatedAgentRun(1);
+    const first = run.dynamic!.attempts[0]!;
+    first.status = "superseded";
+    first.cancelReason = "operator_steered";
+    first.finishedAt = "2026-07-01T00:00:02.000Z";
+    run.dynamic!.attempts.push({
+      attemptId: "attempt-steered",
+      nodeKey: first.nodeKey,
+      nodeId: first.nodeId,
+      attemptNo: 2,
+      status: "started",
+      startedAt: "2026-07-01T00:00:03.000Z",
+    });
+    run.dynamic!.executionMetadata.push({
+      id: 2,
+      attemptId: "attempt-steered",
+      kind: "agent_attempt",
+      metadata: { turnCount: 1 },
+      createdAt: "2026-07-01T00:00:04.000Z",
+    });
+    const artifacts: ArtifactRecord[] = [{
+      id: "turn-original",
+      runId: run.id,
+      nodeKey: first.nodeKey,
+      attempt: 1,
+      mediaType: "application/json",
+      digest: "sha256:original",
+      size: 42,
+      path: `/runtime/runs/${run.id}/artifacts/${first.nodeKey}/attempt-1/agent/turn-001.json`,
+    }, {
+      id: "turn-steered",
+      runId: run.id,
+      nodeKey: first.nodeKey,
+      attempt: 2,
+      mediaType: "application/json",
+      digest: "sha256:steered",
+      size: 42,
+      path: `/runtime/runs/${run.id}/artifacts/${first.nodeKey}/attempt-2/agent/turn-001.json`,
+    }];
+
+    const current = projectRunInspection({
+      ir: compositeWorkflow(),
+      run,
+      artifacts,
+      cursor: { eventSequence: 80, progressVersion: 1 },
+      query: { runId: run.id, mode: "target", target: first.nodeKey },
+    });
+    const original = projectRunInspection({
+      ir: compositeWorkflow(),
+      run,
+      artifacts,
+      cursor: { eventSequence: 80, progressVersion: 1 },
+      query: { runId: run.id, mode: "target", target: first.attemptId },
+    });
+
+    if (current?.kind !== "target" || original?.kind !== "target") throw new Error("expected target documents");
+    expect(current.summary).toMatchObject({
+      latestAttempt: { attemptId: "attempt-steered", attemptNo: 2 },
+      prompt: { kind: "artifact", artifactId: "turn-steered" },
+      agent: { turnCount: 1 },
+    });
+    expect(original.summary).toMatchObject({
+      latestAttempt: { attemptId: first.attemptId, attemptNo: 1 },
+      prompt: { kind: "artifact", artifactId: "turn-original" },
+      agent: { turnCount: 4 },
+    });
+  });
+
   it("keeps repeated static targets aggregate and preserves single-instance detail", () => {
     const repeated = repeatedAgentRun(2);
     repeated.dynamic!.nodeInstances[0]!.status = "completed";
@@ -491,6 +560,43 @@ describe("run inspection projection", () => {
     expect(changes.map(change => [change.sequence, change.action, change.status])).toEqual([
       [7, "consumed", "completed"],
     ]);
+  });
+
+  it("projects one redacted steer transition and suppresses its scheduler bookkeeping", () => {
+    const run = repeatedAgentRun(1);
+    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], cursor: { eventSequence: 9, progressVersion: 1 }, query: { runId: run.id, mode: "overview" } });
+    if (!document) throw new Error("expected document");
+    const changes = semanticChanges([
+      {
+        ...event(6, "control.agent_steer_requested"),
+        payload: {
+          steerId: "cli:steer-1",
+          requestedTarget: "review",
+          nodeKey: "review~0",
+          fencedAttemptId: "attempt-0",
+          instruction: "SECRET correction",
+        },
+      },
+      {
+        ...event(7, "attempt.superseded"),
+        payload: { nodeKey: "review~0", nodeId: "review", attemptId: "attempt-0", cancelReason: "operator_steered" },
+      },
+      {
+        ...event(8, "instance.requeued"),
+        payload: { nodeKey: "review~0", nodeId: "review", reason: "steered", steerId: "cli:steer-1" },
+      },
+    ], document, run);
+
+    expect(changes).toEqual([
+      expect.objectContaining({
+        sequence: 6,
+        action: "steered",
+        status: "ready",
+        entity: { kind: "control", id: "review~0", nodeId: "review" },
+      }),
+    ]);
+    expect(JSON.stringify(changes)).not.toContain("SECRET correction");
+    expect(JSON.stringify(changes)).not.toContain("cli:steer-1");
   });
 
   it("keeps materialized Assert nodes in the authored compact tree", () => {

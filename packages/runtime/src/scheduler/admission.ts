@@ -10,6 +10,8 @@ export type SelectNextAdmissionInput = {
   projection: SchedulerProjection;
   maxLeafConcurrency: number;
   ownerLocalUnsettled: number;
+  ownerLocalUnsettledExecutorResources?: ReadonlySet<string>;
+  executorResourceFor?: (instance: NodeInstance) => string | undefined;
   signalNodeIds: ReadonlySet<string>;
 };
 
@@ -26,10 +28,16 @@ export function selectNextAdmission(input: SelectNextAdmissionInput): SchedulerA
   for (const instance of Object.values(input.projection.instances).filter(instance => instance.status === "ready").sort(byReadiness)) {
     const kind = input.signalNodeIds.has(instance.nodeId) ? "signal" : "executor";
     if (kind === "executor" && !executorCapacityAvailable) continue;
+    if (kind === "executor" && executorResourceBlocked(input, instance)) continue;
     if (!groupsAdmit(input.projection, instance.nodeKey, runningMembers)) continue;
     return { kind, instance };
   }
   return undefined;
+}
+
+function executorResourceBlocked(input: SelectNextAdmissionInput, instance: NodeInstance): boolean {
+  const resource = input.executorResourceFor?.(instance);
+  return resource !== undefined && input.ownerLocalUnsettledExecutorResources?.has(resource) === true;
 }
 
 function runCanAdmit(projection: SchedulerProjection): boolean {

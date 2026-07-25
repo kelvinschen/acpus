@@ -37,6 +37,16 @@ export type DaemonControlResult =
   | { type: "resume"; state: "applied"; run: RunDetails }
   | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
   | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
+  | {
+    type: "steer";
+    state: "applied";
+    run: RunDetails;
+    steerId: string;
+    requestedTarget: string;
+    target: string;
+    fencedAttemptId: string;
+    continuation: "queued";
+  }
   | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
   | {
     type: "signal";
@@ -50,6 +60,7 @@ export type DaemonControlResult =
 export type DaemonControlIntent =
   | { requestId: string; type: "pause" | "resume"; runId: string }
   | { requestId: string; type: "retry" | "cancel"; runId: string; target?: string }
+  | { requestId: string; type: "steer"; runId: string; target: string; instruction: string }
   | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; unsafeReuse?: boolean }
   | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue };
 
@@ -444,6 +455,15 @@ function isDaemonControlResult(value: unknown, expectedType: DaemonControlIntent
       && value.state === "applied"
       && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
   }
+  if (value.type === "steer") {
+    return hasExactKeys(value, ["type", "state", "run", "steerId", "requestedTarget", "target", "fencedAttemptId", "continuation"])
+      && value.state === "applied"
+      && value.continuation === "queued"
+      && typeof value.steerId === "string" && value.steerId.length > 0
+      && typeof value.requestedTarget === "string" && value.requestedTarget.length > 0
+      && typeof value.target === "string" && value.target.length > 0
+      && typeof value.fencedAttemptId === "string" && value.fencedAttemptId.length > 0;
+  }
   if (value.type === "fork") {
     return hasExactKeys(value, ["type", "state", "sourceRunId", "run"])
       && value.state === "applied"
@@ -527,6 +547,14 @@ function isControlIntent(value: unknown): value is DaemonControlIntent {
   if (value.type === "retry" || value.type === "cancel") {
     return hasExactKeys(value, ["requestId", "type", "runId"], ["target"])
       && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
+  }
+  if (value.type === "steer") {
+    return hasExactKeys(value, ["requestId", "type", "runId", "target", "instruction"])
+      && value.requestId.length > 0
+      && typeof value.target === "string"
+      && value.target.trim().length > 0
+      && typeof value.instruction === "string"
+      && value.instruction.trim().length > 0;
   }
   if (value.type === "signal") {
     return hasExactKeys(value, ["requestId", "type", "runId", "nodeId", "payload"])

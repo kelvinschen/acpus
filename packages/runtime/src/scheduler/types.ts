@@ -21,6 +21,7 @@ export type CancellationReason =
   | "quorum_reached"
   | "paused"
   | "superseded"
+  | "operator_steered"
   | "operator_cancelled";
 
 export type SchedulerFrame = {
@@ -57,6 +58,7 @@ export type NodeInstance = {
   timeoutMs?: number;
   /** Current status reason only; running/completed instances must not retain historical control reasons. */
   statusReason?: string;
+  pendingSteerId?: string;
   output?: JsonValue;
   error?: JsonObject;
   acceptedAttemptId?: string;
@@ -70,6 +72,7 @@ type NodeAttempt = {
   attemptNo: number;
   ownerEpoch: number;
   status: AttemptStatus;
+  steerId?: string;
   deadlineAt?: string;
   result?: JsonValue;
   error?: JsonObject;

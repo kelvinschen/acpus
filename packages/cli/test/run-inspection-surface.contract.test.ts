@@ -54,6 +54,74 @@ describe("compact run inspection surface", () => {
     expect(output).not.toContain("Agent: observer");
   });
 
+  it("offers an exact-attempt steer command only for a started Agent target", () => {
+    const base = snapshot();
+    const document: RunInspectionTargetDocument = {
+      schemaVersion: 1,
+      kind: "target",
+      cursor: base.cursor,
+      run: {
+        ...base.run,
+        status: "running",
+        execution: { state: "active", lastStatus: "running", reason: "daemon_alive" },
+      },
+      target: { kind: "dynamic-node", id: "review~abc" },
+      staticNode: { nodeId: "review", kind: "agent", order: 0, path: ["review"] },
+      summary: {
+        targetKind: "dynamic-node",
+        targetId: "review~abc",
+        runStatus: "running",
+        runStartedAt: base.run.createdAt,
+        nodeId: "review",
+        nodeKey: "review~abc",
+        nodeStatus: "running",
+        staticKind: "agent",
+        latestAttempt: {
+          attemptId: "attempt_1",
+          attemptNo: 2,
+          status: "started",
+          startedAt: base.run.createdAt,
+        },
+        artifacts: [],
+      },
+      items: [],
+      instances: [],
+      frames: [],
+      attempts: [{
+        attemptId: "attempt_0",
+        nodeKey: "review~abc",
+        nodeId: "review",
+        attemptNo: 1,
+        status: "superseded",
+        cancelReason: "operator_steered",
+        startedAt: base.run.createdAt,
+        finishedAt: base.run.updatedAt,
+      }, {
+        attemptId: "attempt_1",
+        nodeKey: "review~abc",
+        nodeId: "review",
+        attemptNo: 2,
+        status: "started",
+        startedAt: base.run.updatedAt,
+      }],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+      artifacts: [],
+    };
+
+    const output = formatRunInspectionDocument(document);
+
+    expect(output).toContain("Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'");
+    expect(output).toContain("attempt_0  superseded / operator_steered  attempt=1");
+    document.summary.latestAttempt = { ...document.summary.latestAttempt!, status: "completed" };
+    expect(formatRunInspectionDocument(document)).not.toContain("acpus runs steer");
+    document.summary.latestAttempt = { ...document.summary.latestAttempt, status: "started" };
+    document.summary.staticKind = "task";
+    document.staticNode = { ...document.staticNode!, kind: "task" };
+    expect(formatRunInspectionDocument(document)).not.toContain("acpus runs steer");
+  });
+
   it("shows Agent identity without unavailable telemetry in the tree", () => {
     const document = snapshot();
     document.items[2]!.agent = {
@@ -177,6 +245,26 @@ describe("compact run inspection surface", () => {
     expect(formatTerminalOutput({ result: "complete" })).toContain('"result": "complete"');
     expect(formatTerminalOutput({})).toContain("{}");
     expect(formatTerminalOutput(undefined)).toBe("");
+  });
+
+  it("renders a steer transition without internal ids or correction text", () => {
+    const text = formatRunInspectionChanges([{
+      sequence: 8,
+      at: "2026-07-11T00:00:01.000Z",
+      entity: { kind: "control", id: "review~abc", nodeId: "review" },
+      subject: "review (review~abc)",
+      action: "steered",
+      status: "ready",
+    }], {
+      kind: "snapshot",
+      run: snapshot().run,
+      items: [],
+      actions: [],
+    });
+
+    expect(text).toBe("+1s  review (review~abc)  steered\n");
+    expect(text).not.toContain("steerId");
+    expect(text).not.toContain("instruction");
   });
 
   it("renders the same layered acpx failure in compact trees and non-TTY transitions", () => {

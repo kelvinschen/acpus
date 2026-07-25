@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
@@ -14,17 +14,20 @@ import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
+import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { stableJson } from "../stable-json.js";
 import { selectNextAdmission } from "../scheduler/admission.js";
+import { indexNodes } from "../scheduler/ir-walk.js";
+import { scopeForNodeAttempt } from "../scheduler/scope.js";
 import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, signalTimeoutEvents, targetedRetryDependencyBlocker, targetedRetryGroupBlocker, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
 import type { GroupMember, GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
-import { nextFrozenRunTransitionEvents, settleFrozenProjection } from "../scheduler/settle.js";
+import { frozenRunScope, nextFrozenRunTransitionEvents, settleFrozenProjection } from "../scheduler/settle.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
@@ -2369,18 +2372,25 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     try {
       const existing = this.eventByIdempotencyKey(input.idempotencyKey);
       if (existing && existing.type === "attempt.started") {
-        const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown };
+        const payload = existing.payload as { attemptId?: unknown; attemptNo?: unknown; steerId?: unknown };
         if (existing.run_id !== input.runId) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with another run.` });
         if (!matchesAttemptStartInput(input, payload)) throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey: input.idempotencyKey, runId: input.runId, message: `Attempt start idempotency key '${input.idempotencyKey}' conflicts with different input.` });
         this.requireOwnerEpoch(input.runId, input.ownerEpoch);
         if (typeof payload.attemptId !== "string" || typeof payload.attemptNo !== "number") {
           throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid payload.`);
         }
+        if (payload.steerId !== undefined && typeof payload.steerId !== "string") {
+          throw new Error(`Attempt start idempotency key '${input.idempotencyKey}' has invalid steer metadata.`);
+        }
+        const steer = payload.steerId === undefined
+          ? undefined
+          : this.requireSteerDirective(input.runId, payload.steerId, input.nodeKey);
         const replay = {
           attemptId: payload.attemptId,
           attemptNo: payload.attemptNo,
           snapshot: this.loadRunSnapshot(input.runId),
           disposition: "existing" as const,
+          ...(steer === undefined ? {} : { steer: { steerId: steer.steerId, instruction: steer.instruction } }),
         };
         this.db.exec("COMMIT");
         return replay;
@@ -2422,6 +2432,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       }
       const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
       const attemptNo = row?.count ?? 1;
+      const steer = instance.pendingSteerId === undefined
+        ? undefined
+        : this.requireSteerDirective(input.runId, instance.pendingSteerId, input.nodeKey);
       const payload = {
         runId: input.runId,
         attemptId,
@@ -2430,6 +2443,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         attemptNo,
         ownerEpoch: input.ownerEpoch,
         admissionVersion: input.expectedVersion,
+        ...(steer === undefined ? {} : { steerId: steer.steerId }),
         ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       };
       const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey, attemptId } };
@@ -2458,7 +2472,13 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       });
       this.db.exec("COMMIT");
       this.snapshotCache.set(input.runId, snapshot);
-      return { attemptId, attemptNo, snapshot, disposition: "started" };
+      return {
+        attemptId,
+        attemptNo,
+        snapshot,
+        disposition: "started",
+        ...(steer === undefined ? {} : { steer: { steerId: steer.steerId, instruction: steer.instruction } }),
+      };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -2639,7 +2659,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           type: "instance.requeued",
           payload: {
             nodeKey: instance.nodeKey,
-            reason: "paused",
+            reason: attempt.steerId === undefined ? "paused" : "steered",
+            ...(attempt.steerId === undefined ? {} : { steerId: attempt.steerId }),
             ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
           },
         });
@@ -2862,6 +2883,105 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
+  trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult> {
+    return schedulerStoreResult(() => this.steerAgent(input));
+  }
+
+  private steerAgent(input: SchedulerSteerInput): SchedulerSteerResult {
+    if (input.instruction.trim().length === 0) {
+      throwSchedulerStoreError({
+        type: "invalid-steer-instruction",
+        runId: input.runId,
+        message: "Agent steer instruction must contain non-whitespace text.",
+      });
+    }
+    const intentDigest = schedulerIntentDigest({
+      type: "steer",
+      steerId: input.steerId,
+      target: input.target,
+      instruction: input.instruction,
+    });
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
+      if (duplicate) {
+        const directive = this.requireSteerDirective(input.runId, input.steerId);
+        const result = {
+          snapshot: duplicate,
+          steerId: directive.steerId,
+          requestedTarget: directive.requestedTarget,
+          target: directive.nodeKey,
+          fencedAttemptId: directive.fencedAttemptId,
+        };
+        this.db.exec("COMMIT");
+        return result;
+      }
+
+      this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+      const current = this.loadRunSnapshot(input.runId);
+      const frozen = this.loadFrozenRun(input.runId);
+      const nodes = indexNodes(frozen.ir.root);
+      const attempt = resolveSteerTarget(input.target, current, nodes);
+      assertAgentSteerSessionAvailable(frozen, current.projection, attempt, nodes);
+
+      const events: SchedulerEvent[] = [
+        {
+          type: "control.agent_steer_requested",
+          payload: {
+            steerId: input.steerId,
+            requestedTarget: input.target,
+            nodeKey: attempt.nodeKey,
+            fencedAttemptId: attempt.attemptId,
+            instruction: input.instruction,
+          },
+        },
+        {
+          type: "attempt.superseded",
+          payload: {
+            attemptId: attempt.attemptId,
+            cancelReason: "operator_steered",
+          },
+        },
+        {
+          type: "instance.requeued",
+          payload: {
+            nodeKey: attempt.nodeKey,
+            reason: "steered",
+            steerId: input.steerId,
+            ...(current.projection.instances[attempt.nodeKey]?.readinessSequence === undefined
+              ? {}
+              : { readinessSequence: current.projection.instances[attempt.nodeKey]!.readinessSequence }),
+          },
+        },
+      ];
+      this.db.prepare(`
+        INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, intent_digest)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(input.runId, input.idempotencyKey, events.length, schedulerEventDigest(events), intentDigest);
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: input.runId,
+        current,
+        events,
+        now,
+        idempotencyKeys: events.map((_, index) => schedulerEventIdempotencyKey(input.runId, input.idempotencyKey, index)),
+        nodeKeys: events.map(() => attempt.nodeKey),
+      });
+      this.db.exec("COMMIT");
+      this.snapshotCache.set(input.runId, snapshot);
+      return {
+        snapshot,
+        steerId: input.steerId,
+        requestedTarget: input.target,
+        target: attempt.nodeKey,
+        fencedAttemptId: attempt.attemptId,
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {
     return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(input));
   }
@@ -2890,10 +3010,20 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       const nodeKeys: string[] = [];
       for (const attempt of attempts) {
         const instance = projection.instances[attempt.node_key];
+        const projectedAttempt = projection.attempts[attempt.attempt_id];
+        const steerId = projectedAttempt?.steerId;
         const events: SchedulerEvent[] = [
           { type: "attempt.superseded", payload: { attemptId: attempt.attempt_id, cancelReason: "superseded" } },
           ...(instance && (instance.status === "running" || instance.status === "awaiting")
-            ? [{ type: "instance.requeued", payload: { nodeKey: instance.nodeKey, reason: "superseded", ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }) } } satisfies SchedulerEvent]
+            ? [{
+              type: "instance.requeued",
+              payload: {
+                nodeKey: instance.nodeKey,
+                reason: steerId === undefined ? "superseded" : "steered",
+                ...(steerId === undefined ? {} : { steerId }),
+                ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+              },
+            } satisfies SchedulerEvent]
             : []),
         ];
         projection = applySchedulerEvents(projection, events);
@@ -3015,6 +3145,26 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       throwSchedulerStoreError({ type: "idempotency-conflict", idempotencyKey, runId: row.run_id, message: `Scheduler idempotency key '${idempotencyKey}' conflicts with non-scheduler event.` });
     }
     return { run_id: row.run_id, type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) };
+  }
+
+  private requireSteerDirective(runId: string, steerId: string, nodeKey?: string): SteerDirective {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'control.agent_steer_requested'
+      ORDER BY sequence
+    `).all(runId) as Array<{ payload_json: string }>;
+    const matches = rows
+      .map(row => decodeSteerDirective(row.payload_json))
+      .filter(directive => directive.steerId === steerId);
+    if (matches.length !== 1) {
+      throw new Error(`Run '${runId}' steer directive '${steerId}' does not resolve to exactly one durable control event.`);
+    }
+    const directive = matches[0]!;
+    if (nodeKey !== undefined && directive.nodeKey !== nodeKey) {
+      throw new Error(`Run '${runId}' steer directive '${steerId}' targets '${directive.nodeKey}', not '${nodeKey}'.`);
+    }
+    return directive;
   }
 
   private groupMemberStartedEventsForNode(_runId: string, nodeKey: string, projection: SchedulerProjection): Array<Extract<SchedulerEvent, { type: "group.member_started" }>> {
@@ -4057,6 +4207,199 @@ function cancelTargetKey(target: string, snapshot: SchedulerSnapshot): Result<st
   });
   if (target === "root" && snapshot.projection.frames.root) return ok("root");
   return ok(target);
+}
+
+type SteerAttemptTarget = {
+  runId: string;
+  attemptId: string;
+  nodeKey: string;
+  nodeId: string;
+  attemptNo: number;
+  status: string;
+};
+
+type SteerDirective = {
+  steerId: string;
+  requestedTarget: string;
+  nodeKey: string;
+  fencedAttemptId: string;
+  instruction: string;
+};
+
+function resolveSteerTarget(
+  target: string,
+  snapshot: SchedulerSnapshot,
+  nodes: ReadonlyMap<string, NodeIR>,
+): SteerAttemptTarget {
+  const exactAttempt = snapshot.projection.attempts[target];
+  if (exactAttempt) {
+    if (exactAttempt.status !== "started") {
+      throwSchedulerStoreError({
+        type: "invalid-steer-target",
+        runId: snapshot.runId,
+        targetKey: target,
+        status: exactAttempt.status,
+        message: `Steer target attempt '${target}' is already ${exactAttempt.status}.`,
+      });
+    }
+    assertSteerInstanceActive(snapshot, exactAttempt.nodeKey, target);
+    return exactAttempt;
+  }
+
+  const exactInstance = snapshot.projection.instances[target];
+  if (exactInstance) {
+    const attempts = Object.values(snapshot.projection.attempts)
+      .filter(attempt => attempt.nodeKey === target && attempt.status === "started");
+    if (attempts.length > 1) throw new Error(`Node instance '${target}' has multiple started attempts.`);
+    if (attempts.length === 1) {
+      assertSteerInstanceActive(snapshot, target, target);
+      return attempts[0]!;
+    }
+    throwSchedulerStoreError({
+      type: "invalid-steer-target",
+      runId: snapshot.runId,
+      targetKey: target,
+      status: exactInstance.status,
+      message: `Steer target node instance '${target}' has no started attempt.`,
+    });
+  }
+
+  const staticNode = nodes.get(target);
+  if (staticNode && staticNode.kind !== "agent") {
+    throwSchedulerStoreError({
+      type: "invalid-steer-target",
+      runId: snapshot.runId,
+      targetKey: target,
+      status: staticNode.kind,
+      message: `Steer target '${target}' is not an Agent node.`,
+    });
+  }
+
+  const activeMatches = Object.values(snapshot.projection.attempts)
+    .filter(attempt => attempt.nodeId === target && attempt.status === "started")
+    .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
+  if (activeMatches.length === 1) {
+    assertSteerInstanceActive(snapshot, activeMatches[0]!.nodeKey, target);
+    return activeMatches[0]!;
+  }
+  if (activeMatches.length > 1) {
+    const candidateKeys = [...new Set(activeMatches.map(attempt => attempt.nodeKey))].sort();
+    throwSchedulerStoreError({
+      type: "ambiguous-steer-target",
+      runId: snapshot.runId,
+      targetKey: target,
+      candidateKeys,
+      message: `Scheduler steer target '${target}' is ambiguous. Candidate nodeKeys: ${candidateKeys.join(", ")}.`,
+    });
+  }
+
+  const historical = Object.values(snapshot.projection.attempts)
+    .filter(attempt => attempt.nodeId === target)
+    .sort((left, right) => right.attemptNo - left.attemptNo)[0];
+  if (historical) {
+    throwSchedulerStoreError({
+      type: "invalid-steer-target",
+      runId: snapshot.runId,
+      targetKey: target,
+      status: historical.status,
+      message: `Steer target '${target}' has no started attempt.`,
+    });
+  }
+  throwSchedulerStoreError({
+    type: "missing-steer-target",
+    runId: snapshot.runId,
+    targetKey: target,
+    message: `Scheduler steer target '${target}' was not found.`,
+  });
+}
+
+function assertSteerInstanceActive(snapshot: SchedulerSnapshot, nodeKey: string, requestedTarget: string): void {
+  const instance = snapshot.projection.instances[nodeKey];
+  if (instance?.status === "running" || instance?.status === "awaiting") return;
+  throwSchedulerStoreError({
+    type: "invalid-steer-target",
+    runId: snapshot.runId,
+    targetKey: requestedTarget,
+    status: instance?.status ?? "missing",
+    message: `Steer target '${requestedTarget}' does not belong to an active node instance.`,
+  });
+}
+
+function assertAgentSteerSessionAvailable(
+  frozen: FrozenRun,
+  projection: SchedulerProjection,
+  target: SteerAttemptTarget,
+  nodes: ReadonlyMap<string, NodeIR>,
+): void {
+  const targetNode = nodes.get(target.nodeId);
+  if (!targetNode || targetNode.kind !== "agent") {
+    throwSchedulerStoreError({
+      type: "invalid-steer-target",
+      runId: target.runId,
+      targetKey: target.attemptId,
+      status: targetNode?.kind ?? "missing_node",
+      message: `Steer target '${target.attemptId}' is not an Agent attempt.`,
+    });
+  }
+  const baseScope = frozenRunScope(frozen);
+  const targetIdentity = resolveAgentSessionIdentity(
+    targetNode,
+    scopeForNodeAttempt(baseScope, projection, target.nodeKey),
+    target.runId,
+    target.nodeKey,
+  );
+  if (targetIdentity.isErr()) {
+    throwSchedulerStoreError({
+      type: "invalid-steer-target",
+      runId: target.runId,
+      targetKey: target.attemptId,
+      status: "session_resolution_failed",
+      message: `Steer target '${target.attemptId}' Agent session identity could not be resolved.`,
+    });
+  }
+
+  const candidateKeys = Object.values(projection.attempts)
+    .filter(attempt => attempt.attemptId !== target.attemptId && attempt.status === "started")
+    .flatMap(attempt => {
+      const node = nodes.get(attempt.nodeId);
+      if (!node || node.kind !== "agent") return [];
+      const identity = resolveAgentSessionIdentity(
+        node,
+        scopeForNodeAttempt(baseScope, projection, attempt.nodeKey),
+        attempt.runId,
+        attempt.nodeKey,
+      );
+      if (identity.isErr()) return [];
+      return identity.value.sessionName === targetIdentity.value.sessionName ? [attempt.nodeKey] : [];
+    })
+    .sort();
+  if (candidateKeys.length > 0) {
+    throwSchedulerStoreError({
+      type: "steer-session-conflict",
+      runId: target.runId,
+      targetKey: target.nodeKey,
+      candidateKeys,
+      message: `Agent session for steer target '${target.nodeKey}' is also used by active nodeKeys: ${candidateKeys.join(", ")}.`,
+    });
+  }
+}
+
+function decodeSteerDirective(payloadJson: string): SteerDirective {
+  const payload = decodeSchedulerPayload(payloadJson, "control.agent_steer_requested");
+  if (typeof payload.steerId !== "string"
+    || typeof payload.requestedTarget !== "string"
+    || typeof payload.nodeKey !== "string"
+    || typeof payload.fencedAttemptId !== "string"
+    || typeof payload.instruction !== "string") {
+    throw new Error("Scheduler steer control event has an invalid payload.");
+  }
+  return {
+    steerId: payload.steerId,
+    requestedTarget: payload.requestedTarget,
+    nodeKey: payload.nodeKey,
+    fencedAttemptId: payload.fencedAttemptId,
+    instruction: payload.instruction,
+  };
 }
 
 function isTerminalStatus(status: string): boolean {

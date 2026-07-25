@@ -1,11 +1,10 @@
 # Advanced CLI Operations
 
-Read this only for catalogs, import, static visualization, WebUI, bundled-skill management, artifact lookup, run deletion, or CLI automation. Use `acpus <cmd> --help` for exact options.
+Read this only for detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, artifact lookup, run deletion, or CLI automation. Use `acpus <cmd> --help` for exact options.
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 
 ## Standalone Check
-
 
 Use `workflow check` only when validation without execution is the goal:
 
@@ -14,6 +13,79 @@ acpus workflow check workflow.ts --input sample-input.json
 ```
 
 `workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
+
+## Runtime control details
+
+This section describes command mechanics. Use [Runtime Recovery](runtime-recovery.md#steer-vs-retry-vs-fork) to choose between steer, retry, and fork.
+
+Inspect before controlling a run. Target inspection resolves dynamic identities, exposes persisted Signal details, and prints applicable signal, steer, retry, and fork commands.
+
+Mutating controls start or wake the workspace daemon and wait up to 30 seconds for a durable effect. Success confirms that effect, not downstream completion. A control timeout reports unconfirmed application; inspect again before repeating it.
+
+### Signal
+
+```sh
+acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json>'
+```
+
+Schema-backed Signals validate the supplied JSON. Schema-less Signals require a JSON string such as `--payload '"approved"'`; Runtime passes its decoded string value through unchanged. A static alias must resolve to one open wait, so use the dynamic `nodeKey` when multiple waits exist.
+
+An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABLE` with a schema path. Success identifies the requested and resolved targets and confirms validation, not downstream completion. A timed-out wait is closed; inspect it, then use retry or fork instead of signaling it again.
+
+### Steer
+
+```sh
+acpus runs steer <run-id> --target <attemptId-or-nodeKey-or-static-agent> --instruction '<correction>'
+```
+
+Use steer when the admitted Agent task is still correct but its active turn needs a concise correction. Prefer the exact attempt id from target inspection; a dynamic node key or unique static Agent id also resolves atomically.
+
+Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings; do not include secrets.
+
+### Pause and resume
+
+```sh
+acpus runs pause <run-id>
+acpus runs resume <run-id>
+```
+
+Pause records a durable gate and requests best-effort abort of active attempts. Resume clears the gate and re-drives eligible work. These controls return after their immediate durable effect is confirmed, not after later work becomes terminal.
+
+Pause and resume are idempotent. Pause fences active attempts from late commits and waits for bounded executor cleanup before reporting `paused`; resume continues through a newly claimed execution session. Signal timeout budgets are suspended while paused and restored on resume.
+
+### Retry
+
+```sh
+acpus runs retry <run-id>
+acpus runs retry <run-id> --target <nodeKey-or-frameKey-or-static-alias>
+```
+
+Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame; Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
+
+Resume a paused run before retrying it. Retry rejects completed/canceled blockers, incompatible composite state, and targets that cannot make work admissible; rejection leaves durable state unchanged. Dynamic targets come from the source run's frozen workflow. Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
+
+### Fork
+
+```sh
+acpus runs fork <run-id> \
+  [--workflow <workflow.ts>] [--input <json|file.json>] \
+  [--agents '<json>'] [--target <replacement-target>] [--unsafe-reuse]
+```
+
+Fork creates a child run and leaves the source unchanged. Its receipt identifies both runs; continue inspection on the child. Unspecified workflow, input, and Agent overrides are inherited. Providing new input disables normal completed-output reuse.
+
+Omit `--target` unless recovery should begin at one point in the replacement workflow. Fork targets belong to that replacement workflow, so source-run dynamic keys may not resolve. Safe reuse carries only compatible completed prerequisites and registered artifacts. `--unsafe-reuse` relaxes workflow/input/signature compatibility checks; use it only when reusing earlier results and side effects is intentional.
+
+### Cancel
+
+```sh
+acpus runs cancel <run-id>
+acpus runs cancel <run-id> --target <nodeKey-or-frameKey-or-static-alias>
+```
+
+Run-level cancel is idempotent. A targeted cancel must resolve unambiguously to one non-terminal node or frame; it terminalizes that scheduler subtree as `operator_cancelled`. Both forms durably fence late result, artifact, and progress commits.
+
+Treat cancel as destructive and ask before using it unless cancellation was already explicitly requested.
 
 ## Catalog and import
 

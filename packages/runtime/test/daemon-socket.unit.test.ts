@@ -227,6 +227,11 @@ describe("daemon socket server", () => {
         { method: "unsupported" },
         { method: "control", control: { requestId: "pause", type: "pause", runId: "run_1", target: "node" } },
         { method: "control", control: { requestId: "fork", type: "fork", runId: "run_1", target: "" } },
+        { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "review", instruction: "   " } },
+        { method: "control", control: { requestId: "", type: "steer", runId: "run_1", target: "review", instruction: "focus" } },
+        { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "", instruction: "focus" } },
+        { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "   ", instruction: "focus" } },
+        { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "review", instruction: "focus", extra: true } },
         { method: "admitRun", prepared: preparedRunWorkflow(), input: {}, extra: true },
         { method: "admitRun", prepared: { ...preparedRunWorkflow(), extra: true }, input: {} },
       ];
@@ -282,6 +287,8 @@ describe("daemon socket server", () => {
       { type: "pause", state: "applied", run: { ...run, status: "unknown" } },
       { type: "pause", state: "applied", run: { ...run, execution: { state: "active", lastStatus: "unknown" } } },
       { type: "pause", state: "applied", run, extra: true },
+      { type: "steer", state: "applied", run, steerId: "steer-1", requestedTarget: "review", target: "review~1", fencedAttemptId: "attempt-1", continuation: "queued", instruction: "must not leak" },
+      { type: "steer", state: "applied", run, steerId: "steer-1", requestedTarget: "review", target: "review~1", fencedAttemptId: "attempt-1", continuation: "started" },
       { type: "fork", state: "applied", sourceRunId: "run_source", run, unexpected: true },
       {
         type: "signal",
@@ -326,6 +333,16 @@ describe("daemon socket server", () => {
       { type: "retry", state: "applied", run },
       { type: "retry", state: "applied", target: "root", run },
       { type: "cancel", state: "applied", target: "root", run },
+      {
+        type: "steer",
+        state: "applied",
+        run,
+        steerId: "steer-1",
+        requestedTarget: "review",
+        target: "review~123456789abc",
+        fencedAttemptId: "attempt-1",
+        continuation: "queued",
+      },
       { type: "fork", state: "applied", sourceRunId: "run_source", run },
       {
         type: "signal",
@@ -439,6 +456,7 @@ function runDetails() {
 function controlIntent(type: string): Parameters<typeof requestDaemonControl>[1] {
   const base = { requestId: type, runId: "run_1" };
   if (type === "signal") return { ...base, type, nodeId: "approve", payload: "ok" };
+  if (type === "steer") return { ...base, type, target: "review", instruction: "focus" };
   if (type === "fork") return { ...base, type };
   if (type === "retry" || type === "cancel") return { ...base, type };
   if (type === "pause" || type === "resume") return { ...base, type };

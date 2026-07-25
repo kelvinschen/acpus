@@ -1175,6 +1175,154 @@ describe("agent node execution", () => {
         });
       });
 
+    it("sends only the steering tag to schema-less agents and omits initial config", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-schema-less-steer", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+            name: "raw_steered_agent",
+            agents: { reviewer: { use: "mock", config: { mode: "review" } } },
+          }).build(({ agents, step }) => {
+            step("review").agent({ agent: agents.reviewer, prompt: "original task" });
+            return {};
+          }));
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const turns: AgentTurnRequest[] = [];
+
+          await expect(executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            initialPrompt: { kind: "steer", instruction: "Focus on the failing assertion." },
+            executeTurn: async request => {
+              turns.push(request);
+              return completedAgentTurn("fixed");
+            },
+          })).resolves.toBe("fixed");
+
+          expect(turns).toHaveLength(1);
+          expect(turns[0]!.prompt).toBe("<steering>Focus on the failing assertion.</steering>");
+          expect(turns[0]!.config).toBeUndefined();
+        });
+      });
+
+    it("adds the complete output contract to schema-backed steering and conforms in one turn", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-schema-steer-direct", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const turns: AgentTurnRequest[] = [];
+
+          await expect(executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            initialPrompt: { kind: "steer", instruction: "Return the attempt as a string." },
+            executeTurn: async request => {
+              turns.push(request);
+              return completedAgentTurn(taggedAgentOutput("{\"attempt\":\"1\"}"));
+            },
+          })).resolves.toEqual({ attempt: "1" });
+
+          expect(turns).toHaveLength(1);
+          expect(turns[0]!.prompt).toContain(`<steering>Return the attempt as a string.</steering>
+
+# OUTPUT [MANDATORY]
+End your response with exactly one JSON value matching the JSON Schema below, **wrapped in <ACPUS_OUTPUT>...</ACPUS_OUTPUT>**.
+
+JSON Schema:`);
+          expect(turns[0]!.prompt).toContain('"attempt"');
+          expect(turns[0]!.prompt).toContain('"type": "string"');
+          expect(turns[0]!.config).toBeUndefined();
+        });
+      });
+
+    it("keeps steering repair free of the instruction and steer id", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-schema-steer", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const turns: AgentTurnRequest[] = [];
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const executor = createRuntimeNodeExecutor({
+              cwd: workspace,
+              ir: prepared.ir,
+              scope: {},
+              store,
+              executeAgentTurn: async request => {
+                turns.push(request);
+                return completedAgentTurn(taggedAgentOutput(turns.length === 1 ? "{\"attempt\":1}" : "{\"attempt\":\"2\"}"));
+              },
+            });
+
+            await expect(withImmediateAgentRepairs(() => executor.execute({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              attemptId: "attempt_steered",
+              attemptNo: 1,
+              ownerEpoch: 1,
+              steer: {
+                steerId: "steer-must-remain-internal",
+                instruction: "Return the attempt as a string.",
+              },
+              signal: new AbortController().signal,
+            }))).resolves.toEqual({ status: "completed", output: { attempt: "2" } });
+
+            expect(turns).toHaveLength(2);
+            expect(turns[0]!.prompt).toMatch(/^<steering>Return the attempt as a string\.<\/steering>\n\n# OUTPUT \[MANDATORY\]/);
+            expect(turns[0]!.config).toBeUndefined();
+            expect(turns[1]!.prompt).toContain("# OUTPUT REPAIR");
+            expect(turns[1]!.prompt).not.toContain("Return the attempt as a string.");
+            expect(turns.every(turn => !turn.prompt.includes("steer-must-remain-internal"))).toBe(true);
+            const turnArtifacts = store.listArtifacts(run.id)
+              .filter(artifact => /turn-\d+\.json$/.test(artifact.path))
+              .sort((left, right) => left.path.localeCompare(right.path));
+            const recorded = await Promise.all(turnArtifacts.map(artifact => readJsonFile(artifact.path))) as Array<{ prompt: string }>;
+            expect(recorded.map(artifact => artifact.prompt)).toEqual(turns.map(turn => turn.prompt));
+            expect(JSON.stringify(recorded)).not.toContain("steer-must-remain-internal");
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("treats a provider success returned after abort as cancellation", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-abort-wins", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const controller = new AbortController();
+          const writeNodeProgress = vi.fn();
+          agentMocks.executeAgentTurn.mockImplementation(async request => {
+            controller.abort();
+            request.onProgress?.({
+              responseText: "late progress",
+              updatedAt: "2026-07-01T00:00:00.000Z",
+              summary: agentSummary(1),
+            });
+            return completedAgentTurn(taggedAgentOutput("{\"ok\":\"invalid\"}"));
+          });
+
+          const result = await executeAgentNodeProduction(node, {}, {
+            cwd: workspace,
+            runId: "run_steered",
+            nodeKey: "review.dynamic",
+            attemptId: "attempt_fenced",
+            attemptNo: 1,
+            ownerEpoch: 1,
+            agents: prepared.ir.agents,
+            hostPolicy: loadAgentHostPolicy(process.env),
+            progressWriter: { writeNodeProgress },
+            signal: controller.signal,
+            initialPrompt: { kind: "steer", instruction: "Use the smaller fix." },
+          });
+          expect(result.isErr() && result.error).toMatchObject({
+            type: "cancelled",
+            message: "Agent turn was aborted.",
+          });
+          expect(agentMocks.executeAgentTurn).toHaveBeenCalledOnce();
+          expect(writeNodeProgress).not.toHaveBeenCalled();
+        });
+      });
+
     it("returns prompt resolution failures without rejecting the Agent boundary", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-resolution-result", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
@@ -1646,7 +1794,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("records partial agent metadata when response repair delay is aborted", async () => {
+    it("drops a partial response when abort wins before response repair", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-repair-delay-abort", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -1682,10 +1830,11 @@ describe("agent node execution", () => {
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
               status: "cancelled",
-              turnCount: 1,
-              message: "Agent response repair was aborted.",
-              turns: [expect.objectContaining({ status: "completed", failure: { kind: "output_conformance", message: expect.any(String) } })],
+              turnCount: 0,
+              message: "Agent turn was aborted.",
+              turns: [],
             });
+            expect(store.listArtifacts(run.id).some(artifact => /turn-001\.json$/.test(artifact.path))).toBe(false);
           } finally {
             store.close();
           }

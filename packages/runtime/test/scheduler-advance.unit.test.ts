@@ -3,7 +3,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok } from "neverthrow";
 import { advanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath } from "../src/scheduler/types.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
@@ -186,6 +186,61 @@ describe("scheduler advance loop", () => {
     releaseStuck();
     await waitUntil(() => calls.includes("next"));
     await expect(advancing).resolves.toMatchObject({ started: 2, completed: 1, cancelled: 1 });
+  });
+
+  it("waits for a fenced session executor to settle while admitting an unrelated session", async () => {
+    const store = new MemorySchedulerStore([ready("shared", 1), ready("other", 2)]);
+    const wakeup = createVersionedWakeup();
+    const calls: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>(resolve => {
+      releaseCleanup = resolve;
+    });
+    let markOtherStarted!: () => void;
+    const otherStarted = new Promise<void>(resolve => {
+      markOtherStarted = resolve;
+    });
+    let sharedCalls = 0;
+    const advancing = advanceRun({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      wakeup,
+      maxLeafConcurrency: 2,
+      executorResourceFor: instance => instance.nodeKey === "shared" ? "agent-session:shared" : `agent-session:${instance.nodeKey}`,
+      executor: executor(async context => {
+        calls.push(context.nodeKey);
+        if (context.nodeKey !== "shared") {
+          markOtherStarted();
+          return completed();
+        }
+        sharedCalls += 1;
+        if (sharedCalls > 1) return completed();
+        const snapshot = store.loadRunSnapshot("run_1");
+        store.appendSchedulerEvents({
+          runId: "run_1",
+          ownerEpoch: 1,
+          expectedVersion: snapshot.version,
+          idempotencyKey: "fence-shared",
+          events: [
+            { type: "attempt.superseded", payload: { attemptId: context.attemptId, cancelReason: "superseded" } },
+            { type: "instance.requeued", payload: { nodeKey: context.nodeKey, reason: "superseded", readinessSequence: 1 } },
+          ],
+        });
+        wakeup.wake();
+        await cleanup;
+        return abortedExecution();
+      }),
+    });
+
+    try {
+      await otherStarted;
+      expect(calls).toEqual(["shared", "other"]);
+    } finally {
+      releaseCleanup();
+    }
+    await expect(advancing).resolves.toMatchObject({ started: 3, completed: 2, cancelled: 1 });
+    expect(calls).toEqual(["shared", "other", "shared"]);
   });
 
   it("admits a Signal wait while the run leaf cap is full", async () => {
@@ -1254,6 +1309,12 @@ class MemorySchedulerStore implements SchedulerStorePort {
 
   cancel(_input: SchedulerCancelInput): SchedulerSnapshot {
     throw new Error("not implemented");
+  }
+
+  trySteerAgent(_input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult> {
+    return schedulerStoreResult(() => {
+      throw new Error("not implemented");
+    });
   }
 
   tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {

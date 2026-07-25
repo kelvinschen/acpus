@@ -85,6 +85,54 @@ describe("daemon run execution sessions", () => {
     await sessions.stopExecutors(100);
   });
 
+  it("bridges steer to the scheduler and returns its durable receipt without replacing the session", async () => {
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
+    sessions.start("run-a");
+    applySchedulerControlIntent.mockReturnValue(ok({
+      snapshot: {} as SchedulerSnapshot,
+      effect: {
+        type: "steer",
+        state: "applied",
+        steerId: "steer-1",
+        requestedTarget: "review",
+        target: "review~000000000001",
+        fencedAttemptId: "attempt-1",
+        continuation: "queued",
+      },
+      reopened: false,
+    }));
+
+    const result = await sessions.control({
+      requestId: "steer-1",
+      runId: "run-a",
+      type: "steer",
+      target: "review",
+      instruction: "Focus on the failing assertion.",
+    });
+
+    expect(applySchedulerControlIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        requestId: "steer-1",
+        runId: "run-a",
+        type: "steer",
+        target: "review",
+        instruction: "Focus on the failing assertion.",
+      },
+      1,
+    );
+    expect(result._unsafeUnwrap()).toMatchObject({
+      type: "steer",
+      steerId: "steer-1",
+      target: "review~000000000001",
+      fencedAttemptId: "attempt-1",
+      continuation: "queued",
+    });
+    expect(executions[0]!.wake).toHaveBeenCalledOnce();
+    expect(executions[0]!.stop).not.toHaveBeenCalled();
+    await sessions.stopExecutors(100);
+  });
+
   it.each(["resume", "retry"] as const)("does not replace an active execution for a no-op %s", async type => {
     const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
     sessions.start("run-a");

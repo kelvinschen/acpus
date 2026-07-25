@@ -12,6 +12,7 @@ export type RunControlIntent =
   | { requestId: string; runId: string; type: "resume" }
   | { requestId: string; runId: string; type: "retry"; target?: string }
   | { requestId: string; runId: string; type: "cancel"; target?: string }
+  | { requestId: string; runId: string; type: "steer"; target: string; instruction: string }
   | { requestId: string; runId: string; type: "signal"; node: string; payload: JsonValue; commandIdempotencyKey?: string };
 
 export type SchedulerControlEffect =
@@ -19,6 +20,15 @@ export type SchedulerControlEffect =
   | { type: "resume"; state: "applied" }
   | { type: "retry"; state: "applied"; target?: string }
   | { type: "cancel"; state: "applied"; target?: string }
+  | {
+    type: "steer";
+    state: "applied";
+    steerId: string;
+    requestedTarget: string;
+    target: string;
+    fencedAttemptId: string;
+    continuation: "queued";
+  }
   | {
     type: "signal";
     state: "consumed";
@@ -67,6 +77,28 @@ export function applySchedulerControlIntent(
       snapshot: next,
       effect: { type: "retry", state: "applied", target } as const,
       reopened: next.version > current.value.version,
+    }));
+  }
+  if (intent.type === "steer") {
+    return store.scheduler.trySteerAgent({
+      runId,
+      ownerEpoch,
+      idempotencyKey,
+      steerId: intent.requestId,
+      target: intent.target,
+      instruction: intent.instruction,
+    }).map(applied => ({
+      snapshot: applied.snapshot,
+      effect: {
+        type: "steer",
+        state: "applied",
+        steerId: applied.steerId,
+        requestedTarget: applied.requestedTarget,
+        target: applied.target,
+        fencedAttemptId: applied.fencedAttemptId,
+        continuation: "queued",
+      } as const,
+      reopened: false,
     }));
   }
 

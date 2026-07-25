@@ -12,13 +12,14 @@ import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
 import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
-import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
+import { schedulerStoreError, throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import {
   buildAgentOutputPrompt,
   buildAgentOutputRepairPrompt,
   conformAgentOutput,
   type AgentOutputProcessing,
 } from "./agent-output.js";
+import { resolveAgentSessionIdentity } from "./agent-session.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
@@ -57,9 +58,14 @@ export type AgentExecutorOptions = {
   deadlineAt?: string;
   store?: RuntimeStore;
   progressWriter?: NodeProgressWriter;
-  initialPromptKind?: "task" | "plain_continuation";
+  initialPrompt?: AgentInitialPrompt;
   signal?: AbortSignal;
 };
+
+export type AgentInitialPrompt =
+  | { kind: "task" }
+  | { kind: "continuation" }
+  | { kind: "steer"; instruction: string };
 
 type AgentTurnRecord = {
   turn: number;
@@ -137,7 +143,6 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
   let responseRepairMax: number | null | undefined;
-  let renderedPrompt: string | undefined;
   const writeTerminalState = async (
     status: "completed" | "failed" | "cancelled" | "timed_out",
     message?: string,
@@ -188,10 +193,10 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     };
     applyRuntimeAgentEnv(env, node.id, options);
     const deadline = options.deadlineAt === undefined ? undefined : persistedDeadline(options.deadlineAt, node.id);
-    const resolvedSessionKey = renderSessionKey(node, scope);
-    if (resolvedSessionKey.isErr()) return finishFailure(resolutionFailure(resolvedSessionKey.error));
-    explicitSessionKey = resolvedSessionKey.value;
-    sessionNameForMetadata = sessionName(options.runId, options.nodeKey ?? node.id, explicitSessionKey);
+    const session = resolveAgentSessionIdentity(node, scope, options.runId, options.nodeKey ?? node.id);
+    if (session.isErr()) return finishFailure(resolutionFailure(session.error));
+    explicitSessionKey = session.value.explicitSessionKey;
+    sessionNameForMetadata = session.value.sessionName;
     const effectiveModel = definition.config?.model ?? definition.model;
     const turnBase = {
       agent: agentSelector(definition),
@@ -204,12 +209,14 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       ...(definition.trace === true ? { captureTrace: true } : {}),
     } satisfies Omit<AgentTurnRequest, "prompt" | "config">;
     const maxRepairTurns = responseRepairMax;
-    const plainContinuation = options.initialPromptKind === "plain_continuation";
-    const resolvedPrompt = plainContinuation
-      ? ok(CONTINUATION_PROMPT)
-      : renderAgentPrompt(node, scope, options);
+    const initialPrompt = options.initialPrompt ?? { kind: "task" };
+    const resolvedPrompt = initialPrompt.kind === "task"
+      ? renderAgentPrompt(node, scope, options)
+      : ok(initialPrompt.kind === "steer"
+        ? `<steering>${initialPrompt.instruction}</steering>`
+        : CONTINUATION_PROMPT);
     if (resolvedPrompt.isErr()) return finishFailure(resolutionFailure(resolvedPrompt.error));
-    renderedPrompt = resolvedPrompt.value;
+    const renderedPrompt = resolvedPrompt.value;
     let prompt = node.outputSchema
       ? buildAgentOutputPrompt(renderedPrompt, node.outputSchema)
       : renderedPrompt;
@@ -222,15 +229,23 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         ...turnBase,
         prompt,
         ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
-        ...(turn === 0 && !plainContinuation && definition.config !== undefined ? { config: definition.config } : {}),
+        ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(onProgress ? { onProgress } : {}),
       } satisfies AgentTurnRequest;
       const result = await executeAgentTurn(request);
-      if (result.status === "cancelled" && options.signal?.aborted) {
-        return finishFailure({ type: "cancelled", message: result.message });
+      if (options.signal?.aborted) {
+        return finishFailure(abortedTurnFailure(result));
       }
-      turns.push(await writeAgentTurnArtifacts(node, options, turn + 1, request, result, captureRawDebug));
+      let turnRecord: AgentTurnRecord;
+      try {
+        turnRecord = await writeAgentTurnArtifacts(node, options, turn + 1, request, result, captureRawDebug);
+      } catch (error) {
+        if (!isAttemptFenceError(error)) throw error;
+        return finishFailure({ type: "cancelled", message: "Agent turn was fenced." });
+      }
+      if (options.signal?.aborted) return finishFailure(abortedTurnFailure(result));
+      turns.push(turnRecord);
       if (result.status === "cancelled") {
         return finishFailure({ type: "cancelled", message: result.message }, result, turn + 1);
       }
@@ -277,6 +292,20 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
 
 function resolutionFailure(error: ResolutionError): AgentAttemptFailure {
   return { type: "resolution", error, message: error.message };
+}
+
+function abortedTurnFailure(result: AgentTurnResult): AgentAttemptFailure {
+  return {
+    type: "cancelled",
+    message: result.status === "cancelled" ? result.message : "Agent turn was aborted.",
+  };
+}
+
+function isAttemptFenceError(error: unknown): boolean {
+  const failure = schedulerStoreError(error);
+  return failure?.type === "terminal-attempt"
+    || failure?.type === "owner-epoch-stale"
+    || failure?.type === "owner-epoch-inactive";
 }
 
 function renderAgentPrompt(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Result<string, ResolutionError> {
@@ -338,29 +367,6 @@ function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"]
   return definition.kind === "agent_command"
     ? { kind: "command", command: definition.command }
     : { kind: "named", name: definition.use };
-}
-
-function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result<string | undefined, ResolutionError> {
-  if (!node.run.sessionKey) return ok(undefined);
-  const field = `Agent node '${node.id}' sessionKey`;
-  const rendered = tryResolveString(node.run.sessionKey, scope, field);
-  if (rendered.isErr()) return err(rendered.error);
-  if (rendered.value.trim().length === 0) {
-    return err({
-      type: "constraint",
-      field,
-      expected: "non-empty string",
-      message: `${field} must render to a non-empty string.`,
-    });
-  }
-  return ok(rendered.value);
-}
-
-function sessionName(runId: string | undefined, nodeKey: string, explicitKey: string | undefined): string {
-  const identity = explicitKey === undefined
-    ? { runId: runId ?? "local", nodeKey }
-    : { runId: runId ?? "local", key: explicitKey };
-  return `acpus-${Buffer.from(JSON.stringify(identity)).toString("base64url")}`;
 }
 
 async function writeAgentTurnArtifacts(
@@ -460,6 +466,7 @@ function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOp
   let lastFlushAt: number | undefined;
   let lastSignature = "";
   return progress => {
+    if (options.signal?.aborted) return;
     const snapshot = progressSnapshot(node, options, turn, progress);
     const signature = JSON.stringify([snapshot.context, snapshot.tokenUsage, snapshot.tools]);
     const now = Date.now();
@@ -471,6 +478,7 @@ function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOp
 }
 
 function writeAgentTerminalProgress(node: AgentNodeIR, options: AgentExecutorOptions, turn: number, result: AgentTurnResult, status: "completed" | "failed" | "cancelled" | "timed_out", message?: string): void {
+  if (options.signal?.aborted) return;
   const writer = progressTarget(options);
   if (!writer || !options.runId || !options.nodeKey || !options.attemptId || options.ownerEpoch === undefined) return;
   writer.writeNodeProgress(progressSnapshot(node, options, turn, {

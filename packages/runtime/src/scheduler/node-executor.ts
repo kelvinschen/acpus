@@ -105,6 +105,11 @@ async function executeTask(
 }
 
 async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput, agentHostPolicy: AgentHostPolicy) {
+  const initialPrompt = context.steer
+    ? { kind: "steer" as const, instruction: context.steer.instruction }
+    : context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume"
+      ? { kind: "continuation" as const }
+      : { kind: "task" as const };
   return executeAgentNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
@@ -117,7 +122,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     store: input.store,
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
-    initialPromptKind: context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume" ? "plain_continuation" : "task",
+    initialPrompt,
     signal: context.signal,
   });
 }

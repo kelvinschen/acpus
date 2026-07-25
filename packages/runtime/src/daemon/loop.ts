@@ -247,9 +247,15 @@ async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {
 function daemonControlFailure(intent: DaemonControlIntent, failure: RunSessionControlFailure): DaemonHandlerFailure {
   const code: DaemonErrorCode = failure.type === "run-not-found"
     ? "RUN_NOT_FOUND"
-    : failure.type === "prepared-workflow-invalid" || failure.type === "schema-mismatch" || failure.type === "agent-overrides-invalid"
+    : failure.type === "prepared-workflow-invalid"
+      || failure.type === "schema-mismatch"
+      || failure.type === "agent-overrides-invalid"
+      || failure.type === "invalid-steer-instruction"
       ? "INVALID_REQUEST"
-    : failure.type === "idempotency-conflict" || failure.type === "fork-request-conflict"
+    : failure.type === "idempotency-conflict"
+      || failure.type === "fork-request-conflict"
+      || failure.type === "ambiguous-steer-target"
+      || failure.type === "steer-session-conflict"
       ? "CONTROL_CONFLICT"
       : "RUN_NOT_CONTROLLABLE";
   const message = failure.type === "idempotency-conflict"

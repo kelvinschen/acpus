@@ -25,6 +25,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
+| `runs steer <run-id>` | Requires `--target <attemptId\|nodeKey\|agentId>` and direct `--instruction <text>`; optional `--json`. |
 | `doctor` | Read-only runtime and authoring health. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
 | `skill install` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
@@ -40,6 +41,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
+- Empty or whitespace-only steer target input MUST fail before daemon startup.
+- Empty or whitespace-only steer instruction input MUST fail before daemon startup.
 
 ### Workflow Resolution And Import
 
@@ -118,7 +121,10 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Fork replacement workflow, input, and Agent overrides MUST be prepared or normalized against frozen workflow data before daemon control; the daemon never imports replacement source.
 - Mutating controls MUST start or wake the daemon, dispatch one closed intent, and wait up to 30 seconds for the requested effect to be applied or fail.
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
-- Control receipts MUST distinguish applied pause/resume/retry/cancel, consumed signal, and applied fork; target fields appear only when requested and fork results identify source and child separately.
+- Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; target fields appear only when requested and fork results identify source and child separately.
+- A structured steer receipt MUST project the [Runtime-owned steer result](runtime-spec.md#controls-and-daemon).
+- Text and structured steer receipts MUST NOT echo the instruction.
+- Successful text steer output MUST point `Next` to follow inspection of the resolved dynamic node key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
 - Foreground run and follow `Ctrl-C` MUST detach without canceling the run; foreground run prints its run id and an explicit cancel command. No hidden double-`Ctrl-C` control exists.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
@@ -200,6 +206,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Overview/all text inspection MUST expose copyable dynamic targets only in Attention guidance; Active MUST remain human-readable and omit internal keys. Exact input, output, prompt, attempt, Agent, Signal, and artifact detail remains owned by `--target`.
 - Compact run headers MUST show direct fork source with optional target/unsafe-reuse and one `instances`/`attempts`/`turns` Agent usage line when present; unavailable Agent telemetry MUST remain explicit in JSON and MUST NOT add text lines or inferred values.
 - Static target text with multiple matching contexts MUST show aggregate total/status counts and MUST NOT select the first same-node item for details.
+- Target text for a started Agent attempt MUST expose a copyable steer command using its exact attempt id.
+- Target attempt history MUST append a persisted cancellation reason to the attempt status when one exists.
 - Overview/all text inspection MUST append a `Hooks:` section only for terminal runs with hook history and MUST omit it when no hook rows exist.
 - Agent detail MUST show the authored Agent key, compact counters/activity, and at most three runtime-normalized intent-only tool commands without arguments or payloads.
 - Awaiting Signal Attention text MUST include a bounded prompt, payload guidance, and copyable signal command. A timed-out wait in overview/all MUST show its bounded failure and recovery actions without adding deadline detail; `--target` retains the exact deadline and complete Signal state.
@@ -208,6 +216,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Inspection JSON/NDJSON MUST contain only structured envelope values and MUST NOT contain terminal connectors, section headings, or ANSI escapes added by text presentation.
 - Non-TTY overview/all follow MUST append a direct run failure and root inspection command unless the current snapshot satisfies the same propagated-failure rule; target follow MUST omit that run-wide fallback.
 - Non-TTY text follow MUST append the applicable operation command immediately after an awaiting, failed, or timed-out transition and MUST remain free of ANSI escapes.
+- Text follow MUST render each Runtime-projected `steered` change as one transition.
+- Text follow MUST NOT echo steering instructions.
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
 - Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY and JSON output MUST remain free of ANSI styling.
@@ -220,6 +230,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 ## Verification
 
 - Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
+- `pnpm test:contract -- packages/cli`: verifies steer argument validation, structured and text receipt redaction, exact-attempt inspection guidance, and follow rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime shards.

@@ -101,6 +101,7 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<DaemonStatus>().toMatchTypeOf<{ status: "ok"; pid: number; generation: number; protocolVersion: number; packageVersion: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{ requestId: string; type: "pause" | "resume"; runId: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{ requestId: string; type: "retry" | "cancel"; runId: string; target?: string }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "steer" }>>().toEqualTypeOf<{ requestId: string; type: "steer"; runId: string; target: string; instruction: string }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "fork" }>>().toMatchTypeOf<{ requestId: string; type: "fork"; runId: string; target?: string; input?: JsonValue; unsafeReuse?: boolean }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{ requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue }>();
   expectTypeOf<DaemonControlResult>().toEqualTypeOf<
@@ -108,6 +109,16 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     | { type: "resume"; state: "applied"; run: RunDetails }
     | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
     | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
+    | {
+      type: "steer";
+      state: "applied";
+      run: RunDetails;
+      steerId: string;
+      requestedTarget: string;
+      target: string;
+      fencedAttemptId: string;
+      continuation: "queued";
+    }
     | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
     | {
       type: "signal";

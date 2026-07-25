@@ -25,6 +25,7 @@ export type NodeAttemptContext = {
   ownerEpoch: number;
   deadlineAt?: string;
   attemptStartReason?: "control_retry" | "pause_resume";
+  steer?: { steerId: string; instruction: string };
   signal: AbortSignal;
 };
 
@@ -42,6 +43,7 @@ export type AdvanceRunInput = {
   leaseMs?: number;
   maxLeafConcurrency?: number;
   signalNodeIds?: ReadonlySet<string>;
+  executorResourceFor?: (instance: NodeInstance, projection: SchedulerProjection) => string | undefined;
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
@@ -85,6 +87,7 @@ type Counters = {
 type ActiveExecution = {
   attempt: ActiveAttempt;
   instance: NodeInstance;
+  executorResource?: string;
   settlement?: Promise<void>;
   outcome?: ActiveExecutionOutcome;
 };
@@ -211,6 +214,10 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
         projection: snapshot.projection,
         maxLeafConcurrency: input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY,
         ownerLocalUnsettled: unresolvedExecutionCount(active),
+        ownerLocalUnsettledExecutorResources: unsettledExecutorResources(active),
+        ...(input.executorResourceFor === undefined
+          ? {}
+          : { executorResourceFor: instance => input.executorResourceFor!(instance, snapshot.projection) }),
         signalNodeIds: input.signalNodeIds ?? new Set(),
       });
       if (admission?.kind === "signal") {
@@ -239,6 +246,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       if (admission?.kind === "executor") {
         const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now()) ?? ok(undefined);
         const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
+        const executorResource = input.executorResourceFor?.(admission.instance, snapshot.projection);
         const started = input.store.tryStartAttempt({
           runId: input.runId,
           nodeKey: admission.instance.nodeKey,
@@ -271,6 +279,8 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
             attemptId: started.value.attemptId,
             attemptNo: started.value.attemptNo,
             deadlineAt,
+            ...(started.value.steer === undefined ? {} : { steer: started.value.steer }),
+            ...(executorResource === undefined ? {} : { executorResource }),
             active,
             settledAttemptIds,
             wakeup,
@@ -431,6 +441,8 @@ function launchExecution(input: {
   attemptId: string;
   attemptNo: number;
   deadlineAt: string | undefined;
+  steer?: { steerId: string; instruction: string };
+  executorResource?: string;
   active: Map<string, ActiveExecution>;
   settledAttemptIds: string[];
   wakeup: VersionedWakeup;
@@ -448,6 +460,7 @@ function launchExecution(input: {
   const execution: ActiveExecution = {
     attempt,
     instance: input.instance,
+    ...(input.executorResource === undefined ? {} : { executorResource: input.executorResource }),
   };
   input.active.set(input.attemptId, execution);
   const startReason = attemptStartReason(input.instance);
@@ -461,6 +474,7 @@ function launchExecution(input: {
       ownerEpoch: input.claim.ownerEpoch,
       ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
+      ...(input.steer === undefined ? {} : { steer: input.steer }),
       signal: controller.signal,
     }))
     .then(
@@ -625,6 +639,16 @@ function unresolvedExecutionCount(active: ReadonlyMap<string, ActiveExecution>):
     if (execution.outcome === undefined) count += 1;
   }
   return count;
+}
+
+function unsettledExecutorResources(active: ReadonlyMap<string, ActiveExecution>): ReadonlySet<string> {
+  const resources = new Set<string>();
+  for (const execution of active.values()) {
+    if (execution.outcome === undefined && execution.executorResource !== undefined) {
+      resources.add(execution.executorResource);
+    }
+  }
+  return resources;
 }
 
 function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attemptStartReason"] | undefined {

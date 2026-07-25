@@ -56,6 +56,36 @@ describe("scheduler control settlement", () => {
     },
   );
 
+  it("rejects steer without settling unrelated derived transitions", async () => {
+    mockProgressingLoop();
+
+    await withRuntimeWorkspace("scheduler-control-steer-zero-write-failure", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, trivialWorkflow());
+      const store = await openRuntimeStore(workspace);
+      let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
+      try {
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        claim = store.scheduler.claimRun(run.id, "steer-owner", 60_000);
+        if (!claim) throw new Error("expected scheduler claim");
+        const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
+
+        expect(applySchedulerControlIntent(store, {
+          requestId: `steer:${run.id}`,
+          runId: run.id,
+          type: "steer",
+          target: "missing-agent",
+          instruction: "Correct course.",
+        }, claim.ownerEpoch)._unsafeUnwrapErr()).toMatchObject({ type: "missing-steer-target" });
+
+        expect(throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id)).version).toBe(seeded.version);
+        expect(materializeMocks.continueRootEvents).not.toHaveBeenCalled();
+      } finally {
+        if (claim) store.scheduler.releaseRun(claim);
+        store.close();
+      }
+    });
+  });
+
   it("drains more than 1000 derived transitions after a due Signal before pause", async () => {
     mockProgressingLoop({ failRunAfterSignalTimeout: true });
 

@@ -9,6 +9,7 @@ import {
   type SchedulerRetryInput,
   type SchedulerRunRetryInput,
   type SchedulerRecoveryInput,
+  type SchedulerSteerInput,
   type SchedulerStorePort,
   type SignalConsumeInput,
 } from "../../src/scheduler/store-port.js";
@@ -28,6 +29,7 @@ export function throwingSchedulerStore(store: SchedulerStorePort) {
     retryRun: (input: SchedulerRunRetryInput) => throwSchedulerStoreResult(store.tryRetryRun(input)),
     retry: (input: SchedulerRetryInput) => throwSchedulerStoreResult(store.tryRetry(input)),
     cancel: (input: SchedulerCancelInput) => throwSchedulerStoreResult(store.tryCancel(input)),
+    steerAgent: (input: SchedulerSteerInput) => throwSchedulerStoreResult(store.trySteerAgent(input)),
     markExpiredOwnerAttemptsSuperseded: (input: SchedulerRecoveryInput) => throwSchedulerStoreResult(store.tryMarkExpiredOwnerAttemptsSuperseded(input)),
   };
 }

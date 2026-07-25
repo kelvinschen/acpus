@@ -5,6 +5,7 @@ const schedulerEventTypes = new Set<string>([
   "control.paused",
   "control.resumed",
   "control.run_retry_requested",
+  "control.agent_steer_requested",
   "frame.started",
   "frame.completed",
   "frame.failed",

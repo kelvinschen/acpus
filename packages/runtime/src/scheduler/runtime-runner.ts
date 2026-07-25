@@ -17,6 +17,7 @@ import { throwSchedulerStoreResult } from "./store-port.js";
 import type { SchedulerSnapshot } from "./store-port.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 import { readVerifiedArtifactBytes } from "../artifacts/path.js";
+import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
 
 export type AdvanceFrozenRunInput = {
@@ -147,6 +148,14 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     store: input.store.scheduler,
     ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
     signalNodeIds,
+    executorResourceFor: (instance, projection) => {
+      const node = nodes.get(instance.nodeId);
+      if (!node || node.kind !== "agent") return undefined;
+      const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);
+      return resolveAgentSessionIdentity(node, attemptScope, input.runId, instance.nodeKey)
+        .map(identity => identity.sessionName)
+        .unwrapOr(undefined);
+    },
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);
       const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);

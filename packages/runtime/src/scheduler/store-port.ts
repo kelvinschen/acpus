@@ -35,6 +35,11 @@ export type SchedulerStoreError =
   | { type: "missing-cancel-target"; runId: string; targetKey: string; message: string }
   | { type: "ambiguous-cancel-target"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
   | { type: "invalid-cancel-target"; runId: string; targetKey?: string; status: string; message: string }
+  | { type: "missing-steer-target"; runId: string; targetKey: string; message: string }
+  | { type: "ambiguous-steer-target"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
+  | { type: "invalid-steer-target"; runId: string; targetKey: string; status: string; message: string }
+  | { type: "steer-session-conflict"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
+  | { type: "invalid-steer-instruction"; runId: string; message: string }
   | { type: "deadline-out-of-range"; runId: string; nodeKey: string; message: string };
 
 export type SchedulerStoreResult<T> = Result<T, SchedulerStoreError>;
@@ -92,6 +97,7 @@ export type AttemptStartResult = {
   attemptNo: number;
   snapshot: SchedulerSnapshot;
   disposition: "started" | "existing";
+  steer?: { steerId: string; instruction: string };
 };
 
 export type SchedulerRecoveryInput = {
@@ -154,6 +160,23 @@ export type SchedulerCancelInput = {
   target?: string;
 };
 
+export type SchedulerSteerInput = {
+  runId: string;
+  ownerEpoch: number;
+  idempotencyKey: string;
+  steerId: string;
+  target: string;
+  instruction: string;
+};
+
+export type SchedulerSteerResult = {
+  snapshot: SchedulerSnapshot;
+  steerId: string;
+  requestedTarget: string;
+  target: string;
+  fencedAttemptId: string;
+};
+
 export type SchedulerStorePort = {
   claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined;
   heartbeatRun(claim: RunOwnerClaim, leaseMs: number): boolean;
@@ -168,5 +191,6 @@ export type SchedulerStorePort = {
   tryRetryRun(input: SchedulerRunRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot>;
+  trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult>;
   tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot>;
 };

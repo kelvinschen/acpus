@@ -81,6 +81,52 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
+  it("renders a steer receipt and follows the resolved target without echoing its instruction", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    expect(writeResult({
+      ok: true,
+      phase: "control",
+      message: "Attempt fenced; correction queued.",
+      control: {
+        type: "steer",
+        state: "applied",
+        runId: "run_1",
+        steerId: "cli:steer-1",
+        requestedTarget: "review",
+        target: "review~abc",
+        fencedAttemptId: "attempt_1",
+        continuation: "queued",
+      },
+      run: {
+        id: "run_1",
+        name: "review",
+        status: "running",
+        workflowEntry: "review.workflow.ts",
+        sourceGraphDigest: "sha256:review",
+        createdAt: "2026-07-25T00:00:00.000Z",
+        updatedAt: "2026-07-25T00:00:01.000Z",
+        progressVersion: 2,
+      },
+      followRunId: "run_1",
+    }, "text", { stdout, stderr }, 0)).toBe(0);
+
+    expect(stdout.text).toBe([
+      "Attempt fenced; correction queued.",
+      "Run: run_1",
+      "Steer: cli:steer-1",
+      "Target: review → review~abc",
+      "Fenced attempt: attempt_1",
+      "Continuation: queued",
+      "Status: running",
+      "Workflow entry: review.workflow.ts",
+      "Next: acpus runs inspect run_1 --target review~abc --follow",
+      "",
+    ].join("\n"));
+    expect(stdout.text).not.toContain("SECRET correction");
+    expect(stderr.text).toBe("");
+  });
+
   it("renders targeted and run-level retry without inventing a root target", () => {
     const run = {
       id: "run_1",

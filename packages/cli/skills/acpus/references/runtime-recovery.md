@@ -33,38 +33,21 @@ use target JSON for the complete parsed JSON-RPC error data. Do not infer an aut
 | task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |
 | control target not found, run terminal, conflict | `control` | Re-inspect and target the dynamic nodeKey/frameKey or static alias that currently exists. |
 
-## Retry vs fork
+## Steer vs Retry vs Fork
 
 | Choose | Use when | Effect |
 | --- | --- | --- |
+| Steer | An Agent is running on the correct admitted task but its current turn is drifting. | Fences that attempt and queues a correction in the same run and Agent session. |
 | Retry | The admitted workflow, input, and agent mapping are still correct. | Continues the same run and preserves completed work. |
-| Fork | The workflow, input, or agent mapping / task defination must change. | Creates a new run and reuses compatible completed work when safe. |
+| Fork | The workflow, input, Agent mapping, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
 
-### Retry
+Prefer the smallest action that preserves correct admitted state:
 
-```sh
-acpus runs retry <run-id>
-acpus runs retry <run-id> --target <nodeKey-or-frameKey-or-static-alias>
-```
+- Steer only while the Agent is running and no workflow, input, Agent configuration, schema, or task change is needed. Account for external side effects that its old turn may already have performed.
+- Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
+- Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
 
-- Use targeted retry for one unambiguous failed node or frame; use run-level retry when several failures must be retried together.
-- Resume a paused run first. Retry is rejected if completed/canceled ancestors, independent failures, or composite strategy rules make progress impossible; it never silently broadens the target.
-- Targets belong to the source run's frozen workflow, so dynamic keys from `runs inspect` are valid.
-- Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
-
-A timed-out Signal wait is closed. Retry its dynamic target; do not signal the closed wait again.
-
-### Fork
-
-```sh
-acpus runs fork <run-id> --workflow fixed.workflow.ts
-acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
-acpus runs fork <run-id> --input '{"repoPath":"/repo","ready":true}'
-```
-
-- Unchanged input and Agent overrides are inherited; do not repeat them unnecessarily. An explicit `--input` disables normal safe completed-output reuse.
-- Omit `--target` by default. Fork targets belong to the replacement workflow, so source-run dynamic keys may not resolve there.
-- Use `--unsafe-reuse` only when reusing earlier results is intentional and its side effects are acceptable. It relaxes compatibility checks but does not fix an invalid replacement target.
+Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for command syntax, target resolution, fencing, retry reopening, fork inheritance, receipts, and other control mechanics.
 
 ## Stale non-terminal execution
 

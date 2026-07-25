@@ -952,15 +952,20 @@ function projectTarget(
   const progress = dynamic?.progress.filter(item => instanceKeys.has(item.nodeKey) || attemptIds.has(item.attemptId ?? "") || (!scoped && item.nodeId === targetId)) ?? [];
   const targetKeys = new Set([targetId, ...instanceKeys, ...frames.map(item => item.frameKey), ...attempts.map(item => item.nodeKey)]);
   const targetArtifacts = artifacts.filter(item => targetKeys.has(item.nodeKey));
-  const latestAttempt = latest(attempts, item => item.startedAt);
+  const latestAttempt = exactAttempt ?? latest(attempts, item => item.startedAt);
   const latestInstance = latest(instances, item => item.updatedAt);
   const latestFrame = latest(frames, item => item.updatedAt);
   const latestWait = latest(signalWaits, item => item.updatedAt);
   const resolvedStatic = staticNode ?? staticNodes.find(item => item.nodeId === latestInstance?.nodeId || item.nodeId === latestAttempt?.nodeId || item.nodeId === latestFrame?.nodeId);
   const node = resolvedStatic ? nodeById(ir, resolvedStatic.nodeId) : undefined;
-  const metadata = latest(executionMetadata, item => item.createdAt);
-  const currentProgress = latest(progress, item => item.updatedAt);
+  const metadata = latestAttempt
+    ? latest(executionMetadata.filter(item => item.attemptId === latestAttempt.attemptId), item => item.createdAt)
+    : latest(executionMetadata, item => item.createdAt);
+  const currentProgress = latestAttempt
+    ? latest(progress.filter(item => item.attemptId === latestAttempt.attemptId), item => item.updatedAt)
+    : latest(progress, item => item.updatedAt);
   const turnArtifact = [...targetArtifacts]
+    .filter(item => latestAttempt === undefined || item.attempt === latestAttempt.attemptNo)
     .sort((left, right) => left.path.localeCompare(right.path))
     .find(item => /^turn-\d+\.json$/.test(basename(item.path)));
   const authoredInput = node?.kind === "task" ? Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, renderExpr(expr)])) : undefined;
@@ -1580,6 +1585,8 @@ function operatorVisibleEvent(event: CommittedRuntimeEventRow, context: EventCon
   const type = event.type;
   if (type.startsWith("group.") || type === "branch.decided") return false;
   if (type === "attempt.completed" || type === "attempt.cancelled") return false;
+  if (type === "attempt.superseded" && event.payload.cancelReason === "operator_steered") return false;
+  if (type === "instance.requeued" && event.payload.reason === "steered") return false;
   if (type === "attempt.started") return Number(event.payload.attemptNo ?? 1) > 1;
   if (type.startsWith("attempt.")) return true;
   if (type === "instance.awaiting" && matchingEvent(visibility, "signal.awaiting", context.nodeKey)) return false;
@@ -1617,7 +1624,7 @@ function eventSubject(
   const itemOccurrences = itemOccurrenceCounts.get(context.nodeId) ?? 0;
   const path = context.path ? semanticPath(context.path) : item?.path.join(" › ");
   const subject = (context.repeated ?? itemOccurrences > 1) && path ? path : context.nodeId;
-  const actionable = action === "awaiting" || action === "failed" || action === "timed_out" || action === "retrying" || action === "requeued";
+  const actionable = action === "awaiting" || action === "failed" || action === "timed_out" || action === "retrying" || action === "requeued" || action === "steered";
   return actionable && context.nodeKey && context.nodeKey !== subject ? `${subject} (${context.nodeKey})` : subject;
 }
 
@@ -1637,6 +1644,7 @@ function eventEntity(event: CommittedRuntimeEventRow): RunInspectionChange["enti
 }
 
 function eventAction(type: string): RunInspectionChange["action"] {
+  if (type === "control.agent_steer_requested") return "steered";
   const suffix = type.split(".").at(-1);
   if (suffix === "ready") return "ready";
   if (suffix === "started") return "started";
@@ -1657,6 +1665,7 @@ function eventAction(type: string): RunInspectionChange["action"] {
 
 function eventStatus(action: RunInspectionChange["action"]): RunInspectionStatus | undefined {
   if (action === "admitted" || action === "retrying") return "pending";
+  if (action === "steered") return "ready";
   if (action === "ready" || action === "requeued") return "ready";
   if (action === "started" || action === "resumed" || action === "advanced") return "running";
   if (action === "awaiting") return "awaiting";
@@ -1668,6 +1677,7 @@ function eventStatus(action: RunInspectionChange["action"]): RunInspectionStatus
 }
 
 function eventMessage(payload: Record<string, unknown>, action: RunInspectionChange["action"]): string | undefined {
+  if (action === "steered") return undefined;
   const error = record(payload.error);
   const transition = record(payload.transition);
   return string(error?.message) ?? string(payload.message) ?? string(payload.statusReason) ?? string(payload.terminalReason) ?? string(payload.cancelReason) ?? string(payload.reason)

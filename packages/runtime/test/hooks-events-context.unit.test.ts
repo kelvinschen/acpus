@@ -19,6 +19,13 @@ describe("hooks events and context", () => {
   it("does not map unrelated scheduler rows", () => {
     expect(mapRuntimeEventToHookEvent(row("frame.started", { runId: "run_1", frameKey: "node", frameKind: "node" }))).toBeUndefined();
     expect(mapRuntimeEventToHookEvent(row("attempt.completed", { attemptId: "attempt_1" }))).toBeUndefined();
+    expect(mapRuntimeEventToHookEvent(row("control.agent_steer_requested", {
+      steerId: "steer-1",
+      requestedTarget: "review",
+      nodeKey: "review~1",
+      fencedAttemptId: "attempt_1",
+      instruction: "SECRET correction",
+    }))).toBeUndefined();
   });
 
   it("decodes scheduler envelopes and public run event payloads", () => {

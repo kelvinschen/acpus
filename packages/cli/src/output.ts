@@ -36,6 +36,16 @@ export type CliAppliedControl =
   | { type: "retry" | "cancel"; state: "applied"; runId: string; target?: string }
   | { type: "fork"; state: "applied"; sourceRunId: string }
   | {
+      type: "steer";
+      state: "applied";
+      runId: string;
+      steerId: string;
+      requestedTarget: string;
+      target: string;
+      fencedAttemptId: string;
+      continuation: "queued";
+    }
+  | {
       type: "signal";
       state: "consumed";
       runId: string;
@@ -206,7 +216,12 @@ export function writeResult(
     for (const run of result.skippedRuns) stream.write(`Skipped: ${run.id}\t${run.status}\t${run.name}\n`);
   }
   if (result.prune) writePruneReport(stream, result.prune);
-  if (result.followRunId) stream.write(`Next: acpus runs inspect ${result.followRunId} --follow\n`);
+  if (result.followRunId) {
+    const target = result.control?.type === "steer" && result.control.state === "applied"
+      ? ` --target ${result.control.target}`
+      : "";
+    stream.write(`Next: acpus runs inspect ${result.followRunId}${target} --follow\n`);
+  }
   if (result.checks) {
     const statusWidth = result.checks.reduce((width, check) => Math.max(width, check.status.length), 0);
     const areaWidth = result.checks.reduce((width, check) => Math.max(width, check.area.length), 0);
@@ -340,6 +355,11 @@ function writeRun(stream: Writable, run: RunRecord, control: CliControl | undefi
     stream.write(control.validation.kind === "schema"
       ? `Payload: validated against ${control.validation.schemaSummary}\n`
       : "Payload: validated as raw string\n");
+  } else if (control?.type === "steer" && control.state === "applied") {
+    stream.write(`Steer: ${control.steerId}\n`);
+    stream.write(`Target: ${control.requestedTarget} → ${control.target}\n`);
+    stream.write(`Fenced attempt: ${control.fencedAttemptId}\n`);
+    stream.write(`Continuation: ${control.continuation}\n`);
   } else if (control?.type === "retry" && control.state === "applied" && control.target !== undefined) {
     stream.write(`Target: ${control.target}\n`);
   }

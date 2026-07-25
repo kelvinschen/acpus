@@ -57,7 +57,7 @@ export default defineWorkflow({
     context: z.string().default("").describe("Optional constraints, background, time range, or preferred source types."),
     depth: z.enum(["quick", "standard", "deep"]).default("standard").describe("Research depth profile controlling search, source, and verification budgets."),
     reportLanguage: z.enum(["auto", "zh-CN", "en"]).default("auto").describe("Reader-facing report language. Auto selects Simplified Chinese for a Chinese question and English otherwise."),
-    maxAgentConcurrency: z.number().int().min(1).max(48).default(12).describe("Local cap for each large Agent fanout; Acpus runtime controls global concurrency."),
+    maxAgentConcurrency: z.number().int().min(1).max(48).default(12).describe("Local cap for each large Agent fanout;"),
     reportFormat: z.enum(["none", "md", "html"]).default("html").describe("Optional presentation format. None returns only the research package."),
     reportPath: z.string().default("").describe("Optional workspace-contained report path for md/html; ignored for none and otherwise defaults by format."),
   }),

@@ -342,6 +342,7 @@ export type RunInspectionChange = {
     | "awaiting"
     | "requeued"
     | "retrying"
+    | "steered"
     | "completed"
     | "failed"
     | "timed_out"

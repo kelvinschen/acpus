@@ -403,6 +403,7 @@ function protectedChange(change: RunInspectionChange): boolean {
     || change.action === "awaiting"
     || change.action === "retrying"
     || change.action === "requeued"
+    || change.action === "steered"
     || (change.attemptNo ?? 1) > 1;
 }
 

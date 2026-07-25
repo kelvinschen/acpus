@@ -43,6 +43,11 @@ type SignalOptions = JsonOutputOptions & {
   payload: string;
 };
 
+type SteerOptions = JsonOutputOptions & {
+  target: string;
+  instruction: string;
+};
+
 type InspectRunOptions = JsonOutputOptions & {
   target?: string;
   all?: boolean;
@@ -158,6 +163,16 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .requiredOption("--payload <json>", "signal payload JSON")
     ).action(async (runId: string, options: SignalOptions) => {
       await signalRun(ctx, runId, options, outputFormatFor(options));
+    }));
+
+  command.addCommand(withJsonOutput(new Command("steer")
+    .exitOverride()
+    .description("Correct one running Agent attempt.")
+    .argument("<run-id>", "run id")
+    .requiredOption("--target <run-target>", "running Agent attempt, dynamic node, or static node")
+    .requiredOption("--instruction <text>", "correction for the replacement Agent turn")
+    ).action(async (runId: string, options: SteerOptions) => {
+      await steerRun(ctx, runId, options, outputFormatFor(options));
     }));
 
   return command;
@@ -415,6 +430,29 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: Signal
   }, format, ctx, 0));
 }
 
+async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions, format: OutputFormat): Promise<void> {
+  if (options.target.trim() === "") throw usageError("--target must be a non-empty string.");
+  if (options.instruction.trim() === "") throw usageError("--instruction must be a non-empty string.");
+  const controlled = await sendDaemonControl(ctx.cwd, {
+    requestId: daemonControlRequestId(),
+    type: "steer",
+    runId,
+    target: options.target,
+    instruction: options.instruction,
+  });
+  if (controlled.isErr()) throw runControlError(controlled.error);
+  const result = controlled.value;
+  if (result.type !== "steer") throw new Error(`Daemon returned '${result.type}' for steer control.`);
+  ctx.setExitCode(writeResult({
+    ok: true,
+    phase: "control",
+    message: "Attempt fenced; correction queued.",
+    control: appliedControl(result),
+    run: toRunRecord(result.run),
+    ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
+  }, format, ctx, 0));
+}
+
 async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation, format: OutputFormat): Promise<void> {
   if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
   const replacementInput = request.type === "fork" && request.input !== undefined
@@ -469,7 +507,7 @@ function controlDescription(type: Exclude<ControlAction, "fork">): string {
   }
 }
 
-function controlSuccessMessage(type: Exclude<DaemonControlResult["type"], "signal">): string {
+function controlSuccessMessage(type: Exclude<DaemonControlResult["type"], "signal" | "steer">): string {
   switch (type) {
     case "pause": return "Run paused.";
     case "resume": return "Run resumed.";
@@ -497,6 +535,17 @@ function appliedControl(result: DaemonControlResult): CliAppliedControl {
         requestedTarget: result.requestedTarget,
         target: result.target,
         validation: result.validation,
+      };
+    case "steer":
+      return {
+        type: "steer",
+        state: "applied",
+        runId: result.run.id,
+        steerId: result.steerId,
+        requestedTarget: result.requestedTarget,
+        target: result.target,
+        fencedAttemptId: result.fencedAttemptId,
+        continuation: result.continuation,
       };
   }
 }

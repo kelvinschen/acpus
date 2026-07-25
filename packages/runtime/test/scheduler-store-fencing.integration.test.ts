@@ -218,6 +218,34 @@ describe("scheduler store attempt fences", () => {
     });
   });
 
+  it("rejects artifacts from a superseded attempt", async () => {
+    await withRuntimeWorkspace("scheduler-store-superseded-artifact-fence", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
+        const current = unwrap(store.scheduler.tryLoadRunSnapshot(run.id));
+        unwrap(store.scheduler.tryAppendSchedulerEvents({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: current.version,
+          idempotencyKey: "artifact-fence:supersede",
+          events: [{ type: "attempt.superseded", payload: { attemptId: attempt.attemptId, cancelReason: "operator_steered" } }],
+        }));
+
+        const late = store.registerArtifact(artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_late"));
+        expect(late.isErr()).toBe(true);
+        if (late.isOk()) throw new Error("expected superseded artifact registration to fail");
+        expect(late.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "superseded" });
+        expect(store.listArtifacts(run.id)).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("rejects artifact registry paths outside the owning attempt directory", async () => {
     await withRuntimeWorkspace("scheduler-store-artifact-path", async workspace => {
       const store = await openedStore(workspace);

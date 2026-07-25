@@ -247,6 +247,7 @@ export class RunExecutionSessions {
 
 function continuesAfterShortControl(intent: DaemonControlIntent): boolean {
   return intent.type === "signal"
+    || intent.type === "steer"
     || intent.type === "cancel" && intent.target !== undefined;
 }
 
@@ -265,6 +266,15 @@ function controlIntent(intent: DaemonControlIntent): RunControlIntent {
   if (intent.type === "resume") return { requestId: intent.requestId, runId: intent.runId, type: "resume" };
   if (intent.type === "retry") return { requestId: intent.requestId, runId: intent.runId, type: "retry", ...(intent.target === undefined ? {} : { target: intent.target }) };
   if (intent.type === "cancel") return { requestId: intent.requestId, runId: intent.runId, type: "cancel", ...(intent.target === undefined ? {} : { target: intent.target }) };
+  if (intent.type === "steer") {
+    return {
+      requestId: intent.requestId,
+      runId: intent.runId,
+      type: "steer",
+      target: intent.target,
+      instruction: intent.instruction,
+    };
+  }
   throw new Error(`Unsupported active control '${intent.type}'.`);
 }
 
@@ -273,6 +283,7 @@ function daemonControlResult(effect: SchedulerControlEffect, run: RunDetails): D
   if (effect.type === "resume") return { ...effect, run };
   if (effect.type === "retry") return { ...effect, run };
   if (effect.type === "cancel") return { ...effect, run };
+  if (effect.type === "steer") return { ...effect, run };
   if (effect.type === "signal") return { ...effect, run };
   return assertNever(effect);
 }

@@ -51,7 +51,7 @@ export default defineWorkflow({
 
       Cover the most consequential failure modes without overlap. Return no more
       than the requested maximum.`,
-    timeout: "15m",
+    timeout: "30m",
   });
   const lenses = lift(plan.output.lenses, reviewerLimit, (items, limit) => items.slice(0, limit));
 
@@ -95,7 +95,7 @@ export default defineWorkflow({
               Round: ${round}
               Result: ${work.output}
               Report only concrete issues and regressions.`,
-            timeout: "20m",
+            timeout: "40m",
           }).output,
           fresh: () => step("fresh_reviews").fanout({
             over: lenses,
@@ -111,7 +111,7 @@ export default defineWorkflow({
                 Context: ${input.context}
                 Result: ${work.output}
                 Report blockers separately from non-blocking improvements.`,
-              timeout: "20m",
+              timeout: "40m",
             }).output,
           }).output,
         },
@@ -133,7 +133,7 @@ export default defineWorkflow({
 
           Approve only when no blocking issue remains. Do not block on nits.
           Feedback must explain the evidence and give actionable fixes.`,
-        timeout: "20m",
+        timeout: "40m",
       });
 
       return {

@@ -50,5 +50,21 @@ describe("CLI result type", () => {
 
     acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" } });
     acceptResult({ ok: false, phase: "control", message: "Failed.", control: { type: "pause", runId: "run_1" } });
+    acceptResult({
+      ok: true,
+      phase: "control",
+      message: "Queued.",
+      run: {} as never,
+      control: {
+        type: "steer",
+        state: "applied",
+        runId: "run_1",
+        steerId: "cli:1",
+        requestedTarget: "review",
+        target: "review~abc",
+        fencedAttemptId: "attempt_1",
+        continuation: "queued",
+      },
+    });
   });
 });
