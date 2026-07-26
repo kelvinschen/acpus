@@ -1,20 +1,25 @@
 import { getEventListeners } from "node:events";
-import { describe, expect, it } from "vitest";
-import { quote, quotePowerShell } from "zx/core";
+import { describe, expect, it, vi } from "vitest";
+import { $ as zxDollar, quote, quotePowerShell } from "zx/core";
 import { createDollar } from "../src/runtime.js";
 
 describe("dollar runtime", () => {
   it("returns command results and reader outputs", async () => {
     const $ = createDollar();
-    const result = await $`${process.execPath} -e ${"process.stdout.write('out'); process.stderr.write('err')"}`;
-
-    expect(result.stdout).toBe("out");
-    expect(result.stderr).toBe("err");
-    expect(result.exitCode).toBe(0);
-    expect(result.signal).toBeUndefined();
-    expect(result.durationMs).toBeGreaterThanOrEqual(0);
-    expect(result.command).toContain(process.execPath);
-    expect(result.command).toContain("process.stdout.write");
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const result = await $`${process.execPath} -e ${"process.stdout.write('out'); process.stderr.write('err')"}`;
+      expect(result.stdout).toBe("out");
+      expect(result.stderr).toBe("err");
+      expect(stderr).not.toHaveBeenCalled();
+      expect(result.exitCode).toBe(0);
+      expect(result.signal).toBeUndefined();
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      expect(result.command).toContain(process.execPath);
+      expect(result.command).toContain("process.stdout.write");
+    } finally {
+      stderr.mockRestore();
+    }
 
     await expect($`${process.execPath} -e ${"process.stdout.write('text')"}`.text()).resolves.toBe("text");
     await expect($`${process.execPath} -e ${"process.stdout.write(JSON.stringify({ ok: true }))"}`.json<{ ok: boolean }>()).resolves.toEqual({ ok: true });
@@ -39,10 +44,43 @@ describe("dollar runtime", () => {
     await expect($`${process.execPath} -e ${"process.exit(7)"}`.allowExitCode([7])).resolves.toMatchObject({ exitCode: 7 });
   });
 
-  it("terminates a slow command at an explicit timeout", async () => {
+  it("terminates a command tree at an explicit timeout without changing zx globally", async () => {
     const $ = createDollar();
+    const originalKill = zxDollar.kill;
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => warnings.push(warning);
+    const source = [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: 'ignore' });",
+      "process.stdout.write(String(child.pid));",
+      "setTimeout(() => {}, 10_000);",
+    ].join("");
+    let childPid: number | undefined;
+    process.on("warning", onWarning);
 
-    await expect($`${process.execPath} -e ${"setTimeout(() => {}, 10_000)"}`.timeout("100ms")).rejects.toThrow();
+    try {
+      let failure: unknown;
+      try {
+        await $`${process.execPath} -e ${source}`.timeout("100ms");
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ signal: "SIGTERM" });
+      const parsedChildPid = Number((failure as { stdout: string }).stdout);
+      expect(Number.isSafeInteger(parsedChildPid) && parsedChildPid > 0).toBe(true);
+      childPid = parsedChildPid;
+      await vi.waitFor(() => expect(isProcessAlive(childPid!)).toBe(false));
+    } finally {
+      process.off("warning", onWarning);
+      if (childPid !== undefined && isProcessAlive(childPid)) {
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {}
+      }
+    }
+    expect(zxDollar.kill).toBe(originalKill);
+    expect(warnings.filter(warning => (warning as NodeJS.ErrnoException).code === "DEP0190")).toEqual([]);
   });
 
   it("does not retain abort listeners after commands complete", async () => {
@@ -54,3 +92,13 @@ describe("dollar runtime", () => {
     expect(getEventListeners(controller.signal, "abort")).toEqual([]);
   });
 });
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -11,7 +11,7 @@
 - The package MUST expose `executeAgentTurn(request)` plus public request, result, progress, observation, timing, summary, tool, and normalized trace types without a binary.
 - Public operational types MUST use `AgentTurnSummary`, `AgentContextSummary`, `AgentTokenUsageSummary`, `AgentToolCallSummary`, `AgentToolsSummary`, and `AgentTurnTiming`.
 - Terminal results MUST contain UTC `startedAt`/`finishedAt` and finite non-negative monotonic `elapsedMs`; progress and summary omit terminal timing.
-- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model and string `config` map, numeric timeout, optional abort, and optional progress/observation callbacks. `config.model`, when present, MUST override `model` for acpx invocation and MUST NOT be sent through `set`.
+- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model, optional string `config` map, optional numeric timeout, optional abort, and optional progress/observation callbacks. `config.model`, when present, MUST override `model` for acpx invocation and MUST NOT be sent through `set`.
 - `AgentTurnObservation` MUST contain one normalized `AgentTraceEvent` and its corresponding `AgentTurnProgress` snapshot.
 - `onObservation` MUST receive `{ event: AgentTraceEvent; progress: AgentTurnProgress }` once for each normalized non-terminal provider event and exactly once for the synthetic terminal `turn_end`.
 - Observation delivery MUST NOT depend on normalized-trace capture being enabled.
@@ -19,8 +19,9 @@
 - An observation callback throw or rejection MUST NOT change the turn result.
 - The executor MUST resolve its bundled `acpx` internally and reject request-level binary/path/provider-command overrides.
 - Named `claude` requests MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` only when absent; custom commands never receive that default by string matching.
-- `timeoutMs` MUST be a non-negative safe integer, with invalid values returning `config` before spawn and zero timing out immediately.
-- The full command sequence MUST share one monotonic deadline; each subprocess receives remaining seconds as `max(1, ceil(remainingMs / 1000))`, with long budgets protected from native timer overflow.
+- When provided, `timeoutMs` MUST be a non-negative safe integer, with invalid values returning `config` before spawn and zero timing out immediately.
+- An omitted `timeoutMs` MUST create no executor deadline or acpx `--timeout` argument.
+- An explicit timeout MUST create one monotonic deadline shared by the full command sequence; each subprocess receives remaining seconds as `max(1, ceil(remainingMs / 1000))`, with long budgets protected from native timer overflow.
 - Optional raw-debug and normalized-trace capture MUST be independent and have no effect on execution, parsing, summary, or failure classification.
 - Progress callbacks MUST receive normalized snapshots rather than raw JSON; callback throws/rejections are best-effort observer failures.
 

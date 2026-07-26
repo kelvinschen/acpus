@@ -134,7 +134,9 @@
 - Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
 - Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
 - Without an explicit per-call cwd or env override, the `$` wrapper MUST read the live process cwd and environment when each command starts rather than capturing them when the wrapper is created.
+- The `$` wrapper MUST capture command stdout and stderr without echoing either to host streams by default.
 - The wrapper MUST support `` $`cmd` ``, `$({ cwd, env, timeout, nothrow, allowExitCode })`, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
+- An explicit command timeout MUST attempt to send its configured signal to the command process and its descendants.
 - Programmatic arguments MUST use zx array interpolation.
 - `CommandResult.command` MUST equal zx's rendered command for the actual process invocation, including quoting and array expansion.
 
@@ -193,5 +195,6 @@
 ## Verification
 
 - Contract and type tests cover public exports, native Zod authoring, graph-boundary schema lowering, and every workflow/node authoring shape.
+- Dollar integration tests cover live process defaults, captured output, rendered commands, exit controls, timeouts, and abort-listener cleanup.
 - Lowering and validation tests cover deterministic closed `WorkflowIR`, duration rules, task targets, output/ref legality, and single-owner diagnostics.
 - Traversal tests cover every node kind, child-scope order, ancestry, and the public traversal type unions.

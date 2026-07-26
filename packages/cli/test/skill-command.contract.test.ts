@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
+import { parseAcpusSkillMetadata } from "../src/skill-content.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
@@ -215,8 +216,10 @@ describe("skill CLI contracts", () => {
       expect(result.stdout.text).toContain(`updated\tuniversal\t${target}`);
       expect((await lstat(target)).isDirectory()).toBe(true);
       expect((await lstat(target)).isSymbolicLink()).toBe(false);
-      expect(await readFile(join(target, "SKILL.md"), "utf8")).toContain(`acpus-version: ${getCliPackageInfo().version}`);
-      expect(await readFile(join(linked, "SKILL.md"), "utf8")).toContain("acpus-version: 0.0.0");
+      expect(parseAcpusSkillMetadata(await readFile(join(target, "SKILL.md"), "utf8")).version)
+        .toBe(getCliPackageInfo().version);
+      expect(parseAcpusSkillMetadata(await readFile(join(linked, "SKILL.md"), "utf8")).version)
+        .toBe("0.0.0");
     });
   });
 

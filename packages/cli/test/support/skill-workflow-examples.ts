@@ -24,7 +24,7 @@ export const skillWorkflowExamples = [
     name: "adversarial review",
     directory: "adversarial-review",
     pattern: "Iterate with resident and fresh reviewers in a bounded loop.",
-    nodes: ["agent", "parallel", "fanout", "loop"],
+    nodes: ["agent", "task", "parallel", "fanout", "loop"],
     reference: "authoring",
   },
   {
@@ -42,17 +42,17 @@ export const skillWorkflowExamples = [
     reference: "authoring",
   },
   {
-    name: "multi-aspect brainstorm",
-    directory: "multi-aspect-brainstorm",
-    pattern: "Run parallel agent perspectives in a bounded synthesis loop.",
-    nodes: ["agent", "parallel", "loop"],
+    name: "scaled exploration",
+    directory: "scaled-exploration",
+    pattern: "Plan a standard-scale fanout and reduce results in batches.",
+    nodes: ["agent", "task", "fanout"],
     reference: "authoring",
   },
   {
     name: "worktree tournament",
     directory: "worktree-tournament",
-    pattern: "Create parallel worktree implementations and have an agent judge them.",
-    nodes: ["agent", "task", "parallel"],
+    pattern: "Fan out six worktree implementations and have an agent judge them.",
+    nodes: ["agent", "task", "fanout"],
     reference: "authoring",
   },
   {
@@ -75,7 +75,6 @@ export const skillWorkflowLibrary = [
   {
     name: "deep research",
     directory: "deep-research",
-    purpose: "Investigate complex questions with verified evidence",
   },
 ] as const;
 

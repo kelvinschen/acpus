@@ -1,12 +1,12 @@
 # Deep Research Workflow
 
-Researches a question across public sources, verifies claims, preserves conflicting or uncertain evidence, and always produces a durable research package with optional Markdown or HTML presentation. **DO NOT use on local project research**
+Only an explicit `/wf:<hint>` or `/workflow:<hint>` request runs this public-web source-verification workflow; Never use it for local files/repositories, code analysis, debugging, review, or implementation.
 
 ## Inputs
 
 - `question` is required.
 - `context` adds optional constraints, background, time ranges, or source preferences.
-- `depth` is `quick`, `standard`, or `deep`; the default is `standard`. **use deep only if user explicitly request**
+- `depth` is `quick`, `deep` (default), or `xdeep`. Omit it unless named; `xdeep` requires explicit `xdeep` or `extra deep`.
 - `reportLanguage` is `auto`, `zh-CN`, or `en`; the default is `auto`.
 - `maxAgentConcurrency` controls local fanout burst size; the default is `12`.
 - `reportFormat` is `none`, `md`, or `html`; the default is `html`.
@@ -25,5 +25,5 @@ The result always references the format-neutral research package. It returns `re
 Resolve the active Acpus skill directory and use the workflow's absolute path:
 
 ```sh
-acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"What should I research?","depth":"standard","reportFormat":"html","reportLanguage":"auto"}'
+acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"What should I research?","reportFormat":"html","reportLanguage":"auto"}'
 ```

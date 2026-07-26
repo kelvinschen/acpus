@@ -23,7 +23,7 @@ export default defineWorkflow({
 }).build(({ input, agents, meta, step }) => {
   const triaged = step("triage_issues").fanout({
     over: input.issues,
-    maxConcurrency: 3,
+    maxConcurrency: 6,
     do({ item }) {
       const lane = step("triage_lane").parallel({
         branches: {
@@ -56,7 +56,6 @@ export default defineWorkflow({
 
                 Choose route "now", "later", or "escalate".
               `,
-              timeout: "20m",
             });
             const reviewView = lift(review.output, output => ({
               route: output.route,

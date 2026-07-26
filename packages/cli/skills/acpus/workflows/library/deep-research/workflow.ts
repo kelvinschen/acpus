@@ -51,11 +51,11 @@ import {
 
 export default defineWorkflow({
   name: "deep-research",
-  description: "Iteratively research and verify a question, then produce a durable research package with optional Markdown or HTML presentation.",
+  description: "Research and verify a question with public-web resources, then produce a durable research package with optional Markdown or HTML presentation.",
   inputSchema: z.object({
     question: z.string().describe("The research question to investigate."),
     context: z.string().default("").describe("Optional constraints, background, time range, or preferred source types."),
-    depth: z.enum(["quick", "standard", "deep"]).default("standard").describe("Research depth profile controlling search, source, and verification budgets."),
+    depth: z.enum(["quick", "deep", "xdeep"]).default("deep").describe("Research profile controlling search, source, and verification budgets."),
     reportLanguage: z.enum(["auto", "zh-CN", "en"]).default("auto").describe("Reader-facing report language. Auto selects Simplified Chinese for a Chinese question and English otherwise."),
     maxAgentConcurrency: z.number().int().min(1).max(48).default(12).describe("Local cap for each large Agent fanout;"),
     reportFormat: z.enum(["none", "md", "html"]).default("html").describe("Optional presentation format. None returns only the research package."),
@@ -75,15 +75,15 @@ export default defineWorkflow({
     ({ depth, maxAgentConcurrency }) => {
       const profile = {
         quick: { maxSearchRounds: 1, searchWorkers: 1, angleLimit: 4, sourceLimit: 6, claimLimit: 6, editorialPasses: 1 },
-        standard: { maxSearchRounds: 2, searchWorkers: 2, angleLimit: 5, sourceLimit: 10, claimLimit: 12, editorialPasses: 1 },
-        deep: { maxSearchRounds: 3, searchWorkers: 3, angleLimit: 6, sourceLimit: 18, claimLimit: 24, editorialPasses: 2 },
+        deep: { maxSearchRounds: 2, searchWorkers: 2, angleLimit: 5, sourceLimit: 10, claimLimit: 12, editorialPasses: 1 },
+        xdeep: { maxSearchRounds: 3, searchWorkers: 3, angleLimit: 6, sourceLimit: 18, claimLimit: 24, editorialPasses: 2 },
       }[depth];
       const verificationBatchSize = 2;
       const verificationBatchLimit = Math.ceil(profile.claimLimit / verificationBatchSize);
       return {
         depth,
         ...profile,
-        deepEditorialReview: depth === "deep",
+        xdeepEditorialReview: depth === "xdeep",
         verificationBatchSize,
         maxAgentConcurrency,
         maxLogicalAgentCalls: 1
@@ -766,7 +766,7 @@ export default defineWorkflow({
       });
 
       const authoritativeDraft = step("independent_editorial_review").if({
-        condition: researchPlan.deepEditorialReview,
+        condition: researchPlan.xdeepEditorialReview,
         then() {
           const critic = step("review_editorial_bundle").agent({
             outputSchema: EditorialBundleOutput,
@@ -828,8 +828,8 @@ export default defineWorkflow({
             agent: agents.synthesizer,
             cwd: meta.workspaceDir,
             sessionKey: lift(
-              researchPlan.deepEditorialReview,
-              deepEditorialReview => deepEditorialReview ? "deep-research:editor-final" : "deep-research:editor",
+              researchPlan.xdeepEditorialReview,
+              xdeepEditorialReview => xdeepEditorialReview ? "deep-research:editor-final" : "deep-research:editor",
             ),
             prompt: md`
               Role

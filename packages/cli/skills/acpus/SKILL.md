@@ -1,6 +1,6 @@
 ---
 name: acpus
-description: Author, validate, run, inspect, recover, and explain Acpus TypeScript workflows and durable runs. Use for workflow modules, Agent/Task/Signal nodes, WorkflowIR, catalogs, hooks.json, runtime controls, task.define, acpus/core, acpus/expression, acpus/tasks/git, and steer/retry/fork/signal/pause/resume/cancel operations.
+description: Use when Acpus is the intended orchestration layer, or when an existing Acpus workflow or durable run is in scope.
 metadata:
   acpus-version: 0.8.0
 ---
@@ -13,6 +13,8 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 
 Use Acpus to achieve user's goal, own the Acpus loop: *author → run → inspect/recover → verify the goal*. For one named operation, route directly.
 
+For Agent-heavy authoring, calibrate logical work before topology; broad or uncertain work without an explicit user budget defaults to standard scale.
+
 ## Route the request
 
 ### **READ first**
@@ -20,11 +22,12 @@ Use Acpus to achieve user's goal, own the Acpus loop: *author → run → inspec
 - **Author or adapt:** Read `references/authoring.md` completely, then edit the target directly. Use only its linked examples; never inspect workflow-library implementations.
 - **Run, observe, or control:** Read `references/cli-operations.md` for status, overrides, and controls; use `acpus <cmd> --help` for exact syntax.
 - **Recover a run:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, drifting-agent steering, steer/retry/fork decisions, or deep diagnostics.
-- **Workflow reuse:** `/wf:<hint>` / `/workflow:<hint>` mean reuse. Check library/catalog before authoring; otherwise skip catalog. Use library only for a good fit; read README first and implementation only to modify/diagnose, else follow **Author or adapt**.
+- **Workflow reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
 
 | Workflow | Use when | Read first |
 | --- | --- | --- |
-| `deep-research` | Investigate complex questions with verified evidence | `workflows/library/deep-research/README.md` |
+| `deep-research` | Research public-web with verified sources | `workflows/library/deep-research/README.md` |
+
 - **Choose an agent:** Read `references/acpx-agents.md` when Agent availability matters.
 
 ### **DO NOT read by default**
@@ -40,8 +43,9 @@ Search all available documentation under `references/` to explain concepts. Choo
 
 ## Inspection budget [Mandatory]
 
+- Inspect adaptively: start with sparse, minute-scale inspections, tighten cadence only near a decision boundary, and never poll.
 - Inspect the target controlling the next decision. Add `--timeline` only when process activity matters; use an exact attempt for Evidence metadata.
-- Use dynamic keys for repeats and `--all` only for topology. Follow one transition, refresh Summary, filter with `jq`, and use raw last.
+- Use dynamic keys for repeats and `--all` only for topology. One live follow for a decision-controlling transition replaces scheduled inspection; do not do both. Refresh Summary, filter with `jq`, and use raw last.
 
 ## Safety
 

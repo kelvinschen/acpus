@@ -194,7 +194,7 @@ export const EditorialBundleOutput = z.object({
 });
 
 const ResearchBudget = z.object({
-  depth: z.enum(["quick", "standard", "deep"]),
+  depth: z.enum(["quick", "deep", "xdeep"]),
   maxSearchRounds: z.number().int(),
   searchWorkers: z.number().int(),
   angleLimit: z.number().int(),

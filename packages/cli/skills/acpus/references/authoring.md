@@ -36,6 +36,19 @@ Choose the operation by intent:
 | Read a node result | Exactly one `.output`; `NodeRef` itself is only a control handle. |
 | Stabilize a shape or state | `z.infer`, an explicit type, complete loop transitions, and `lift` narrowing for unions. |
 
+## Scale Before Topology
+
+State `N = planners + rounds × (workers + reducers + judges)` and peak ready Agents separately; choose the profile below.
+
+| Profile | Occurrences | Use |
+| --- | ---: | --- |
+| Small | <20 | Narrow, dependent, or explicitly budgeted work. |
+| Standard | 20–49 | Default for broad, uncertain, or multi-aspect work without a user budget. |
+| Large | 50–99 | Many independent items or high-stakes redundancy. |
+| Extra-large | ≥100 | Explicit large corpus or search space; staged reduction required. |
+
+Assign every occurrence a distinct item, lens, hypothesis, or verification duty;
+
 ## Core Rules
 
 - Project fields and indexes directly; **MUST use `lift` or predicate helpers for JavaScript operators, `.length`, array methods, and control flow over `Expr` values**.
@@ -44,6 +57,7 @@ Choose the operation by intent:
 - Use an inline Task first. Upgrade at the second authored call site or when module/third-party imports are required; loop/fanout runtime instances do not count.
 - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
 - Set a stable, non-empty `sessionKey` for agent step only when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it.
+- Leave Agent `timeout` unset unless the user or workflow explicitly requires a hard elapsed deadline.
 - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`.
 - Never add `outputSchema` to Task or composite nodes; their outputs are TypeScript-inferred.
 
@@ -132,7 +146,6 @@ const checks = step("checks").parallel({
 
 const reviews = step("reviews").fanout({
   over: input.items,
-  maxConcurrency: 4,
   do: ({ item, itemIndex }) => step("review_item").agent({
     agent: agents.worker, prompt: template`Review item ${itemIndex}: ${item}.`,
   }).output,
@@ -157,7 +170,7 @@ const rounds = step("rounds").loop({
 return rounds.output;
 ```
 
-`parallel` and `fanout` accept runtime `maxConcurrency`: use a positive integer to cap work, or `0`/`undefined` for no authored local cap.
+`parallel` and `fanout` accept runtime `maxConcurrency`: a positive integer, use only when user explicitly requested (acups already has a default cap limit).
 
 ## Choose An Example
 
@@ -166,11 +179,11 @@ Only after applying the rules above, choose the closest compact teaching example
 | Example | Nodes | Pattern |
 | --- | --- | --- |
 | [`typed-loop-state`](../workflows/examples/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
-| [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `parallel`, `fanout`, `loop` | Iterate with resident and fresh reviewers in a bounded loop. |
+| [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `task`, `parallel`, `fanout`, `loop` | Iterate with resident and fresh reviewers in a bounded loop. |
 | [`change-approval`](../workflows/examples/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
-| [`multi-aspect-brainstorm`](../workflows/examples/multi-aspect-brainstorm/workflow.ts) | `agent`, `parallel`, `loop` | Run parallel perspectives in a bounded synthesis loop. |
-| [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `parallel` | Build parallel worktree candidates and judge them. |
+| [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a standard-scale fanout and reduce results in batches. |
+| [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `fanout` | Fan out six worktree candidates and judge them. |
 
 ## Declaration Lookup
 

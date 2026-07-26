@@ -1,6 +1,6 @@
 /*
  * Pattern: Iterate with resident and fresh reviewers in a bounded loop.
- * Nodes: agent, parallel, fanout, loop
+ * Nodes: agent, task, parallel, fanout, loop
  */
 import { defineWorkflow, z } from "acpus/core";
 import { gte, lift, md, or } from "acpus/expression";
@@ -22,7 +22,9 @@ export default defineWorkflow({
     task: z.string().describe("The task the worker should complete."),
     rubric: z.string().describe("The requirements used to judge the result."),
     context: z.string().default("").describe("Optional background or constraints."),
-    maxReviewers: z.number().default(3).describe("Maximum number of fresh review lenses."),
+    maxReviewers: z.number().default(6).describe(
+      "Number of fresh review lenses",
+    ),
     maxRounds: z.number().default(3).describe("Maximum worker-review rounds."),
   }),
   agents: {
@@ -32,7 +34,7 @@ export default defineWorkflow({
     judge: { use: "claude" },
   },
 }).build(({ input, agents, meta, step }) => {
-  const reviewerLimit = lift(input.maxReviewers, value => Math.max(1, Math.floor(value)));
+  const reviewerLimit = lift(input.maxReviewers, value => Math.min(12, Math.max(1, Math.floor(value))));
   const roundLimit = lift(input.maxRounds, value => Math.max(1, Math.floor(value)));
 
   const plan = step("plan_reviews").agent({
@@ -47,13 +49,23 @@ export default defineWorkflow({
       Task: ${input.task}
       Rubric: ${input.rubric}
       Context: ${input.context}
-      Maximum lenses: ${reviewerLimit}
+      Required lenses: ${reviewerLimit}
 
-      Cover the most consequential failure modes without overlap. Return no more
-      than the requested maximum.`,
-    timeout: "30m",
+      Cover the most consequential failure modes without overlap. Return exactly
+      the requested number.`,
   });
-  const lenses = lift(plan.output.lenses, reviewerLimit, (items, limit) => items.slice(0, limit));
+  const lenses = step("validate_review_plan").task({
+    input: {
+      lenses: plan.output.lenses,
+      reviewerLimit,
+    },
+    exec: async ({ input }) => {
+      if (input.lenses.length !== input.reviewerLimit) {
+        throw new Error(`Expected ${input.reviewerLimit} lenses, received ${input.lenses.length}.`);
+      }
+      return input.lenses;
+    },
+  });
 
   const initial: ReviewState = {
     approved: false,
@@ -78,7 +90,6 @@ export default defineWorkflow({
           Round: ${round}
           Previous result: ${state.result}
           Feedback to address: ${state.feedback}`,
-        timeout: "30m",
       });
 
       const reviews = step("reviews").parallel({
@@ -95,10 +106,9 @@ export default defineWorkflow({
               Round: ${round}
               Result: ${work.output}
               Report only concrete issues and regressions.`,
-            timeout: "40m",
           }).output,
           fresh: () => step("fresh_reviews").fanout({
-            over: lenses,
+            over: lenses.output,
             maxConcurrency: reviewerLimit,
             do: ({ item }) => step("fresh_review").agent({
               agent: agents.reviewer,
@@ -111,7 +121,6 @@ export default defineWorkflow({
                 Context: ${input.context}
                 Result: ${work.output}
                 Report blockers separately from non-blocking improvements.`,
-              timeout: "40m",
             }).output,
           }).output,
         },
@@ -133,7 +142,6 @@ export default defineWorkflow({
 
           Approve only when no blocking issue remains. Do not block on nits.
           Feedback must explain the evidence and give actionable fixes.`,
-        timeout: "40m",
       });
 
       return {
@@ -153,6 +161,6 @@ export default defineWorkflow({
     feedback: cycle.output.feedback,
     rounds: cycle.output.rounds,
     result: cycle.output.result,
-    reviewLenses: lenses,
+    reviewLenses: lenses.output,
   };
 });

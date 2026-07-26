@@ -165,9 +165,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Skill uninstall MUST NOT create skills roots; an absent target reports `missing`, while unrelated content reports `skipped` and makes the command fail.
 - The bundled skill MUST separate compact authoring examples under `workflows/examples/` from complete directly runnable workflow packages under `workflows/library/`.
 - Bundled authoring guidance MUST NOT route authoring requests to workflow-library implementation files.
-- `SKILL.md` MUST expose a compact workflow-library inventory and route a matching request through the selected workflow README before implementation files.
-- The bundled skill MUST treat `/wf:<hint>` and `/workflow:<hint>` as equivalent heuristic requests to look for a likely existing workflow in the library and catalog before authoring.
-- The bundled skill MUST NOT route unmarked requests to catalog inspection by default.
+- `SKILL.md` MUST expose a compact workflow-library inventory and read a marked match's README before its implementation.
+- The bundled skill MUST reserve library/catalog lookup and reuse for explicit user `/wf:<hint>` and `/workflow:<hint>` requests.
+- For unmarked requests, the bundled skill MUST NOT look up or reuse library/catalog workflows; it MAY read a user-named workflow to explain, modify, or diagnose it.
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
 - Bundled deep-research report drafts MUST be confined to `$HOME/.acpus/tmp/report-drafts/<run-id>/`.
 - An explicit deep-research report destination MUST remain inside the workflow workspace.

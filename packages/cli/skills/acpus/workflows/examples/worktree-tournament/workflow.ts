@@ -1,10 +1,12 @@
 /*
- * Pattern: Create parallel worktree implementations and have an agent judge them.
- * Nodes: agent, task, parallel
+ * Pattern: Fan out six worktree implementations and have an agent judge them.
+ * Nodes: agent, task, fanout
  */
 import { defineWorkflow, z } from "acpus/core";
-import { md } from "acpus/expression";
+import { md, template } from "acpus/expression";
 import { createWorktree } from "acpus/tasks/git";
+
+const CandidateLanes = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] as const;
 
 export default defineWorkflow({
   name: "worktree-tournament",
@@ -23,125 +25,46 @@ export default defineWorkflow({
     judge: { use: "codex" },
   },
 }).build(({ input, agents, meta, step }) => {
-  const paths = step("plan_worktrees").task({
-    input: { root: input.worktreeRoot, runId: meta.runId },
-    exec: async ({ input }) => ({
-      alpha: `${input.root}/${input.runId}-alpha`,
-      beta: `${input.root}/${input.runId}-beta`,
-      gamma: `${input.root}/${input.runId}-gamma`,
-    }),
-  });
+  const candidates = step("candidate_worktrees").fanout({
+    over: CandidateLanes,
+    do: ({ item }) => {
+      const worktree = step("create_candidate_worktree").task({
+        task: createWorktree,
+        input: {
+          repo: input.repoPath,
+          path: template`${input.worktreeRoot}/${meta.runId}-${item}`,
+          ref: input.baseRef,
+          forceRemove: input.forceRemove,
+        },
+        timeout: "2m",
+      });
 
-  const candidates = step("candidate_worktrees").parallel({
-    branches: {
-      alpha() {
-        const worktree = step("create_alpha_worktree").task({
-          task: createWorktree,
-          input: {
-            repo: input.repoPath,
-            path: paths.output.alpha,
-            ref: input.baseRef,
-            forceRemove: input.forceRemove,
-          },
-          timeout: "2m",
-        });
+      const implementation = step("implement_candidate").agent({
+        agent: agents.implementer,
+        cwd: worktree.output.worktreePath,
+        prompt: md`
+          Implement this task independently in the ${item} worktree.
 
-        const implementation = step("implement_alpha").agent({
-          agent: agents.implementer,
-          cwd: worktree.output.worktreePath,
-          prompt: md`
-            Implement this task in the alpha worktree.
+          Task: ${input.task}
 
-            Task: ${input.task}
+          Return a Markdown implementation report with:
+          - Changed files
+          - Implementation summary
+          - Test command run, or "not run" with the reason
+        `,
+      });
 
-            Return a Markdown implementation report with:
-            - Changed files
-            - Implementation summary
-            - Test command run, or "not run" with the reason
-          `,
-          timeout: "45m",
-        });
-
-        return {
-          lane: "alpha",
-          worktreePath: worktree.output.worktreePath,
-          report: implementation.output,
-        };
-      },
-      beta() {
-        const worktree = step("create_beta_worktree").task({
-          task: createWorktree,
-          input: {
-            repo: input.repoPath,
-            path: paths.output.beta,
-            ref: input.baseRef,
-            forceRemove: input.forceRemove,
-          },
-          timeout: "2m",
-        });
-
-        const implementation = step("implement_beta").agent({
-          agent: agents.implementer,
-          cwd: worktree.output.worktreePath,
-          prompt: md`
-            Implement this task in the beta worktree.
-
-            Task: ${input.task}
-
-            Return a Markdown implementation report with:
-            - Changed files
-            - Implementation summary
-            - Test command run, or "not run" with the reason
-          `,
-          timeout: "45m",
-        });
-
-        return {
-          lane: "beta",
-          worktreePath: worktree.output.worktreePath,
-          report: implementation.output,
-        };
-      },
-      gamma() {
-        const worktree = step("create_gamma_worktree").task({
-          task: createWorktree,
-          input: {
-            repo: input.repoPath,
-            path: paths.output.gamma,
-            ref: input.baseRef,
-            forceRemove: input.forceRemove,
-          },
-          timeout: "2m",
-        });
-
-        const implementation = step("implement_gamma").agent({
-          agent: agents.implementer,
-          cwd: worktree.output.worktreePath,
-          prompt: md`
-            Implement this task in the gamma worktree.
-
-            Task: ${input.task}
-
-            Return a Markdown implementation report with:
-            - Changed files
-            - Implementation summary
-            - Test command run, or "not run" with the reason
-          `,
-          timeout: "45m",
-        });
-
-        return {
-          lane: "gamma",
-          worktreePath: worktree.output.worktreePath,
-          report: implementation.output,
-        };
-      },
+      return {
+        lane: item,
+        worktreePath: worktree.output.worktreePath,
+        report: implementation.output,
+      };
     },
   });
 
   const judgment = step("judge_candidates").agent({
     outputSchema: z.object({
-      winner: z.enum(["alpha", "beta", "gamma"]),
+      winner: z.enum(CandidateLanes),
       rationale: z.string(),
     }),
     agent: agents.judge,
@@ -152,24 +75,16 @@ export default defineWorkflow({
       Task: ${input.task}
 
       Each candidate includes its lane, worktree path, and Markdown implementation report.
-
-      Alpha: ${candidates.output.alpha}
-      Beta: ${candidates.output.beta}
-      Gamma: ${candidates.output.gamma}
+      Candidates: ${candidates.output}
 
       Return the winning lane and a concise rationale.
     `,
-    timeout: "30m",
   });
 
   return {
     runId: meta.runId,
     winner: judgment.output.winner,
     rationale: judgment.output.rationale,
-    candidates: {
-      alpha: candidates.output.alpha,
-      beta: candidates.output.beta,
-      gamma: candidates.output.gamma,
-    },
+    candidates: candidates.output,
   };
 });

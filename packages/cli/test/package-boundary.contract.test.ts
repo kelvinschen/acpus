@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parseAcpusSkillMetadata } from "../src/skill-content.js";
 
 const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
@@ -38,8 +39,7 @@ describe("acpus package boundaries", () => {
     const skill = await readFile(skillPath, "utf8");
     expect(pkg.private).not.toBe(true);
     expect(pkg.files).toContain("skills");
-    expect(skill).toContain("name: acpus");
-    expect(skill).toContain(`acpus-version: ${pkg.version}`);
+    expect(parseAcpusSkillMetadata(skill)).toEqual({ name: "acpus", version: pkg.version });
     expect(skill).not.toContain("npm root -g");
   });
 });

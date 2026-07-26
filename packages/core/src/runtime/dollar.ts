@@ -1,5 +1,9 @@
-import { $ as zxDollar } from "zx/core";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { $ as zxDollar, within as zxWithin } from "zx/core";
 import type { Options as ZxOptions, ProcessPromise } from "zx/core";
+
+const execFileAsync = promisify(execFile);
 
 export type CommandResult = {
   stdout: string;
@@ -41,7 +45,12 @@ export function createDollar(options: DollarOptions = {}, config: DollarConfig =
     const strings = arg as TemplateStringsArray;
     const cwd = config.cwd ?? options.cwd ?? process.cwd();
     const env = config.env ?? options.env ?? process.env;
-    const shell = zxDollar({ cwd, env: env as Record<string, string>, ...(options.signal ? { signal: options.signal } : {}) });
+    const shell = zxDollar({
+      cwd,
+      env: env as Record<string, string>,
+      quiet: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
     const proc = shell(strings, ...values as any[]);
     const builder = wrapProcess(proc);
     if (config.timeout !== undefined) builder.timeout(config.timeout);
@@ -88,11 +97,64 @@ function wrapProcess(proc: ProcessPromise): CommandBuilder {
     finally: ((onfinally: any) => run().finally(onfinally)) as any,
     allowExitCode(codes: number[]) { allowCodes = codes; return builder as CommandBuilder; },
     nothrow(v = true) { nothrow = v; return builder as CommandBuilder; },
-    timeout(duration, signal) { if (typeof proc.timeout === "function") proc.timeout(duration, signal); return builder as CommandBuilder; },
+    timeout(duration, signal) {
+      zxWithin(() => {
+        // zx carries this override only into the timeout timer's async context.
+        zxDollar.kill = killProcessTree;
+        proc.timeout(duration, signal);
+      });
+      return builder as CommandBuilder;
+    },
     async text() { return (await run()).stdout; },
     async json<T = unknown>() { return JSON.parse((await run()).stdout) as T; },
     async lines() { return (await run()).stdout.split(/\r?\n/).filter(Boolean); },
     [Symbol.toStringTag]: "AcpusCommandBuilder",
   };
   return builder as CommandBuilder;
+}
+
+async function killProcessTree(pid: string | number, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+  const rootPid = Number(pid);
+  if (process.platform === "win32") {
+    try {
+      await execFileAsync("taskkill.exe", ["/PID", String(rootPid), "/T", "/F"]);
+      return;
+    } catch {
+      killProcess(rootPid, signal);
+      return;
+    }
+  }
+
+  try {
+    const { stdout } = await execFileAsync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
+    const children = new Map<number, number[]>();
+    for (const line of stdout.split(/\r?\n/)) {
+      const [child, parent] = line.trim().split(/\s+/, 2);
+      const childPid = Number(child);
+      const parentPid = Number(parent);
+      if (!Number.isInteger(childPid) || !Number.isInteger(parentPid)) continue;
+      const siblings = children.get(parentPid) ?? [];
+      siblings.push(childPid);
+      children.set(parentPid, siblings);
+    }
+    const visit = (parentPid: number): void => {
+      for (const childPid of children.get(parentPid) ?? []) {
+        visit(childPid);
+        killProcess(childPid, signal);
+      }
+    };
+    visit(rootPid);
+  } catch {}
+
+  try {
+    process.kill(-rootPid, signal);
+  } catch {
+    killProcess(rootPid, signal);
+  }
+}
+
+function killProcess(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {}
 }

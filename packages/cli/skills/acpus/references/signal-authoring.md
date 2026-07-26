@@ -26,4 +26,4 @@ Concurrent waits do not provide participant identity, access control, confidenti
 
 Durations accept integer milliseconds with optional `ms`, `s`, `m`, `h`, or `d`; omitted units mean milliseconds. Weeks (`w`) are not supported. The shared grammar also applies to Agent/Task timeouts and Task command timeouts.
 
-For the smallest checked concurrent-wait pattern, use [`parallel-approvals`](../workflows/examples/parallel-approvals/workflow.ts).
+For a compact checked concurrent-wait pattern, use [`parallel-approvals`](../workflows/examples/parallel-approvals/workflow.ts).

@@ -30,7 +30,6 @@ export default defineWorkflow({
     agent: agents.planner,
     cwd: input.repoPath,
     prompt: template`Draft an implementation plan for: ${input.request}`,
-    timeout: "20m",
   });
 
   const refined = step("refine_plan").loop({
@@ -54,7 +53,6 @@ export default defineWorkflow({
 
           Return a ready flag, concise summary, and next draft.
         `,
-        timeout: "20m",
       });
       return {
         state: {

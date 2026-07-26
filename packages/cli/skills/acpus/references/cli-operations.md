@@ -28,7 +28,8 @@ Turn Evidence and Trace state. Add `--timeline` for current and recent activity.
 
 1. Start with the target Summary; use a dynamic key for repeated occurrences.
 2. Add Timeline only when process activity is needed; use `--all` only for topology.
-3. Follow one required transition, then refresh Summary. At terminal state, verify output and artifacts against the goal.
+3. Inspect adaptively: begin with sparse, minute-scale inspections.
+4. Refresh Summary after that transition. At terminal state, verify output and artifacts against the goal.
 
 Use focused `jq` for structured output.
 Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details)
