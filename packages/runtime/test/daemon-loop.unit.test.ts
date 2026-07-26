@@ -9,6 +9,12 @@ import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layo
 
 const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
 const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
+const startupRecovery = vi.hoisted(() => ({
+  claimed: false,
+  claimedAtRecovery: false,
+  calls: 0,
+  failure: undefined as Error | undefined,
+}));
 
 vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
 vi.mock("../src/store/store.js", async importOriginal => {
@@ -17,6 +23,19 @@ vi.mock("../src/store/store.js", async importOriginal => {
     ...actual,
     openRuntimeStore: async (cwd: string) => {
       const store = await actual.openRuntimeStore(cwd);
+      const claimDaemon = store.claimDaemon.bind(store);
+      store.claimDaemon = input => {
+        const lease = claimDaemon(input);
+        startupRecovery.claimed = true;
+        return lease;
+      };
+      const recover = store.observationLog.recoverTerminalPartialTurns.bind(store.observationLog);
+      store.observationLog.recoverTerminalPartialTurns = async () => {
+        startupRecovery.calls += 1;
+        startupRecovery.claimedAtRecovery = startupRecovery.claimed;
+        if (startupRecovery.failure !== undefined) throw startupRecovery.failure;
+        await recover();
+      };
       const cleanup = store.cleanupStagedRunDirectories.bind(store);
       store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
         ? cleanup()
@@ -41,6 +60,10 @@ beforeEach(async () => {
   ]);
   restoreRuntimeHome = setRuntimeHomeForTest(dir, runtimeHome);
   startupCleanup.failure = undefined;
+  startupRecovery.claimed = false;
+  startupRecovery.claimedAtRecovery = false;
+  startupRecovery.calls = 0;
+  startupRecovery.failure = undefined;
   runDaemonTick.mockReset();
 });
 
@@ -70,6 +93,40 @@ describe("daemon loop", () => {
 
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
       "startup cleanup failed",
+    );
+
+    const db = new DatabaseSync(layout.databasePath, { readOnly: true });
+    try {
+      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+    await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recovers terminal observations only after claiming daemon ownership", async () => {
+    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+
+    const loop = await startDaemonLoop(dir, {
+      idleStopMs: 1_000,
+      packageVersion: "test",
+    });
+    try {
+      expect(startupRecovery).toMatchObject({
+        calls: 1,
+        claimedAtRecovery: true,
+      });
+    } finally {
+      await loop.shutdown();
+    }
+  });
+
+  it("releases its lease and closes the server when terminal observation recovery fails", async () => {
+    const layout = resolveRuntimeLayout(dir);
+    startupRecovery.failure = new Error("startup observation recovery failed");
+
+    await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
+      "startup observation recovery failed",
     );
 
     const db = new DatabaseSync(layout.databasePath, { readOnly: true });

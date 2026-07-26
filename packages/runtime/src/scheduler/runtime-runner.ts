@@ -210,6 +210,10 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     ...(input.onRelease === undefined ? {} : { onRelease: input.onRelease }),
     ...(input.wakeup === undefined ? {} : { wakeup: input.wakeup }),
     ...(input.shouldStop === undefined ? {} : { shouldStop: input.shouldStop }),
+    afterOwnershipRecovery: async () => {
+      const recovered = await input.store.observationLog.recoverPartialTurns(input.runId);
+      if (recovered.isErr()) throw recovered.error;
+    },
     onCheckpoint: () => dispatchHooksAtCheckpoint({ ...input, frozen }),
     executor: createRuntimeNodeExecutor({
       cwd: input.cwd,

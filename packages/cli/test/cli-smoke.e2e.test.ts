@@ -27,7 +27,6 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         phase: "run",
         kind: "done",
         run: {
-          name: "cli-valid",
           status: "completed",
         },
         output: { ready: true },
@@ -72,6 +71,51 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(overview.stdout).toContain("approval · signal · awaiting");
       expect(overview.stdout).toContain("Attention:");
       expect(overview.stdout).toContain(`Signal: acpus runs signal ${runId} --target approval`);
+
+      const summary = await runSourceCli(workspace, [
+        "runs",
+        "inspect",
+        runId,
+        "--target",
+        "approval",
+        "--json",
+      ]);
+      expect(summary.exitCode, summary.stdout || summary.stderr).toBe(0);
+      expect(summary.stderr).toBe("");
+      expect(JSON.parse(summary.stdout)).toMatchObject({
+        ok: true,
+        phase: "inspect",
+        schemaVersion: 2,
+        kind: "target",
+        subject: { targetKind: "static-node", id: "approval", kind: "signal" },
+        state: { status: "awaiting" },
+        availableActions: [
+          { kind: "signal" },
+          { kind: "inspect-timeline" },
+        ],
+      });
+
+      const timeline = await runSourceCli(workspace, [
+        "runs",
+        "inspect",
+        runId,
+        "--target",
+        "approval",
+        "--timeline",
+        "--json",
+      ]);
+      expect(timeline.exitCode, timeline.stdout || timeline.stderr).toBe(0);
+      expect(timeline.stderr).toBe("");
+      expect(JSON.parse(timeline.stdout)).toMatchObject({
+        ok: true,
+        phase: "inspect",
+        schemaVersion: 2,
+        kind: "timeline",
+        subject: { targetKind: "static-node", id: "approval", kind: "signal" },
+        state: { status: "awaiting" },
+        current: { kind: "signal" },
+        recent: { entries: expect.any(Array) },
+      });
 
       const signaled = await runSourceCli(workspace, [
         "runs",
@@ -118,7 +162,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     while (Date.now() <= deadline) {
       const inspected = await getRunInspection(workspace, { runId, mode: "target", target });
       if (inspected.isOk() && inspected.value.kind === "target") {
-        lastStatus = inspected.value.summary.nodeStatus;
+        lastStatus = inspected.value.state.status;
         if (lastStatus === "awaiting") return;
       }
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -145,7 +189,6 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
           phase: "run",
           kind: "done",
           run: {
-            name: "cli-concurrency-short-task",
             status: "completed",
           },
           output: { ok: true },

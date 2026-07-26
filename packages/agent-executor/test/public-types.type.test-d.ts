@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import type { AgentBackendFailure, AgentBackendFailureKind, AgentContextSummary, AgentTelemetryAvailability, AgentTokenUsageSummary, AgentToolCallSummary, AgentToolsSummary, AgentTraceEvent, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult, AgentTurnSummary, AgentTurnTiming, AgentTurnTrace } from "@acpus/agent-executor";
+import type { AgentBackendFailure, AgentBackendFailureKind, AgentContextSummary, AgentTelemetryAvailability, AgentTokenUsageSummary, AgentToolCallSummary, AgentToolsSummary, AgentTraceEvent, AgentTurnObservation, AgentTurnProgress, AgentTurnRawDebug, AgentTurnRequest, AgentTurnResult, AgentTurnSummary, AgentTurnTiming, AgentTurnTrace } from "@acpus/agent-executor";
 import { executeAgentTurn } from "@acpus/agent-executor";
 
 const availability = { context: "unavailable", tokenUsage: "unavailable" } as const;
@@ -29,6 +29,10 @@ test("@acpus/agent-executor public types accept only resolved execution requests
   assertType<AgentTurnProgress>({ responseText: "partial", summary, updatedAt: "2026-07-01T00:00:00.000Z" });
   assertType<AgentTurnRawDebug>({ stdout: "{\"jsonrpc\":\"2.0\"}\n" });
   assertType<AgentTraceEvent>({ schemaVersion: 1, sequence: 0, observedAt: "2026-07-01T00:00:00.000Z", elapsedMs: 0, type: "message", channel: "assistant", content: { type: "text", text: "ok" } });
+  assertType<AgentTurnObservation>({
+    event: { schemaVersion: 1, sequence: 0, observedAt: "2026-07-01T00:00:00.000Z", elapsedMs: 0, type: "message", channel: "assistant", content: { type: "text", text: "ok" } },
+    progress: { responseText: "ok", summary, updatedAt: "2026-07-01T00:00:00.000Z" },
+  });
   assertType<AgentTurnTrace>({ startedAt: "2026-07-01T00:00:00.000Z", elapsedMs: 1, events: [] });
   assertType<AgentTurnResult>({ status: "completed", responseText: "ok", stderr: "", summary, timing, rawDebug: { stdout: "{}\n" } });
   assertType<AgentBackendFailure>({ kind: "provider_exit", message: "bad config", upstream: { source: "acpx", operation: "sessions.ensure", code: "RUNTIME", protocol: { name: "json-rpc", code: -32603 }, data: { details: "bad config" } } });
@@ -51,6 +55,10 @@ test("@acpus/agent-executor public types accept only resolved execution requests
       assertType<number>(progress.summary.eventCount);
       assertType<string>(progress.updatedAt);
     },
+    onObservation: observation => {
+      assertType<AgentTraceEvent>(observation.event);
+      assertType<AgentTurnProgress>(observation.progress);
+    },
   });
   assertType<AgentTurnRequest>({
     agent: { kind: "named", name: "codex" },
@@ -61,6 +69,9 @@ test("@acpus/agent-executor public types accept only resolved execution requests
     permissionMode: "approve-all",
     onProgress: async progress => {
       assertType<string>(progress.responseText);
+    },
+    onObservation: async observation => {
+      assertType<number>(observation.event.sequence);
     },
   });
   assertType<AgentTurnRequest>({

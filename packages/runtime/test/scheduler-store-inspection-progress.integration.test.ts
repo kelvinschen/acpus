@@ -15,7 +15,7 @@ describe("scheduler store inspection, progress, and validation", () => {
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const admitted = store.readRunInspection(run.id, 0);
-        expect(admitted.cursor).toEqual({ eventSequence: 1, progressVersion: 0 });
+        expect(admitted.cursor).toEqual({ eventSequence: 1, progressVersion: 0, observationVersion: 0 });
         expect(admitted.events.map(event => event.sequence)).toEqual([1]);
         expect(admitted.run?.eventCount).toBe(1);
 
@@ -40,7 +40,7 @@ describe("scheduler store inspection, progress, and validation", () => {
 
         const advanced = store.readRunInspection(run.id, admitted.cursor.eventSequence);
         expect(advanced.events.map(event => event.sequence)).toEqual([2, 3, 4, 5]);
-        expect(advanced.cursor).toEqual({ eventSequence: 5, progressVersion: 0 });
+        expect(advanced.cursor).toEqual({ eventSequence: 5, progressVersion: 0, observationVersion: 0 });
         expect(advanced.run?.dynamic?.version).toBe(5);
         expect(advanced.run?.dynamic?.nodeInstances).toEqual(expect.arrayContaining([
           expect.objectContaining({ nodeKey: "require_ready~1", status: "running" }),
@@ -59,7 +59,7 @@ describe("scheduler store inspection, progress, and validation", () => {
         });
         const progressed = store.readRunInspection(run.id, advanced.cursor.eventSequence);
         expect(progressed.events).toEqual([]);
-        expect(progressed.cursor).toEqual({ eventSequence: 5, progressVersion: 1 });
+        expect(progressed.cursor).toEqual({ eventSequence: 5, progressVersion: 1, observationVersion: 0 });
         expect(progressed.run?.dynamic?.progress).toEqual(expect.arrayContaining([
           expect.objectContaining({ nodeKey: "require_ready~1", context: { used: 10, size: 100 } }),
         ]));

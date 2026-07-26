@@ -34,7 +34,7 @@ export type NodeExecutionInspection = {
     turnCount?: number;
     message?: string;
   };
-  lastActiveAt?: string;
+  lastObservedAt?: string;
   contextWindow?: {
     used?: number;
     size?: number;

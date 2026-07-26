@@ -1,6 +1,9 @@
 # Advanced CLI Operations
 
-Read this only for detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, artifact lookup, run deletion, or CLI automation. Use `acpus <cmd> --help` for exact options.
+Read this only for inspection pagination/follow mechanics, detailed runtime
+controls, catalogs, import, static visualization, WebUI, bundled-skill
+management, artifact lookup, run deletion, or CLI automation. Use
+`acpus <cmd> --help` for exact options.
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 
@@ -14,11 +17,38 @@ acpus workflow check workflow.ts --input sample-input.json
 
 `workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
 
+## Inspection details
+
+```sh
+acpus runs inspect <run-id> --target <attemptId|nodeKey|frameKey|nodeId>
+acpus runs inspect <run-id> --target <target> --timeline [--limit <1-50>] [--before <cursor>]
+acpus runs inspect <run-id> --target <target> --timeline --follow [--after <revision>]
+```
+
+Start with Summary. Runtime resolves `attemptId`, `nodeKey`, `frameKey`, then
+static `nodeId`; use a candidate dynamic key when a repeated static target is
+ambiguous. Exact Agent attempts add metadata-only Private Turn Evidence and
+Trace state.
+
+Use Timeline for current/recent activity. It defaults to 12 entries;
+`--limit` accepts 1–50 and `--before` pages older entries. `--timeline` requires
+`--target`, conflicts with `--all`/`--raw`, and `--before` conflicts with
+`--follow`/`--after`.
+
+Follow emits a bounded snapshot and semantic deltas. Resume with `--after`
+using the returned revision unchanged. Revisions and page cursors are opaque
+and bound to their run, view, and target.
+
+Read a Private Turn Evidence path only for an exact prompt, fence, or terminal
+diagnosis. Full provider-frame history exists only when `trace: true`.
+`--raw --json` exposes neither private body. See
+[Agent Tracing](agent-tracing.md) for Evidence, Trace, and raw ACP roles.
+
 ## Runtime control details
 
 This section describes command mechanics. Use [Runtime Recovery](runtime-recovery.md#steer-vs-retry-vs-fork) to choose between steer, retry, and fork.
 
-Inspect before controlling a run. Target inspection resolves dynamic identities, exposes persisted Signal details, and prints applicable signal, steer, retry, and fork commands.
+Inspect before controlling a run. Target inspection resolves dynamic identities, exposes persisted Signal details, and prints available signal, steer, retry, and fork operations.
 
 Mutating controls start or wake the workspace daemon and wait up to 30 seconds for a durable effect. Success confirms that effect, not downstream completion. A control timeout reports unconfirmed application; inspect again before repeating it.
 
@@ -38,7 +68,7 @@ An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABL
 acpus runs steer <run-id> --target <attemptId-or-nodeKey-or-static-agent> --instruction '<correction>'
 ```
 
-Use steer when the admitted Agent task is still correct but its active turn needs a concise correction. Prefer the exact attempt id from target inspection; a dynamic node key or unique static Agent id also resolves atomically.
+Steer is a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Prefer the exact attempt id; a dynamic node key or unique static Agent id also resolves atomically.
 
 Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings; do not include secrets.
 
@@ -142,4 +172,4 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Machine records use `schemaVersion: 1`. Machine-visible result phases are `usage`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.
+`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Ordinary result envelopes use `schemaVersion: 1`; successful inspection documents and follow snapshot/delta/resync/done records use Runtime inspection `schemaVersion: 2`. Machine-visible result phases are `usage`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.

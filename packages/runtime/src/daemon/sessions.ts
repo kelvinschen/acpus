@@ -139,7 +139,11 @@ export class RunExecutionSessions {
     if (applied.isErr()) return err(applied.error);
     const control = applied.value;
     const { effect, reopened } = control;
+    const fenceFlush = control.observationFence
+      ? this.store.observationLog.markFenced(control.observationFence)
+      : undefined;
     session.execution.wake();
+    if (fenceFlush) await fenceFlush.catch(() => {});
 
     const restartsSession = reopened;
     const endsSession = intent.type === "pause" || intent.type === "cancel" && intent.target === undefined;
@@ -187,6 +191,9 @@ export class RunExecutionSessions {
       if (applied.isErr()) return err(applied.error);
       const control = applied.value;
       reopened = control.reopened;
+      if (control.observationFence) {
+        await this.store.observationLog.markFenced(control.observationFence).catch(() => {});
+      }
       this.triggerHooks(intent.runId);
       const run = this.store.getRun(intent.runId);
       if (!run) throw new Error(`Run '${intent.runId}' was not found.`);

@@ -15,6 +15,7 @@ import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { evaluateExpr } from "../evaluation/evaluator.js";
 import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
+import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { stableJson } from "../stable-json.js";
@@ -112,10 +113,11 @@ const DUE_SIGNAL_WAIT_WHERE = `
 
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 1;
+export const RUNTIME_STORAGE_VERSION = 2;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
+  observationLog: AgentObservationLog;
   close(): void;
   admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure>;
   getFrozenRun(runId: string): FrozenRun | undefined;
@@ -157,6 +159,7 @@ export type RunInspectionStoreRead = {
   cursor: {
     eventSequence: number;
     progressVersion: number;
+    observationVersion: number;
   };
   events: CommittedRuntimeEventRow[];
 };
@@ -347,6 +350,7 @@ export type RunNodeProgress = {
   context?: unknown;
   tokenUsage?: unknown;
   tools?: unknown;
+  intent?: unknown;
   updatedAt: string;
 };
 
@@ -517,6 +521,7 @@ export type WriteNodeProgressInput = {
   context?: JsonValue;
   tokenUsage?: JsonValue;
   tools?: JsonValue;
+  intent?: JsonValue;
 };
 
 type RunRow = {
@@ -889,6 +894,7 @@ async function reconcileTrash(store: RuntimeStore, layout: RuntimeLayout, db: Da
 
 class SqliteRuntimeStore implements RuntimeStore {
   private schedulerPort?: SqliteSchedulerStorePort;
+  private observationLogInstance?: AgentObservationLog;
   private readonly cwd: string;
 
   constructor(
@@ -901,6 +907,23 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   get scheduler(): SchedulerStorePort {
     return this.schedulerStore();
+  }
+
+  get observationLog(): AgentObservationLog {
+    this.observationLogInstance ??= new AgentObservationLog(this.db, this.layout);
+    return this.observationLogInstance;
+  }
+
+  async withInspectionSnapshot<T>(read: () => Promise<T>): Promise<T> {
+    this.db.exec("BEGIN");
+    try {
+      const result = await read();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private schedulerStore(): SqliteSchedulerStorePort {
@@ -1743,28 +1766,33 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead {
-    let transactionStarted = false;
+    const ownsTransaction = !this.db.isTransaction;
     try {
-      this.db.exec("BEGIN");
-      transactionStarted = true;
+      if (ownsTransaction) this.db.exec("BEGIN");
       const run = this.getRun(runId);
       const frozen = run ? this.getFrozenRun(runId) : undefined;
       const eventSequence = run ? this.getLastRunEventSequence(runId) : 0;
+      const observation = run
+        ? this.db.prepare("SELECT observation_version FROM runs WHERE id = ?").get(runId) as { observation_version: number }
+        : undefined;
       const artifacts = run ? this.listArtifacts(runId) : [];
       const events = run && afterEventSequence !== undefined
         ? this.getCommittedRuntimeEventsAfter(runId, afterEventSequence)
         : [];
-      this.db.exec("COMMIT");
-      transactionStarted = false;
+      if (ownsTransaction) this.db.exec("COMMIT");
       return {
         ...(run ? { run } : {}),
         ...(frozen ? { frozen } : {}),
         artifacts,
-        cursor: { eventSequence, progressVersion: run?.progressVersion ?? 0 },
+        cursor: {
+          eventSequence,
+          progressVersion: run?.progressVersion ?? 0,
+          observationVersion: observation?.observation_version ?? 0,
+        },
         events,
       };
     } catch (error) {
-      if (transactionStarted) this.db.exec("ROLLBACK");
+      if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
   }
@@ -1929,9 +1957,9 @@ class SqliteRuntimeStore implements RuntimeStore {
         INSERT INTO node_progress (
           run_id, node_key, node_id, attempt_id, attempt_no, kind, status, message,
           output_tail, output_total_bytes, output_truncated,
-          context_json, token_usage_json, tools_json, updated_at
+          context_json, token_usage_json, tools_json, intent_json, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, node_key) DO UPDATE SET
           node_id = excluded.node_id,
           attempt_id = excluded.attempt_id,
@@ -1945,6 +1973,7 @@ class SqliteRuntimeStore implements RuntimeStore {
           context_json = excluded.context_json,
           token_usage_json = excluded.token_usage_json,
           tools_json = excluded.tools_json,
+          intent_json = excluded.intent_json,
           updated_at = excluded.updated_at
       `).run(
         input.runId,
@@ -1961,6 +1990,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         input.context === undefined ? null : stableJsonLine(input.context),
         input.tokenUsage === undefined ? null : stableJsonLine(input.tokenUsage),
         input.tools === undefined ? null : stableJsonLine(input.tools),
+        input.intent === undefined ? null : stableJsonLine(input.intent),
         now,
       );
       this.db.prepare(`
@@ -2188,6 +2218,13 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as CountRow | undefined;
     return row?.count ?? 1;
   }
+}
+
+export function withRunInspectionSnapshot<T>(store: RuntimeStore, read: () => Promise<T>): Promise<T> {
+  if (!(store instanceof SqliteRuntimeStore)) {
+    throw new Error("Run inspection snapshots require the SQLite runtime store.");
+  }
+  return store.withInspectionSnapshot(read);
 }
 
 class SqliteSchedulerStorePort implements SchedulerStorePort {
@@ -2913,6 +2950,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           requestedTarget: directive.requestedTarget,
           target: directive.nodeKey,
           fencedAttemptId: directive.fencedAttemptId,
+          fenceEventSequence: directive.eventSequence,
+          fencedAt: directive.createdAt,
         };
         this.db.exec("COMMIT");
         return result;
@@ -2975,6 +3014,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         requestedTarget: input.target,
         target: attempt.nodeKey,
         fencedAttemptId: attempt.attemptId,
+        fenceEventSequence: current.version + 1,
+        fencedAt: now,
       };
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -3149,13 +3190,17 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   private requireSteerDirective(runId: string, steerId: string, nodeKey?: string): SteerDirective {
     const rows = this.db.prepare(`
-      SELECT payload_json
+      SELECT sequence, payload_json, created_at
       FROM run_events
       WHERE run_id = ? AND type = 'control.agent_steer_requested'
       ORDER BY sequence
-    `).all(runId) as Array<{ payload_json: string }>;
+    `).all(runId) as Array<{ sequence: number; payload_json: string; created_at: string }>;
     const matches = rows
-      .map(row => decodeSteerDirective(row.payload_json))
+      .map(row => ({
+        ...decodeSteerDirective(row.payload_json),
+        eventSequence: row.sequence,
+        createdAt: row.created_at,
+      }))
       .filter(directive => directive.steerId === steerId);
     if (matches.length !== 1) {
       throw new Error(`Run '${runId}' steer directive '${steerId}' does not resolve to exactly one durable control event.`);
@@ -3891,7 +3936,7 @@ function readRunNodeProgress(db: DatabaseSync, runId: string): RunNodeProgress[]
   const rows = db.prepare(`
     SELECT node_key, node_id, attempt_id, attempt_no, kind, status, message,
       output_tail, output_total_bytes, output_truncated,
-      context_json, token_usage_json, tools_json, updated_at
+      context_json, token_usage_json, tools_json, intent_json, updated_at
     FROM node_progress
     WHERE run_id = ?
     ORDER BY updated_at ASC, node_key ASC
@@ -3912,6 +3957,7 @@ function readRunNodeProgress(db: DatabaseSync, runId: string): RunNodeProgress[]
     context: row.context_json === null ? undefined : JSON.parse(String(row.context_json)) as unknown,
     tokenUsage: row.token_usage_json === null ? undefined : JSON.parse(String(row.token_usage_json)) as unknown,
     tools: row.tools_json === null ? undefined : JSON.parse(String(row.tools_json)) as unknown,
+    intent: row.intent_json === null ? undefined : JSON.parse(String(row.intent_json)) as unknown,
     updatedAt: String(row.updated_at),
   }) as RunNodeProgress);
 }
@@ -4224,6 +4270,8 @@ type SteerDirective = {
   nodeKey: string;
   fencedAttemptId: string;
   instruction: string;
+  eventSequence: number;
+  createdAt: string;
 };
 
 function resolveSteerTarget(
@@ -4384,7 +4432,7 @@ function assertAgentSteerSessionAvailable(
   }
 }
 
-function decodeSteerDirective(payloadJson: string): SteerDirective {
+function decodeSteerDirective(payloadJson: string): Omit<SteerDirective, "eventSequence" | "createdAt"> {
   const payload = decodeSchedulerPayload(payloadJson, "control.agent_steer_requested");
   if (typeof payload.steerId !== "string"
     || typeof payload.requestedTarget !== "string"
@@ -4538,7 +4586,9 @@ function initializeSchema(db: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       progress_version INTEGER NOT NULL DEFAULT 0,
-      progress_updated_at TEXT
+      progress_updated_at TEXT,
+      observation_version INTEGER NOT NULL DEFAULT 0,
+      observation_updated_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS run_inputs (
@@ -4717,8 +4767,82 @@ function initializeSchema(db: DatabaseSync): void {
       context_json TEXT,
       token_usage_json TEXT,
       tools_json TEXT,
+      intent_json TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (run_id, node_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_observation_attempts (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL REFERENCES node_attempts(attempt_id) ON DELETE CASCADE,
+      latest_observation_version INTEGER NOT NULL DEFAULT 0 CHECK (latest_observation_version >= 0),
+      retention_omitted_count INTEGER NOT NULL DEFAULT 0 CHECK (retention_omitted_count >= 0),
+      retention_floor_version INTEGER CHECK (retention_floor_version > 0),
+      PRIMARY KEY (run_id, attempt_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_observation_turns (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL REFERENCES node_attempts(attempt_id) ON DELETE CASCADE,
+      node_key TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      turn_no INTEGER NOT NULL CHECK (turn_no > 0),
+      prompt_kind TEXT NOT NULL CHECK (prompt_kind IN ('task', 'continuation', 'steer', 'repair')),
+      relative_path TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('recording', 'sealed', 'partial')),
+      degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0, 1)),
+      gap_count INTEGER NOT NULL DEFAULT 0 CHECK (gap_count >= 0),
+      provider_event_count INTEGER NOT NULL DEFAULT 0 CHECK (provider_event_count >= 0),
+      unknown_event_count INTEGER NOT NULL DEFAULT 0 CHECK (unknown_event_count >= 0),
+      last_record_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_record_sequence >= 0),
+      indexed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (indexed_bytes >= 0),
+      prompt_bytes INTEGER NOT NULL CHECK (prompt_bytes >= 0),
+      prompt_digest TEXT NOT NULL,
+      last_response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (last_response_bytes >= 0),
+      last_response_digest TEXT NOT NULL,
+      response_at_fence_bytes INTEGER CHECK (response_at_fence_bytes >= 0),
+      response_at_fence_digest TEXT,
+      fence_event_sequence INTEGER,
+      fenced_at TEXT,
+      fence_reason TEXT,
+      final_response_bytes INTEGER CHECK (final_response_bytes >= 0),
+      final_response_digest TEXT,
+      provider_status TEXT CHECK (provider_status IN ('completed', 'failed', 'cancelled', 'timed_out')),
+      current_json TEXT,
+      current_bytes INTEGER NOT NULL DEFAULT 0 CHECK (current_bytes >= 0),
+      current_updated_at TEXT,
+      current_observation_version INTEGER CHECK (current_observation_version > 0),
+      trace_enabled INTEGER NOT NULL DEFAULT 0 CHECK (trace_enabled IN (0, 1)),
+      trace_state TEXT NOT NULL DEFAULT 'none'
+        CHECK (trace_state IN ('none', 'recording', 'sealed', 'partial', 'published')),
+      trace_relative_path TEXT,
+      trace_artifact_relative_path TEXT,
+      trace_bytes INTEGER CHECK (trace_bytes >= 0),
+      trace_digest TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      sealed_bytes INTEGER CHECK (sealed_bytes >= 0),
+      sealed_digest TEXT,
+      PRIMARY KEY (run_id, attempt_id, turn_no),
+      UNIQUE (run_id, fence_event_sequence)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_observation_entries (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL,
+      turn_no INTEGER NOT NULL,
+      entry_id TEXT NOT NULL,
+      observation_version INTEGER NOT NULL CHECK (observation_version > 0),
+      source_sequence INTEGER NOT NULL CHECK (source_sequence >= 0),
+      observed_at TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('activity', 'gap')),
+      payload_json TEXT NOT NULL,
+      payload_bytes INTEGER NOT NULL CHECK (payload_bytes > 0),
+      PRIMARY KEY (run_id, attempt_id, entry_id),
+      FOREIGN KEY (run_id, attempt_id, turn_no)
+        REFERENCES agent_observation_turns(run_id, attempt_id, turn_no)
+        ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS hook_journal (
@@ -4757,6 +4881,12 @@ function initializeSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_signal_waits_status ON signal_waits(run_id, node_key, status);
     CREATE INDEX IF NOT EXISTS idx_signal_waits_deadline_status ON signal_waits(run_id, deadline_at, status);
     CREATE INDEX IF NOT EXISTS idx_node_progress_run_updated ON node_progress(run_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_observation_turns_node
+      ON agent_observation_turns(run_id, node_key, attempt_no, turn_no);
+    CREATE INDEX IF NOT EXISTS idx_agent_observation_entries_attempt
+      ON agent_observation_entries(run_id, attempt_id, observation_version, source_sequence, entry_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_observation_entries_target_time
+      ON agent_observation_entries(run_id, attempt_id, observed_at, entry_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_run_id ON hook_journal(run_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_triggered_at ON hook_journal(triggered_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_handler

@@ -20,7 +20,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `workflow viz <workflow>` | Optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
-| `runs inspect [run-id]` | `--all`, `--target`, `--follow`, `--interval`, and `--raw` as constrained below. |
+| `runs inspect [run-id]` | `--target`, `--timeline`, `--limit`, `--before`, `--follow`, `--after`, `--interval`, `--all`, and `--raw` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
@@ -100,7 +100,20 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Runtime-backed read-only commands MUST use Runtime read APIs.
 - Artifact listing MUST present Runtime-owned registry records, including each absolute public path, without reading bodies.
 - An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
-- Inspect MUST map default, `--all`, `--target`, and `--raw --json` to the corresponding Runtime query modes. Target/all conflict; raw requires JSON and conflicts with target, all, and follow.
+- Inspect MUST map default, `--all`, `--target`, `--target --timeline`, and `--raw --json` to the corresponding Runtime overview, all, target-summary, timeline, and raw query modes.
+- Ordinary CLI inspection MUST NOT invoke Runtime details mode.
+- `--timeline` MUST require `--target`.
+- `--timeline` MUST conflict with `--all` and `--raw`.
+- `--limit` and `--before` MUST require `--timeline`.
+- `--limit` MUST accept only integers from 1 through 50.
+- `--before` MUST conflict with `--follow` and `--after`.
+- `--after` MUST require `--follow`.
+- `--after` MUST conflict with `--before`.
+- `--all` MUST conflict with `--target`.
+- `--raw` MUST require JSON and conflict with target, timeline, all, and follow.
+- Empty or whitespace-only target input MUST fail as usage before reading Runtime state.
+- The CLI MUST pass target strings to Runtime without pre-resolution.
+- Raw structured inspection MUST NOT append Private Turn Evidence, private Trace bodies, or provider payloads.
 - Inspect interval MUST require follow, default to 1s, and reject values below 250ms.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
@@ -178,46 +191,74 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 ### Output And Exit Codes
 
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
-- Every machine-readable record MUST contain `schemaVersion: 1`, `ok`, and `phase`.
+- Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
+- Non-inspection result records and CLI-local inspection errors MUST retain `schemaVersion: 1`.
+- Successful inspection documents and follow records MUST retain the Runtime-owned `schemaVersion: 2`.
 - Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
-- Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission/snapshot, ordered update or resync records, and terminal output exactly once in `done`.
+- Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission or bounded snapshot, ordered delta/resync records, and a terminal done record.
+- Inspect follow with `--after` MUST omit the initial snapshot and resume from the supplied opaque revision.
+- An invalid `--after` or `--before` value MUST surface Runtime's typed invalid-cursor failure.
+- A non-usage one-shot inspection JSON failure MUST expose the Runtime-owned typed failure as `inspectionError`, preserving `runId`, `target`, and `candidateKeys` when present.
+- Public `inspectionError` MUST NOT expose a Runtime failure cause.
 - A foreground run admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
+- Target/timeline TTY follow MUST retain only bounded current activity and the bounded recent page while redrawing.
+- Target/timeline piped follow MUST append only semantic deltas and resynchronization records rather than repeating complete documents.
 - Non-TTY overview follow MUST emit its first dynamic-context omission summary immediately, retain only the latest omitted status per context during each subsequent 30-second window, and flush at the window, checkpoint, or terminal boundary; failures, timeouts, awaits, retries, and requeues remain immediate. TTY, JSON/NDJSON, `--all`, and `--target` follow MUST remain uncoalesced by this rule.
 - Non-TTY semantic lines MUST use only `+<elapsed>` as their leading marker and preserve intermediate transition order.
 - Default text inspection MUST preserve the authored tree while folding completed repetition and bounding ordinary expanded dynamic contexts to 20; failures, timeouts, awaits, and retries remain visible.
 - `runs inspect --all` text MUST render the Runtime-owned complete occurrence tree, including every authored conditional route and Parallel branch for each materialized occurrence plus every persisted Fanout item and Loop iteration.
-- Overview/all text inspection MUST present sections in `Tree`, `Active`, `Attention`, `Output`, then `Hooks` order after the run header and optional Agent-usage summary, omitting empty sections.
+- Overview/all text inspection MUST present sections in `Tree`, `Active`, `Attention`, `Output`, then `Hooks` order after the run header, omitting empty sections.
 - The Tree section MUST render Runtime item order and parent relationships. Node rows MUST show a status glyph, authored label, and kind; scope and fold rows MUST use structural labels, selection, or progress without pretending to be executable nodes.
 - Tree node edges MUST use `┌─`/`├─`/`└─`, while branch, item, round, and fold edges MUST use `├┄`/`└┄` and preserve ancestor continuation lines.
 - Each Tree row MUST contain at most one structural progress token plus optional duration, and MUST omit dynamic keys, Agent telemetry, prompts, failures, outputs, attempt history, scheduler events, cancellation reasons, and artifact bodies.
 - The Active section MUST contain only starting/running executable leaves in stable Tree order, MUST contain at most three rows in both overview and all mode, and MUST summarize any additional active rows.
-- The Agent pulse in Active and text checkpoints MUST contain at most the known turn, one Runtime-normalized recent tool intent, and the age of its latest visible Agent update, or `no update yet` when none is available; it MUST omit tool arguments/output, context, tokens, and model, and MUST NOT interpret age as liveness or `stalled`.
+- The Agent pulse in Active MUST contain at most the current turn identity and one active Runtime-normalized tool intent; it MUST be omitted when neither is available.
 - The Attention section MUST select the deepest failed/timed-out/awaiting root causes, suppress propagated failed ancestors and expected race/quorum cancellations, and contain stale state plus applicable inspect, Signal, retry, and fork guidance separately from the structural tree.
 - Overview/all Attention MUST show the Runtime-projected run failure with `acpus runs inspect <run-id> --target root` unless that failure is propagated through the visible item tree.
 - A run failure is propagated for text presentation only when a deepest actionable item has structured failure evidence and that item plus every visible ancestor through the top level is failed or timed out.
 - A completed top-level composite with a tolerated failed descendant MUST NOT suppress an independently projected run failure, even when their failure fields are equal.
 - Attention prompt, schema, and error previews MUST each be limited to 240 visible characters.
 - Overview/all text inspection MUST expose copyable dynamic targets only in Attention guidance; Active MUST remain human-readable and omit internal keys. Exact input, output, prompt, attempt, Agent, Signal, and artifact detail remains owned by `--target`.
-- Compact run headers MUST show direct fork source with optional target/unsafe-reuse and one `instances`/`attempts`/`turns` Agent usage line when present; unavailable Agent telemetry MUST remain explicit in JSON and MUST NOT add text lines or inferred values.
+- Compact run headers MUST show direct fork source with optional target/unsafe-reuse and MUST NOT show Agent usage totals.
 - Static target text with multiple matching contexts MUST show aggregate total/status counts and MUST NOT select the first same-node item for details.
-- Target text for a started Agent attempt MUST expose a copyable steer command using its exact attempt id.
-- Target attempt history MUST append a persisted cancellation reason to the attempt status when one exists.
+- Target-summary text MUST render the subject and state, at most one pulse headline, at most one hard attention item, optional degraded visibility, and at most two available operations without complete payloads or Runtime arrays.
+- Target-summary text MUST label controls `Available operations` rather than `Actions`.
+- Target-summary visibility MUST state that inspection may be incomplete and Agent execution health is unknown.
+- Target-summary text MUST contain no more than 1.5 KiB.
+- Target-summary text for a started Agent MUST expose timeline and a copyable steer command using its exact attempt id.
+- An exact Agent-attempt summary MUST render provider outcome and scheduler disposition independently.
+- An exact Agent-attempt summary MUST render its Private Turn Evidence directory, bounded per-turn boundary byte/digest metadata, and optional Trace state without reading private bodies.
+- A superseded attempt summary MUST render `superseded / operator_steered` through its state/reason.
 - Overview/all text inspection MUST append a `Hooks:` section only for terminal runs with hook history and MUST omit it when no hook rows exist.
-- Agent detail MUST show the authored Agent key, compact counters/activity, and at most three runtime-normalized intent-only tool commands without arguments or payloads.
-- Awaiting Signal Attention text MUST include a bounded prompt, payload guidance, and copyable signal command. A timed-out wait in overview/all MUST show its bounded failure and recovery actions without adding deadline detail; `--target` retains the exact deadline and complete Signal state.
+- Timeline text MUST render current activity followed by recent semantic entries and MUST NOT repeat an open current segment in recent history.
+- Timeline text MUST compress each excerpt to no more than 240 visible characters.
+- Timeline text MUST render one expired-history notice only when `retentionOmittedBefore` is greater than zero.
+- Agent timeline text MUST render at most one response tail, one plan or provider-reported-thought intent, and two active tools.
+- Timeline text MUST label provider-reported thought as `Reported thought` and schema repair as `Automatic output repair`.
+- A non-attempt Timeline MUST attribute current, activity, and control records to the compact attempt number when available and otherwise to a bounded attempt id.
+- An exact-attempt Timeline MUST NOT repeat that attempt identity on every current or recent row.
+- Timeline text MUST label superseded-provider activity observed after a durable fence as `post-fence/discarded`.
+- Timeline text MUST render degraded visibility only when present and MUST render `Visibility restored` when follow clears it.
+- Awaiting Signal target text MUST include bounded payload guidance and a copyable signal command. A timed-out wait in overview/all MUST show its bounded failure and recovery actions without adding deadline detail.
 - Completed workflow output MUST appear once as pretty JSON whenever the value is present, including `{}`; only `undefined` output is omitted.
-- Default inspection JSON MUST use the Runtime compact projection; target JSON adds exact attempt/signal/artifact detail, while raw JSON adds the unbounded run and frozen `WorkflowIR`.
+- Default inspection JSON MUST use the Runtime compact overview projection.
+- Overview, target, and Timeline text/JSON/NDJSON MUST omit context, token usage, aggregate Agent resource/usage counters, and elapsed observation-age telemetry. Exact-attempt Evidence MAY retain bounded turn-count metadata, and attempt/turn identities remain lifecycle attribution.
+- Target JSON MUST use the Runtime decision summary and MAY include only the Runtime-owned exact-attempt evidence capsule.
+- Timeline JSON MUST use the Runtime bounded current/recent projection, including attempt attribution, post-fence disposition, and optional degraded visibility.
+- Raw JSON MUST add the unbounded run, frozen `WorkflowIR`, and artifact registry without Private Turn Evidence, private Trace bodies, or provider raw payloads.
 - Inspection JSON/NDJSON MUST contain only structured envelope values and MUST NOT contain terminal connectors, section headings, or ANSI escapes added by text presentation.
 - Non-TTY overview/all follow MUST append a direct run failure and root inspection command unless the current snapshot satisfies the same propagated-failure rule; target follow MUST omit that run-wide fallback.
 - Non-TTY text follow MUST append the applicable operation command immediately after an awaiting, failed, or timed-out transition and MUST remain free of ANSI escapes.
 - Text follow MUST render each Runtime-projected `steered` change as one transition.
 - Text follow MUST NOT echo steering instructions.
+- Structured inspection and follow MUST NOT expose prompts, steering instructions, steering identities, Private Turn Evidence bodies, Trace frames, or raw provider payloads.
+- Target/timeline done records MUST NOT include unrelated workflow output; overview/all done records MUST include present workflow output once.
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
 - Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY and JSON output MUST remain free of ANSI styling.
@@ -229,8 +270,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 ## Verification
 
-- Cover leaf-local JSON capability boundaries, command grammar, option conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
-- `pnpm test:contract -- packages/cli`: verifies steer argument validation, structured and text receipt redaction, exact-attempt inspection guidance, and follow rendering.
+- Cover leaf-local JSON capability boundaries, inspection pagination/follow grammar conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
+- `pnpm test:contract -- packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, opaque follow resume, and bounded semantic-delta rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime shards.

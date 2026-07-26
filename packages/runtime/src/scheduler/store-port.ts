@@ -175,6 +175,8 @@ export type SchedulerSteerResult = {
   requestedTarget: string;
   target: string;
   fencedAttemptId: string;
+  fenceEventSequence: number;
+  fencedAt: string;
 };
 
 export type SchedulerStorePort = {

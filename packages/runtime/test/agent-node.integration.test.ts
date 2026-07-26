@@ -1,8 +1,9 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentTurnObservation, AgentTurnProgress, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -11,7 +12,7 @@ import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunIn
 import { executeAgentNode as executeAgentNodeProduction } from "../src/execution/agent-node.js";
 import { throwSchedulerStoreResult, type RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
 import type { HookContext } from "../src/hooks/context.js";
@@ -343,12 +344,15 @@ describe("agent node execution", () => {
               store,
               executeAgentTurn: async request => {
                 turns.push(request);
-                return tracedCompletedAgentTurn(turns.length === 1 ? taggedAgentOutput("1 2") : taggedAgentOutput("{\"ok\":true}"));
+                return observedAgentTurn(
+                  request,
+                  completedAgentTurn(turns.length === 1 ? taggedAgentOutput("1 2") : taggedAgentOutput("{\"ok\":true}")),
+                );
               },
             }))).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
             expect(turns).toHaveLength(2);
-            expect(turns.every(turn => turn.captureTrace === true)).toBe(true);
+            expect(turns.every(turn => turn.captureTrace === undefined)).toBe(true);
             const traces = store.listArtifacts(run.id).filter(artifact => artifact.path.endsWith(".trace.jsonl"));
             expect(traces).toHaveLength(2);
             expect(traces.map(artifact => artifact.mediaType)).toEqual(["application/x-ndjson", "application/x-ndjson"]);
@@ -387,7 +391,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("keeps a partial trace artifact when a traced provider turn fails", async () => {
+    it("publishes a terminal trace artifact when a traced provider turn fails", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-failed-trace", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -398,15 +402,14 @@ describe("agent node execution", () => {
               runId: run.id,
               ownerId: "owner-a",
               store,
-              executeAgentTurn: async () => ({
-                status: "failed",
-                failure: { kind: "provider_exit", message: "provider disconnected" },
-                responseText: "partial",
-                stderr: "",
-                summary: agentSummary(1),
-                timing: agentTiming(2),
-                trace: agentTrace("failed", "partial", "provider disconnected"),
-              }),
+              executeAgentTurn: async request => observedAgentTurn(request, {
+                  status: "failed",
+                  failure: { kind: "provider_exit", message: "provider disconnected" },
+                  responseText: "partial",
+                  stderr: "",
+                  summary: agentSummary(1),
+                  timing: agentTiming(2),
+                }),
             })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
             const trace = store.listArtifacts(run.id).find(artifact => artifact.path.endsWith(".trace.jsonl"));
@@ -430,6 +433,62 @@ describe("agent node execution", () => {
         });
       });
 
+    it("keeps a fenced trace private instead of publishing an artifact", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-fenced-trace", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const controller = new AbortController();
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const executor = createRuntimeNodeExecutor({
+              cwd: workspace,
+              ir: prepared.ir,
+              scope: {},
+              store,
+              executeAgentTurn: async request => {
+                expect(request.captureTrace).toBeUndefined();
+                const result = observedAgentTurn(
+                  request,
+                  completedAgentTurn(taggedAgentOutput("{\"ok\":true}")),
+                );
+                controller.abort();
+                return result;
+              },
+            });
+
+            await expect(executor.execute({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              attemptId: "attempt_fenced_trace",
+              attemptNo: 1,
+              ownerEpoch: 1,
+              signal: controller.signal,
+            })).resolves.toEqual({ status: "cancelled", reason: "paused" });
+
+            expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".trace.jsonl"))).toBe(false);
+            const trace = runtimeRow(
+              workspace,
+              `SELECT trace_state, trace_relative_path
+               FROM agent_observation_turns
+               WHERE run_id = ? AND turn_no = 1`,
+              run.id,
+            ) as { trace_state: string; trace_relative_path: string };
+            expect(trace.trace_state).toBe("sealed");
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const privateTrace = await readFile(join(runDir, trace.trace_relative_path), "utf8");
+            expect(privateTrace.trim().split("\n").map(line => JSON.parse(line).type)).toEqual([
+              "turn_start",
+              "message",
+              "turn_end",
+            ]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
     it("propagates trace registry failures without committing an ordinary node failure", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-trace-write-error", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, tracedAgentWorkflow());
@@ -447,7 +506,10 @@ describe("agent node execution", () => {
               runId: run.id,
               ownerId: "owner-a",
               store,
-              executeAgentTurn: async () => tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}")),
+              executeAgentTurn: async request => observedAgentTurn(
+                request,
+                completedAgentTurn(taggedAgentOutput("{\"ok\":true}")),
+              ),
             })).rejects.toBe(sentinel);
 
             expect(store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt")).toEqual([]);
@@ -455,7 +517,17 @@ describe("agent node execution", () => {
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run directory");
             const files = await readdir(runDir, { recursive: true });
-            expect(files.some(path => path.endsWith(".trace.jsonl"))).toBe(false);
+            expect(files.filter(path => path.startsWith("artifacts/") && path.endsWith(".trace.jsonl"))).toEqual([]);
+            const privateTrace = runtimeRow(
+              workspace,
+              `SELECT trace_state, trace_relative_path
+               FROM agent_observation_turns
+               WHERE run_id = ? AND turn_no = 1`,
+              run.id,
+            ) as { trace_state: string; trace_relative_path: string };
+            expect(privateTrace.trace_state).toBe("sealed");
+            expect(privateTrace.trace_relative_path).toContain("evidence/agents/");
+            expect((await stat(join(runDir, privateTrace.trace_relative_path))).isFile()).toBe(true);
           } finally {
             registration.mockRestore();
             store.close();
@@ -476,7 +548,7 @@ describe("agent node execution", () => {
               scope: {},
               store,
               executeAgentTurn: async request => {
-                request.onProgress?.({
+                const reportedProgress: AgentTurnProgress = {
                   responseText: "hello from a long running agent",
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: {
@@ -496,9 +568,35 @@ describe("agent node execution", () => {
                       })),
                     },
                   },
+                };
+                request.onObservation?.({
+                  event: {
+                    schemaVersion: 1,
+                    sequence: 0,
+                    observedAt: reportedProgress.updatedAt,
+                    elapsedMs: 0,
+                    type: "plan",
+                    value: "Run the focused test, then inspect the diff.",
+                  },
+                  progress: reportedProgress,
                 });
-                const progress = store.getRun(run.id)?.dynamic?.progress;
-                expect(progress).toEqual([
+                request.onObservation?.({
+                  event: {
+                    schemaVersion: 1,
+                    sequence: 1,
+                    observedAt: reportedProgress.updatedAt,
+                    elapsedMs: 1,
+                    type: "tool",
+                    action: "update",
+                    toolCallId: "tool-4",
+                    status: "running",
+                    rawOutput: "4 tests passed",
+                  },
+                  progress: reportedProgress,
+                });
+                request.onProgress?.(reportedProgress);
+                const persistedProgress = store.getRun(run.id)?.dynamic?.progress;
+                expect(persistedProgress).toEqual([
                   expect.objectContaining({
                     nodeKey: "review.dynamic",
                     nodeId: "review",
@@ -524,9 +622,15 @@ describe("agent node execution", () => {
                           toolName: "Bash",
                           status: "running",
                           inputPreview: "{\"cmd\":\"pnpm test\"}",
+                          output: "4 tests passed",
                         }),
                       ],
                     }),
+                    intent: {
+                      kind: "plan",
+                      value: "Run the focused test, then inspect the diff.",
+                      updatedAt: "2026-07-01T00:00:00.000Z",
+                    },
                   }),
                 ]);
                 return completedAgentTurn(taggedAgentOutput("{\"attempt\":\"1\"}"));
@@ -1278,6 +1382,963 @@ JSON Schema:`);
             const recorded = await Promise.all(turnArtifacts.map(artifact => readJsonFile(artifact.path))) as Array<{ prompt: string }>;
             expect(recorded.map(artifact => artifact.prompt)).toEqual(turns.map(turn => turn.prompt));
             expect(JSON.stringify(recorded)).not.toContain("steer-must-remain-internal");
+            const evidenceRows = runtimeRows(
+              workspace,
+              `SELECT turn_no, prompt_kind, relative_path, state, provider_status
+               FROM agent_observation_turns
+               WHERE run_id = ?
+               ORDER BY turn_no`,
+              run.id,
+            ) as Array<{
+              turn_no: number;
+              prompt_kind: string;
+              relative_path: string;
+              state: string;
+              provider_status: string;
+            }>;
+            expect(evidenceRows).toEqual([
+              expect.objectContaining({ turn_no: 1, prompt_kind: "steer", state: "sealed", provider_status: "completed" }),
+              expect.objectContaining({ turn_no: 2, prompt_kind: "repair", state: "sealed", provider_status: "completed" }),
+            ]);
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const journals = await Promise.all(evidenceRows.map(async row =>
+              (await readFile(join(runDir, row.relative_path), "utf8")).trim().split("\n").map(line => JSON.parse(line)),
+            ));
+            expect(journals.map(records => records[0]?.prompt)).toEqual(turns.map(turn => turn.prompt));
+            expect(journals.map(records => records.map(record => record.type))).toEqual([
+              ["turn_start", "turn_end"],
+              ["turn_start", "turn_end"],
+            ]);
+            expect(JSON.stringify(journals)).not.toContain("steer-must-remain-internal");
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("seals the response at a durable steer fence and retains later provider output privately", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-steer-evidence", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const controller = new AbortController();
+          let releaseProvider!: () => void;
+          const providerRelease = new Promise<void>(resolve => {
+            releaseProvider = resolve;
+          });
+          let providerStarted!: () => void;
+          const started = new Promise<void>(resolve => {
+            providerStarted = resolve;
+          });
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const node = prepared.ir.root.nodes.find(candidate => candidate.id === "review");
+            if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", node.id);
+            agentMocks.executeAgentTurn.mockImplementation(async request => {
+              request.onObservation?.(agentObservation(0, "response before steer", "response before steer"));
+              providerStarted();
+              await providerRelease;
+              request.onObservation?.(agentObservation(1, " and after steer", "response before steer and after steer"));
+              return completedAgentTurn("response before steer and after steer");
+            });
+
+            const execution = executeAgentNodeProduction(node, {}, {
+              cwd: workspace,
+              runId: run.id,
+              nodeKey: "review.dynamic",
+              ...attempt,
+              agents: prepared.ir.agents,
+              hostPolicy: loadAgentHostPolicy(process.env),
+              store,
+              signal: controller.signal,
+            });
+            await started;
+            const steered = store.scheduler.trySteerAgent({
+              runId: run.id,
+              ownerEpoch: attempt.ownerEpoch,
+              idempotencyKey: "steer:evidence",
+              steerId: "steer-private-only",
+              target: attempt.attemptId,
+              instruction: "Use the shorter argument.",
+            })._unsafeUnwrap();
+            const fenceFlush = store.observationLog.markFenced({
+              runId: run.id,
+              attemptId: attempt.attemptId,
+              eventSequence: steered.fenceEventSequence,
+              committedAt: steered.fencedAt,
+              reason: "operator_steered",
+            });
+            controller.abort();
+            releaseProvider();
+            await fenceFlush;
+
+            const result = await execution;
+            expect(result.isErr() && result.error).toMatchObject({
+              type: "cancelled",
+              message: "Agent turn was aborted.",
+            });
+            expect(store.listArtifacts(run.id).filter(artifact => artifact.nodeKey === "review.dynamic")).toEqual([]);
+
+            const evidence = runtimeRow(
+              workspace,
+              `SELECT relative_path, state, degraded, gap_count, response_at_fence_bytes,
+                      final_response_bytes, provider_status, fence_event_sequence
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            ) as {
+              relative_path: string;
+              state: string;
+              degraded: number;
+              gap_count: number;
+              response_at_fence_bytes: number;
+              final_response_bytes: number;
+              provider_status: string;
+              fence_event_sequence: number;
+            };
+            expect(evidence).toMatchObject({
+              state: "sealed",
+              degraded: 0,
+              gap_count: 0,
+              response_at_fence_bytes: Buffer.byteLength("response before steer"),
+              final_response_bytes: Buffer.byteLength("response before steer and after steer"),
+              provider_status: "completed",
+              fence_event_sequence: steered.fenceEventSequence,
+            });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, evidence.relative_path), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual([
+              "turn_start",
+              "fence",
+              "turn_end",
+            ]);
+            expect(records[1]).toMatchObject({
+              reason: "operator_steered",
+              schedulerEventSequence: steered.fenceEventSequence,
+              responseAtFence: "response before steer",
+            });
+            expect(records.at(-1)).toMatchObject({
+              providerStatus: "completed",
+              finalObservedResponse: "response before steer and after steer",
+            });
+            const semantic = runtimeRows(
+              workspace,
+              `SELECT payload_json
+               FROM agent_observation_entries
+               WHERE run_id = ? AND attempt_id = ?
+               ORDER BY observation_version, source_sequence`,
+              run.id,
+              attempt.attemptId,
+            ).map(row => JSON.parse(String((row as { payload_json: string }).payload_json)));
+            expect(semantic.map(payload => payload.summary.text)).toEqual([
+              "response before steer",
+              " and after steer",
+            ]);
+            expect(JSON.stringify(records)).not.toContain("steer-private-only");
+            if (process.platform !== "win32") {
+              expect((await stat(join(runDir, "evidence"))).mode & 0o777).toBe(0o700);
+              expect((await stat(join(runDir, evidence.relative_path))).mode & 0o777).toBe(0o600);
+            }
+            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata
+              .find(entry => entry.attemptId === attempt.attemptId && entry.kind === "agent_attempt")
+              ?.metadata as AgentAttemptMetadata | undefined;
+            expect(metadata).toMatchObject({
+              status: "cancelled",
+              turnCount: 1,
+              turns: [expect.objectContaining({ turn: 1, status: "completed" })],
+            });
+            expect(metadata?.turns?.[0]).not.toHaveProperty("turnArtifact");
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("keeps trace-disabled evidence bounded across many provider frames", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-queue", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const node = prepared.ir.root.nodes.find(candidate => candidate.id === "review");
+            if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", node.id);
+            agentMocks.executeAgentTurn.mockImplementation(async request => {
+              for (let sequence = 0; sequence < 80; sequence += 1) {
+                const observedAt = new Date(Date.UTC(2026, 6, 1) + sequence).toISOString();
+                request.onObservation?.({
+                  event: {
+                    schemaVersion: 1,
+                    sequence,
+                    observedAt,
+                    elapsedMs: sequence,
+                    type: "message",
+                    channel: "assistant",
+                    content: "x".repeat(16 * 1024),
+                  },
+                  progress: {
+                    responseText: "partial",
+                    summary: agentSummary(sequence + 1),
+                    updatedAt: observedAt,
+                  },
+                });
+              }
+              return completedAgentTurn(taggedAgentOutput("{\"attempt\":\"1\"}"));
+            });
+
+            const result = await executeAgentNodeProduction(node, {}, {
+              cwd: workspace,
+              runId: run.id,
+              nodeKey: "review.dynamic",
+              ...attempt,
+              agents: prepared.ir.agents,
+              hostPolicy: loadAgentHostPolicy(process.env),
+              store,
+              signal: new AbortController().signal,
+            });
+            expect(result.isOk() ? result.value : result.error).toEqual({ attempt: "1" });
+
+            const evidence = runtimeRow(
+              workspace,
+              `SELECT relative_path, degraded, gap_count, provider_event_count
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            ) as {
+              relative_path: string;
+              degraded: number;
+              gap_count: number;
+              provider_event_count: number;
+            };
+            expect(evidence).toMatchObject({
+              degraded: 0,
+              gap_count: 0,
+              provider_event_count: 80,
+            });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const evidencePath = join(runDir, evidence.relative_path);
+            const records = (await readFile(evidencePath, "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line)) as Array<{ type: string }>;
+            expect(records.map(record => record.type)).toEqual(["turn_start", "turn_end"]);
+            expect((await stat(evidencePath)).size).toBeLessThan(32 * 1024);
+            const projection = runtimeRow(
+              workspace,
+              `SELECT COUNT(*) AS count, COALESCE(SUM(payload_bytes), 0) AS bytes
+               FROM agent_observation_entries
+               WHERE run_id = ? AND attempt_id = ?`,
+              run.id,
+              attempt.attemptId,
+            ) as { count: number; bytes: number };
+            expect(projection.count).toBe(1);
+            expect(projection.bytes).toBeLessThanOrEqual(2 * 1024);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("marks unknown provider events degraded without persisting their payload", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-unknown", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            agentMocks.executeAgentTurn.mockImplementation(async request => {
+              const observation = agentObservation(0, "", "");
+              request.onObservation?.({
+                ...observation,
+                event: {
+                  ...observation.event,
+                  type: "unknown",
+                  tag: "provider-extension",
+                  value: { private: true },
+                },
+              });
+              return completedAgentTurn("provider response");
+            });
+
+            const captured = await store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-unknown",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-unknown",
+              permissionMode: "approve-all",
+            });
+
+            expect(captured.evidence).toMatchObject({
+              state: "sealed",
+              completeness: "degraded",
+              gapCount: 0,
+            });
+            const evidence = runtimeRow(
+              workspace,
+              `SELECT relative_path, degraded, gap_count, unknown_event_count
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            ) as {
+              relative_path: string;
+              degraded: number;
+              gap_count: number;
+              unknown_event_count: number;
+            };
+            expect(evidence).toMatchObject({
+              degraded: 1,
+              gap_count: 0,
+              unknown_event_count: 1,
+            });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const body = await readFile(join(runDir, evidence.relative_path), "utf8");
+            const records = body
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line)) as Array<{ type: string }>;
+            expect(records.map(record => record.type)).toEqual(["turn_start", "turn_end"]);
+            expect(body).not.toContain("provider-extension");
+            expect(body).not.toContain("\"private\":true");
+            expect(runtimeRow(
+              workspace,
+              `SELECT COUNT(*) AS count
+               FROM agent_observation_entries
+               WHERE run_id = ? AND attempt_id = ?`,
+              run.id,
+              attempt.attemptId,
+            )).toEqual({ count: 0 });
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("records an incomplete crash tail as a durable recovery gap", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-incomplete-tail", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          let store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const node = prepared.ir.root.nodes.find(candidate => candidate.id === "review");
+            if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+            await expect(executeAgentNode(node, {}, {
+                cwd: workspace,
+                runId: run.id,
+                nodeKey: "review.dynamic",
+                agents: prepared.ir.agents,
+                store,
+                executeTurn: async () => completedAgentTurn(taggedAgentOutput("{\"attempt\":\"1\"}")),
+              })).resolves.toEqual({ attempt: "1" });
+            const evidence = runtimeRow(
+              workspace,
+              `SELECT attempt_id, relative_path
+               FROM agent_observation_turns
+               WHERE run_id = ? AND turn_no = 1`,
+              run.id,
+            ) as { attempt_id: string; relative_path: string };
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const partialPath = `${join(runDir, evidence.relative_path)}.partial`;
+            await rename(join(runDir, evidence.relative_path), partialPath);
+            await writeFile(partialPath, "{\"schemaVersion\":1,\"type\":\"provider\"", { flag: "a" });
+            store.close();
+
+            const db = new DatabaseSync(runtimeDatabasePath(workspace));
+            try {
+              db.prepare(`
+                UPDATE agent_observation_turns
+                SET relative_path = ?, state = 'recording'
+                WHERE run_id = ? AND attempt_id = ? AND turn_no = 1
+              `).run(`${evidence.relative_path}.partial`, run.id, evidence.attempt_id);
+              db.prepare(`
+                UPDATE node_attempts
+                SET status = 'completed', finished_at = ?
+                WHERE run_id = ? AND attempt_id = ?
+              `).run("2026-07-01T00:00:10.000Z", run.id, evidence.attempt_id);
+            } finally {
+              db.close();
+            }
+            store = await openRuntimeStore(workspace);
+            const recovered = await store.observationLog.recoverPartialTurns(run.id);
+            expect(recovered.isOk() ? undefined : recovered.error).toBeUndefined();
+            expect(runtimeRow(
+              workspace,
+              `SELECT state, degraded, gap_count
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              evidence.attempt_id,
+            )).toEqual({ state: "sealed", degraded: 1, gap_count: 1 });
+            const recoveredRecords = (await readFile(join(runDir, evidence.relative_path), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => {
+                try {
+                  return JSON.parse(line);
+                } catch {
+                  return undefined;
+                }
+              })
+              .filter(Boolean);
+            expect(recoveredRecords.at(-1)).toMatchObject({
+              type: "gap",
+              dropped: 1,
+              reason: "incomplete_tail_recovery",
+            });
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("persists degraded partial evidence when sealing a writable turn fails", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-seal-failure", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            const before = runtimeRow(
+              workspace,
+              "SELECT observation_version FROM runs WHERE id = ?",
+              run.id,
+            ) as { observation_version: number };
+            vi.spyOn(store.observationLog, "finishTurn")
+              .mockRejectedValueOnce(new Error("simulated observation seal failure"));
+            agentMocks.executeAgentTurn.mockResolvedValue(completedAgentTurn("provider response"));
+
+            await expect(store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-seal-failure",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-seal-failure",
+              permissionMode: "approve-all",
+            })).rejects.toThrow("simulated observation seal failure");
+
+            expect(agentMocks.executeAgentTurn).toHaveBeenCalledOnce();
+            const evidence = runtimeRow(
+              workspace,
+              `SELECT relative_path, state, degraded, gap_count, provider_event_count,
+                      last_record_sequence, provider_status, final_response_bytes
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            ) as {
+              relative_path: string;
+              state: string;
+              degraded: number;
+              gap_count: number;
+              provider_event_count: number;
+              last_record_sequence: number;
+              provider_status: string | null;
+              final_response_bytes: number | null;
+            };
+            expect(evidence).toEqual({
+              relative_path: `evidence/agents/${attempt.attemptId}/turn-001.evidence.jsonl.partial`,
+              state: "partial",
+              degraded: 1,
+              gap_count: 1,
+              provider_event_count: 0,
+              last_record_sequence: 1,
+              provider_status: null,
+              final_response_bytes: null,
+            });
+            expect(runtimeRow(
+              workspace,
+              "SELECT observation_version FROM runs WHERE id = ?",
+              run.id,
+            )).toEqual({ observation_version: before.observation_version + 2 });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, evidence.relative_path), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual(["turn_start", "gap"]);
+            expect(records.at(-1)).toMatchObject({
+              dropped: 1,
+              reason: "evidence_capture_failed",
+            });
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("returns degraded partial evidence when a fenced turn cannot seal", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-fenced-seal-failure", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          let releaseProvider!: () => void;
+          const providerRelease = new Promise<void>(resolve => {
+            releaseProvider = resolve;
+          });
+          let providerStarted!: () => void;
+          const started = new Promise<void>(resolve => {
+            providerStarted = resolve;
+          });
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            const before = runtimeRow(
+              workspace,
+              "SELECT observation_version FROM runs WHERE id = ?",
+              run.id,
+            ) as { observation_version: number };
+            vi.spyOn(store.observationLog, "finishTurn")
+              .mockRejectedValueOnce(new Error("simulated fenced seal failure"));
+            agentMocks.executeAgentTurn.mockImplementation(async () => {
+              providerStarted();
+              await providerRelease;
+              return completedAgentTurn("late provider response");
+            });
+
+            const capture = store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-fenced-seal-failure",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-fenced-seal-failure",
+              permissionMode: "approve-all",
+            });
+            await started;
+            await store.observationLog.markFenced({
+              runId: run.id,
+              attemptId: attempt.attemptId,
+              eventSequence: 202,
+              committedAt: "2026-07-25T00:00:00.000Z",
+              reason: "operator_steered",
+            });
+            expect(runtimeRow(
+              workspace,
+              `SELECT fence_event_sequence, state
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            )).toEqual({ fence_event_sequence: 202, state: "recording" });
+            releaseProvider();
+            const captured = await capture;
+
+            expect(captured.result.status).toBe("completed");
+            expect(captured.evidence).toMatchObject({
+              state: "partial",
+              completeness: "degraded",
+              gapCount: 1,
+              fenceEventSequence: 202,
+              fenceReason: "operator_steered",
+            });
+            expect(captured.evidence.providerStatus).toBeUndefined();
+            expect(runtimeRow(
+              workspace,
+              `SELECT state, degraded, gap_count, fence_event_sequence,
+                      provider_status, final_response_bytes
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              attempt.attemptId,
+            )).toEqual({
+              state: "partial",
+              degraded: 1,
+              gap_count: 1,
+              fence_event_sequence: 202,
+              provider_status: null,
+              final_response_bytes: null,
+            });
+            expect(runtimeRow(
+              workspace,
+              "SELECT observation_version FROM runs WHERE id = ?",
+              run.id,
+            )).toEqual({ observation_version: before.observation_version + 3 });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, captured.evidence.relativePath), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual(["turn_start", "fence", "gap"]);
+          } finally {
+            releaseProvider?.();
+            store.close();
+          }
+        });
+      });
+
+    it.skipIf(process.platform === "win32")("rejects a runs-root symlink before provider dispatch", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-runs-root-symlink", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const runsRoot = dirname(runDir);
+            const regularRunsRoot = `${runsRoot}.regular`;
+            const orphanRelativePath = join(
+              "evidence",
+              "agents",
+              "orphan-attempt",
+              "turn-001.evidence.jsonl.partial",
+            );
+            await mkdir(dirname(join(runDir, orphanRelativePath)), { recursive: true });
+            await writeFile(join(runDir, orphanRelativePath), "{\"orphan\":true}\n");
+            await rename(runsRoot, regularRunsRoot);
+            try {
+              await symlink(regularRunsRoot, runsRoot, "dir");
+              agentMocks.executeAgentTurn.mockResolvedValue(completedAgentTurn("must not run"));
+
+              const recovered = await store.observationLog.recoverPartialTurns(run.id);
+              expect(recovered.isErr() ? recovered.error.message : undefined)
+                .toMatch(/Runtime runs root .* is not a regular directory/);
+              await expect(readFile(join(regularRunsRoot, run.id, orphanRelativePath), "utf8"))
+                .resolves.toBe("{\"orphan\":true}\n");
+
+              await expect(store.observationLog.captureTurn({
+                runId: run.id,
+                nodeId: "review",
+                nodeKey: "review.dynamic",
+                ...attempt,
+                turn: 1,
+                promptKind: "task",
+                agentKey: "reviewer",
+                sessionName: "session-runs-root-symlink",
+                cwd: workspace,
+                trace: false,
+              }, {
+                agent: { kind: "named", name: "mock" },
+                prompt: "review",
+                cwd: workspace,
+                env: {},
+                sessionName: "session-runs-root-symlink",
+                permissionMode: "approve-all",
+              })).rejects.toThrow(/Runtime runs root .* is not a regular directory/);
+
+              expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
+              expect(runtimeRows(
+                workspace,
+                "SELECT attempt_id FROM agent_observation_turns WHERE run_id = ?",
+                run.id,
+              )).toEqual([]);
+            } finally {
+              await unlink(runsRoot);
+              await rename(regularRunsRoot, runsRoot);
+            }
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("does not dispatch a provider when durable observation admission rejects the attempt", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-admission", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            await expect(store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              attemptId: "attempt_not_started",
+              attemptNo: 1,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-not-started",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-not-started",
+              permissionMode: "approve-all",
+            })).rejects.toThrow("is not the started Agent attempt");
+            expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
+            expect(runtimeRows(
+              workspace,
+              "SELECT attempt_id FROM agent_observation_turns WHERE run_id = ?",
+              run.id,
+            )).toEqual([]);
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            expect((await readdir(runDir, { recursive: true })).filter(path => path.endsWith(".partial"))).toEqual([]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("serializes a steer fence with a turn whose durable admission is still publishing", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-admission-fence", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            let admissionReached!: () => void;
+            const admitted = new Promise<void>(resolve => {
+              admissionReached = resolve;
+            });
+            let releaseAdmission!: () => void;
+            const admissionRelease = new Promise<void>(resolve => {
+              releaseAdmission = resolve;
+            });
+            const beginTurn = store.observationLog.beginTurn.bind(store.observationLog);
+            vi.spyOn(store.observationLog, "beginTurn").mockImplementation(async (writer, record) => {
+              await beginTurn(writer, record);
+              admissionReached();
+              await admissionRelease;
+            });
+            const capture = store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-admission-fence",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-admission-fence",
+              permissionMode: "approve-all",
+            });
+            await admitted;
+            const fence = store.observationLog.markFenced({
+              runId: run.id,
+              attemptId: attempt.attemptId,
+              eventSequence: 101,
+              committedAt: "2026-07-25T00:00:00.000Z",
+              reason: "operator_steered",
+            });
+            releaseAdmission();
+            const [{ evidence }] = await Promise.all([capture, fence]);
+
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, evidence.relativePath), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual([
+              "turn_start",
+              "fence",
+              "turn_end",
+            ]);
+            expect(evidence).toMatchObject({
+              state: "sealed",
+              fenceEventSequence: 101,
+              fenceReason: "operator_steered",
+              providerStatus: "cancelled",
+            });
+            expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("appends an exact steer fence after provider settle while scheduler commit is pending", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-post-settle-fence", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            let sealReached!: () => void;
+            const sealing = new Promise<void>(resolve => {
+              sealReached = resolve;
+            });
+            let releaseSeal!: () => void;
+            const sealRelease = new Promise<void>(resolve => {
+              releaseSeal = resolve;
+            });
+            const finishTurn = store.observationLog.finishTurn.bind(store.observationLog);
+            vi.spyOn(store.observationLog, "finishTurn").mockImplementation(async (writer, result, mutation) => {
+              sealReached();
+              await sealRelease;
+              return finishTurn(writer, result, mutation);
+            });
+            agentMocks.executeAgentTurn.mockImplementation(async request => {
+              request.onObservation?.(agentObservation(
+                0,
+                "final-before-commit",
+                "final-before-commit",
+              ));
+              return completedAgentTurn("final-before-commit");
+            });
+
+            const capture = store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-post-settle-fence",
+              cwd: workspace,
+              trace: false,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-post-settle-fence",
+              permissionMode: "approve-all",
+            });
+            await sealing;
+            const fence = store.observationLog.markFenced({
+              runId: run.id,
+              attemptId: attempt.attemptId,
+              eventSequence: 303,
+              committedAt: "2026-07-25T00:00:00.000Z",
+              reason: "operator_steered",
+            });
+            releaseSeal();
+            const [{ evidence }] = await Promise.all([capture, fence]);
+
+            expect(evidence).toMatchObject({
+              state: "sealed",
+              completeness: "complete",
+              gapCount: 0,
+              providerStatus: "completed",
+            });
+            const projection = (await store.observationLog.readInspectionProjection({
+              runId: run.id,
+              attemptIds: [attempt.attemptId],
+            }))._unsafeUnwrap();
+            expect(projection.turns[0]).toMatchObject({
+              fenceEventSequence: 303,
+              responseAtFenceBytes: Buffer.byteLength("final-before-commit"),
+              completeness: "complete",
+              gapCount: 0,
+            });
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, evidence.relativePath), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual(["turn_start", "turn_end", "fence"]);
+            expect(records.at(-1)).toMatchObject({
+              schedulerEventSequence: 303,
+              responseAtFence: "final-before-commit",
+            });
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("records a fallback fence when the signal is already aborted after turn admission", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-observation-pre-abort", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const attempt = ensureTestAttempt(store, run.id, "review.dynamic", "review");
+            const controller = new AbortController();
+            controller.abort();
+            agentMocks.executeAgentTurn.mockResolvedValue({
+              status: "cancelled",
+              message: "Agent turn was aborted before dispatch.",
+              responseText: "",
+              stderr: "",
+              summary: agentSummary(0),
+              timing: agentTiming(0),
+            });
+
+            const captured = await store.observationLog.captureTurn({
+              runId: run.id,
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              ...attempt,
+              turn: 1,
+              promptKind: "task",
+              agentKey: "reviewer",
+              sessionName: "session-pre-abort",
+              cwd: workspace,
+              trace: false,
+              signal: controller.signal,
+            }, {
+              agent: { kind: "named", name: "mock" },
+              prompt: "review",
+              cwd: workspace,
+              env: {},
+              sessionName: "session-pre-abort",
+              permissionMode: "approve-all",
+              signal: controller.signal,
+            });
+
+            expect(captured.result.status).toBe("cancelled");
+            expect(captured.evidence).toMatchObject({
+              state: "sealed",
+              fenceReason: "runtime_abort",
+              responseAtFenceBytes: 0,
+            });
+            expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const records = (await readFile(join(runDir, captured.evidence.relativePath), "utf8"))
+              .trim()
+              .split("\n")
+              .map(line => JSON.parse(line));
+            expect(records.map(record => record.type)).toEqual(["turn_start", "fence", "turn_end"]);
           } finally {
             store.close();
           }
@@ -1830,9 +2891,9 @@ JSON Schema:`);
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
               status: "cancelled",
-              turnCount: 0,
+              turnCount: 1,
               message: "Agent turn was aborted.",
-              turns: [],
+              turns: [expect.objectContaining({ turn: 1, status: "completed" })],
             });
             expect(store.listArtifacts(run.id).some(artifact => /turn-001\.json$/.test(artifact.path))).toBe(false);
           } finally {
@@ -1862,6 +2923,7 @@ JSON Schema:`);
               wakeup,
               executeAgentTurn: async request => {
                 turns.push(request);
+                request.onObservation?.(agentObservation(0, "partial response\n", "partial response\n"));
                 setTimeout(() => {
                   throwingSchedulerStore(store.scheduler).pauseRun({
                     runId: run.id,
@@ -1903,9 +2965,24 @@ JSON Schema:`);
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
               status: "cancelled",
-              turnCount: 0,
+              turnCount: 1,
               message: "paused by operator",
-              turns: [],
+              turns: [expect.objectContaining({ turn: 1, status: "cancelled" })],
+            });
+            expect(runtimeRow(
+              workspace,
+              `SELECT state, fence_reason, response_at_fence_bytes, final_response_bytes, provider_status
+               FROM agent_observation_turns
+               WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
+              run.id,
+              Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)
+                .find(attempt => attempt.attemptNo === 1)?.attemptId ?? "",
+            )).toMatchObject({
+              state: "sealed",
+              fence_reason: "runtime_abort",
+              response_at_fence_bytes: Buffer.byteLength("partial response\n"),
+              final_response_bytes: Buffer.byteLength("partial response\n"),
+              provider_status: "cancelled",
             });
 
             const claim = store.scheduler.claimRun(run.id, "resume-owner", 60_000);
@@ -1933,7 +3010,7 @@ JSON Schema:`);
             expect(turns[1]!.config).toBeUndefined();
             const metadataEntries = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
             expect(metadataEntries).toEqual([
-              expect.objectContaining({ status: "cancelled", sessionName: turns[0]!.sessionName, turnCount: 0 }),
+              expect.objectContaining({ status: "cancelled", sessionName: turns[0]!.sessionName, turnCount: 1 }),
               expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, turnCount: 1 }),
             ]);
           } finally {
@@ -2179,6 +3256,19 @@ JSON Schema:`);
               expect.objectContaining({ status: "failed", sessionName: turns[0]!.sessionName, responseRepairMax: 2, turnCount: 3 }),
               expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, responseRepairMax: 0, turnCount: 1 }),
             ]);
+            const continuation = runtimeRows(
+              workspace,
+              `SELECT prompt_kind, relative_path
+               FROM agent_observation_turns
+               WHERE run_id = ?
+               ORDER BY attempt_no, turn_no`,
+              run.id,
+            ).at(-1) as { prompt_kind: string; relative_path: string };
+            expect(continuation.prompt_kind).toBe("continuation");
+            const runDir = store.getRunDir(run.id);
+            if (!runDir) throw new Error("expected run directory");
+            const start = JSON.parse((await readFile(join(runDir, continuation.relative_path), "utf8")).split("\n")[0]!);
+            expect(start).toMatchObject({ type: "turn_start", promptKind: "continuation", prompt: turns[3]!.prompt });
           } finally {
             store.close();
           }
@@ -2271,44 +3361,45 @@ function tracedAgentWorkflow() {
   });
 }
 
-function tracedCompletedAgentTurn(responseText: string): AgentTurnResult {
-  return {
-    ...completedAgentTurn(responseText),
-    timing: agentTiming(2),
-    trace: agentTrace("completed", responseText),
+function observedAgentTurn(request: AgentTurnRequest, result: AgentTurnResult): AgentTurnResult {
+  const responseProgress: AgentTurnProgress = {
+    responseText: result.responseText,
+    summary: result.summary,
+    updatedAt: "2026-07-01T00:00:00.001Z",
   };
-}
-
-function agentTrace(
-  status: "completed" | "failed" | "cancelled" | "timed_out",
-  text: string,
-  message?: string,
-): NonNullable<AgentTurnResult["trace"]> {
-  return {
-    startedAt: "2026-07-01T00:00:00.000Z",
-    elapsedMs: 2,
-    events: [
-      {
-        schemaVersion: 1,
-        sequence: 0,
-        observedAt: "2026-07-01T00:00:00.001Z",
-        elapsedMs: 1,
-        type: "message",
-        channel: "assistant",
-        content: { type: "text", text },
-        tag: "agent_message_chunk",
-      },
-      {
-        schemaVersion: 1,
-        sequence: 1,
-        observedAt: "2026-07-01T00:00:00.002Z",
-        elapsedMs: 2,
-        type: "turn_end",
-        status,
-        ...(message ? { message } : {}),
-      },
-    ],
-  };
+  request.onObservation?.({
+    event: {
+      schemaVersion: 1,
+      sequence: 0,
+      observedAt: responseProgress.updatedAt,
+      elapsedMs: 1,
+      type: "message",
+      channel: "assistant",
+      content: { type: "text", text: result.responseText },
+      tag: "agent_message_chunk",
+    },
+    progress: responseProgress,
+  });
+  const status = result.status === "failed" && result.failure.kind === "timeout"
+    ? "timed_out"
+    : result.status;
+  request.onObservation?.({
+    event: {
+      schemaVersion: 1,
+      sequence: 1,
+      observedAt: "2026-07-01T00:00:00.002Z",
+      elapsedMs: 2,
+      type: "turn_end",
+      status,
+      ...(result.status === "failed" ? { failure: result.failure, message: result.failure.message } : {}),
+      ...(result.status === "cancelled" ? { message: result.message } : {}),
+    },
+    progress: {
+      ...responseProgress,
+      updatedAt: "2026-07-01T00:00:00.002Z",
+    },
+  });
+  return result;
 }
 
 function hostRepairBudgetAgentWorkflow() {
@@ -2461,6 +3552,26 @@ function blankSessionAgentWorkflow() {
     });
     return {};
   });
+}
+
+function agentObservation(sequence: number, content: string, responseText: string): AgentTurnObservation {
+  const observedAt = `2026-07-01T00:00:0${sequence}.000Z`;
+  return {
+    event: {
+      schemaVersion: 1,
+      sequence,
+      observedAt,
+      elapsedMs: sequence,
+      type: "message",
+      channel: "assistant",
+      content,
+    },
+    progress: {
+      responseText,
+      summary: agentSummary(sequence + 1),
+      updatedAt: observedAt,
+    },
+  };
 }
 
 function restoreEnv(key: string, value: string | undefined): void {

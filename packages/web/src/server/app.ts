@@ -11,7 +11,7 @@ import {
   type DaemonControlIntent,
   type RunInspectionContext,
   type RunInspectionError,
-  type RunInspectionTargetDocument,
+  type RunInspectionTargetDetailsDocument,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AccessPolicy } from "./security.js";
@@ -265,7 +265,7 @@ function mediaType(path: string): string {
   }
 }
 
-async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
+async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDetailsDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
   if (!artifactRef || typeof artifactRef !== "object" || Array.isArray(artifactRef)) return undefined;
   const artifactId = (artifactRef as Record<string, unknown>).artifactId;
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
@@ -280,7 +280,10 @@ async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDo
   return parsed;
 }
 
-async function loadInspectionPrompt(cwd: string, inspection: RunInspectionTargetDocument): Promise<RunInspectionTargetDocument> {
+async function loadInspectionPrompt(
+  cwd: string,
+  inspection: RunInspectionTargetDetailsDocument,
+): Promise<RunInspectionTargetDetailsDocument> {
   const prompt = inspection.summary.prompt;
   if (prompt?.kind !== "artifact" || prompt.field !== "prompt") return inspection;
   const artifact = await readRunJsonArtifact(cwd, inspection.artifacts, prompt);
@@ -288,7 +291,9 @@ async function loadInspectionPrompt(cwd: string, inspection: RunInspectionTarget
     throw new Error(`Registered Agent prompt artifact '${prompt.artifactId}' is unavailable.`);
   }
   const text = (artifact as Record<string, unknown>)[prompt.field];
-  if (typeof text !== "string") throw new Error(`Registered Agent prompt artifact '${prompt.artifactId}' has no string prompt.`);
+  if (typeof text !== "string") {
+    throw new Error(`Registered Agent prompt artifact '${prompt.artifactId}' has no string prompt.`);
+  }
   return {
     ...inspection,
     summary: { ...inspection.summary, prompt: { ...prompt, text } },
@@ -300,15 +305,15 @@ async function readNodeInspection(
   runId: string,
   target: string,
   context: RunInspectionContext,
-): Promise<RunInspectionTargetDocument> {
+): Promise<RunInspectionTargetDetailsDocument> {
   const result = await getRunInspection(cwd, {
     runId,
-    mode: "target",
+    mode: "details",
     target,
     ...(context.length === 0 ? {} : { context }),
   });
   if (result.isErr()) inspectionError(result.error);
-  if (result.value.kind !== "target") throw new Error("Runtime returned a non-target inspection document.");
+  if (result.value.kind !== "details") throw new Error("Runtime returned a non-details inspection document.");
   return result.value;
 }
 
@@ -318,7 +323,9 @@ function inspectionError(error: RunInspectionError): never {
   }
   if (error.type === "target-not-found") apiError(404, "target_not_found", error.message);
   if (error.type === "invalid-query") apiError(400, "invalid_inspection_query", error.message);
-  throw error.cause ?? new Error(error.message);
+  throw error.type === "inspection-read-failed" && error.cause !== undefined
+    ? error.cause
+    : new Error(error.message);
 }
 
 function inspectionContext(value: string | undefined): RunInspectionContext {

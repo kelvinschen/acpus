@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentTurnObservation, AgentTurnProgress } from "@acpus/agent-executor";
 
 const fake = vi.hoisted(() => {
   type Handler = (...args: any[]) => void;
@@ -73,7 +74,10 @@ const fake = vi.hoisted(() => {
         };
       },
       error(message: string): Scenario {
-        return child => child.emit("error", new Error(message));
+        return child => {
+          child.emit("error", new Error(message));
+          child.emit("close", null);
+        };
       },
       stdout(text: string, exitCode = 0): Scenario {
         return child => {
@@ -632,6 +636,7 @@ describe("executeAgentTurn", () => {
         },
       );
       const { executeAgentTurn } = await import("@acpus/agent-executor");
+      const observations: AgentTurnObservation[] = [];
 
       const result = await executeAgentTurn({
         agent: { kind: "named", name: "codex" },
@@ -641,9 +646,11 @@ describe("executeAgentTurn", () => {
         sessionName: "session",
         permissionMode: "approve-all",
         captureTrace: true,
+        onObservation: observation => observations.push(observation),
       });
 
       expect(result).toMatchObject({ status: "completed", responseText: "answer" });
+      expect(observations.map(observation => observation.event)).toEqual(result.trace?.events);
       expect(result.trace?.events.map(event => event.type)).toEqual([
         "message", "message", "tool", "tool", "usage", "plan", "unknown", "usage", "turn_end",
       ]);
@@ -684,6 +691,103 @@ describe("executeAgentTurn", () => {
     }
   });
 
+  it("dispatches ordered normalized observations without trace capture", async () => {
+    const promptLines = [
+      "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":\"thinking\"}}}}",
+      "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tool-1\",\"status\":\"running\",\"rawInput\":{\"path\":\"README.md\"}}}}",
+      "{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":8,\"outputTokens\":2}}}",
+    ];
+    fake.state.scenarios.push(
+      fake.scenario.stdout("{\"acpxRecordId\":\"record-1\"}\n"),
+      fake.scenario.stdout(`${promptLines.join("\n")}\n`),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const observations: AgentTurnObservation[] = [];
+    const progress: AgentTurnProgress[] = [];
+    const parse = vi.spyOn(JSON, "parse");
+
+    try {
+      const result = await executeAgentTurn({
+        agent: { kind: "named", name: "codex" },
+        prompt: "review",
+        cwd: "/repo",
+        env: {},
+        sessionName: "session",
+        permissionMode: "approve-all",
+        onObservation: observation => observations.push(observation),
+        onProgress: update => progress.push(update),
+      });
+
+      expect(result).not.toHaveProperty("trace");
+      expect(observations.map(({ event }) => event.type)).toEqual(["message", "tool", "usage", "turn_end"]);
+      expect(observations.map(({ event }) => event.sequence)).toEqual([0, 1, 2, 3]);
+      expect(observations.map(({ progress: update }) => update.summary.eventCount)).toEqual([1, 2, 3, 3]);
+      expect(observations.at(-1)).toMatchObject({
+        event: { type: "turn_end", status: "completed", stopReason: "end_turn" },
+        progress: { responseText: "", summary: { eventCount: 3, stopReason: "end_turn" } },
+      });
+      expect(progress).toEqual(observations.slice(0, -1).map(({ progress: update }) => update));
+      for (const line of promptLines) {
+        expect(parse.mock.calls.filter(([value]) => value === line)).toHaveLength(1);
+      }
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it("dispatches exactly one terminal observation for a pre-dispatch failure", async () => {
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const observations: AgentTurnObservation[] = [];
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      timeoutMs: -1,
+      onObservation: observation => observations.push(observation),
+    })).resolves.toMatchObject({ status: "failed", failure: { kind: "config" } });
+
+    expect(observations).toMatchObject([{
+      event: { sequence: 0, type: "turn_end", status: "failed" },
+      progress: { responseText: "", summary: { eventCount: 0 } },
+    }]);
+    expect(fake.spawn).not.toHaveBeenCalled();
+  });
+
+  it("does not await or propagate observation callback failures", async () => {
+    fake.state.scenarios.push(
+      fake.scenario.stdout("{}\n"),
+      fake.scenario.stdout([
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_thought_chunk\",\"content\":{\"type\":\"text\",\"text\":\"thinking\"}}}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ok\"}}}}",
+      ].join("\n") + "\n"),
+    );
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    let call = 0;
+    const onObservation = vi.fn(() => {
+      call += 1;
+      if (call === 1) throw new Error("observer threw");
+      if (call === 2) return Promise.reject(new Error("observer rejected"));
+      return new Promise(() => {});
+    });
+
+    await expect(executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      onObservation,
+    })).resolves.toMatchObject({ status: "completed", responseText: "ok" });
+    await Promise.resolve();
+
+    expect(onObservation).toHaveBeenCalledTimes(3);
+  });
+
   it("excludes client protocol frames from trace while retaining raw wire and provider operations", async () => {
     const prompt = "run pwd and return TRACE_FILTER_OK";
     const excludedMethods = [
@@ -713,6 +817,10 @@ describe("executeAgentTurn", () => {
       "mcp/disconnect",
       "extension/future_operation",
     ];
+    const excludedSessionUpdates = [
+      "available_commands_update",
+      "session_info_update",
+    ];
     const events = [
       ...excludedMethods.map(method => ({
         jsonrpc: "2.0",
@@ -720,6 +828,11 @@ describe("executeAgentTurn", () => {
         params: method === "session/prompt" ? { prompt } : { marker: method },
       })),
       ...retainedMethods.map(method => ({ jsonrpc: "2.0", method, params: { marker: method } })),
+      ...excludedSessionUpdates.map(sessionUpdate => ({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { update: { sessionUpdate, marker: sessionUpdate } },
+      })),
       { jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "future_update", value: { keep: true } } } },
       { jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "TRACE_FILTER_OK" } } } },
       { jsonrpc: "2.0", id: "req-1", result: { stopReason: "end_turn" } },
@@ -748,6 +861,10 @@ describe("executeAgentTurn", () => {
     });
     expect(result.rawDebug?.stdout).toContain('"method":"session/prompt"');
     expect(result.rawDebug?.stdout).toContain(prompt);
+    for (const tag of excludedSessionUpdates) {
+      expect(result.rawDebug?.stdout).toContain(tag);
+      expect(JSON.stringify(result.trace)).not.toContain(tag);
+    }
     expect(JSON.stringify(result.trace)).not.toContain(prompt);
     const unknownValues = result.trace?.events
       .filter(event => event.type === "unknown")
@@ -1562,10 +1679,16 @@ describe("executeAgentTurn", () => {
     try {
       fake.state.scenarios.push(fake.scenario.success, child => {
         child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"partial\"}}}}\n");
+        setTimeout(() => {
+          child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\" after-timeout\"}}}}\n");
+          child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",\"result\":{\"stopReason\":\"end_turn\"}}\n");
+          child.stderr.emit("data", "stderr after timeout");
+        }, 7);
         setTimeout(() => child.emit("close", null), 10);
       });
       const { executeAgentTurn } = await import("@acpus/agent-executor");
       const progress: unknown[] = [];
+      const observations: AgentTurnObservation[] = [];
 
       const result = executeAgentTurn({
         agent: { kind: "named", name: "codex" },
@@ -1576,15 +1699,27 @@ describe("executeAgentTurn", () => {
         permissionMode: "approve-all",
         timeoutMs: 5,
         onProgress: update => progress.push(update),
+        onObservation: observation => observations.push(observation),
       });
       await vi.runAllTimersAsync();
 
       await expect(result).resolves.toMatchObject({
         status: "failed",
         failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
-        responseText: "partial",
+        responseText: "partial after-timeout",
+        stderr: "stderr after timeout",
       });
-      expect(progress).toMatchObject([{ responseText: "partial", summary: { eventCount: 1 } }]);
+      expect(progress).toMatchObject([
+        { responseText: "partial", summary: { eventCount: 1 } },
+        { responseText: "partial after-timeout", summary: { eventCount: 2 } },
+        { responseText: "partial after-timeout", summary: { eventCount: 3, stopReason: "end_turn" } },
+      ]);
+      expect(observations.map(observation => observation.event.type)).toEqual([
+        "message",
+        "message",
+        "turn_end",
+      ]);
+      expect(observations.at(-1)?.event).toMatchObject({ type: "turn_end", status: "timed_out", stopReason: "end_turn" });
     } finally {
       vi.useRealTimers();
     }
@@ -1622,6 +1757,46 @@ describe("executeAgentTurn", () => {
     expect(() => cancelChild.emit("error", new Error("cancel spawn failed"))).not.toThrow();
   });
 
+  it("collects output until an aborted child settles and ignores output after settlement", async () => {
+    const controller = new AbortController();
+    const before = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"before\"}}}}\n";
+    const during = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"-during\"}}}}\n";
+    const late = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"-late\"}}}}\n";
+    fake.state.scenarios.push(fake.scenario.success, child => {
+      child.stdout.emit("data", before);
+      controller.abort();
+      child.stdout.emit("data", during);
+      child.stderr.emit("data", "during termination");
+      child.emit("close", null);
+      child.stdout.emit("data", late);
+      child.stderr.emit("data", "late stderr");
+    });
+    const { executeAgentTurn } = await import("@acpus/agent-executor");
+    const observations: AgentTurnObservation[] = [];
+
+    const result = await executeAgentTurn({
+      agent: { kind: "named", name: "codex" },
+      prompt: "review",
+      cwd: "/repo",
+      env: {},
+      sessionName: "session",
+      permissionMode: "approve-all",
+      signal: controller.signal,
+      captureRawDebug: true,
+      onObservation: observation => observations.push(observation),
+    });
+
+    expect(result).toMatchObject({
+      status: "cancelled",
+      responseText: "before-during",
+      stderr: "during termination",
+      rawDebug: { stdout: `${before}${during}` },
+    });
+    expect(observations.map(({ event }) => event.type)).toEqual(["message", "message", "turn_end"]);
+    expect(observations.map(({ progress }) => progress.responseText)).toEqual(["before", "before-during", "before-during"]);
+    expect(JSON.stringify(observations)).not.toContain("-late");
+  });
+
   it("keeps abort authoritative across stdin and child process errors", async () => {
     const controller = new AbortController();
     fake.state.scenarios.push(fake.scenario.success, child => {
@@ -1629,6 +1804,8 @@ describe("executeAgentTurn", () => {
       controller.abort();
       child.stdin.emit("error", new Error("write EPIPE"));
       child.emit("error", new Error("late child error"));
+      child.stdout.emit("data", "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\" after-error\"}}}}\n");
+      child.stderr.emit("data", "stderr after error");
       child.emit("close", null);
     });
     const { executeAgentTurn } = await import("@acpus/agent-executor");
@@ -1641,7 +1818,11 @@ describe("executeAgentTurn", () => {
       sessionName: "session",
       permissionMode: "approve-all",
       signal: controller.signal,
-    })).resolves.toMatchObject({ status: "cancelled", responseText: "partial" });
+    })).resolves.toMatchObject({
+      status: "cancelled",
+      responseText: "partial after-error",
+      stderr: "stderr after error",
+    });
   });
 
   it("does not cancel a completed prompt when the signal aborts later", async () => {

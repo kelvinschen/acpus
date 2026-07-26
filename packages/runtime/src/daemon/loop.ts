@@ -115,6 +115,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     throw error;
   }
   try {
+    await store.observationLog.recoverTerminalPartialTurns();
     await store.cleanupStagedRunDirectories();
   } catch (error) {
     await closeDaemonServer(server);

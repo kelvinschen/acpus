@@ -30,6 +30,7 @@ export type AgentTurnRequest = {
   captureRawDebug?: boolean;
   captureTrace?: boolean;
   onProgress?: (progress: AgentTurnProgress) => unknown;
+  onObservation?: (observation: AgentTurnObservation) => unknown;
 };
 
 export type AgentBackendFailureKind =
@@ -160,6 +161,11 @@ type AgentTraceEventPayload =
 
 export type AgentTraceEvent = AgentTraceEventBase & AgentTraceEventPayload;
 
+export type AgentTurnObservation = {
+  event: AgentTraceEvent;
+  progress: AgentTurnProgress;
+};
+
 export type AgentTurnTrace = {
   startedAt: string;
   elapsedMs: number;
@@ -256,7 +262,7 @@ type PromptAccumulator = FailureEvidence & {
   context?: AgentContextSummary;
   tokenUsage?: AgentTokenUsageSummary;
   options?: PromptSummaryOptions;
-  trace?: TraceCapture;
+  dispatcher?: TurnEventDispatcher;
 };
 
 type TurnClock = {
@@ -264,9 +270,12 @@ type TurnClock = {
   startedAtMonotonic: number;
 };
 
-type TraceCapture = TurnClock & {
-  events: AgentTraceEvent[];
-  failed: boolean;
+type TurnEventDispatcher = TurnClock & {
+  nextSequence: number;
+  traceEvents?: AgentTraceEvent[];
+  traceFailed: boolean;
+  onProgress?: AgentTurnRequest["onProgress"];
+  onObservation?: AgentTurnRequest["onObservation"];
 };
 
 type PromptObservation = {
@@ -290,18 +299,14 @@ type TurnBudget =
 
 export async function executeAgentTurn(request: AgentTurnRequest): Promise<AgentTurnResult> {
   const clock = createTurnClock();
-  let trace: TraceCapture | undefined;
-  if (request.captureTrace) {
-    try {
-      trace = createTraceCapture(clock);
-    } catch {}
-  }
-  const result = await executeAgentTurnInternal(request, trace);
+  const dispatcher = createTurnEventDispatcher(clock, request);
+  const result = await executeAgentTurnInternal(request, dispatcher);
   const end = traceObservation(clock);
-  return withTiming(withTrace(result, trace, end), clock, end);
+  dispatchTurnEnd(dispatcher, result, end);
+  return withTiming(withTrace(result, dispatcher, end), clock, end);
 }
 
-async function executeAgentTurnInternal(request: AgentTurnRequest, trace: TraceCapture | undefined): Promise<AgentTurnOutcome> {
+async function executeAgentTurnInternal(request: AgentTurnRequest, dispatcher: TurnEventDispatcher): Promise<AgentTurnOutcome> {
   if (request.timeoutMs !== undefined && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 0)) {
     return configResult("Agent turn timeoutMs must be a non-negative safe integer.");
   }
@@ -344,25 +349,14 @@ async function executeAgentTurnInternal(request: AgentTurnRequest, trace: TraceC
   const accumulator = createPromptAccumulator({
     cwd: request.cwd,
     ...(acpxRecordId ? { acpxRecordId } : {}),
-  }, trace);
+  }, dispatcher);
   const prompt = await runAcpx({
     args: buildAcpxArgs(request, ["prompt", "-s", request.sessionName, "-f", "-"], promptBudget.timeoutMs),
     cancelArgs: timeoutMs => buildAcpxArgs(request, ["cancel", "-s", request.sessionName], timeoutMs),
     input: request.prompt,
     cwd: request.cwd,
     env,
-    onStdoutLine: (line: string) => {
-      if (!consumePromptLine(accumulator, line)) return;
-      if (!request.onProgress) return;
-      try {
-        const observed = request.onProgress({
-          responseText: accumulator.responseText,
-          summary: turnSummaryFromAccumulator(accumulator),
-          updatedAt: new Date().toISOString(),
-        });
-        if (observed) void Promise.resolve(observed).catch(() => {});
-      } catch {}
-    },
+    onStdoutLine: (line: string) => consumePromptLine(accumulator, line),
     ...(deadline === undefined ? {} : { deadline }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
@@ -390,38 +384,44 @@ function createTurnClock(): TurnClock {
   };
 }
 
-function createTraceCapture(clock: TurnClock): TraceCapture {
+function createTurnEventDispatcher(clock: TurnClock, request: AgentTurnRequest): TurnEventDispatcher {
   return {
     ...clock,
-    events: [],
-    failed: false,
+    nextSequence: 0,
+    traceFailed: false,
+    ...(request.captureTrace ? { traceEvents: [] } : {}),
+    ...(request.onProgress ? { onProgress: request.onProgress } : {}),
+    ...(request.onObservation ? { onObservation: request.onObservation } : {}),
   };
 }
 
-function withTrace<T extends AgentTurnOutcome>(result: T, capture: TraceCapture | undefined, end: PromptObservation): T {
-  if (!capture || capture.failed) return result;
-  try {
-    const status = result.status === "failed" && result.failure.kind === "timeout"
-      ? "timed_out"
-      : result.status;
-    appendTraceEvent(capture, {
-      type: "turn_end",
-      status,
-      ...(result.summary.stopReason ? { stopReason: result.summary.stopReason } : {}),
-      ...(result.status === "failed" ? { failure: result.failure as unknown as AgentJsonValue, message: result.failure.message } : {}),
-      ...(result.status === "cancelled" ? { message: result.message } : {}),
-    }, end);
-    return {
-      ...result,
-      trace: {
-        startedAt: capture.startedAt,
-        elapsedMs: end.elapsedMs,
-        events: capture.events,
-      },
-    };
-  } catch {
-    return result;
-  }
+function dispatchTurnEnd(dispatcher: TurnEventDispatcher, result: AgentTurnOutcome, observation: PromptObservation): void {
+  const status = result.status === "failed" && result.failure.kind === "timeout"
+    ? "timed_out"
+    : result.status;
+  dispatchTurnEvent(dispatcher, {
+    type: "turn_end",
+    status,
+    ...(result.summary.stopReason ? { stopReason: result.summary.stopReason } : {}),
+    ...(result.status === "failed" ? { failure: result.failure as unknown as AgentJsonValue, message: result.failure.message } : {}),
+    ...(result.status === "cancelled" ? { message: result.message } : {}),
+  }, {
+    responseText: result.responseText,
+    summary: result.summary,
+    updatedAt: observation.observedAt,
+  }, observation);
+}
+
+function withTrace<T extends AgentTurnOutcome>(result: T, dispatcher: TurnEventDispatcher, end: PromptObservation): T {
+  if (!dispatcher.traceEvents || dispatcher.traceFailed) return result;
+  return {
+    ...result,
+    trace: {
+      startedAt: dispatcher.startedAt,
+      elapsedMs: end.elapsedMs,
+      events: dispatcher.traceEvents,
+    },
+  };
 }
 
 function withTiming<T extends AgentTurnOutcome>(
@@ -447,14 +447,35 @@ function traceObservation(capture: Pick<TurnClock, "startedAtMonotonic"> | undef
   };
 }
 
-function appendTraceEvent(capture: TraceCapture, payload: AgentTraceEventPayload, observation: PromptObservation): void {
-  capture.events.push({
+function dispatchTurnEvent(
+  dispatcher: TurnEventDispatcher,
+  payload: AgentTraceEventPayload,
+  progress: AgentTurnProgress,
+  observation: PromptObservation,
+): void {
+  const event: AgentTraceEvent = {
     schemaVersion: 1,
-    sequence: capture.events.length,
+    sequence: dispatcher.nextSequence++,
     observedAt: observation.observedAt,
     elapsedMs: observation.elapsedMs,
     ...payload,
-  });
+  };
+  if (dispatcher.traceEvents && !dispatcher.traceFailed) {
+    try {
+      dispatcher.traceEvents.push(event);
+    } catch {
+      dispatcher.traceFailed = true;
+    }
+  }
+  notifyBestEffort(dispatcher.onObservation, { event, progress });
+}
+
+function notifyBestEffort<T>(observer: ((value: T) => unknown) | undefined, value: T): void {
+  if (!observer) return;
+  try {
+    const pending = observer(value);
+    if (pending) void Promise.resolve(pending).catch(() => {});
+  } catch {}
 }
 
 function requestEnv(request: AgentTurnRequest): NodeJS.ProcessEnv {
@@ -526,6 +547,7 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
     let killTimeout: NodeJS.Timeout | undefined;
     let settled = false;
     let stdinError: string | undefined;
+    let childError: Error | undefined;
     const abort = () => checkBudget();
     const cleanup = () => {
       if (timeout !== undefined) clearTimeout(timeout);
@@ -579,7 +601,7 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
     };
 
     const collect = (target: Buffer[], chunk: unknown, onLine?: (line: string) => void) => {
-      if (termination || settled) return;
+      if (settled) return;
       const buffer = Buffer.from(chunk as any);
       target.push(buffer);
       if (!onLine) return;
@@ -589,10 +611,10 @@ function runAcpx(invocation: AcpxInvocation): Promise<AcpxProcessResult> {
 
     child.stdout.on("data", chunk => collect(stdout, chunk, invocation.onStdoutLine));
     child.stderr.on("data", chunk => collect(stderr, chunk));
-    child.on("close", exitCode => settle(exitCode));
+    child.on("close", exitCode => settle(exitCode, childError));
     child.on("error", error => {
       if (termination) killProcess(child.pid, "SIGKILL");
-      settle(null, error);
+      childError ??= error;
     });
     child.stdin.on("error", error => {
       if (termination || settled) return;
@@ -641,27 +663,29 @@ function summarizePromptOutput(stdout: string, options?: PromptSummaryOptions): 
   return promptSummaryFromAccumulator(accumulator);
 }
 
-function createPromptAccumulator(options?: PromptSummaryOptions, trace?: TraceCapture): PromptAccumulator {
+function createPromptAccumulator(options?: PromptSummaryOptions, dispatcher?: TurnEventDispatcher): PromptAccumulator {
   return {
     responseText: "",
     eventCount: 0,
     nonJsonTail: "",
     tools: new Map(),
     ...(options ? { options } : {}),
-    ...(trace ? { trace } : {}),
+    ...(dispatcher ? { dispatcher } : {}),
   };
 }
 
-function consumePromptLine(accumulator: PromptAccumulator, raw: string): boolean {
+function consumePromptLine(accumulator: PromptAccumulator, raw: string): void {
   const line = raw.trim();
-  if (!line) return false;
-  const observation = traceObservation(accumulator.trace);
+  if (!line) return;
+  const observation = traceObservation(accumulator.dispatcher);
+  let event: unknown;
   try {
-    consumePromptLineEvent(accumulator, line, JSON.parse(line) as unknown, raw, observation);
+    event = JSON.parse(line) as unknown;
   } catch {
-    consumePromptLineEvent(accumulator, line, undefined, raw, observation);
+    event = undefined;
   }
-  return true;
+  consumePromptLineEvent(accumulator, line, event, raw, observation);
+  dispatchPromptLine(accumulator, event, observation);
 }
 
 function consumePromptLineEvent(
@@ -669,7 +693,7 @@ function consumePromptLineEvent(
   line: string,
   event: unknown | undefined,
   raw = line,
-  observation = traceObservation(accumulator.trace),
+  observation = traceObservation(accumulator.dispatcher),
 ): void {
   if (event === undefined) {
     accumulator.malformedLine ??= line;
@@ -689,13 +713,25 @@ function consumePromptLineEvent(
   if (typeof result?.stopReason === "string") accumulator.stopReason = result.stopReason;
   const tokenUsage = tokenUsageFromResult(result);
   if (tokenUsage !== undefined) accumulator.tokenUsage = tokenUsage;
-  if (accumulator.trace && !accumulator.trace.failed) {
+}
+
+function dispatchPromptLine(accumulator: PromptAccumulator, event: unknown, observation: PromptObservation): void {
+  const dispatcher = accumulator.dispatcher;
+  if (!dispatcher) return;
+  const progress = {
+    responseText: accumulator.responseText,
+    summary: turnSummaryFromAccumulator(accumulator),
+    updatedAt: observation.observedAt,
+  };
+  if (dispatcher.traceEvents || dispatcher.onObservation) {
     try {
-      captureNormalizedTraceEvent(accumulator.trace, event, observation);
+      const payload = normalizedTraceEvent(event);
+      if (payload) dispatchTurnEvent(dispatcher, payload, progress, observation);
     } catch {
-      accumulator.trace.failed = true;
+      dispatcher.traceFailed = true;
     }
   }
+  notifyBestEffort(dispatcher.onProgress, progress);
 }
 
 function promptSummaryFromAccumulator(accumulator: PromptAccumulator): PromptSummary {
@@ -708,21 +744,21 @@ function promptSummaryFromAccumulator(accumulator: PromptAccumulator): PromptSum
   };
 }
 
-function captureNormalizedTraceEvent(capture: TraceCapture, event: unknown, observation: PromptObservation): void {
-  if (!isAgentJsonValue(event)) return;
-  if (isTraceExcludedProtocolFrame(event)) return;
+function normalizedTraceEvent(event: unknown): AgentTraceEventPayload | undefined {
+  if (!isAgentJsonValue(event)) return undefined;
+  if (isTraceExcludedProtocolFrame(event)) return undefined;
   const update = eventUpdate(event);
   const tag = stringField(update, "sessionUpdate");
+  if (tag === "available_commands_update" || tag === "session_info_update") return undefined;
   if (update && (tag === "agent_message_chunk" || tag === "agent_thought_chunk")) {
     const content = jsonField(update, "content");
     if (content !== undefined) {
-      appendTraceEvent(capture, {
+      return {
         type: "message",
         channel: tag === "agent_message_chunk" ? "assistant" : "thought",
         content,
         tag,
-      }, observation);
-      return;
+      };
     }
   }
   if (update && (tag === "tool_call" || tag === "tool_call_update")) {
@@ -735,7 +771,7 @@ function captureNormalizedTraceEvent(capture: TraceCapture, event: unknown, obse
     const rawOutput = jsonField(update, "rawOutput");
     const content = jsonField(update, "content");
     const locations = jsonField(update, "locations");
-    appendTraceEvent(capture, {
+    return {
       type: "tool",
       action: tag === "tool_call" ? "call" : "update",
       ...(toolCallId ? { toolCallId } : {}),
@@ -747,40 +783,36 @@ function captureNormalizedTraceEvent(capture: TraceCapture, event: unknown, obse
       ...(rawOutput === undefined ? {} : { rawOutput }),
       ...(content === undefined ? {} : { content }),
       ...(locations === undefined ? {} : { locations }),
-    }, observation);
-    return;
+    };
   }
   if (update && tag === "usage_update") {
     const context = usageContextFromUpdate(update);
     const tokenUsage = usageValueFromUpdate(update);
-    appendTraceEvent(capture, {
+    return {
       type: "usage",
       ...(context === undefined ? {} : { context }),
       ...(tokenUsage === undefined ? {} : { tokenUsage }),
-    }, observation);
-    return;
+    };
   }
   if (update && tag === "plan") {
-    appendTraceEvent(capture, {
+    return {
       type: "plan",
       value: jsonField(update, "entries") ?? jsonField(update, "value") ?? update as AgentJsonValue,
-    }, observation);
-    return;
+    };
   }
 
   const eventRecord: Record<string, any> | undefined = isRecord(event) ? event as Record<string, any> : undefined;
   const result = isRecord(eventRecord?.result) ? eventRecord.result : undefined;
   if (result) {
     const tokenUsage = jsonField(result, "usage");
-    if (tokenUsage !== undefined) appendTraceEvent(capture, { type: "usage", tokenUsage }, observation);
-    return;
+    return tokenUsage === undefined ? undefined : { type: "usage", tokenUsage };
   }
-  if (jsonRpcFailure(event)) return;
-  appendTraceEvent(capture, {
+  if (jsonRpcFailure(event)) return undefined;
+  return {
     type: "unknown",
     ...(tag ? { tag } : {}),
     value: event,
-  }, observation);
+  };
 }
 
 function isTraceExcludedProtocolFrame(event: AgentJsonValue): boolean {

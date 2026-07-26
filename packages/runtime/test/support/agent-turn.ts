@@ -1,4 +1,4 @@
-import type { AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
 
 export function agentSummary(eventCount: number): AgentTurnResult["summary"] {
   return {
@@ -24,20 +24,38 @@ export function taggedAgentOutput(payload: string): string {
   return `<ACPUS_OUTPUT>\n${payload}\n</ACPUS_OUTPUT>`;
 }
 
-export function tracedCompletedAgentTurn(responseText: string): AgentTurnResult {
-  return {
-    ...completedAgentTurn(responseText),
-    trace: {
-      startedAt: "2026-07-01T00:00:00.000Z",
+export function observedCompletedAgentTurn(request: AgentTurnRequest, responseText: string): AgentTurnResult {
+  const result = completedAgentTurn(responseText);
+  request.onObservation?.({
+    event: {
+      schemaVersion: 1,
+      sequence: 0,
+      observedAt: "2026-07-01T00:00:00.001Z",
       elapsedMs: 1,
-      events: [{
-        schemaVersion: 1,
-        sequence: 0,
-        observedAt: "2026-07-01T00:00:00.001Z",
-        elapsedMs: 1,
-        type: "turn_end",
-        status: "completed",
-      }],
+      type: "message",
+      channel: "assistant",
+      content: responseText,
     },
-  };
+    progress: {
+      responseText,
+      summary: result.summary,
+      updatedAt: "2026-07-01T00:00:00.001Z",
+    },
+  });
+  request.onObservation?.({
+    event: {
+      schemaVersion: 1,
+      sequence: 1,
+      observedAt: "2026-07-01T00:00:00.001Z",
+      elapsedMs: 1,
+      type: "turn_end",
+      status: "completed",
+    },
+    progress: {
+      responseText,
+      summary: result.summary,
+      updatedAt: "2026-07-01T00:00:00.001Z",
+    },
+  });
+  return result;
 }

@@ -53,6 +53,7 @@ export type AdvanceRunInput = {
   onClaim?: (claim: RunOwnerClaim) => void;
   onRelease?: (claim: RunOwnerClaim) => void;
   onCheckpoint?: (snapshot: SchedulerSnapshot) => void;
+  afterOwnershipRecovery?: () => Promise<void>;
   now?: () => Date;
 };
 
@@ -141,6 +142,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
     checkpoint(input, drained.snapshot);
     let recovered = await recoverExpiredOwnerAttempts(input, claim, drained.snapshot);
     if (recovered.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+    await input.afterOwnershipRecovery?.();
 
     let pumpTurns = 0;
     for (;;) {

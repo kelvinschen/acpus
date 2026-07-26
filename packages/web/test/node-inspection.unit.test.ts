@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RunInspectionTargetDocument } from "@acpus/runtime";
+import type { RunInspectionTargetDetailsDocument } from "@acpus/runtime";
 import { inspectNodeExecution } from "../src/server/node-inspection.js";
 
 const noTurnArtifact = async () => undefined;
@@ -31,7 +31,7 @@ describe("node execution inspection", () => {
 
     expect(result).toMatchObject({
       available: true,
-      lastActiveAt: "2026-07-01T00:00:02.000Z",
+      lastObservedAt: "2026-07-01T00:00:02.000Z",
       summary: { status: "running", message: "working" },
       contextWindow: { used: 2_500, size: 10_000, percent: 25 },
       tokenUsage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
@@ -119,7 +119,7 @@ describe("node execution inspection", () => {
         backend: { kind: "command" },
         availability: { context: "available", tokenUsage: "available" },
         turnCount: 2,
-        lastActivityAt: "2026-07-01T00:00:04.000Z",
+        lastObservedAt: "2026-07-01T00:00:04.000Z",
         context: { used: 3_000, size: 12_000 },
         tokenUsage: { inputTokens: 90, outputTokens: 10, cachedReadTokens: 20, totalTokens: 120 },
         tools: {
@@ -136,7 +136,7 @@ describe("node execution inspection", () => {
     expect(result).toMatchObject({
       available: true,
       summary: { status: "running", turnCount: 2 },
-      lastActiveAt: "2026-07-01T00:00:04.000Z",
+      lastObservedAt: "2026-07-01T00:00:04.000Z",
       contextWindow: { used: 3_000, size: 12_000, percent: 25 },
       tokenUsage: { inputTokens: 90, outputTokens: 10, totalTokens: 120 },
       toolCallCount: 5,
@@ -149,13 +149,13 @@ describe("node execution inspection", () => {
 });
 
 function targetInspection(overrides: Partial<Pick<
-  RunInspectionTargetDocument,
+  RunInspectionTargetDetailsDocument,
   "progress" | "executionMetadata"
->> & { agent?: NonNullable<RunInspectionTargetDocument["summary"]["agent"]> } = {}): RunInspectionTargetDocument {
+>> & { agent?: NonNullable<RunInspectionTargetDetailsDocument["summary"]["agent"]> } = {}): RunInspectionTargetDetailsDocument {
   return {
-    schemaVersion: 1,
-    kind: "target",
-    cursor: { eventSequence: 3, progressVersion: 1 },
+    schemaVersion: 2,
+    kind: "details",
+    revision: "inspection-v2:test" as RunInspectionTargetDetailsDocument["revision"],
     run: {
       id: "run_1",
       name: "review-workflow",

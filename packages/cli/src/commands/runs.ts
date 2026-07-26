@@ -2,7 +2,7 @@ import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import { tryParseDurationMs } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, pruneRuns as pruneRuntimeRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type PreparedRunWorkflow, type PruneReport, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, pruneRuns as pruneRuntimeRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type FollowRunInspectionQuery, type PreparedRunWorkflow, type PruneReport, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunInspectionRevision, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -51,7 +51,11 @@ type SteerOptions = JsonOutputOptions & {
 type InspectRunOptions = JsonOutputOptions & {
   target?: string;
   all?: boolean;
+  timeline?: boolean;
+  limit?: string;
+  before?: string;
   follow?: boolean;
+  after?: string;
   interval?: string;
   raw?: boolean;
 };
@@ -83,10 +87,14 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .description("Inspect durable run structure and status.")
     .argument("[run-id]", "run id")
     .option("--target <run-target>", "inspect one static node, dynamic node, frame, or attempt")
+    .option("--timeline", "show current activity and recent semantic history for the target")
+    .option("--limit <count>", "limit Timeline entries (default: 12, maximum: 50)")
+    .option("--before <page-cursor>", "read an older Timeline page")
     .option("--all", "expand every dynamic run context")
     .option("--follow", "follow run status until completion or Ctrl-C")
+    .option("--after <revision>", "resume follow after an inspection revision")
     .option("--interval <duration>", "refresh followed status (default: 1s, minimum: 250ms)")
-    .option("--raw", "emit the unbounded raw inspection bundle (requires --json)")
+    .option("--raw", "emit the raw scheduler inspection bundle (requires --json)")
     ).action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);
     }));
@@ -182,7 +190,13 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
   const query = inspectionQuery(runId, options);
   if (options.follow) {
     if (query.mode === "raw") throw usageError("--raw cannot be followed.");
-    const outcome = await followRun(ctx.cwd, { ...query, intervalMs: parseFollowInterval(options.interval) }, {
+    if (query.mode === "details") throw usageError("--details cannot be followed.");
+    const followQuery: FollowRunInspectionQuery = {
+      ...query,
+      intervalMs: parseFollowInterval(options.interval),
+      ...(options.after === undefined ? {} : { after: options.after as RunInspectionRevision }),
+    };
+    const outcome = await followRun(ctx.cwd, followQuery, {
       phase: "inspect",
       format: outputFormatFor(options) === "json" ? "ndjson" : "text",
       stdout: ctx.stdout,
@@ -221,6 +235,18 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
 
 function inspectionQuery(runId: string, options: InspectRunOptions): RunInspectionQuery {
   if (options.raw) return { runId, mode: "raw" };
+  if (options.timeline) {
+    const page = {
+      ...(options.limit === undefined ? {} : { limit: Number(options.limit) }),
+      ...(options.before === undefined ? {} : { before: options.before }),
+    };
+    return {
+      runId,
+      mode: "timeline",
+      target: options.target!,
+      ...(Object.keys(page).length === 0 ? {} : { page }),
+    };
+  }
   if (options.target !== undefined) return { runId, mode: "target", target: options.target };
   if (options.all) return { runId, mode: "all" };
   return { runId, mode: "overview" };
@@ -228,7 +254,13 @@ function inspectionQuery(runId: string, options: InspectRunOptions): RunInspecti
 
 function inspectionError(error: RunInspectionError): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
   if (error.type === "invalid-query") return usageError(error.message);
-  return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
+  const inspectionError = error.type === "inspection-read-failed"
+    ? { type: error.type, runId: error.runId, message: error.message }
+    : error;
+  return notFoundError(error.message, {
+    errorCode: error.type.replaceAll("-", "_").toUpperCase(),
+    inspectionError,
+  });
 }
 
 async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, options: ArtifactsRunOptions): Promise<void> {
@@ -239,9 +271,9 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
     if (listed === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
     artifacts = listed;
   } else {
-    const inspected = await getRunInspection(ctx.cwd, { runId, mode: "target", target: options.target });
+    const inspected = await getRunInspection(ctx.cwd, { runId, mode: "details", target: options.target });
     if (inspected.isErr()) throw inspectionError(inspected.error);
-    if (inspected.value.kind !== "target") throw new Error("Target inspection returned an unexpected document.");
+    if (inspected.value.kind !== "details") throw new Error("Target details inspection returned an unexpected document.");
     artifacts = inspected.value.artifacts;
   }
 
@@ -263,8 +295,27 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
 }
 
 function validateInspectOptions(options: InspectRunOptions): void {
-  if (options.target === "") throw usageError("--target must be a non-empty string.");
+  if (options.target !== undefined && options.target.trim().length === 0) {
+    throw usageError("--target must be a non-empty string.");
+  }
+  if (options.before !== undefined && options.before.trim().length === 0) {
+    throw usageError("--before must be a non-empty cursor.");
+  }
+  if (options.after !== undefined && options.after.trim().length === 0) {
+    throw usageError("--after must be a non-empty revision.");
+  }
   if (options.target !== undefined && options.all) throw usageError("--target cannot be used with --all.");
+  if (options.timeline && options.target === undefined) throw usageError("--timeline requires --target.");
+  if (options.timeline && (options.all || options.raw)) throw usageError("--timeline cannot be used with --all or --raw.");
+  if (options.limit !== undefined && !options.timeline) throw usageError("--limit requires --timeline.");
+  if (options.before !== undefined && !options.timeline) throw usageError("--before requires --timeline.");
+  if (options.limit !== undefined && (!/^\d+$/.test(options.limit) || Number(options.limit) < 1 || Number(options.limit) > 50)) {
+    throw usageError("--limit must be an integer from 1 to 50.");
+  }
+  if (options.before !== undefined && (options.follow || options.after !== undefined)) {
+    throw usageError("--before cannot be used with --follow or --after.");
+  }
+  if (options.after !== undefined && !options.follow) throw usageError("--after requires --follow.");
   if (options.interval !== undefined && !options.follow) throw usageError("--interval requires --follow.");
   if (options.raw && outputFormatFor(options) !== "json") throw usageError("--raw requires --json.");
   if (options.raw && (options.follow || options.all || options.target !== undefined)) {

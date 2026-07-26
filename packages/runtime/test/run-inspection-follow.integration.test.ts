@@ -1,14 +1,62 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { DatabaseSync } from "node:sqlite";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { Result } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { followRunInspection } from "../src/inspection/use-cases.js";
-import type { RunInspectionEmission, RunInspectionError } from "../src/inspection/types.js";
+import { followRunInspection, getRunInspection } from "../src/inspection/use-cases.js";
+import { decodeTimelinePageCursor } from "../src/inspection/revision.js";
+import type {
+  FollowRunInspectionQuery,
+  RunInspectionEmission,
+  RunInspectionError,
+} from "../src/inspection/types.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+
+vi.mock("@acpus/agent-executor", async importOriginal => {
+  const actual = await importOriginal<typeof import("@acpus/agent-executor")>();
+  return {
+    ...actual,
+    executeAgentTurn: vi.fn(async (request: import("@acpus/agent-executor").AgentTurnRequest) => {
+      const observedAt = new Date().toISOString();
+      request.onObservation?.({
+        event: {
+          schemaVersion: 1,
+          sequence: 0,
+          observedAt,
+          elapsedMs: 1,
+          type: "message",
+          channel: "assistant",
+          content: "durable observation",
+        },
+        progress: {
+          responseText: "durable observation",
+          summary: {
+            eventCount: 1,
+            availability: { context: "unavailable", tokenUsage: "unavailable" },
+            tools: { totalToolCallCount: 0, calls: [] },
+          },
+          updatedAt: observedAt,
+        },
+      });
+      return {
+        status: "completed" as const,
+        responseText: "durable observation",
+        stderr: "",
+        summary: {
+          eventCount: 1,
+          availability: { context: "unavailable" as const, tokenUsage: "unavailable" as const },
+          tools: { totalToolCallCount: 0, calls: [] },
+        },
+        timing: { startedAt: observedAt, finishedAt: observedAt, elapsedMs: 1 },
+      };
+    }),
+  };
+});
 
 describe("run inspection follow", () => {
   beforeEach(() => {
@@ -19,7 +67,7 @@ describe("run inspection follow", () => {
     vi.useRealTimers();
   });
 
-  it("emits rich Agent state once and coalesces rapid counter-only updates", async () => {
+  it("emits compact Agent activity once and coalesces rapid metric-only updates", async () => {
     await withRuntimeWorkspace("run-inspection-follow-progress", async workspace => {
       const store = await admittedAgentStore(workspace);
       const run = store.listRuns()[0]!;
@@ -52,25 +100,29 @@ describe("run inspection follow", () => {
 
         const update = await nextPolledEmission(iterator);
         expect(update).toMatchObject({
-          kind: "update",
-          changes: expect.arrayContaining([
-            expect.objectContaining({ action: "ready", status: "ready" }),
-            expect.objectContaining({ action: "started", status: "running" }),
-            expect.objectContaining({ action: "progress", progressVersion: 1, itemKey: stableItemKey }),
-          ]),
-          patch: {
-            upsertItems: expect.arrayContaining([
-              expect.objectContaining({
-                key: stableItemKey,
-                nodeKey: "observe~1",
-                agent: expect.objectContaining({
-                  key: "observer",
-                  tools: { totalCallCount: 1, recent: [{ command: "Read", status: "running" }] },
-                }),
-              }),
+          kind: "delta",
+          changes: [{
+            kind: "overview",
+            changes: expect.arrayContaining([
+              expect.objectContaining({ action: "ready", status: "ready" }),
+              expect.objectContaining({ action: "started", status: "running" }),
+              expect.objectContaining({ action: "progress", progressVersion: 1, itemKey: stableItemKey }),
             ]),
-            removeItemKeys: [],
-          },
+            patch: {
+              upsertItems: expect.arrayContaining([
+                expect.objectContaining({
+                  key: stableItemKey,
+                  nodeKey: "observe~1",
+                  agent: {
+                    key: "observer",
+                    turn: 1,
+                    activeTool: { command: "Read", status: "running" },
+                  },
+                }),
+              ]),
+              removeItemKeys: [],
+            },
+          }],
         });
 
         store.writeNodeProgress({
@@ -101,7 +153,68 @@ describe("run inspection follow", () => {
     });
   });
 
-  it("uses sparse target updates for Agent tool progress instead of resync", async () => {
+  it("does not replay metric-only Agent progress when resuming any decision view", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-resume-metrics", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const writeProgress = (used: number, totalTokens: number) => store.writeNodeProgress({
+        runId: run.id,
+        nodeKey: "observe~1",
+        nodeId: "observe",
+        attemptId: attempt.attemptId,
+        attemptNo: attempt.attemptNo,
+        ownerEpoch: attempt.ownerEpoch,
+        kind: "agent",
+        status: "running",
+        context: { used, size: 200_000 },
+        tokenUsage: { inputTokens: totalTokens - 100, outputTokens: 100, totalTokens },
+        tools: { turn: 1, totalToolCallCount: 1, lastCalls: [{ toolName: "Read", status: "running" }] },
+      });
+      try {
+        writeProgress(1_000, 1_000);
+        const [overview, target, timeline] = await Promise.all([
+          getRunInspection(workspace, { runId: run.id, mode: "overview" }),
+          getRunInspection(workspace, { runId: run.id, mode: "target", target: attempt.attemptId }),
+          getRunInspection(workspace, { runId: run.id, mode: "timeline", target: attempt.attemptId }),
+        ]);
+        if (overview.isErr() || target.isErr() || timeline.isErr()) {
+          throw new Error("expected resumable inspection documents");
+        }
+        writeProgress(1_100, 1_100);
+        const queries = [
+          { runId: run.id, mode: "overview", after: overview.value.revision },
+          { runId: run.id, mode: "target", target: attempt.attemptId, after: target.value.revision },
+          { runId: run.id, mode: "timeline", target: attempt.attemptId, after: timeline.value.revision },
+        ] satisfies FollowRunInspectionQuery[];
+
+        for (const query of queries) {
+          const controller = new AbortController();
+          const iterator = followRunInspection(workspace, {
+            ...query,
+            intervalMs: 250,
+            signal: controller.signal,
+          })[Symbol.asyncIterator]();
+          try {
+            const pending = iterator.next();
+            let settled = false;
+            void pending.then(() => { settled = true; });
+            await vi.advanceTimersByTimeAsync(250);
+            expect(settled).toBe(false);
+            controller.abort();
+            expect((await pending).done).toBe(true);
+          } finally {
+            controller.abort();
+            await iterator.return?.();
+          }
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("uses compact target deltas for Agent tool progress instead of resync", async () => {
     await withRuntimeWorkspace("run-inspection-follow-target", async workspace => {
       const store = await admittedAgentStore(workspace);
       const run = store.listRuns()[0]!;
@@ -142,16 +255,238 @@ describe("run inspection follow", () => {
 
         const update = await nextPolledEmission(iterator);
         expect(update).toMatchObject({
-          kind: "update",
-          changes: [expect.objectContaining({ action: "progress", itemKey: "instance:observe~1" })],
-          patch: {
-            upsertItems: [expect.objectContaining({
-              nodeKey: "observe~1",
-              agent: expect.objectContaining({ tools: { totalCallCount: 1, recent: [{ command: "Bash: rg", status: "completed" }] } }),
-            })],
-            removeItemKeys: [],
+          kind: "delta",
+          changes: [{
+            kind: "pulse",
+            pulse: expect.objectContaining({ phase: "starting", headline: "starting", turn: 1 }),
+          }],
+        });
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
+  it("surfaces degraded evidence as visibility and emits its restoration", async () => {
+    await withRuntimeWorkspace("run-inspection-target-evidence", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        await store.observationLog.captureTurn({
+          runId: run.id,
+          nodeId: "observe",
+          nodeKey: "observe~1",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          turn: 1,
+          promptKind: "task",
+          agentKey: "observer",
+          sessionName: "inspection-target-evidence",
+          cwd: workspace,
+          trace: false,
+        }, {
+          agent: { kind: "named", name: "claude" },
+          prompt: "Inspect",
+          cwd: workspace,
+          env: {},
+          sessionName: "inspection-target-evidence",
+          permissionMode: "deny-all",
+        });
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          db.prepare(`
+            UPDATE agent_observation_turns
+            SET degraded = 1, gap_count = 1
+            WHERE run_id = ? AND attempt_id = ?
+          `).run(run.id, attempt.attemptId);
+        } finally {
+          db.close();
+        }
+
+        const inspected = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "target",
+          target: "observe~1",
+        });
+        if (inspected.isErr() || inspected.value.kind !== "target") throw new Error("expected Target summary");
+        expect(inspected.value.attention).toBeUndefined();
+        expect(inspected.value.visibility).toEqual({
+          state: "degraded",
+          reason: "observation-gap",
+        });
+        expect(inspected.value.evidence).toBeUndefined();
+
+        const restorationDb = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          const row = restorationDb.prepare("SELECT observation_version FROM runs WHERE id = ?")
+            .get(run.id) as { observation_version: number };
+          const version = row.observation_version + 1;
+          restorationDb.exec("BEGIN IMMEDIATE");
+          restorationDb.prepare(`
+            UPDATE agent_observation_turns
+            SET degraded = 0, gap_count = 0
+            WHERE run_id = ? AND attempt_id = ?
+          `).run(run.id, attempt.attemptId);
+          restorationDb.prepare(`
+            UPDATE agent_observation_attempts
+            SET latest_observation_version = ?
+            WHERE run_id = ? AND attempt_id = ?
+          `).run(version, run.id, attempt.attemptId);
+          restorationDb.prepare(`
+            UPDATE runs
+            SET observation_version = ?, observation_updated_at = ?
+            WHERE id = ?
+          `).run(version, new Date().toISOString(), run.id);
+          restorationDb.exec("COMMIT");
+        } catch (error) {
+          restorationDb.exec("ROLLBACK");
+          throw error;
+        } finally {
+          restorationDb.close();
+        }
+
+        const controller = new AbortController();
+        const iterator = followRunInspection(workspace, {
+          runId: run.id,
+          mode: "target",
+          target: "observe~1",
+          after: inspected.value.revision,
+          intervalMs: 250,
+          signal: controller.signal,
+        })[Symbol.asyncIterator]();
+        try {
+          expect(await nextEmission(iterator)).toMatchObject({
+            kind: "delta",
+            changes: expect.arrayContaining([{ kind: "visibility", visibility: null }]),
+          });
+        } finally {
+          controller.abort();
+          await iterator.return?.();
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("coalesces a small response headline update until the ten-second checkpoint", async () => {
+    vi.setSystemTime(new Date("2026-07-25T00:00:00.000Z"));
+    await withRuntimeWorkspace("run-inspection-follow-response-checkpoint", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const progress = (tail: string) => ({
+        runId: run.id,
+        nodeKey: "observe~1",
+        nodeId: "observe",
+        attemptId: attempt.attemptId,
+        attemptNo: attempt.attemptNo,
+        ownerEpoch: attempt.ownerEpoch,
+        kind: "agent" as const,
+        status: "running",
+        output: { tail, totalBytes: Buffer.byteLength(tail), truncated: false },
+      });
+      store.writeNodeProgress(progress("a"));
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "target",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(await nextEmission(iterator)).toMatchObject({
+          kind: "snapshot",
+          document: {
+            kind: "target",
+            pulse: { phase: "responding", headline: "a" },
           },
         });
+        store.writeNodeProgress(progress("ab"));
+        const pending = iterator.next();
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(9_750);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(250);
+        const emission = await pending;
+        if (emission.done || emission.value.isErr()) throw new Error("expected checkpoint delta");
+        expect(emission.value.value).toMatchObject({
+          kind: "delta",
+          changes: [{
+            kind: "pulse",
+            pulse: { phase: "responding", headline: "ab" },
+          }],
+        });
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
+  it("emits only changed Agent current fields after the response threshold", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-current-patch", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const progress = (tail: string) => ({
+        runId: run.id,
+        nodeKey: "observe~1",
+        nodeId: "observe",
+        attemptId: attempt.attemptId,
+        attemptNo: attempt.attemptNo,
+        ownerEpoch: attempt.ownerEpoch,
+        kind: "agent" as const,
+        status: "running" as const,
+        output: { tail, totalBytes: Buffer.byteLength(tail), truncated: false },
+        context: { used: 10, size: 100 },
+        tools: {
+          turn: 1,
+          totalToolCallCount: 1,
+          lastCalls: [{ toolName: "Read", status: "running" }],
+        },
+      });
+      store.writeNodeProgress(progress("a"));
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "timeline",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(await nextEmission(iterator)).toMatchObject({
+          kind: "snapshot",
+          document: { kind: "timeline", current: { kind: "agent" } },
+        });
+        store.writeNodeProgress(progress(`a${"b".repeat(512)}`));
+
+        const update = await nextPolledEmission(iterator);
+        if (update.kind !== "delta") throw new Error("expected current patch delta");
+        const current = update.changes.find(change => change.kind === "current-patch");
+        expect(current).toMatchObject({
+          kind: "current-patch",
+          patch: {
+            kind: "agent",
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            changes: {
+              response: expect.objectContaining({ originalBytes: 513 }),
+            },
+          },
+        });
+        if (!current || current.kind !== "current-patch") throw new Error("expected current patch");
+        expect(current.patch.changes).not.toHaveProperty("tools");
+        expect(current.patch.changes).not.toHaveProperty("context");
+        expect(current.patch.changes).not.toHaveProperty("observation");
+        expect(current.patch.changes).not.toHaveProperty("intent");
       } finally {
         controller.abort();
         await iterator.return?.();
@@ -213,22 +548,25 @@ describe("run inspection follow", () => {
         appendReady(0);
         const update = await nextPolledEmission(iterator);
         expect(update).toMatchObject({
-          kind: "update",
-          changes: [expect.objectContaining({ action: "ready", itemKey: node0Key })],
-          patch: {
-            upsertItems: expect.arrayContaining([
-              expect.objectContaining({ key: scope0Key, scope: { kind: "fanout_item", itemIndex: 0, empty: false } }),
-              expect.objectContaining({ key: node0Key, nodeId: "observe" }),
-            ]),
-            removeItemKeys: [],
-            itemOrder: [
-              `node:${deriveInstanceKey(appendNode([], "batch"))}`,
-              scope0Key,
-              node0Key,
-              scope1Key,
-              node1Key,
-            ],
-          },
+          kind: "delta",
+          changes: [{
+            kind: "overview",
+            changes: [expect.objectContaining({ action: "ready", itemKey: node0Key })],
+            patch: {
+              upsertItems: expect.arrayContaining([
+                expect.objectContaining({ key: scope0Key, scope: { kind: "fanout_item", itemIndex: 0, empty: false } }),
+                expect.objectContaining({ key: node0Key, nodeId: "observe" }),
+              ]),
+              removeItemKeys: [],
+              itemOrder: [
+                `node:${deriveInstanceKey(appendNode([], "batch"))}`,
+                scope0Key,
+                node0Key,
+                scope1Key,
+                node1Key,
+              ],
+            },
+          }],
         });
       } finally {
         controller.abort();
@@ -238,7 +576,7 @@ describe("run inspection follow", () => {
     });
   });
 
-  it("summarizes Agent progress outside the compact context budget without inlining items", async () => {
+  it("does not inline or emit hidden Agent counter-only progress", async () => {
     await withRuntimeWorkspace("run-inspection-follow-omitted-progress", async workspace => {
       const store = await admittedRepeatedAgentStore(workspace);
       const run = store.listRuns()[0]!;
@@ -271,19 +609,13 @@ describe("run inspection follow", () => {
           tools: { turn: 1, totalToolCallCount: 1, lastCalls: [{ toolName: "Read", status: "running" }] },
         });
 
-        const update = await nextPolledEmission(iterator);
-        expect(update).toMatchObject({
-          kind: "update",
-          changes: [{
-            entity: { kind: "progress", id: "omitted-agents" },
-            action: "progress",
-            progressVersion: 1,
-            summary: { kind: "omitted-agent-progress", changed: 1, tracked: 1 },
-          }],
-          patch: { upsertItems: [], removeItemKeys: [] },
-        });
-        if (update.kind !== "update") throw new Error("expected update");
-        expect(update.changes[0]).not.toHaveProperty("itemKey");
+        const pending = iterator.next();
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(settled).toBe(false);
+        controller.abort();
+        expect((await pending).done).toBe(true);
       } finally {
         controller.abort();
         await iterator.return?.();
@@ -332,6 +664,504 @@ describe("run inspection follow", () => {
     });
   });
 
+  it("does not emit a clock-only Timeline current patch at a forced semantic boundary", async () => {
+    vi.setSystemTime(new Date("2026-07-11T00:00:00.000Z"));
+    await withRuntimeWorkspace("run-inspection-follow-forced-clock-only", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const progress = () => ({
+        runId: run.id,
+        nodeKey: "observe~1",
+        nodeId: "observe",
+        attemptId: attempt.attemptId,
+        attemptNo: attempt.attemptNo,
+        ownerEpoch: attempt.ownerEpoch,
+        kind: "agent" as const,
+        status: "running" as const,
+        output: { tail: "working", totalBytes: 7, truncated: false },
+        tools: { turn: 1, totalToolCallCount: 0, lastCalls: [] },
+      });
+      store.writeNodeProgress(progress());
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "timeline",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(await nextEmission(iterator)).toMatchObject({
+          kind: "snapshot",
+          document: { kind: "timeline", current: { kind: "agent", phase: "responding" } },
+        });
+        vi.setSystemTime(new Date("2026-07-11T00:00:01.000Z"));
+        store.writeNodeProgress(progress());
+        const sequence = store.getLastRunEventSequence(run.id) + 1;
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          db.prepare(`
+            INSERT INTO run_events (
+              run_id, sequence, type, node_key, payload_json, created_at, idempotency_key
+            )
+            VALUES (?, ?, 'control.paused', NULL, ?, ?, ?)
+          `).run(
+            run.id,
+            sequence,
+            JSON.stringify({ schedulerEventVersion: 1, payload: {} }),
+            new Date().toISOString(),
+            `inspection-forced-clock-only:${run.id}`,
+          );
+        } finally {
+          db.close();
+        }
+
+        const update = await nextPolledEmission(iterator);
+        expect(update).toMatchObject({
+          kind: "delta",
+          changes: [{
+            kind: "recent",
+            upsert: [expect.objectContaining({ kind: "control", action: "paused" })],
+          }],
+        });
+        if (update.kind !== "delta") throw new Error("expected Timeline delta");
+        expect(update.changes.some(change =>
+          change.kind === "current" || change.kind === "current-patch")).toBe(false);
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
+  it("does not emit a Target delta when only the deadline clock advances", async () => {
+    const now = new Date("2026-07-11T00:00:00.000Z");
+    vi.setSystemTime(now);
+    await withRuntimeWorkspace("run-inspection-follow-deadline-clock-only", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const db = new DatabaseSync(runtimeDatabasePath(workspace));
+      try {
+        db.prepare("UPDATE node_attempts SET deadline_at = ? WHERE attempt_id = ?")
+          .run(new Date(now.getTime() + 61_000).toISOString(), attempt.attemptId);
+      } finally {
+        db.close();
+      }
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "target",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        const initial = await nextEmission(iterator);
+        expect(initial).toMatchObject({ kind: "snapshot", document: { kind: "target" } });
+        if (initial.kind !== "snapshot" || initial.document.kind !== "target") {
+          throw new Error("expected Target snapshot");
+        }
+        expect(initial.document.attention).toBeUndefined();
+
+        const pending = iterator.next();
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(settled).toBe(false);
+        controller.abort();
+        expect((await pending).done).toBe(true);
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
+  it("emits a Timeline delta when only observation version advances", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-observation", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      const before = store.readRunInspection(run.id).cursor;
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "timeline",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(await nextEmission(iterator)).toMatchObject({
+          kind: "snapshot",
+          document: { kind: "timeline" },
+        });
+        await store.observationLog.captureTurn({
+          runId: run.id,
+          nodeId: "observe",
+          nodeKey: "observe~1",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          turn: 1,
+          promptKind: "task",
+          agentKey: "observer",
+          sessionName: "inspection-observation",
+          cwd: workspace,
+          trace: false,
+        }, {
+          agent: { kind: "named", name: "claude" },
+          prompt: "Inspect",
+          cwd: workspace,
+          env: {},
+          sessionName: "inspection-observation",
+          permissionMode: "deny-all",
+        });
+        const after = store.readRunInspection(run.id).cursor;
+        expect(after).toEqual({
+          eventSequence: before.eventSequence,
+          progressVersion: before.progressVersion,
+          observationVersion: expect.any(Number),
+        });
+        expect(after.observationVersion).toBeGreaterThan(before.observationVersion);
+
+        const update = await nextPolledEmission(iterator);
+        expect(update).toMatchObject({
+          kind: "delta",
+          changes: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "recent",
+              upsert: [expect.objectContaining({
+                kind: "activity",
+                channel: "response",
+                summary: expect.objectContaining({ text: "durable observation" }),
+              })],
+            }),
+          ]),
+        });
+        if (update.kind !== "delta") throw new Error("expected Timeline delta");
+        const recentIndex = update.changes.findIndex(change => change.kind === "recent");
+        const currentIndex = update.changes.findIndex(change =>
+          change.kind === "current" || change.kind === "current-patch");
+        expect(recentIndex).toBeGreaterThanOrEqual(0);
+        expect(currentIndex).toBeGreaterThan(recentIndex);
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
+  it("reads Summary and Timeline from SQLite after the private evidence file is unavailable", async () => {
+    await withRuntimeWorkspace("run-inspection-sqlite-only", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        const captured = await store.observationLog.captureTurn({
+          runId: run.id,
+          nodeId: "observe",
+          nodeKey: "observe~1",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          turn: 1,
+          promptKind: "task",
+          agentKey: "observer",
+          sessionName: "inspection-sqlite-only",
+          cwd: workspace,
+          trace: false,
+        }, {
+          agent: { kind: "named", name: "claude" },
+          prompt: "Inspect",
+          cwd: workspace,
+          env: {},
+          sessionName: "inspection-sqlite-only",
+          permissionMode: "deny-all",
+        });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected run directory");
+        await rm(join(runDir, captured.evidence.relativePath));
+
+        const summary = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "target",
+          target: attempt.attemptId,
+        });
+        const timeline = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+        });
+
+        if (summary.isErr() || timeline.isErr()) throw new Error("expected SQLite inspection");
+        expect(summary.value).toMatchObject({
+          kind: "target",
+          evidence: {
+            records: [expect.objectContaining({
+              file: "turn-001.evidence.jsonl",
+            })],
+          },
+        });
+        expect(timeline.value).toMatchObject({
+          kind: "timeline",
+          recent: {
+            entries: expect.arrayContaining([expect.objectContaining({
+              kind: "activity",
+              channel: "response",
+              summary: expect.objectContaining({ text: "durable observation" }),
+            })]),
+          },
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("resumes a Timeline with only semantic observation deltas after the opaque revision", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-observation-resume", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        const initial = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+        });
+        if (initial.isErr() || initial.value.kind !== "timeline") throw new Error("expected Timeline snapshot");
+
+        await store.observationLog.captureTurn({
+          runId: run.id,
+          nodeId: "observe",
+          nodeKey: "observe~1",
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          turn: 1,
+          promptKind: "task",
+          agentKey: "observer",
+          sessionName: "inspection-observation-resume",
+          cwd: workspace,
+          trace: false,
+        }, {
+          agent: { kind: "named", name: "claude" },
+          prompt: "Inspect",
+          cwd: workspace,
+          env: {},
+          sessionName: "inspection-observation-resume",
+          permissionMode: "deny-all",
+        });
+
+        const controller = new AbortController();
+        const iterator = followRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+          after: initial.value.revision,
+          intervalMs: 250,
+          signal: controller.signal,
+        })[Symbol.asyncIterator]();
+        try {
+          const resumed = await nextEmission(iterator);
+          expect(resumed).toMatchObject({
+            kind: "delta",
+            changes: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "recent",
+                upsert: [expect.objectContaining({
+                  kind: "activity",
+                  channel: "response",
+                  summary: expect.objectContaining({ text: "durable observation" }),
+                })],
+              }),
+            ]),
+          });
+          expect(resumed.kind).not.toBe("snapshot");
+          expect(resumed.kind).not.toBe("resync");
+          if (resumed.kind !== "delta") throw new Error("expected resumed Timeline delta");
+          const recentIndex = resumed.changes.findIndex(change => change.kind === "recent");
+          const currentIndex = resumed.changes.findIndex(change =>
+            change.kind === "current" || change.kind === "current-patch");
+          expect(recentIndex).toBeGreaterThanOrEqual(0);
+          expect(currentIndex).toBeGreaterThan(recentIndex);
+          expect(resumed.changes.some(change => change.kind === "visibility")).toBe(false);
+        } finally {
+          controller.abort();
+          await iterator.return?.();
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects a Timeline revision resumed with a different page limit", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-revision-limit", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        const initial = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+          page: { limit: 12 },
+        });
+        if (initial.isErr() || initial.value.kind !== "timeline") throw new Error("expected Timeline snapshot");
+        const iterator = followRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+          page: { limit: 1 },
+          after: initial.value.revision,
+          intervalMs: 250,
+        })[Symbol.asyncIterator]();
+
+        const result = await iterator.next();
+        expect(result.done).toBe(false);
+        expect(result.value?.isErr() && result.value.error).toMatchObject({
+          type: "invalid-cursor",
+          runId: run.id,
+          target: attempt.attemptId,
+        });
+        await iterator.return?.();
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("accepts Timeline limits at 1 and 50 and rejects values outside that range", async () => {
+    await withRuntimeWorkspace("run-inspection-timeline-limit", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        for (const limit of [1, 50]) {
+          const result = await getRunInspection(workspace, {
+            runId: run.id,
+            mode: "timeline",
+            target: attempt.attemptId,
+            page: { limit },
+          });
+          expect(result.isOk()).toBe(true);
+        }
+        for (const limit of [0, 51]) {
+          const result = await getRunInspection(workspace, {
+            runId: run.id,
+            mode: "timeline",
+            target: attempt.attemptId,
+            page: { limit },
+          });
+          expect(result.isErr() && result.error.type).toBe("invalid-query");
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects a Timeline page cursor whose semantic boundary expired", async () => {
+    await withRuntimeWorkspace("run-inspection-timeline-expired-page", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempt = startAgent(store, run.id);
+      try {
+        for (let turn = 1; turn <= 13; turn += 1) {
+          await store.observationLog.captureTurn({
+            runId: run.id,
+            nodeId: "observe",
+            nodeKey: "observe~1",
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            turn,
+            promptKind: "task",
+            agentKey: "observer",
+            sessionName: "inspection-expired-page",
+            cwd: workspace,
+            trace: false,
+          }, {
+            agent: { kind: "named", name: "claude" },
+            prompt: "Inspect",
+            cwd: workspace,
+            env: {},
+            sessionName: "inspection-expired-page",
+            permissionMode: "deny-all",
+          });
+        }
+
+        const first = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+        });
+        if (first.isErr() || first.value.kind !== "timeline") throw new Error("expected Timeline page");
+        const pageCursor = first.value.recent.olderCursor;
+        const boundary = pageCursor ? decodeTimelinePageCursor(pageCursor)?.beforeEntry : undefined;
+        if (!pageCursor || !boundary) throw new Error("expected semantic page boundary");
+
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          db.prepare(`
+            INSERT INTO agent_observation_entries (
+              run_id, attempt_id, turn_no, entry_id, observation_version,
+              source_sequence, observed_at, kind, payload_json, payload_bytes
+            )
+            SELECT run_id, attempt_id, turn_no, ?, observation_version,
+                   source_sequence + 1000, observed_at, kind, payload_json, payload_bytes
+            FROM agent_observation_entries
+            WHERE run_id = ? AND attempt_id = ? AND entry_id = ?
+          `).run(
+            `${boundary.id}:retained-sibling`,
+            run.id,
+            attempt.attemptId,
+            boundary.id,
+          );
+          db.prepare(`
+            DELETE FROM agent_observation_entries
+            WHERE run_id = ? AND attempt_id = ? AND entry_id = ?
+          `).run(run.id, attempt.attemptId, boundary.id);
+          db.prepare(`
+            UPDATE agent_observation_attempts
+            SET retention_omitted_count = 1, retention_floor_version = ?
+            WHERE run_id = ? AND attempt_id = ?
+          `).run(boundary.observationVersion, run.id, attempt.attemptId);
+          db.exec("COMMIT");
+          expect((db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM agent_observation_entries
+            WHERE run_id = ? AND attempt_id = ? AND observation_version = ?
+          `).get(run.id, attempt.attemptId, boundary.observationVersion) as { count: number }).count)
+            .toBeGreaterThan(0);
+        } catch (error) {
+          if (db.isTransaction) db.exec("ROLLBACK");
+          throw error;
+        } finally {
+          db.close();
+        }
+
+        const expired = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "timeline",
+          target: attempt.attemptId,
+          page: { before: pageCursor },
+        });
+        expect(expired.isErr() && expired.error).toMatchObject({
+          type: "invalid-cursor",
+          runId: run.id,
+          target: attempt.attemptId,
+        });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("resynchronizes when the durable event cursor contains a gap", async () => {
     await withRuntimeWorkspace("run-inspection-follow-cursor-gap", async workspace => {
       const store = await admittedAgentStore(workspace);
@@ -345,7 +1175,8 @@ describe("run inspection follow", () => {
       })[Symbol.asyncIterator]();
       try {
         const initial = await nextEmission(iterator);
-        const previousSequence = initial.cursor.eventSequence;
+        expect(initial.kind).toBe("snapshot");
+        const previousSequence = store.getLastRunEventSequence(run.id);
         const db = new DatabaseSync(runtimeDatabasePath(workspace));
         try {
           db.prepare(`

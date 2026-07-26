@@ -13,7 +13,10 @@ export function usageError(message: string): CliError {
   return new CliError(2, { ok: false, phase: "usage", message });
 }
 
-export function notFoundError(message: string, details: Pick<CliResult, "errorCode"> = {}): CliError {
+export function notFoundError(
+  message: string,
+  details: Pick<CliResult, "errorCode" | "inspectionError"> = {},
+): CliError {
   return new CliError(1, { ok: false, phase: "inspect", message, ...details });
 }
 

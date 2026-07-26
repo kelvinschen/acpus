@@ -10,7 +10,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { taggedAgentOutput, tracedCompletedAgentTurn } from "./support/agent-turn.js";
+import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -69,7 +69,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               turns.push(request);
-              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
+              return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
@@ -83,7 +83,7 @@ describe("scheduler agent overrides and forks", () => {
           });
           expect(turns[0]!.model).toBeUndefined();
           expect(turns[0]!.config).toBeUndefined();
-          expect(turns[0]!.captureTrace).toBe(true);
+          expect(turns[0]!.captureTrace).toBeUndefined();
         } finally {
           store.close();
         }
@@ -382,7 +382,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               sourceTurns.push(request);
-              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
+              return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
           expect(store.getRun(source.id)).toMatchObject({ status: "completed", output: {} });
@@ -401,7 +401,7 @@ describe("scheduler agent overrides and forks", () => {
             store,
             executeAgentTurn: async request => {
               forkTurns.push(request);
-              return tracedCompletedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
+              return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 

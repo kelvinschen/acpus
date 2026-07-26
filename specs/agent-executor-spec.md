@@ -2,16 +2,21 @@
 
 ## Purpose
 
-`@acpus/agent-executor` executes one resolved acpx-backed ACP turn. It owns acpx resolution/arguments, process deadlines and cancellation, single-pass ACP JSON parsing, normalized progress/trace, and backend failure classification; the [Runtime](runtime-spec.md) owns workflow rendering, schema repair, scheduler attempts, and durable records.
+`@acpus/agent-executor` executes one resolved acpx-backed ACP turn. It owns acpx resolution/arguments, process deadlines and cancellation, single-pass ACP JSON parsing, normalized progress/observation/trace, and backend failure classification; the [Runtime](runtime-spec.md) owns workflow rendering, schema repair, scheduler attempts, and durable records.
 
 ## Requirements
 
 ### Public API And Requests
 
-- The package MUST expose `executeAgentTurn(request)` plus public request, result, progress, timing, summary, tool, and normalized trace types without a binary.
+- The package MUST expose `executeAgentTurn(request)` plus public request, result, progress, observation, timing, summary, tool, and normalized trace types without a binary.
 - Public operational types MUST use `AgentTurnSummary`, `AgentContextSummary`, `AgentTokenUsageSummary`, `AgentToolCallSummary`, `AgentToolsSummary`, and `AgentTurnTiming`.
 - Terminal results MUST contain UTC `startedAt`/`finishedAt` and finite non-negative monotonic `elapsedMs`; progress and summary omit terminal timing.
-- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model and string `config` map, numeric timeout, optional abort, and optional observation callbacks. `config.model`, when present, MUST override `model` for acpx invocation and MUST NOT be sent through `set`.
+- Requests MUST select a named acpx token or custom `--agent <command>` and provide rendered prompt, absolute cwd, environment, session, permission, optional model and string `config` map, numeric timeout, optional abort, and optional progress/observation callbacks. `config.model`, when present, MUST override `model` for acpx invocation and MUST NOT be sent through `set`.
+- `AgentTurnObservation` MUST contain one normalized `AgentTraceEvent` and its corresponding `AgentTurnProgress` snapshot.
+- `onObservation` MUST receive `{ event: AgentTraceEvent; progress: AgentTurnProgress }` once for each normalized non-terminal provider event and exactly once for the synthetic terminal `turn_end`.
+- Observation delivery MUST NOT depend on normalized-trace capture being enabled.
+- The executor MUST invoke observation callbacks without awaiting their returned promises.
+- An observation callback throw or rejection MUST NOT change the turn result.
 - The executor MUST resolve its bundled `acpx` internally and reject request-level binary/path/provider-command overrides.
 - Named `claude` requests MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1` only when absent; custom commands never receive that default by string matching.
 - `timeoutMs` MUST be a non-negative safe integer, with invalid values returning `config` before spawn and zero timing out immediately.
@@ -31,6 +36,8 @@
 - Prompt timeout or abort MUST best-effort invoke `cancel -s <session>` before force-killing the prompt process.
 - Abort and expired deadlines MUST win settlement races, including synchronous startup; when both occur at one boundary, abort wins and cancellation errors remain handled.
 - Stdin failure after spawn MUST preserve child stderr/exit classification; settled invocations ignore later stdout/progress.
+- After abort or timeout begins termination, the executor MUST continue collecting prompt stdout and stderr until the child process settles.
+- Abort or timeout MUST remain the terminal result even when the provider emits a late success before process settlement.
 
 ### Results And Summaries
 
@@ -50,9 +57,11 @@
 - Trace events MUST use schema version 1, monotonic sequence/elapsed values, and event-arrival UTC `observedAt`; terminal trace timing equals terminal turn timing.
 - When trace capture is enabled, every terminal result's trace event list MUST end with `turn_end`; timeout failures MUST use terminal status `timed_out`.
 - Normalization MUST preserve emitted message/thought, tool, usage, and plan facts without inference; unrecognized provider behavior remains `unknown` with available tag/value.
+- Normalization MUST exclude `available_commands_update` and `session_info_update` session metadata.
 - Trace MUST exclude client protocol/control frames and prompt echoes while retaining provider-facing permission, filesystem, terminal, elicitation, MCP, and unknown extension activity as normalized/unknown events.
 - Trace tools MUST preserve full provider-emitted `rawInput`, `rawOutput`, `content`, and `locations` without broadening summary/progress payloads.
 - Prompt stdout MUST be decoded and parsed once while streaming; response, summary, progress, and optional trace derive from that pass and retain event-arrival timing.
+- Observation events and trace events MUST derive from that same parse and be identical when trace capture is enabled.
 - Progress callbacks MUST fire for valid non-text prompt activity, including thought and tool events.
 - Progress MUST include response-so-far, the same normalized summary shape including telemetry availability, and update time; parsing is byte-safe across arbitrary chunks and incomplete lines wait for a boundary/close.
 

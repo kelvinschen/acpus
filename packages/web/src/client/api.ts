@@ -1,4 +1,4 @@
-import type { RunInspectionTargetDocument } from "@acpus/runtime";
+import type { RunInspectionTargetDetailsDocument } from "@acpus/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type {
   NodeExecutionInspection,
@@ -63,7 +63,7 @@ export type ArtifactReference = {
   createdAt?: string;
 };
 
-export type NodeInspection = RunInspectionTargetDocument;
+export type NodeInspection = RunInspectionTargetDetailsDocument;
 
 export type ArtifactPreview = {
   text: string;

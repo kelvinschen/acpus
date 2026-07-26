@@ -125,7 +125,7 @@ describe("Inspector presence", () => {
 });
 
 describe("Inspector primitives", () => {
-  it("renders normalized compact Agent state before full execution details is loaded", async () => {
+  it("keeps resource telemetry out of the Agent overview", async () => {
     vi.setSystemTime(new Date("2026-07-01T00:00:06.000Z"));
     await render(React.createElement(AgentOverview, {
       agent: {
@@ -134,7 +134,7 @@ describe("Inspector primitives", () => {
         availability: { context: "available", tokenUsage: "available" },
         model: "opus",
         turnCount: 2,
-        lastActivityAt: "2026-07-01T00:00:04.000Z",
+        lastObservedAt: "2026-07-01T00:00:04.000Z",
         context: { used: 26_100, size: 200_000 },
         tokenUsage: { inputTokens: 51_800, outputTokens: 205, totalTokens: 52_005 },
         tools: {
@@ -152,11 +152,7 @@ describe("Inspector primitives", () => {
     expect([...container.querySelectorAll(".key-value")].map(row => row.textContent)).toEqual([
       "Agentobserver",
       "Modelopus",
-      "Turns2",
-      "Last active2s ago",
-      "Context26.1k/200k (13%)",
-      "Tokensin 51.8k, out 205, total 52k",
-      "Last tools✓ Read · ⠋ Bash: rg · ◆ Write",
+      "Last observed2s ago",
     ]);
     expect(container.textContent).not.toContain("command");
   });

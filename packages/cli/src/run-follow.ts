@@ -1,16 +1,13 @@
 import { tryParseDurationMs } from "@acpus/core/ir";
 import {
   followRunInspection,
-  getRunInspection,
+  type FollowableInspectionDocument,
   type FollowRunInspectionQuery,
+  type RunInspectionChange,
   type RunInspectionEmission,
   type RunInspectionError,
-  type RunInspectionChange,
   type RunInspectionItem,
-  type RunInspectionQuery,
-  type RunInspectionRunSummary,
-  type RunInspectionSnapshot,
-  type RunInspectionTargetDocument,
+  type RunStatus,
 } from "@acpus/runtime";
 import type { Writable } from "node:stream";
 import { usageError } from "./errors.js";
@@ -18,6 +15,7 @@ import { writeJsonLine } from "./output.js";
 import {
   applyRunInspectionUpdate,
   formatRunInspectionChanges,
+  formatRunInspectionDelta,
   formatRunInspectionCheckpoint,
   formatRunInspectionDocument,
   formatRunInspectionHeader,
@@ -26,6 +24,7 @@ import {
 
 const defaultFollowIntervalMs = 1_000;
 const minimumFollowIntervalMs = 250;
+const checkpointIntervalMs = 30_000;
 const overviewTranscriptContextLimit = 20;
 const transcriptOmissionIntervalMs = 30_000;
 
@@ -38,7 +37,7 @@ export function parseFollowInterval(value: string | undefined): number {
 }
 
 export type RunFollowOutcome =
-  | { kind: "done"; run: RunInspectionRunSummary }
+  | { kind: "done"; run: { id: string; status: RunStatus } }
   | { kind: "detached" }
   | { kind: "error"; error: RunInspectionError };
 
@@ -61,19 +60,16 @@ export async function followRun(
   process.once("SIGINT", onAbort);
   const presenter = new RunFollowPresenter(
     options,
-    query.mode === "target" ? "target" : "snapshot",
-    query.mode === "overview",
-    async () => {
-      const result = await getRunInspection(cwd, inspectionQuery(query));
-      if (result.isErr() || result.value.kind === "raw") return undefined;
-      return withoutTerminalOutput(result.value);
-    },
+    query.runId,
+    query.mode,
+    query.mode === "timeline" ? query.page?.limit ?? 12 : 12,
   );
+
   try {
     const source = followRunInspection(cwd, { ...query, signal: controller.signal });
-    for await (const event of withPresentationTicks(source, options.format === "ndjson" ? undefined : 1_000)) {
+    for await (const event of withPresentationTicks(source, options.format === "text" ? 1_000 : undefined)) {
       if (event.kind === "tick") {
-        await presenter.tick();
+        presenter.tick();
         continue;
       }
       const result = event.result;
@@ -81,9 +77,8 @@ export async function followRun(
         writeFollowError(result.error, options);
         return { kind: "error", error: result.error };
       }
-      const emission = result.value;
-      presenter.emission(emission);
-      if (emission.kind === "done") return { kind: "done", run: emission.run };
+      presenter.emission(result.value);
+      if (result.value.kind === "done") return { kind: "done", run: result.value.run };
     }
   } catch (error) {
     const failure: RunInspectionError = {
@@ -102,121 +97,164 @@ export async function followRun(
   if (detached) {
     const stream = options.format === "ndjson" ? options.stderr : options.stdout;
     stream.write(`Detached from run ${query.runId}. Background daemon continues running.\n`);
-    stream.write(`Resume: acpus runs inspect ${query.runId} --follow\n`);
+    stream.write(`Resume: ${resumeCommand(query, presenter.revision ?? query.after)}\n`);
     stream.write(`Cancel: acpus runs cancel ${query.runId}\n`);
     return { kind: "detached" };
   }
 
-  const failure: RunInspectionError = { type: "inspection-read-failed", runId: query.runId, message: "Run inspection follow ended before a terminal status." };
+  const failure: RunInspectionError = {
+    type: "inspection-read-failed",
+    runId: query.runId,
+    message: "Run inspection follow ended before a terminal status.",
+  };
   writeFollowError(failure, options);
   return { kind: "error", error: failure };
 }
 
-type FollowDocument = RunInspectionSnapshot | RunInspectionTargetDocument;
 type FollowOptions = Parameters<typeof followRun>[2];
 
 class RunFollowPresenter {
-  private document: FollowDocument | undefined;
-  private targetChanges: string[] = [];
+  private document: FollowableInspectionDocument | undefined;
   private renderedLines = 0;
-  private lastAppendAt = Date.now();
   private outputWritten = false;
+  private lastWriteAt = Date.now();
   private readonly transcriptContextAliases = new Set<string>();
   private transcriptContextCount = 0;
   private readonly pendingTranscriptOmissions = new Map<string, RunInspectionChange>();
   private lastTranscriptOmissionAt: number | undefined;
+  revision: string | undefined;
 
   constructor(
     private readonly options: FollowOptions,
-    private readonly documentKind: FollowDocument["kind"],
-    private readonly budgetOverviewTranscript: boolean,
-    private readonly readCheckpointDocument: () => Promise<FollowDocument | undefined>,
+    private readonly runId: string,
+    private readonly mode: FollowRunInspectionQuery["mode"],
+    private readonly timelineLimit: number,
   ) {}
 
   emission(emission: RunInspectionEmission): void {
-    if (this.options.format === "ndjson") this.writeJson(emission);
+    this.revision = emission.revision;
+    if (this.options.format === "ndjson") {
+      this.writeJson(emission);
+      return;
+    }
 
     if (emission.kind === "snapshot" || emission.kind === "resync") {
       this.document = withoutTerminalOutput(emission.document);
-      this.targetChanges = [];
-      if (this.options.format === "ndjson") return;
-      if (this.budgetOverviewTranscript && !isTty(this.options.stdout)) this.resetTranscriptBudget(this.document.items);
-      if (emission.kind === "resync" && !isTty(this.options.stdout)) this.options.stdout.write(`Resynced inspection (${emission.reason}).\n`);
-      this.renderedLines = redraw(this.options.stdout, formatRunInspectionDocument(this.document), this.renderedLines);
-      this.lastAppendAt = Date.now();
+      if (this.mode === "overview" && !isTty(this.options.stdout) && this.document.kind === "snapshot") {
+        this.resetTranscriptBudget(this.document.items);
+      }
+      const resync = emission.kind === "resync" && !isTty(this.options.stdout)
+        ? `Resynced inspection (${emission.reason}).\n`
+        : "";
+      const text = `${resync}${formatRunInspectionDocument(this.document)}`;
+      if (isTty(this.options.stdout)) this.renderedLines = redraw(this.options.stdout, text, this.renderedLines);
+      else this.options.stdout.write(text);
+      this.lastWriteAt = Date.now();
       return;
     }
 
-    if (emission.kind === "update") {
-      if (this.document) this.document = applyRunInspectionUpdate(this.document, emission);
-      if (this.options.format === "ndjson") return;
-      const items = this.document?.items ?? emission.patch.upsertItems;
-      const textChanges = coalesceTerminalAgentChanges(emission.changes, items);
-      const transcript = this.budgetOverviewTranscript && !isTty(this.options.stdout)
-        ? this.limitTranscriptChanges(textChanges, items)
-        : { changes: textChanges, omitted: [], shownContextKeys: [] };
-      const changes = formatRunInspectionChanges(transcript.changes, this.documentKind === "snapshot" ? {
-        kind: "snapshot",
-        run: emission.run,
-        items,
-        actions: this.document?.kind === "snapshot" ? this.document.actions : [],
-      } : {
-        kind: "target",
-        run: emission.run,
-        items,
-      }) + this.recordTranscriptOmissions(transcript.omitted, transcript.shownContextKeys, emission.run.id);
+    if (emission.kind === "delta") {
+      const previousDocument = this.document;
+      if (this.document) {
+        this.document = applyRunInspectionUpdate(this.document, emission, this.timelineLimit);
+      }
       if (isTty(this.options.stdout)) {
-        if (changes) this.targetChanges = [...this.targetChanges, ...changes.trimEnd().split("\n")].slice(-20);
-        if (this.document) this.renderedLines = redraw(this.options.stdout, this.currentText(), this.renderedLines);
-      } else if (changes) {
-        this.options.stdout.write(changes);
-        this.lastAppendAt = Date.now();
+        if (this.document) {
+          this.renderedLines = redraw(
+            this.options.stdout,
+            formatRunInspectionDocument(this.document),
+            this.renderedLines,
+          );
+        } else {
+          this.options.stdout.write(formatRunInspectionDelta(emission));
+        }
+      } else {
+        const text = this.formatPipeDelta(emission, previousDocument);
+        if (text) {
+          this.options.stdout.write(text);
+          this.lastWriteAt = Date.now();
+        }
       }
       return;
     }
 
-    if (this.options.format === "text") {
-      if (!isTty(this.options.stdout)) {
-        const omitted = this.flushTranscriptOmissions(emission.run.id);
-        if (omitted) this.options.stdout.write(omitted);
+    if (!isTty(this.options.stdout)) {
+      const omitted = this.flushTranscriptOmissions(emission.run.id);
+      if (omitted) this.options.stdout.write(omitted);
+    }
+    if (this.document && isTty(this.options.stdout)) {
+      this.document = terminalStateDocument(this.document, emission.run.status);
+      this.renderedLines = redraw(
+        this.options.stdout,
+        formatRunInspectionDocument(this.document),
+        this.renderedLines,
+      );
+    } else if (this.mode === "overview" || this.mode === "all") {
+      if (this.document?.kind === "snapshot") {
+        this.options.stdout.write(formatRunInspectionHeader({
+          ...this.document.run,
+          status: emission.run.status,
+        }));
+      } else {
+        this.options.stdout.write(`Run ${emission.run.id}  ${emission.run.status}\n`);
       }
-      if (this.document && isTty(this.options.stdout)) {
-        this.document = { ...this.document, run: emission.run };
-        this.renderedLines = redraw(this.options.stdout, this.currentText(), this.renderedLines);
-      } else if (!isTty(this.options.stdout)) {
-        this.options.stdout.write(formatRunInspectionHeader(emission.run));
-      }
-      if (!this.outputWritten) {
-        this.options.stdout.write(formatTerminalOutput(emission.output));
-        this.outputWritten = true;
-      }
+    }
+    if (!this.outputWritten) {
+      this.options.stdout.write(formatTerminalOutput(emission.output));
+      this.outputWritten = true;
     }
   }
 
-  async tick(nowMs = Date.now()): Promise<void> {
-    if (this.options.format === "ndjson" || !this.document) return;
+  tick(nowMs = Date.now()): void {
+    if (!this.document) return;
     if (isTty(this.options.stdout)) {
-      this.renderedLines = redraw(this.options.stdout, this.currentText(nowMs), this.renderedLines);
+      this.renderedLines = redraw(
+        this.options.stdout,
+        formatRunInspectionDocument(this.document, nowMs),
+        this.renderedLines,
+      );
       return;
     }
     const omitted = this.flushTranscriptOmissionsIfDue(this.document.run.id, nowMs);
     if (omitted) {
       this.options.stdout.write(omitted);
-      this.lastAppendAt = nowMs;
+      this.lastWriteAt = nowMs;
       return;
     }
-    if (nowMs - this.lastAppendAt < 30_000) return;
-    const latest = await this.readCheckpointDocument().catch(() => undefined);
-    this.options.stdout.write(formatRunInspectionCheckpoint(latest ?? this.document, nowMs));
-    this.lastAppendAt = nowMs;
+    if (nowMs - this.lastWriteAt < checkpointIntervalMs) return;
+    this.options.stdout.write(formatRunInspectionCheckpoint(this.document, nowMs));
+    this.lastWriteAt = nowMs;
   }
 
-  private currentText(nowMs = Date.now()): string {
-    if (!this.document) return "";
-    const document = formatRunInspectionDocument(this.document, nowMs);
-    return this.document.kind === "target" && this.targetChanges.length > 0
-      ? `${document}\nChanges:\n${this.targetChanges.join("\n")}\n`
-      : document;
+  private formatPipeDelta(
+    emission: Extract<RunInspectionEmission, { kind: "delta" }>,
+    previousDocument?: FollowableInspectionDocument,
+  ): string {
+    let output = "";
+    for (const delta of emission.changes) {
+      if (delta.kind !== "overview") {
+        output += formatRunInspectionDelta({ ...emission, changes: [delta] }, previousDocument, this.runId);
+        continue;
+      }
+      const document = this.document?.kind === "snapshot" ? this.document : undefined;
+      const items = document?.items ?? delta.patch.upsertItems;
+      const changes = coalesceTerminalAgentChanges(delta.changes, items);
+      const transcript = this.mode === "overview"
+        ? this.limitTranscriptChanges(changes, items)
+        : { changes, omitted: [], shownContextKeys: [] };
+      output += formatRunInspectionChanges(transcript.changes, {
+        kind: "snapshot",
+        run: delta.run,
+        items,
+        availableActions: document?.availableActions ?? delta.patch.availableActions ?? [],
+      });
+      output += this.recordTranscriptOmissions(
+        transcript.omitted,
+        transcript.shownContextKeys,
+        delta.run.id,
+      );
+    }
+    return output;
   }
 
   private writeJson(emission: RunInspectionEmission): void {
@@ -298,13 +336,15 @@ class RunFollowPresenter {
     for (const key of shownContextKeys) this.pendingTranscriptOmissions.delete(key);
     for (const change of changes) this.pendingTranscriptOmissions.set(transcriptContextKey(change), change);
     if (this.pendingTranscriptOmissions.size === 0) return "";
-    if (this.lastTranscriptOmissionAt !== undefined && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
+    if (this.lastTranscriptOmissionAt !== undefined
+      && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
     return this.flushTranscriptOmissions(runId, nowMs);
   }
 
   private flushTranscriptOmissionsIfDue(runId: string, nowMs: number): string {
     if (this.pendingTranscriptOmissions.size === 0) return "";
-    if (this.lastTranscriptOmissionAt !== undefined && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
+    if (this.lastTranscriptOmissionAt !== undefined
+      && nowMs - this.lastTranscriptOmissionAt < transcriptOmissionIntervalMs) return "";
     return this.flushTranscriptOmissions(runId, nowMs);
   }
 
@@ -323,7 +363,9 @@ function coalesceTerminalAgentChanges(
 ): RunInspectionChange[] {
   const byIdentity = new Map<string, RunInspectionItem>();
   for (const item of items) {
-    for (const identity of [item.key, item.nodeKey, item.attemptId]) if (identity) byIdentity.set(identity, item);
+    for (const identity of [item.key, item.nodeKey, item.attemptId]) {
+      if (identity) byIdentity.set(identity, item);
+    }
   }
   const result = changes.map(change => ({ ...change }));
   const removed = new Set<number>();
@@ -340,7 +382,8 @@ function coalesceTerminalAgentChanges(
     const item = agentItem(progress, byIdentity);
     if (!item || !terminalAgentProgress(progress)) continue;
     const candidates = durableByItem.get(`${item.key}:${progress.status}`) ?? [];
-    const durableIndex = [...candidates].reverse().find(candidate => compatibleAttempt(result[candidate]!, progress));
+    const durableIndex = [...candidates].reverse()
+      .find(candidate => compatibleAttempt(result[candidate]!, progress));
     if (durableIndex === undefined) continue;
     result[durableIndex] = mergeTerminalChange(result[durableIndex]!, progress);
     removed.add(index);
@@ -349,8 +392,12 @@ function coalesceTerminalAgentChanges(
   return result.filter((_, index) => !removed.has(index));
 }
 
-function agentItem(change: RunInspectionChange, byIdentity: ReadonlyMap<string, RunInspectionItem>): RunInspectionItem | undefined {
-  const item = (change.itemKey ? byIdentity.get(change.itemKey) : undefined) ?? byIdentity.get(change.entity.id);
+function agentItem(
+  change: RunInspectionChange,
+  byIdentity: ReadonlyMap<string, RunInspectionItem>,
+): RunInspectionItem | undefined {
+  const item = (change.itemKey ? byIdentity.get(change.itemKey) : undefined)
+    ?? byIdentity.get(change.entity.id);
   return item?.agent ? item : undefined;
 }
 
@@ -370,14 +417,25 @@ function terminalAgentProgress(change: RunInspectionChange): boolean {
 }
 
 function compatibleAttempt(left: RunInspectionChange, right: RunInspectionChange): boolean {
-  return left.attemptNo === undefined || right.attemptNo === undefined || left.attemptNo === right.attemptNo;
+  return left.attemptNo === undefined
+    || right.attemptNo === undefined
+    || left.attemptNo === right.attemptNo;
 }
 
-function mergeTerminalChange(durable: RunInspectionChange, progress: RunInspectionChange): RunInspectionChange {
-  const message = [durable.message, progress.message].filter((value, index, values): value is string => value !== undefined && values.indexOf(value) === index).join(" · ");
+function mergeTerminalChange(
+  durable: RunInspectionChange,
+  progress: RunInspectionChange,
+): RunInspectionChange {
+  const message = [durable.message, progress.message]
+    .filter((value, index, values): value is string => (
+      value !== undefined && values.indexOf(value) === index
+    ))
+    .join(" · ");
   return {
     ...durable,
-    ...(durable.attemptNo === undefined && progress.attemptNo !== undefined ? { attemptNo: progress.attemptNo } : {}),
+    ...(durable.attemptNo === undefined && progress.attemptNo !== undefined
+      ? { attemptNo: progress.attemptNo }
+      : {}),
     ...(message ? { message } : {}),
   };
 }
@@ -388,7 +446,10 @@ type TranscriptContextGroup = {
   last: RunInspectionChange;
 };
 
-function dynamicTranscriptChange(change: RunInspectionChange, item: RunInspectionItem | undefined): boolean {
+function dynamicTranscriptChange(
+  change: RunInspectionChange,
+  item: RunInspectionItem | undefined,
+): boolean {
   if (change.entity.kind === "run" || change.entity.kind === "control") return false;
   return item?.role !== "static" && item?.role !== "fold";
 }
@@ -408,11 +469,16 @@ function protectedChange(change: RunInspectionChange): boolean {
 }
 
 function protectedItem(item: RunInspectionItem): boolean {
-  return item.status === "failed" || item.status === "timed_out" || item.status === "awaiting" || (item.attemptNo ?? 1) > 1;
+  return item.status === "failed"
+    || item.status === "timed_out"
+    || item.status === "awaiting"
+    || (item.attemptNo ?? 1) > 1;
 }
 
 function transcriptContextKey(change: RunInspectionChange): string {
-  return change.subject.replace(/\s+\([^()]+\)$/, "") || change.itemKey || change.entity.id;
+  return change.subject.replace(/\s+\([^()]+\)$/, "")
+    || change.itemKey
+    || change.entity.id;
 }
 
 function changeContextAliases(change: RunInspectionChange): string[] {
@@ -435,25 +501,49 @@ function hasAlias(known: Set<string>, aliases: Set<string>): boolean {
   return [...aliases].some(alias => known.has(alias));
 }
 
-function formatTranscriptOmission(changes: readonly RunInspectionChange[], runId: string): string {
+function formatTranscriptOmission(
+  changes: readonly RunInspectionChange[],
+  runId: string,
+): string {
   if (changes.length === 0) return "";
   const counts = new Map<string, number>();
   for (const change of changes) {
     const status = finalChangeStatus(change);
     counts.set(status, (counts.get(status) ?? 0) + 1);
   }
-  const order = ["not-started", "pending", "starting", "ready", "running", "awaiting", "completed", "failed", "timed-out", "canceled", "mixed", "updated"];
-  const summary = [...counts].sort(([left], [right]) => {
-    const leftIndex = order.indexOf(left);
-    const rightIndex = order.indexOf(right);
-    return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex) || left.localeCompare(right);
-  }).map(([status, count]) => `${status}=${count}`).join("  ");
-  return `… ${changes.length} contexts omitted (${summary})  More: acpus runs inspect ${runId} --all --follow\n`;
+  const order = [
+    "not-started",
+    "pending",
+    "starting",
+    "ready",
+    "running",
+    "awaiting",
+    "completed",
+    "failed",
+    "timed-out",
+    "canceled",
+    "mixed",
+    "updated",
+  ];
+  const summary = [...counts]
+    .sort(([left], [right]) => {
+      const leftIndex = order.indexOf(left);
+      const rightIndex = order.indexOf(right);
+      return (leftIndex < 0 ? order.length : leftIndex)
+        - (rightIndex < 0 ? order.length : rightIndex)
+        || left.localeCompare(right);
+    })
+    .map(([status, count]) => `${status}=${count}`)
+    .join("  ");
+  return `… ${changes.length} contexts omitted (${summary})  `
+    + `More: acpus runs inspect ${runId} --all --follow\n`;
 }
 
 function finalChangeStatus(change: RunInspectionChange): string {
-  if (change.status) return change.status.replaceAll("_", "-").replace("cancelled", "canceled");
-  if (change.action === "started" || change.action === "progress" || change.action === "advanced" || change.action === "resumed") return "running";
+  if (change.status) {
+    return change.status.replaceAll("_", "-").replace("cancelled", "canceled");
+  }
+  if (["started", "progress", "advanced", "resumed"].includes(change.action)) return "running";
   if (change.action === "ready" || change.action === "requeued") return "ready";
   if (change.action === "awaiting") return "awaiting";
   if (change.action === "completed" || change.action === "consumed") return "completed";
@@ -463,9 +553,50 @@ function finalChangeStatus(change: RunInspectionChange): string {
   return "updated";
 }
 
-function inspectionQuery(query: FollowRunInspectionQuery): Exclude<RunInspectionQuery, { mode: "raw" }> {
-  const { intervalMs: _intervalMs, signal: _signal, ...inspection } = query;
-  return inspection;
+function terminalStateDocument(
+  document: FollowableInspectionDocument,
+  status: RunStatus,
+): FollowableInspectionDocument {
+  return {
+    ...document,
+    run: { ...document.run, status },
+  } as FollowableInspectionDocument;
+}
+
+function withoutTerminalOutput(document: FollowableInspectionDocument): FollowableInspectionDocument {
+  if (document.kind !== "snapshot" || document.output === undefined) return document;
+  const snapshot = { ...document };
+  delete snapshot.output;
+  return snapshot;
+}
+
+function resumeCommand(query: FollowRunInspectionQuery, revision: string | undefined): string {
+  const target = "target" in query ? ` --target ${query.target}` : "";
+  const timeline = query.mode === "timeline" ? " --timeline" : query.mode === "all" ? " --all" : "";
+  const limit = query.mode === "timeline" && query.page?.limit !== undefined
+    ? ` --limit ${query.page.limit}`
+    : "";
+  const after = revision ? ` --after ${revision}` : "";
+  return `acpus runs inspect ${query.runId}${target}${timeline}${limit} --follow${after}`;
+}
+
+function writeFollowError(error: RunInspectionError, options: FollowOptions): void {
+  if (options.format === "ndjson") {
+    writeJsonLine(options.stdout, {
+      schemaVersion: 2,
+      ok: false,
+      phase: options.phase,
+      kind: "error",
+      error: publicInspectionError(error),
+    });
+  } else {
+    options.stderr.write(`Inspection failed: ${error.message}\n`);
+  }
+}
+
+function publicInspectionError(error: RunInspectionError): object {
+  if (error.type !== "inspection-read-failed") return error;
+  return { type: error.type, runId: error.runId, message: error.message };
 }
 
 type FollowResult = ReturnType<typeof followRunInspection> extends AsyncIterable<infer Result> ? Result : never;
@@ -510,23 +641,6 @@ async function* withPresentationTicks(
   } finally {
     if (timer) clearInterval(timer);
   }
-}
-
-function writeFollowError(error: RunInspectionError, options: Parameters<typeof followRun>[2]): void {
-  if (options.format === "ndjson") writeJsonLine(options.stdout, { schemaVersion: 1, ok: false, phase: options.phase, kind: "error", error: publicInspectionError(error) });
-  else options.stderr.write(`Inspection failed: ${error.message}\n`);
-}
-
-function publicInspectionError(error: RunInspectionError): object {
-  if (error.type !== "inspection-read-failed") return error;
-  return { type: error.type, runId: error.runId, message: error.message };
-}
-
-function withoutTerminalOutput(document: RunInspectionSnapshot | RunInspectionTargetDocument): RunInspectionSnapshot | RunInspectionTargetDocument {
-  if (document.kind !== "snapshot" || document.output === undefined) return document;
-  const snapshot = { ...document };
-  delete snapshot.output;
-  return snapshot;
 }
 
 function redraw(stream: Writable, text: string, renderedLines: number): number {

@@ -6,6 +6,7 @@ import type {
   HookConfigScope,
   LoadedHookConfig,
   PruneReport,
+  RunInspectionError,
   RunRecord,
   RuntimeHealthCheck,
   RuntimePersistence,
@@ -72,6 +73,7 @@ type CliResultFields = {
   checks?: Array<RuntimeHealthCheck | AuthoringHealthCheck>;
   authoring?: AuthoringEnvironment;
   errorCode?: string;
+  inspectionError?: PublicRunInspectionError;
   control?: CliControl;
   hookValidation?: { count: number };
   hooks?: HookListResult;
@@ -82,6 +84,10 @@ type CliResultFields = {
   catalog?: WorkflowCatalogEntry;
   checked?: boolean;
 };
+
+type PublicRunInspectionError =
+  | Exclude<RunInspectionError, { type: "inspection-read-failed" }>
+  | Omit<Extract<RunInspectionError, { type: "inspection-read-failed" }>, "cause">;
 
 type ResultRecord<
   Phase extends ResultPhase,
@@ -122,7 +128,7 @@ export type CliResult =
   | ResultRecord<"inspect", true, "catalog", "catalog">
   | ResultRecord<"inspect", true, "catalogEntries", "catalogEntries">
   | ResultRecord<"inspect", true, "message" | "hooks", "message" | "hooks">
-  | ResultRecord<"inspect", false, "message" | "errorCode", "message">
+  | ResultRecord<"inspect", false, "message" | "errorCode" | "inspectionError", "message">
   | ControlSuccessCliResult
   | ControlFailureCliResult
   | ResultRecord<"delete", true, "message" | "run" | "deletedRuns" | "skippedRuns", "message" | "deletedRuns" | "skippedRuns">

@@ -2,25 +2,32 @@
 
 ## Triage checklist
 
-1. Inspect first:
+1. Inspect the run, then the item controlling the next decision:
 
    ```sh
    acpus runs inspect <run-id>
+   acpus runs inspect <run-id> --target <nodeId|nodeKey|frameKey|attemptId>
    ```
 
-2. Identify:
-   - durable run status and derived execution state
-   - failed, timed-out, canceled, or stale node/frame
-   - dynamic `nodeKey` or `frameKey` when targeting recovery
-   - agent attempt metadata and artifact refs, if available
-   - whether the workflow source changed after admission
+2. Identify status, the dynamic recovery target, and whether admitted source
+   or inputs must change. For Agent interruption, also identify the exact
+   `attemptId`, provider outcome, scheduler disposition, and completeness.
 
-3. Choose the smallest safe action.
+3. Add Timeline only when activity is needed, then choose the smallest safe
+   action:
 
-Use `--target <nodeId-or-nodeKey-or-frameKey-or-attemptId>` when recovery needs one execution. Use focused target JSON only after text inspection; `--raw --json` is the unbounded last resort.
+   ```sh
+   acpus runs inspect <run-id> --target <resolved-target> --timeline
+   ```
 
-Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Compact text shows the actionable upstream detail and bounded acpx code;
-use target JSON for the complete parsed JSON-RPC error data. Do not infer an authentication, model, or quota category from provider error wording.
+If Summary and Timeline are insufficient, read only the exact attempt's
+Private Turn Evidence for prompt/fence/terminal boundaries. Use an opt-in Trace
+or raw ACP artifact for provider-frame detail; see
+[Agent Tracing](agent-tracing.md).
+
+Agent failures preserve Acpus origin/code separately from their upstream acpx
+cause. Do not infer an authentication, model, or quota category from error
+wording.
 
 ## Phase-based fixes
 
@@ -43,7 +50,7 @@ use target JSON for the complete parsed JSON-RPC error data. Do not infer an aut
 
 Prefer the smallest action that preserves correct admitted state:
 
-- Steer only while the Agent is running and no workflow, input, Agent configuration, schema, or task change is needed. Account for external side effects that its old turn may already have performed.
+- Steer only as a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Context/usage metrics, observation age, isolated tool failures, degraded visibility, and an available steer operation are not sufficient evidence. Account for external side effects that the old turn may already have performed.
 - Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
 - Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
 

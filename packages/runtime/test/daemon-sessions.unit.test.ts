@@ -133,6 +133,61 @@ describe("daemon run execution sessions", () => {
     await sessions.stopExecutors(100);
   });
 
+  it("snapshots the private observation fence before waking the steered execution", async () => {
+    const order: string[] = [];
+    const store = runtimeStore("run-a");
+    store.observationLog.markFenced = vi.fn(() => {
+      order.push("fence");
+      return Promise.resolve();
+    });
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
+    sessions.start("run-a");
+    executions[0]!.wake = vi.fn(() => {
+      order.push("wake");
+    });
+    applySchedulerControlIntent.mockImplementation(() => {
+      order.push("control");
+      return ok({
+        snapshot: {} as SchedulerSnapshot,
+        effect: {
+          type: "steer",
+          state: "applied",
+          steerId: "steer-1",
+          requestedTarget: "review",
+          target: "review~000000000001",
+          fencedAttemptId: "attempt-1",
+          continuation: "queued",
+        },
+        reopened: false,
+        observationFence: {
+          runId: "run-a",
+          attemptId: "attempt-1",
+          eventSequence: 7,
+          committedAt: "2026-07-12T00:00:00.000Z",
+          reason: "operator_steered",
+        },
+      });
+    });
+
+    await sessions.control({
+      requestId: "steer-1",
+      runId: "run-a",
+      type: "steer",
+      target: "review",
+      instruction: "Focus.",
+    });
+
+    expect(order).toEqual(["control", "fence", "wake"]);
+    expect(store.observationLog.markFenced).toHaveBeenCalledWith({
+      runId: "run-a",
+      attemptId: "attempt-1",
+      eventSequence: 7,
+      committedAt: "2026-07-12T00:00:00.000Z",
+      reason: "operator_steered",
+    });
+    await sessions.stopExecutors(100);
+  });
+
   it.each(["resume", "retry"] as const)("does not replace an active execution for a no-op %s", async type => {
     const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
     sessions.start("run-a");
@@ -304,6 +359,7 @@ function runtimeStore(...runIds: string[]): RuntimeStore {
     getRun: (runId: string) => runs.get(runId),
     getRunEventVersion: (runId: string) => runs.get(runId)?.eventCount,
     writeNodeProgress: vi.fn(),
+    observationLog: { markFenced: vi.fn(() => Promise.resolve()) },
   } as unknown as RuntimeStore;
 }
 

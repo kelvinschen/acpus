@@ -181,7 +181,7 @@ describe("web API contract", () => {
   });
 
   describe("GET /api/runs/:id/nodes/:target", () => {
-    it("returns agent execution last active from progress", async () => {
+    it("returns the Agent's latest observation time from progress", async () => {
       mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
         progress: [{
           nodeKey: "review~abc",
@@ -201,7 +201,7 @@ describe("web API contract", () => {
       expect(body.ok).toBe(true);
       expect(body.execution).toMatchObject({
         available: true,
-        lastActiveAt: "2026-07-01T00:00:02.000Z",
+        lastObservedAt: "2026-07-01T00:00:02.000Z",
         summary: { status: "running" },
       });
     });
@@ -224,7 +224,7 @@ describe("web API contract", () => {
       });
       expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
         runId: "run_1",
-        mode: "target",
+        mode: "details",
         target: "review~abc",
         context: selectorContext,
       });
@@ -705,9 +705,9 @@ function inspectionErr(error: JsonBody) {
 
 function targetInspection(overrides: { progress?: JsonBody[]; prompt?: JsonBody; artifacts?: JsonBody[] } = {}): JsonBody {
   return {
-    schemaVersion: 1,
-    kind: "target",
-    cursor: { eventSequence: 3, progressVersion: 1 },
+    schemaVersion: 2,
+    kind: "details",
+    revision: "inspection-v2:test",
     run: {
       id: "run_1",
       name: "review-workflow",

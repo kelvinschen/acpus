@@ -1,6 +1,6 @@
 # Deep Research Workflow
 
-Researches a question across public sources, verifies claims, preserves conflicting or uncertain evidence, and always produces a durable research package with optional Markdown or HTML presentation.
+Researches a question across public sources, verifies claims, preserves conflicting or uncertain evidence, and always produces a durable research package with optional Markdown or HTML presentation. **DO NOT use on local project research**
 
 ## Inputs
 

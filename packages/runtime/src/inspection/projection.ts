@@ -17,9 +17,11 @@ import type {
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../scheduler/identity.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
 import { compactSchemaSummary } from "../schema-summary.js";
+import { decodeInspectionRevision, inspectionRevision } from "./revision.js";
 import type {
+  AgentDecisionState,
   AgentInspectionState,
-  RunInspectionAction,
+  RunInspectionOverviewAction,
   RunInspectionChange,
   RunInspectionContext,
   RunInspectionCursor,
@@ -33,7 +35,7 @@ import type {
   RunInspectionStatus,
   RunInspectionStatusCounts,
   RunInspectionTarget,
-  RunInspectionTargetDocument,
+  RunInspectionTargetDetailsDocument,
 } from "./types.js";
 
 const overviewContextLimit = 20;
@@ -64,12 +66,20 @@ export function projectRunInspection(input: {
   query: RunInspectionQuery;
 }): RunInspectionDocument | undefined {
   if (input.query.mode === "raw") {
-    return { schemaVersion: 1, kind: "raw", cursor: input.cursor, run: input.run, workflow: input.ir, artifacts: input.artifacts };
+    return {
+      schemaVersion: 2,
+      kind: "raw",
+      revision: inspectionRevision({ runId: input.run.id, query: input.query, cursor: input.cursor }),
+      run: input.run,
+      workflow: input.ir,
+      artifacts: input.artifacts,
+    };
   }
   const staticNodes = inspectionStaticNodes(input.ir);
-  if (input.query.mode === "target") {
+  if (input.query.mode === "details") {
     return projectTarget(input.ir, input.run, input.artifacts, input.cursor, staticNodes, input.query.target, input.query.context ?? []);
   }
+  if (input.query.mode === "target" || input.query.mode === "timeline") return undefined;
   return projectSnapshot(input.ir, input.run, input.cursor, staticNodes, input.query.mode === "all");
 }
 
@@ -123,24 +133,26 @@ export function semanticChanges(events: readonly CommittedRuntimeEventRow[], doc
 }
 
 export function progressChanges(previous: RunInspectionDocument, current: RunInspectionDocument): RunInspectionChange[] {
-  if (current.cursor.progressVersion === previous.cursor.progressVersion) return [];
+  const previousCursor = decodeInspectionRevision(previous.revision);
+  const currentCursor = decodeInspectionRevision(current.revision);
+  if (!previousCursor || !currentCursor || currentCursor.progress === previousCursor.progress) return [];
   const beforeItems = new Map(inspectionItems(previous).map(item => [item.key, item]));
   const afterItems = inspectionItems(current);
   const occurrenceCounts = inspectionOccurrenceCounts(afterItems);
   const agentChanges = afterItems.filter(item => item.agent && meaningfulAgentProgressChanged(beforeItems.get(item.key)?.agent, item.agent));
   const changes: RunInspectionChange[] = agentChanges.map(item => ({
-    at: item.agent!.lastActivityAt ?? item.updatedAt ?? current.run.updatedAt,
+    at: item.updatedAt ?? current.run.updatedAt,
     entity: { kind: "progress", id: item.nodeKey ?? item.key, ...(item.nodeId ? { nodeId: item.nodeId } : {}) },
     subject: progressSubject(item, occurrenceCounts),
     action: "progress",
     status: item.status,
     ...(item.attemptNo === undefined ? {} : { attemptNo: item.attemptNo }),
-    progressVersion: current.cursor.progressVersion,
+    progressVersion: currentCursor.progress,
     itemKey: item.key,
   }));
-  if (current.kind !== "target") return changes;
+  if (current.kind !== "details") return changes;
 
-  const previousProgress = new Map(previous.kind === "target" ? previous.progress.map(item => [item.nodeKey, item]) : []);
+  const previousProgress = new Map(previous.kind === "details" ? previous.progress.map(item => [item.nodeKey, item]) : []);
   const currentItemsByNodeKey = new Map(afterItems.flatMap(item => item.nodeKey ? [[item.nodeKey, item] as const] : []));
   for (const value of current.progress) {
     if (value.kind === "agent") continue;
@@ -152,9 +164,9 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
       entity: { kind: "progress", id: value.nodeKey, ...(value.nodeId ? { nodeId: value.nodeId } : {}) },
       subject: item ? progressSubject(item, occurrenceCounts) : value.nodeId || value.nodeKey,
       action: "progress",
-      status: normalizeStatus(value.status),
+      status: normalizeInspectionStatus(value.status),
       ...(value.attemptNo === undefined ? {} : { attemptNo: value.attemptNo }),
-      progressVersion: current.cursor.progressVersion,
+      progressVersion: currentCursor.progress,
       ...(item ? { itemKey: item.key } : {}),
       ...(value.message ? { message: value.message } : {}),
     });
@@ -163,53 +175,14 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
 }
 
 export function inspectionItems(document: RunInspectionDocument): RunInspectionItem[] {
-  return document.kind === "snapshot" || document.kind === "target" ? document.items : [];
+  return document.kind === "snapshot" || document.kind === "details" ? document.items : [];
 }
 
 function meaningfulAgentProgressChanged(
   previous: RunInspectionItem["agent"] | undefined,
   current: NonNullable<RunInspectionItem["agent"]>,
 ): boolean {
-  if (!previous) return true;
-  const { lastActivityAt: _previousActivity, ...previousState } = previous;
-  const { lastActivityAt: _currentActivity, ...currentState } = current;
-  return JSON.stringify(previousState) !== JSON.stringify(currentState);
-}
-
-export type NormalizedAgentProgressState = {
-  itemKey: string;
-  nodeKey: string;
-  nodeId: string;
-  attemptId?: string;
-  attemptNo?: number;
-  status: RunInspectionStatus;
-  message?: string;
-  updatedAt: string;
-  agentState: Omit<AgentInspectionState, "key" | "backend" | "model">;
-};
-
-export function normalizedAgentProgressStates(run: RunDetails): NormalizedAgentProgressState[] {
-  const instances = new Map((run.dynamic?.nodeInstances ?? []).map(instance => [instance.nodeKey, instance]));
-  const metadataByAttemptId = new Map<string, RunExecutionMetadata>();
-  for (const metadata of run.dynamic?.executionMetadata ?? []) {
-    if (metadata.attemptId) metadataByAttemptId.set(metadata.attemptId, newerCreated(metadataByAttemptId.get(metadata.attemptId), metadata));
-  }
-  return (run.dynamic?.progress ?? []).filter(progress => progress.kind === "agent").map(progress => {
-    const metadata = progress.attemptId ? metadataByAttemptId.get(progress.attemptId) : undefined;
-    return {
-      itemKey: instances.get(progress.nodeKey)?.instancePath
-        ? occurrenceNodeKey(instances.get(progress.nodeKey)!.instancePath!)
-        : `node:${progress.nodeKey}`,
-      nodeKey: progress.nodeKey,
-      nodeId: progress.nodeId,
-      ...(progress.attemptId ? { attemptId: progress.attemptId } : {}),
-      ...(progress.attemptNo === undefined ? {} : { attemptNo: progress.attemptNo }),
-      status: normalizeStatus(progress.status),
-      ...(progress.message ? { message: progress.message } : {}),
-      updatedAt: progress.updatedAt,
-      agentState: agentInspectionState(metadata, progress),
-    };
-  });
+  return !previous || JSON.stringify(previous) !== JSON.stringify(current);
 }
 
 function progressSubject(item: RunInspectionItem, occurrenceCounts: ReadonlyMap<string, number>): string {
@@ -256,7 +229,7 @@ function projectSnapshot(
   const tree = occurrenceTree(ir, indexes);
   const compact = all ? { items: tree.items, hiddenStatuses: [], hiddenAgentNodeKeys: new Set<string>(), folds: 0 } : compactOccurrenceTree(tree);
   const hiddenCount = compact.hiddenStatuses.length;
-  const actions: RunInspectionAction[] = [];
+  const actions: RunInspectionOverviewAction[] = [];
   if (hiddenCount > 0 || compact.folds > 0) actions.push({ kind: "inspect-all", omitted: hiddenCount });
   for (const wait of run.dynamic?.signalWaits ?? []) {
     if (wait.status === "awaiting") {
@@ -279,19 +252,19 @@ function projectSnapshot(
   if (timedOutSignals.length > 0) actions.push({ kind: "fork" });
   const omittedAgentProgress = (run.dynamic?.progress ?? []).filter(item => item.kind === "agent" && compact.hiddenAgentNodeKeys.has(item.nodeKey)).length;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "snapshot",
-    cursor,
-    run: runSummary(ir, run),
-    counts: statusCounts(tree.executionStatuses),
+    revision: inspectionRevision({ runId: run.id, query: { mode: all ? "all" : "overview" }, cursor }),
+    run: runSummary(ir, run, false),
+    counts: inspectionStatusCounts(tree.executionStatuses),
     items: compact.items,
-    actions,
+    availableActions: actions,
     ...(hiddenCount === 0 ? {} : {
       omitted: {
         reason: "context-limit",
         limit: overviewContextLimit,
         dynamicContexts: hiddenCount,
-        counts: statusCounts(compact.hiddenStatuses),
+        counts: inspectionStatusCounts(compact.hiddenStatuses),
         ...(omittedAgentProgress > 0 ? { agentProgress: { tracked: omittedAgentProgress } } : {}),
       },
     }),
@@ -423,7 +396,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
       const key = occurrenceNodeKey(nodePath);
       const instance = occurrenceInstance(indexes, nodePath, node.id, parentFrame);
       const frame = occurrenceNodeFrame(indexes, nodePath, node.id, parentFrame);
-      const item = snapshotNodeItem(ir, indexes, node, nodePath, key, parentKey, instance, frame);
+      const item = snapshotNodeItem(indexes, node, nodePath, key, parentKey, instance, frame);
       items.push(item);
       if (item.nodeKey) itemKeyByNodeKey.set(item.nodeKey, key);
 
@@ -446,7 +419,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
           if (selection === "selected") {
             const statuses = visitScope(child.scope, branchPath, branchItem.key, branchFrame);
             childStatuses.push(...statuses);
-            if (!branchFrame && statuses.length > 0) branchItem.status = aggregateStatus(statuses);
+            if (!branchFrame && statuses.length > 0) branchItem.status = aggregateInspectionStatus(statuses);
           }
         }
       } else if (node.kind === "parallel") {
@@ -462,12 +435,12 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
             ownerKind: "parallel",
             branchId: child.branchId,
             empty: child.scope.nodes.length === 0,
-          }, member ? normalizeStatus(member.status) : undefined);
+          }, member ? normalizeInspectionStatus(member.status) : undefined);
           items.push(branchItem);
           if (materialized) {
             const statuses = visitScope(child.scope, branchPath, branchItem.key, branchFrame);
             childStatuses.push(...statuses);
-            if (!branchFrame && !member && statuses.length > 0) branchItem.status = aggregateStatus(statuses);
+            if (!branchFrame && !member && statuses.length > 0) branchItem.status = aggregateInspectionStatus(statuses);
           }
         }
       } else if (node.kind === "fanout") {
@@ -483,11 +456,11 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
             kind: "fanout_item",
             itemIndex,
             empty: node.do.nodes.length === 0,
-          }, member ? normalizeStatus(member.status) : undefined);
+          }, member ? normalizeInspectionStatus(member.status) : undefined);
           items.push(scopeItem);
           const statuses = visitScope(node.do, itemPath, scopeItem.key, itemFrame);
           childStatuses.push(...statuses);
-          if (!itemFrame && !member && statuses.length > 0) scopeItem.status = aggregateStatus(statuses);
+          if (!itemFrame && !member && statuses.length > 0) scopeItem.status = aggregateInspectionStatus(statuses);
         }
       } else if (node.kind === "loop") {
         const iterations = contextNumbers(indexes, basePath, node.id, "loop");
@@ -504,7 +477,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
           items.push(scopeItem);
           const statuses = visitScope(node.do, iterationPath, scopeItem.key, iterationFrame);
           childStatuses.push(...statuses);
-          if (!iterationFrame && statuses.length > 0) scopeItem.status = aggregateStatus(statuses);
+          if (!iterationFrame && statuses.length > 0) scopeItem.status = aggregateInspectionStatus(statuses);
         }
       }
 
@@ -514,7 +487,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
         executionItemKeys.add(item.key);
         scopeStatuses.push(item.status);
       } else {
-        if (!instance && !frame && childStatuses.length > 0) item.status = aggregateStatus(childStatuses);
+        if (!instance && !frame && childStatuses.length > 0) item.status = aggregateInspectionStatus(childStatuses);
         scopeStatuses.push(...childStatuses);
       }
     }
@@ -526,7 +499,6 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
 }
 
 function snapshotNodeItem(
-  ir: WorkflowIR,
   indexes: SnapshotIndexes,
   node: NodeIR,
   path: InstancePath,
@@ -538,7 +510,6 @@ function snapshotNodeItem(
   if (instance) {
     const state = indexedInstanceState(indexes, instance);
     const progress = indexes.progressByNodeKey.get(instance.nodeKey);
-    const metadata = state.attempt?.attemptId ? indexes.metadataByAttemptId.get(state.attempt.attemptId) : undefined;
     return {
       key,
       role: "instance",
@@ -558,7 +529,7 @@ function snapshotNodeItem(
       ...(state.attempt?.finishedAt ? { finishedAt: state.attempt.finishedAt } : {}),
       ...(state.attempt?.deadlineAt ? { deadlineAt: state.attempt.deadlineAt } : {}),
       ...failureDetails(node, instance.error ?? state.attempt?.error, instance.statusReason ?? state.attempt?.terminalReason),
-      ...(node.kind === "agent" ? { agent: agentDetails(ir, node, metadata, progress) } : {}),
+      ...(node.kind === "agent" ? { agent: agentDecisionState(node, progress) } : {}),
       ...(node.kind === "task" ? { task: { target: node.run.target.kind } } : {}),
       ...(node.kind === "signal" ? { signal: {
         target: instance.nodeKey,
@@ -569,7 +540,7 @@ function snapshotNodeItem(
     };
   }
   if (frame) {
-    const status = normalizeStatus(frame.status);
+    const status = normalizeInspectionStatus(frame.status);
     return {
       key,
       role: "frame",
@@ -611,7 +582,7 @@ function snapshotScopeItem(
   scope: NonNullable<RunInspectionItem["scope"]>,
   statusOverride?: RunInspectionStatus,
 ): RunInspectionItem {
-  const status = statusOverride ?? (frame ? normalizeStatus(frame.status) : "not_started");
+  const status = statusOverride ?? (frame ? normalizeInspectionStatus(frame.status) : "not_started");
   const label = scope.kind === "branch"
     ? owner.kind === "switch" && scope.branchId.startsWith("case:") ? `case ${Number(scope.branchId.slice(5)) + 1}` : scope.branchId
     : scope.kind === "fanout_item" ? `item[${scope.itemIndex}]` : `round ${scope.round}`;
@@ -644,7 +615,7 @@ function occurrenceCompositeDetails(indexes: SnapshotIndexes, node: NodeIR, fram
       ...(group?.quorumCount === undefined ? {} : { quorumCount: group.quorumCount }),
       ...(group?.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
       ...(frame?.loop?.iter === undefined ? {} : { currentIteration: frame.loop.iter }),
-      ...(group ? { counts: statusCounts(members.map(member => normalizeStatus(member.status))) } : {}),
+      ...(group ? { counts: inspectionStatusCounts(members.map(member => normalizeInspectionStatus(member.status))) } : {}),
     },
   };
 }
@@ -684,7 +655,7 @@ function indexedInstanceState(indexes: SnapshotIndexes, instance: RunDynamicNode
   const attempt = instance.acceptedAttemptId ? attempts.find(item => item.attemptId === instance.acceptedAttemptId) ?? attempts[0] : attempts[0];
   const wait = indexes.waitsByNodeKey.get(instance.nodeKey);
   const signalStatus = wait?.status === "awaiting" || wait?.status === "timed_out" ? wait.status : undefined;
-  return { attempt, wait, status: normalizeStatus(signalStatus ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)) };
+  return { attempt, wait, status: normalizeInspectionStatus(signalStatus ?? (attempt?.status === "timed_out" ? "timed_out" : instance.status)) };
 }
 
 function contextNumbers(indexes: SnapshotIndexes, basePath: InstancePath, nodeId: string, kind: "fanout" | "loop"): Set<number> {
@@ -839,11 +810,11 @@ function compactOccurrenceTree(tree: OccurrenceTree): { items: RunInspectionItem
         role: "fold",
         parentKey: item.key,
         path: [...item.path, `omitted:${pending.length}`],
-        label: `${aggregateStatus(statuses).replaceAll("_", " ")} ${first.scope?.kind === "loop_iteration" ? "rounds" : "items"}`,
+        label: `${aggregateInspectionStatus(statuses).replaceAll("_", " ")} ${first.scope?.kind === "loop_iteration" ? "rounds" : "items"}`,
         kind: first.kind,
-        status: aggregateStatus(statuses),
+        status: aggregateInspectionStatus(statuses),
         ...(item.nodeId ? { nodeId: item.nodeId } : {}),
-        fold: { count: pending.length, counts: statusCounts(statuses) },
+        fold: { count: pending.length, counts: inspectionStatusCounts(statuses) },
       });
       folds += 1;
       pending = [];
@@ -876,7 +847,7 @@ function instanceItem(
   indexes: SnapshotIndexes,
   nodesById: ReadonlyMap<string, NodeIR>,
   staticById: Map<string, RunInspectionStaticNode>,
-): RunInspectionItem {
+): RunInspectionItem<AgentInspectionState> {
   const node = nodesById.get(instance.nodeId);
   const { attempt, wait, status } = indexedInstanceState(indexes, instance);
   const progress = indexes.progressByNodeKey.get(instance.nodeKey);
@@ -921,7 +892,7 @@ function projectTarget(
   staticNodes: RunInspectionStaticNode[],
   targetId: string,
   context: RunInspectionContext,
-): RunInspectionTargetDocument | undefined {
+): RunInspectionTargetDetailsDocument | undefined {
   const dynamic = run.dynamic;
   const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
   const indexes = snapshotIndexes(run, staticNodes);
@@ -977,26 +948,42 @@ function projectTarget(
   const staticStatuses = target.kind === "static-node" ? staticTargetStatuses(node, indexes, instances, frames) : [];
   const staticAggregate = staticStatuses.length > 1;
   const status = staticAggregate
-    ? aggregateStatus(staticStatuses)
-    : signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
+    ? aggregateInspectionStatus(staticStatuses)
+    : target.kind === "attempt"
+      ? latestAttempt?.status ?? "not_started"
+      : signalStatus ?? latestInstance?.status ?? latestAttempt?.status ?? latestFrame?.status ?? "not_started";
   const agent = node?.kind === "agent" ? agentDetails(ir, node, metadata, currentProgress) : undefined;
   const signal = node?.kind === "signal" ? {
     target: latestWait?.nodeKey ?? latestInstance?.nodeKey ?? targetId,
     ...(latestWait?.deadlineAt ? { deadlineAt: latestWait.deadlineAt } : {}),
     ...(latestWait?.renderedPrompt ? { promptPreview: latestWait.renderedPrompt } : {}),
-    ...(node.outputSchema ? { outputSchema: node.outputSchema } : {}),
+    ...(node.outputSchema
+      ? {
+          outputSchema: node.outputSchema,
+          schemaSummary: compactSchemaSummary(node.outputSchema),
+        }
+      : {}),
   } : undefined;
   const targetFailure = detailedFailure(
     node,
-    latestInstance?.error ?? latestAttempt?.error ?? latestFrame?.error,
-    latestInstance?.statusReason ?? latestAttempt?.terminalReason ?? latestFrame?.terminalReason,
+    target.kind === "attempt"
+      ? latestAttempt?.error
+      : latestInstance?.error ?? latestAttempt?.error ?? latestFrame?.error,
+    target.kind === "attempt"
+      ? latestAttempt?.cancelReason ?? latestAttempt?.terminalReason
+      : latestInstance?.statusReason ?? latestAttempt?.terminalReason ?? latestFrame?.terminalReason,
   );
   const items = targetInspectionItems(ir, run, indexes, instances, frames, resolvedStatic, staticById);
   return {
-    schemaVersion: 1,
-    kind: "target",
-    cursor,
-    run: runSummary(ir, run),
+    schemaVersion: 2,
+    kind: "details",
+    revision: inspectionRevision({
+      runId: run.id,
+      query: { mode: "details", context },
+      resolvedTarget: `${target.kind}:${target.id}`,
+      cursor,
+    }),
+    run: runSummary(ir, run, true),
     target,
     ...(resolvedStatic ? { staticNode: resolvedStatic } : {}),
     summary: {
@@ -1009,9 +996,17 @@ function projectTarget(
       ...(!staticAggregate && latestInstance?.nodeKey ? { nodeKey: latestInstance.nodeKey } : !staticAggregate && latestAttempt?.nodeKey ? { nodeKey: latestAttempt.nodeKey } : {}),
       ...(!staticAggregate && latestFrame?.frameKey ? { frameKey: latestFrame.frameKey } : {}),
       nodeStatus: status,
-      ...(staticAggregate ? { counts: statusCounts(staticStatuses) } : {}),
+      ...(staticAggregate ? { counts: inspectionStatusCounts(staticStatuses) } : {}),
       ...(!staticAggregate && runtimeInput !== undefined ? { input: { kind: "runtime", value: runtimeInput } } : !staticAggregate && authoredInput !== undefined ? { input: { kind: "authored", value: authoredInput } } : {}),
-      ...(!staticAggregate && latestInstance?.output !== undefined ? { output: latestInstance.output } : !staticAggregate && latestAttempt?.result !== undefined ? { output: latestAttempt.result } : !staticAggregate && latestFrame?.result !== undefined ? { output: latestFrame.result } : {}),
+      ...(!staticAggregate && target.kind === "attempt" && latestAttempt?.result !== undefined
+        ? { output: latestAttempt.result }
+        : !staticAggregate && target.kind !== "attempt" && latestInstance?.output !== undefined
+          ? { output: latestInstance.output }
+          : !staticAggregate && latestAttempt?.result !== undefined
+            ? { output: latestAttempt.result }
+            : !staticAggregate && latestFrame?.result !== undefined
+              ? { output: latestFrame.result }
+              : {}),
       ...(!staticAggregate && targetFailure ? { failure: targetFailure } : {}),
       ...(!staticAggregate && latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
         : !staticAggregate && turnArtifact ? { prompt: { kind: "artifact", artifactId: turnArtifact.id, path: turnArtifact.path, ...(turnArtifact.mediaType ? { mediaType: turnArtifact.mediaType } : {}), field: "prompt" } }
@@ -1044,7 +1039,7 @@ function staticTargetStatuses(
   if (instances.length > 0) return instances.map(item => indexedInstanceState(indexes, item).status);
   return frames
     .filter(item => item.nodeId === node.id && (item.frameKind === "node" || item.frameKind === "loop"))
-    .map(item => normalizeStatus(item.status));
+    .map(item => normalizeInspectionStatus(item.status));
 }
 
 function targetInspectionItems(
@@ -1055,7 +1050,7 @@ function targetInspectionItems(
   frames: RunDynamicFrame[],
   staticNode: RunInspectionStaticNode | undefined,
   staticById: Map<string, RunInspectionStaticNode>,
-): RunInspectionItem[] {
+): RunInspectionItem<AgentInspectionState>[] {
   const nodesById = new Map(Array.from(walkNodes(ir.root), ({ node }) => [node.id, node]));
   const items = instances.map(instance => instanceItem(ir, instance, indexes, nodesById, staticById));
   const frameKeys = new Set(frames.map(frame => frame.frameKey));
@@ -1068,7 +1063,7 @@ function targetInspectionItems(
       path: inspectionPath(frame.instancePath),
       label: frame.nodeId ?? frame.frameKey,
       kind: node?.kind ?? frame.frameKind,
-      status: normalizeStatus(frame.status),
+      status: normalizeInspectionStatus(frame.status),
       ...(frame.nodeId ? { nodeId: frame.nodeId } : {}),
       ...(frame.nodeKey ? { nodeKey: frame.nodeKey } : {}),
       frameKey: frame.frameKey,
@@ -1092,15 +1087,15 @@ function targetInspectionItems(
     path: staticNode.path,
     label: staticNode.nodeId,
     kind: staticNode.kind,
-    status: aggregateStatus(relatedStatuses(run, staticNode.nodeId)),
+    status: aggregateInspectionStatus(relatedStatuses(run, staticNode.nodeId)),
     nodeId: staticNode.nodeId,
     ...(node?.kind === "agent" ? { agent: agentDetails(ir, node, metadata, progress) } : {}),
     ...(node ? compositeDetails(run, node) : {}),
   }];
 }
 
-function runSummary(ir: WorkflowIR, run: RunDetails): RunInspectionRunSummary {
-  const agentUsage = runAgentUsage(ir, run);
+function runSummary(ir: WorkflowIR, run: RunDetails, includeAgentUsage: boolean): RunInspectionRunSummary {
+  const agentUsage = includeAgentUsage ? runAgentUsage(ir, run) : undefined;
   const rootFrame = run.status === "failed"
     ? run.dynamic?.frames.find(frame => frame.frameKind === "root")
     : undefined;
@@ -1142,8 +1137,8 @@ function runAgentUsage(ir: WorkflowIR, run: RunDetails): NonNullable<RunInspecti
 
 function relatedStatuses(run: RunDetails, nodeId: string): RunInspectionStatus[] {
   return [
-    ...(run.dynamic?.nodeInstances.filter(item => item.nodeId === nodeId).map(item => normalizeStatus(item.status)) ?? []),
-    ...(run.dynamic?.frames.filter(item => item.nodeId === nodeId && (item.frameKind === "node" || item.frameKind === "loop")).map(item => normalizeStatus(item.status)) ?? []),
+    ...(run.dynamic?.nodeInstances.filter(item => item.nodeId === nodeId).map(item => normalizeInspectionStatus(item.status)) ?? []),
+    ...(run.dynamic?.frames.filter(item => item.nodeId === nodeId && (item.frameKind === "node" || item.frameKind === "loop")).map(item => normalizeInspectionStatus(item.status)) ?? []),
   ];
 }
 
@@ -1160,8 +1155,30 @@ function compositeDetails(run: RunDetails, node: NodeIR, nodeKey?: string): Pick
       ...(group?.quorumCount === undefined ? {} : { quorumCount: group.quorumCount }),
       ...(group?.maxConcurrency === undefined ? {} : { maxConcurrency: group.maxConcurrency }),
       ...(frame?.loop?.iter === undefined ? {} : { currentIteration: frame.loop.iter }),
-      ...(members.length === 0 ? {} : { counts: statusCounts(members.map(item => normalizeStatus(item.status))) }),
+      ...(members.length === 0 ? {} : { counts: inspectionStatusCounts(members.map(item => normalizeInspectionStatus(item.status))) }),
     },
+  };
+}
+
+function agentDecisionState(
+  node: Extract<NodeIR, { kind: "agent" }>,
+  progress: RunNodeProgress | undefined,
+): AgentDecisionState {
+  const tools = record(progress?.tools);
+  const calls = Array.isArray(tools?.lastCalls) ? tools.lastCalls : [];
+  const activeCall = [...calls].reverse().map(record).find(call => {
+    const status = string(call?.status);
+    return call !== undefined && !["completed", "failed", "cancelled", "canceled"].includes(status ?? "");
+  });
+  const command = activeCall ? normalizedToolCommand(activeCall) : undefined;
+  const status = activeCall ? string(activeCall.status) : undefined;
+  const turn = number(tools?.turn);
+  return {
+    key: node.run.agent,
+    ...(turn === undefined ? {} : { turn }),
+    ...(command
+      ? { activeTool: { command, ...(status ? { status: normalizeToolStatus(status) } : {}) } }
+      : {}),
   };
 }
 
@@ -1170,7 +1187,7 @@ function agentDetails(
   node: Extract<NodeIR, { kind: "agent" }>,
   metadata: RunExecutionMetadata | undefined,
   progress: RunNodeProgress | undefined,
-): NonNullable<RunInspectionItem["agent"]> {
+): AgentInspectionState {
   const configured = ir.agents[node.run.agent];
   const model = configured?.config?.model ?? configured?.model;
   const agentState = agentInspectionState(metadata, progress);
@@ -1220,14 +1237,14 @@ function agentInspectionState(
         ? "partial" as const
         : persistedAvailability?.tokenUsage ?? "unavailable" as const,
   };
-  const lastActivityAt = [progress?.updatedAt, string(metadataContext?.updatedAt), metadata?.createdAt]
+  const lastObservedAt = [progress?.updatedAt, string(metadataContext?.updatedAt), metadata?.createdAt]
     .filter((value): value is string => value !== undefined)
     .sort()
     .at(-1);
   return {
     availability,
     ...(turnCount === undefined ? {} : { turnCount }),
-    ...(lastActivityAt ? { lastActivityAt } : {}),
+    ...(lastObservedAt ? { lastObservedAt } : {}),
     ...(context ? { context } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
     ...(toolCallCount === undefined && recentTools.length === 0 ? {} : { tools: { totalCallCount: toolCallCount ?? recentTools.length, recent: recentTools } }),
@@ -1244,14 +1261,14 @@ function inspectionAvailability(value: unknown): AgentInspectionState["availabil
   return { context, tokenUsage };
 }
 
-function inspectionContext(value: unknown): NonNullable<NonNullable<RunInspectionItem["agent"]>["context"]> | undefined {
+function inspectionContext(value: unknown): NonNullable<AgentInspectionState["context"]> | undefined {
   const data = record(value);
   const used = number(data?.used);
   const size = number(data?.size);
   return used === undefined || size === undefined ? undefined : { used, size };
 }
 
-function inspectionTokenUsage(value: unknown): NonNullable<NonNullable<RunInspectionItem["agent"]>["tokenUsage"]> | undefined {
+function inspectionTokenUsage(value: unknown): NonNullable<AgentInspectionState["tokenUsage"]> | undefined {
   const data = record(value);
   const tokenUsage = {
     ...(number(data?.inputTokens) === undefined ? {} : { inputTokens: number(data?.inputTokens)! }),
@@ -1452,7 +1469,7 @@ function boundedSummary(value: string, limit: number): string {
   return characters.length <= limit ? normalized : `${characters.slice(0, limit - 1).join("")}…`;
 }
 
-function aggregateStatus(statuses: RunInspectionStatus[]): RunInspectionStatus {
+function aggregateInspectionStatus(statuses: RunInspectionStatus[]): RunInspectionStatus {
   if (statuses.length === 0) return "not_started";
   const unique = new Set(statuses);
   if (unique.size === 1) return statuses[0]!;
@@ -1460,7 +1477,7 @@ function aggregateStatus(statuses: RunInspectionStatus[]): RunInspectionStatus {
   return "mixed";
 }
 
-function statusCounts(statuses: RunInspectionStatus[]): RunInspectionStatusCounts {
+function inspectionStatusCounts(statuses: RunInspectionStatus[]): RunInspectionStatusCounts {
   const counts: RunInspectionStatusCounts = { total: statuses.length };
   const keys: Record<RunInspectionStatus, keyof RunInspectionStatusCounts> = {
     not_started: "notStarted", not_selected: "notSelected", pending: "pending", starting: "starting", ready: "ready", running: "running", awaiting: "awaiting", completed: "completed", failed: "failed", timed_out: "timedOut", cancelled: "cancelled", mixed: "mixed",
@@ -1472,7 +1489,7 @@ function statusCounts(statuses: RunInspectionStatus[]): RunInspectionStatusCount
   return counts;
 }
 
-function normalizeStatus(status: string): RunInspectionStatus {
+export function normalizeInspectionStatus(status: string): RunInspectionStatus {
   if (status === "canceled" || status === "cancelled" || status === "superseded") return "cancelled";
   if (status === "started") return "running";
   if (["not_started", "not_selected", "pending", "starting", "ready", "running", "awaiting", "completed", "failed", "timed_out", "mixed"].includes(status)) return status as RunInspectionStatus;
@@ -1511,7 +1528,7 @@ function nodeById(ir: WorkflowIR, nodeId: string): NodeIR | undefined {
   return undefined;
 }
 
-function summarizeLoopProgress(frames: RunDynamicFrame[]): RunInspectionTargetDocument["summary"]["loopProgress"] | undefined {
+function summarizeLoopProgress(frames: RunDynamicFrame[]): RunInspectionTargetDetailsDocument["summary"]["loopProgress"] | undefined {
   const frame = latest(frames.filter(item => item.frameKind === "loop" && item.loop), item => item.updatedAt);
   if (!frame?.loop) return undefined;
   const active = frames.find(item => item.frameKind === "loop_iteration" && item.instancePath?.some(segment => segment.kind === "loop" && segment.nodeId === frame.nodeId && segment.iter === frame.loop!.iter));

@@ -52,6 +52,79 @@ describe("scheduler store format", () => {
     }
   });
 
+  it("owns bounded Agent observation projections and private turn evidence in storage v2", () => {
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
+    try {
+      expect(tableColumns(db, "runs")).toEqual(expect.arrayContaining([
+        "observation_version",
+        "observation_updated_at",
+      ]));
+      expect(tableColumns(db, "agent_observation_attempts")).toEqual(expect.arrayContaining([
+        "run_id",
+        "attempt_id",
+        "latest_observation_version",
+        "retention_omitted_count",
+        "retention_floor_version",
+      ]));
+      expect(tableColumns(db, "agent_observation_turns")).toEqual(expect.arrayContaining([
+        "run_id",
+        "attempt_id",
+        "turn_no",
+        "prompt_kind",
+        "relative_path",
+        "state",
+        "gap_count",
+        "indexed_bytes",
+        "provider_event_count",
+        "unknown_event_count",
+        "response_at_fence_bytes",
+        "final_response_bytes",
+        "provider_status",
+        "current_json",
+        "current_bytes",
+        "trace_state",
+        "trace_relative_path",
+        "trace_artifact_relative_path",
+        "sealed_digest",
+      ]));
+      expect(tableColumns(db, "agent_observation_entries")).toEqual(expect.arrayContaining([
+        "run_id",
+        "attempt_id",
+        "turn_no",
+        "entry_id",
+        "observation_version",
+        "source_sequence",
+        "kind",
+        "payload_json",
+        "payload_bytes",
+      ]));
+      expect(tableColumns(db, "agent_observation_batches")).toEqual([]);
+      const turnsSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'agent_observation_turns'")
+        .get() as { sql: string };
+      expect(turnsSql.sql).toContain("UNIQUE (run_id, fence_event_sequence)");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects storage v1 without a compatibility read path", async () => {
+    store?.close();
+    store = undefined;
+    const path = resolveRuntimeLayout(dir).databasePath;
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("PRAGMA user_version = 1");
+    } finally {
+      db.close();
+    }
+
+    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+      name: "IncompatibleRuntimeDatabaseError",
+      applicationId: RUNTIME_APPLICATION_ID,
+      userVersion: 1,
+    });
+  });
+
   it("preserves admitted run semantics across read-only and writable reopen", async () => {
     if (!store) throw new Error("expected fresh runtime store");
     const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
@@ -105,4 +178,8 @@ function databaseFormat(db: DatabaseSync): { applicationId: number; userVersion:
     applicationId: Number(application.application_id),
     userVersion: Number(version.user_version),
   };
+}
+
+function tableColumns(db: DatabaseSync, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name);
 }

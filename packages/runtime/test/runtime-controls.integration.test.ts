@@ -104,7 +104,9 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
       const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
-      expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({ sourceRunId: source.run.id });
+      expect(inspection.isOk() && inspection.value.kind === "snapshot" ? inspection.value.run.fork : undefined).toEqual({
+        sourceRunId: source.run.id,
+      });
 
       const forkOfFork = await forkRun(workspace, fork!.run.id);
       expect(forkOfFork?.run).toMatchObject({ status: "completed", fork: { sourceRunId: fork!.run.id } });
@@ -118,8 +120,13 @@ describe.concurrent("runtime controls and recovery", () => {
       const sourceRunDir = runtimeRunDir(workspace, source.run.id);
       await mkdir(join(sourceRunDir, "outputs", "stale"), { recursive: true });
       await mkdir(join(sourceRunDir, "work"), { recursive: true });
+      await mkdir(join(sourceRunDir, "evidence", "agents", "attempt-private"), { recursive: true });
       await writeFile(join(sourceRunDir, "outputs", "stale", "result.txt"), "unowned output");
       await writeFile(join(sourceRunDir, "work", "scratch.txt"), "unowned work");
+      await writeFile(
+        join(sourceRunDir, "evidence", "agents", "attempt-private", "turn-001.evidence.jsonl"),
+        "private evidence",
+      );
       await writeFile(join(sourceRunDir, "artifacts", "unregistered.txt"), "unregistered artifact");
       await writeFile(join(sourceRunDir, "unknown.txt"), "unregistered");
       const outside = join(workspace, "outside.txt");
@@ -131,6 +138,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       expect((await readdir(sourceRunDir)).sort()).toEqual([
         "artifacts",
+        "evidence",
         "lock.json",
         "outputs",
         "unknown-link",
@@ -141,6 +149,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect((await readdir(forkRunDir)).sort()).toEqual(["artifacts", "lock.json", "workflow.ir.json"]);
       await expect(access(join(sourceRunDir, "artifacts", "unregistered.txt"))).resolves.toBeUndefined();
       await expect(access(join(forkRunDir, "artifacts", "unregistered.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(forkRunDir, "evidence"))).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 

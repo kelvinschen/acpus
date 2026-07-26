@@ -179,4 +179,4 @@ Only look up declaration when the above rules and examples don't already answer 
 1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
-For operation commands read `cli-operations.md`; for runtime recovery stretegy read `runtime-recovery.md`.
+For operation commands read `cli-operations.md`; for runtime recovery strategy read `runtime-recovery.md`.

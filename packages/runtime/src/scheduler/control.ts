@@ -41,6 +41,13 @@ export type SchedulerControlResult = {
   snapshot: SchedulerSnapshot;
   effect: SchedulerControlEffect;
   reopened: boolean;
+  observationFence?: {
+    runId: string;
+    attemptId: string;
+    eventSequence: number;
+    committedAt: string;
+    reason: string;
+  };
 };
 
 export type SchedulerControlFailure = SchedulerStoreError
@@ -99,6 +106,13 @@ export function applySchedulerControlIntent(
         continuation: "queued",
       } as const,
       reopened: false,
+      observationFence: {
+        runId,
+        attemptId: applied.fencedAttemptId,
+        eventSequence: applied.fenceEventSequence,
+        committedAt: applied.fencedAt,
+        reason: "operator_steered",
+      },
     }));
   }
 

@@ -1,27 +1,42 @@
 import { stripVTControlCharacters } from "node:util";
 import type { SchemaIR } from "@acpus/core/ir";
 import type {
+  AgentInspectionState,
+  AgentAttemptEvidenceCapsule,
+  FollowableInspectionDocument,
   RunInspectionChange,
   RunInspectionAction,
+  RunInspectionCurrentActivity,
+  RunInspectionCurrentActivityPatch,
+  RunInspectionDelta,
   RunInspectionDocument,
   RunInspectionEmission,
+  RunInspectionExcerpt,
   RunInspectionItem,
+  RunInspectionOverviewAction,
   RunInspectionRunSummary,
   RunInspectionSnapshot,
   RunInspectionStatus,
   RunInspectionStatusCounts,
-  RunInspectionTargetDocument,
+  RunInspectionTargetDetailsDocument,
+  RunInspectionTargetSummaryDocument,
+  RunInspectionTimelineDocument,
+  RunInspectionTimelineEntry,
+  RunInspectionToolActivity,
+  RunInspectionVisibility,
 } from "@acpus/runtime";
 import { terminalTreeChildPrefix, terminalTreeConnector, type TerminalTreeEdge } from "./terminal-tree.js";
 
-type RunInspectionUpdate = Extract<RunInspectionEmission, { kind: "update" }>;
-type FollowableInspectionDocument = RunInspectionSnapshot | RunInspectionTargetDocument;
-type AgentInspectionState = NonNullable<RunInspectionItem["agent"]>;
+type RunInspectionDeltaEmission = Extract<RunInspectionEmission, { kind: "delta" }>;
+type AgentDecisionState = NonNullable<RunInspectionItem["agent"]>;
 type RecentTool = NonNullable<AgentInspectionState["tools"]>["recent"][number];
+const targetSummaryTextBytes = 1536;
 
 export function formatRunInspectionDocument(document: RunInspectionDocument, nowMs = Date.now()): string {
   if (document.kind === "raw") return "Raw run inspection is available only as JSON.\n";
-  if (document.kind === "target") return formatTarget(document, nowMs);
+  if (document.kind === "target") return formatTargetSummary(document);
+  if (document.kind === "timeline") return formatTimeline(document);
+  if (document.kind === "details") return formatTargetDetails(document, nowMs);
   return formatSnapshot(document, nowMs);
 }
 
@@ -34,15 +49,13 @@ export function formatRunInspectionChanges(
   context: {
     run: RunInspectionRunSummary;
     items: readonly RunInspectionItem[];
-    nowMs?: number;
   } & (
-    | { kind: "snapshot"; actions: readonly RunInspectionAction[] }
+    | { kind: "snapshot"; availableActions: readonly RunInspectionOverviewAction[] }
     | { kind: "target" }
   ),
 ): string {
-  const nowMs = context.nowMs ?? Date.now();
   const items = new Map(context.items.map(item => [item.key, item]));
-  const actions = indexActions(context.kind === "snapshot" ? context.actions : []);
+  const actions = indexActions(context.kind === "snapshot" ? context.availableActions : []);
   const suppressRootFailure = context.kind === "snapshot"
     && rootFailureWasPropagated(context.items, deepestAttentionCandidates(context.items, actions));
   const visible = changes.filter(change => {
@@ -67,7 +80,8 @@ export function formatRunInspectionChanges(
       ? `  ${formatFailure(structuredFailure, 160)}`
       : "";
     const message = failure || (change.message ? `  ${oneLine(change.message, 160)}` : "");
-    const agent = item?.agent ? `  ${formatAgentProgress(item.agent, nowMs)}` : "";
+    const progress = item?.agent ? formatAgentProgress(item.agent) : "";
+    const agent = progress ? `  ${progress}` : "";
     lines.push(`+${elapsed}  ${subject}  ${state}${attempt}${agent}${message}`);
     const actionable = change.action === "awaiting" || change.action === "failed" || change.action === "timed_out";
     if (item && actionable) {
@@ -84,60 +98,445 @@ export function formatRunInspectionChanges(
 }
 
 export function formatRunInspectionCheckpoint(document: FollowableInspectionDocument, nowMs = Date.now()): string {
-  const elapsed = elapsedSince(document.run.createdAt, new Date(nowMs).toISOString());
   if (document.kind === "target") {
-    const current = currentTargetItem(document);
-    const agent = current?.agent ?? document.summary.agent;
-    const details = agent ? `\n  ${current?.label ?? document.target.id}  ${formatAgentPulse(agent, nowMs)}` : "";
-    return `· checkpoint +${elapsed}  ${document.run.status}${details}\n`;
+    return `· checkpoint  ${document.run.status}  ${document.subject.label}\n`;
+  }
+  if (document.kind === "timeline") {
+    return `· checkpoint  ${document.run.status}  ${document.subject.label}\n`;
   }
 
+  const elapsed = elapsedSince(document.run.createdAt, new Date(nowMs).toISOString());
   const counts = formatCounts(document.counts);
-  const candidates = actionableItems(document.items);
-  const shown = candidates.slice(0, 3);
-  const lines = [`· checkpoint +${elapsed}  ${document.run.status}${counts ? `  ${counts}` : ""}`];
-  for (const item of shown) {
-    const detail = item.agent ? formatAgentPulse(item.agent, nowMs) : displayStatus(item.status);
-    lines.push(`  ${item.label}  ${detail}`);
-  }
-  if (candidates.length > shown.length) lines.push(`  … ${candidates.length - shown.length} more actionable`);
-  return `${lines.join("\n")}\n`;
+  return `· checkpoint +${elapsed}  ${document.run.status}${counts ? `  ${counts}` : ""}\n`;
 }
 
 export function applyRunInspectionUpdate(
   document: FollowableInspectionDocument,
-  update: RunInspectionUpdate,
+  update: RunInspectionDeltaEmission,
+  timelineLimit = 12,
 ): FollowableInspectionDocument {
-  const removed = new Set(update.patch.removeItemKeys);
-  const replacements = new Map(update.patch.upsertItems.map(item => [item.key, item]));
-  const items = document.items
-    .filter(item => !removed.has(item.key))
-    .map(item => replacements.get(item.key) ?? item);
-  const existing = new Set(items.map(item => item.key));
-  for (const item of update.patch.upsertItems) if (!existing.has(item.key)) items.push(item);
-  if (update.patch.itemOrder) {
-    const order = new Map(update.patch.itemOrder.map((key, index) => [key, index]));
-    items.sort((left, right) => (order.get(left.key) ?? Number.MAX_SAFE_INTEGER) - (order.get(right.key) ?? Number.MAX_SAFE_INTEGER));
+  let next: FollowableInspectionDocument = { ...document, revision: update.revision };
+  for (const delta of update.changes) next = applyInspectionDelta(next, delta, timelineLimit);
+  return next;
+}
+
+export function formatRunInspectionDelta(
+  emission: Extract<RunInspectionEmission, { kind: "delta" }>,
+  document?: FollowableInspectionDocument,
+  runId = document?.run.id,
+): string {
+  const lines: string[] = [];
+  for (const delta of emission.changes) {
+    if (delta.kind === "overview") {
+      if (document !== undefined && document.kind !== "snapshot") continue;
+      lines.push(formatRunInspectionChanges(delta.changes, {
+        kind: "snapshot",
+        run: delta.run,
+        items: document?.kind === "snapshot" ? document.items : delta.patch.upsertItems,
+        availableActions: document?.kind === "snapshot"
+          ? document.availableActions
+          : delta.patch.availableActions ?? [],
+      }).trimEnd());
+    } else if (delta.kind === "run") {
+      lines.push(`Run ${delta.run.id}  ${delta.run.status}`);
+    } else if (delta.kind === "state") {
+      lines.push(`State ${displayStatus(delta.state.status)}${delta.state.reason ? `  ${oneLine(delta.state.reason, 160)}` : ""}`);
+    } else if (delta.kind === "pulse" && delta.pulse) {
+      lines.push(`Pulse ${formatPhase(delta.pulse.phase)}${delta.pulse.headline ? `  ${oneLine(delta.pulse.headline, 240)}` : ""}`);
+    } else if (delta.kind === "attention" && delta.attention) {
+      lines.push(`Attention ${delta.attention.code}  ${oneLine(delta.attention.summary, 160)}`);
+    } else if (delta.kind === "visibility") {
+      lines.push(delta.visibility ? formatVisibility(delta.visibility) : "Visibility restored");
+    } else if (delta.kind === "current" && delta.current) {
+      lines.push(`Current ${formatCurrentHeadline(delta.current, exactAttemptTimeline(document))}`);
+    } else if (delta.kind === "current-patch") {
+      lines.push(...formatCurrentPatch(
+        delta.patch,
+        document?.kind === "timeline" ? document.current : undefined,
+        exactAttemptTimeline(document),
+      ));
+    } else if (delta.kind === "recent") {
+      lines.push(...delta.upsert.map(entry => formatTimelineEntry(entry, exactAttemptTimeline(document))));
+      const previousRetentionOmitted = document?.kind === "timeline"
+        ? document.recent.retentionOmittedBefore ?? 0
+        : undefined;
+      if ((delta.page.retentionOmittedBefore ?? 0) > 0
+        && delta.page.retentionOmittedBefore !== previousRetentionOmitted) {
+        lines.push(`History ${delta.page.retentionOmittedBefore} earlier entries expired from bounded history`);
+      }
+    } else if (delta.kind === "available-actions" && runId) {
+      lines.push(...formatSummaryActions(delta.availableActions, runId));
+    } else if (delta.kind === "evidence" && delta.evidence) {
+      lines.push(...formatEvidence(delta.evidence));
+    }
   }
-  if (document.kind === "target") {
-    return { ...document, cursor: update.cursor, run: update.run, items };
-  }
-  const { omitted: _omitted, hooks: _hooks, ...base } = document;
-  return {
-    ...base,
-    cursor: update.cursor,
-    run: update.run,
-    counts: update.patch.counts ?? document.counts,
-    actions: update.patch.actions ?? document.actions,
-    items,
-    ...(update.patch.omitted === undefined ? document.omitted ? { omitted: document.omitted } : {} : update.patch.omitted ? { omitted: update.patch.omitted } : {}),
-    ...((update.patch.hooks ?? document.hooks ?? []).length > 0 ? { hooks: update.patch.hooks ?? document.hooks } : {}),
-  };
+  return lines.filter(Boolean).join("\n") + (lines.some(Boolean) ? "\n" : "");
 }
 
 export function formatTerminalOutput(output: unknown): string {
   if (output === undefined) return "";
   return `\nOutput:\n${prettyLines(output, "  ").join("\n")}\n`;
+}
+
+function applyInspectionDelta(
+  document: FollowableInspectionDocument,
+  delta: RunInspectionDelta,
+  timelineLimit: number,
+): FollowableInspectionDocument {
+  if (delta.kind === "overview") {
+    if (document.kind !== "snapshot") return document;
+    const removed = new Set(delta.patch.removeItemKeys);
+    const replacements = new Map(delta.patch.upsertItems.map(item => [item.key, item]));
+    const items = document.items
+      .filter(item => !removed.has(item.key))
+      .map(item => replacements.get(item.key) ?? item);
+    const existing = new Set(items.map(item => item.key));
+    for (const item of delta.patch.upsertItems) if (!existing.has(item.key)) items.push(item);
+    if (delta.patch.itemOrder) {
+      const order = new Map(delta.patch.itemOrder.map((key, index) => [key, index]));
+      items.sort((left, right) =>
+        (order.get(left.key) ?? Number.MAX_SAFE_INTEGER)
+        - (order.get(right.key) ?? Number.MAX_SAFE_INTEGER));
+    }
+    const { omitted: _omitted, hooks: _hooks, ...base } = document;
+    return {
+      ...base,
+      run: delta.run,
+      counts: delta.patch.counts ?? document.counts,
+      availableActions: delta.patch.availableActions ?? document.availableActions,
+      items,
+      ...(delta.patch.omitted === undefined
+        ? document.omitted ? { omitted: document.omitted } : {}
+        : delta.patch.omitted ? { omitted: delta.patch.omitted } : {}),
+      ...((delta.patch.hooks ?? document.hooks ?? []).length > 0
+        ? { hooks: delta.patch.hooks ?? document.hooks }
+        : {}),
+    };
+  }
+  if (delta.kind === "run") {
+    if (document.kind === "snapshot") return document;
+    return { ...document, run: { ...document.run, ...delta.run } };
+  }
+  if (delta.kind === "state" && document.kind !== "snapshot") {
+    return { ...document, state: delta.state };
+  }
+  if (document.kind === "target") {
+    if (delta.kind === "pulse") {
+      const { pulse: _pulse, ...rest } = document;
+      return delta.pulse ? { ...rest, pulse: delta.pulse } : rest;
+    }
+    if (delta.kind === "attention") {
+      const { attention: _attention, ...rest } = document;
+      return delta.attention ? { ...rest, attention: delta.attention } : rest;
+    }
+    if (delta.kind === "visibility") {
+      const { visibility: _visibility, ...rest } = document;
+      return delta.visibility ? { ...rest, visibility: delta.visibility } : rest;
+    }
+    if (delta.kind === "available-actions") {
+      return { ...document, availableActions: delta.availableActions };
+    }
+    if (delta.kind === "evidence") {
+      const { evidence: _evidence, ...rest } = document;
+      return delta.evidence ? { ...rest, evidence: delta.evidence } : rest;
+    }
+  }
+  if (document.kind === "timeline") {
+    if (delta.kind === "visibility") {
+      const { visibility: _visibility, ...rest } = document;
+      return delta.visibility ? { ...rest, visibility: delta.visibility } : rest;
+    }
+    if (delta.kind === "current") {
+      const { current: _current, ...rest } = document;
+      return delta.current ? { ...rest, current: delta.current } : rest;
+    }
+    if (delta.kind === "current-patch" && document.current?.kind === delta.patch.kind) {
+      return { ...document, current: applyCurrentActivityPatch(document.current, delta.patch) };
+    }
+    if (delta.kind === "recent") {
+      const entries = new Map(document.recent.entries.map(entry => [entry.id, entry]));
+      for (const entry of delta.upsert) {
+        entries.set(entry.id, entry);
+      }
+      const bounded = delta.order
+        .flatMap(id => entries.get(id) ?? [])
+        .slice(-timelineLimit);
+      return {
+        ...document,
+        recent: {
+          ...delta.page,
+          entries: bounded,
+        },
+      };
+    }
+  }
+  return document;
+}
+
+function applyCurrentActivityPatch(
+  current: RunInspectionCurrentActivity,
+  patch: RunInspectionCurrentActivityPatch,
+): RunInspectionCurrentActivity {
+  const updated = { ...current } as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(patch.changes)) {
+    if (value === null) delete updated[key];
+    else updated[key] = value;
+  }
+  return updated as RunInspectionCurrentActivity;
+}
+
+function formatCurrentPatch(
+  patch: RunInspectionCurrentActivityPatch,
+  current: RunInspectionCurrentActivity | undefined,
+  exactAttempt: boolean,
+): string[] {
+  const changes = patch.changes as Record<string, unknown>;
+  const phase = "phase" in patch.changes && typeof patch.changes.phase === "string"
+    ? formatPhase(patch.changes.phase)
+    : "updated";
+  const lines: string[] = [];
+  const postFence = "postFence" in changes
+    ? changes.postFence === true
+    : current?.kind === "agent" && current.postFence === true;
+  const agentIdentity = patch.kind === "agent"
+    ? patch
+    : current?.kind === "agent" ? current : undefined;
+  const currentPrefix = [
+    phase,
+    agentIdentity ? formatAttemptAttribution(agentIdentity, exactAttempt).trim() : undefined,
+    postFence ? "post-fence/discarded" : undefined,
+  ].filter((value): value is string => Boolean(value)).join(" · ");
+  const add = (value: string): void => {
+    lines.push(`Current ${currentPrefix} · ${value}`);
+  };
+
+  if ("response" in changes) {
+    const response = changes.response as RunInspectionExcerpt | null;
+    add(response ? `Response: ${formatExcerpt(response, 160)}` : "Response cleared");
+  }
+  if ("intent" in changes) {
+    const intent = changes.intent as Extract<RunInspectionCurrentActivity, { kind: "agent" }>["intent"] | null;
+    add(intent
+      ? `${intent.kind === "plan" ? "Plan" : "Reported thought"}: ${formatExcerpt(intent.excerpt, 160)}`
+      : "Intent cleared");
+  }
+  if ("tools" in changes) {
+    const tools = changes.tools as Extract<RunInspectionCurrentActivity, { kind: "agent" }>["tools"] | null;
+    const tool = tools?.active[0];
+    add(tool ? `Tool: ${formatTool(tool)}` : "Tools cleared");
+  }
+  if ("message" in changes) {
+    const message = changes.message;
+    add(typeof message === "string" ? oneLine(message, 160) : "Message cleared");
+  }
+  if ("prompt" in changes) {
+    const prompt = changes.prompt as RunInspectionExcerpt | null;
+    add(prompt ? `Prompt: ${formatExcerpt(prompt, 160)}` : "Prompt cleared");
+  }
+  if ("schemaSummary" in changes) {
+    const summary = changes.schemaSummary;
+    add(typeof summary === "string" ? `Expected: ${oneLine(summary, 160)}` : "Expected schema cleared");
+  }
+  return lines.length > 0 ? lines : [`Current ${currentPrefix} · ${patch.kind}`];
+}
+
+function formatTargetSummary(document: RunInspectionTargetSummaryDocument): string {
+  const subject = [
+    boundedInline(document.subject.label, 240),
+    document.subject.id === document.subject.label ? undefined : boundedInline(document.subject.id, 240),
+    boundedInline(document.subject.kind, 80),
+  ].filter((value): value is string => value !== undefined).join("  ");
+  const state = [
+    displayStatus(document.state.status),
+    document.state.reason ? oneLine(document.state.reason, 160) : undefined,
+    document.state.durationMs === undefined ? undefined : formatDurationMs(document.state.durationMs),
+  ].filter((value): value is string => value !== undefined).join("  ");
+  const lines = [
+    `Run ${boundedInline(document.run.id, 160)}  ${document.run.status}`,
+    `Target ${subject}`,
+    `State ${state}`,
+  ];
+  if (document.pulse) {
+    const turn = document.pulse.turn === undefined ? "" : `  turn=${document.pulse.turn}`;
+    const headline = document.pulse.headline ? `  ${oneLine(document.pulse.headline, 240)}` : "";
+    lines.push(`Pulse ${formatPhase(document.pulse.phase)}${turn}${headline}`);
+  }
+  if (document.attention) {
+    lines.push(`Attention ${document.attention.code}  ${oneLine(document.attention.summary, 160)}`);
+  }
+  if (document.visibility) lines.push(formatVisibility(document.visibility));
+  if (document.occurrence) {
+    const counts = formatCounts(document.occurrence.counts);
+    lines.push(`Occurrences ${document.occurrence.total}${counts ? `  ${counts}` : ""}`);
+  }
+  lines.push(...formatSummaryActions(document.availableActions, document.run.id));
+  if (document.evidence) lines.push(...formatEvidence(document.evidence));
+  return boundedTextOutput(`${lines.join("\n")}\n`, targetSummaryTextBytes);
+}
+
+function formatSummaryActions(actions: readonly RunInspectionAction[], runId: string): string[] {
+  if (actions.length === 0) return [];
+  return [
+    "Available operations:",
+    ...actions.slice(0, 2)
+      .map(action => `  ${boundedInline(formatSummaryAction(action, runId), 480)}`),
+  ];
+}
+
+function formatEvidence(evidence: AgentAttemptEvidenceCapsule): string[] {
+  const disposition = evidence.dispositionReason
+    ? `${evidence.schedulerDisposition}/${evidence.dispositionReason}`
+    : evidence.schedulerDisposition;
+  const lines = [
+    `Evidence ${evidence.state}/${evidence.completeness}  turns=${evidence.turnCount}  gaps=${evidence.gapCount}  scheduler=${disposition}${evidence.providerOutcome ? `  provider=${evidence.providerOutcome}` : ""}`,
+    `  Directory: ${boundedInline(evidence.directory, 480)}`,
+  ];
+  for (const record of evidence.records) {
+    const sizes = [
+      `durable=${record.lastDurableResponseBytes}B`,
+      record.responseAtFenceBytes === undefined ? undefined : `fence=${record.responseAtFenceBytes}B`,
+      record.finalObservedResponseBytes === undefined ? undefined : `final=${record.finalObservedResponseBytes}B`,
+    ].filter((value): value is string => value !== undefined).join("  ");
+    const trace = record.trace
+      ? `  trace=${record.trace.state}${record.trace.file ? `/${record.trace.file}` : ""}${record.trace.bytes === undefined ? "" : `/${record.trace.bytes}B`}`
+      : "";
+    lines.push(boundedInline(
+      `  Turn ${record.turn}  ${record.file}  prompt=${record.prompt.kind}/${record.prompt.bytes}B/${record.prompt.digest}  ${sizes}${trace}`,
+      480,
+    ));
+  }
+  if (evidence.omittedTurns > 0) lines.push(`  … ${evidence.omittedTurns} turns omitted`);
+  return lines;
+}
+
+function formatSummaryAction(action: RunInspectionAction, runId: string): string {
+  if (action.kind === "inspect-timeline") return `Timeline: acpus runs inspect ${runId} --target ${action.target} --timeline`;
+  if (action.kind === "follow-target") return `Follow: acpus runs inspect ${runId} --target ${action.target} --follow`;
+  if (action.kind === "steer") return `Steer: acpus runs steer ${runId} --target ${action.target} --instruction '<correction>'`;
+  if (action.kind === "signal") {
+    return `Signal: acpus runs signal ${runId} --target ${action.target} --payload ${action.schemaSummary ? "'<json>'" : `'\"text\"'`}`;
+  }
+  if (action.kind === "retry") return `Retry: acpus runs retry ${runId}${action.target ? ` --target ${action.target}` : ""}`;
+  return `Fork: acpus runs fork ${runId}${action.target ? ` --target ${action.target}` : ""}`;
+}
+
+function formatTimeline(document: RunInspectionTimelineDocument): string {
+  const lines = [
+    `Run ${document.run.id}  ${document.run.status}`,
+    `Timeline ${document.subject.label}  ${document.subject.id}  ${displayStatus(document.state.status)}`,
+  ];
+  if (document.visibility) lines.push(formatVisibility(document.visibility));
+  const exactAttempt = document.subject.targetKind === "attempt";
+  if (document.current) {
+    lines.push("Current:", ...formatCurrent(document.current, exactAttempt).map(line => `  ${line}`));
+  }
+  lines.push("Recent:");
+  if (document.recent.entries.length === 0) lines.push("  (no closed activity)");
+  else lines.push(...document.recent.entries.map(entry => `  ${formatTimelineEntry(entry, exactAttempt)}`));
+  if (document.recent.hasOlder) {
+    lines.push(`  … ${document.recent.omittedBefore} older${document.recent.olderCursor ? `  before=${document.recent.olderCursor}` : ""}`);
+  }
+  if ((document.recent.retentionOmittedBefore ?? 0) > 0) {
+    lines.push(`  … ${document.recent.retentionOmittedBefore} earlier entries expired from bounded history`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function formatCurrent(current: RunInspectionCurrentActivity, exactAttempt: boolean): string[] {
+  if (current.kind === "agent") {
+    const attempt = formatAttemptAttribution(current, exactAttempt);
+    const disposition = current.postFence ? "  post-fence/discarded" : "";
+    const turn = current.turn === undefined ? "" : `  turn=${current.turn}${current.turnKind ? `/${current.turnKind}` : ""}`;
+    const lines = [`${formatPhase(current.phase)}${attempt}${turn}${disposition}`];
+    if (current.response) lines.push(`Response: ${formatExcerpt(current.response, 240)}`);
+    if (current.intent) {
+      lines.push(`${current.intent.kind === "plan" ? "Plan" : "Reported thought"}: ${formatExcerpt(current.intent.excerpt, 240)}`);
+    }
+    if (current.tools) {
+      for (const tool of current.tools.active) lines.push(`Tool: ${formatTool(tool)}`);
+      if (current.tools.omittedActive > 0) lines.push(`… ${current.tools.omittedActive} active tools omitted`);
+    }
+    return lines;
+  }
+  if (current.kind === "signal") {
+    return [
+      `awaiting  updated=${current.updatedAt}${current.deadlineAt ? `  deadline=${current.deadlineAt}` : ""}`,
+      ...(current.prompt ? [`Prompt: ${formatExcerpt(current.prompt, 240)}`] : []),
+      ...(current.schemaSummary ? [`Expected: ${oneLine(current.schemaSummary, 240)}`] : []),
+    ];
+  }
+  return [`${current.phase}  updated=${current.updatedAt}${current.message ? `  ${oneLine(current.message, 240)}` : ""}`];
+}
+
+function formatCurrentHeadline(current: RunInspectionCurrentActivity, exactAttempt: boolean): string {
+  if (current.kind === "signal") return current.prompt ? `awaiting · ${formatExcerpt(current.prompt, 160)}` : "awaiting";
+  if (current.kind !== "agent") return `${current.phase}${current.message ? ` · ${oneLine(current.message, 160)}` : ""}`;
+  const prefix = [
+    formatPhase(current.phase),
+    formatAttemptAttribution(current, exactAttempt).trim(),
+    current.postFence ? "post-fence/discarded" : undefined,
+  ].filter((value): value is string => Boolean(value)).join(" · ");
+  const tool = current.tools?.active[0];
+  if (tool) return `${prefix} · ${formatTool(tool)}`;
+  if (current.intent) return `${prefix} · ${formatExcerpt(current.intent.excerpt, 160)}`;
+  if (current.response) return `${prefix} · ${formatExcerpt(current.response, 160)}`;
+  return prefix;
+}
+
+function formatTimelineEntry(entry: RunInspectionTimelineEntry, exactAttempt = false): string {
+  if (entry.kind === "transition") {
+    const attempt = formatAttemptAttribution(entry, exactAttempt);
+    return `${entry.at}  ${entry.action}${entry.status ? `/${displayStatus(entry.status)}` : ""}${attempt}${entry.summary ? `  ${formatExcerpt(entry.summary, 240)}` : ""}`;
+  }
+  if (entry.kind === "activity") {
+    const channel = entry.channel === "reported-thought" ? "Reported thought" : entry.channel;
+    const disposition = entry.postFence ? "  post-fence/discarded" : "";
+    return `${entry.at}  ${channel}${formatAttemptAttribution(entry, exactAttempt)}${entry.turn === undefined ? "" : `  turn=${entry.turn}`}${disposition}  ${entry.tool ? formatTool(entry.tool) : formatExcerpt(entry.summary, 240)}`;
+  }
+  if (entry.kind === "control") {
+    return `${entry.at}  ${entry.action}${formatAttemptAttribution(entry, exactAttempt)}${entry.responseAtFenceBytes === undefined ? "" : `  response-at-fence=${entry.responseAtFenceBytes}B`}`;
+  }
+  return `${entry.at}  gap  dropped=${entry.dropped}  ${oneLine(entry.reason, 240)}`;
+}
+
+function formatTool(tool: RunInspectionToolActivity): string {
+  const fields = [
+    tool.name,
+    tool.status,
+    tool.input ? `in=${formatExcerpt(tool.input, 120)}` : undefined,
+    tool.output ? `out=${formatExcerpt(tool.output, 120)}` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  return oneLine(fields.join("  "), 240);
+}
+
+function formatExcerpt(excerpt: RunInspectionExcerpt, limit: number): string {
+  const suffix = excerpt.truncated ? `… [${excerpt.originalBytes}B]` : "";
+  return `${oneLine(excerpt.text, Math.max(1, limit - suffix.length))}${suffix}`;
+}
+
+function exactAttemptTimeline(
+  document: FollowableInspectionDocument | undefined,
+): boolean {
+  return document?.kind === "timeline" && document.subject.targetKind === "attempt";
+}
+
+function formatAttemptAttribution(
+  value: { attemptNo?: number; attemptId?: string },
+  exactAttempt: boolean,
+): string {
+  if (exactAttempt) return "";
+  if (value.attemptNo !== undefined) return `  attempt=${value.attemptNo}`;
+  return value.attemptId ? `  attempt=${boundedInline(value.attemptId, 48)}` : "";
+}
+
+function formatPhase(phase: string): string {
+  if (phase === "reported-thought") return "Reported thought";
+  if (phase === "output-repair") return "Automatic output repair";
+  return phase;
+}
+
+function formatVisibility(visibility: RunInspectionVisibility): string {
+  return `Visibility degraded/${visibility.reason}  Inspection may be incomplete; Agent execution health is unknown.`;
 }
 
 function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string {
@@ -146,7 +545,7 @@ function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string 
   if (document.omitted && !document.items.some(item => item.role === "fold")) {
     lines.push(`  … ${document.omitted.dynamicContexts} contexts omitted (${formatCounts(document.omitted.counts)})`);
   }
-  const inspectAll = document.actions.find(action => action.kind === "inspect-all");
+  const inspectAll = document.availableActions.find(action => action.kind === "inspect-all");
   if (inspectAll) lines.push(`  More: acpus runs inspect ${document.run.id} --all`);
 
   const active = activeItems(document.items);
@@ -154,7 +553,7 @@ function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string 
   if (active.length + hiddenActive > 0) {
     const byKey = new Map(document.items.map(item => [item.key, item]));
     lines.push("", "Active:");
-    for (const item of active.slice(0, 3)) lines.push(`  ${formatActiveItem(item, byKey, nowMs)}`);
+    for (const item of active.slice(0, 3)) lines.push(`  ${formatActiveItem(item, byKey)}`);
     const additional = Math.max(0, active.length - 3) + hiddenActive;
     if (additional > 0) lines.push(`  … ${additional} more running`);
   }
@@ -174,11 +573,11 @@ function formatSnapshot(document: RunInspectionSnapshot, nowMs: number): string 
   return `${lines.join("\n")}\n`;
 }
 
-function formatTarget(document: RunInspectionTargetDocument, nowMs: number): string {
+function formatTargetDetails(document: RunInspectionTargetDetailsDocument, nowMs: number): string {
   const { summary } = document;
   const current = currentTargetItem(document);
   const nodeStatus = current?.status ?? summary.nodeStatus;
-  const lines = [formatHeader(document.run, nowMs), `Target ${document.target.id}  [${document.target.kind}]${nodeStatus ? `  ${nodeStatus}` : ""}`];
+  const lines = [formatHeader(document.run, nowMs, true), `Target ${document.target.id}  [${document.target.kind}]${nodeStatus ? `  ${nodeStatus}` : ""}`];
   if (summary.counts) {
     const statuses = formatCounts(summary.counts);
     lines.push(`  Aggregate: total=${summary.counts.total}${statuses ? `  ${statuses}` : ""}`);
@@ -324,27 +723,24 @@ function activeItems(items: readonly RunInspectionItem[]): RunInspectionItem[] {
   return items.filter(item => executableKinds.has(item.kind) && (item.status === "starting" || item.status === "running"));
 }
 
-function formatActiveItem(item: RunInspectionItem, byKey: ReadonlyMap<string, RunInspectionItem>, nowMs: number): string {
+function formatActiveItem(item: RunInspectionItem, byKey: ReadonlyMap<string, RunInspectionItem>): string {
   const kind = item.kind === "agent" && item.agent ? `agent(${item.agent.key})` : item.kind;
-  const pulse = item.agent ? ` · ${formatAgentPulse(item.agent, nowMs)}` : "";
+  const agentPulse = item.agent ? formatAgentPulse(item.agent) : "";
+  const pulse = agentPulse ? ` · ${agentPulse}` : "";
   return `${statusGlyph(item.status)} ${itemBreadcrumb(item, byKey)} · ${kind}${pulse}`;
 }
 
-function formatAgentPulse(agent: AgentInspectionState, nowMs: number): string {
-  const recentTools = agent.tools?.recent ?? [];
-  const tool = recentTools.filter(item => item.status === "running" || item.status === "started").at(-1) ?? recentTools.at(-1);
-  const updated = agent.lastActivityAt ? relativeAge(agent.lastActivityAt, nowMs) : undefined;
+function formatAgentPulse(agent: AgentDecisionState): string {
   const fields = [
-    agent.turnCount === undefined ? undefined : `turn ${agent.turnCount}`,
-    tool ? formatRecentTool(tool) : undefined,
-    updated ? `updated ${updated}` : undefined,
+    agent.turn === undefined ? undefined : `turn ${agent.turn}`,
+    agent.activeTool ? formatDecisionTool(agent.activeTool) : undefined,
   ].filter((value): value is string => value !== undefined);
-  return fields.length > 0 ? fields.join(" · ") : "no update yet";
+  return fields.join(" · ");
 }
 
 function formatAttention(document: RunInspectionSnapshot): string[] {
   const byKey = new Map(document.items.map(item => [item.key, item]));
-  const actions = indexActions(document.actions);
+  const actions = indexActions(document.availableActions);
   const candidates = deepestAttentionCandidates(document.items, actions);
   const lines: string[] = [];
   if (document.run.execution.state === "stale") {
@@ -440,12 +836,12 @@ function formatRunLevelActionCommands(actions: ActionIndex, runId: string): stri
 }
 
 type ActionIndex = {
-  byItem: Map<string, RunInspectionAction[]>;
-  unscopedForks: Array<Extract<RunInspectionAction, { kind: "fork" }>>;
+  byItem: Map<string, RunInspectionOverviewAction[]>;
+  unscopedForks: Array<Extract<RunInspectionOverviewAction, { kind: "fork" }>>;
 };
 
-function indexActions(actions: readonly RunInspectionAction[]): ActionIndex {
-  const byItem = new Map<string, RunInspectionAction[]>();
+function indexActions(actions: readonly RunInspectionOverviewAction[]): ActionIndex {
+  const byItem = new Map<string, RunInspectionOverviewAction[]>();
   const unscopedForks: ActionIndex["unscopedForks"] = [];
   for (const action of actions) {
     if (action.kind === "inspect-all") continue;
@@ -453,7 +849,7 @@ function indexActions(actions: readonly RunInspectionAction[]): ActionIndex {
       unscopedForks.push(action);
       continue;
     }
-    const itemKey = action.itemKey;
+    const itemKey = "itemKey" in action ? action.itemKey : undefined;
     if (!itemKey) continue;
     const itemActions = byItem.get(itemKey);
     if (itemActions) itemActions.push(action);
@@ -498,39 +894,27 @@ function formatAgent(agent: AgentInspectionState, indent: number, nowMs: number)
     ].filter(Boolean);
     if (tokens.length > 0) lines.push(`${prefix}Tokens: ${tokens.join(", ")}`);
   }
-  if (agent.lastActivityAt) {
-    const age = relativeAge(agent.lastActivityAt, nowMs);
-    if (age) lines.push(`${prefix}Last active: ${age}`);
+  if (agent.lastObservedAt) {
+    const age = relativeAge(agent.lastObservedAt, nowMs);
+    if (age) lines.push(`${prefix}Last observed: ${age}`);
   }
   return lines;
 }
 
-function formatAgentProgress(agent: AgentInspectionState, nowMs: number): string {
-  const fields: string[] = [];
-  if (agent.lastActivityAt) {
-    const age = relativeAge(agent.lastActivityAt, nowMs);
-    if (age) fields.push(`active=${age.replace(/ ago$/, "")}`);
-  }
-  if (agent.turnCount !== undefined) fields.push(`turn=${agent.turnCount}`);
-  if (agent.tools) {
-    const recentTools = agent.tools.recent.slice(-3);
-    const recent = recentTools.length > 0 ? `[${recentTools.map(formatRecentToolInline).join(",")}]` : "";
-    fields.push(`tools=${agent.tools.totalCallCount}${recent}`);
-  }
-  if (agent.context) fields.push(`ctx=${compactNumber(agent.context.used)}/${compactNumber(agent.context.size)}`);
-  if (agent.tokenUsage?.totalTokens !== undefined) fields.push(`tok=${compactNumber(agent.tokenUsage.totalTokens)}`);
-  if (agent.stopReason) fields.push(`stop=${oneLine(agent.stopReason, 48)}`);
-  return fields.join("  ");
+function formatAgentProgress(agent: AgentDecisionState): string {
+  return [
+    agent.turn === undefined ? undefined : `turn=${agent.turn}`,
+    agent.activeTool ? `tool=[${formatDecisionTool(agent.activeTool)}]` : undefined,
+  ].filter((value): value is string => value !== undefined).join("  ");
+}
+
+function formatDecisionTool(tool: NonNullable<AgentDecisionState["activeTool"]>): string {
+  return `${toolStatusGlyph(tool.status)} ${truncateToolCommand(tool.command)}`;
 }
 
 function formatRecentTool(tool: RecentTool): string {
   const status = typeof tool.status === "string" ? tool.status : undefined;
   return `${toolStatusGlyph(status)} ${truncateToolCommand(tool.command)}`;
-}
-
-function formatRecentToolInline(tool: RecentTool): string {
-  const status = typeof tool.status === "string" ? tool.status : undefined;
-  return `${toolStatusGlyph(status)}${truncateToolCommand(tool.command).replace(": ", ":")}`;
 }
 
 function truncateToolCommand(command: string): string {
@@ -564,13 +948,13 @@ function formatSignal(signal: NonNullable<RunInspectionItem["signal"]>, runId: s
   return lines;
 }
 
-function formatHeader(run: RunInspectionRunSummary, nowMs: number): string {
+function formatHeader(run: RunInspectionRunSummary, nowMs: number, includeDiagnostics = false): string {
   const duration = run.durationMs === undefined ? Math.max(0, nowMs - Date.parse(run.createdAt)) : run.durationMs;
   const lines = [`Run ${run.id}  ${run.name}  ${executionStatus(run)}  ${formatDurationMs(duration)}`];
   if (run.fork) {
     lines.push(`Fork: source=${run.fork.sourceRunId}${run.fork.target ? `  target=${run.fork.target}` : ""}${run.fork.unsafeReuse ? "  unsafe-reuse" : ""}`);
   }
-  if (run.agentUsage) {
+  if (includeDiagnostics && run.agentUsage) {
     lines.push(`Agent usage: instances=${run.agentUsage.instances}  attempts=${run.agentUsage.attempts}  turns=${run.agentUsage.turns}`);
   }
   return lines.join("\n");
@@ -679,25 +1063,7 @@ function elapsedSince(start: string, value: string): string {
   return formatDurationMs(elapsed);
 }
 
-function actionableItems(items: readonly RunInspectionItem[]): RunInspectionItem[] {
-  const rank: Partial<Record<RunInspectionStatus, number>> = {
-    failed: 0,
-    timed_out: 1,
-    awaiting: 2,
-    running: 3,
-    starting: 4,
-    ready: 5,
-    pending: 6,
-  };
-  const active = items.filter(item => rank[item.status] !== undefined);
-  const dynamic = active.some(item => item.role !== "static") ? active.filter(item => item.role !== "static") : active;
-  return [...dynamic].sort((left, right) => {
-    const status = (rank[left.status] ?? 99) - (rank[right.status] ?? 99);
-    return status || left.path.join("/").localeCompare(right.path.join("/")) || left.key.localeCompare(right.key);
-  });
-}
-
-function currentTargetItem(document: RunInspectionTargetDocument): RunInspectionItem | undefined {
+function currentTargetItem(document: RunInspectionTargetDetailsDocument): RunInspectionItem<AgentInspectionState> | undefined {
   const { summary } = document;
   if (document.target.kind === "static-node" && summary.counts) return undefined;
   return document.items.find(item => item.key === document.target.id
@@ -718,6 +1084,32 @@ function oneLine(value: string, limit: number): string {
   const compact = stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   const visible = Array.from(compact);
   return visible.length <= limit ? compact : `${visible.slice(0, limit - 1).join("")}…`;
+}
+
+function boundedInline(value: string, maxBytes: number): string {
+  const compact = stripVTControlCharacters(value)
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
+    .trim();
+  if (Buffer.byteLength(compact) <= maxBytes) return compact;
+  return `${utf8Head(compact, Math.max(0, maxBytes - Buffer.byteLength("…")))}…`;
+}
+
+function boundedTextOutput(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  return `${utf8Head(value, maxBytes - Buffer.byteLength("…\n")).trimEnd()}…\n`;
+}
+
+function utf8Head(value: string, maxBytes: number): string {
+  let bytes = Buffer.from(value).subarray(0, maxBytes);
+  while (bytes.length > 0) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      // Only the selected edge can split a UTF-8 sequence.
+    }
+    bytes = bytes.subarray(0, -1);
+  }
+  return "";
 }
 
 function errorText(error: unknown): string {

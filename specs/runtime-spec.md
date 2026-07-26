@@ -21,6 +21,7 @@
 | Daemon socket when the platform path fits | `daemon.sock` |
 | Active database | `runtime/runtime.db` |
 | Run capsule | `runtime/runs/<run-id>/` |
+| Private Turn Evidence | `runtime/runs/<run-id>/evidence/agents/` |
 | Durable global-catalog source | `runtime/sources/catalog/<name>/<digest>/` |
 | Interrupted deletion | `runtime/trash/` |
 | Archived storage generation | `archives/<utc>-v<storage-version>/` |
@@ -43,7 +44,20 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 1` as the current storage version.
+- The active database MUST use SQLite `user_version = 2` as the current storage version.
+- Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
+- The active schema MUST index private Agent evidence and bounded semantic inspection through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
+- A non-null observation fence event sequence MUST be unique within its run.
+- An observation-attempt row MUST store its latest observation version, retention-omitted count, and retention-floor version.
+- An observation-turn row MUST store turn identity and prompt kind, Evidence and optional Trace lifecycle/integrity metadata, gap/unknown/provider-event counts, byte/digest metadata for prompt and response boundaries, fence metadata, provider status/timing, and one bounded current-activity projection.
+- Trace lifecycle metadata MUST use `none`, `recording`, `sealed`, `published`, or `partial`.
+- A trace-enabled turn MUST progress from `none` to `recording` and become `sealed` after complete provider settlement.
+- Only a sealed Trace belonging to a writable attempt MAY become `published`.
+- An incomplete or failed private Trace MUST become `partial` instead of `published`.
+- An observation-entry row MUST store turn identity, deterministic entry id, observation version, source sequence, event time, semantic kind, bounded JSON payload, and exact payload byte count.
+- Observation index rows MUST NOT store an exact prompt, steering instruction, response-at-fence, final response, or raw provider frame.
+- Each durable turn-start, coalesced current checkpoint, semantic-entry batch, fence, gap, terminal, or recovery mutation MUST increment the run observation version exactly once.
+- Persisting a Trace frame MUST NOT increment the run observation version.
 - A first writable open MUST initialize the complete current schema.
 - Reopening a current-version database MUST preserve its rows.
 - New-run preparation and real pruning of an incompatible active database MUST archive every child of `runtime/` under one new `archives/<utc>-v<observed-storage-version>/` generation before creating an empty current database.
@@ -66,7 +80,7 @@
 - Runtime execution MUST use the run workspace as the fallback dependency authority for bare imports originating in a frozen global-catalog source.
 - Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
-- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, and the optional `artifacts/` tree.
+- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, and the optional private `evidence/` tree.
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
 - Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
@@ -250,6 +264,7 @@ type PruneReport = {
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
 - Runtime MUST serialize Agent executor admission by effective session identity within one run.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
+- Steering replacement settlement gating MUST include draining and sealing the superseded turn's Private Turn Evidence.
 - Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
 - Schema-less Agents MUST return raw text with zero response repairs.
 - A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible correction before any schema-backed output contract.
@@ -282,16 +297,96 @@ type PruneReport = {
 - A response-repair prompt MUST repeat the declared output schema.
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
-- Each scheduler-backed turn MUST register `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
-- Turn metadata MUST reference the canonical artifact and compact summary without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr uses a separate artifact.
-- `ACPUS_AGENT_RAW_ACP_DEBUG=1` MUST be captured at daemon startup and optionally persist exact wire output without affecting execution or repair.
-- Top-level Agent `trace: true` MUST request one schema-versioned, ordered normalized trace artifact per turn that excludes prompt/control frames; a missing captured trace or trace persistence/registration failure is a system rejection and MUST NOT be recorded as an ordinary Agent failure.
+- A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
+- A fenced Agent turn MUST NOT register a new ordinary turn, stderr, raw, or trace artifact after the fence.
+- Turn metadata MUST reference a registered canonical artifact when one exists and otherwise count sealed Private Turn Evidence without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr for a writable attempt uses a separate artifact.
+- `ACPUS_AGENT_RAW_ACP_DEBUG=1` MUST be captured at daemon startup and MAY persist exact wire output for a writable turn without affecting execution or repair.
+- Top-level Agent `trace: true` MUST enable complete schema-versioned, ordered normalized Trace spooling per turn without requesting an in-memory Runtime trace result from the Agent Executor.
 - A recognized Agent failure MUST write terminal progress/metadata once; if that write also fails, the rejection MUST retain both the recognized failure and persistence failure.
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
+- Agent progress MUST retain a bounded response, at most one latest plan or provider-reported-thought intent, bounded tool input/output, and observation completeness for the active owned attempt.
+
+### Private Turn Evidence And Semantic Observation
+
+- Runtime MUST capture each Agent turn through one observation module that owns Private Turn Evidence, bounded semantic projection, optional Trace spooling, fencing, sealing, publication, and recovery.
+- Runtime MUST persist each turn's Evidence beneath `runtime/runs/<run-id>/evidence/agents/<attempt-id>/turn-<NNN>.evidence.jsonl.partial`.
+- After persisting the provider terminal boundary, Runtime MUST atomically rename Evidence to the corresponding `.evidence.jsonl` path.
+- Runtime MUST persist a trace-enabled turn's private spool beside its Evidence as `turn-<NNN>.trace.jsonl.partial`.
+- The `evidence/` tree MUST remain private Runtime data and MUST NOT enter artifact listing, ArtifactRef resolution, Hooks, expressions, workflow output, fork inheritance, or another Agent prompt.
+- Runtime MUST create Evidence directories with mode `0700` and files with mode `0600` where POSIX modes are supported.
+- Evidence paths MUST use the same containment, real-path, regular-file, and symbolic-link protections as other private Runtime run data.
+- Run deletion and pruning MUST delete private Evidence, private Trace spools, and their indexes.
+- Fork MUST NOT copy private Evidence or Trace spools into the child run.
+- Private Turn Evidence MUST contain only `turn_start`, `fence`, `gap`, and `turn_end` boundary records.
+- A `turn_start` record MUST use sequence zero and contain run/node/attempt/turn identity, Agent/session/cwd, prompt kind, exact Agent-visible prompt, Trace-enabled state, and start time.
+- A `fence` record MUST contain its reason and, when available, scheduler event sequence/time plus the exact response observed at that fence.
+- A fence without an available response snapshot MUST mark that response unavailable and the Evidence degraded.
+- A `gap` record MUST identify a real persistence, corruption, queue-overflow, or recovery loss by scope, count, bytes, and reason.
+- Semantic-retention eviction MUST NOT create a gap or mark Evidence degraded.
+- A `turn_end` record MUST contain the exact final observed response, provider outcome, timing, bounded failure, and a bounded summary without a complete tool-call array.
+- The semantic entry/current budgets MUST NOT truncate the exact prompt, response-at-fence, or final response stored in Private Turn Evidence.
+- Evidence records and provider requests MUST NOT contain a Runtime steering identity.
+- Evidence prompts MUST preserve the steering prompt rules in [Agents](#agents), including the complete schema contract when present and no explanatory prefix.
+- A response-repair turn MUST preserve only its repair prompt as Evidence and MUST NOT repeat the steering instruction.
+- Runtime MUST durably persist `turn_start`, its Evidence index row, and the optional Trace header before dispatching the provider.
+- Runtime MUST revalidate attempt identity and its abort/fence after durable turn start and before provider dispatch.
+- Runtime MUST continue observing a superseded provider until its process settles.
+- Runtime MUST seal Evidence and any Trace spool after provider settlement and before evaluating whether the attempt may register artifacts or commit a result.
+- Runtime MUST revalidate attempt ownership before artifact registration and again before output conformance, repair, or scheduler result commit.
+- A late provider success MAY set the private provider outcome to `completed` but MUST NOT change a superseded scheduler disposition from discarded.
+- A superseded attempt's late output, ordinary artifact registration, progress writes, and result commit MUST remain fenced.
+- An artifact registered before a fence MAY remain registered.
+- Cleanup of an unregistered post-fence artifact file MUST NOT delete Private Turn Evidence or a private Trace spool.
+- Runtime MUST fold normalized provider observations into bounded current activity and closed semantic entries when they are received.
+- Runtime MUST merge consecutive assistant chunks into one response segment and consecutive thought or plan chunks into the corresponding intent segment.
+- Runtime MUST fold calls and updates sharing one tool-call id into one tool entry.
+- Runtime MUST retain usage observations in node progress, terminal turn summaries, Private Turn Evidence, and opt-in Trace diagnostics without adding them to semantic current activity or Timeline entries.
+- Runtime MUST exclude unknown-provider payload bodies from semantic persistence while counting unknown events and marking observation completeness degraded.
+- A tool, channel change, fence, gap, or turn terminal boundary MUST close the applicable open semantic segment.
+- Runtime MUST close pre-fence segments before the steer control marker and order subsequent late provider activity after that marker.
+- An open semantic segment MUST exist only in a turn's bounded current projection.
+- A closed semantic segment MUST exist only in `agent_observation_entries`.
+- A trace-disabled turn MUST NOT persist normalized provider frames.
+- One attempt MUST retain at most 128 closed semantic entries and at most 128 KiB of their JSON payloads.
+- A turn's serialized current projection MUST contain at most 16 KiB.
+- Inserting semantic entries and evicting the oldest entries required by either retention limit MUST occur in one SQLite transaction.
+- Retention eviction MUST increment the attempt's retention-omitted count and advance its retention-floor version.
+- Retention eviction MUST NOT increment the Evidence gap count or reduce observation completeness.
+- Runtime MUST checkpoint response or intent growth after at least 512 additional bytes or ten seconds since the preceding checkpoint.
+- Runtime MUST checkpoint phase changes, tool start/terminal, fence, gap, and turn terminal immediately.
+- A usage-only observation MUST NOT advance the inspection-visible observation version.
+- A trace-enabled turn MUST spool every normalized observation in arrival order without persisting those provider frames in Private Turn Evidence or the SQLite semantic projection.
+- A Trace spool MUST start with `turn_start` at sequence zero, assign each observation `event.sequence + 1`, and end with `turn_end`.
+- A Trace spool MUST NOT contain a prompt, fence, steering instruction, or Runtime steering identity.
+- Runtime MUST use a fixed 64 KiB Trace write buffer and flush it when full and at fence or terminal boundaries.
+- Runtime MUST synchronize and seal a complete Trace spool after the provider process settles.
+- Runtime MUST atomically rename a complete sealed Trace spool to the corresponding private `.trace.jsonl` path.
+- After revalidating artifact ownership, Runtime MUST copy a sealed Trace spool to the deterministic trace-artifact path and register it with the spool's size and digest.
+- Runtime MUST remove the private Trace spool after successful artifact registration on a best-effort basis.
+- A failed Trace registration MUST remove only its unregistered public copy and retain the private spool.
+- A missing Trace spool or Trace copy/registration failure for a writable attempt MUST reject execution as a system failure.
+- A fence that wins before Trace registration MUST retain the private spool without registering a public trace artifact.
+- A Trace artifact registered before a later fence MUST remain registered.
+- Failure to seal Evidence or Trace for an active writable attempt MUST reject execution as a system failure.
+- Failure to seal Evidence or Trace for a fenced attempt MUST preserve the durable control and replacement admission while marking the private record partial/degraded.
+- Evidence sealing means the provider terminal boundary is durable; Runtime MAY append one idempotent post-settlement fence annotation and recompute Evidence metadata.
+- Writable-store recovery MUST index complete unindexed Evidence boundary records.
+- Recovery MUST represent an incomplete Evidence trailing record as a gap rather than inventing its content.
+- Recovery MUST seal partial Evidence containing a valid `turn_end`.
+- Recovery MUST mark open Evidence for a terminal or superseded attempt as partial without inventing a provider outcome or final response.
+- Recovery MUST close a recoverable bounded current checkpoint with a deterministic semantic entry id.
+- Recovery MUST seal a partial Trace only when its sequence is complete and it contains a terminal record.
+- Recovery MUST retain an incomplete Trace as partial without inventing a terminal record.
+- Recovery MAY remove an orphan partial file with no index when provider dispatch was never admitted.
+- Recovery MAY remove a private Trace spool when the deterministic registered trace artifact has the same size and digest.
+- Opening a Runtime store MUST NOT trigger Evidence recovery.
+- Runtime MUST NOT recover Evidence while its indexed scheduler attempt remains `started`.
+- Executable-run Evidence recovery MUST occur only after the daemon has claimed that run and superseded attempts owned by expired epochs.
+- Terminal-run Evidence recovery MUST occur only after daemon startup owns both its endpoint and durable daemon lease.
+- Evidence recovery MUST NOT participate in scheduler decisions.
 
 ### Controls And Daemon
 
-- Runtime control intents MUST use closed `pause`, `resume`, `retry`, `cancel`, `fork`, `signal`, and `steer` variants with run-scoped request identity.
 - The steer control wire variants MUST use the following closed shapes.
 
 ```ts
@@ -332,10 +427,16 @@ type DaemonSteerControlResult = {
 - A steer target that is absent, non-Agent, or no longer started MUST return `RUN_NOT_CONTROLLABLE`.
 - A rejected steer target MUST append no events.
 - An accepted steer MUST atomically persist `control.agent_steer_requested`, supersede the targeted attempt as `operator_steered`, and requeue its node instance as `steered`.
+- The accepted steer transaction MUST return the committed control event sequence and time to the Runtime Evidence layer.
+- In the same control call stack, Runtime MUST snapshot the exact response observed at that committed fence and idempotently enqueue one private fence record before waking the scheduler.
+- A replayed steer request MUST NOT create a duplicate private fence record.
+- When no active observation handle is available, inspection MUST retain the durable fence and report unavailable response-at-fence evidence as degraded.
+- Runtime MUST best-effort flush the private fence record before returning the existing steer receipt.
 - An accepted steer MUST fence the superseded attempt's result commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's artifact commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's progress commits before returning its receipt.
 - An accepted steer MUST request best-effort abort of the superseded Agent turn.
+- Pause, cancel, and owner-loss handling MUST add a fallback private fence for each affected active Agent turn.
 - Runtime MUST NOT roll back external side effects already performed by a superseded Agent turn.
 - A steering replacement MUST reuse the frozen run, input, node configuration, Agent mapping, and output schema.
 - A steering replacement MUST reuse the effective ACP session.
@@ -387,14 +488,273 @@ type DaemonSteerControlResult = {
 
 | Mode | Projection |
 | --- | --- |
-| overview | Versioned compact occurrence tree, exact status counts, cursors, sparse items, actions, omitted counts, terminal output. |
+| overview | Versioned compact occurrence tree, exact status counts, opaque revision, sparse items, available operations, omitted counts, terminal output. |
 | all | Complete occurrence-expanded execution tree without exposing raw tables. |
-| target | Static aggregate or exact node/frame/attempt context with history, progress, Signal, execution metadata, and artifact references. |
+| target | Bounded decision summary for one static node, dynamic node, frame, or attempt; an exact Agent attempt includes a bounded evidence capsule. |
+| timeline | Bounded current activity plus the latest closed semantic history for one resolved target. |
+| details | Rich node/frame/attempt dossier with history, progress, Signal, execution metadata, and artifact references for explicit Web/operator consumers. |
 | raw | Unbounded run details, complete frozen `WorkflowIR`, and artifact registry. |
 
+```ts
+type RunInspectionQuery =
+  | { runId: string; mode: "overview" }
+  | { runId: string; mode: "all" }
+  | { runId: string; mode: "target"; target: string; context?: RunInspectionContext; view?: "summary" }
+  | {
+      runId: string;
+      mode: "timeline";
+      target: string;
+      context?: RunInspectionContext;
+      page?: { limit?: number; before?: string };
+    }
+  | { runId: string; mode: "details"; target: string; context?: RunInspectionContext }
+  | { runId: string; mode: "raw" };
+
+declare const inspectionRevisionBrand: unique symbol;
+type RunInspectionRevision =
+  string & { readonly [inspectionRevisionBrand]: true };
+```
+
+- Details mode MUST NOT include timeline entries or Private Turn Evidence bodies.
+- Raw mode MUST NOT append Private Turn Evidence, private Trace bodies, or provider raw payloads.
+- The public query union MUST use `context` only for target, timeline, and details resolution; target accepts only `view?: "summary"`, while timeline accepts only `page?: { limit?: number; before?: string }`.
+- Inspection schema version 2 MUST replace prior inspection schemas without a compatibility shim.
+- Every followable inspection document MUST contain an opaque branded revision.
+- A revision MUST bind the run, query/view fingerprint, resolved target identity, scheduler event sequence, progress version, observation version, encoding version, and bounded activity/visibility fingerprints needed to resume without replaying telemetry-only changes.
+- A caller MUST treat a revision as an opaque save/compare/replay value.
+- A timeline page cursor MUST be opaque and bind the run, resolved target, ordering version, and page boundary.
+- Opaque encodings MUST bind authored target identities through fixed-size fingerprints rather than copy unbounded authored text into bounded inspection documents.
+- A revision or page cursor used with a different run, query, view, or target MUST return typed `invalid-cursor`.
+- An unsupported revision or page-cursor encoding version MUST return typed `invalid-cursor`.
+- A timeline page cursor whose boundary has expired from semantic retention MUST return typed `invalid-cursor`.
+- Ambiguous target resolution MUST return typed `target-ambiguous` with deterministically sorted candidate node keys when the requested view requires one occurrence.
+- `target-ambiguous` MUST contain the run id, requested target, sorted `candidateKeys`, and message.
+- `invalid-cursor` MUST contain the run id, optional requested target, and message.
+- A target summary MUST use this closed top-level shape.
+
+```ts
+type RunInspectionTargetSummaryDocument = {
+  schemaVersion: 2;
+  kind: "target";
+  revision: RunInspectionRevision;
+  run: { id: string; status: RunStatus; updatedAt: string };
+  subject: {
+    targetKind: "static-node" | "dynamic-node" | "frame" | "attempt";
+    id: string;
+    label: string;
+    kind: string;
+    nodeId?: string;
+    nodeKey?: string;
+    attemptId?: string;
+    attemptNo?: number;
+  };
+  state: {
+    status: RunInspectionStatus;
+    reason?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    deadlineAt?: string;
+    durationMs?: number;
+  };
+  pulse?: RunInspectionPulse;
+  attention?: RunInspectionAttention;
+  visibility?: RunInspectionVisibility;
+  availableActions: RunInspectionAction[];
+  occurrence?: { total: number; counts: RunInspectionStatusCounts };
+  evidence?: AgentAttemptEvidenceCapsule;
+};
+
+type RunInspectionPulse = {
+  phase: "starting" | "responding" | "reported-thought" | "planning" | "tool" | "output-repair" | "settling" | "settled";
+  headline?: string;
+  turn?: number;
+  updatedAt: string;
+};
+
+type RunInspectionAttention = {
+  code: "terminal_failure" | "timed_out" | "awaiting_input";
+  summary: string;
+};
+
+type RunInspectionVisibility = {
+  state: "degraded";
+  reason:
+    | "boundary-evidence-unavailable"
+    | "observation-gap"
+    | "unrecognized-provider-activity";
+};
+
+type RunInspectionAction =
+  | { kind: "inspect-timeline"; target: string }
+  | { kind: "follow-target"; target: string }
+  | { kind: "steer"; target: string }
+  | { kind: "signal"; target: string; schemaSummary?: string }
+  | { kind: "retry"; target?: string }
+  | { kind: "fork"; target?: string };
+
+type RunInspectionExcerpt = {
+  text: string;
+  originalBytes: number;
+  truncated: boolean;
+};
+```
+
+- A target summary MUST omit instance, frame, attempt, Signal-wait, execution-metadata, progress, and artifact arrays and complete input/output bodies.
+- A target summary's `availableActions` MUST contain only `RunInspectionAction` values.
+- A target summary pulse MUST use one phase from `starting`, `responding`, `reported-thought`, `planning`, `tool`, `output-repair`, `settling`, or `settled`, one optional headline, optional turn, and update time.
+- A pulse headline MUST contain no more than 240 visible characters.
+- Runtime MUST choose at most one pulse headline in this order: active tool; latest meaningful plan or provider-reported thought; response tail; starting state.
+- A terminal pulse MUST NOT select a stale failed tool from progress.
+- A settled pulse without an evidence-backed headline MUST omit its headline rather than report `starting`.
+- Runtime MUST NOT infer thought that the provider did not report.
+- A target summary MUST contain at most one attention item.
+- Attention MUST use a summary of no more than 160 visible characters and one code from `terminal_failure`, `timed_out`, or `awaiting_input`.
+- Runtime MUST select attention only for terminal failure/timeout or an awaiting Signal.
+- Context or usage metrics, elapsed observation age, an isolated tool failure, visibility degradation, and an available control MUST NOT create attention.
+- Runtime MUST NOT classify an Agent as stalled from elapsed update time, classify drift from repeated tools, judge semantic correctness, or prescribe steering.
+- A target summary MUST expose `visibility` only while inspection completeness is degraded.
+- When multiple visibility reasons apply, Runtime MUST select `boundary-evidence-unavailable`, then `observation-gap`, then `unrecognized-provider-activity`.
+- Visibility MUST describe inspection completeness without asserting an Agent execution fault or prescribing steering.
+- A target summary MUST contain no more than two available actions.
+- Available actions MUST be ordered by operator value: a started Agent exposes timeline then exact-attempt steer; a running Task/composite exposes timeline then follow; an awaiting Signal exposes signal then timeline; a failed/timed-out target exposes retry then fork.
+- A steer action MUST target the exact started attempt id.
+- Retry and targeted-fork actions MUST use identities accepted by their control resolvers rather than scheduler attempt ids; fork MUST omit its optional target when no safe replacement-workflow target is available.
+- Completed and cancelled target summaries MUST expose no available actions.
+- An available action MUST express applicability without asserting that the operator ought to execute it.
+- An exact Agent attempt summary MUST include this evidence capsule.
+- Every other target summary MUST NOT include an evidence capsule.
+
+```ts
+type AgentAttemptEvidenceCapsule = {
+  directory: string;
+  state: "recording" | "sealed" | "partial";
+  completeness: "complete" | "degraded";
+  turnCount: number;
+  omittedTurns: number;
+  gapCount: number;
+  providerOutcome?: "completed" | "failed" | "cancelled" | "timed_out";
+  schedulerDisposition: "pending" | "committed" | "discarded";
+  dispositionReason?: string;
+  records: Array<{
+    turn: number;
+    file: string;
+    prompt: {
+      kind: "task" | "continuation" | "steer" | "repair";
+      bytes: number;
+      digest: string;
+    };
+    lastDurableResponseBytes: number;
+    responseAtFenceBytes?: number;
+    finalObservedResponseBytes?: number;
+    trace?: {
+      state: "recording" | "sealed" | "partial" | "published";
+      file?: string;
+      bytes?: number;
+      digest?: string;
+    };
+  }>;
+};
+```
+
+- An evidence capsule MUST include at most the first and latest distinct turn records.
+- `omittedTurns` MUST report turns excluded from the capsule.
+- `directory` plus each `file` MUST identify the exact Private Turn Evidence path without repeating a long absolute path.
+- A private Trace `file` MUST be present only while its private spool exists.
+- An evidence capsule MUST NOT include prompt, response, thought, tool, steering instruction, or steering identity content.
+- A timeline document MUST use this closed top-level shape.
+
+```ts
+type RunInspectionTimelineDocument = {
+  schemaVersion: 2;
+  kind: "timeline";
+  revision: RunInspectionRevision;
+  run: { id: string; status: RunStatus; updatedAt: string };
+  subject: RunInspectionTargetSummaryDocument["subject"];
+  state: RunInspectionTargetSummaryDocument["state"];
+  visibility?: RunInspectionVisibility;
+  current?: RunInspectionCurrentActivity;
+  recent: {
+    entries: RunInspectionTimelineEntry[];
+    returned: number;
+    omittedBefore: number;
+    hasOlder: boolean;
+    olderCursor?: string;
+    retentionOmittedBefore?: number;
+  };
+};
+
+type AgentCurrentActivity = {
+  kind: "agent";
+  attemptId: string;
+  attemptNo?: number;
+  postFence?: true;
+  turn?: number;
+  turnKind?: "task" | "continuation" | "steer" | "repair";
+  phase: RunInspectionPulse["phase"];
+  updatedAt: string;
+  response?: RunInspectionExcerpt;
+  intent?: {
+    kind: "plan" | "reported-thought";
+    excerpt: RunInspectionExcerpt;
+  };
+  tools?: {
+    active: RunInspectionToolActivity[];
+    omittedActive: number;
+  };
+};
+```
+
+- Agent current activity MUST contain the exact attempt id, optional attempt number and post-fence disposition, optional turn and turn kind, phase, update time, optional bounded response, at most one latest plan or provider-reported-thought intent, and bounded active-tool state.
+- Agent current activity MUST include no more than two active tools.
+- Task, Signal, and composite current activity MUST use corresponding small discriminated variants without Agent-only empty fields.
+- Agent current activity MUST use its persisted semantic current projection when available.
+- When that projection is unavailable, Agent current activity MAY fall back to bounded node progress when present.
+- A timeline entry MUST use exactly one of these four semantic forms.
+
+```ts
+type RunInspectionTimelineEntry =
+  | { id: string; kind: "transition"; at: string; action: RunInspectionChangeAction; status?: RunInspectionStatus; attemptId?: string; attemptNo?: number; summary?: RunInspectionExcerpt }
+  | { id: string; kind: "activity"; at: string; attemptId?: string; attemptNo?: number; postFence?: true; turn?: number; channel: "response" | "reported-thought" | "plan" | "tool"; summary: RunInspectionExcerpt; tool?: RunInspectionToolActivity }
+  | { id: string; kind: "control"; at: string; action: "steered" | "paused" | "resumed" | "retried" | "cancelled"; attemptId?: string; attemptNo?: number; responseAtFenceBytes?: number }
+  | { id: string; kind: "gap"; at: string; dropped: number; reason: string };
+```
+
+- An open tool or response segment MUST appear only in `current`.
+- A segment MUST move into `recent` after a tool, control, or turn-terminal boundary closes it.
+- Runtime MUST merge consecutive assistant chunks into one response segment and consecutive thought or plan chunks into the corresponding intent segment.
+- Runtime MUST fold calls and updates sharing one tool-call id into one upsertable item.
+- Runtime MUST fold the control request, supersede, requeue, and fence for one accepted steer into one control entry.
+- An observation-backed steer control MUST retain the durable scheduler event identity while closing pre-fence response, intent, and tool segments before that control, including when their timestamps share the same millisecond.
+- A superseded provider's late response MUST order after its steer control entry.
+- A superseded provider's post-fence current activity and Timeline entries MUST carry `postFence: true`; replacement activity MUST NOT.
+- Usage MUST NOT create a Timeline entry or semantic current-activity change.
+- Unknown provider events MUST affect omitted/degraded accounting instead of creating one entry per event.
+- Inspection MUST read Agent current activity, semantic entries, retention state, and Evidence metadata from SQLite without reading Private Turn Evidence or Trace bodies.
+- A timeline is an operational projection and MUST NOT expose a raw transcript, Private Turn Evidence body, or Trace frame.
+- Target resolution MUST prefer exact attempt id, dynamic node key, frame key, then static node id.
+- An exact attempt timeline MUST contain only that attempt lifecycle and its observations.
+- A dynamic-node timeline MUST join that node's attempts, including a steering replacement.
+- A frame/root timeline MUST contain only directly owned scheduler transitions and MUST NOT recursively expand descendants.
+- A static node that has not run MUST return `not_started` with an empty timeline.
+- A static target with multiple occurrences MAY return aggregate counts in summary mode.
+- A static target with multiple occurrences MUST return `target-ambiguous` for timeline mode unless `context` disambiguates it.
+- Non-Agent targets MUST remain valid timeline subjects without Agent current activity.
+- A serialized target-summary document MUST fit within 4 KiB, except an exact-attempt evidence capsule MAY increase it to 6 KiB.
+- Timeline current response MUST contain no more than 1536 UTF-8 bytes.
+- Timeline current intent MUST contain no more than 768 UTF-8 bytes.
+- The combined input/output excerpt for one current tool MUST contain no more than 768 UTF-8 bytes.
+- Timeline MUST default to 12 recent entries and accept limits from 1 through 50.
+- One recent entry body MUST contain no more than 512 UTF-8 bytes.
+- One recent page MUST contain no more than 8 KiB of entry bodies and MAY return fewer than the requested limit to preserve that budget.
+- Timeline `returned` MUST equal the number of returned entries and `omittedBefore` MUST count older entries excluded from that page.
+- Timeline `hasOlder` MUST be true only while older retained entries remain readable.
+- A timeline with readable older entries MUST expose an opaque `olderCursor`.
+- Timeline `retentionOmittedBefore` MUST count entries expired from the fixed semantic-retention window and MUST be omitted when zero.
+- Every truncated excerpt MUST preserve valid UTF-8 and report exact `originalBytes` plus `truncated`.
+- Inspection byte and entry budgets MUST be fixed Runtime policy rather than caller-selected byte, token, or verbosity configuration.
 - Snapshot items MUST form a unique-keyed, parent-before-child preorder tree whose `parentKey` values resolve within the same snapshot.
 - Snapshot item keys MUST remain stable for the same authored node or dynamic scope occurrence across follow polls and MUST be treated as opaque by consumers.
-- `RunInspectionItem.scope` MUST use the following closed additive shape while inspection documents retain `schemaVersion: 1`.
+- `RunInspectionItem.scope` MUST use the following closed additive shape while inspection documents retain `schemaVersion: 2`.
 
 ```ts
 type RunInspectionScopeState =
@@ -405,7 +765,8 @@ type RunInspectionScopeState =
 ```
 
 - A scope state's `empty` field MUST be true exactly when its frozen authored scope contains no nodes.
-- Occurrence-targeted inspect, Signal, and retry actions MUST carry the corresponding snapshot `itemKey`; a fork action MAY carry that `itemKey`, while an inspect-all action remains run-wide without one.
+- Overview snapshots and patches MUST expose applicable operations only through `availableActions`.
+- Occurrence-targeted inspect, Signal, and retry entries in `availableActions` MUST carry the corresponding snapshot `itemKey`; a fork entry MAY carry that `itemKey`, while an inspect-all entry remains run-wide without one.
 - Inspection MUST parent repeated nodes and scopes by exact dynamic occurrence identity rather than by static `nodeId` alone.
 - Inspection preorder MUST retain authored node order within each scope, authored If/Switch route and Parallel branch order, Switch case-before-default order, ascending Fanout `itemIndex`, and ascending Loop `iteration`.
 - For each materialized If or Switch occurrence, all-mode inspection MUST emit every authored route in authored order, mark its selection state, and expand only the selected route.
@@ -415,34 +776,73 @@ type RunInspectionScopeState =
 - All-mode inspection MUST NOT invent a future Fanout item or Loop iteration.
 - All-mode inspection MUST contain neither fold items nor omitted-context metadata.
 - Overview and all-mode inspection MUST expose the same compact fields for the same occurrence; they differ only in occurrence visibility, folds, and omitted metadata.
+- Overview and all-mode Agent items MUST use this closed decision state:
+
+```ts
+type AgentDecisionState = {
+  key: string;
+  turn?: number;
+  activeTool?: { command: string; status?: string };
+};
+```
+
+- Overview and all-mode Agent items MUST NOT expose backend, model, telemetry availability, context, token usage, aggregate Agent usage counters, stop reason, or observation time. Current turn identity remains lifecycle attribution, not a usage counter.
 - Overview MUST count every dynamic leaf context, represent an unmaterialized authored leaf once, and exclude grouping rows.
 - Overview MUST bound ordinary expanded dynamic leaf contexts to 20 while retaining every failed, timed-out, awaiting, or retried occurrence and its ancestry outside that budget.
 - Overview MUST compact repeated completed or cancelled occurrences when needed to preserve its bounded presentation and MUST retain valid parent links after compaction. Each fold MUST replace one contiguous run of hidden sibling occurrences under the same parent and MUST NOT aggregate across an outer occurrence.
-- Inspection run summaries MUST expose `agentUsage` for workflows containing Agent nodes, including zero values before materialization; instances count materialized Agent nodes, attempts count all scheduler attempts for those nodes, and turns use durable attempt metadata supplemented by newer active progress without double counting.
+- Overview and all-mode run summaries MUST NOT expose aggregate Agent usage counts.
 - A failed inspection run summary MUST expose the compact failure from its persisted root frame when that frame contains an error.
 - A root-frame failure MUST NOT create a synthetic overview/all item.
-- Target `root` MUST retain the exact root-frame failure detail.
-- A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its detailed projection and zero matches remain `not_started`.
+- Target `root` MUST retain the bounded root-frame failure in its decision summary.
+- A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its resolved summary and zero matches remain `not_started`.
 - Public artifact records MUST expose absolute `path` without exposing internal relative storage coordinates.
 - `listArtifacts` MUST return registry metadata without reading file bodies.
 - `listArtifacts` MUST return `[]` for an empty existing run and `undefined` for a missing run or store.
 - `readArtifact(cwd, runId, artifactId): Promise<{ artifact: ArtifactRecord; bytes: Buffer } | undefined>` MUST return the artifact record and bytes after verifying the registered file's run containment, non-symlink regular-file identity, recorded size, and digest.
 - `readArtifact` MUST return `undefined` for a missing store, run, or artifact registry row.
 - A registered artifact that is missing, escapes its run, is a symlink or non-regular file, or fails its recorded size or digest MUST make `readArtifact` reject as durable corruption.
-- Runtime target inspection MUST represent a persisted canonical turn prompt as an artifact descriptor with `field: "prompt"` and MUST NOT embed the prompt body.
-- Attempt target inspection MUST select attempt-scoped prompt, metadata, and progress from that exact attempt.
-- Node target inspection MUST select attempt-scoped prompt, metadata, and progress from its latest matched attempt.
-- Repeated composite inspection MUST associate group membership by dynamic `nodeKey` and MUST NOT reuse a group matched only by static `nodeId`.
-- Compact Agent inspection MUST use the authored Agent key, typed effective backend/counters/activity, explicit context/token availability, and at most three bounded normalized tool commands without command text or payloads.
-- Compact Agent turn count MUST use the greatest value from persisted attempt metadata and live progress so polling cannot regress.
-- Compact Signal inspection MUST bound prompt/schema summaries, preserve complete target/raw values, and expose inspect/retry/fork rather than signal actions after `signal_timeout`.
+- Runtime details inspection MUST represent a persisted canonical turn prompt as an artifact descriptor with `field: "prompt"` and MUST NOT embed the prompt body.
+- Attempt details inspection MUST select attempt-scoped prompt, metadata, and progress from that exact attempt.
+- Node details inspection MUST select attempt-scoped prompt, metadata, and progress from its latest matched attempt.
+- Repeated composite details inspection MUST associate group membership by dynamic `nodeKey` and MUST NOT reuse a group matched only by static `nodeId`.
+- Rich Agent details MUST use the authored Agent key, typed effective backend/counters, `lastObservedAt`, explicit context/token availability, and at most three bounded normalized tool commands without command text or payloads.
+- Rich Agent turn count MUST use the greatest value from persisted attempt metadata, Private Turn Evidence, and live progress so polling cannot regress.
+- Compact Signal details MUST bound prompt/schema summaries, preserve complete target/raw values, and expose inspect/retry/fork rather than signal actions after `signal_timeout`.
 - Failure inspection MUST preserve stable origin/code and bounded upstream acpx/RPC cause without raw ACP lines or broad text-prefix reclassification.
-- `followRunInspection` MUST be a read-only async iterable beginning with a compact snapshot, preserving every durable transition in order, and terminating only on terminal state, caller abort, or tagged error.
-- Follow updates MUST use independent event/progress cursors and sparse keyed patches, resynchronize on cursor/projection gaps, suppress unchanged/clock-only observations, and emit terminal output exactly once.
+- `followRunInspection` MUST be a read-only async iterable that terminates only on terminal state, caller abort, or tagged error.
+- Follow emissions MUST use the following closed schema-version-2 union.
+
+```ts
+type RunInspectionEmission =
+  | { schemaVersion: 2; kind: "snapshot"; revision: RunInspectionRevision; document: FollowableInspectionDocument }
+  | { schemaVersion: 2; kind: "delta"; revision: RunInspectionRevision; changes: RunInspectionDelta[] }
+  | { schemaVersion: 2; kind: "resync"; revision: RunInspectionRevision; reason: "cursor-gap" | "projection-drift"; document: FollowableInspectionDocument }
+  | { schemaVersion: 2; kind: "done"; revision: RunInspectionRevision; run: { id: string; status: RunStatus }; output?: JsonValue };
+```
+
+- Follow without an `after` revision MUST begin with a bounded snapshot.
+- Follow with an `after` revision MUST emit only semantic changes after that revision unless resynchronization is required.
+- A cursor gap or projection drift MUST emit a bounded `resync`.
+- Resuming a timeline from a revision older than the applicable attempt retention floor MUST emit a bounded `projection-drift` resynchronization.
+- Follow MUST emit status, control, fence, tool-start, tool-terminal, failure, and gap changes immediately.
+- Follow MUST emit phase changes immediately.
+- Follow MUST emit accumulated response or intent after at least 512 additional bytes or ten seconds since its preceding emission.
+- A phase change, fence, or terminal boundary MUST flush an open current segment.
+- Follow MUST NOT emit context, token usage, aggregate Agent resource/usage counters, or observation-age changes in overview, target, or Timeline documents.
+- Clock-only `updatedAt` changes MUST NOT emit a delta.
+- Timeline recent changes MUST append or upsert semantic entries and carry the exact bounded page order plus page metadata so consumers can discard entries displaced by the entry-count or 8 KiB body budget.
+- Current-activity deltas MUST use a full replacement only when current identity changes or clears; otherwise they MUST contain only changed fields, using `null` to clear an optional field.
+- An Agent current-activity patch MUST carry its attempt id and optional attempt/turn identity independently of a preceding snapshot.
+- A target available-operation change MUST use `kind: "available-actions"` and the `availableActions` field.
+- A resumed Timeline backlog that cannot fit its entry-count or 8 KiB delta budget MUST emit a bounded `projection-drift` resynchronization instead of silently dropping semantic changes.
+- Visibility degradation and restoration MUST emit an immediate semantic delta.
+- Ordinary coalescing MUST NOT be represented as an observation gap.
+- A 30-second checkpoint MUST NOT repeat activity bodies.
+- A target or timeline `done` emission MUST NOT include workflow output.
+- Overview/all `done` MUST include workflow output exactly once when present.
 - Follow updates MUST project an accepted steer as one `steered` semantic change.
-- Follow updates MUST NOT expose a steering instruction.
-- Follow updates MUST suppress the supersede/requeue bookkeeping paired with an accepted steer.
-- Agent follow MUST emit meaningful attempt/turn/tool/status/failure changes immediately and coalesce counter-only changes to at most once per Agent per ten seconds.
+- Follow updates MUST NOT expose a steering instruction or Runtime steering identity.
+- Follow updates MUST suppress the supersede/requeue/fence bookkeeping represented by that accepted steer.
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
 - After acquiring the workspace lease and before its first scheduling tick, the daemon MUST remove `.staging-*` run directories that have been stale for at least 60 seconds.
@@ -457,8 +857,8 @@ type RunInspectionScopeState =
 
 ## Verification
 
-- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, daemon session wiring, steer inspection/follow projection, and progress beyond internal count limits.
-- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact schema-less and schema-backed steering prompts, superseded attempt fences and settle gating, retry replay behavior, rejection of non-terminal execution without a durable wake source, due-Signal scale, execution-metadata authority, and lease recovery ordering.
+- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, revision/cursor binding, and progress beyond internal count limits.
+- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
 - Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.
@@ -466,6 +866,6 @@ type RunInspectionScopeState =
 - A fresh-process Runtime integration test verifies that SQLite initialization is quiet while an unrelated experimental warning remains observable.
 - Cover workspace-key and manifest validation, private shard creation, database version archive/reset, frozen-file integrity, run-directory entry limits, prepared source consistency, durable global-catalog sources, collision-safe atomic admission, trash reconciliation, pruning, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
 - Prove deterministic scheduler recovery and every node/composite strategy, identity, resource, deadline, cancellation, retry, and projection rule.
-- Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, canonical turn records, and optional captures.
+- Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, Private Turn Evidence, bounded semantic projection, conditional canonical turn records, and optional captures.
 - Cover control idempotency/targeting, fork safety, daemon fencing, sessions, socket ownership, heartbeat, idle-stop, and public error sanitization.
-- Verify inspection modes, verified artifact reads, health persistence projection, follow fidelity/resync, liveness, terminal output once, and read-only operation without daemon startup or shard creation.
+- Verify summary/timeline/details modes, evidence capsules, verified artifact reads, health persistence projection, incremental follow fidelity/resync, target-scoped terminal output, and read-only operation without daemon startup or shard creation.

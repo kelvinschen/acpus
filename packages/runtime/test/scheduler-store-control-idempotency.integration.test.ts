@@ -499,8 +499,8 @@ describe("scheduler store controls, idempotency, and public projection", () => {
 
         dbRun(workspace, "UPDATE node_instances SET status_reason = 'retry' WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1");
         expect(store.getRun(run.id)?.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
-        const inspected = await getRunInspection(workspace, { runId: run.id, mode: "target", target: "require_ready~1" });
-        expect(inspected.isOk() && inspected.value.kind === "target"
+        const inspected = await getRunInspection(workspace, { runId: run.id, mode: "details", target: "require_ready~1" });
+        expect(inspected.isOk() && inspected.value.kind === "details"
           ? inspected.value.instances.find(node => node.nodeKey === "require_ready~1")?.statusReason
           : "inspection failed").toBeUndefined();
       } finally {

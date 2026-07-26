@@ -1,9 +1,9 @@
-import type { RunInspectionTargetDocument } from "@acpus/runtime";
+import type { RunInspectionTargetDetailsDocument } from "@acpus/runtime";
 import type { NodeExecutionInspection } from "../api-types.js";
 export type { NodeExecutionInspection } from "../api-types.js";
 
 export async function inspectNodeExecution(
-  inspection: RunInspectionTargetDocument,
+  inspection: RunInspectionTargetDetailsDocument,
   loadTurnArtifact: (artifactRef: unknown) => Promise<unknown | undefined>,
 ): Promise<NodeExecutionInspection> {
   const progress = latestAgentProgress(inspection);
@@ -33,7 +33,7 @@ export async function inspectNodeExecution(
       ...agentExecutionSummary(metadata),
       ...agentProgressSummary(progress),
     },
-    ...(progress?.updatedAt ? { lastActiveAt: progress.updatedAt } : compact?.lastActivityAt ? { lastActiveAt: compact.lastActivityAt } : {}),
+    ...(progress?.updatedAt ? { lastObservedAt: progress.updatedAt } : compact?.lastObservedAt ? { lastObservedAt: compact.lastObservedAt } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
     ...(progress?.output ? { output: progress.output } : {}),
@@ -42,9 +42,9 @@ export async function inspectNodeExecution(
   };
 }
 
-type NodeProgress = RunInspectionTargetDocument["progress"][number];
+type NodeProgress = RunInspectionTargetDetailsDocument["progress"][number];
 
-function latestAgentProgress(inspection: RunInspectionTargetDocument): NodeProgress | undefined {
+function latestAgentProgress(inspection: RunInspectionTargetDetailsDocument): NodeProgress | undefined {
   const attemptIds = new Set(inspection.attempts.map(attempt => attempt.attemptId));
   return latestBy(inspection.progress.filter(progress =>
     progress.kind === "agent"
@@ -90,7 +90,7 @@ function contextWindowFromProgress(progress: NodeProgress | undefined): NodeExec
 }
 
 function contextWindowFromCompact(
-  compact: RunInspectionTargetDocument["summary"]["agent"],
+  compact: RunInspectionTargetDetailsDocument["summary"]["agent"],
 ): NodeExecutionInspection["contextWindow"] | undefined {
   if (!compact?.context) return undefined;
   const { used, size } = compact.context;
@@ -166,7 +166,7 @@ function tokenUsageFromRecord(usage: Record<string, unknown>): NodeExecutionInsp
 }
 
 function toolCallsFromCompact(
-  compact: RunInspectionTargetDocument["summary"]["agent"],
+  compact: RunInspectionTargetDetailsDocument["summary"]["agent"],
 ): NodeExecutionInspection["lastToolCalls"] {
   if (!compact?.tools) return [];
   return compact.tools.recent.map(tool => ({

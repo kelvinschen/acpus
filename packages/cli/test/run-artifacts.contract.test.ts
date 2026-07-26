@@ -62,7 +62,7 @@ describe("runs artifacts", () => {
 
     expect(runtime.getRunInspection).toHaveBeenCalledWith("/workspace", {
       runId: "run_1",
-      mode: "target",
+      mode: "details",
       target: "attempt_1",
     });
     expect(JSON.parse(result.stdout)).toEqual({
@@ -122,6 +122,6 @@ async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: nu
 function okTarget(value: ArtifactRecord[]) {
   return {
     isErr: () => false as const,
-    value: { kind: "target" as const, artifacts: value },
+    value: { kind: "details" as const, artifacts: value },
   };
 }

@@ -1,1163 +1,556 @@
 import { describe, expect, it } from "vitest";
-import type { RunInspectionSnapshot, RunInspectionTargetDocument } from "@acpus/runtime";
-import { applyRunInspectionUpdate, formatRunInspectionChanges, formatRunInspectionCheckpoint, formatRunInspectionDocument, formatTerminalOutput } from "../src/run-inspection-surface.js";
+import type {
+  RunInspectionEmission,
+  RunInspectionRevision,
+  RunInspectionSnapshot,
+  RunInspectionTargetSummaryDocument,
+  RunInspectionTimelineDocument,
+} from "@acpus/runtime";
+import {
+  applyRunInspectionUpdate,
+  formatRunInspectionCheckpoint,
+  formatRunInspectionDelta,
+  formatRunInspectionDocument,
+  formatRunInspectionHeader,
+} from "../src/run-inspection-surface.js";
 
-describe("compact run inspection surface", () => {
-  it("renders direct fork lineage and aggregate Agent usage in the run header", () => {
-    const document = snapshot();
-    document.run.fork = { sourceRunId: "run_source", target: "review~abc", unsafeReuse: true };
-    document.run.agentUsage = { instances: 3, attempts: 4, turns: 9 };
+describe("Inspection v2 text surface", () => {
+  it("renders a compact target decision summary with available operations", () => {
+    const text = formatRunInspectionDocument(targetSummary());
 
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("Fork: source=run_source  target=review~abc  unsafe-reuse");
-    expect(output).toContain("Agent usage: instances=3  attempts=4  turns=9");
+    expect(text).toBe([
+      "Run run_1  running",
+      "Target review  review~abc  agent",
+      "State running  2s",
+      "Pulse tool  turn=1  Bash: rg src",
+      "Attention awaiting_input  Operator input required",
+      "Available operations:",
+      "  Timeline: acpus runs inspect run_1 --target review~abc --timeline",
+      "  Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'",
+      "",
+    ].join("\n"));
+    expect(text).not.toContain("instances");
+    expect(text).not.toContain("\nInput:");
+    expect(text).not.toContain("\nOutput:");
   });
 
-  it("renders a static multi-instance target only as an aggregate plus discoverable instances", () => {
-    const base = snapshot();
-    const document: RunInspectionTargetDocument = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: base.cursor,
-      run: base.run,
-      target: { kind: "static-node", id: "review" },
-      summary: {
-        targetKind: "static-node",
-        targetId: "review",
-        runStatus: "running",
-        runStartedAt: base.run.createdAt,
-        nodeId: "review",
-        nodeStatus: "mixed",
-        counts: { total: 2, running: 1, failed: 1 },
-        artifacts: [],
-      },
-      items: [{ ...base.items[2]!, status: "running" }, { ...base.items[2]!, key: "review~def", nodeKey: "review~def", status: "failed" }],
-      instances: [
-        { nodeKey: "review~abc", nodeId: "review", parentFrameKey: "frame~a", status: "running", createdAt: base.run.createdAt, updatedAt: base.run.updatedAt },
-        { nodeKey: "review~def", nodeId: "review", parentFrameKey: "frame~b", status: "failed", createdAt: base.run.createdAt, updatedAt: base.run.updatedAt },
-      ],
-      frames: [],
-      attempts: [],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [],
+  it("keeps overview Agent activity free of resource and age telemetry", () => {
+    const text = formatRunInspectionDocument(overview());
+    const header = formatRunInspectionHeader({
+      ...overview().run,
+      agentUsage: { instances: 2, attempts: 3, turns: 7 },
+    });
+
+    expect(text).toContain("Active:\n  ⠋ review · agent(observer) · turn 3 · ⠋ Bash: rg src");
+    expect(header).not.toContain("Agent usage");
+    expect(text).not.toContain("Agent usage");
+    expect(text).not.toContain("Context");
+    expect(text).not.toContain("Tokens");
+    expect(text).not.toContain("updated");
+    expect(text).not.toContain("no update yet");
+  });
+
+  it("reports degraded visibility separately and makes restoration explicit", () => {
+    const document = targetSummary({
+      visibility: { state: "degraded", reason: "observation-gap" },
+    });
+    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [{ kind: "visibility", visibility: null }],
     };
 
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("Target review  [static-node]  mixed");
-    expect(output).toContain("Aggregate: total=2  running=1  failed=1");
-    expect(output).toContain("review~abc  running");
-    expect(output).toContain("review~def  failed");
-    expect(output).not.toContain("Agent: observer");
+    expect(formatRunInspectionDocument(document)).toContain(
+      "Visibility degraded/observation-gap  Inspection may be incomplete; Agent execution health is unknown.",
+    );
+    expect(formatRunInspectionDelta(delta, document)).toBe("Visibility restored\n");
+    expect(applyRunInspectionUpdate(document, delta)).not.toHaveProperty("visibility");
   });
 
-  it("offers an exact-attempt steer command only for a started Agent target", () => {
-    const base = snapshot();
-    const document: RunInspectionTargetDocument = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: base.cursor,
-      run: {
-        ...base.run,
-        status: "running",
-        execution: { state: "active", lastStatus: "running", reason: "daemon_alive" },
-      },
-      target: { kind: "dynamic-node", id: "review~abc" },
-      staticNode: { nodeId: "review", kind: "agent", order: 0, path: ["review"] },
-      summary: {
-        targetKind: "dynamic-node",
-        targetId: "review~abc",
-        runStatus: "running",
-        runStartedAt: base.run.createdAt,
-        nodeId: "review",
-        nodeKey: "review~abc",
-        nodeStatus: "running",
-        staticKind: "agent",
-        latestAttempt: {
-          attemptId: "attempt_1",
-          attemptNo: 2,
-          status: "started",
-          startedAt: base.run.createdAt,
-        },
-        artifacts: [],
-      },
-      items: [],
-      instances: [],
-      frames: [],
-      attempts: [{
-        attemptId: "attempt_0",
-        nodeKey: "review~abc",
-        nodeId: "review",
-        attemptNo: 1,
-        status: "superseded",
-        cancelReason: "operator_steered",
-        startedAt: base.run.createdAt,
-        finishedAt: base.run.updatedAt,
-      }, {
-        attemptId: "attempt_1",
-        nodeKey: "review~abc",
-        nodeId: "review",
-        attemptNo: 2,
-        status: "started",
-        startedAt: base.run.updatedAt,
-      }],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [],
-    };
-
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'");
-    expect(output).toContain("attempt_0  superseded / operator_steered  attempt=1");
-    document.summary.latestAttempt = { ...document.summary.latestAttempt!, status: "completed" };
-    expect(formatRunInspectionDocument(document)).not.toContain("acpus runs steer");
-    document.summary.latestAttempt = { ...document.summary.latestAttempt, status: "started" };
-    document.summary.staticKind = "task";
-    document.staticNode = { ...document.staticNode!, kind: "task" };
-    expect(formatRunInspectionDocument(document)).not.toContain("acpus runs steer");
-  });
-
-  it("shows Agent identity without unavailable telemetry in the tree", () => {
-    const document = snapshot();
-    document.items[2]!.agent = {
-      key: "observer",
-      backend: { kind: "use", name: "claude" },
-      availability: { context: "unavailable", tokenUsage: "unavailable" },
-    };
-
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("✓ review · agent(observer)");
-    expect(output).not.toContain("unavailable");
-    expect(output).not.toContain("Context:");
-    expect(output).not.toContain("Tokens:");
-  });
-
-  it("renders a topology-first tree, folded contexts, and full terminal output", () => {
-    const document = snapshot();
-    const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
-
-    expect(output).toContain("Run run_1  nested  completed  2s");
-    expect(output).toContain("Tree:\n┌─ ✓ review_loop · loop · 25 rounds");
-    expect(output).toContain("├┄ ✓ round 1");
-    expect(output).toContain("└─ ✓ review · agent(observer)");
-    expect(output).toContain("└┄ … 24 completed rounds");
-    expect(output).not.toContain("Last tools:");
-    expect(output).not.toContain("Context:");
-    expect(output).not.toContain("Tokens:");
-    expect(output).not.toContain("acpx");
-    expect(output).toContain("└┄ … 24 completed rounds");
-    expect(output).toContain("More: acpus runs inspect run_1 --all");
-    expect(output).toContain('"field_29": 29');
-    expect(output).not.toContain("prompt text must stay out of overview");
-    expect(output).not.toContain("artifacts/review/turn-001.json");
-  });
-
-  it("renders only the public absolute artifact path", () => {
-    const path = "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/output.txt";
-    const document = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: { eventSequence: 1, progressVersion: 0 },
-      run: snapshot().run,
-      target: { kind: "static-node", id: "task" },
-      summary: {
-        targetKind: "static-node",
-        targetId: "task",
-        runStatus: "completed",
-        runStartedAt: "2026-07-11T00:00:00.000Z",
-        artifacts: [],
-      },
-      items: [],
-      instances: [],
-      frames: [],
-      attempts: [],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [{
-        id: "artifact_1",
-        runId: "run_1",
-        nodeKey: "task",
-        attempt: 1,
-        digest: "sha256:test",
-        size: 4,
-        path,
-      }],
-    } as RunInspectionTargetDocument;
-
-    const output = formatRunInspectionDocument(document);
-    expect(output).toContain(`artifact_1  ${path}`);
-    expect(output).not.toContain("relativePath");
-  });
-
-  it("applies semantic item updates without exposing raw runtime tables", () => {
-    const document = snapshot();
-    delete document.output;
-    const runningItem = { ...document.items[2]! };
-    delete runningItem.finishedAt;
-    const updated = applyRunInspectionUpdate(document, {
-      schemaVersion: 1,
-      kind: "update",
-      cursor: { eventSequence: 8, progressVersion: 2 },
-      run: { ...document.run, status: "running", updatedAt: "2026-07-11T00:00:03.000Z" },
-      changes: [],
-      patch: {
-        counts: { total: 2, running: 1, completed: 1 },
-      upsertItems: [{
-        ...runningItem,
-        status: "running",
-      }],
-      removeItemKeys: ["fold:old"],
-      itemOrder: ["review_loop", "review~abc", "review_loop:0"],
+  it("shows bounded evidence metadata without prompt or instruction bodies", () => {
+    const document = targetSummary({
+      evidence: {
+        directory: "/private/runtime/runs/run_1/evidence/agents/attempt_1",
+        state: "sealed",
+        completeness: "complete",
+        turnCount: 3,
+        omittedTurns: 1,
+        gapCount: 0,
+        providerOutcome: "completed",
+        schedulerDisposition: "discarded",
+        dispositionReason: "operator_steered",
+        records: [
+          {
+            turn: 1,
+            file: "turn-001.jsonl",
+            prompt: { kind: "task", bytes: 88, digest: "sha256:first" },
+            lastDurableResponseBytes: 400,
+            responseAtFenceBytes: 350,
+            finalObservedResponseBytes: 510,
+            trace: {
+              state: "partial",
+              file: "turn-001.trace.jsonl.partial",
+              bytes: 12_345,
+              digest: "sha256:trace",
+            },
+          },
+          {
+            turn: 3,
+            file: "turn-003.jsonl",
+            prompt: { kind: "repair", bytes: 90, digest: "sha256:last" },
+            lastDurableResponseBytes: 120,
+            finalObservedResponseBytes: 120,
+          },
+        ],
       },
     });
 
-    expect(updated.cursor).toEqual({ eventSequence: 8, progressVersion: 2 });
-    expect(updated.items.find(item => item.key === "review~abc")?.status).toBe("running");
-    expect(updated.items.some(item => item.key === "fold:old")).toBe(false);
-    expect(updated.items.map(item => item.key)).toEqual(["review_loop", "review~abc", "review_loop:0"]);
-  });
+    const text = formatRunInspectionDocument(document);
 
-  it("formats append-only semantic changes and terminal output independently", () => {
-    const text = formatRunInspectionChanges([{
-      sequence: 7,
-      at: "2026-07-11T00:00:01.000Z",
-      entity: { kind: "attempt", id: "attempt_2", nodeId: "review" },
-      subject: "review",
-      action: "started",
-      status: "running",
-      attemptNo: 2,
-    }], {
-      kind: "snapshot",
-      run: snapshot().run,
-      items: [],
-      actions: [],
-      nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
-    });
-
-    expect(text).toBe("+1s  review  running  attempt=2\n");
-    expect(formatTerminalOutput({ result: "complete" })).toContain('"result": "complete"');
-    expect(formatTerminalOutput({})).toContain("{}");
-    expect(formatTerminalOutput(undefined)).toBe("");
-  });
-
-  it("renders a steer transition without internal ids or correction text", () => {
-    const text = formatRunInspectionChanges([{
-      sequence: 8,
-      at: "2026-07-11T00:00:01.000Z",
-      entity: { kind: "control", id: "review~abc", nodeId: "review" },
-      subject: "review (review~abc)",
-      action: "steered",
-      status: "ready",
-    }], {
-      kind: "snapshot",
-      run: snapshot().run,
-      items: [],
-      actions: [],
-    });
-
-    expect(text).toBe("+1s  review (review~abc)  steered\n");
+    expect(text).toContain("Evidence sealed/complete  turns=3  gaps=0  scheduler=discarded/operator_steered  provider=completed");
+    expect(text).toContain("turn-001.jsonl  prompt=task/88B/sha256:first  durable=400B  fence=350B  final=510B");
+    expect(text).toContain("trace=partial/turn-001.trace.jsonl.partial/12345B");
+    expect(text).toContain("… 1 turns omitted");
+    expect(text).not.toContain("<steering>");
     expect(text).not.toContain("steerId");
-    expect(text).not.toContain("instruction");
   });
 
-  it("renders the same layered acpx failure in compact trees and non-TTY transitions", () => {
-    const document = snapshot();
-    const failed = {
-      ...document.items[2]!,
-      status: "failed" as const,
-      statusReason: "provider_exit",
-      failure: {
-        origin: "provider" as const,
-        code: "provider_exit",
-        message: "failed to reload config",
-        upstream: {
-          source: "acpx" as const,
-          operation: "sessions.ensure",
-          exitCode: 1,
-          code: "RUNTIME",
-          origin: "cli",
-          protocol: { name: "json-rpc" as const, code: -32603, message: "Internal error" },
-        },
+  it("keeps exact Agent operations ahead of evidence when the text budget is exhausted", () => {
+    const long = "e".repeat(480);
+    const text = formatRunInspectionDocument(targetSummary({
+      evidence: {
+        directory: `/${long}`,
+        state: "sealed",
+        completeness: "complete",
+        turnCount: 2,
+        omittedTurns: 0,
+        gapCount: 0,
+        providerOutcome: "completed",
+        schedulerDisposition: "pending",
+        records: [1, 2].map(turn => ({
+          turn,
+          file: `${long}-${turn}.jsonl`,
+          prompt: { kind: "task", bytes: 480, digest: long },
+          lastDurableResponseBytes: 480,
+        })),
+      },
+    }));
+
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1_536);
+    expect(text).toContain("Timeline: acpus runs inspect run_1 --target review~abc --timeline");
+    expect(text).toContain("Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'");
+  });
+
+  it("renders one unified Timeline with current activity and closed semantic history", () => {
+    const text = formatRunInspectionDocument(timeline());
+
+    expect(text).toContain("Timeline review  review~abc  running");
+    expect(text).toContain("Current:\n  tool  attempt=2  turn=2/steer");
+    expect(text).toContain("Response: checking the requested sources");
+    expect(text).toContain("Plan: verify citations then revise");
+    expect(text).toContain("Tool: Read running in=report.md");
+    expect(text).toContain("Recent:\n  2026-07-25T00:00:01.000Z  response  attempt=1  turn=1  draft response");
+    expect(text).toContain("steered  attempt=1  response-at-fence=240B");
+    expect(text).toContain("response  attempt=1  turn=1  post-fence/discarded  late discarded output");
+    expect(text).toContain("… 8 older  before=page:older");
+    expect(text).toContain("… 7 earlier entries expired from bounded history");
+    expect(text.match(/checking the requested sources/g)).toHaveLength(1);
+  });
+
+  it("labels reported thought and automatic output repair without implying failure", () => {
+    const document = timeline();
+    if (document.current?.kind !== "agent") throw new Error("expected Agent current activity");
+    document.current = {
+      ...document.current,
+      phase: "output-repair",
+      intent: {
+        kind: "reported-thought",
+        excerpt: { text: "checking the required shape", originalBytes: 27, truncated: false },
       },
     };
-    document.items[2] = failed;
 
-    const tree = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
-    const transcript = formatRunInspectionChanges([{
-      sequence: 9,
-      at: "2026-07-11T00:00:02.000Z",
-      entity: { kind: "node", id: "review~abc", nodeId: "review" },
-      subject: "review",
-      itemKey: "review~abc",
-      action: "failed",
-      status: "failed",
-      message: "failed to reload config",
-    }], {
-      kind: "snapshot",
-      run: document.run,
-      items: [failed],
-      actions: document.actions,
-      nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
-    });
+    const text = formatRunInspectionDocument(document);
 
-    expect(tree).toContain("Error (provider provider_exit · acpx RUNTIME): failed to reload config");
-    expect(tree).not.toContain("failed  1s  provider_exit");
-    expect(transcript).toBe("+2s  review  failed  turn=2  tools=4[✓Bash:rg,⠋Grep,◆Write generated release…]  ctx=12.5k/200k  tok=1.5k  Error (provider provider_exit · acpx RUNTIME): failed to reload config\n");
+    expect(text).toContain("Automatic output repair  attempt=2");
+    expect(text).toContain("Reported thought: checking the required shape");
   });
 
-  it("renders rich Agent progress as a compact reconstructable transcript line", () => {
-    const document = snapshot();
-    const item = {
-      ...document.items[2]!,
-      status: "running" as const,
-      agent: { ...document.items[2]!.agent!, lastActivityAt: "2026-07-11T00:00:01.400Z" },
-    };
-    const text = formatRunInspectionChanges([{
-      progressVersion: 9,
-      at: "2026-07-11T00:00:01.500Z",
-      entity: { kind: "progress", id: "review~abc", nodeId: "review" },
-      subject: "review~abc",
-      itemKey: "review~abc",
-      action: "progress",
-      status: "running",
-    }], {
-      kind: "snapshot",
-      run: document.run,
-      items: [item],
-      actions: document.actions,
-      nowMs: Date.parse("2026-07-11T00:00:02.000Z"),
-    });
-
-    expect(text).toBe("+1.5s  review~abc  running  active=<1s  turn=2  tools=4[✓Bash:rg,⠋Grep,◆Write generated release…]  ctx=12.5k/200k  tok=1.5k\n");
-  });
-
-  it("keeps Agent tool activity out of overview trees", () => {
-    const document = snapshot();
-    document.items[2]!.agent!.tools = {
-      totalCallCount: 9,
-      recent: [
-        { command: "hidden oldest", status: "completed" },
-        { command: "one two three four", status: "completed" },
-        { command: "abcdefghijklmnopqrstuvwxyz1234567890", status: "cancelled" },
-        { command: "Bash: rg", status: "running" },
+  it("applies semantic deltas by upserting bounded Timeline entries", () => {
+    const initial = timeline();
+    const current = initial.current;
+    if (current?.kind !== "agent") throw new Error("expected Agent current activity");
+    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [
+        {
+          kind: "current",
+          current: {
+            ...current,
+            phase: "settling",
+            response: { text: "final response", originalBytes: 14, truncated: false },
+          },
+        },
+        {
+          kind: "recent",
+          upsert: [{
+            id: "activity:1",
+            kind: "activity",
+            at: "2026-07-25T00:00:02.000Z",
+            attemptId: "attempt_1",
+            turn: 1,
+            channel: "response",
+            summary: { text: "revised closed response", originalBytes: 23, truncated: false },
+          }],
+          order: initial.recent.entries.map(entry => entry.id),
+          page: { ...initial.recent, retentionOmittedBefore: 8 },
+        },
       ],
     };
 
-    const text = formatRunInspectionDocument(document);
-    expect(text).not.toContain("Last tools:");
-    expect(text).not.toContain("one two three");
-    expect(text).not.toContain("hidden oldest");
+    const updated = applyRunInspectionUpdate(initial, delta);
+
+    expect(updated.revision).toBe("rev:2");
+    expect(updated.kind).toBe("timeline");
+    if (updated.kind !== "timeline") throw new Error("expected Timeline");
+    expect(updated.current?.phase).toBe("settling");
+    expect(updated.recent.entries).toHaveLength(3);
+    expect(updated.recent.entries[0]).toMatchObject({
+      id: "activity:1",
+      summary: { text: "revised closed response" },
+    });
+    expect(formatRunInspectionDelta(delta, updated)).toContain("Current settling · attempt=2 · Read running");
+    expect(formatRunInspectionDelta(delta, initial))
+      .toContain("History 8 earlier entries expired from bounded history");
+    expect(formatRunInspectionDelta(delta, updated))
+      .not.toContain("expired from bounded history");
   });
 
-  it("retains full Agent telemetry in target inspection", () => {
-    const base = snapshot();
-    const item = base.items[2]!;
-    const document: RunInspectionTargetDocument = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: base.cursor,
-      run: base.run,
-      target: { kind: "dynamic-node", id: item.nodeKey! },
+  it("keeps the followed Timeline at the requested page limit", () => {
+    const initial = timeline();
+    const upsert = Array.from({ length: 4 }, (_, index) => ({
+      id: `activity:${index + 3}`,
+      kind: "activity" as const,
+      at: `2026-07-25T00:00:0${index + 3}.000Z`,
+      attemptId: "attempt_1",
+      turn: 1,
+      channel: "response" as const,
       summary: {
-        targetKind: "dynamic-node",
-        targetId: item.nodeKey!,
-        runStatus: base.run.status,
-        runStartedAt: base.run.createdAt,
-        nodeId: item.nodeId!,
-        nodeKey: item.nodeKey!,
-        nodeStatus: item.status,
-        artifacts: [],
+        text: `response ${index + 3}`,
+        originalBytes: 10,
+        truncated: false,
       },
-      items: [item],
-      instances: [],
-      frames: [],
-      attempts: [],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [],
-    };
-
-    const text = formatRunInspectionDocument(document);
-    expect(text).toContain("Agent: observer  turns=2  tools=4");
-    expect(text).toContain("Last tools: ✓ Bash: rg · ⠋ Grep · ◆ Write generated release…");
-    expect(text).toContain("Context: 12.5k/200k");
-    expect(text).toContain("Tokens: in 1k, out 500, total 1.5k");
-  });
-
-  it("bounds text-only checkpoints to three actionable rows", () => {
-    const document = snapshot();
-    delete document.output;
-    const { durationMs: _durationMs, ...run } = document.run;
-    document.run = { ...run, status: "running", execution: { state: "active", lastStatus: "running", reason: "daemon_alive" } };
-    document.counts = { total: 5, running: 5 };
-    document.items = Array.from({ length: 5 }, (_, index) => ({
-      key: `work_${index}`,
-      role: "instance" as const,
-      path: [`work_${index}`],
-      label: `work_${index}`,
-      kind: "task",
-      status: "running" as const,
     }));
 
-    const text = formatRunInspectionCheckpoint(document, Date.parse("2026-07-11T00:00:31.000Z"));
-    expect(text).toContain("· checkpoint +31s  running  running=5");
-    expect(text).toContain("  work_0  running");
-    expect(text).toContain("  … 2 more actionable");
-    expect(text).not.toContain("  work_3  running");
-  });
-
-  it("uses the compact Agent pulse in target checkpoints", () => {
-    const base = snapshot();
-    const item = {
-      ...base.items[2]!,
-      status: "running" as const,
-      agent: {
-        ...base.items[2]!.agent!,
-        lastActivityAt: "2026-07-11T00:00:01.000Z",
-      },
-    };
-    const document: RunInspectionTargetDocument = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: base.cursor,
-      run: { ...base.run, status: "running" },
-      target: { kind: "dynamic-node", id: item.nodeKey! },
-      summary: {
-        targetKind: "dynamic-node",
-        targetId: item.nodeKey!,
-        runStatus: "running",
-        runStartedAt: base.run.createdAt,
-        nodeId: item.nodeId!,
-        nodeKey: item.nodeKey!,
-        nodeStatus: "running",
-        artifacts: [],
-      },
-      items: [item],
-      instances: [],
-      frames: [],
-      attempts: [],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [],
-    };
-
-    const text = formatRunInspectionCheckpoint(document, Date.parse("2026-07-11T00:00:31.000Z"));
-    expect(text).toBe("· checkpoint +31s  running\n  review  turn 2 · ⠋ Grep · updated 30s ago\n");
-    expect(text).not.toContain("Context:");
-    expect(text).not.toContain("Tokens:");
-    expect(text).not.toContain("Write generated release");
-  });
-
-  it("bounds Active to three stable tree-order leaves", () => {
-    const document = snapshot();
-    delete document.output;
-    delete document.omitted;
-    document.actions = [];
-    document.items = Array.from({ length: 5 }, (_, index) => ({
-      key: `node:work_${index}`,
-      role: "instance" as const,
-      path: [`work_${index}`],
-      label: `work_${index}`,
-      kind: "task",
-      status: "running" as const,
-    }));
-
-    const text = formatRunInspectionDocument(document);
-    const active = text.slice(text.indexOf("Active:"));
-    expect(active).toContain("⠋ work_0 · task");
-    expect(active).toContain("⠋ work_2 · task");
-    expect(active).not.toContain("⠋ work_3 · task");
-    expect(active).toContain("… 2 more running");
-  });
-
-  it("falls back to the latest Agent tool and reports missing telemetry", () => {
-    const document = snapshot();
-    delete document.output;
-    delete document.omitted;
-    document.actions = [];
-    document.items = [{
-      ...document.items[2]!,
-      status: "running",
-      agent: {
-        key: "observer",
-        availability: { context: "unavailable", tokenUsage: "unavailable" },
-        tools: { totalCallCount: 2, recent: [{ command: "Read", status: "completed" }, { command: "Write", status: "failed" }] },
-      },
-    }];
-
-    expect(formatRunInspectionDocument(document)).toContain("Active:\n  ⠋ review · agent(observer) · ◆ Write");
-    document.items[0]!.agent = { key: "observer", availability: { context: "unavailable", tokenUsage: "unavailable" } };
-    expect(formatRunInspectionDocument(document)).toContain("Active:\n  ⠋ review · agent(observer) · no update yet");
-  });
-
-  it("includes omitted active occurrences in the Active remainder", () => {
-    const document = snapshot();
-    delete document.output;
-    document.items = [{
-      key: "node:work",
-      role: "instance",
-      path: ["work"],
-      label: "work",
-      kind: "task",
-      status: "running",
-    }];
-    document.omitted = { reason: "context-limit", limit: 20, dynamicContexts: 4, counts: { total: 4, running: 4 } };
-    document.actions = [{ kind: "inspect-all", omitted: 4 }];
-
-    const text = formatRunInspectionDocument(document);
-    expect(text).toContain("Active:\n  ⠋ work · task\n  … 4 more running");
-  });
-
-  it("keeps scheduler cancellation reasons out of structural scope rows", () => {
-    const document = snapshot();
-    delete document.output;
-    delete document.omitted;
-    document.actions = [];
-    document.items = [{
-      key: "node:race",
-      role: "frame",
-      path: ["race"],
-      label: "race",
-      kind: "parallel",
-      status: "completed",
-    }, {
-      key: "scope:race:slow",
-      role: "context",
-      parentKey: "node:race",
-      path: ["race", "slow"],
-      label: "slow",
-      kind: "branch",
-      status: "cancelled",
-      statusReason: "race_lost",
-      scope: { kind: "branch", ownerKind: "parallel", branchId: "slow", empty: false },
-    }];
-
-    const output = formatRunInspectionDocument(document);
-    expect(output).toContain("└┄ ✗ slow · canceled");
-    expect(output).not.toContain("race lost");
-  });
-
-  it("renders an actionable awaiting signal without inlining unrelated data", () => {
-    const document: RunInspectionSnapshot = {
-      ...snapshot(),
-      run: { ...snapshot().run, status: "awaiting", execution: { state: "inactive", lastStatus: "awaiting", reason: "daemon_alive" } },
-      counts: { total: 1, awaiting: 1 },
-      actions: [{ kind: "signal", target: "approve~abc", itemKey: "approve~abc", schemaSummary: "{ ok: boolean }" }],
-      items: [{
-        key: "approve~abc",
-        role: "instance",
-        path: ["approve"],
-        label: "approve",
-        kind: "signal",
-        status: "awaiting",
-        signal: {
-          target: "approve~abc",
-          promptPreview: "Approve this release?",
-          schemaSummary: "{ ok: boolean }",
+    const updated = applyRunInspectionUpdate(initial, {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [{
+        kind: "recent",
+        upsert,
+        order: ["activity:4", "activity:5", "activity:6"],
+        page: {
+          returned: 3,
+          omittedBefore: initial.recent.omittedBefore + 3,
+          hasOlder: true,
+          olderCursor: "page:newer",
         },
       }],
-    };
-    delete document.output;
-    delete document.omitted;
+    }, 3);
 
-    const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"));
-    expect(output).toContain("Tree:\n┌─ ⏳ approve · signal · awaiting");
-    expect(output.slice(output.indexOf("Tree:"), output.indexOf("Attention:"))).not.toContain("approve~abc");
-    expect(output).toContain("Attention:\n  ⏳ approve — waiting for input");
-    expect(output).toContain("Prompt: Approve this release?");
-    expect(output).toContain("Expected payload: { ok: boolean }");
-    expect(output).toContain("acpus runs signal run_1 --target approve~abc --payload '<json>'");
+    if (updated.kind !== "timeline") throw new Error("expected Timeline");
+    expect(updated.recent).toMatchObject({
+      returned: 3,
+      omittedBefore: initial.recent.omittedBefore + 3,
+      hasOlder: true,
+    });
+    expect(updated.recent.entries.map(entry => entry.id)).toEqual([
+      "activity:4",
+      "activity:5",
+      "activity:6",
+    ]);
   });
 
-  it("renders nested branch, fanout, active, and attention structure without inline telemetry", () => {
-    const document: RunInspectionSnapshot = {
-      ...snapshot(),
-      run: {
-        ...snapshot().run,
-        status: "running",
-        execution: { state: "active", lastStatus: "running", reason: "daemon_alive" },
-      },
-      counts: { total: 5, notStarted: 1, running: 2, awaiting: 1, completed: 1 },
-      items: [{
-        key: "node:route",
-        role: "static",
-        path: ["route"],
-        label: "route",
-        kind: "if",
-        status: "completed",
-      }, {
-        key: "scope:route:then",
-        role: "context",
-        parentKey: "node:route",
-        path: ["route", "then"],
-        label: "then",
-        kind: "branch",
-        status: "completed",
-        scope: { kind: "branch", ownerKind: "if", branchId: "then", selection: "selected", empty: false },
-      }, {
-        key: "node:primary",
-        role: "instance",
-        parentKey: "scope:route:then",
-        path: ["route", "then", "primary_route"],
-        label: "primary_route",
-        kind: "task",
-        status: "completed",
-      }, {
-        key: "scope:route:else",
-        role: "context",
-        parentKey: "node:route",
-        path: ["route", "else"],
-        label: "else",
-        kind: "branch",
-        status: "not_selected",
-        scope: { kind: "branch", ownerKind: "if", branchId: "else", selection: "not_selected", empty: false },
-      }, {
-        key: "node:batch",
-        role: "static",
-        path: ["batch"],
-        label: "batch",
-        kind: "fanout",
-        status: "running",
-        composite: { strategy: "all", counts: { total: 2, completed: 1, running: 1 } },
-      }, {
-        key: "scope:batch:0",
-        role: "context",
-        parentKey: "node:batch",
-        path: ["batch", "item[0]"],
-        label: "item[0]",
-        kind: "fanout-item",
-        status: "completed",
-        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
-      }, {
-        key: "scope:batch:1",
-        role: "context",
-        parentKey: "node:batch",
-        path: ["batch", "item[1]"],
-        label: "item[1]",
-        kind: "fanout-item",
-        status: "running",
-        scope: { kind: "fanout_item", itemIndex: 1, empty: false },
-      }, {
-        key: "node:review",
-        role: "instance",
-        parentKey: "scope:batch:1",
-        path: ["batch", "item[1]", "review"],
-        label: "review",
-        kind: "agent",
-        status: "running",
-        agent: {
-          key: "observer",
-          availability: { context: "available", tokenUsage: "available" },
-          turnCount: 3,
-          lastActivityAt: "2026-07-11T00:00:01.400Z",
-          context: { used: 90_000, size: 200_000 },
-          tokenUsage: { totalTokens: 12_000 },
-          tools: { totalCallCount: 8, recent: [{ command: "Read", status: "running" }, { command: "Write", status: "completed" }] },
-        },
-      }, {
-        key: "node:approval",
-        role: "instance",
-        path: ["approval"],
-        label: "approval",
-        kind: "signal",
-        status: "awaiting",
-        signal: { target: "approval~abc", promptPreview: "Approve deployment?", schemaSummary: "{ ok: boolean }" },
-      }, {
-        key: "node:assert",
-        role: "static",
-        path: ["require_approval"],
-        label: "require_approval",
-        kind: "assert",
-        status: "not_started",
-      }],
-      actions: [{ kind: "signal", target: "approval~abc", itemKey: "node:approval", schemaSummary: "{ ok: boolean }" }],
-    };
-    delete document.output;
-    delete document.omitted;
+  it("applies sparse current patches and null-clears without replacing Agent identity", () => {
+    const initial = timeline();
+    if (initial.current?.kind !== "agent") throw new Error("expected Agent current activity");
+    const tools = initial.current.tools;
 
-    expect(formatRunInspectionDocument(document, Date.parse("2026-07-11T00:00:02.000Z"))).toBe(`Run run_1  nested  running  2s
-
-Tree:
-┌─ ✓ route · if
-│  ├┄ ✓ then · selected
-│  │  └─ ✓ primary_route · task
-│  └┄ · else · not selected
-├─ ⠋ batch · fanout · running · 2 items
-│  ├┄ ✓ item[0] · empty
-│  └┄ ⠋ item[1] · running
-│     └─ ⠋ review · agent(observer) · running
-├─ ⏳ approval · signal · awaiting
-└─ ○ require_approval · assert · not started
-
-Active:
-  ⠋ batch › item[1] › review · agent(observer) · turn 3 · ⠋ Read · updated <1s ago
-
-Attention:
-  ⏳ approval — waiting for input
-     Prompt: Approve deployment?
-     Expected payload: { ok: boolean }
-     Signal: acpus runs signal run_1 --target approval~abc --payload '<json>'
-`);
-  });
-
-  it("renders terminal Signal timeout evidence with retry and fork recovery", () => {
-    const document = failedSnapshot({
-      failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
-      counts: { total: 1, timedOut: 1 },
-      actions: [
-        { kind: "inspect-target", target: "approve~abc", itemKey: "approve~abc" },
-        { kind: "retry", target: "approve~abc", itemKey: "approve~abc" },
-        { kind: "fork" },
-      ],
-      items: [{
-        key: "approve~abc",
-        role: "instance",
-        path: ["approve"],
-        label: "approve",
-        kind: "signal",
-        status: "timed_out",
-        statusReason: "signal_timeout",
-        failure: { origin: "scheduler", code: "signal_timeout", message: "Approval timed out." },
-        signal: {
-          target: "approve~abc",
-          deadlineAt: "2026-07-11T00:01:00.000Z",
-          promptPreview: "Approve this release?",
-          schemaSummary: "{ ok: boolean }",
+    const updated = applyRunInspectionUpdate(initial, {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [{
+        kind: "current-patch",
+        patch: {
+          kind: "agent",
+          attemptId: "attempt_2",
+          attemptNo: 2,
+          changes: {
+            phase: "settling",
+            response: null,
+          },
         },
       }],
     });
 
-    const output = formatRunInspectionDocument(document, Date.parse("2026-07-11T00:01:01.000Z"));
-    expect(output).toContain("Error (scheduler signal_timeout): Approval timed out.");
-    expect(output).toContain("Attention:");
-    expect(output).not.toContain("Deadline:");
-    expect(output).not.toContain("Signal wait is closed.");
-    expect(output).toContain("Inspect: acpus runs inspect run_1 --target approve~abc");
-    expect(output).toContain("Retry: acpus runs retry run_1 --target approve~abc");
-    expect(output).toContain("Fork: acpus runs fork run_1");
-    expect(output).toContain("\n  Fork: acpus runs fork run_1\n");
-    expect(output).not.toContain("\n     Fork: acpus runs fork run_1\n");
-    expect(output).not.toContain("--target root");
-    expect(output).not.toContain("Expected payload:");
-    expect(output).not.toContain("acpus runs signal");
+    if (updated.kind !== "timeline" || updated.current?.kind !== "agent") {
+      throw new Error("expected Agent Timeline");
+    }
+    expect(updated.current).toMatchObject({
+      attemptId: initial.current.attemptId,
+      turn: initial.current.turn,
+      phase: "settling",
+      tools,
+    });
+    expect(updated.current).not.toHaveProperty("response");
   });
 
-  it("falls back to the root failure and root inspection when no item explains a failed run", () => {
-    const document = failedSnapshot({
-      failure: { origin: "scheduler", code: "root_failed", message: "Workflow output failed." },
-      actions: [],
-    });
+  it("formats only the fields carried by a sparse current patch", () => {
+    const initial = timeline();
+    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [{
+        kind: "current-patch",
+        patch: {
+          kind: "agent",
+          attemptId: "attempt_2",
+          attemptNo: 2,
+          changes: {
+            response: {
+              text: "new response bytes",
+              originalBytes: 18,
+              truncated: false,
+            },
+          },
+        },
+      }],
+    };
+    const updated = applyRunInspectionUpdate(initial, delta);
 
-    const output = formatRunInspectionDocument(document);
-    const attention = output.slice(output.indexOf("Attention:"));
+    const text = formatRunInspectionDelta(delta, updated);
 
-    expect(attention).toBe([
-      "Attention:",
-      "  ◆ run — Error (scheduler root_failed): Workflow output failed.",
-      "     Inspect: acpus runs inspect run_1 --target root",
+    expect(text).toContain("Current updated · attempt=2 · Response: new response bytes");
+    expect(text).not.toContain("Read running");
+    expect(text).not.toContain("updated · agent");
+  });
+
+  it("renders available-operation deltas as copyable commands", () => {
+    const document = targetSummary({ availableActions: [] });
+    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
+      schemaVersion: 2,
+      kind: "delta",
+      revision: revision("rev:2"),
+      changes: [{
+        kind: "available-actions",
+        availableActions: [
+          { kind: "retry", target: "review~abc" },
+          { kind: "fork", target: "review~abc" },
+        ],
+      }],
+    };
+
+    expect(formatRunInspectionDelta(delta, document)).toBe([
+      "Available operations:",
+      "  Retry: acpus runs retry run_1 --target review~abc",
+      "  Fork: acpus runs fork run_1 --target review~abc",
       "",
     ].join("\n"));
   });
 
-  it("keeps failed context rows from suppressing the actionable owning node", () => {
-    const document: RunInspectionSnapshot = {
-      ...snapshot(),
-      counts: { total: 1, failed: 1 },
-      items: [{
-        key: "node:batch",
-        role: "frame",
-        path: ["batch"],
-        label: "batch",
-        kind: "fanout",
-        status: "failed",
-        frameKey: "batch~abc",
-        failure: { origin: "scheduler", code: "group_failed", message: "One item failed." },
-      }, {
-        key: "scope:batch:0",
-        role: "context",
-        parentKey: "node:batch",
-        path: ["batch", "item[0]"],
-        label: "item[0]",
-        kind: "fanout_item",
-        status: "failed",
-        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
-      }],
-      actions: [{ kind: "inspect-target", target: "batch~abc", itemKey: "node:batch" }],
-    };
-    delete document.output;
-    delete document.omitted;
+  it("keeps checkpoints compact instead of replaying activity bodies", () => {
+    const text = formatRunInspectionCheckpoint(timeline());
 
-    const output = formatRunInspectionDocument(document);
-    expect(output).toContain("◆ batch — Error (scheduler group_failed): One item failed.");
-    expect(output).toContain("Inspect: acpus runs inspect run_1 --target batch~abc");
-    expect(output).not.toContain("◆ batch › item[0] —");
-  });
-
-  it("surfaces a failed scope frame as the deepest actionable root cause", () => {
-    const propagatedFailure = { origin: "scheduler" as const, code: "root_failed", message: "The root propagated a child failure." };
-    const document = failedSnapshot({
-      failure: propagatedFailure,
-      counts: { total: 1, failed: 1 },
-      items: [{
-        key: "node:batch",
-        role: "frame",
-        path: ["batch"],
-        label: "batch",
-        kind: "fanout",
-        status: "failed",
-        frameKey: "batch~abc",
-        failure: { origin: "scheduler", code: "group_failed", message: "An item failed." },
-      }, {
-        key: "scope:batch:0",
-        role: "context",
-        parentKey: "node:batch",
-        path: ["batch", "item[0]"],
-        label: "item[0]",
-        kind: "fanout_item",
-        status: "failed",
-        frameKey: "batch~abc:item:0",
-        failure: { origin: "scheduler", code: "expression_failed", message: "Item output failed." },
-        scope: { kind: "fanout_item", itemIndex: 0, empty: true },
-      }],
-      actions: [{ kind: "inspect-target", target: "batch~abc:item:0", itemKey: "scope:batch:0" }],
-    });
-
-    const output = formatRunInspectionDocument(document);
-    const attention = output.slice(output.indexOf("Attention:"));
-    expect(attention).toContain("◆ batch › item[0] — Error (scheduler expression_failed): Item output failed.");
-    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target batch~abc:item:0");
-    expect(attention).not.toContain("◆ batch — Error (scheduler group_failed)");
-    expect(attention).not.toContain("The root propagated a child failure.");
-    expect(attention).not.toContain("--target root");
-  });
-
-  it("keeps an independent root failure beside a tolerated failed descendant", () => {
-    const failure = { origin: "scheduler" as const, code: "expression_failed", message: "Item output failed." };
-    const document = failedSnapshot({
-      failure,
-      counts: { total: 2, completed: 1, failed: 1 },
-      items: [{
-        key: "node:batch",
-        role: "frame",
-        path: ["batch"],
-        label: "batch",
-        kind: "parallel",
-        status: "completed",
-        frameKey: "batch~abc",
-      }, {
-        key: "node:item",
-        role: "instance",
-        parentKey: "node:batch",
-        path: ["batch", "item"],
-        label: "item",
-        kind: "task",
-        status: "failed",
-        nodeKey: "item~abc",
-        failure,
-      }],
-      actions: [{ kind: "inspect-target", target: "item~abc", itemKey: "node:item" }],
-    });
-
-    const output = formatRunInspectionDocument(document);
-    const attention = output.slice(output.indexOf("Attention:"));
-    expect(attention.match(/Error \(scheduler expression_failed\): Item output failed\./g)).toHaveLength(2);
-    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target root");
-    expect(attention).toContain("Inspect: acpus runs inspect run_1 --target item~abc");
-  });
-
-  it("does not pair a structured failure with an unrelated failed top-level item", () => {
-    const document = failedSnapshot({
-      failure: { origin: "scheduler", code: "root_failed", message: "Root output failed." },
-      counts: { total: 3, completed: 1, failed: 2 },
-      items: [{
-        key: "node:tolerant",
-        role: "frame",
-        path: ["tolerant"],
-        label: "tolerant",
-        kind: "parallel",
-        status: "completed",
-        frameKey: "tolerant~abc",
-      }, {
-        key: "node:tolerated-child",
-        role: "instance",
-        parentKey: "node:tolerant",
-        path: ["tolerant", "child"],
-        label: "child",
-        kind: "task",
-        status: "failed",
-        nodeKey: "child~abc",
-        failure: { origin: "task", code: "task_failed", message: "Tolerated child failed." },
-      }, {
-        key: "node:unexplained",
-        role: "instance",
-        path: ["unexplained"],
-        label: "unexplained",
-        kind: "task",
-        status: "failed",
-        nodeKey: "unexplained~abc",
-      }],
-      actions: [],
-    });
-
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("◆ run — Error (scheduler root_failed): Root output failed.");
-    expect(output).toContain("Inspect: acpus runs inspect run_1 --target root");
-  });
-
-  it("does not propagate a descendant failure through a completed intermediate composite", () => {
-    const document = failedSnapshot({
-      failure: { origin: "scheduler", code: "root_failed", message: "Outer output failed." },
-      counts: { total: 3, completed: 1, failed: 2 },
-      items: [{
-        key: "node:outer",
-        role: "frame",
-        path: ["outer"],
-        label: "outer",
-        kind: "parallel",
-        status: "failed",
-        frameKey: "outer~abc",
-      }, {
-        key: "node:tolerant",
-        role: "frame",
-        parentKey: "node:outer",
-        path: ["outer", "tolerant"],
-        label: "tolerant",
-        kind: "parallel",
-        status: "completed",
-        frameKey: "tolerant~abc",
-      }, {
-        key: "node:tolerated-child",
-        role: "instance",
-        parentKey: "node:tolerant",
-        path: ["outer", "tolerant", "child"],
-        label: "child",
-        kind: "task",
-        status: "failed",
-        nodeKey: "child~abc",
-        failure: { origin: "task", code: "task_failed", message: "Tolerated child failed." },
-      }],
-      actions: [],
-    });
-
-    const output = formatRunInspectionDocument(document);
-
-    expect(output).toContain("◆ run — Error (scheduler root_failed): Outer output failed.");
-    expect(output).toContain("Inspect: acpus runs inspect run_1 --target root");
-  });
-
-  it("excludes run-wide failure fallbacks from target documents and changes", () => {
-    const base = snapshot();
-    const run = failedSnapshot({
-      failure: { origin: "scheduler" as const, code: "root_failed", message: "Workflow output failed." },
-    }).run;
-    const document: RunInspectionTargetDocument = {
-      schemaVersion: 1,
-      kind: "target",
-      cursor: base.cursor,
-      run,
-      target: { kind: "static-node", id: "review" },
-      summary: {
-        targetKind: "static-node",
-        targetId: "review",
-        runStatus: "failed",
-        runStartedAt: run.createdAt,
-        nodeId: "review",
-        nodeStatus: "completed",
-        artifacts: [],
-      },
-      items: [],
-      instances: [],
-      frames: [],
-      attempts: [],
-      signalWaits: [],
-      executionMetadata: [],
-      progress: [],
-      artifacts: [],
-    };
-    const rootChange = {
-      sequence: 9,
-      at: "2026-07-11T00:00:02.000Z",
-      entity: { kind: "run" as const, id: "run_1" },
-      subject: "run_1",
-      action: "failed" as const,
-      status: "failed" as const,
-      message: "Workflow output failed.",
-    };
-
-    const output = formatRunInspectionDocument(document);
-    expect(output).not.toContain("Attention:");
-    expect(output).not.toContain("--target root");
-    expect(formatRunInspectionChanges([rootChange], { kind: "target", run, items: [] })).toBe("");
-  });
-
-  it("bounds failure previews and strips terminal control sequences from text output", () => {
-    const document = snapshot();
-    delete document.output;
-    delete document.omitted;
-    const message = `\u001b[31m${"x".repeat(300)}\u001b[0m\nnext`;
-    document.items = [{
-      key: "node:work",
-      role: "instance",
-      path: ["work"],
-      label: "work",
-      kind: "task",
-      status: "failed",
-      failure: { origin: "task", code: "task_failed", message },
-    }];
-    document.actions = [{ kind: "inspect-target", target: "work~abc", itemKey: "node:work" }];
-
-    const output = formatRunInspectionDocument(document);
-    const detail = output.split("\n").find(line => line.includes(" — Error (task task_failed):"))?.split(" — ")[1];
-    expect(output).not.toContain("\u001b");
-    expect(output).not.toContain("[31m");
-    expect(detail).toBeDefined();
-    expect(Array.from(detail!).length).toBeLessThanOrEqual(240);
-
-    const transcript = formatRunInspectionChanges([{
-      sequence: 9,
-      at: "2026-07-11T00:00:02.000Z",
-      entity: { kind: "node", id: "work~abc", nodeId: "work" },
-      subject: "work",
-      itemKey: "node:work",
-      action: "failed",
-      status: "failed",
-      message,
-    }], { kind: "snapshot", run: document.run, items: document.items, actions: document.actions });
-    expect(transcript).not.toContain("\u001b");
-    expect(transcript).not.toContain("[31m");
-  });
-
-  it("renders compact terminal hook history", () => {
-    const document = snapshot();
-    document.hooks = [{
-      runId: "run_1",
-      eventSequence: 42,
-      triggerOrder: 1,
-      event: "run.completed",
-      source: "project",
-      sourcePath: "/workspace/.acpus/hooks.json",
-      handlerId: "notify",
-      definitionHash: "hash",
-      status: "completed",
-      exitCode: 0,
-      durationMs: 120,
-      triggeredAt: "2026-07-11T00:00:02.000Z",
-    }];
-
-    const output = formatRunInspectionDocument(document);
-    expect(output).toContain("Hooks:");
-    expect(output).toContain("completed  notify  run.completed  #42  120ms  exit=0");
-    expect(output.indexOf("Output:")).toBeLessThan(output.indexOf("Hooks:"));
+    expect(text).toBe("· checkpoint  running  review\n");
+    expect(text).not.toContain("Recent:");
+    expect(text).not.toContain("report.md");
   });
 });
 
-function failedSnapshot(options: {
-  failure: NonNullable<RunInspectionSnapshot["run"]["failure"]>;
-  counts?: RunInspectionSnapshot["counts"];
-  items?: RunInspectionSnapshot["items"];
-  actions?: RunInspectionSnapshot["actions"];
-}): RunInspectionSnapshot {
-  const { output: _output, omitted: _omitted, ...document } = snapshot();
+function targetSummary(
+  overrides: Partial<RunInspectionTargetSummaryDocument> = {},
+): RunInspectionTargetSummaryDocument {
   return {
-    ...document,
+    schemaVersion: 2,
+    kind: "target",
+    revision: revision("rev:1"),
     run: {
-      ...document.run,
-      status: "failed",
-      execution: { state: "terminal", lastStatus: "failed", reason: "terminal" },
-      failure: options.failure,
+      id: "run_1",
+      status: "running",
+      updatedAt: "2026-07-25T00:00:02.000Z",
     },
-    ...(options.counts ? { counts: options.counts } : {}),
-    ...(options.items ? { items: options.items } : {}),
-    ...(options.actions ? { actions: options.actions } : {}),
+    subject: {
+      targetKind: "dynamic-node",
+      id: "review~abc",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+      nodeKey: "review~abc",
+      attemptId: "attempt_1",
+      attemptNo: 1,
+    },
+    state: {
+      status: "running",
+      startedAt: "2026-07-25T00:00:00.000Z",
+      durationMs: 2_000,
+    },
+    pulse: {
+      phase: "tool",
+      headline: "Bash: rg src",
+      turn: 1,
+      updatedAt: "2026-07-25T00:00:02.000Z",
+    },
+    attention: {
+      code: "awaiting_input",
+      summary: "Operator input required",
+    },
+    availableActions: [
+      { kind: "inspect-timeline", target: "review~abc" },
+      { kind: "steer", target: "attempt_1" },
+    ],
+    ...overrides,
   };
 }
 
-function snapshot(): RunInspectionSnapshot {
+function overview(): RunInspectionSnapshot {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "snapshot",
-    cursor: { eventSequence: 7, progressVersion: 1 },
+    revision: revision("rev:1"),
     run: {
       id: "run_1",
-      name: "nested",
-      status: "completed",
-      workflowEntry: "workflow.ts",
-      createdAt: "2026-07-11T00:00:00.000Z",
-      updatedAt: "2026-07-11T00:00:02.000Z",
-      durationMs: 2_000,
-      execution: { state: "terminal", lastStatus: "completed", reason: "terminal" },
+      name: "review",
+      status: "running",
+      workflowEntry: "review.workflow.ts",
+      createdAt: "2026-07-25T00:00:00.000Z",
+      updatedAt: "2026-07-25T00:00:03.000Z",
+      execution: { state: "active", lastStatus: "running" },
     },
-    counts: { total: 27, completed: 27 },
+    counts: { total: 1, running: 1 },
     items: [{
-      key: "review_loop",
-      role: "static",
-      path: ["review_loop"],
-      label: "review_loop",
-      kind: "loop",
-      status: "completed",
-      nodeId: "review_loop",
-      composite: { strategy: "loop", currentIteration: 24, counts: { total: 25, completed: 25 } },
-    }, {
-      key: "review_loop:0",
-      role: "context",
-      parentKey: "review_loop",
-      path: ["review_loop", "round:0"],
-      label: "round 1",
-      kind: "loop-iteration",
-      status: "completed",
-      scope: { kind: "loop_iteration", iteration: 0, round: 1, empty: false },
-    }, {
       key: "review~abc",
       role: "instance",
-      parentKey: "review_loop:0",
-      path: ["review_loop", "round:0", "review"],
+      path: ["review"],
       label: "review",
       kind: "agent",
-      status: "completed",
+      status: "running",
       nodeId: "review",
       nodeKey: "review~abc",
-      startedAt: "2026-07-11T00:00:00.000Z",
-      finishedAt: "2026-07-11T00:00:01.000Z",
+      attemptId: "attempt_1",
+      attemptNo: 1,
       agent: {
         key: "observer",
-        backend: { kind: "use", name: "claude" },
-        availability: { context: "available", tokenUsage: "available" },
-        model: "codex",
-        turnCount: 2,
-        context: { used: 12_500, size: 200_000 },
-        tokenUsage: { inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 },
-        tools: {
-          totalCallCount: 4,
-          recent: [
-            { command: "Read", status: "completed" },
-            { command: "Bash: rg", status: "completed" },
-            { command: "Grep", status: "running" },
-            { command: "Write generated release report", status: "failed" },
-          ],
+        turn: 3,
+        activeTool: { command: "Bash: rg src", status: "running" },
+      },
+    }],
+    availableActions: [],
+  };
+}
+
+function timeline(): RunInspectionTimelineDocument {
+  return {
+    schemaVersion: 2,
+    kind: "timeline",
+    revision: revision("rev:1"),
+    run: {
+      id: "run_1",
+      status: "running",
+      updatedAt: "2026-07-25T00:00:03.000Z",
+    },
+    subject: {
+      targetKind: "dynamic-node",
+      id: "review~abc",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+      nodeKey: "review~abc",
+      attemptId: "attempt_2",
+      attemptNo: 2,
+    },
+    state: {
+      status: "running",
+      startedAt: "2026-07-25T00:00:00.000Z",
+    },
+    current: {
+      kind: "agent",
+      attemptId: "attempt_2",
+      attemptNo: 2,
+      turn: 2,
+      turnKind: "steer",
+      phase: "tool",
+      updatedAt: "2026-07-25T00:00:03.000Z",
+      response: {
+        text: "checking the requested sources",
+        originalBytes: 30,
+        truncated: false,
+      },
+      intent: {
+        kind: "plan",
+        excerpt: {
+          text: "verify citations then revise",
+          originalBytes: 28,
+          truncated: false,
         },
       },
-    }, {
-      key: "fold:old",
-      role: "fold",
-      parentKey: "review_loop",
-      path: ["review_loop", "fold:old"],
-      label: "completed rounds",
-      kind: "fold",
-      status: "completed",
-      fold: { count: 24, counts: { total: 24, completed: 24 } },
-    }],
-    actions: [{ kind: "inspect-all", omitted: 24 }],
-    omitted: { reason: "context-limit", limit: 20, dynamicContexts: 24, counts: { total: 24, completed: 24 } },
-    output: Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`field_${index}`, index])),
+      tools: {
+        active: [{
+          toolCallId: "tool_1",
+          name: "Read",
+          status: "running",
+          input: { text: "report.md", originalBytes: 9, truncated: false },
+          updatedAt: "2026-07-25T00:00:03.000Z",
+        }],
+        omittedActive: 0,
+      },
+    },
+    recent: {
+      entries: [
+        {
+          id: "activity:1",
+          kind: "activity",
+          at: "2026-07-25T00:00:01.000Z",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          turn: 1,
+          channel: "response",
+          summary: { text: "draft response", originalBytes: 14, truncated: false },
+        },
+        {
+          id: "control:2",
+          kind: "control",
+          at: "2026-07-25T00:00:02.000Z",
+          action: "steered",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          responseAtFenceBytes: 240,
+        },
+        {
+          id: "activity:late",
+          kind: "activity",
+          at: "2026-07-25T00:00:02.500Z",
+          attemptId: "attempt_1",
+          attemptNo: 1,
+          postFence: true,
+          turn: 1,
+          channel: "response",
+          summary: { text: "late discarded output", originalBytes: 21, truncated: false },
+        },
+      ],
+      returned: 3,
+      omittedBefore: 8,
+      hasOlder: true,
+      olderCursor: "page:older",
+      retentionOmittedBefore: 7,
+    },
   };
+}
+
+function revision(value: string): RunInspectionRevision {
+  return value as RunInspectionRevision;
 }

@@ -148,7 +148,25 @@ acpus runs inspect <run-id>
 ```
 
 `workflow check` typechecks, compiles, and validates without admitting a run.
-`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` admits and executes a durable run; `runs inspect` reads its structure, status, attempts, artifacts, and results.
+`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` admits and executes a durable run; `runs inspect` starts with a compact durable status view.
+
+Narrow inspection only as far as the next decision requires:
+
+```sh
+# One target: low-token decision summary
+acpus runs inspect <run-id> --target <node-or-attempt>
+
+# Current activity plus recent semantic history
+acpus runs inspect <run-id> --target <node-or-attempt> --timeline
+
+# An exact Agent attempt also shows its Private Turn Evidence metadata
+acpus runs inspect <run-id> --target <attempt-id>
+```
+
+The attempt capsule reports boundary byte/digest metadata, provider outcome,
+scheduler disposition, and private Evidence/Trace state without printing their
+bodies. Timeline is bounded operational history; full normalized provider
+streaming is retained only when the Agent enables `trace: true`.
 
 ### Common Run Controls
 
@@ -162,7 +180,6 @@ acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-Steer fences one running Agent attempt and queues a correction in the same session. Retry targets a failed part of the current run. Fork creates a new run and can reuse completed work only within Acpus compatibility and dependency boundaries; it is not an unconditional cache.
 
 ## Configuring Agents
 
