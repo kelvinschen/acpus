@@ -1,21 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { commandForControl, confirmationForControl, controlStateForRun, nodeInspectionRefetchInterval, retryCommandTarget, retryTargetsForRun } from "../src/client/ui/App.js";
-import type { RunDetails } from "../src/client/api.js";
+import {
+  agentExecutionRefetchInterval,
+  commandForControl,
+  confirmationForControl,
+  controlStateForRun,
+  nodeInspectionRefetchInterval,
+  retryCommandTarget,
+  retryTargetsForControls,
+  toolCallEmptyState,
+  toolCallHistorySummary,
+} from "../src/client/ui/App.js";
 
 describe("runtime run controls", () => {
   it("shows pause and cancel for active runs", () => {
-    expect(controlStateForRun("running", false).map(control => control.id)).toEqual(["pause", "cancel"]);
-    expect(controlStateForRun("running", false).every(control => !control.disabled)).toBe(true);
+    expect(controlStateForRun("running", false, [], true).map(control => control.id)).toEqual(["pause", "cancel"]);
+    expect(controlStateForRun("running", false, [], true).every(control => !control.disabled)).toBe(true);
   });
 
   it("shows resume and cancel for paused runs", () => {
-    expect(controlStateForRun("paused", false).map(control => control.id)).toEqual(["resume", "cancel"]);
+    expect(controlStateForRun("paused", false, [], true).map(control => control.id)).toEqual(["resume", "cancel"]);
+  });
+
+  it("disables run cancel when Runtime reports no useful cancel action", () => {
+    expect(controlStateForRun("running", false, [], false)).toMatchObject([
+      { id: "pause", disabled: false },
+      { id: "cancel", disabled: true },
+    ]);
   });
 
   it("shows target-first retry only for failed runs", () => {
     const controls = controlStateForRun("failed", false, [{ value: "node_a~123", label: "node: a", kind: "node" }]);
     expect(controls.map(control => control.id)).toEqual(["retry"]);
     expect(controls[0]!.disabled).toBe(false);
+    expect(controlStateForRun(
+      "running",
+      false,
+      [{ value: "node_a~123", label: "node: a", kind: "node" }],
+      true,
+    ).map(control => control.id)).toEqual(["pause", "cancel"]);
   });
 
   it("disables retry when no failed target exists", () => {
@@ -39,29 +61,47 @@ describe("runtime run controls", () => {
     expect(nodeInspectionRefetchInterval("canceled")).toBe(false);
   });
 
-  it("extracts failed retry targets from frames, node instances, and group members", () => {
-    const targets = retryTargetsForRun({
-      dynamic: {
-        version: 1,
-        frames: [
-          { frameKey: "z_frame", nodeId: "route", frameKind: "node", status: "failed" },
-          { frameKey: "ignored_scope", nodeId: "scope", frameKind: "scope", status: "failed" },
-        ],
-        nodeInstances: [
-          { nodeKey: "a_node", nodeId: "score_gate", status: "failed" },
-          { nodeKey: "done_node", nodeId: "done", status: "completed" },
-        ],
-        groupMembers: [
-          { memberKey: "m_member", memberKind: "branch", branchId: "cache", status: "failed" },
-          { memberKey: "a_node", memberKind: "branch", branchId: "duplicate", status: "failed" },
-        ],
-      },
-    } satisfies Pick<RunDetails, "dynamic">);
+  it("refreshes an active Execution tab only while its scheduler status is active", () => {
+    for (const status of ["starting", "ready", "running", "awaiting"]) {
+      expect(agentExecutionRefetchInterval(true, status)).toBe(2_500);
+    }
+    for (const status of [undefined, "not_started", "completed", "failed", "timed_out", "cancelled"]) {
+      expect(agentExecutionRefetchInterval(true, status)).toBe(false);
+    }
+    expect(agentExecutionRefetchInterval(false, "running")).toBe(false);
+  });
+
+  it("does not claim there were no tool calls when retained details are incomplete", () => {
+    expect(toolCallEmptyState(true)).toEqual({
+      title: "Recent tool details incomplete",
+      detail: "No recent tool-call details were retained; earlier tool calls may be unavailable.",
+    });
+    expect(toolCallHistorySummary(2, 5, true)).toBe("Last 2 of 5 · retained details incomplete");
+    expect(toolCallHistorySummary(2, undefined, true)).toBe("2 recent · retained details incomplete");
+    expect(toolCallEmptyState(false).title).toBe("No tool calls");
+  });
+
+  it("adds Web labels without reordering Runtime-approved retry targets", () => {
+    const targets = retryTargetsForControls([
+      { target: "z_frame", nodeId: "route", kind: "frame" },
+      { target: "a_node", nodeId: "score_gate", kind: "node" },
+      { target: "key_only", kind: "node" },
+    ]);
 
     expect(targets).toEqual([
-      { value: "a_node", label: "node: score_gate", kind: "node" },
-      { value: "m_member", label: "member: cache", kind: "member" },
       { value: "z_frame", label: "frame: route", kind: "frame" },
+      { value: "a_node", label: "node: score_gate", kind: "node" },
+      { value: "key_only", label: "node: key_only", kind: "node" },
+    ]);
+  });
+
+  it("disambiguates repeated authored labels with exact Runtime targets", () => {
+    expect(retryTargetsForControls([
+      { target: "task~item-0", nodeId: "task", kind: "node" },
+      { target: "task~item-1", nodeId: "task", kind: "node" },
+    ])).toEqual([
+      { value: "task~item-0", label: "node: task (task~item-0)", kind: "node" },
+      { value: "task~item-1", label: "node: task (task~item-1)", kind: "node" },
     ]);
   });
 
@@ -80,7 +120,10 @@ describe("runtime run controls", () => {
     expect(commandForControl("cancel", undefined, "node_a")).toEqual({ type: "cancel", target: "node_a" });
     expect(commandForControl("cancel", undefined, undefined)).toEqual({ type: "cancel" });
     expect(commandForControl("cancel", undefined, null)).toBeUndefined();
+    expect(commandForControl("cancel", undefined, "")).toBeUndefined();
+    expect(commandForControl("cancel", undefined, "   ")).toBeUndefined();
     expect(commandForControl("retry", "node_a", undefined)).toEqual({ type: "retry", target: "node_a" });
+    expect(commandForControl("retry", "", undefined)).toBeUndefined();
     expect(commandForControl("retry", undefined, undefined)).toBeUndefined();
   });
 

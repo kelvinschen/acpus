@@ -11,7 +11,7 @@ const mockGetRunInspection = vi.fn();
 const mockReadArtifact = vi.fn();
 const mockRequestDaemonControl = vi.fn();
 const mockEnsureDaemonRunning = vi.fn();
-const mockVisualizeWorkflowSource = vi.fn();
+const mockTryVisualizeWorkflowSource = vi.fn();
 
 vi.mock("@acpus/runtime", () => ({
   getRuntimeHealth: (...args: unknown[]) => mockGetRuntimeHealth(...args),
@@ -25,7 +25,7 @@ vi.mock("@acpus/runtime", () => ({
 
 vi.mock("../src/server/workflows.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/server/workflows.js")>(),
-  visualizeWorkflowSource: (...args: unknown[]) => mockVisualizeWorkflowSource(...args),
+  tryVisualizeWorkflowSource: (...args: unknown[]) => mockTryVisualizeWorkflowSource(...args),
 }));
 
 import { createWebApp } from "../src/server/app.js";
@@ -38,6 +38,7 @@ describe("web API contract", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTryVisualizeWorkflowSource.mockReset();
   });
 
   afterEach(async () => {
@@ -147,6 +148,16 @@ describe("web API contract", () => {
           nodes: [{ nodeId: "step_1", kind: "task", path: ["step_1"], instances: [], frames: [], attempts: [], signalWaits: [], status: "completed" }],
           groups: [],
         },
+        controls: {
+          canCancelRun: true,
+          runtimeOnly: "not-public",
+          retryTargets: [{
+            target: "step_1#node",
+            kind: "node",
+            nodeId: "step_1",
+            runtimeOnly: "not-public",
+          }],
+        },
       });
       const res = await app.request("/api/runs/run_1/runtime-snapshot");
       expect(res.status).toBe(200);
@@ -158,14 +169,13 @@ describe("web API contract", () => {
         input: { release: true },
         createdAt: "2026-07-01T00:00:00.000Z",
         updatedAt: "2026-07-01T00:00:01.000Z",
-        dynamic: {
-          version: 7,
-          frames: [{ frameKey: "step_1#frame", nodeId: "step_1", frameKind: "node", status: "failed" }],
-          nodeInstances: [{ nodeKey: "step_1#node", nodeId: "step_1", status: "failed" }],
-          groupMembers: [{ memberKey: "member", memberKind: "branch", branchId: "main", status: "failed" }],
-        },
+        runtimeVersion: 7,
       });
       expect(body.graph).toBeDefined();
+      expect(body.controls).toEqual({
+        canCancelRun: true,
+        retryTargets: [{ target: "step_1#node", kind: "node", nodeId: "step_1" }],
+      });
       expect(mockGetRunVisualizationSnapshot).toHaveBeenCalledWith("/tmp/acpus-web-test", "run_1");
     });
 
@@ -181,28 +191,94 @@ describe("web API contract", () => {
   });
 
   describe("GET /api/runs/:id/nodes/:target", () => {
-    it("returns the Agent's latest observation time from progress", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
-        progress: [{
-          nodeKey: "review~abc",
-          nodeId: "review",
-          attemptId: "attempt_1",
-          attemptNo: 1,
-          kind: "agent",
-          status: "running",
-          updatedAt: "2026-07-01T00:00:02.000Z",
-        }],
-      })));
+    it("requests the Runtime execution projection with context and performs no artifact reads", async () => {
+      mockGetRunInspection.mockResolvedValue(inspectionOk(executionInspection()));
+      const selectorContext = [{ nodeId: "items", kind: "fanout", itemIndex: 1 }];
+      const context = Buffer.from(JSON.stringify(selectorContext)).toString("base64url");
+
+      const res = await app.request(`/api/runs/run_1/nodes/review~abc/execution?context=${context}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as JsonBody;
+      expect(body).toEqual({
+        ok: true,
+        execution: {
+          available: true,
+          summary: {
+            status: "running",
+            sessionName: "review-session",
+            turnCount: 2,
+            message: "working",
+          },
+          lastObservedAt: "2026-07-01T00:00:02.000Z",
+          contextWindow: { used: 2_500, size: 10_000, percent: 25 },
+          tokenUsage: {
+            source: "usage_update",
+            inputTokens: 100,
+            outputTokens: 25,
+            totalTokens: 125,
+          },
+          output: { tail: "partial response", totalBytes: 16, truncated: false },
+          toolCallCount: 4,
+          lastToolCalls: [{
+            turn: 2,
+            toolCallId: "tool_1",
+            toolName: "read_file",
+            status: "running",
+            durationMs: 20,
+            inputPreview: "README.md",
+          }],
+          recentToolsIncomplete: true,
+        },
+      });
+      expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
+        runId: "run_1",
+        mode: "execution",
+        target: "review~abc",
+        context: selectorContext,
+      });
+      expect(mockReadArtifact).not.toHaveBeenCalled();
+    });
+
+    it("maps Runtime execution unavailability to Web-owned copy", async () => {
+      mockGetRunInspection.mockResolvedValue(inspectionOk({
+        ...executionInspection(),
+        available: false,
+        reason: "not-started",
+        summary: { status: "not_started" },
+        lastToolCalls: [],
+        recentToolsIncomplete: false,
+      }));
 
       const res = await app.request("/api/runs/run_1/nodes/review~abc/execution");
 
       expect(res.status).toBe(200);
-      const body = await res.json() as JsonBody;
-      expect(body.ok).toBe(true);
-      expect(body.execution).toMatchObject({
-        available: true,
+      expect((await res.json() as JsonBody).execution).toMatchObject({
+        available: false,
+        reason: "No agent execution metadata exists for the selected scope.",
         lastObservedAt: "2026-07-01T00:00:02.000Z",
-        summary: { status: "running" },
+        summary: { status: "not_started" },
+      });
+    });
+
+    it("returns a conflict for an ambiguous execution target", async () => {
+      mockGetRunInspection.mockResolvedValue(inspectionErr({
+        type: "target-ambiguous",
+        runId: "run_1",
+        target: "review",
+        candidateKeys: ["review~0", "review~1"],
+        message: "Run target 'review' matches multiple occurrences.",
+      }));
+
+      const res = await app.request("/api/runs/run_1/nodes/review/execution");
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        ok: false,
+        error: {
+          code: "target_ambiguous",
+          message: "Run target 'review' matches multiple occurrences.",
+        },
       });
     });
 
@@ -214,13 +290,17 @@ describe("web API contract", () => {
 
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
-      expect(body.ok).toBe(true);
-      expect(body.inspection.target).toEqual({ kind: "dynamic-node", id: "review~abc" });
-      expect(body.inspection.summary.agent).toEqual({
-        key: "reviewer",
-        backend: { kind: "use", name: "claude" },
-        turnCount: 1,
-        tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
+      expect(body).toEqual({
+        ok: true,
+        inspection: {
+          nodeId: "review",
+          nodeKey: "review~abc",
+          cancelTarget: "review~abc",
+          staticKind: "agent",
+          runStartedAt: "2026-07-01T00:00:00.000Z",
+          agent: { key: "reviewer" },
+          artifacts: [],
+        },
       });
       expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
         runId: "run_1",
@@ -255,7 +335,16 @@ describe("web API contract", () => {
       const res = await artifactApp.request("/api/runs/run_1/nodes/review~abc");
 
       expect(res.status).toBe(200);
-      expect((await res.json() as JsonBody).inspection.summary.prompt).toMatchObject({ text: prompt, field: "prompt" });
+      const body = await res.json() as JsonBody;
+      expect(body.inspection.prompt).toEqual({
+        kind: "artifact",
+        text: prompt,
+        artifactId: artifact.id,
+        mediaType: artifact.mediaType,
+      });
+      expect(body.inspection.prompt.text.endsWith("PROMPT_TAIL")).toBe(true);
+      expect(mockReadArtifact).toHaveBeenCalledOnce();
+      expect(mockReadArtifact).toHaveBeenCalledWith(cwd, "run_1", artifact.id);
     });
 
     it("rejects fanout inspection context without an item index", async () => {
@@ -427,6 +516,23 @@ describe("web API contract", () => {
       expect((await res.json() as JsonBody).error.code).toBe("invalid_command");
     });
 
+    it.each([
+      { type: "retry", target: "   " },
+      { type: "cancel", target: "   " },
+      { type: "signal", target: "   ", payload: {} },
+    ])("rejects a blank $type target before daemon startup", async command => {
+      const res = await app.request("/api/runs/run_1/controls", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(command),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json() as JsonBody).error.code).toBe("invalid_command");
+      expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
+      expect(mockRequestDaemonControl).not.toHaveBeenCalled();
+    });
+
     it("rejects fields outside the selected control shape", async () => {
       const res = await app.request("/api/runs/run_1/controls", {
         method: "POST",
@@ -543,6 +649,8 @@ describe("web API contract", () => {
       const cwd = await temporaryDirectory("acpus-web-catalog-");
       await mkdir(join(cwd, ".acpus", "workflows", "release"), { recursive: true });
       await writeFile(join(cwd, ".acpus", "workflows", "release", "workflow.ts"), "throw new Error('must not import');\n");
+      await mkdir(join(cwd, ".acpus", "workflows", "bad-name!"), { recursive: true });
+      await writeFile(join(cwd, ".acpus", "workflows", "bad-name!", "workflow.ts"), "export default {};\n");
       const catalogApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
       const res = await catalogApp.request("/api/workflows/catalog");
       expect(res.status).toBe(200);
@@ -579,12 +687,13 @@ describe("web API contract", () => {
       const res = await filesApp.request("/api/workflows/files");
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
-      expect(body.files.entries).toEqual(expect.arrayContaining([
-        { name: "nested", path: "nested", kind: "directory" },
-        { name: "workflow.ts", path: "workflow.ts", kind: "workflow" },
-      ]));
-      expect(body.files.dir).toBe("");
-      expect(body.files.entries.some((entry: JsonBody) => entry.name === "README.md")).toBe(false);
+      expect(body.files).toEqual({
+        dir: "",
+        entries: [
+          { name: "nested", path: "nested", kind: "directory" },
+          { name: "workflow.ts", path: "workflow.ts", kind: "workflow" },
+        ],
+      });
     });
 
     it("rejects file browser path escapes", async () => {
@@ -631,7 +740,7 @@ describe("web API contract", () => {
         },
         sourceGraphDigest: "sha256:source",
       };
-      mockVisualizeWorkflowSource.mockResolvedValue(result);
+      mockTryVisualizeWorkflowSource.mockReturnValue(okAsync(result));
       const cwd = "/virtual/acpus-web-visualize";
       const visualizeApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
       const source = { kind: "file", path: "release.workflow.ts" };
@@ -643,9 +752,40 @@ describe("web API contract", () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, result });
-      expect(mockVisualizeWorkflowSource).toHaveBeenCalledOnce();
-      expect(mockVisualizeWorkflowSource).toHaveBeenCalledWith(cwd, source);
+      expect(mockTryVisualizeWorkflowSource).toHaveBeenCalledOnce();
+      expect(mockTryVisualizeWorkflowSource).toHaveBeenCalledWith(cwd, source);
     });
+
+    it.each(["source", "check", "compile", "lock", "validate"] as const)(
+      "preserves a %s visualization failure at the HTTP adapter",
+      async phase => {
+        mockTryVisualizeWorkflowSource.mockReturnValue(errAsync({
+          type: "test-preparation-failure",
+          phase,
+          message: `${phase} preparation failed`,
+        }));
+        const visualizeApp = createWebApp({
+          cwd: "/virtual/acpus-web-visualize",
+          ensureDaemonRunning: mockEnsureDaemonRunning,
+        });
+
+        const res = await visualizeApp.request("/api/workflows/visualize", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ source: { kind: "file", path: "release.workflow.ts" } }),
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
+          ok: true,
+          result: {
+            status: "failed",
+            phase,
+            message: `${phase} preparation failed`,
+          },
+        });
+      },
+    );
 
     it("rejects invalid visualization bodies", async () => {
       const res = await app.request("/api/workflows/visualize", {
@@ -703,7 +843,77 @@ function inspectionErr(error: JsonBody) {
   };
 }
 
-function targetInspection(overrides: { progress?: JsonBody[]; prompt?: JsonBody; artifacts?: JsonBody[] } = {}): JsonBody {
+function executionInspection(): JsonBody {
+  return {
+    schemaVersion: 2,
+    kind: "execution",
+    revision: "inspection-v2:execution",
+    run: {
+      id: "run_1",
+      status: "running",
+      updatedAt: "2026-07-01T00:00:02.000Z",
+      runtimeOnly: "private",
+    },
+    subject: {
+      targetKind: "dynamic-node",
+      id: "review~abc",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+      nodeKey: "review~abc",
+      runtimeOnly: "private",
+    },
+    available: true,
+    summary: {
+      status: "running",
+      sessionName: "review-session",
+      turnCount: 2,
+      message: "working",
+      runtimeOnly: "private",
+    },
+    lastObservedAt: "2026-07-01T00:00:02.000Z",
+    contextWindow: {
+      used: 2_500,
+      size: 10_000,
+      percent: 25,
+      runtimeOnly: "private",
+    },
+    tokenUsage: {
+      source: "usage_update",
+      inputTokens: 100,
+      outputTokens: 25,
+      totalTokens: 125,
+      runtimeOnly: "private",
+    },
+    output: {
+      tail: "partial response",
+      totalBytes: 16,
+      truncated: false,
+      runtimeOnly: "private",
+    },
+    toolCallCount: 4,
+    lastToolCalls: [{
+      turn: 2,
+      toolCallId: "tool_1",
+      toolName: "read_file",
+      status: "running",
+      durationMs: 20,
+      inputPreview: "README.md",
+      runtimeOnly: "private",
+    }],
+    recentToolsIncomplete: true,
+    runtimeOnly: "private",
+  };
+}
+
+function targetInspection(overrides: {
+  progress?: JsonBody[];
+  prompt?: JsonBody;
+  artifacts?: JsonBody[];
+  summary?: JsonBody;
+  signalWaits?: JsonBody[];
+  availableControls?: JsonBody[];
+} = {}): JsonBody {
   return {
     schemaVersion: 2,
     kind: "details",
@@ -735,6 +945,7 @@ function targetInspection(overrides: { progress?: JsonBody[]; prompt?: JsonBody;
         turnCount: 1,
         tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
       },
+      ...overrides.summary,
       ...(overrides.prompt ? { prompt: overrides.prompt } : {}),
       artifacts: overrides.artifacts ?? [],
     },
@@ -755,9 +966,10 @@ function targetInspection(overrides: { progress?: JsonBody[]; prompt?: JsonBody;
       status: "started",
       startedAt: "2026-07-01T00:00:00.000Z",
     }],
-    signalWaits: [],
+    signalWaits: overrides.signalWaits ?? [],
     executionMetadata: [],
     progress: overrides.progress ?? [],
     artifacts: overrides.artifacts ?? [],
+    availableControls: overrides.availableControls ?? [{ type: "cancel", target: "review~abc" }],
   };
 }

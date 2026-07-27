@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok } from "neverthrow";
-import { advanceRun, type NodeAttemptContext, type NodeExecutor } from "../src/scheduler/advance.js";
+import { advanceRun, type NodeAttemptContext, type NodeExecutor, type SchedulerExecutionStore } from "../src/scheduler/advance.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStorePort, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath } from "../src/scheduler/types.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
@@ -1155,7 +1155,7 @@ describe("scheduler advance loop", () => {
   });
 });
 
-class MemorySchedulerStore implements SchedulerStorePort {
+class MemorySchedulerStore implements SchedulerExecutionStore {
   claimable = true;
   heartbeatCount = 0;
   failHeartbeatAfter: number | undefined;
@@ -1249,18 +1249,6 @@ class MemorySchedulerStore implements SchedulerStorePort {
     return this.loadRunSnapshot(input.runId);
   }
 
-  tryConsumeSignal(): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.consumeSignal());
-  }
-
-  consumeSignal(): SchedulerSnapshot {
-    throw new Error("not implemented");
-  }
-
-  tryPauseRun(input: { runId: string; ownerEpoch: number; idempotencyKey: string }): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.pauseRun(input));
-  }
-
   pauseRun(input: { runId: string; ownerEpoch: number; idempotencyKey: string }): SchedulerSnapshot {
     const snapshot = this.loadRunSnapshot(input.runId);
     if (snapshot.projection.run.status === "paused") return snapshot;
@@ -1278,43 +1266,9 @@ class MemorySchedulerStore implements SchedulerStorePort {
     return this.loadRunSnapshot(input.runId);
   }
 
-  tryResumeRun(input: { runId: string }): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.resumeRun(input));
-  }
-
   resumeRun(input: { runId: string }): SchedulerSnapshot {
     this.events.push({ type: "control.resumed", payload: {} });
     return this.loadRunSnapshot(input.runId);
-  }
-
-  tryRetryRun(): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.retryRun());
-  }
-
-  retryRun(): SchedulerSnapshot {
-    throw new Error("not implemented");
-  }
-
-  tryRetry(): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.retry());
-  }
-
-  retry(): SchedulerSnapshot {
-    throw new Error("not implemented");
-  }
-
-  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.cancel(input));
-  }
-
-  cancel(_input: SchedulerCancelInput): SchedulerSnapshot {
-    throw new Error("not implemented");
-  }
-
-  trySteerAgent(_input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult> {
-    return schedulerStoreResult(() => {
-      throw new Error("not implemented");
-    });
   }
 
   tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {

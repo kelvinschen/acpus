@@ -1,12 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskExecutionTargetIR } from "@acpus/core/ir";
+import {
+  removeRunFile,
+  verifyRunFile,
+  writeRunFile,
+  type RunFileToken,
+} from "../store/run-file.js";
 import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
+import { verifyRunDirectoryToken } from "../store/path-fence.js";
 import { loadInlineTaskFunction } from "./inline-task.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
 
@@ -110,16 +116,16 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
     if (signal.aborted) throw new Error(`Task node '${args.nodeKey}' attempt ${args.attempt} is aborted.`);
     const id = `artifact_${randomUUID()}`;
     const relativePath = join("artifacts", args.nodeKey, `attempt-${args.attempt}`, `${id}-${safeArtifactName(name)}`);
-    const absolutePath = join(args.runDir, relativePath);
+    const label = `Task artifact '${id}'`;
+    let file: RunFileToken;
     try {
-      await mkdir(join(args.runDir, "artifacts", args.nodeKey, `attempt-${args.attempt}`), { recursive: true, mode: 0o700 });
-      await writeFile(absolutePath, bytes, { mode: 0o600 });
+      file = await writeRunFile({ run: args.run, relativePath, bytes, label });
     } catch (cause) {
       throw rememberSystemFailure(`Task artifact write failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
     }
     if (signal.aborted) {
       try {
-        await rm(absolutePath, { force: true });
+        await removeRunFile(args.run, file, label);
       } catch (cause) {
         throw rememberSystemFailure(`Task artifact cleanup failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
       }
@@ -128,7 +134,7 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
     try {
       await registerArtifact({
         id,
-        runId: args.runId,
+        runId: args.run.runId,
         nodeKey: args.nodeKey,
         attemptId: args.attemptId,
         attempt: args.attempt,
@@ -137,20 +143,26 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
         digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
         size: bytes.byteLength,
         relativePath,
+        file,
       });
     } catch (cause) {
       let failure = cause;
       try {
-        await rm(absolutePath, { force: true });
+        await removeRunFile(args.run, file, label);
       } catch (cleanupError) {
         failure = new AggregateError([cause, cleanupError], "Task artifact registration and cleanup both failed.");
       }
       throw rememberSystemFailure(`Task artifact registration failed for node '${args.nodeKey}' attempt ${args.attempt}`, failure);
     }
+    try {
+      verifyRunFile(args.run, file, label);
+    } catch (cause) {
+      throw rememberSystemFailure(`Task artifact verification failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
+    }
     const ref: ArtifactRef = mediaType === undefined
-      ? { kind: "artifact", uri: `artifact://${args.runId}/${id}` }
-      : { kind: "artifact", uri: `artifact://${args.runId}/${id}`, mediaType };
-    paths.set(ref.uri, absolutePath);
+      ? { kind: "artifact", uri: `artifact://${args.run.runId}/${id}` }
+      : { kind: "artifact", uri: `artifact://${args.run.runId}/${id}`, mediaType };
+    paths.set(ref.uri, file);
     return ref;
   }
 
@@ -170,7 +182,12 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
       if (!path) {
         throw new Error(`Artifact '${ref.uri}' is not available to this Task; bind it through Task input or use a ref returned by artifact.write(...).`);
       }
-      return path;
+      try {
+        verifyRunDirectoryToken(args.run);
+        return verifyRunFile(args.run, path, `Task input artifact '${ref.uri}'`);
+      } catch (cause) {
+        throw rememberSystemFailure(`Task artifact path resolution failed for node '${args.nodeKey}' attempt ${args.attempt}`, cause);
+      }
     },
   };
 }

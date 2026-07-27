@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
+import { getRunInspection, getRunVisualizationSnapshot } from "@acpus/runtime";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
@@ -47,6 +48,19 @@ describe("scheduler targeted retry eligibility", () => {
     });
   });
 
+  it("keeps an owner-valid large quorum on the typed blocked-retry path", async () => {
+    await withClaimedRun("scheduler-retry-large-quorum-dependency", async ({ store, runId, claim }) => {
+      appendEvents(
+        store,
+        runId,
+        claim,
+        hiddenFailedDependencyEvents(runId, Number.MAX_SAFE_INTEGER + 1),
+      );
+
+      expectRejectedWithoutMutation(store, runId, claim, "outer.left.task");
+    });
+  });
+
   it("rejects targeted retry while paused without writing events", async () => {
     await withClaimedRun("scheduler-retry-paused-run", async ({ store, runId, claim }) => {
       appendEvents(store, runId, claim, pausedFailedTargetEvents(runId));
@@ -56,10 +70,208 @@ describe("scheduler targeted retry eligibility", () => {
   });
 
   it("rejects leaf retry after pre-execution expression resolution failure", async () => {
-    await withClaimedRun("scheduler-retry-expression-resolution", async ({ store, runId, claim }) => {
+    await withClaimedRun("scheduler-retry-expression-resolution", async ({ workspace, store, runId, claim }) => {
       appendEvents(store, runId, claim, expressionResolutionFailureEvents(runId));
 
       expectRejectedWithoutMutation(store, runId, claim, "target");
+      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+        controls: { canCancelRun: false, retryTargets: [] },
+      });
+      const details = await getRunInspection(workspace, {
+        runId,
+        mode: "details",
+        target: "target",
+      });
+      expect(details.isOk() && details.value.kind === "details"
+        ? details.value.availableControls
+        : undefined).toEqual([]);
+      const summary = await getRunInspection(workspace, {
+        runId,
+        mode: "target",
+        target: "target",
+      });
+      expect(summary.isOk() && summary.value.kind === "target"
+        ? summary.value.availableActions
+        : undefined).toEqual([{ kind: "fork", target: "target" }]);
+    });
+  });
+
+  it("projects exact retry targets that the mutation planner accepts", async () => {
+    await withClaimedRun("scheduler-retry-projection-parity", async ({ workspace, store, runId, claim }) => {
+      appendEvents(store, runId, claim, retryableFailedTargetEvents(runId));
+
+      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+        controls: {
+          canCancelRun: false,
+          retryTargets: [{ target: "target", kind: "node", nodeId: "target" }],
+        },
+      });
+      const retry = store.scheduler.tryRetry({
+        runId,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "retry:projection-parity",
+        target: "target",
+      });
+      expect(retry.isOk() ? retry.value.projection.instances.target : undefined)
+        .toMatchObject({ status: "ready", statusReason: "retry" });
+    });
+  });
+
+  it("projects an accepted retry target before root failure propagation", async () => {
+    await withPendingParallelFailure("scheduler-retry-projection-intermediate", async ({ workspace, store, runId, claim, targetKey }) => {
+      const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+      const parentFrameKey = before.projection.instances[targetKey]?.parentFrameKey;
+      if (!parentFrameKey || !before.projection.groupMembers[parentFrameKey]) {
+        throw new Error("Expected target branch membership.");
+      }
+      throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+        runId,
+        expectedVersion: before.version,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "retry:intermediate-propagation",
+        events: [
+          { type: "frame.failed", payload: { frameKey: parentFrameKey, error: { reason: "failed" } } },
+          { type: "group.member_failed", payload: { memberKey: parentFrameKey, error: { reason: "failed" } } },
+        ],
+      });
+
+      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+        run: { status: "running" },
+        controls: {
+          retryTargets: expect.arrayContaining([
+            { target: targetKey, kind: "node", nodeId: "target" },
+          ]),
+        },
+      });
+      const retry = store.scheduler.tryRetry({
+        runId,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "retry:intermediate-projection",
+        target: targetKey,
+      });
+      expect(retry.isOk()).toBe(true);
+    });
+  });
+
+  it("projects retry through pure multi-level failure settlement without writing", async () => {
+    await withPendingNestedParallelFailure("scheduler-retry-projection-nested-intermediate", async ({
+      workspace,
+      store,
+      runId,
+      claim,
+      targetKey,
+      outerMemberKey,
+    }) => {
+      const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+      expect(before.projection.groupMembers[outerMemberKey]).toMatchObject({ status: "running" });
+      const eventCount = store.getRun(runId)?.eventCount;
+
+      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+        run: { status: "running" },
+        controls: {
+          retryTargets: expect.arrayContaining([
+            { target: targetKey, kind: "node", nodeId: "target" },
+          ]),
+        },
+      });
+      const details = await getRunInspection(workspace, {
+        runId,
+        mode: "details",
+        target: targetKey,
+      });
+      expect(details.isOk() && details.value.kind === "details"
+        ? details.value.availableControls
+        : undefined).toContainEqual({ type: "retry", target: targetKey });
+
+      const afterReads = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+      expect(afterReads.version).toBe(before.version);
+      expect(afterReads.projection.groupMembers[outerMemberKey]).toMatchObject({ status: "running" });
+      expect(store.getRun(runId)?.eventCount).toBe(eventCount);
+
+      const retried = store.scheduler.tryRetry({
+        runId,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "retry:nested-intermediate-projection",
+        target: targetKey,
+      });
+      expect(retried.isOk() ? retried.value.projection.instances[targetKey] : undefined)
+        .toMatchObject({ status: "ready", statusReason: "retry" });
+    });
+  });
+
+  it("does not project current-node controls onto a historical attempt", async () => {
+    await withClaimedRun("scheduler-controls-historical-attempt", async ({ workspace, store, runId, claim }) => {
+      appendEvents(store, runId, claim, [
+        { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
+        { type: "instance.ready", payload: { runId, nodeKey: "require_ready", nodeId: "require_ready", parentFrameKey: "root", instancePath: [] } },
+        { type: "instance.started", payload: { nodeKey: "require_ready", attemptId: "attempt_old" } },
+        { type: "attempt.started", payload: { runId, attemptId: "attempt_old", nodeKey: "require_ready", nodeId: "require_ready", attemptNo: 1, ownerEpoch: claim.ownerEpoch } },
+        { type: "attempt.failed", payload: { attemptId: "attempt_old", error: { reason: "old_failure" } } },
+        { type: "instance.failed", payload: { nodeKey: "require_ready", attemptId: "attempt_old", error: { reason: "old_failure" } } },
+        { type: "instance.retry_requested", payload: { nodeKey: "require_ready" } },
+        { type: "instance.started", payload: { nodeKey: "require_ready", attemptId: "attempt_current" } },
+        { type: "attempt.started", payload: { runId, attemptId: "attempt_current", nodeKey: "require_ready", nodeId: "require_ready", attemptNo: 2, ownerEpoch: claim.ownerEpoch } },
+      ]);
+
+      const historical = await getRunInspection(workspace, {
+        runId,
+        mode: "details",
+        target: "attempt_old",
+      });
+      expect(historical.isOk() && historical.value.kind === "details"
+        ? historical.value.availableControls
+        : undefined).toEqual([]);
+
+      const current = await getRunInspection(workspace, {
+        runId,
+        mode: "details",
+        target: "attempt_current",
+      });
+      expect(current.isOk() && current.value.kind === "details"
+        ? current.value.availableControls
+        : undefined).toEqual([{ type: "cancel", target: "require_ready" }]);
+    });
+  });
+
+  it("fails closed when an authored node id collides with the root frame identity", async () => {
+    await withRuntimeWorkspace("scheduler-controls-root-id-collision", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, rootIdWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "root-id-collision-owner", 60_000);
+        if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
+        appendEvents(store, run.id, claim, [
+          { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+          {
+            type: "instance.ready",
+            payload: {
+              runId: run.id,
+              nodeKey: "root~occurrence",
+              nodeId: "root",
+              parentFrameKey: "root",
+              instancePath: [{ kind: "node", nodeId: "root" }],
+            },
+          },
+        ]);
+
+        const details = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "details",
+          target: "root",
+        });
+        expect(details.isOk() && details.value.kind === "details"
+          ? {
+              target: details.value.target,
+              availableControls: details.value.availableControls,
+            }
+          : undefined).toEqual({
+          target: { kind: "frame", id: "root" },
+          availableControls: [],
+        });
+      } finally {
+        store.close();
+      }
     });
   });
 
@@ -259,6 +471,122 @@ async function withPendingParallelFailure(
   });
 }
 
+async function withPendingNestedParallelFailure(
+  name: string,
+  fn: (input: {
+    workspace: string;
+    store: RuntimeStore;
+    runId: string;
+    claim: RunOwnerClaim;
+    targetKey: string;
+    outerMemberKey: string;
+  }) => Promise<void>,
+): Promise<void> {
+  await withRuntimeWorkspace(name, async workspace => {
+    const prepared = await prepareSyntheticWorkflow(workspace, nestedAtomicRetryWorkflow());
+    const store = await openRuntimeStore(workspace);
+    const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+    const claim = store.scheduler.claimRun(run.id, "nested-atomic-retry-owner", 60_000);
+    if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
+    try {
+      const frozen = store.getFrozenRun(run.id);
+      if (!frozen) throw new Error(`Run '${run.id}' has no frozen workflow.`);
+      const admitted = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+      const materialized = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+        runId: run.id,
+        expectedVersion: admitted.version,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "nested-atomic-retry:bootstrap",
+        events: bootstrapRootEvents(run.id, frozen.ir, frozenRunScope(frozen)),
+      });
+      const target = Object.values(materialized.projection.instances)
+        .find(instance => instance.nodeId === "target");
+      const innerSibling = Object.values(materialized.projection.instances)
+        .find(instance => instance.nodeId === "inner_sibling");
+      const outerSibling = Object.values(materialized.projection.instances)
+        .find(instance => instance.nodeId === "outer_sibling");
+      if (!target || !innerSibling || !outerSibling) {
+        throw new Error("Nested retry workflow did not materialize all task instances.");
+      }
+      const scheduler = throwingSchedulerStore(store.scheduler);
+      const targetAttempt = scheduler.startAttempt({
+        runId: run.id,
+        nodeKey: target.nodeKey,
+        nodeId: target.nodeId,
+        ownerEpoch: claim.ownerEpoch,
+        expectedVersion: materialized.version,
+        idempotencyKey: "nested-atomic-retry:target-start",
+      });
+      const innerSiblingAttempt = scheduler.startAttempt({
+        runId: run.id,
+        nodeKey: innerSibling.nodeKey,
+        nodeId: innerSibling.nodeId,
+        ownerEpoch: claim.ownerEpoch,
+        expectedVersion: targetAttempt.snapshot.version,
+        idempotencyKey: "nested-atomic-retry:inner-sibling-start",
+      });
+      const outerSiblingAttempt = scheduler.startAttempt({
+        runId: run.id,
+        nodeKey: outerSibling.nodeKey,
+        nodeId: outerSibling.nodeId,
+        ownerEpoch: claim.ownerEpoch,
+        expectedVersion: innerSiblingAttempt.snapshot.version,
+        idempotencyKey: "nested-atomic-retry:outer-sibling-start",
+      });
+      scheduler.commitAttemptResult({
+        runId: run.id,
+        attemptId: innerSiblingAttempt.attemptId,
+        ownerEpoch: claim.ownerEpoch,
+        result: { status: "completed", output: { ok: true } },
+        idempotencyKey: "nested-atomic-retry:inner-sibling-completed",
+      });
+      const siblingsCompleted = scheduler.commitAttemptResult({
+        runId: run.id,
+        attemptId: outerSiblingAttempt.attemptId,
+        ownerEpoch: claim.ownerEpoch,
+        result: { status: "completed", output: { ok: true } },
+        idempotencyKey: "nested-atomic-retry:outer-sibling-completed",
+      });
+      const propagated = settleFrozenRunTransitions({
+        store,
+        runId: run.id,
+        ownerEpoch: claim.ownerEpoch,
+      });
+      if (propagated.version <= siblingsCompleted.version) {
+        throw new Error("Nested sibling completion did not propagate.");
+      }
+      const targetMemberKey = propagated.projection.instances[target.nodeKey]?.parentFrameKey;
+      const innerFrameKey = targetMemberKey
+        ? propagated.projection.frames[targetMemberKey]?.parentFrameKey
+        : undefined;
+      const outerMemberKey = innerFrameKey
+        ? propagated.projection.frames[innerFrameKey]?.parentFrameKey
+        : undefined;
+      if (!targetMemberKey || !outerMemberKey || !propagated.projection.groupMembers[outerMemberKey]) {
+        throw new Error("Nested retry workflow did not expose its ancestor memberships.");
+      }
+      scheduler.commitAttemptResult({
+        runId: run.id,
+        attemptId: targetAttempt.attemptId,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: "nested-atomic-retry:target-failed",
+        result: { status: "failed", reason: "boom", error: { reason: "boom" } },
+      });
+      await fn({
+        workspace,
+        store,
+        runId: run.id,
+        claim,
+        targetKey: target.nodeKey,
+        outerMemberKey,
+      });
+    } finally {
+      store.scheduler.releaseRun(claim);
+      store.close();
+    }
+  });
+}
+
 function appendEvents(store: RuntimeStore, runId: string, claim: RunOwnerClaim, events: SchedulerEvent[]): void {
   const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -352,7 +680,7 @@ function failedAllMemberEvents(runId: string, branchId: "left" | "right", readin
   ];
 }
 
-function hiddenFailedDependencyEvents(runId: string): SchedulerEvent[] {
+function hiddenFailedDependencyEvents(runId: string, quorumCount?: number): SchedulerEvent[] {
   return [
     { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
     { type: "frame.started", payload: { runId, frameKey: "outer", frameKind: "node", parentFrameKey: "root", nodeKey: "outer", nodeId: "outer", strategy: "all" } },
@@ -365,16 +693,76 @@ function hiddenFailedDependencyEvents(runId: string): SchedulerEvent[] {
     { type: "group.member_failed", payload: { memberKey: "outer.left", error: { reason: "target_failed" } } },
     { type: "frame.started", payload: { runId, frameKey: "outer.right", frameKind: "branch", parentFrameKey: "outer" } },
     { type: "group.member_ready", payload: { runId, groupKey: "outer", memberKey: "outer.right", childFrameKey: "outer.right", memberKind: "branch", branchId: "right", readinessSequence: 2 } },
-    { type: "frame.started", payload: { runId, frameKey: "inner", frameKind: "node", parentFrameKey: "outer.right", nodeKey: "inner", nodeId: "inner", strategy: "all" } },
-    { type: "group.started", payload: { runId, groupKey: "inner", nodeKey: "inner", nodeId: "inner", kind: "parallel", strategy: "all" } },
-    { type: "frame.started", payload: { runId, frameKey: "inner.failed", frameKind: "branch", parentFrameKey: "inner" } },
-    { type: "group.member_ready", payload: { runId, groupKey: "inner", memberKey: "inner.failed", childFrameKey: "inner.failed", memberKind: "branch", branchId: "failed", readinessSequence: 3 } },
+    {
+      type: "frame.started",
+      payload: {
+        runId,
+        frameKey: "inner",
+        frameKind: "node",
+        parentFrameKey: "outer.right",
+        nodeKey: "inner",
+        nodeId: "inner",
+        strategy: quorumCount === undefined ? "all" : "quorum",
+      },
+    },
+    quorumCount === undefined
+      ? {
+          type: "group.started",
+          payload: {
+            runId,
+            groupKey: "inner",
+            nodeKey: "inner",
+            nodeId: "inner",
+            kind: "parallel",
+            strategy: "all",
+          },
+        }
+      : {
+          type: "group.started",
+          payload: {
+            runId,
+            groupKey: "inner",
+            nodeKey: "inner",
+            nodeId: "inner",
+            kind: "fanout",
+            strategy: "quorum",
+            quorumCount,
+          },
+        },
+    {
+      type: "frame.started",
+      payload: {
+        runId,
+        frameKey: "inner.failed",
+        frameKind: quorumCount === undefined ? "branch" : "fanout_item",
+        parentFrameKey: "inner",
+      },
+    },
+    {
+      type: "group.member_ready",
+      payload: quorumCount === undefined
+        ? { runId, groupKey: "inner", memberKey: "inner.failed", childFrameKey: "inner.failed", memberKind: "branch", branchId: "failed", readinessSequence: 3 }
+        : { runId, groupKey: "inner", memberKey: "inner.failed", childFrameKey: "inner.failed", memberKind: "fanout_item", itemIndex: 0, item: null, readinessSequence: 3 },
+    },
     { type: "instance.ready", payload: { runId, nodeKey: "inner.failed.task", nodeId: "failed_task", parentFrameKey: "inner.failed", instancePath: [] } },
     { type: "instance.failed", payload: { nodeKey: "inner.failed.task", error: { reason: "independent_failure" } } },
     { type: "frame.failed", payload: { frameKey: "inner.failed", error: { reason: "independent_failure" } } },
     { type: "group.member_failed", payload: { memberKey: "inner.failed", error: { reason: "independent_failure" } } },
-    { type: "frame.started", payload: { runId, frameKey: "inner.pending", frameKind: "branch", parentFrameKey: "inner" } },
-    { type: "group.member_ready", payload: { runId, groupKey: "inner", memberKey: "inner.pending", childFrameKey: "inner.pending", memberKind: "branch", branchId: "pending", readinessSequence: 4 } },
+    {
+      type: "frame.started",
+      payload: {
+        runId,
+        frameKey: "inner.pending",
+        frameKind: quorumCount === undefined ? "branch" : "fanout_item",
+        parentFrameKey: "inner",
+      },
+    },
+    {
+      type: "group.member_ready",
+      payload: quorumCount === undefined
+        ? { runId, groupKey: "inner", memberKey: "inner.pending", childFrameKey: "inner.pending", memberKind: "branch", branchId: "pending", readinessSequence: 4 }
+        : { runId, groupKey: "inner", memberKey: "inner.pending", childFrameKey: "inner.pending", memberKind: "fanout_item", itemIndex: 1, item: null, readinessSequence: 4 },
+    },
     { type: "group.member_cancelled", payload: { memberKey: "inner.pending", cancelReason: "parent_failed" } },
     { type: "group.cancelled", payload: { groupKey: "inner", cancelReason: "parent_failed" } },
     { type: "frame.cancelled", payload: { frameKey: "inner.pending", cancelReason: "parent_failed" } },
@@ -405,6 +793,15 @@ function expressionResolutionFailureEvents(runId: string): SchedulerEvent[] {
   ];
 }
 
+function retryableFailedTargetEvents(runId: string): SchedulerEvent[] {
+  return [
+    { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
+    { type: "instance.ready", payload: { runId, nodeKey: "target", nodeId: "target", parentFrameKey: "root", instancePath: [] } },
+    { type: "instance.failed", payload: { nodeKey: "target", error: { reason: "failed" } } },
+    { type: "frame.failed", payload: { frameKey: "root", error: { reason: "failed" } } },
+  ];
+}
+
 function atomicRetryWorkflow() {
   return defineWorkflow({ name: "scheduler-atomic-targeted-retry" }).build(({ step }) => {
     const result = step("parallel").parallel({
@@ -421,5 +818,43 @@ function atomicRetryWorkflow() {
       },
     });
     return { result: result.output };
+  });
+}
+
+function nestedAtomicRetryWorkflow() {
+  return defineWorkflow({ name: "scheduler-nested-atomic-targeted-retry" }).build(({ step }) => {
+    const result = step("outer").parallel({
+      strategy: "all",
+      branches: {
+        left() {
+          const inner = step("inner").parallel({
+            strategy: "all",
+            branches: {
+              target() {
+                const target = step("target").task({ input: {}, exec: async () => ({ ok: true }) });
+                return { ok: target.output.ok };
+              },
+              sibling() {
+                const sibling = step("inner_sibling").task({ input: {}, exec: async () => ({ ok: true }) });
+                return { ok: sibling.output.ok };
+              },
+            },
+          });
+          return { result: inner.output };
+        },
+        right() {
+          const sibling = step("outer_sibling").task({ input: {}, exec: async () => ({ ok: true }) });
+          return { ok: sibling.output.ok };
+        },
+      },
+    });
+    return { result: result.output };
+  });
+}
+
+function rootIdWorkflow() {
+  return defineWorkflow({ name: "scheduler-root-id-collision" }).build(({ step }) => {
+    const root = step("root").task({ input: {}, exec: async () => ({ ok: true }) });
+    return { ok: root.output.ok };
   });
 }

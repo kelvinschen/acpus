@@ -34,6 +34,7 @@ const targetSummaryTextBytes = 1536;
 
 export function formatRunInspectionDocument(document: RunInspectionDocument, nowMs = Date.now()): string {
   if (document.kind === "raw") return "Raw run inspection is available only as JSON.\n";
+  if (document.kind === "execution") return "Agent execution inspection is available in the Web Inspector.\n";
   if (document.kind === "target") return formatTargetSummary(document);
   if (document.kind === "timeline") return formatTimeline(document);
   if (document.kind === "details") return formatTargetDetails(document, nowMs);

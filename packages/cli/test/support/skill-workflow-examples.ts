@@ -1,72 +1,44 @@
 import { fileURLToPath } from "node:url";
 
-export const workflowNodeKinds = [
-  "agent",
-  "task",
-  "signal",
-  "assert",
-  "if",
-  "switch",
-  "parallel",
-  "fanout",
-  "loop",
-] as const;
-
 export const skillWorkflowExamples = [
   {
     name: "typed loop state",
     directory: "typed-loop-state",
-    pattern: "Widen evolving loop state and replace it completely each round.",
-    nodes: ["loop"],
     reference: "authoring",
   },
   {
     name: "adversarial review",
     directory: "adversarial-review",
-    pattern: "Iterate with resident and fresh reviewers in a bounded loop.",
-    nodes: ["agent", "task", "parallel", "fanout", "loop"],
     reference: "authoring",
   },
   {
     name: "change approval",
     directory: "change-approval",
-    pattern: "Draft, iteratively refine, optionally approve, and enforce a change plan.",
-    nodes: ["agent", "task", "signal", "assert", "if", "loop"],
     reference: "authoring",
   },
   {
     name: "issue triage",
     directory: "issue-triage",
-    pattern: "Fan out issue triage, run branch work in parallel, and route by switch.",
-    nodes: ["agent", "task", "switch", "parallel", "fanout"],
     reference: "authoring",
   },
   {
     name: "scaled exploration",
     directory: "scaled-exploration",
-    pattern: "Plan a standard-scale fanout and reduce results in batches.",
-    nodes: ["agent", "task", "fanout"],
     reference: "authoring",
   },
   {
     name: "worktree tournament",
     directory: "worktree-tournament",
-    pattern: "Fan out six worktree implementations and have an agent judge them.",
-    nodes: ["agent", "task", "fanout"],
     reference: "authoring",
   },
   {
     name: "reusable task artifact",
     directory: "reusable-task-artifact",
-    pattern: "Reuse a typed Task at two authored call sites and return its artifacts.",
-    nodes: ["task"],
     reference: "advanced-authoring",
   },
   {
     name: "parallel approvals",
     directory: "parallel-approvals",
-    pattern: "Open independent approval waits concurrently and require both results.",
-    nodes: ["signal", "parallel"],
     reference: "signal-authoring",
   },
 ] as const;
@@ -77,10 +49,6 @@ export const skillWorkflowLibrary = [
     directory: "deep-research",
   },
 ] as const;
-
-export function skillExampleWorkflowPath(directory: string): string {
-  return fileURLToPath(new URL(`../../skills/acpus/workflows/examples/${directory}/workflow.ts`, import.meta.url));
-}
 
 export function skillLibraryWorkflowPath(directory: string, relativePath = "workflow.ts"): string {
   return fileURLToPath(new URL(`../../skills/acpus/workflows/library/${directory}/${relativePath}`, import.meta.url));

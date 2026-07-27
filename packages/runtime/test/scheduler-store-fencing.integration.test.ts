@@ -1,9 +1,14 @@
 import { admitRunForTest } from "./support/runtime-store.js";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { readArtifact } from "../src/runs/use-cases.js";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RegisterArtifactInput, type RuntimeStore } from "../src/store/store.js";
+import { captureRunFile } from "../src/store/run-file.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler store attempt fences", () => {
@@ -195,8 +200,9 @@ describe("scheduler store attempt fences", () => {
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
-        const first = artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_first");
+        const first = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_first");
 
+        await materializeArtifact(store, first);
         expect(store.registerArtifact(first).isOk()).toBe(true);
         unwrap(store.scheduler.tryCommitAttemptResult({
           runId: run.id,
@@ -206,7 +212,7 @@ describe("scheduler store attempt fences", () => {
           idempotencyKey: "artifact-fence:complete",
         }));
 
-        const late = artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_late");
+        const late = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_late");
         const rejected = store.registerArtifact(late);
         expect(rejected.isErr()).toBe(true);
         if (rejected.isOk()) throw new Error("expected terminal artifact registration to fail");
@@ -235,7 +241,13 @@ describe("scheduler store attempt fences", () => {
           events: [{ type: "attempt.superseded", payload: { attemptId: attempt.attemptId, cancelReason: "operator_steered" } }],
         }));
 
-        const late = store.registerArtifact(artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_late"));
+        const late = store.registerArtifact(artifactInput(
+          store,
+          run.id,
+          attempt.attemptId,
+          claim.ownerEpoch,
+          "artifact_late",
+        ));
         expect(late.isErr()).toBe(true);
         if (late.isOk()) throw new Error("expected superseded artifact registration to fail");
         expect(late.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "superseded" });
@@ -254,13 +266,76 @@ describe("scheduler store attempt fences", () => {
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
-        const artifact = artifactInput(run.id, attempt.attemptId, claim.ownerEpoch, "artifact_escape");
+        const artifact = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_escape");
 
         expect(() => store.registerArtifact({
           ...artifact,
           relativePath: "workflow.ir.json",
         })).toThrow("inside its attempt artifact directory");
         expect(store.listArtifacts(run.id)).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("registers and publicly reads only the exact regular file with valid metadata", async () => {
+    await withRuntimeWorkspace("scheduler-store-artifact-file-verification", async workspace => {
+      await expect(readArtifact(workspace, "run_missing", "artifact_missing")).resolves.toBeUndefined();
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
+        const artifact = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_verified");
+
+        expect(() => store.registerArtifact(artifact)).toThrow(/ENOENT/);
+        const path = await materializeArtifact(store, artifact);
+        expect(() => store.registerArtifact({ ...artifact, digest: "invalid" })).toThrow();
+        expect(() => store.registerArtifact({ ...artifact, size: artifact.size + 1 })).toThrow();
+        await rm(path);
+        await mkdir(path);
+        expect(() => store.registerArtifact(artifact)).toThrow();
+        expect(store.listArtifacts(run.id)).toEqual([]);
+        await rm(path, { recursive: true });
+        await materializeArtifact(store, artifact);
+        expect(store.registerArtifact(artifact).isOk()).toBe(true);
+        const expected = store.getArtifact(run.id, artifact.id);
+        if (!expected) throw new Error("expected registered artifact");
+
+        await expect(readArtifact(workspace, run.id, artifact.id)).resolves.toEqual({
+          artifact: expected,
+          bytes: Buffer.from("x"),
+        });
+        await expect(readArtifact(workspace, run.id, "artifact_missing")).resolves.toBeUndefined();
+        await expect(readArtifact(workspace, "run_missing", artifact.id)).resolves.toBeUndefined();
+        await writeFile(path, "y");
+        await expect(readArtifact(workspace, run.id, artifact.id)).rejects.toThrow("size/digest verification");
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a symbolic-link artifact without registering or removing its target", async () => {
+    await withRuntimeWorkspace("scheduler-store-artifact-symlink", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
+        const artifact = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_symlink");
+        const path = await materializeArtifact(store, artifact);
+        const target = join(workspace, "outside-artifact.txt");
+        await writeFile(target, "x");
+        await rm(path);
+        await symlink(target, path);
+
+        expect(() => store.registerArtifact(artifact)).toThrow();
+        expect(store.listArtifacts(run.id)).toEqual([]);
+        await expect(readFile(target, "utf8")).resolves.toBe("x");
       } finally {
         store.close();
       }
@@ -309,7 +384,13 @@ describe("scheduler store attempt fences", () => {
         const expiredOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         const ready = appendReadyInstances(store.scheduler, run.id, expiredOwner.ownerEpoch, ["leaf"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", expiredOwner.ownerEpoch, ready.version)));
-        const acceptedArtifact = artifactInput(run.id, attempt.attemptId, expiredOwner.ownerEpoch, "artifact_current");
+        const acceptedArtifact = artifactInput(
+          store,
+          run.id,
+          attempt.attemptId,
+          expiredOwner.ownerEpoch,
+          "artifact_current",
+        );
         const currentProgress = {
           runId: run.id,
           nodeKey: "leaf",
@@ -322,6 +403,7 @@ describe("scheduler store attempt fences", () => {
           message: "current",
         };
 
+        await materializeArtifact(store, acceptedArtifact);
         expect(store.registerArtifact(acceptedArtifact).isOk()).toBe(true);
         store.writeNodeProgress(currentProgress);
         const progressVersion = store.getRun(run.id)!.progressVersion;
@@ -329,7 +411,13 @@ describe("scheduler store attempt fences", () => {
         expireRunLease(workspace, run.id);
         expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toMatchObject({ ownerEpoch: expiredOwner.ownerEpoch + 1 });
 
-        const staleArtifact = artifactInput(run.id, attempt.attemptId, expiredOwner.ownerEpoch, "artifact_stale");
+        const staleArtifact = artifactInput(
+          store,
+          run.id,
+          attempt.attemptId,
+          expiredOwner.ownerEpoch,
+          "artifact_stale",
+        );
         const rejected = store.registerArtifact(staleArtifact);
         expect(rejected.isErr()).toBe(true);
         if (rejected.isOk()) throw new Error("expected expired-owner artifact registration to fail");
@@ -413,7 +501,17 @@ function startInput(runId: string, nodeKey: string, ownerEpoch: number, expected
   };
 }
 
-function artifactInput(runId: string, attemptId: string, ownerEpoch: number, id: string): RegisterArtifactInput {
+function artifactInput(
+  store: RuntimeStore,
+  runId: string,
+  attemptId: string,
+  ownerEpoch: number,
+  id: string,
+): RegisterArtifactInput {
+  const bytes = Buffer.from("x");
+  const runDir = store.getRunDir(runId);
+  if (!runDir) throw new Error(`Run '${runId}' has no directory.`);
+  const relativePath = `artifacts/leaf/attempt-1/${id}.txt`;
   return {
     id,
     runId,
@@ -421,10 +519,28 @@ function artifactInput(runId: string, attemptId: string, ownerEpoch: number, id:
     attempt: 1,
     attemptId,
     ownerEpoch,
-    digest: "sha256:test",
-    size: 1,
-    relativePath: `artifacts/leaf/attempt-1/${id}.txt`,
+    digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    size: bytes.byteLength,
+    relativePath,
+    file: {
+      path: join(runDir, relativePath),
+      filesystemIdentity: "not-materialized",
+    },
   };
+}
+
+async function materializeArtifact(store: RuntimeStore, artifact: RegisterArtifactInput): Promise<string> {
+  const runDir = store.getRunDir(artifact.runId);
+  if (!runDir) throw new Error(`Run '${artifact.runId}' has no directory.`);
+  const path = join(runDir, artifact.relativePath);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, "x");
+  artifact.file = captureRunFile(
+    store.getRunDirectoryToken(artifact.runId)!,
+    path,
+    `Artifact '${artifact.id}'`,
+  );
+  return path;
 }
 
 function expireRunLease(workspace: string, runId: string): void {

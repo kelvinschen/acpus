@@ -79,18 +79,17 @@
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",
         "scripts/build-static-viz.mjs",
+        "src/client/main.tsx",
         "src/client/static-viz.tsx"
       ],
       "project": [
         "src/**/*.{ts,tsx}!",
+        "!src/client/**/*.{ts,tsx}!",
         "test/**/*.{ts,tsx}",
         "scripts/*.mjs"
       ],
-      "vitest": false,
-      "ignoreIssues": {
-        // Tailwind is a bundle-time CSS input.
-        "src/client/styles.css": ["unlisted"]
-      }
+      "vite": false,
+      "vitest": false
     },
     "packages/workflow-compiler": {
       "entry": [

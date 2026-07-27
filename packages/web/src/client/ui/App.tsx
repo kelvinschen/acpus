@@ -36,16 +36,17 @@ import {
   listRuns,
   submitRunCommand,
   visualizeWorkflow,
-  type ArtifactReference,
   type HealthReport,
   type NodeExecutionInspection,
   type NodeDetail,
   type NodeInspection,
   type ProjectWorkflowCatalogEntry,
+  type RunControlTarget,
   type RunDetails,
   type RunRuntimeSnapshot,
   type RunRecord,
   type ServerConfig,
+  type WebControlCommand,
   type WebGraphSelection,
   type WorkflowFileEntry,
   type WorkflowVisualizationResult,
@@ -203,15 +204,14 @@ function RuntimePage({
     enabled: Boolean(runId && selectedNodeId),
     refetchInterval: nodeInspectionRefetchInterval(snapshot.data?.run.status),
   });
-  const inspectedCancelTarget = inspection.data?.summary.nodeKey ?? inspection.data?.summary.frameKey;
   const selectedCancelTarget = selectedNode
-    ? inspectedCancelTarget ?? (selectedNode.context.length === 0 ? selectedNode.nodeId : null)
+    ? inspection.data?.cancelTarget ?? null
     : undefined;
   const selectedCancelLabel = selectedNode
     ? [selectedNode.label, graphContextLabel(selectedNode.context)].filter(Boolean).join(" · ")
     : undefined;
   const command = useMutation({
-    mutationFn: (input: Record<string, unknown>) => submitRunCommand(runId!, input),
+    mutationFn: (input: WebControlCommand) => submitRunCommand(runId!, input),
     onSuccess: async (_data, variables) => {
       push({ tone: "success", title: `${commandLabel(variables)} accepted` });
       await Promise.all([
@@ -226,9 +226,9 @@ function RuntimePage({
 
   const runDetails = snapshot.data?.run;
   const signalWait = selectedTarget?.kind === "node"
-    ? inspection.data?.signalWaits.find(w => w.status === "awaiting")
+    ? inspection.data?.awaitingSignal
     : undefined;
-  const retryTargets = retryTargetsForRun(runDetails);
+  const retryTargets = retryTargetsForControls(snapshot.data?.controls.retryTargets ?? []);
   const retryTargetSignature = retryTargets.map(target => target.value).join("|");
   const [retryTarget, setRetryTarget] = useState<string | undefined>();
 
@@ -266,6 +266,7 @@ function RuntimePage({
             status={runDetails?.status}
             selectedCancelTarget={selectedCancelTarget}
             selectedCancelLabel={selectedCancelLabel}
+            canCancelRun={snapshot.data?.controls.canCancelRun ?? false}
             retryTargets={retryTargets}
             selectedRetryTarget={retryTarget}
             onSelectRetryTarget={setRetryTarget}
@@ -283,7 +284,7 @@ function RuntimePage({
           const context = graphContextLabel(target.node.context);
           return {
             eyebrow: "Node",
-            title: inspection.data?.summary.nodeId ?? target.node.label,
+            title: inspection.data?.nodeId ?? target.node.label,
             status: <StatusPill status={target.node.displayStatus} />,
             ...(context ? { subtitle: context } : {}),
           };
@@ -297,7 +298,7 @@ function RuntimePage({
             {signalWait && (
               <SignalBox
                 wait={signalWait}
-                onSubmit={payload => command.mutate({ type: "signal", target: signalWait.nodeKey, payload })}
+                onSubmit={payload => command.mutate({ type: "signal", target: signalWait.target, payload })}
               />
             )}
           </>
@@ -338,8 +339,8 @@ function RunHeaderError({ message }: { message: string }) {
   );
 }
 
-function commandLabel(input: Record<string, unknown>): string {
-  return typeof input.type === "string" ? input.type : "command";
+function commandLabel(input: WebControlCommand): string {
+  return input.type;
 }
 
 function WorkflowsPage() {
@@ -666,7 +667,7 @@ function RuntimeWorkflowInspector({ run }: { run: RunDetails | undefined }) {
         <KeyValue label="Name" value={run.name} />
         <KeyValue label="Run ID" value={run.id} />
         <KeyValue label="Status" value={runtimeStatusLabel(normalizeRuntimeStatus(run.status))} />
-        {run.dynamic?.version !== undefined && <KeyValue label="Runtime version" value={String(run.dynamic.version)} />}
+        {run.runtimeVersion !== undefined && <KeyValue label="Runtime version" value={String(run.runtimeVersion)} />}
         <KeyValue label="Started" value={formatDate(run.createdAt)} />
         <KeyValue label="Updated" value={formatDate(run.updatedAt)} />
         <KeyValue label="Duration" value={formatDuration(durationBetween(run.createdAt, run.updatedAt))} />
@@ -692,6 +693,7 @@ function RunControls({
   status,
   selectedCancelTarget,
   selectedCancelLabel,
+  canCancelRun,
   retryTargets,
   selectedRetryTarget,
   onSelectRetryTarget,
@@ -701,12 +703,13 @@ function RunControls({
   status: string | undefined;
   selectedCancelTarget: string | null | undefined;
   selectedCancelLabel: string | undefined;
+  canCancelRun: boolean;
   retryTargets: RetryTarget[];
   selectedRetryTarget: string | undefined;
   onSelectRetryTarget(value: string): void;
-  onCommand(input: Record<string, unknown>): void;
+  onCommand(input: Exclude<WebControlCommand, { type: "signal" }>): void;
 }) {
-  const controls = controlStateForRun(status, disabled, retryTargets);
+  const controls = controlStateForRun(status, disabled, retryTargets, canCancelRun);
   const retryTarget = retryCommandTarget(retryTargets, selectedRetryTarget);
   const [pendingControl, setPendingControl] = useState<PendingControl | undefined>();
   const retryTargetLabel = retryTargets.find(target => target.value === retryTarget)?.label;
@@ -796,7 +799,7 @@ function RunSelector({
 export type RetryTarget = {
   value: string;
   label: string;
-  kind: "frame" | "node" | "member";
+  kind: "frame" | "node";
 };
 
 export type RunControlId = "pause" | "resume" | "retry" | "cancel";
@@ -811,7 +814,7 @@ export type RunControlSpec = {
 
 type PendingControl = {
   control: RunControlSpec;
-  command: Record<string, unknown>;
+  command: Exclude<WebControlCommand, { type: "signal" }>;
   targetLabel: string | undefined;
   restoreFocus: HTMLElement | undefined;
 };
@@ -823,44 +826,24 @@ export type ControlConfirmation = {
   tone: RunControlId;
 };
 
-export function retryTargetsForRun(run: Pick<RunDetails, "dynamic"> | undefined): RetryTarget[] {
-  const targets = new Map<string, RetryTarget>();
-  const add = (target: RetryTarget) => {
-    if (target.value.length > 0 && !targets.has(target.value)) targets.set(target.value, target);
-  };
-
-  for (const frame of run?.dynamic?.frames ?? []) {
-    if (frame.status !== "failed") continue;
-    if (frame.frameKind !== undefined && frame.frameKind !== "node" && frame.frameKind !== "loop") continue;
-    add({
-      value: frame.frameKey,
-      label: frame.nodeId ? `frame: ${frame.nodeId}` : `frame: ${frame.frameKey}`,
-      kind: "frame",
-    });
-  }
-  for (const instance of run?.dynamic?.nodeInstances ?? []) {
-    if (instance.status !== "failed") continue;
-    add({
-      value: instance.nodeKey,
-      label: `node: ${instance.nodeId}`,
-      kind: "node",
-    });
-  }
-  for (const member of run?.dynamic?.groupMembers ?? []) {
-    if (member.status !== "failed") continue;
-    add({
-      value: member.memberKey,
-      label: `member: ${member.memberKind === "branch" ? member.branchId : `item[${member.itemIndex}]`}`,
-      kind: "member",
-    });
-  }
-  return [...targets.values()].sort((left, right) => left.value.localeCompare(right.value));
+export function retryTargetsForControls(targets: readonly RunControlTarget[]): RetryTarget[] {
+  const baseLabels = targets.map(target => `${target.kind}: ${target.nodeId ?? target.target}`);
+  const counts = new Map<string, number>();
+  for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return targets.map((target, index) => ({
+    value: target.target,
+    label: counts.get(baseLabels[index]!) === 1
+      ? baseLabels[index]!
+      : `${baseLabels[index]} (${target.target})`,
+    kind: target.kind,
+  }));
 }
 
 export function controlStateForRun(
   status: string | undefined,
   disabled: boolean,
   retryTargets: readonly RetryTarget[] = [],
+  canCancelRun = false,
 ): RunControlSpec[] {
   if (status === "failed") {
     return [{
@@ -874,13 +857,13 @@ export function controlStateForRun(
   if (status === "paused") {
     return [
       controlSpec("resume", disabled),
-      controlSpec("cancel", disabled),
+      controlSpec("cancel", disabled || !canCancelRun),
     ];
   }
   if (status === "pending" || status === "running" || status === "awaiting") {
     return [
       controlSpec("pause", disabled),
-      controlSpec("cancel", disabled),
+      controlSpec("cancel", disabled || !canCancelRun),
     ];
   }
   return [
@@ -901,10 +884,15 @@ export function commandForControl(
   controlId: RunControlId,
   retryTarget: string | undefined,
   selectedNodeId: string | null | undefined,
-): Record<string, unknown> | undefined {
-  if (controlId === "retry") return retryTarget ? { type: "retry", target: retryTarget } : undefined;
+): Exclude<WebControlCommand, { type: "signal" }> | undefined {
+  if (controlId === "retry") {
+    return retryTarget?.trim() ? { type: "retry", target: retryTarget } : undefined;
+  }
   if (controlId === "cancel" && selectedNodeId === null) return undefined;
-  if (controlId === "cancel") return selectedNodeId ? { type: "cancel", target: selectedNodeId } : { type: "cancel" };
+  if (controlId === "cancel" && selectedNodeId === undefined) return { type: "cancel" };
+  if (controlId === "cancel") {
+    return selectedNodeId?.trim() ? { type: "cancel", target: selectedNodeId } : undefined;
+  }
   return { type: controlId };
 }
 
@@ -1013,31 +1001,30 @@ function Inspector({
     setActiveTab("overview");
   }, [target]);
   useEffect(() => {
-    const hasArtifacts = (inspection?.summary.artifacts.length ?? 0) > 0;
-    const hasExecution = inspection?.summary.staticKind === "agent";
+    const hasArtifacts = (inspection?.artifacts.length ?? 0) > 0;
+    const hasExecution = inspection?.staticKind === "agent";
     if ((activeTab === "artifacts" && !hasArtifacts) || (activeTab === "execution" && !hasExecution)) {
       setActiveTab("overview");
     }
-  }, [activeTab, inspection?.summary.artifacts.length, inspection?.summary.staticKind]);
+  }, [activeTab, inspection?.artifacts.length, inspection?.staticKind]);
   if (loading) return <StateBlock tone="loading" title="Loading node details" />;
   if (!inspection) return <StateBlock tone="empty" title="Select a graph node" detail="Node runtime details appear here after selection." />;
-  const summary = inspection.summary;
-  const hasArtifacts = summary.artifacts.length > 0;
-  const hasExecution = summary.staticKind === "agent";
+  const hasArtifacts = inspection.artifacts.length > 0;
+  const hasExecution = inspection.staticKind === "agent";
   return (
     <div className="inspector-stack">
-      {(summary.runStartedAt || summary.runDurationMs !== undefined) && (
+      {(inspection.runStartedAt || inspection.runDurationMs !== undefined) && (
         <div className="inspector-runtime-meta" aria-label="Run metadata">
-          {summary.runStartedAt && (
+          {inspection.runStartedAt && (
             <div className="inspector-runtime-meta-item">
               <span>Run start</span>
-              <strong>{formatDate(summary.runStartedAt)}</strong>
+              <strong>{formatDate(inspection.runStartedAt)}</strong>
             </div>
           )}
-          {summary.runDurationMs !== undefined && (
+          {inspection.runDurationMs !== undefined && (
             <div className="inspector-runtime-meta-item duration">
               <span>Run duration</span>
-              <strong>{formatDuration(summary.runDurationMs)}</strong>
+              <strong>{formatDuration(inspection.runDurationMs)}</strong>
             </div>
           )}
         </div>
@@ -1045,61 +1032,61 @@ function Inspector({
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as InspectorTabId)}>
         <TabsList className="inspector-tabs" aria-label="Inspector sections">
           <InspectorTab id="overview">Overview</InspectorTab>
-          {hasArtifacts && <InspectorTab id="artifacts">Artifacts <Badge variant="tabCount">{summary.artifacts.length}</Badge></InspectorTab>}
+          {hasArtifacts && <InspectorTab id="artifacts">Artifacts <Badge variant="tabCount">{inspection.artifacts.length}</Badge></InspectorTab>}
           {hasExecution && <InspectorTab id="execution">Execution</InspectorTab>}
         </TabsList>
 
         <InspectorTabPanel id="overview">
           <>
-          {summary.agent && <AgentOverview agent={summary.agent} />}
+          {inspection.agent && <AgentOverview agent={inspection.agent} />}
 
           <InspectorSection title="Runtime target">
-            {summary.nodeKey && <KeyValue label="Node Key" value={summary.nodeKey} />}
-            {summary.frameKey && <KeyValue label="Frame Key" value={summary.frameKey} />}
-            {summary.staticKind && <KeyValue label="Kind" value={summary.staticKind} />}
-            {summary.latestAttempt && <KeyValue label="Latest attempt" value={`${summary.latestAttempt.attemptNo} · ${summary.latestAttempt.status}`} />}
+            {inspection.nodeKey && <KeyValue label="Node Key" value={inspection.nodeKey} />}
+            {inspection.frameKey && <KeyValue label="Frame Key" value={inspection.frameKey} />}
+            {inspection.staticKind && <KeyValue label="Kind" value={inspection.staticKind} />}
+            {inspection.latestAttempt && <KeyValue label="Latest attempt" value={`${inspection.latestAttempt.attemptNo} · ${inspection.latestAttempt.status}`} />}
           </InspectorSection>
 
           {definition && <JsonSection title="Definition" value={definition} expandNested />}
 
-          {summary.input && (
-            <JsonSection title={summary.input.kind === "runtime" ? "Input" : "Authored Input"} value={summary.input.value} />
+          {inspection.input && (
+            <JsonSection title={inspection.input.kind === "runtime" ? "Input" : "Authored Input"} value={inspection.input.value} />
           )}
 
-          {summary.prompt && (
+          {inspection.prompt && (
             <InspectorSection title="Prompt">
-              <PromptContent runId={runId} prompt={summary.prompt} />
+              <PromptContent runId={runId} prompt={inspection.prompt} />
             </InspectorSection>
           )}
 
-          {summary.loopProgress && (
+          {inspection.loopProgress && (
             <>
               <InspectorSection title="Loop Progress">
-                <KeyValue label="Round" value={String(summary.loopProgress.round)} />
-                <KeyValue label="Index" value={String(summary.loopProgress.index)} />
-                <KeyValue label="Frame Key" value={summary.loopProgress.frameKey} />
-                {summary.loopProgress.activeIterationFrameKey && <KeyValue label="Iteration Frame" value={summary.loopProgress.activeIterationFrameKey} />}
-                {summary.loopProgress.stop !== undefined && <KeyValue label="Stop" value={String(summary.loopProgress.stop)} />}
+                <KeyValue label="Round" value={String(inspection.loopProgress.round)} />
+                <KeyValue label="Index" value={String(inspection.loopProgress.index)} />
+                <KeyValue label="Frame Key" value={inspection.loopProgress.frameKey} />
+                {inspection.loopProgress.activeIterationFrameKey && <KeyValue label="Iteration Frame" value={inspection.loopProgress.activeIterationFrameKey} />}
+                {inspection.loopProgress.stop !== undefined && <KeyValue label="Stop" value={String(inspection.loopProgress.stop)} />}
               </InspectorSection>
-              {summary.loopProgress.activeChildNodeKeys.length > 0 && <JsonSection title="Active Child Node Keys" value={summary.loopProgress.activeChildNodeKeys} />}
-              {summary.loopProgress.state !== undefined && <JsonSection title="Loop State" value={summary.loopProgress.state} />}
-              {summary.loopProgress.transition !== undefined && <JsonSection title="Last Transition" value={summary.loopProgress.transition} />}
+              {inspection.loopProgress.activeChildNodeKeys.length > 0 && <JsonSection title="Active Child Node Keys" value={inspection.loopProgress.activeChildNodeKeys} />}
+              {inspection.loopProgress.state !== undefined && <JsonSection title="Loop State" value={inspection.loopProgress.state} />}
+              {inspection.loopProgress.transition !== undefined && <JsonSection title="Last Transition" value={inspection.loopProgress.transition} />}
             </>
           )}
 
-          {summary.output !== undefined && (
-            <JsonSection title="Output" value={summary.output} />
+          {inspection.output !== undefined && (
+            <JsonSection title="Output" value={inspection.output} />
           )}
 
-          {summary.failure !== undefined && (
-            <JsonSection title="Diagnostics" value={summary.failure} />
+          {inspection.failure !== undefined && (
+            <JsonSection title="Diagnostics" value={inspection.failure} />
           )}
           </>
         </InspectorTabPanel>
 
         {hasArtifacts && (
         <InspectorTabPanel id="artifacts">
-          <ArtifactList runId={runId} artifacts={summary.artifacts} />
+          <ArtifactList runId={runId} artifacts={inspection.artifacts} />
         </InspectorTabPanel>
         )}
 
@@ -1113,7 +1100,7 @@ function Inspector({
   );
 }
 
-export function AgentOverview({ agent }: { agent: NonNullable<NodeInspection["summary"]["agent"]> }) {
+export function AgentOverview({ agent }: { agent: NonNullable<NodeInspection["agent"]> }) {
   return (
     <InspectorSection title="Agent State">
       <KeyValue label="Agent" value={agent.key} />
@@ -1146,13 +1133,13 @@ function InspectorTabPanel({ id, children }: { id: InspectorTabId; children: Rea
   );
 }
 
-function PromptContent({ runId, prompt }: { runId: string | undefined; prompt: NonNullable<NodeInspection["summary"]["prompt"]> }) {
+function PromptContent({ runId, prompt }: { runId: string | undefined; prompt: NonNullable<NodeInspection["prompt"]> }) {
   if (prompt.text) return <MarkdownBlock value={prompt.text} />;
   if (!runId || !prompt.artifactId) return <StateBlock tone="empty" title="Prompt unavailable" detail="No prompt artifact or inline prompt was recorded for this scope." />;
   return <ArtifactPreviewBlock runId={runId} artifactId={prompt.artifactId} {...(prompt.mediaType ? { mediaType: prompt.mediaType } : {})} />;
 }
 
-function ArtifactList({ runId, artifacts }: { runId: string | undefined; artifacts: ArtifactReference[] }) {
+function ArtifactList({ runId, artifacts }: { runId: string | undefined; artifacts: NodeInspection["artifacts"] }) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>();
   const selected = artifacts.find(artifact => artifact.id === selectedArtifactId);
   return (
@@ -1208,7 +1195,10 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
     queryKey: ["node-execution", runId, target, context],
     queryFn: () => getNodeExecutionInspection(runId, target, context),
     enabled: active,
-    refetchInterval: active ? 2_500 : false,
+    refetchInterval: query => agentExecutionRefetchInterval(
+      active,
+      (query.state.data as NodeExecutionInspection | undefined)?.summary.status,
+    ),
   });
   if (execution.isLoading) return <StateBlock tone="loading" title="Loading execution details" />;
   if (execution.error) return <StateBlock tone="error" title="Execution details failed" detail={execution.error instanceof Error ? execution.error.message : String(execution.error)} />;
@@ -1218,7 +1208,7 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
   return (
     <div className="inspector-stack">
       <InspectorSection title="Summary">
-        {data.summary.status && <KeyValue label="Status" value={data.summary.status} />}
+        <KeyValue label="Status" value={data.summary.status} />
         {data.lastObservedAt && <KeyValue label="Last observed" value={formatRelativeAge(data.lastObservedAt)} />}
         {data.summary.sessionName && <KeyValue label="Session" value={data.summary.sessionName} />}
         {data.summary.turnCount !== undefined && <KeyValue label="Turns" value={String(data.summary.turnCount)} />}
@@ -1234,7 +1224,9 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
         {data.output ? <TextArtifactPreview value={data.output.tail} label={progressOutputLabel(data.output)} /> : <StateBlock tone="empty" title="No streamed output" detail="The selected agent attempt did not report streamed output." />}
       </InspectorSection>
       <InspectorSection title="Last Tool Calls">
-        {data.lastToolCalls.length > 0 ? <ToolCallList calls={data.lastToolCalls} total={data.toolCallCount} /> : <StateBlock tone="empty" title="No tool calls" detail="No tool calls were recorded for the selected agent attempt." />}
+        {data.lastToolCalls.length > 0
+          ? <ToolCallList calls={data.lastToolCalls} total={data.toolCallCount} incomplete={data.recentToolsIncomplete} />
+          : <StateBlock tone="empty" {...toolCallEmptyState(data.recentToolsIncomplete)} />}
       </InspectorSection>
     </div>
   );
@@ -1281,10 +1273,19 @@ function Metric({ label, value }: { label: string; value: number | string | unde
   );
 }
 
-function ToolCallList({ calls, total }: { calls: NodeExecutionInspection["lastToolCalls"]; total: number | undefined }) {
+function ToolCallList({
+  calls,
+  total,
+  incomplete,
+}: {
+  calls: NodeExecutionInspection["lastToolCalls"];
+  total: number | undefined;
+  incomplete: boolean;
+}) {
+  const summary = toolCallHistorySummary(calls.length, total, incomplete);
   return (
     <div className="tool-call-stack">
-      {total !== undefined && <span className="tool-call-summary">Last {calls.length} of {total}</span>}
+      {summary && <span className="tool-call-summary">{summary}</span>}
       {calls.map((call, index) => (
         <div key={`${call.turn}-${call.toolCallId ?? index}`} className="tool-call-row">
           <div className="tool-call-head">
@@ -1332,8 +1333,8 @@ function SignalBox({
   wait,
   onSubmit,
 }: {
-  wait: { nodeKey: string; renderedPrompt?: string };
-  onSubmit(payload: unknown): void;
+  wait: NonNullable<NodeInspection["awaitingSignal"]>;
+  onSubmit(payload: Extract<WebControlCommand, { type: "signal" }>["payload"]): void;
 }) {
   const [payload, setPayload] = useState("{}");
   const [payloadError, setPayloadError] = useState<string | undefined>();
@@ -1351,7 +1352,7 @@ function SignalBox({
       }}
     >
       <strong>Awaiting Signal</strong>
-      {wait.renderedPrompt && <p>{wait.renderedPrompt}</p>}
+      {wait.prompt && <p>{wait.prompt}</p>}
       <Textarea
         value={payload}
         aria-label="Signal payload JSON"
@@ -1522,6 +1523,39 @@ function isTerminalRunStatus(status: string | undefined): boolean {
 
 export function nodeInspectionRefetchInterval(status: string | undefined): 1_000 | false {
   return isTerminalRunStatus(status) ? false : 1_000;
+}
+
+export function agentExecutionRefetchInterval(
+  active: boolean,
+  status: string | undefined,
+): 2_500 | false {
+  return active && (
+    status === "starting"
+    || status === "ready"
+    || status === "running"
+    || status === "awaiting"
+  ) ? 2_500 : false;
+}
+
+export function toolCallEmptyState(incomplete: boolean): { title: string; detail: string } {
+  return incomplete
+    ? {
+      title: "Recent tool details incomplete",
+      detail: "No recent tool-call details were retained; earlier tool calls may be unavailable.",
+    }
+    : {
+      title: "No tool calls",
+      detail: "No tool calls were recorded for the selected agent attempt.",
+    };
+}
+
+export function toolCallHistorySummary(
+  count: number,
+  total: number | undefined,
+  incomplete: boolean,
+): string | undefined {
+  const retained = total === undefined ? `${count} recent` : `Last ${count} of ${total}`;
+  return incomplete ? `${retained} · retained details incomplete` : total === undefined ? undefined : retained;
 }
 
 function runStatusIcon(status: string) {

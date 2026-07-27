@@ -7,7 +7,7 @@ import type { SourceFile } from "typescript/unstable/ast";
 import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "../typescript/native.js";
 import { execFunction, isTaskDefineCall, objectProperty, taskFactoryLocalName } from "./ast.js";
 import { findTaskCallsites, type TaskCallsiteSemanticContext } from "./callsites.js";
-import { collectFreeIdentifiers } from "./inline-capture.js";
+import { collectFreeIdentifiers } from "./capture-analysis.js";
 import type { ImportBinding, TaskAuthoringIssue, TaskReferenceMetadata, TaskCallsite, WorkflowTaskExport } from "./types.js";
 import { collectImportBindings, collectWorkflowTaskExports, findVisibleVariableDeclaration, hasInnerBinding } from "./workflow-symbols.js";
 

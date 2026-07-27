@@ -143,6 +143,79 @@ export function targetedRetryGroupBlocker(
     : { status: "completed", reason: "group_would_complete_without_retry" };
 }
 
+export function targetedRetryGroupAssessment(
+  group: GroupProjection,
+  members: readonly GroupMember[],
+  reopenedDependencyKeys: ReadonlySet<string>,
+): {
+  blockerFor(targetMemberKey: string): ReturnType<typeof targetedRetryGroupBlocker>;
+} {
+  const membersByKey = new Map<string, GroupMember>();
+  for (const member of members) {
+    if (membersByKey.has(member.memberKey)) {
+      throw new Error(`Retry group '${group.groupKey}' contains duplicate member identity '${member.memberKey}'.`);
+    }
+    membersByKey.set(member.memberKey, member);
+  }
+  const failed = members.filter(member =>
+    member.status === "failed" && !reopenedDependencyKeys.has(member.memberKey));
+  const cancelled = members.filter(member =>
+    member.status === "cancelled" && !reopenedDependencyKeys.has(member.memberKey));
+  const completedMembers = members
+    .filter(member =>
+      member.status === "completed" && !reopenedDependencyKeys.has(member.memberKey));
+  if (group.strategy === "race" || group.strategy === "quorum") {
+    completedMembers.sort(byCompletionSequence);
+  }
+  const completed = completedMembers.length;
+  const open = members.filter(member =>
+    (member.status === "ready" || member.status === "running")
+    && !reopenedDependencyKeys.has(member.memberKey)).length;
+  const reopenedDependencies = members.filter(member =>
+    reopenedDependencyKeys.has(member.memberKey)).length;
+
+  return {
+    blockerFor(targetMemberKey) {
+      const target = membersByKey.get(targetMemberKey);
+      if (!target) {
+        throw new Error(`Retry group '${group.groupKey}' has no target member '${targetMemberKey}'.`);
+      }
+      if (group.strategy === "all") {
+        const remainingFailure = failed.find(member => member.memberKey !== targetMemberKey);
+        if (remainingFailure) {
+          return {
+            status: "failed",
+            reason: remainingFailure.terminalReason ?? "member_failed",
+          };
+        }
+        const remainingCancellation = cancelled.find(member => member.memberKey !== targetMemberKey);
+        return remainingCancellation
+          ? {
+            status: "failed",
+            reason: remainingCancellation.terminalReason ?? "member_cancelled",
+          }
+          : undefined;
+      }
+      if (group.strategy === "race") {
+        return completed > 0
+          ? { status: "completed", reason: "group_would_complete_without_retry" }
+          : undefined;
+      }
+      const quorum = requirePositiveQuorum(group);
+      if (completed >= quorum) {
+        return { status: "completed", reason: "group_would_complete_without_retry" };
+      }
+      const reopenedTargets = reopenedDependencyKeys.has(targetMemberKey)
+        ? 0
+        : 1;
+      const reopened = reopenedDependencies + reopenedTargets;
+      return completed + open + reopened < quorum
+        ? { status: "failed", reason: "quorum_impossible" }
+        : undefined;
+    },
+  };
+}
+
 type RetryDependencyOutcome = "blocked" | "complete" | "work";
 
 export function targetedRetryDependencyBlocker(

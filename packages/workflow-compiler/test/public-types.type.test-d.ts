@@ -29,6 +29,8 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   expectTypeOf<Extract<CompileWorkerFailure, { type: "worker-spawn-failed" }>[
     "stdoutTail"
   ]>().toEqualTypeOf<string>();
+  expectTypeOf<Extract<CompileWorkerFailure, { type: "workflow-source-changed" }>>()
+    .toEqualTypeOf<{ type: "workflow-source-changed"; entry: string; message: string }>();
 
   const failure = { type: "worker-system-failed", message: "failed" } satisfies CompileWorkerFailure;
   const error = new WorkflowPreparationError({ type: "compile-failed", phase: "compile", message: "failed", failure });

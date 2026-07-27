@@ -1,8 +1,9 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, cp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openRuntimeStore } from "../src/store/store.js";
+import { DirectoryFence } from "../src/store/path-fence.js";
+import { openRuntimeStore, publishRunDirectory } from "../src/store/store.js";
 import { preparedWorkflow, prepareSyntheticWorkflow, runtimeRunsRoot, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 const runIdBytes = vi.hoisted(() => ({ values: [] as number[] }));
@@ -151,6 +152,160 @@ describe("runtime run directory publication", () => {
       }
     });
   });
+
+  it("reports an orphan final run directory without deleting it", async () => {
+    await withRuntimeWorkspace("runtime-orphan-run-publication", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      const runId = deterministicRunId(0xdd);
+      const sentinel = join(runtimeRunsRoot(workspace), runId, "sentinel.txt");
+      await mkdir(dirname(sentinel), { recursive: true });
+      await writeFile(sentinel, "uncommitted publication");
+      try {
+        await expect(store.cleanupStagedRunDirectories()).rejects.toThrow();
+        await expect(readFile(sentinel, "utf8")).resolves.toBe("uncommitted publication");
+        expect(store.listRuns()).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("revalidates the opened runs root after asynchronous staging population", async () => {
+    await withRuntimeWorkspace("runtime-publication-root-swap", async workspace => {
+      const runsRoot = runtimeRunsRoot(workspace);
+      const relocatedRunsRoot = `${runsRoot}.opened`;
+      await mkdir(runsRoot, { recursive: true });
+      const publicationReady = deferred<void>();
+      const resumePublication = deferred<void>();
+      const runId = deterministicRunId(0xdd);
+      const publication = publishRunDirectory({
+        runsRoot: new DirectoryFence(runsRoot, "Runtime runs root"),
+        runId,
+        platform: process.platform,
+        populate: async stagingDir => {
+          await writeFile(join(stagingDir, "workflow.ir.json"), "{}\n");
+          publicationReady.resolve();
+          await resumePublication.promise;
+        },
+      });
+      await publicationReady.promise;
+      await rename(runsRoot, relocatedRunsRoot);
+      await mkdir(runsRoot);
+      await writeFile(join(runsRoot, "sentinel"), "replacement");
+      try {
+        resumePublication.resolve();
+        let failure: unknown;
+        try {
+          await publication;
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(AggregateError);
+        await expect(readFile(join(runsRoot, "sentinel"), "utf8")).resolves.toBe("replacement");
+        await expect(readdir(runsRoot)).resolves.toEqual(["sentinel"]);
+        await expect(readFile(join(relocatedRunsRoot, runId, "workflow.ir.json"), "utf8"))
+          .resolves.toBe("{}\n");
+        await expect(readdir(join(relocatedRunsRoot, `.staging-${runId}`))).resolves.toEqual([]);
+      } finally {
+        resumePublication.resolve();
+        await rm(runsRoot, { recursive: true });
+        await rename(relocatedRunsRoot, runsRoot);
+      }
+    });
+  });
+
+  it("returns absence only for missing rows and rejects a substituted run capsule before writes", async () => {
+    await withRuntimeWorkspace("runtime-run-capsule-lookup", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected admitted run directory");
+        expect(store.getRunDir(deterministicRunId(0xee))).toBeUndefined();
+
+        const outside = join(workspace, "outside-run");
+        await rename(runDir, outside);
+        expect(() => store.getRunDir(run.id)).toThrow();
+
+        await symlink(outside, runDir, process.platform === "win32" ? "junction" : "dir");
+        await expect((async () => {
+          const selected = store.getRunDir(run.id);
+          if (!selected) throw new Error("expected persisted run row");
+          await mkdir(join(selected, "artifacts"), { recursive: true });
+          await writeFile(join(selected, "artifacts", "escaped.txt"), "escaped");
+        })()).rejects.toThrow();
+        await expect(access(join(outside, "artifacts", "escaped.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a substituted runtime ancestor before exposing a run directory", async () => {
+    await withRuntimeWorkspace("runtime-run-capsule-ancestor", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected admitted run directory");
+        const runtimeRoot = dirname(dirname(runDir));
+        const relocatedRuntimeRoot = `${runtimeRoot}.relocated`;
+        await rename(runtimeRoot, relocatedRuntimeRoot);
+        try {
+          await symlink(relocatedRuntimeRoot, runtimeRoot, "dir");
+          try {
+            expect(() => store.getFrozenRun(run.id)).toThrow();
+            await expect(store.deleteRun(run.id)).rejects.toThrow();
+            expect(store.getRun(run.id)?.id).toBe(run.id);
+            await expect((async () => {
+              const selected = store.getRunDir(run.id);
+              if (!selected) throw new Error("expected persisted run row");
+              await writeFile(join(selected, "ancestor-escaped.txt"), "escaped");
+            })()).rejects.toThrow();
+            await expect(access(join(relocatedRuntimeRoot, "runs", run.id, "ancestor-escaped.txt")))
+              .rejects.toMatchObject({ code: "ENOENT" });
+          } finally {
+            await unlink(runtimeRoot);
+          }
+        } finally {
+          await rename(relocatedRuntimeRoot, runtimeRoot);
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a same-path runs-root replacement by directory identity", async () => {
+    await withRuntimeWorkspace("runtime-runs-root-identity", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected admitted run directory");
+        const runsRoot = dirname(runDir);
+        const relocatedRunsRoot = `${runsRoot}.relocated`;
+        await rename(runsRoot, relocatedRunsRoot);
+        try {
+          await mkdir(runsRoot);
+          await cp(join(relocatedRunsRoot, run.id), join(runsRoot, run.id), { recursive: true });
+          try {
+            expect(() => store.getRunDir(run.id)).toThrow();
+            expect(() => store.getFrozenRun(run.id)).toThrow();
+          } finally {
+            await rm(runsRoot, { recursive: true });
+          }
+        } finally {
+          await rename(relocatedRunsRoot, runsRoot);
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
 
 function deterministicRunId(byte: number): string {
@@ -164,4 +319,15 @@ function deterministicRunId(byte: number): string {
     now.getSeconds(),
   ].map(value => String(value).padStart(2, "0")).join("");
   return `${timestamp}${byte.toString(16).padStart(2, "0").toUpperCase().repeat(10)}`;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>(resolve => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
 }

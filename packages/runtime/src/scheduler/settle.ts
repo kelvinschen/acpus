@@ -3,6 +3,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { continueRootEvents } from "./materialize.js";
 import type { SchedulerEvent } from "./events.js";
+import type { SchedulerSnapshot } from "./store-port.js";
 import { applySchedulerEvents, attemptTimeoutEvents, nextGroupCompletionBatchEvents, signalTimeoutEvents } from "./transitions.js";
 import type { SchedulerProjection } from "./types.js";
 
@@ -61,4 +62,24 @@ export function settleFrozenProjection(input: {
     events.push(...derived);
     projection = applySchedulerEvents(projection, derived);
   }
+}
+
+export function settleFrozenSnapshot(input: {
+  frozen: FrozenSchedulerRun;
+  snapshot: SchedulerSnapshot;
+  now: Date;
+}): { snapshot: SchedulerSnapshot; events: SchedulerEvent[] } {
+  const settled = settleFrozenProjection({
+    frozen: input.frozen,
+    projection: input.snapshot.projection,
+    now: input.now,
+  });
+  return {
+    events: settled.events,
+    snapshot: {
+      ...input.snapshot,
+      version: input.snapshot.version + settled.events.length,
+      projection: settled.projection,
+    },
+  };
 }

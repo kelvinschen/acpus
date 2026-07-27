@@ -8,16 +8,11 @@
     "node": "^22.18.0 || >=24.0.0"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs workspace",
     "build:clean": "pnpm clean && pnpm build",
-    "check:build-toolchain": "node scripts/verify-build-toolchain.mjs",
-    "check:dead-code": "knip --include-entry-exports --include files,exports,nsExports,types,nsTypes,enumMembers,namespaceMembers,duplicates --treat-config-hints-as-errors",
-    "check:dependencies": "knip --dependencies --treat-config-hints-as-errors",
-    "check:dependencies:strict": "knip --strict --dependencies --treat-config-hints-as-errors",
-    "check:docs": "node scripts/verify-doc-links.mjs",
-    "check:release": "node scripts/verify-release-state.mjs",
-    "check:security": "pnpm audit --audit-level high",
-    "typecheck": "pnpm -r typecheck",
+    "check": "node scripts/check.mjs",
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:tests",
+    "typecheck:tests": "tsc -p tsconfig.vitest.json --noEmit",
     "test": "node scripts/test.mjs",
     "test:watch": "vitest",
     "test:type": "vitest run --typecheck.only --project type-contract",
@@ -29,7 +24,7 @@
     "test:dist": "node scripts/verify-dist.js",
     "changeset": "changeset",
     "version-packages": "changeset version && node scripts/sync-acpus-skill-version.mjs && pnpm install --lockfile-only",
-    "ci:publish": "pnpm check:release && changeset publish",
+    "ci:publish": "pnpm check release && changeset publish",
     "clean": "pnpm -r run clean"
   },
   "devDependencies": {

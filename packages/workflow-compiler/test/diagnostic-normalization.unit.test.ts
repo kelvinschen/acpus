@@ -1,7 +1,6 @@
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
-import type { DiagnosticCandidate, DiagnosticOrigin } from "../src/check/diagnostics.js";
-import { normalizeDiagnostics } from "../src/check/typescript.js";
+import { normalizeDiagnostics, type DiagnosticCandidate, type DiagnosticOrigin } from "../src/check/diagnostics.js";
 
 const entry = "/work/workflow.ts";
 

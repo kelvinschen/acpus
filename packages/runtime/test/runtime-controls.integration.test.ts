@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
-import { openExistingWritableRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
+import { openExistingWritableRuntimeStore, openRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
   failOnceTaskWorkflow,
@@ -31,6 +31,7 @@ import {
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
 import { advanceRuntimeRun, applySchedulerControlIntent } from "./support/scheduler.js";
+import { admitRunForTest } from "./support/runtime-store.js";
 
 describe.concurrent("runtime controls and recovery", () => {
   it("pauses, resumes, and applies retries to durable runs", async () => {
@@ -61,6 +62,29 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
 
+    });
+  });
+
+  it("cancels a paused run before its root frame materializes", async () => {
+    await withRuntimeWorkspace("runtime-cancel-paused-before-root", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, scalarWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace })
+        .finally(() => store.close());
+
+      await expect(controlRun(workspace, run.id, "pause")).resolves.toMatchObject({ status: "paused" });
+      await expect(getRunVisualizationSnapshot(workspace, run.id)).resolves.toMatchObject({
+        controls: { canCancelRun: true },
+      });
+      await expect(controlRun(workspace, run.id, "cancel")).resolves.toMatchObject({ status: "canceled" });
+      expect(runtimeRows(
+        workspace,
+        "SELECT type FROM run_events WHERE run_id = ? AND type LIKE 'frame.%' ORDER BY sequence",
+        run.id,
+      )).toEqual([
+        { type: "frame.started" },
+        { type: "frame.cancelled" },
+      ]);
     });
   });
 
@@ -459,6 +483,40 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(runtimeRows(workspace, "SELECT status, terminal_reason FROM signal_waits WHERE run_id = ?", runId)).toEqual([
         { status: "timed_out", terminal_reason: "signal_timeout" },
       ]);
+    });
+  });
+
+  it("projects selected cancel only while the exact dynamic target is controllable", async () => {
+    await withRuntimeWorkspace("runtime-selected-cancel-projection", async workspace => {
+      const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      const before = await getRunInspection(workspace, {
+        runId: awaiting.run.id,
+        mode: "details",
+        target: "approve",
+      });
+      expect(before.isOk() && before.value.kind === "details"
+        ? before.value.availableControls
+        : undefined).toEqual([
+        { type: "cancel", target: expect.any(String) },
+      ]);
+      const cancelTarget = before.isOk() && before.value.kind === "details"
+        ? before.value.availableControls[0]?.target
+        : undefined;
+      expect(cancelTarget).toEqual(
+        before.isOk() && before.value.kind === "details"
+          ? before.value.summary.nodeKey
+          : undefined,
+      );
+
+      await signalRun(workspace, awaiting.run.id, "approve", { ok: true });
+      const after = await getRunInspection(workspace, {
+        runId: awaiting.run.id,
+        mode: "details",
+        target: "approve",
+      });
+      expect(after.isOk() && after.value.kind === "details"
+        ? after.value.availableControls
+        : undefined).toEqual([]);
     });
   });
 

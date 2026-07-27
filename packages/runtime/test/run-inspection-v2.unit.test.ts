@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { projectAgentExecution } from "../src/inspection/agent-execution-projection.js";
 import {
   ambiguousTimelineCandidates,
   inspectionExcerpt,
@@ -205,6 +206,7 @@ describe("inspection v2 decision projections", () => {
     };
     details.instances[0] = { ...details.instances[0]!, status: "failed" };
     details.summary.nodeStatus = "failed";
+    details.availableControls = [{ type: "retry", target: "agent~1" }];
 
     const summary = projectTargetSummary({
       run: { ...agentRun(), status: "failed" },
@@ -1381,6 +1383,415 @@ describe("inspection v2 decision projections", () => {
     };
     expect(resolvedTargetIdentity(details)).toBe("dynamic-node:agent~1");
   });
+
+  it("projects exact-attempt Agent execution while keeping scheduler status authoritative", () => {
+    const details = agentDetails();
+    details.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-1",
+      kind: "agent_attempt",
+      createdAt: "2026-07-25T00:00:03.000Z",
+      metadata: {
+        status: "completed",
+        sessionName: "session-exact",
+        turnCount: 2,
+        message: "metadata message",
+        turns: [{
+          turn: 1,
+          summary: {
+            context: { used: 40, size: 100 },
+            tokenUsage: {
+              source: "prompt_response",
+              inputTokens: 10,
+              outputTokens: 2,
+              totalTokens: 12,
+            },
+            tools: { totalToolCallCount: 1 },
+          },
+        }, {
+          turn: 2,
+          summary: {
+            tokenUsage: {
+              source: "usage_update",
+              inputTokens: 20,
+              outputTokens: 3,
+              totalTokens: 23,
+            },
+            tools: { totalToolCallCount: 0 },
+          },
+        }],
+      },
+    }, {
+      id: 2,
+      attemptId: "attempt-other",
+      kind: "agent_attempt",
+      createdAt: "2026-07-25T00:00:10.000Z",
+      metadata: { sessionName: "wrong-session", turnCount: 99 },
+    }];
+    details.progress[0] = {
+      ...details.progress[0]!,
+      status: "completed",
+      message: "live message",
+      context: { used: 90, size: 100, updatedAt: "2026-07-25T00:00:02.000Z" },
+      tokenUsage: { inputTokens: 999, totalTokens: 999 },
+    };
+    details.progress.push({
+      nodeKey: "agent~2",
+      nodeId: "agent",
+      attemptId: "attempt-other",
+      attemptNo: 2,
+      kind: "agent",
+      status: "running",
+      message: "wrong progress",
+      updatedAt: "2026-07-25T00:00:20.000Z",
+    });
+
+    const document = projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations: observationProjection([
+        evidence(1, { finishedAt: "2026-07-25T00:00:01.500Z" }),
+        evidence(2, { finishedAt: "2026-07-25T00:00:02.500Z" }),
+      ]),
+    });
+
+    expect(document).toMatchObject({
+      kind: "execution",
+      available: true,
+      summary: {
+        status: "running",
+        sessionName: "session-exact",
+        turnCount: 2,
+        message: "live message",
+      },
+      contextWindow: {
+        used: 90,
+        size: 100,
+        percent: 90,
+        updatedAt: "2026-07-25T00:00:02.000Z",
+      },
+      tokenUsage: {
+        source: "usage_update",
+        inputTokens: 30,
+        outputTokens: 5,
+        totalTokens: 35,
+      },
+      output: { tail: "partial response", totalBytes: 16, truncated: false },
+      toolCallCount: 1,
+      lastToolCalls: [{
+        turn: 1,
+        toolCallId: "tool-1",
+        toolName: "Bash",
+        status: "running",
+      }],
+      recentToolsIncomplete: false,
+    });
+    expect(document.summary.sessionName).not.toBe("wrong-session");
+  });
+
+  it("does not infer Agent execution availability from authored compact state", () => {
+    const details = agentDetails();
+    details.summary.agent = {
+      key: "reviewer",
+      availability: { context: "available", tokenUsage: "available" },
+      turnCount: 3,
+    };
+    delete details.summary.latestAttempt;
+    details.attempts = [];
+    details.progress = [];
+
+    expect(projectAgentExecution({
+      details,
+      cursor: { eventSequence: 0, progressVersion: 0, observationVersion: 0 },
+      query: { runId: details.run.id, mode: "execution", target: "agent" },
+    })).toMatchObject({
+      available: false,
+      reason: "not-started",
+      lastToolCalls: [],
+      recentToolsIncomplete: false,
+    });
+
+    details.staticNode = { ...details.staticNode!, kind: "task" };
+    expect(projectAgentExecution({
+      details,
+      cursor: { eventSequence: 0, progressVersion: 0, observationVersion: 0 },
+      query: { runId: details.run.id, mode: "execution", target: "agent" },
+    })).toMatchObject({
+      available: false,
+      reason: "not-agent",
+    });
+  });
+
+  it("prefers progress tools, deduplicates durable closed entries, and excludes post-fence activity", () => {
+    const details = agentDetails();
+    const entries = [
+      semanticActivity(1, 1, "tool", "Read completed", {
+        id: "read-v1",
+        sourceSequence: 1,
+        tool: {
+          toolCallId: "tool-1",
+          name: "Read",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:01.000Z",
+          finishedAt: "2026-07-25T00:00:01.000Z",
+        },
+      }),
+      semanticActivity(1, 4, "tool", "Read completed latest", {
+        id: "read-v2",
+        sourceSequence: 4,
+        tool: {
+          toolCallId: "tool-1",
+          name: "Read latest",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:02.000Z",
+          finishedAt: "2026-07-25T00:00:02.000Z",
+        },
+      }),
+      semanticActivity(1, 2, "tool", "Write completed", {
+        id: "write",
+        sourceSequence: 2,
+        tool: {
+          toolCallId: "tool-2",
+          name: "Write",
+          status: "running",
+          updatedAt: "2026-07-25T00:00:03.000Z",
+          finishedAt: "2026-07-25T00:00:03.000Z",
+        },
+      }),
+      semanticActivity(1, 3, "tool", "Status unavailable when segment closed", {
+        id: "statusless",
+        sourceSequence: 3,
+        tool: {
+          toolCallId: "tool-4",
+          name: "Unknown",
+          updatedAt: "2026-07-25T00:00:04.000Z",
+        },
+      }),
+      semanticActivity(1, 5, "tool", "Shell completed after fence", {
+        id: "post-fence",
+        sourceSequence: 5,
+        postFence: true,
+        tool: {
+          toolCallId: "tool-3",
+          name: "Shell",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:04.000Z",
+          finishedAt: "2026-07-25T00:00:04.000Z",
+        },
+      }),
+    ];
+    const observations = observationProjection([], entries, [agentCurrent(1, {
+      tools: {
+        active: [{
+          toolCallId: "active",
+          name: "Ignored active",
+          status: "running",
+          updatedAt: "2026-07-25T00:00:05.000Z",
+        }],
+        recent: {
+          toolCallId: "recent",
+          name: "Ignored recent",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:04.000Z",
+        },
+        omittedActive: 0,
+      },
+    })]);
+
+    const document = projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    });
+
+    expect(document.lastToolCalls).toEqual([
+      expect.objectContaining({ turn: 1, toolCallId: "tool-2", toolName: "Write", status: "running" }),
+      expect.objectContaining({ turn: 1, toolCallId: "tool-4", toolName: "Unknown" }),
+      expect.objectContaining({ turn: 1, toolCallId: "tool-1", toolName: "Bash", status: "running" }),
+    ]);
+    expect(document.lastToolCalls).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolCallId: "active" }),
+      expect.objectContaining({ toolCallId: "recent" }),
+      expect.objectContaining({ toolCallId: "tool-3" }),
+    ]));
+    expect(document.recentToolsIncomplete).toBe(false);
+  });
+
+  it("uses current active tools only when exact progress is absent and never consumes current recent", () => {
+    const details = agentDetails();
+    details.progress = [];
+    const observations = observationProjection([], [], [agentCurrent(2, {
+      tools: {
+        active: [{
+          toolCallId: "active",
+          name: "Read",
+          status: "running",
+          updatedAt: "2026-07-25T00:00:05.000Z",
+        }],
+        recent: {
+          toolCallId: "recent",
+          name: "Stale",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:04.000Z",
+        },
+        omittedActive: 0,
+      },
+    })]);
+
+    const document = projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    });
+
+    expect(document.lastToolCalls).toEqual([{
+      turn: 2,
+      toolCallId: "active",
+      toolName: "Read",
+      status: "running",
+    }]);
+    expect(document.recentToolsIncomplete).toBe(false);
+  });
+
+  it("reports tool recency as complete when the latest three are known despite older retained entries", () => {
+    const details = agentDetails();
+    details.progress[0]!.tools = {
+      turn: 2,
+      totalToolCallCount: 8,
+      lastCalls: ["a", "b", "c"].map((toolCallId, index) => ({
+        toolCallId,
+        toolName: `Tool ${toolCallId}`,
+        status: "completed",
+        updatedAt: `2026-07-25T00:00:0${index + 1}.000Z`,
+      })),
+    };
+    const observations: AgentObservationInspectionProjection = {
+      ...observationProjection([]),
+      olderEntryCount: 5,
+      hasOlderEntries: true,
+      retentionOmittedBefore: 2,
+      omittedTurnEvidence: true,
+    };
+
+    const document = projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    });
+
+    expect(document.lastToolCalls).toHaveLength(3);
+    expect(document.toolCallCount).toBe(8);
+    expect(document.recentToolsIncomplete).toBe(false);
+  });
+
+  it("distinguishes authoritative zero tools from older history that obscures the latest three", () => {
+    const noTools = agentDetails();
+    noTools.progress = [];
+    noTools.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-1",
+      kind: "agent_attempt",
+      createdAt: "2026-07-25T00:00:03.000Z",
+      metadata: {
+        turns: [{ turn: 1, summary: { tools: { totalToolCallCount: 0 } } }],
+      },
+    }];
+    expect(projectAgentExecution({
+      details: noTools,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: noTools.run.id, mode: "execution", target: "attempt-1" },
+    })).toMatchObject({
+      toolCallCount: 0,
+      lastToolCalls: [],
+      recentToolsIncomplete: false,
+    });
+
+    const obscured = agentDetails();
+    obscured.progress = [];
+    const entries = ["a", "b"].map((toolCallId, index) =>
+      semanticActivity(1, index + 1, "tool", `${toolCallId} closed`, {
+        tool: {
+          toolCallId,
+          name: `Tool ${toolCallId}`,
+          updatedAt: `2026-07-25T00:00:0${index + 1}.000Z`,
+        },
+      }));
+    const observations = {
+      ...observationProjection([], entries),
+      olderEntryCount: 4,
+      hasOlderEntries: true,
+    };
+    expect(projectAgentExecution({
+      details: obscured,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: obscured.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    })).toMatchObject({
+      lastToolCalls: [expect.objectContaining({ toolCallId: "a" }), expect.objectContaining({ toolCallId: "b" })],
+      recentToolsIncomplete: true,
+    });
+  });
+
+  it("does not treat a later zero-tool progress turn as attempt-wide completeness", () => {
+    const details = agentDetails();
+    details.executionMetadata = [];
+    details.progress[0]!.tools = {
+      turn: 2,
+      totalToolCallCount: 0,
+      lastCalls: [],
+    };
+    const observations = {
+      ...observationProjection([]),
+      olderEntryCount: 1,
+      hasOlderEntries: true,
+    };
+
+    expect(projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    })).toMatchObject({
+      toolCallCount: 0,
+      lastToolCalls: [],
+      recentToolsIncomplete: true,
+    });
+  });
+
+  it("excludes post-fence current and entry turns from the execution turn count", () => {
+    const details = agentDetails();
+    details.progress = [];
+    details.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-1",
+      kind: "agent_attempt",
+      metadata: {},
+      createdAt: "2026-07-25T00:00:10.000Z",
+    }];
+    const postFenceEntry = semanticActivity(9, 1, "response", "late", { postFence: true });
+    const observations = observationProjection(
+      [evidence(2, {
+        fencedAt: "2026-07-25T00:00:03.000Z",
+        finishedAt: "2026-07-25T00:00:09.000Z",
+      })],
+      [postFenceEntry],
+      [agentCurrent(8, { postFence: true })],
+    );
+
+    const document = projectAgentExecution({
+      details,
+      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
+      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
+      observations,
+    });
+
+    expect(document.summary.turnCount).toBe(2);
+    expect(document.lastObservedAt).toBe("2026-07-25T00:00:03.000Z");
+  });
 });
 
 function agentRun(): RunDetails {
@@ -1507,6 +1918,7 @@ function agentDetails(): RunInspectionTargetDetailsDocument {
     executionMetadata: [],
     progress: [...run.dynamic!.progress],
     artifacts: [],
+    availableControls: [],
   };
 }
 

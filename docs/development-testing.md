@@ -53,12 +53,16 @@ Test public behavior through public entrypoints. Testing an internal helper is a
 4. Run narrow checks while iterating, then broaden verification in proportion to the change's reach and risk.
 5. Update the canonical spec in the same change when current behavior changes.
 
+Pass Vitest path filters directly to the workspace scripts, for example
+`pnpm test:unit packages/runtime`. Do not insert `--`: Vitest treats it as the
+end of its filter arguments and runs the full selected project.
+
 Greenfield changes should test the current contract directly. Do not add
 compatibility tests, migration behavior, or previous-product terminology unless
 they are explicitly part of the requested behavior. Acpus 0.5 remains available
 as history at its release tag.
 
-Use the repository's package scripts rather than duplicating their underlying commands. A typical progression is a focused test project or file, then package typechecking, followed by workspace tests and build checks when the change crosses package or distribution boundaries.
+Use the repository's package scripts rather than duplicating their underlying commands. A typical progression is a focused test project or file, then package typechecking, followed by workspace tests and build checks when the change crosses package or distribution boundaries. Run a narrow repository check with its canonical task name, such as `pnpm check docs` for documentation links or `pnpm check graph:source` for source and dependency reachability. Use `pnpm check` for the complete default check sequence before handoff.
 
 Documentation-only changes may skip executable checks when they cannot affect behavior. State that decision explicitly. When generated artifacts are checked in, regenerate them through their owning script rather than editing them manually.
 

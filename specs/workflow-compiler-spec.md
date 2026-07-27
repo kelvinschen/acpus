@@ -30,11 +30,15 @@
 ### Internal Module Compilation
 
 - The preparation compile worker MUST read and import the workflow source file and require its default export to be an Acpus workflow definition.
-- Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside its source root.
-- After importing and verifying the workflow definition, internal module compilation MUST analyze Task call sites and verify the contained source-root-relative referrer before invoking the workflow build callback.
+- Before importing the workflow module, internal module compilation MUST verify its physical source-root containment and compare the digest of its entry source text with the digest produced by the check phase.
+- When those digests differ, internal module compilation MUST return a serializable `workflow-source-changed` failure without importing the workflow module.
+- After importing and verifying the workflow definition, internal module compilation MUST analyze Task call sites before invoking the workflow build callback.
+- An otherwise successful internal module compilation MUST read the entry source text again before returning and MUST return `workflow-source-changed` when its digest no longer matches the checked digest.
+- The source-generation fence applies only to the workflow entry source text. It MUST NOT snapshot imported helper modules or reusable Task modules and does not establish an atomic filesystem snapshot.
+- Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, source-generation change, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside its source root.
 - Internal module compilation MUST convert reusable-Task source facts into one immutable Core link plan and lower through `tryCompileWorkflowDefinition(...)`.
 - Task-analysis and source-containment failures MUST therefore take precedence over failures thrown by the workflow build callback.
-- Internal module compilation MUST return a `sha256:` source digest alongside the compiled IR, computed from the workflow source text without embedding it in `WorkflowIR`.
+- Internal module compilation MUST return the checked `sha256:` source digest alongside the compiled IR without embedding it in `WorkflowIR`.
 - Core MUST construct complete reusable Task targets and append `validateWorkflowIR(...)` diagnostics exactly once before internal module compilation returns `WorkflowIR`.
 - Internal module compilation MUST NOT traverse or mutate a Core-produced `WorkflowIR` to attach source metadata or validation diagnostics.
 - Scope-ref legality diagnostics MUST come from `validateWorkflowIR(...)` so module compilation, `workflow check`, preparation, and runtime admission share the same backstop for malformed or hand-authored IR.
@@ -44,6 +48,7 @@
 
 - `prepareWorkflow(options)` MUST run `check`, then `compile`, then `validate`.
 - The check phase MUST aggregate stable TypeScript compiler diagnostics and Acpus authoring-rule diagnostics as `DiagnosticIR`.
+- The check phase MUST compute a `sha256:` digest from the same workflow entry source text supplied to the TypeScript check, and preparation MUST pass that digest to the compile worker.
 - TypeScript diagnostics MUST use existing `DiagnosticIR` fields with `code: "TS####"`, flattened `message`, and `source` file, line, and column when available.
 - The TypeScript check MUST use the sole repository-pinned [TypeScript implementation](build-toolchain-spec.md).
 - TypeScript 7 programmatic access MUST be isolated behind the package-internal workflow-analysis implementation boundary. Native API, project, snapshot, program, checker, AST, symbol, type, and node-handle values MAY be shared only among that boundary's check and task-analysis implementation files and MUST NOT appear in the package entrypoint, public types, domain results, IR, events, or worker JSON.
@@ -103,8 +108,11 @@
 
 - Full preparation MUST compile through a worker/import path that loads TypeScript workflow modules and supported official `acpus/*` authoring facade specifiers through `@acpus/loader`.
 - The internal `compileWorkflow(...)` boundary MUST return `ResultAsync<CompiledWorkflowModule, CompileWorkerFailure>` for recoverable worker, protocol, and module failures.
+- The compile worker MUST require the checked source digest as an input and MUST retain `workflow-source-changed` as a compile-phase failure.
 - The compile worker wire envelope MUST be exactly `{ schemaVersion: 1, ok: true, result }` or `{ schemaVersion: 1, ok: false, error }`.
-- The compile worker parent MUST validate the envelope version, discriminant, top-level result shape, source digest, error tag, and process-exit consistency before consuming it.
+- The compile worker parent MUST validate the envelope version, discriminant, top-level result shape, source digest format and equality with the checked digest, error tag, and process-exit consistency before consuming it.
+- The compile worker parent MUST reject a success result when Core validation reports that its serialized `WorkflowIR.diagnostics` subtree is malformed.
+- The compile worker parent MUST reject a success result when any Core `validateWorkflowIR(...)` finding is absent from its serialized `WorkflowIR.diagnostics`.
 - Worker spawn, unsuccessful exit without a result, result read, invalid JSON, invalid result, and worker-system failures MUST retain distinct stable failure tags.
 - A nonzero worker exit MAY become `worker-exit-failed` after result reading only when the result path is absent by `ENOENT` or `ENOTDIR`; permission, I/O, directory, and all other read errors MUST remain `worker-result-read-failed` with their path and error code.
 - Compiler worker stdout and stderr retained in operational failures MUST be bounded tails.
@@ -193,6 +201,6 @@ type WorkflowPreparationSource =
 
 ## Verification
 
-- Contract and integration tests cover metadata extraction, phase ordering, source-root containment, portable source/referrer metadata, prepared workflow data, deterministic locks/digests, scratch cleanup, and tagged failures.
+- Unit, contract, and integration tests cover compile-worker protocol validation, metadata extraction, phase ordering, source-root containment, workflow entry source-generation fencing, portable source/referrer metadata, prepared workflow data, deterministic locks/digests, scratch cleanup, and tagged failures.
 - Authoring-rule tests cover diagnostic ownership, declaration provenance, callback serialization, `any` rejection, stable ordering, and metadata boundaries.
 - Task-analysis tests cover inline capture, reusable references, stable module metadata, unsupported callsites, and validation backstops.

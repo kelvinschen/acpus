@@ -133,6 +133,37 @@ describe("runtime run deletion", () => {
     });
   });
 
+  it("rejects a same-path trash-root replacement without moving or deleting the run", async () => {
+    await withRuntimeWorkspace("runs-delete-trash-root-identity", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      const trashRoot = resolveRuntimeTrash(workspace);
+      const originalTrashRoot = `${trashRoot}.opened`;
+      try {
+        const run = await admitRunForTest(store, {
+          prepared,
+          input: { ready: true },
+          cwd: workspace,
+        });
+        await rename(trashRoot, originalTrashRoot);
+        await mkdir(trashRoot);
+        await writeFile(join(trashRoot, "sentinel"), "replacement");
+        try {
+          await expect(store.deleteRun(run.id)).rejects.toThrow();
+          expect(store.getRun(run.id)?.id).toBe(run.id);
+          await expect(access(runtimeRunDir(workspace, run.id))).resolves.toBeUndefined();
+          await expect(readFile(join(trashRoot, "sentinel"), "utf8")).resolves.toBe("replacement");
+          await expect(readdir(originalTrashRoot)).resolves.toEqual([]);
+        } finally {
+          await rm(trashRoot, { recursive: true });
+          await rename(originalTrashRoot, trashRoot);
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("reconciles interrupted deletion according to the committed database state", async () => {
     await withRuntimeWorkspace("runs-delete-reconcile", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

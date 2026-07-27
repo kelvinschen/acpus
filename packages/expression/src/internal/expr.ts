@@ -1,6 +1,7 @@
-import { EXPR } from "./symbols.js";
 import { err, ok, type Result } from "neverthrow";
 import type { ExprIR } from "../ir.js";
+
+const EXPR = Symbol.for("acpus.expression");
 
 export interface Expr<T> {
   readonly [EXPR]: true;

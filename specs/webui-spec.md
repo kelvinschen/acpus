@@ -28,11 +28,12 @@
 - The Workflows page MUST provide a dedicated workspace-only file picker for `.ts` and `.tsx` workflow sources, with breadcrumb navigation, current-directory filtering, and dense directory/workflow rows. It MUST reject path escapes.
 - Selecting a workflow source MUST NOT compile or import it until the user explicitly requests visualization.
 - Static workflow visualization APIs MUST run workflow preparation in memory and MUST NOT write durable preflight artifacts.
+- A catalog or workspace visualization source that cannot be resolved before workflow preparation MUST return a failed visualization with phase `source`.
 - Static workflow visualization failures MUST preserve compiler-owned `source`, `check`, `compile`, `lock`, and `validate` phases.
-- The `@acpus/web` package root MUST expose only `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
+- The `@acpus/web` package root MUST expose only the runtime values `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
 - `startWebServer` MUST return a tagged `listen-failed` Result when the requested listener cannot be established.
 - Self-contained workflow visualization HTML MUST use the same WebUI static graph React component as the browser Workflows graph. It MUST remain a single offline HTML bundle without live WebUI API calls, and it MUST embed only the static graph runtime needed for graph rendering, static inspection, and workflow I/O.
-- Self-contained workflow visualization HTML MUST receive workflow metadata, workflow contract, and source graph digest. Its document title MUST use the workflow name.
+- `renderWorkflowVizHtml` MUST receive canonical [Core](core-spec.md) `WorkflowIR` and source graph digest and MUST derive workflow metadata, workflow contract, and Web graph data internally. Its document title MUST use the workflow name.
 - Self-contained workflow visualization HTML MUST embed the same graph and static Inspector styling as the browser Workflows graph.
 - Composite nodes MUST render as scoped blocks that visually own nested leaf and composite nodes.
 - A runtime fanout occurrence MUST expand every materialized item inside its canonical authored `do` scope.
@@ -59,11 +60,13 @@
 - Each loop selector MUST contain stable `id` and exact ancestor `context` in addition to its authored node and target identities and materialized iteration options.
 - Loop selector ids MUST remain unique across nested contexts in one graph response.
 - A runtime state MUST contain only `targetId`, `status`, and exact occurrence `context`.
-- Runtime run graph data MUST be served through a run runtime snapshot API that returns run details and graph data from one runtime read. WebUI MUST NOT fetch run details and run graph through separate polling loops for the same runtime page.
-- Run lists MUST project each run to `id`, `name`, and `status`. A runtime snapshot run MUST project `id`, `name`, `status`, `input`, optional `output`, `createdAt`, `updatedAt`, dynamic `version`, and only failed frame, node-instance, and group-member retry targets.
+- Runtime run graph data MUST be served through a run runtime snapshot API that returns run details, graph data, and run-level control applicability from one Runtime read snapshot. WebUI MUST NOT fetch run details and run graph through separate polling loops for the same runtime page.
+- Run lists MUST project each run to `id`, `name`, and `status`. A runtime snapshot run MUST project only `id`, `name`, `status`, `input`, optional `output`, `createdAt`, `updatedAt`, and optional `runtimeVersion`.
+- A runtime snapshot controls projection MUST contain only Runtime-approved exact retry targets and useful run-cancel applicability. Each retry target MUST contain a non-blank exact target, node/frame kind, and optional authored node id, without status rows, group-member identities, display labels, or additional Runtime fields.
 - Runtime visualization overlays MAY expose semantic node detail derived from frozen `WorkflowIR`, but MUST NOT pre-render WebUI display strings.
 - WebUI server code MUST own graph labels and Inspector definition, schema preview, expression preview, and template preview formatting.
 - Browser HTTP transport MUST distinguish network failure, invalid JSON, invalid envelopes, and application request failures before the React Query adapter converts them to thrown query errors.
+- Before returning a successful JSON API response to React Query, Browser HTTP transport MUST validate the payload against the endpoint's Web-owned result shape; a mismatch MUST be classified as `response-invalid-envelope`.
 - Recoverable workflow browsing and preparation failures MUST remain tagged Results until the Hono adapter converts them to an HTTP response; permission, I/O, and other unknown failures MUST propagate to the redacted `500` boundary.
 - Workflow browsing and file visualization MUST reject lexical or symlink-resolved paths outside the workspace.
 - WebUI server code MUST read artifact bodies only through the [Runtime verified artifact reader](runtime-spec.md#read-apis-and-daemon-lifecycle).
@@ -110,17 +113,19 @@
 - The browser graph MUST render arrows only for semantic control-flow between sibling endpoints. It MUST NOT render containment arrows from composite blocks or containers into their descendants.
 - A semantic arrow between nested sibling endpoints MUST render above their shared structural container background and below its endpoint node blocks.
 - Runtime loop selector choices MUST remain local UI state; changing a selector choice MUST NOT mutate runtime state. A closed loop selector MUST NOT render additional status dots beside the select control.
-- Runtime page header, controls, and graph MUST consume the same runtime snapshot response for a run so displayed run status and graph node status cannot drift across independently polled API versions.
+- Runtime page header, run controls, retry targets, and graph MUST consume the same runtime snapshot response for a run so displayed run status, graph node status, and run-level capability cannot drift across independently polled API versions.
 - WebUI code MUST use `@acpus/runtime` public read/control APIs and MUST NOT query runtime SQLite tables directly.
 - WebUI runtime controls MUST ensure the workspace daemon is ready, then submit one `DaemonControlIntent` through `requestDaemonControl`. WebUI server code MUST NOT apply runtime controls directly.
-- WebUI control request bodies MUST be closed shapes: Pause and Resume contain only `type`; Retry contains `type` and a non-empty `target`; Cancel contains `type` and an optional non-empty `target`; Signal contains `type`, a non-empty `target`, and `payload`. A successful control response MUST contain only `{ ok: true }`.
+- WebUI control request bodies MUST be closed shapes: Pause and Resume contain only `type`; Retry contains `type` and a non-blank `target`; Cancel contains `type` and an optional non-blank `target`; Signal contains `type`, a non-blank `target`, and `payload`. A successful control response MUST contain only `{ ok: true }`.
 - WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404 and error code `run_not_found`. Other daemon rejections MUST map to HTTP 400 with the daemon code normalized to lowercase snake case. The daemon error message MUST be preserved.
 - Unexpected WebUI server failures MUST return a fixed `internal_error` response without exposing filesystem, process, or runtime details.
 - WebUI runtime controls MUST NOT expose fork; fork remains a CLI/runtime control because replacement workflow, input, and agent overrides require explicit parameters.
 - WebUI Pause and Resume controls MUST be mutually exclusive: active runs show Pause, paused runs show Resume, and terminal runs show neither.
-- WebUI Retry MUST be target-first for failed runs. It MUST submit a failed dynamic retry target and MUST NOT default to run-level retry.
+- WebUI Retry MUST be target-first for failed runs. It MUST submit one exact Runtime-approved retry target and MUST NOT default to run-level retry.
+- WebUI MUST use Runtime-projected retry/run-cancel applicability and MUST NOT reconstruct target legality from run status, failed dynamic rows, graph state, or authored ids. WebUI owns only product filtering, selection, labels, and confirmation copy.
+- When multiple retry targets share one authored display label, WebUI MUST include each exact target key in its option and confirmation label.
 - WebUI terminal run controls MUST render disabled or absent and MUST NOT submit controls for completed or canceled runs.
-- When a repeated node occurrence is selected, targeted Cancel MUST remain disabled until its exact dynamic target resolves and MUST NOT fall back to the ambiguous authored node id.
+- When any node occurrence is selected, targeted Cancel MUST remain disabled unless Runtime target inspection returns an exact planner-approved cancel target. It MUST NOT fall back to the authored node id, including for a single unmaterialized occurrence.
 - WebUI runtime operation buttons MUST require an explicit confirmation dialog before submitting pause, resume, retry, or cancel controls.
 - Graph node inspection MUST render as a docked inspector card that occupies layout width on graph pages.
 - Graph node inspection MUST render the selected graph node's display status in the primary Inspector header. Raw runtime `not_started` MUST NOT override a WebUI display-layer `skipped` state there. The secondary runtime header MUST contain only run metadata such as start time and duration before the Overview tabs.
@@ -140,21 +145,74 @@
 - Runtime node inspection context MUST identify each fanout selection with a non-negative integer `itemIndex` and each loop selection with a non-negative integer iteration.
 - The WebUI API MUST reject incomplete or malformed inspection context.
 - Runtime node inspection APIs MUST consume the shared runtime target inspection projection rather than independently resolving static nodes, dynamic instances, frames, attempts, signals, progress, execution metadata, or artifact references in the Web server.
+- Runtime node inspection HTTP responses MUST be closed Web-owned projections containing only the node and frame identity, optional exact cancel target, runtime timing, latest attempt, compact Agent identity, selected input, prompt, loop progress, output, structured failure, public artifact identity, and optional actionable Signal fields used by the Inspector.
+- Runtime node inspection HTTP responses MUST NOT expose Runtime inspection schema markers, revision, run, target, static-node document, raw items, instances, frames, attempts, signal waits, execution metadata, progress, registry artifact fields, or unrendered Agent telemetry.
+- An actionable Signal projection MUST use the normalized target inspection Signal only when its normalized node status is `awaiting`. An aggregate target without one normalized Signal action MUST omit the action rather than select an arbitrary dynamic wait.
 - Runtime node Overview inspection MUST refresh once per second while the run is non-terminal and MUST stop periodic refresh after terminal state.
-- Runtime Agent Overview data MUST use the authored Agent key and normalized compact Agent state supplied by runtime target inspection, including current activity, turn, context/token counters, and bounded recent tool commands. The Web server MUST NOT re-resolve the effective Agent or re-parse tool input previews for Overview.
+- Runtime Agent Overview data MUST use the authored Agent key, model, and last-observed time from normalized compact Agent state supplied by runtime target inspection. Turn, context-window, token-usage, output, and tool telemetry MUST remain in the lazy Execution response and MUST NOT be duplicated in Overview. The Web server MUST NOT re-resolve the effective Agent or re-parse tool input previews for Overview.
 - Node inspection MUST present a low-noise Overview with identity, status, prompt, input, output, and the shared structured failure where relevant. It MUST preserve upstream acpx/RPC cause fields without independently parsing provider error text, and MUST NOT expose generic raw `Instances`, `Frames`, `Signals`, or `Metadata` tabs.
 - Artifact content MUST appear in a lazy-loaded `Artifacts` tab only for leaf nodes with artifacts; rows truncate long titles with hover/focus disclosure, and previews stay within the Inspector width.
 - WebUI artifact rows MUST project the public `path` from the [Runtime-owned artifact record](runtime-spec.md#read-apis-and-daemon-lifecycle) and MUST omit internal storage coordinates.
 - Artifact preview responses MUST cap the body at 128 KiB.
 - Artifact preview `Content-Type` MUST prefer the registered media type and otherwise fall back to the public path extension.
 - Agent execution details MUST be shown in a conditional `Execution` tab for Agent nodes.
-- The Agent Execution tab MUST use semantic `agent_attempt` execution metadata.
-- The Agent Execution tab MUST refresh only while active.
-- The Web server MUST load complete tool summaries only through the active Execution-tab path.
+- The Agent Execution tab MUST consume Runtime execution inspection for the exact selected context and MUST NOT derive execution telemetry from Runtime details arrays.
+- The Agent Execution tab MUST refresh only while its Runtime execution status is `starting`, `ready`, `running`, or `awaiting`.
+- The Web execution endpoint MUST project the Runtime execution document field by field and MUST NOT read Agent turn artifacts, Private Turn Evidence, Trace, or any other artifact body.
+- The Web execution endpoint MUST map Runtime `target-ambiguous` failures to HTTP 409 with error code `target_ambiguous`.
 - An artifact-backed Agent prompt descriptor with `field: "prompt"` MUST be resolved through the Runtime verified artifact reader and rendered as exact Markdown text.
 - An artifact-backed Agent prompt read MUST NOT use the 128 KiB generic artifact preview limit.
 - Agent execution MUST render semantic Context Window, Token Usage, and Last Tool Calls sections. It MUST NOT render raw turn JSON as the primary UI.
-- Agent execution responses MUST contain only availability/reason, summary, last-active time, context-window usage, input/output/total token usage with source, streamed-output summary, tool-call count, and the recent tool-call fields rendered by the Execution tab.
+- Agent execution responses MUST use this closed Web-owned shape.
+
+```ts
+type NodeExecutionInspection = ({
+  available: true;
+  reason?: never;
+} | {
+  available: false;
+  reason: string;
+}) & {
+  summary: {
+    status: RunInspectionStatus;
+    sessionName?: string;
+    turnCount?: number;
+    message?: string;
+  };
+  lastObservedAt?: string;
+  contextWindow?: {
+    used?: number;
+    size?: number;
+    percent?: number;
+    updatedAt?: string;
+  };
+  tokenUsage?: {
+    source?: "prompt_response" | "usage_update";
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
+  };
+  toolCallCount?: number;
+  lastToolCalls: Array<{
+    turn: number;
+    toolCallId?: string;
+    toolName?: string;
+    status?: string;
+    durationMs?: number;
+    inputPreview?: string;
+  }>;
+  recentToolsIncomplete: boolean;
+};
+```
+
+- Agent execution responses MUST NOT expose Runtime schema markers, revision, run, subject, details arrays, registry fields, or unrendered telemetry.
+- The browser decoder MUST reject unrecognized root, summary, context-window, token-usage, output, or tool-call fields; invalid availability/reason combinations; malformed or negative metrics; and more than three recent tool calls.
+- When `recentToolsIncomplete` is true, the Execution tab MUST identify retained tool details as incomplete. An empty partial list MUST NOT render the definitive `No tool calls` state.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
 - Prompt and structured output/error content MUST render through Markdown and JSON viewer components.
 - Inspector key/value rows MUST expose full values on hover and keyboard focus. They MUST NOT rely on copy buttons as the primary way to read truncated values.
@@ -166,6 +224,7 @@
 
 ## Verification
 
-- `pnpm test:unit -- packages/web`: verifies canonical static/runtime topology, single-scope fanout expansion, exact loop and Inspector contexts, deterministic layout, running-node focus, viewport preservation, and structural-container semantics.
-- `pnpm test:contract -- packages/web`: verifies graph response shapes, unified runtime snapshots, workflow browsing, inspection context, controls, verified artifact-reader delegation and error mapping, and access behavior.
+- `pnpm test:unit packages/web`: verifies browser JSON transport classification and endpoint payload validation, closed Runtime-control, node-inspection, and Agent-execution projections and decoders, honest partial recent-tool UI, exact retry ordering, Runtime-gated run cancellation, canonical static/runtime topology, single-scope fanout expansion, exact loop and Inspector contexts, deterministic layout, running-node focus, viewport preservation, and structural-container semantics.
+- `pnpm test:contract packages/web`: verifies graph response shapes, unified runtime snapshots with exact controls, workflow browsing, closed node-inspection responses with exact selected-target cancellation, Runtime-owned occurrence-exact Agent execution without artifact reads, inspection context, controls, verified prompt/artifact-reader delegation and error mapping, and access behavior.
+- `pnpm test:integration packages/web`: verifies selected workflow source resolution, in-memory compiler preparation, and static visualization projection as one real seam.
 - Manual browser review verifies representative graph, Inspector, dynamic fanout, running focus, and reduced-motion states.

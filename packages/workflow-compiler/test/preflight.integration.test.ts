@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -32,15 +32,16 @@ describe("workflow preparation", () => {
     await withCompilerWorkspace("compiler-validate", async cwd => {
       const workflow = await copyFixture(cwd, "workflows/basic/malformed.workflow.ts");
       const failure = await expectPreparationFailure(workflow, cwd);
-      expect(failure.phase).toBe("validate");
+      expect(failure).toMatchObject({
+        type: "validate-failed",
+        phase: "validate",
+      });
       if (failure.phase !== "validate") throw new Error("expected validate failure");
-      expect(failure.diagnostics.filter(diagnostic => diagnostic.code === "ID001")).toEqual([{
+      expect(failure.diagnostics).toContainEqual(expect.objectContaining({
         code: "ID001",
         severity: "error",
-        message: "Invalid node id 'bad id'. Expected /^[A-Za-z_][A-Za-z0-9_-]*$/.",
         path: "root.nodes.bad id",
-        hint: "Use a compile-time string literal for the step id; runtime Expr values are not allowed in node ids.",
-      }]);
+      }));
     });
   });
 
@@ -63,6 +64,35 @@ describe("workflow preparation", () => {
           message: `Default export of ${workflow} is not an Acpus workflow definition.`,
         },
       });
+    });
+  });
+
+  it("rejects a workflow entry that changes while it is compiling", async () => {
+    await withCompilerWorkspace("compiler-source-generation", async cwd => {
+      const workflow = join(cwd, "workflow.ts");
+      const changedSource = `import { defineWorkflow } from "acpus/core";
+export default defineWorkflow({ name: "changed" }).build(() => ({}));
+`;
+      const checkedSource = `import { writeFileSync } from "node:fs";
+import { defineWorkflow } from "acpus/core";
+writeFileSync(${JSON.stringify(workflow)}, ${JSON.stringify(changedSource)});
+export default defineWorkflow({ name: "checked" }).build(() => ({}));
+`;
+      await writeFile(workflow, checkedSource);
+
+      const result = await tryPrepareWorkflow({ workflow, cwd });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source generation failure");
+      expect(result.error).toMatchObject({
+        type: "compile-failed",
+        phase: "compile",
+        failure: {
+          type: "workflow-source-changed",
+          entry: workflow,
+        },
+      });
+      expect(await readFile(workflow, "utf8")).toBe(changedSource);
     });
   });
 

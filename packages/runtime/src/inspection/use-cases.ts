@@ -6,6 +6,16 @@ import {
   type RunInspectionStoreRead,
 } from "../store/store.js";
 import {
+  planCancelControl,
+  planRetryControl,
+  retryControlTargets,
+  settleRetryControlSnapshot,
+} from "../scheduler/control-plan.js";
+import {
+  throwSchedulerStoreResult,
+  type SchedulerSnapshot,
+} from "../scheduler/store-port.js";
+import {
   ambiguousTimelineCandidates,
   projectTargetSummary,
   projectTimeline,
@@ -15,6 +25,7 @@ import {
   timelineHasRelevantEvents,
   timelineAttemptIds,
 } from "./decision-projection.js";
+import { projectAgentExecution } from "./agent-execution-projection.js";
 import {
   inspectionItems,
   progressChanges,
@@ -40,6 +51,8 @@ import type {
   RunInspectionQuery,
   RunInspectionSnapshot,
   RunInspectionCurrentActivityPatch,
+  RunInspectionControl,
+  RunInspectionTargetDetailsDocument,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineEntry,
   RunInspectionTimelineDocument,
@@ -223,6 +236,20 @@ async function readInspectionCycle(
         }
         if (!read.frozen) throw new Error(`Frozen workflow for run '${query.runId}' was not found.`);
         const run = read.run;
+        let scheduler: SchedulerSnapshot | undefined;
+        const schedulerSnapshot = () => {
+          scheduler ??= throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(query.runId));
+          return scheduler;
+        };
+        let retryScheduler: SchedulerSnapshot | undefined;
+        const retrySchedulerSnapshot = () => {
+          retryScheduler ??= settleRetryControlSnapshot({
+            frozen: read.frozen!,
+            snapshot: schedulerSnapshot(),
+            now: new Date(),
+          }).snapshot;
+          return retryScheduler;
+        };
 
         if (query.mode === "overview" || query.mode === "all" || query.mode === "raw") {
           const document = projectRunInspection({
@@ -231,6 +258,9 @@ async function readInspectionCycle(
             artifacts: read.artifacts,
             cursor: read.cursor,
             query,
+            ...(query.mode === "raw"
+              ? {}
+              : { availableControls: retryInspectionControls(retrySchedulerSnapshot()) }),
           });
           if (!document) throw new Error("Run inspection projection failed.");
           return ok(followCycle(read, document));
@@ -242,14 +272,14 @@ async function readInspectionCycle(
           target: query.target,
           ...("context" in query && query.context ? { context: query.context } : {}),
         };
-        const details = projectRunInspection({
+        const projectedDetails = projectRunInspection({
           ir: read.frozen.ir,
           run,
           artifacts: read.artifacts,
           cursor: read.cursor,
           query: detailsQuery,
         });
-        if (!details || details.kind !== "details") {
+        if (!projectedDetails || projectedDetails.kind !== "details") {
           return err({
             type: "target-not-found",
             runId: query.runId,
@@ -257,6 +287,44 @@ async function readInspectionCycle(
             message: `Run target '${query.target}' was not found.`,
           });
         }
+        if (query.mode === "execution") {
+          const candidates = ambiguousTimelineCandidates(projectedDetails);
+          if (candidates.length > 1) {
+            return err({
+              type: "target-ambiguous",
+              runId: query.runId,
+              target: query.target,
+              candidateKeys: candidates,
+              message: `Run target '${query.target}' matches multiple occurrences: ${candidates.join(", ")}.`,
+            });
+          }
+          const selectedAttemptId = projectedDetails.staticNode?.kind === "agent"
+            ? projectedDetails.summary.latestAttempt?.attemptId
+            : undefined;
+          const observationResult = selectedAttemptId
+            ? await store.observationLog.readInspectionProjection({
+                runId: query.runId,
+                attemptIds: [selectedAttemptId],
+                entryLimit: 50,
+                latestTurnOnly: true,
+              })
+            : undefined;
+          if (observationResult?.isErr()) throw observationResult.error;
+          return ok(followCycle(read, projectAgentExecution({
+            details: projectedDetails,
+            cursor: read.cursor,
+            query,
+            ...(observationResult?.isOk() ? { observations: observationResult.value } : {}),
+          })));
+        }
+        const details = {
+          ...projectedDetails,
+          availableControls: targetInspectionControls(
+            retrySchedulerSnapshot(),
+            schedulerSnapshot(),
+            projectedDetails,
+          ),
+        } satisfies RunInspectionTargetDetailsDocument;
         if (query.mode === "details") return ok(followCycle(read, details));
 
         if (query.mode === "target") {
@@ -270,15 +338,16 @@ async function readInspectionCycle(
               })
             : undefined;
           if (observationResult?.isErr()) throw observationResult.error;
+          const runDir = details.target.kind === "attempt"
+            ? store.getRunDir(query.runId)
+            : undefined;
           const document = projectTargetSummary({
             run,
             details,
             cursor: read.cursor,
             query,
             ...(observationResult?.isOk() ? { observations: observationResult.value } : {}),
-            ...(details.target.kind === "attempt" && store.getRunDir(query.runId)
-              ? { runDir: store.getRunDir(query.runId)! }
-              : {}),
+            ...(runDir ? { runDir } : {}),
           });
           return ok(followCycle(read, document, {
             relevantDurableChanged: timelineHasRelevantEvents({ run, details, events: read.events }),
@@ -373,6 +442,74 @@ async function readInspectionCycle(
   } catch (error) {
     return err(inspectionError(query.runId, error));
   }
+}
+
+function retryInspectionControls(snapshot: SchedulerSnapshot): RunInspectionControl[] {
+  return retryControlTargets(snapshot)
+    .map(({ target }) => ({ type: "retry" as const, target }));
+}
+
+function targetInspectionControls(
+  retrySnapshot: SchedulerSnapshot,
+  cancelSnapshot: SchedulerSnapshot,
+  details: RunInspectionTargetDetailsDocument,
+): RunInspectionControl[] {
+  const selectedAttempt = details.target.kind === "attempt"
+    ? details.attempts.find(attempt => attempt.attemptId === details.target.id)
+    : undefined;
+  if (details.target.kind === "attempt") {
+    if (!selectedAttempt) return [];
+    const latestAttempt = details.attempts
+      .filter(attempt => attempt.nodeKey === selectedAttempt.nodeKey)
+      .sort((left, right) => right.attemptNo - left.attemptNo)[0];
+    if (latestAttempt?.attemptId !== selectedAttempt.attemptId) return [];
+  }
+  const target = inspectionControlTarget(details, selectedAttempt);
+  if (!target) return [];
+  const allowRetry = selectedAttempt === undefined
+    || selectedAttempt.status === "failed"
+    || selectedAttempt.status === "timed_out";
+  const allowCancel = selectedAttempt === undefined
+    || selectedAttempt.status === "started";
+  const controls: RunInspectionControl[] = [];
+  if (allowRetry) {
+    const retry = planRetryControl(retrySnapshot, target);
+    if (retry.isOk()) controls.push({ type: "retry", target: retry.value.resolvedTarget });
+  }
+  if (allowCancel) {
+    const cancel = planCancelControl(cancelSnapshot, target);
+    if (cancel.isOk() && cancel.value.events.length > 0 && cancel.value.resolvedTarget) {
+      controls.push({ type: "cancel", target: cancel.value.resolvedTarget });
+    }
+  }
+  return controls;
+}
+
+function inspectionControlTarget(
+  details: RunInspectionTargetDetailsDocument,
+  selectedAttempt: RunInspectionTargetDetailsDocument["attempts"][number] | undefined,
+): string | undefined {
+  const authoredCollision = (nodeId: string | undefined) =>
+    details.staticNode?.nodeId === details.target.id
+    && nodeId !== details.staticNode.nodeId;
+  if (details.target.kind === "attempt") {
+    return selectedAttempt && !authoredCollision(selectedAttempt.nodeId)
+      ? selectedAttempt.nodeKey
+      : undefined;
+  }
+  if (details.target.kind === "dynamic-node") {
+    const instance = details.instances.find(item => item.nodeKey === details.target.id);
+    return instance && !authoredCollision(instance.nodeId) ? details.target.id : undefined;
+  }
+  if (details.target.kind === "frame") {
+    const frame = details.frames.find(item => item.frameKey === details.target.id);
+    return frame && !authoredCollision(frame.nodeId) ? details.target.id : undefined;
+  }
+  const candidates = new Set(
+    [details.summary.nodeKey, details.summary.frameKey]
+      .filter((candidate): candidate is string => candidate !== undefined),
+  );
+  return candidates.size === 1 ? [...candidates][0] : undefined;
 }
 
 type InspectionCycle = {

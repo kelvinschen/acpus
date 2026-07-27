@@ -2,9 +2,11 @@ import { readFile } from "node:fs/promises";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { checkTypeScript } from "./typescript.js";
 import type { TypeScriptNativeFailure } from "../typescript/native.js";
+import { sha256Digest } from "../digest.js";
 
 export type WorkflowCheckResult = {
   diagnostics: DiagnosticIR[];
+  sourceDigest?: string;
 };
 
 export async function checkWorkflow(entry: string, cwd: string, scratchDir: string): Promise<WorkflowCheckResult> {
@@ -16,9 +18,10 @@ export async function checkWorkflow(entry: string, cwd: string, scratchDir: stri
   }
 
   const result = await checkTypeScript(entry, cwd, scratchDir, source);
+  const sourceDigest = sha256Digest(source);
   return result.match(
-    value => value,
-    failure => ({ diagnostics: [typescriptNativeDiagnostic(entry, failure)] }),
+    value => ({ ...value, sourceDigest }),
+    failure => ({ diagnostics: [typescriptNativeDiagnostic(entry, failure)], sourceDigest }),
   );
 }
 

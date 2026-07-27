@@ -40,7 +40,6 @@ describe("acpus package boundaries", () => {
     expect(pkg.private).not.toBe(true);
     expect(pkg.files).toContain("skills");
     expect(parseAcpusSkillMetadata(skill)).toEqual({ name: "acpus", version: pkg.version });
-    expect(skill).not.toContain("npm root -g");
   });
 });
 

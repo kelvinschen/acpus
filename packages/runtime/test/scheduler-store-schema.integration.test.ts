@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
+import { getRuntimeHealth } from "../src/runs/use-cases.js";
 import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
@@ -110,18 +111,64 @@ describe("scheduler store format", () => {
   it("rejects storage v1 without a compatibility read path", async () => {
     store?.close();
     store = undefined;
-    const path = resolveRuntimeLayout(dir).databasePath;
-    const db = new DatabaseSync(path);
-    try {
-      db.exec("PRAGMA user_version = 1");
-    } finally {
-      db.close();
-    }
+    const layout = resolveRuntimeLayout(dir);
+    setDatabaseFormat(layout.databasePath, {
+      applicationId: RUNTIME_APPLICATION_ID,
+      userVersion: 1,
+    });
+    const beforeDoctor = await runtimeStateFingerprint(layout.workspaceRoot);
 
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
       name: "IncompatibleRuntimeDatabaseError",
       applicationId: RUNTIME_APPLICATION_ID,
       userVersion: 1,
+    });
+    await expect(getRuntimeHealth(dir)).resolves.toEqual({
+      ok: true,
+      phase: "doctor",
+      state: "unreadable",
+      persistence: { path: layout.workspaceRoot },
+      checks: [{
+        area: "store",
+        status: "warn",
+        message: "Runtime storage version 1 is older than the supported version 2. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+      }],
+    });
+    expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeDoctor);
+  });
+
+  it.each([
+    {
+      name: "storage version zero",
+      applicationId: RUNTIME_APPLICATION_ID,
+      userVersion: 0,
+    },
+    {
+      name: "newer storage",
+      applicationId: RUNTIME_APPLICATION_ID,
+      userVersion: RUNTIME_STORAGE_VERSION + 1,
+    },
+    {
+      name: "another application",
+      applicationId: RUNTIME_APPLICATION_ID + 1,
+      userVersion: 1,
+    },
+  ])("keeps $name as a Doctor failure", async ({ applicationId, userVersion }) => {
+    store?.close();
+    store = undefined;
+    const layout = resolveRuntimeLayout(dir);
+    setDatabaseFormat(layout.databasePath, { applicationId, userVersion });
+
+    await expect(getRuntimeHealth(dir)).resolves.toEqual({
+      ok: false,
+      phase: "doctor",
+      state: "unreadable",
+      persistence: { path: layout.workspaceRoot },
+      checks: [{
+        area: "store",
+        status: "fail",
+        message: `Runtime database '${layout.databasePath}' uses application_id ${applicationId} and user_version ${userVersion}; expected ${RUNTIME_APPLICATION_ID} and ${RUNTIME_STORAGE_VERSION}.`,
+      }],
     });
   });
 
@@ -182,4 +229,19 @@ function databaseFormat(db: DatabaseSync): { applicationId: number; userVersion:
 
 function tableColumns(db: DatabaseSync, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name);
+}
+
+function setDatabaseFormat(
+  path: string,
+  format: { applicationId: number; userVersion: number },
+): void {
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`
+      PRAGMA application_id = ${format.applicationId};
+      PRAGMA user_version = ${format.userVersion};
+    `);
+  } finally {
+    db.close();
+  }
 }

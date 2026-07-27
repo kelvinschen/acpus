@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import {
   classifyCompileWorkerResultReadFailure,
   interpretCompileWorkerOutput,
@@ -71,12 +72,92 @@ describe("compile worker protocol", () => {
     ["extra envelope field", JSON.stringify({ schemaVersion: 1, ok: true, result: compiled, extra: true }), "worker-result-invalid"],
     ["invalid digest", JSON.stringify({ schemaVersion: 1, ok: true, result: { ...compiled, sourceDigest: "sha256:no" } }), "worker-result-invalid"],
     ["unknown error tag", JSON.stringify({ schemaVersion: 1, ok: false, error: { type: "mystery", message: "no" } }), "worker-result-invalid"],
+    ["extra source-change field", JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      error: {
+        type: "workflow-source-changed",
+        entry: "/workspace/workflow.ts",
+        message: "changed",
+        actual: "sha256:unexpected",
+      },
+    }), "worker-result-invalid"],
   ])("rejects %s", (_name, raw, type) => {
     const result = parseCompileWorkerEnvelope(raw);
 
     expect(result.isErr()).toBe(true);
     if (result.isOk()) throw new Error("expected protocol failure");
     expect(result.error.type).toBe(type);
+  });
+
+  it("rejects a worker IR that omits a nested Core validation finding", () => {
+    const result = parseIr(invalidNestedIr());
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected protocol failure");
+    expect(result.error.type).toBe("worker-result-invalid");
+  });
+
+  it("accepts reported Core findings in any order alongside compiler diagnostics", () => {
+    const ir = invalidNestedIr();
+    const findings = validateWorkflowIR(ir);
+    const compilerDiagnostic: DiagnosticIR = {
+      code: "BUILD001",
+      severity: "error",
+      message: "Lowering failed.",
+      path: "root",
+    };
+    ir.diagnostics = [
+      compilerDiagnostic,
+      ...[...findings].reverse(),
+      findings[0]!,
+    ];
+
+    const result = parseIr(ir);
+
+    expect(result.isOk()).toBe(true);
+    if (result.isErr()) throw new Error(result.error.message);
+    expect(result.value.ok && result.value.result.ir.diagnostics).toEqual(ir.diagnostics);
+  });
+
+  it("rejects a worker IR that omits one of several Core findings", () => {
+    const ir = invalidNestedIr();
+    ir.diagnostics = validateWorkflowIR(ir).slice(0, 1);
+
+    const result = parseIr(ir);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected protocol failure");
+    expect(result.error.type).toBe("worker-result-invalid");
+  });
+
+  it("rejects malformed diagnostics even when their Core finding is reported", () => {
+    const ir = {
+      ...compiled.ir,
+      diagnostics: [null],
+    } as unknown as WorkflowIR;
+    ir.diagnostics.push(...validateWorkflowIR(ir));
+
+    const result = parseIr(ir);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected protocol failure");
+    expect(result.error.type).toBe("worker-result-invalid");
+  });
+
+  it("accepts a warning-only IR when the Core warning is reported", () => {
+    const ir: WorkflowIR = {
+      ...compiled.ir,
+      name: "not identifier like",
+      diagnostics: [],
+    };
+    ir.diagnostics = validateWorkflowIR(ir);
+
+    const result = parseIr(ir);
+
+    expect(result.isOk()).toBe(true);
+    if (result.isErr()) throw new Error(result.error.message);
+    expect(result.value.ok && result.value.result.ir.diagnostics).toEqual(ir.diagnostics);
   });
 
   it("rejects an exit/envelope mismatch", () => {
@@ -86,7 +167,7 @@ describe("compile worker protocol", () => {
       signal: null,
       stdoutTail: "stdout",
       stderrTail: "stderr",
-    }, JSON.stringify({ schemaVersion: 1, ok: true, result: compiled }));
+    }, JSON.stringify({ schemaVersion: 1, ok: true, result: compiled }), compiled.sourceDigest);
 
     expect(result.isErr()).toBe(true);
     if (result.isOk()) throw new Error("expected protocol failure");
@@ -110,11 +191,48 @@ describe("compile worker protocol", () => {
       signal: null,
       stdoutTail: "",
       stderrTail: "",
-    }, JSON.stringify({ schemaVersion: 1, ok: false, error: failure }));
+    }, JSON.stringify({ schemaVersion: 1, ok: false, error: failure }), compiled.sourceDigest);
 
     expect(result.isErr()).toBe(true);
     if (result.isOk()) throw new Error("expected module failure");
     expect(result.error).toEqual(failure);
+  });
+
+  it("rejects a worker source digest that differs from the checked source", () => {
+    const result = interpretCompileWorkerOutput({
+      ok: true,
+      exitCode: 0,
+      signal: null,
+      stdoutTail: "stdout",
+      stderrTail: "stderr",
+    }, JSON.stringify({ schemaVersion: 1, ok: true, result: compiled }), `sha256:${"b".repeat(64)}`);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected digest mismatch");
+    expect(result.error).toEqual({
+      type: "worker-result-invalid",
+      message: "Workflow compile worker source digest did not match the checked source digest.",
+      stdoutTail: "stdout",
+      stderrTail: "stderr",
+    });
+  });
+
+  it("accepts the closed source-generation failure shape", () => {
+    const failure = {
+      type: "workflow-source-changed",
+      entry: "/workspace/workflow.ts",
+      message: "changed",
+    };
+
+    const result = parseCompileWorkerEnvelope(JSON.stringify({
+      schemaVersion: 1,
+      ok: false,
+      error: failure,
+    }));
+
+    expect(result.isOk()).toBe(true);
+    if (result.isErr()) throw new Error(result.error.message);
+    expect(result.value).toEqual({ schemaVersion: 1, ok: false, error: failure });
   });
 });
 
@@ -126,4 +244,27 @@ function completedProcess(exitCode: number) {
     stdoutTail: "stdout",
     stderrTail: "stderr",
   };
+}
+
+function invalidNestedIr(): WorkflowIR {
+  return {
+    ...compiled.ir,
+    root: {
+      ...compiled.ir.root,
+      nodes: [{
+        id: "bad id",
+        kind: "task",
+        run: null,
+      }],
+    },
+    diagnostics: [],
+  } as unknown as WorkflowIR;
+}
+
+function parseIr(ir: WorkflowIR) {
+  return parseCompileWorkerEnvelope(JSON.stringify({
+    schemaVersion: 1,
+    ok: true,
+    result: { ...compiled, ir },
+  }));
 }

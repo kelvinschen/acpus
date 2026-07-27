@@ -60,6 +60,11 @@ type InspectRunOptions = JsonOutputOptions & {
   raw?: boolean;
 };
 
+type CliRunInspectionQuery = Exclude<
+  RunInspectionQuery,
+  { mode: "details" | "execution" }
+>;
+
 type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
 };
@@ -190,7 +195,6 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
   const query = inspectionQuery(runId, options);
   if (options.follow) {
     if (query.mode === "raw") throw usageError("--raw cannot be followed.");
-    if (query.mode === "details") throw usageError("--details cannot be followed.");
     const followQuery: FollowRunInspectionQuery = {
       ...query,
       intervalMs: parseFollowInterval(options.interval),
@@ -233,7 +237,7 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
   await inspectRun(ctx, selectedRunId, options);
 }
 
-function inspectionQuery(runId: string, options: InspectRunOptions): RunInspectionQuery {
+function inspectionQuery(runId: string, options: InspectRunOptions): CliRunInspectionQuery {
   if (options.raw) return { runId, mode: "raw" };
   if (options.timeline) {
     const page = {

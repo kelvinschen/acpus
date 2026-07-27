@@ -53,6 +53,10 @@ export function graphEdgeZIndex(edge: WebGraphEdge, parentOf: ReadonlyMap<string
 export type GraphSelections = Record<string, string>;
 export type GraphViewport = { x: number; y: number; scale: number };
 
+export type GraphNavigationIntent =
+  | { type: "navigate-item"; renderId: string }
+  | { type: "recenter"; point: { x: number; y: number } };
+
 export type GraphNodeTarget = {
   renderId: string;
   nodeId: string;
@@ -648,6 +652,28 @@ export function centerViewportAt(viewport: GraphViewport, rect: RectLike, point:
     ...viewport,
     x: rect.width / 2 - point.x * viewport.scale,
     y: rect.height / 2 - point.y * viewport.scale,
+  };
+}
+
+export function planGraphNavigation(
+  model: Pick<RenderModel, "items">,
+  layout: Pick<RenderLayout, "boxes">,
+  viewport: GraphViewport,
+  rect: RectLike,
+  intent: GraphNavigationIntent,
+): { viewport?: GraphViewport; inspectionTarget?: GraphNodeTarget } | undefined {
+  if (intent.type === "recenter") {
+    return { viewport: centerViewportAt(viewport, rect, intent.point) };
+  }
+
+  const item = model.items.get(intent.renderId);
+  if (!item) return undefined;
+  const nextViewport = focusView(layout.boxes.get(item.id), rect);
+  const inspectionTarget = graphNodeTarget(item);
+  if (!nextViewport && !inspectionTarget) return undefined;
+  return {
+    ...(nextViewport === undefined ? {} : { viewport: nextViewport }),
+    ...(inspectionTarget === undefined ? {} : { inspectionTarget }),
   };
 }
 

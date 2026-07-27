@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve, relative } from "node:path";
@@ -11,6 +10,7 @@ import {
 } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata } from "../task-analysis/index.js";
+import { sha256Digest } from "../digest.js";
 import { err, ok, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
 export type CompiledWorkflowModule = {
@@ -20,27 +20,31 @@ export type CompiledWorkflowModule = {
 
 export type CompileWorkflowModuleError =
   | { type: "workflow-source-read-failed"; entry: string; message: string }
+  | { type: "workflow-source-changed"; entry: string; message: string }
   | { type: "module-import-failed"; entry: string; message: string }
   | { type: "invalid-default-export"; entry: string; message: string }
   | { type: "workflow-build-failed"; entry: string; message: string }
   | { type: "task-analysis-failed"; entry: string; message: string }
   | { type: "workflow-outside-workspace"; workflowFile: string; cwd: string; message: string };
 
+export type CompileWorkflowModuleOptions = {
+  dependencyRoot?: string;
+  expectedSourceDigest: string;
+};
+
 export function tryCompileWorkflowModule(
   entry: string,
   sourceRoot: string,
-  dependencyRoot = sourceRoot,
+  options: CompileWorkflowModuleOptions,
 ): ResultAsync<CompiledWorkflowModule, CompileWorkflowModuleError> {
   const absolute = resolve(entry);
-  return ResultAsync.fromPromise(
-    readFile(absolute, "utf8"),
-    cause => ({
-      type: "workflow-source-read-failed",
-      entry,
-      message: `Workflow source '${entry}' could not be read: ${causeMessage(cause)}`,
-    } satisfies CompileWorkflowModuleError),
-  ).andThen(source =>
-    ResultAsync.fromPromise(
+  const dependencyRoot = options.dependencyRoot ?? sourceRoot;
+  return readWorkflowSource(absolute, entry).andThen(source => {
+    const sourceDigest = sha256Digest(source);
+    if (sourceDigest !== options.expectedSourceDigest) return err(sourceChanged(entry));
+    const referrerPath = toContainedSourcePath(sourceRoot, absolute);
+    if (referrerPath.isErr()) return err(referrerPath.error);
+    return ResultAsync.fromPromise(
       importWorkflowModule(absolute, sourceRoot, dependencyRoot),
       cause => ({
         type: "module-import-failed",
@@ -68,8 +72,6 @@ export function tryCompileWorkflowModule(
         entry,
         message: `Workflow task analysis failed for '${entry}': ${failure.message}`,
       } satisfies CompileWorkflowModuleError))).andThen(analysis => {
-        const referrerPath = toContainedSourcePath(sourceRoot, absolute);
-        if (referrerPath.isErr()) return err(referrerPath.error);
         const reusableTasks: ReusableTaskLinkPlan = {
           referrerPath: referrerPath.value,
           targets: resolveTaskReferenceMetadata(analysis),
@@ -82,13 +84,40 @@ export function tryCompileWorkflowModule(
             message: `Workflow '${entry}' could not be lowered: ${built.error.message}`,
           } satisfies CompileWorkflowModuleError);
         }
-        return ok({
-          ir: built.value,
-          sourceDigest: `sha256:${createHash("sha256").update(source).digest("hex")}`,
+        return readWorkflowSource(absolute, entry).andThen(currentSource => {
+          if (sha256Digest(currentSource) !== options.expectedSourceDigest) {
+            return err(sourceChanged(entry));
+          }
+          return ok({
+            ir: built.value,
+            sourceDigest: options.expectedSourceDigest,
+          });
         });
       });
+    });
+  });
+}
+
+function readWorkflowSource(
+  absolute: string,
+  entry: string,
+): ResultAsync<string, CompileWorkflowModuleError> {
+  return ResultAsync.fromPromise(
+    readFile(absolute, "utf8"),
+    cause => ({
+      type: "workflow-source-read-failed",
+      entry,
+      message: `Workflow source '${entry}' could not be read: ${causeMessage(cause)}`,
     }),
   );
+}
+
+function sourceChanged(entry: string): CompileWorkflowModuleError {
+  return {
+    type: "workflow-source-changed",
+    entry,
+    message: `Workflow source '${entry}' changed after the check phase; prepare it again.`,
+  };
 }
 
 function importWorkflowModule(

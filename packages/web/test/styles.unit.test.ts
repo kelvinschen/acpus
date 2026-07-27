@@ -139,8 +139,6 @@ describe("workflow graph visual contract", () => {
     expect(rule(".graph-toolbar")).toContain("gap: 2px;");
     expect(rule(".graph-tool-button")).toContain("width: 28px;");
     expect(rule(".graph-tool-button")).toContain("height: 28px;");
-    expect(styles).not.toContain(".graph-navigator-trigger {");
-    expect(styles).not.toContain(".graph-tool-button.locate-active {");
   });
 
   it("uses opaque filled arrowheads that match the graph's quiet sequence strokes", () => {

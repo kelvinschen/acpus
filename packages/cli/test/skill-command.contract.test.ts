@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
-import { parseAcpusSkillMetadata } from "../src/skill-content.js";
+import { bundledAcpusSkillLocation, parseAcpusSkillMetadata } from "../src/skill-content.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
@@ -169,10 +169,14 @@ describe("skill CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout.text).toContain(`installed\tuniversal\t${universal}\ninstalled\tclaude\t${claude}`);
-      expect(await readFile(join(universal, "SKILL.md"), "utf8"))
-        .toContain("`deep-research`");
-      expect(await readFile(join(universal, "workflows", "library", "deep-research", "workflow.ts"), "utf8"))
-        .toContain('name: "deep-research"');
+      const bundled = bundledAcpusSkillLocation();
+      for (const relativePath of [
+        "SKILL.md",
+        join("workflows", "library", "deep-research", "workflow.ts"),
+      ]) {
+        await expect(readFile(join(universal, relativePath)))
+          .resolves.toEqual(await readFile(join(bundled, relativePath)));
+      }
     });
   });
 
@@ -281,11 +285,12 @@ describe("skill CLI contracts", () => {
 
       const target = join(workspace, ".agents", "skills", "acpus");
       await mkdir(target, { recursive: true });
-      await writeFile(join(target, "SKILL.md"), "---\nname: another-skill\n---\n");
+      const foreignSkill = "---\nname: another-skill\n---\n";
+      await writeFile(join(target, "SKILL.md"), foreignSkill);
       const unsafe = await runSkill(workspace, ["--project", "--agent", "universal"], false, "uninstall");
       expect(unsafe.exitCode).toBe(1);
       expect(unsafe.stderr.text).toContain("skipped\tuniversal");
-      expect(await readFile(join(target, "SKILL.md"), "utf8")).toContain("another-skill");
+      await expect(readFile(join(target, "SKILL.md"), "utf8")).resolves.toBe(foreignSkill);
     });
   });
 

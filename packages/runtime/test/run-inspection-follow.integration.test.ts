@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Result } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { followRunInspection, getRunInspection } from "../src/inspection/use-cases.js";
+import { AgentObservationLog } from "../src/observations/log.js";
 import { decodeTimelinePageCursor } from "../src/inspection/revision.js";
 import type {
   FollowRunInspectionQuery,
@@ -16,6 +17,7 @@ import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import * as controlPlan from "../src/scheduler/control-plan.js";
 
 vi.mock("@acpus/agent-executor", async importOriginal => {
   const actual = await importOriginal<typeof import("@acpus/agent-executor")>();
@@ -917,6 +919,198 @@ describe("run inspection follow", () => {
           },
         });
       } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("reads one bounded exact-attempt execution projection without control planning or private files", async () => {
+    await withRuntimeWorkspace("run-inspection-execution-projection", async workspace => {
+      const store = await admittedRepeatedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const attempts = startAgents(store, run.id, 2);
+      const [nodeKey, first] = [...attempts.entries()].sort(([left], [right]) =>
+        left.localeCompare(right))[0]!;
+      const scheduler = throwingSchedulerStore(store.scheduler);
+      const observationRead = vi.spyOn(
+        AgentObservationLog.prototype,
+        "readInspectionProjection",
+      );
+      let controlSettlement = vi.spyOn(
+        controlPlan,
+        "settleRetryControlSnapshot",
+      ).mockImplementation(() => {
+        throw new Error("execution inspection must not settle controls");
+      });
+      try {
+        const ambiguous = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "execution",
+          target: "observe",
+        });
+        expect(ambiguous).toMatchObject({
+          isErr: expect.any(Function),
+        });
+        if (ambiguous.isOk()) throw new Error("expected static aggregate ambiguity");
+        expect(ambiguous.error).toMatchObject({
+          type: "target-ambiguous",
+          candidateKeys: [...attempts.keys()].sort(),
+        });
+        expect(observationRead).not.toHaveBeenCalled();
+        expect(controlSettlement).not.toHaveBeenCalled();
+        controlSettlement.mockRestore();
+
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey,
+          nodeId: "observe",
+          attemptId: first.attemptId,
+          attemptNo: first.attemptNo,
+          ownerEpoch: first.ownerEpoch,
+          kind: "agent",
+          status: "running",
+          message: "historical progress",
+          tools: { turn: 1, totalToolCallCount: 0, lastCalls: [] },
+        });
+        store.writeExecutionMetadata({
+          runId: run.id,
+          attemptId: first.attemptId,
+          kind: "agent_attempt",
+          metadata: {
+            sessionName: "historical-session",
+            turnCount: 2,
+            turns: [1, 2].map(turn => ({
+              turn,
+            })),
+          },
+        });
+        const captured = [];
+        for (const turn of [1, 2]) {
+          captured.push(await store.observationLog.captureTurn({
+            runId: run.id,
+            nodeId: "observe",
+            nodeKey,
+            attemptId: first.attemptId,
+            attemptNo: first.attemptNo,
+            turn,
+            promptKind: turn === 1 ? "task" : "continuation",
+            agentKey: "observer",
+            sessionName: "historical-session",
+            cwd: workspace,
+            trace: false,
+          }, {
+            agent: { kind: "named", name: "claude" },
+            prompt: "Inspect",
+            cwd: workspace,
+            env: {},
+            sessionName: "historical-session",
+            permissionMode: "deny-all",
+          }));
+        }
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          db.prepare(`
+            UPDATE agent_observation_turns
+            SET degraded = 1, gap_count = 1
+            WHERE run_id = ? AND attempt_id = ? AND turn_no = 1
+          `).run(run.id, first.attemptId);
+        } finally {
+          db.close();
+        }
+        const boundedTurns = await store.observationLog.readInspectionProjection({
+          runId: run.id,
+          attemptIds: [first.attemptId],
+          entryLimit: 50,
+          latestTurnOnly: true,
+        });
+        if (boundedTurns.isErr()) throw boundedTurns.error;
+        expect(boundedTurns.value.turns.map(turn => turn.turn)).toEqual([2]);
+        expect(boundedTurns.value.omittedTurnEvidence).toBe(true);
+        observationRead.mockClear();
+        scheduler.commitAttemptResult({
+          runId: run.id,
+          attemptId: first.attemptId,
+          ownerEpoch: first.ownerEpoch,
+          result: { status: "failed", reason: "retryable" },
+          idempotencyKey: "inspection-execution:first-failed",
+        });
+        scheduler.retry({
+          runId: run.id,
+          target: nodeKey,
+          ownerEpoch: first.ownerEpoch,
+          idempotencyKey: "inspection-execution:retry",
+        });
+        const second = scheduler.startAttempt({
+          runId: run.id,
+          nodeKey,
+          nodeId: "observe",
+          ownerEpoch: first.ownerEpoch,
+          idempotencyKey: "inspection-execution:second",
+        });
+        store.writeNodeProgress({
+          runId: run.id,
+          nodeKey,
+          nodeId: "observe",
+          attemptId: second.attemptId,
+          attemptNo: second.attemptNo,
+          ownerEpoch: first.ownerEpoch,
+          kind: "agent",
+          status: "running",
+          message: "later progress",
+          tools: { turn: 9, totalToolCallCount: 0, lastCalls: [] },
+        });
+        store.writeExecutionMetadata({
+          runId: run.id,
+          attemptId: second.attemptId,
+          kind: "agent_attempt",
+          metadata: {
+            sessionName: "later-session",
+            turnCount: 9,
+            turns: [],
+          },
+        });
+        const runDir = store.getRunDir(run.id);
+        if (!runDir) throw new Error("expected run directory");
+        for (const turn of captured) await rm(join(runDir, turn.evidence.relativePath));
+
+        controlSettlement = vi.spyOn(
+          controlPlan,
+          "settleRetryControlSnapshot",
+        ).mockImplementation(() => {
+          throw new Error("execution inspection must not settle controls");
+        });
+        const execution = await getRunInspection(workspace, {
+          runId: run.id,
+          mode: "execution",
+          target: first.attemptId,
+        });
+        if (execution.isErr()) throw new Error(execution.error.message);
+        expect(execution.value).toMatchObject({
+          kind: "execution",
+          available: true,
+          summary: {
+            status: "failed",
+            sessionName: "historical-session",
+            turnCount: 2,
+          },
+          recentToolsIncomplete: true,
+        });
+        expect(execution.value).not.toEqual(expect.objectContaining({
+          summary: expect.objectContaining({
+            sessionName: "later-session",
+          }),
+        }));
+        expect(observationRead).toHaveBeenCalledTimes(1);
+        expect(observationRead).toHaveBeenCalledWith({
+          runId: run.id,
+          attemptIds: [first.attemptId],
+          entryLimit: 50,
+          latestTurnOnly: true,
+        });
+        expect(controlSettlement).not.toHaveBeenCalled();
+      } finally {
+        observationRead.mockRestore();
+        controlSettlement.mockRestore();
         store.close();
       }
     });

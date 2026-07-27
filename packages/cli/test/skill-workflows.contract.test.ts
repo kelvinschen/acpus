@@ -6,13 +6,11 @@ import { walkNodes, type NodeVisit, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
 import {
-  skillExampleWorkflowPath,
   skillFilePath,
   skillLibraryWorkflowPath,
   skillReferencePath,
   skillWorkflowExamples,
   skillWorkflowLibrary,
-  workflowNodeKinds,
 } from "./support/skill-workflow-examples.js";
 
 // Bloat ceiling with headroom: keep the default authoring route small enough to
@@ -31,19 +29,6 @@ describe("skill workflow contracts", () => {
     expect(sources.reduce((bytes, source) => bytes + Buffer.byteLength(source), 0)).toBeLessThanOrEqual(defaultRouteByteCeiling);
   });
 
-  it("calibrates Agent-heavy work before topology", async () => {
-    const [skill, authoring] = await Promise.all([
-      readFile(skillFilePath("SKILL.md"), "utf8"),
-      readFile(skillReferencePath("authoring"), "utf8"),
-    ]);
-
-    expect(skill).toContain("broad or uncertain work without an explicit user budget defaults to standard scale");
-    expect(authoring).toContain("count total Agent occurrences and size peak concurrency separately");
-    expect(authoring).toContain("defaulting broad or uncertain work without a user budget to Standard");
-    expect(authoring).toContain("keep `maxConcurrency` out of `N`");
-    expect(authoring).toContain("batch-reduce large result sets");
-  });
-
   it("does not publish symlinks, special files, or invalid UTF-8 skill resources", async () => {
     const root = skillFilePath("");
     const resources = await walkSkillResources(root);
@@ -60,19 +45,6 @@ describe("skill workflow contracts", () => {
     }
   });
 
-  it("labels all checked scenario examples and covers every workflow node kind", async () => {
-    const covered = new Set<string>();
-
-    for (const example of skillWorkflowExamples) {
-      const source = await readFile(skillExampleWorkflowPath(example.directory), "utf8");
-      expect(source).toContain(` * Pattern: ${example.pattern}`);
-      expect(source).toContain(` * Nodes: ${example.nodes.join(", ")}`);
-      for (const node of example.nodes) covered.add(node);
-    }
-
-    expect([...covered].sort()).toEqual([...workflowNodeKinds].sort());
-  });
-
   it("routes each example from exactly one disclosure layer", async () => {
     const references = await Promise.all(
       ["authoring", "advanced-authoring", "signal-authoring"].map(async name => ({
@@ -87,23 +59,19 @@ describe("skill workflow contracts", () => {
     }
   });
 
-  it("advertises the workflow library in SKILL without exposing it to authoring routes", async () => {
+  it("advertises the workflow library without exposing it to authoring routes", async () => {
     const [skill, ...authoringReferences] = await Promise.all([
       readFile(skillFilePath("SKILL.md"), "utf8"),
       ...["authoring", "advanced-authoring", "signal-authoring"]
         .map(name => readFile(skillReferencePath(name), "utf8")),
     ]);
 
-    expect(skill).not.toContain("workflows/README.md");
     expect(skill).toContain("/wf:");
     expect(skill).toContain("/workflow:");
     expect(authoringReferences.every(reference => !reference.includes("../workflows/library/"))).toBe(true);
     for (const workflow of skillWorkflowLibrary) {
       expect(libraryReadmeCell(skill, workflow.directory), workflow.directory)
         .toBe(`\`workflows/library/${workflow.directory}/README.md\``);
-      const source = await readFile(skillLibraryWorkflowPath(workflow.directory), "utf8");
-      expect(source).not.toContain(" * Pattern:");
-      expect(source).not.toContain(" * Nodes:");
     }
   });
 

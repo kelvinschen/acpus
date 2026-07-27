@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { tryResolveArtifactPath } from "../src/artifacts/path.js";
+import { tryBindArtifactRef } from "../src/artifacts/access.js";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
@@ -197,15 +197,15 @@ describe("runtime scheduler task process", () => {
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[nodeKey]?.output).toMatchObject({
           artifact: { kind: "artifact", uri: `artifact://${fork.id}/${String(forkArtifact?.id)}` },
         });
-        const resolved = tryResolveArtifactPath({
+        const resolved = tryBindArtifactRef({
           kind: "artifact",
           uri: `artifact://${fork.id}/${String(forkArtifact?.id)}`,
         }, { cwd: workspace, runId: fork.id, store });
         expect(resolved.isOk()).toBe(true);
         if (resolved.isErr()) throw new Error(resolved.error.message);
-        expect(isAbsolute(resolved.value)).toBe(true);
-        expect(resolved.value).toContain(fork.id);
-        await expect(readFile(resolved.value, "utf8")).resolves.toBe("artifact-ok\n");
+        expect(isAbsolute(resolved.value.path)).toBe(true);
+        expect(resolved.value.path).toContain(fork.id);
+        await expect(readFile(resolved.value.path, "utf8")).resolves.toBe("artifact-ok\n");
       } finally {
         store.close();
       }

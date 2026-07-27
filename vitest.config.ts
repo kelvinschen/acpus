@@ -13,7 +13,6 @@ export default defineConfig({
     conditions: ["development", "node", "import", "default"]
   },
   test: {
-    passWithNoTests: true,
     coverage: {
       reporter: ["text", "html"]
     },

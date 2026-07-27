@@ -47,12 +47,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
       - run: pnpm typecheck
-      - run: pnpm check:build-toolchain
-      - run: pnpm check:dead-code
-      - run: pnpm check:dependencies
-      - run: pnpm check:dependencies:strict
-      - run: pnpm check:docs
-      - run: pnpm check:security
+      - run: pnpm check
       - run: pnpm test
       - run: pnpm test:dist
       - run: git diff --check
@@ -89,12 +84,12 @@ jobs:
 
       - name: Verify pnpm publish configuration
         run: |
-          test "$(pnpm --version)" = "11.15.1"
+          test "pnpm@$(pnpm --version)" = "$(node -p 'require("./package.json").packageManager')"
           test "$(pnpm config get provenance)" = "true"
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
-      - run: pnpm check:security
+      - run: pnpm check security
       - run: pnpm test:dist
 
       - name: Create version PR or publish stable packages

@@ -23,6 +23,7 @@ import type {
   AgentInspectionState,
   RunInspectionOverviewAction,
   RunInspectionChange,
+  RunInspectionControl,
   RunInspectionContext,
   RunInspectionCursor,
   RunInspectionDocument,
@@ -64,6 +65,7 @@ export function projectRunInspection(input: {
   artifacts: ArtifactRecord[];
   cursor: RunInspectionCursor;
   query: RunInspectionQuery;
+  availableControls?: readonly RunInspectionControl[];
 }): RunInspectionDocument | undefined {
   if (input.query.mode === "raw") {
     return {
@@ -77,10 +79,28 @@ export function projectRunInspection(input: {
   }
   const staticNodes = inspectionStaticNodes(input.ir);
   if (input.query.mode === "details") {
-    return projectTarget(input.ir, input.run, input.artifacts, input.cursor, staticNodes, input.query.target, input.query.context ?? []);
+    return projectTarget(
+      input.ir,
+      input.run,
+      input.artifacts,
+      input.cursor,
+      staticNodes,
+      input.query.target,
+      input.query.context ?? [],
+      input.availableControls ?? [],
+    );
   }
-  if (input.query.mode === "target" || input.query.mode === "timeline") return undefined;
-  return projectSnapshot(input.ir, input.run, input.cursor, staticNodes, input.query.mode === "all");
+  if (input.query.mode === "target"
+    || input.query.mode === "timeline"
+    || input.query.mode === "execution") return undefined;
+  return projectSnapshot(
+    input.ir,
+    input.run,
+    input.cursor,
+    staticNodes,
+    input.query.mode === "all",
+    input.availableControls ?? [],
+  );
 }
 
 export function semanticChanges(events: readonly CommittedRuntimeEventRow[], document: RunInspectionDocument, run?: RunDetails): RunInspectionChange[] {
@@ -224,6 +244,7 @@ function projectSnapshot(
   cursor: RunInspectionCursor,
   staticNodes: RunInspectionStaticNode[],
   all: boolean,
+  availableControls: readonly RunInspectionControl[],
 ): RunInspectionSnapshot {
   const indexes = snapshotIndexes(run, staticNodes);
   const tree = occurrenceTree(ir, indexes);
@@ -245,9 +266,14 @@ function projectSnapshot(
     if (target) actions.push({ kind: "inspect-target", target, itemKey: item.key });
   }
   const timedOutSignals = (run.dynamic?.signalWaits ?? []).filter(wait => wait.status === "timed_out" && wait.terminalReason === "signal_timeout");
+  const retryTargets = new Set(availableControls
+    .filter(control => control.type === "retry")
+    .map(control => control.target));
   for (const wait of timedOutSignals) {
     const itemKey = tree.itemKeyByNodeKey.get(wait.nodeKey);
-    if (itemKey) actions.push({ kind: "retry", target: wait.nodeKey, itemKey });
+    if (itemKey && retryTargets.has(wait.nodeKey)) {
+      actions.push({ kind: "retry", target: wait.nodeKey, itemKey });
+    }
   }
   if (timedOutSignals.length > 0) actions.push({ kind: "fork" });
   const omittedAgentProgress = (run.dynamic?.progress ?? []).filter(item => item.kind === "agent" && compact.hiddenAgentNodeKeys.has(item.nodeKey)).length;
@@ -892,6 +918,7 @@ function projectTarget(
   staticNodes: RunInspectionStaticNode[],
   targetId: string,
   context: RunInspectionContext,
+  availableControls: readonly RunInspectionControl[],
 ): RunInspectionTargetDetailsDocument | undefined {
   const dynamic = run.dynamic;
   const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
@@ -918,12 +945,15 @@ function projectTarget(
     (item.attemptId === targetId || item.nodeKey === targetId || item.nodeId === targetId || instanceKeys.has(item.nodeKey))
       && (!scoped || instanceKeys.has(item.nodeKey))) ?? [];
   const attemptIds = new Set(attempts.map(item => item.attemptId));
-  const signalWaits = dynamic?.signalWaits.filter(item => item.nodeKey === targetId || item.nodeId === targetId || instanceKeys.has(item.nodeKey)) ?? [];
+  const signalWaits = dynamic?.signalWaits.filter(item =>
+    item.nodeKey === targetId
+      || instanceKeys.has(item.nodeKey)
+      || (!scoped && item.nodeId === targetId)) ?? [];
   const executionMetadata = dynamic?.executionMetadata.filter(item => item.attemptId !== undefined && attemptIds.has(item.attemptId)) ?? [];
   const progress = dynamic?.progress.filter(item => instanceKeys.has(item.nodeKey) || attemptIds.has(item.attemptId ?? "") || (!scoped && item.nodeId === targetId)) ?? [];
   const targetKeys = new Set([targetId, ...instanceKeys, ...frames.map(item => item.frameKey), ...attempts.map(item => item.nodeKey)]);
   const targetArtifacts = artifacts.filter(item => targetKeys.has(item.nodeKey));
-  const latestAttempt = exactAttempt ?? latest(attempts, item => item.startedAt);
+  const latestAttempt = exactAttempt ?? latestAttemptByNumber(attempts);
   const latestInstance = latest(instances, item => item.updatedAt);
   const latestFrame = latest(frames, item => item.updatedAt);
   const latestWait = latest(signalWaits, item => item.updatedAt);
@@ -1026,6 +1056,7 @@ function projectTarget(
     executionMetadata,
     progress,
     artifacts: targetArtifacts,
+    availableControls: [...availableControls],
   };
 }
 
@@ -1742,6 +1773,13 @@ function durationMs(start: string, end: string): number {
 
 function latest<T>(items: T[], field: (item: T) => string | undefined): T | undefined {
   return [...items].sort((left, right) => (field(right) ?? "").localeCompare(field(left) ?? ""))[0];
+}
+
+function latestAttemptByNumber(attempts: RunDynamicAttempt[]): RunDynamicAttempt | undefined {
+  return [...attempts].sort((left, right) =>
+    right.attemptNo - left.attemptNo
+      || right.startedAt.localeCompare(left.startedAt)
+      || right.attemptId.localeCompare(left.attemptId))[0];
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

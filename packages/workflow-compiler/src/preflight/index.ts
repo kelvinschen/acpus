@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFile, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { WorkflowIR } from "@acpus/core/ir";
@@ -6,6 +5,7 @@ import { checkWorkflow } from "../check/runner.js";
 import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
 import { createScratchDir } from "./temp.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { sha256Digest } from "../digest.js";
 
 export type WorkflowPreparationOptions = {
   workflow: string;
@@ -159,8 +159,14 @@ async function prepareWorkflowResult(
         diagnostics: check.diagnostics,
       });
     }
+    if (check.sourceDigest === undefined) {
+      throw new Error("Workflow check succeeded without a source digest.");
+    }
 
-    const compiled = await compileWorkflow(workflowPath, sourceRoot, scratchDir, options.cwd);
+    const compiled = await compileWorkflow(workflowPath, sourceRoot, scratchDir, {
+      dependencyRoot: options.cwd,
+      expectedSourceDigest: check.sourceDigest,
+    });
     if (compiled.isErr()) {
       return err({
         type: "compile-failed",
@@ -181,11 +187,11 @@ async function prepareWorkflowResult(
     }
 
     const irJson = `${JSON.stringify(compiled.value.ir, null, 2)}\n`;
-    const irFileDigest = digest(irJson);
+    const irFileDigest = sha256Digest(irJson);
     const packageLockResult = await tryReadPackageLockDigest(options.cwd);
     if (packageLockResult.isErr()) return err({ ...packageLockResult.error, phase: "lock" });
     const packageLock = packageLockResult.value;
-    const sourceGraphDigest = digest([
+    const sourceGraphDigest = sha256Digest([
       compiled.value.sourceDigest,
       packageLock ?? "",
     ].join("\n"));
@@ -234,7 +240,7 @@ async function readPackageLockDigest(cwd: string): Promise<Result<string | undef
   for (const name of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
     const path = join(cwd, name);
     try {
-      return ok(digest(await readFile(path, "utf8")));
+      return ok(sha256Digest(await readFile(path, "utf8")));
     } catch (error) {
       if (isMissingPathError(error)) continue;
       return err({
@@ -245,10 +251,6 @@ async function readPackageLockDigest(cwd: string): Promise<Result<string | undef
     }
   }
   return ok(undefined);
-}
-
-function digest(value: string): string {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 function causeMessage(cause: unknown): string {

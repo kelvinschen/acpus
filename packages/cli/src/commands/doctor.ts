@@ -29,13 +29,19 @@ export function createDoctorCommand(ctx: DoctorCommandContext): Command {
           message: error instanceof Error ? error.message : String(error),
         };
       }
-      const ok = report.ok && authoring?.ok !== false && authoringFailure === undefined;
+      const checks = [...report.checks, ...(authoring?.checks ?? []), ...(authoringFailure ? [authoringFailure] : [])];
+      const ok = checks.every(check => check.status !== "fail");
+      const message = !ok
+        ? "Doctor checks failed."
+        : checks.some(check => check.status === "warn")
+          ? "Doctor checks passed with warnings."
+          : "Doctor checks passed.";
       ctx.setExitCode(writeResult({
         ok,
         phase: "doctor",
-        message: ok ? "Doctor checks passed." : "Doctor checks failed.",
+        message,
         ...(report.persistence ? { persistence: report.persistence } : {}),
-        checks: [...report.checks, ...(authoring?.checks ?? []), ...(authoringFailure ? [authoringFailure] : [])],
+        checks,
         ...(authoring ? { authoring: authoring.environment } : {}),
       }, outputFormatFor(options), ctx, ok ? 0 : 1));
     });

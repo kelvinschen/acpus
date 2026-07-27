@@ -1,27 +1,20 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
-  constants as fsConstants,
-  createReadStream,
   fsyncSync,
   openSync,
   writeSync,
 } from "node:fs";
 import {
   chmod,
-  copyFile,
   lstat,
-  mkdir,
   open,
   readFile,
   readdir,
   realpath,
-  rename,
-  rm,
-  stat,
 } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   executeAgentTurn,
@@ -33,6 +26,28 @@ import {
 } from "@acpus/agent-executor";
 import { ResultAsync } from "neverthrow";
 import type { RuntimeLayout } from "../runtime-layout.js";
+import { utf8Head, utf8Tail } from "../utf8.js";
+import {
+  captureDirectoryIdentity,
+  verifyDirectoryIdentity,
+  type DirectoryIdentity,
+  type RunDirectoryFence,
+} from "../store/path-fence.js";
+import {
+  assertRunFileIdentity,
+  captureOpenedRunFile,
+  captureOpenedRunFileSync,
+  captureRunFile,
+  chmodRunFile,
+  copyRunFile,
+  prepareRunFilePath,
+  removeRunFile,
+  publishRunFile,
+  verifyPreparedRunFilePath,
+  verifyRunFile,
+  type PreparedRunFilePath,
+  type RunFileToken,
+} from "../store/run-file.js";
 
 const evidenceSchemaVersion = 1;
 const semanticEntryLimit = 128;
@@ -252,6 +267,7 @@ export type AgentObservationInspectionProjection = {
   version: number;
   latestRelevantVersion?: number;
   turns: AgentObservationTurnEvidence[];
+  omittedTurnEvidence?: true;
   currents: AgentObservationCurrent[];
   entries: AgentObservationSemanticEntry[];
   retentionOmittedBefore: number;
@@ -286,12 +302,12 @@ export type AgentTracePublicationInput = {
   runId: string;
   attemptId: string;
   turn: number;
-  destinationAbsolutePath: string;
   destinationRelativePath: string;
   register: (trace: {
     size: number;
     digest: string;
     relativePath: string;
+    file: RunFileToken;
   }) => Promise<void>;
 };
 
@@ -383,6 +399,8 @@ type FenceOperation = {
 };
 
 type PreparedTurnPaths = {
+  run: RunDirectoryFence;
+  directory: DirectoryIdentity;
   evidence: { absolutePath: string; relativePath: string };
   trace?: { absolutePath: string; relativePath: string };
 };
@@ -408,6 +426,7 @@ export class AgentObservationLog {
   constructor(
     private readonly db: DatabaseSync,
     private readonly layout: RuntimeLayout,
+    private readonly resolveRunDirectoryFence: (runId: string) => RunDirectoryFence,
   ) {}
 
   async captureTurn(
@@ -509,6 +528,7 @@ export class AgentObservationLog {
     attemptIds?: readonly string[];
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
+    latestTurnOnly?: true;
   }): ResultAsync<AgentObservationInspectionProjection, AgentObservationReadError> {
     return ResultAsync.fromPromise(
       Promise.resolve().then(() => this.readProjection(input)),
@@ -559,21 +579,23 @@ export class AgentObservationLog {
     if (row.trace_state !== "sealed" || row.trace_relative_path === null) {
       throw new Error(`Agent trace '${input.attemptId}:${input.turn}' is not sealed for publication.`);
     }
-    const source = await this.verifiedEvidencePath(input.runId, row.trace_relative_path);
+    const run = this.runDirectoryFence(input.runId);
+    const sourceFile = await this.verifiedEvidencePath(run, row.trace_relative_path);
+    const source = sourceFile.path;
     const destination = await this.verifiedArtifactDestination(
-      input.runId,
-      input.destinationAbsolutePath,
+      run,
       input.destinationRelativePath,
     );
-    const metadata = await fileMetadata(source);
+    const metadata = await fileMetadata(source, run, sourceFile);
     const existingArtifact = this.traceArtifact(input.runId, input.destinationRelativePath);
     if (existingArtifact
       && (existingArtifact.size !== metadata.size || existingArtifact.digest !== metadata.digest)) {
       throw new Error(`Registered trace artifact '${input.destinationRelativePath}' does not match its private spool.`);
     }
     if (existingArtifact) {
+      run.verify();
       this.finalizeTracePublication(row, input.destinationRelativePath, metadata);
-      await rm(source, { force: true }).catch(() => {});
+      await removeRunFile(run.token(), sourceFile, "Agent trace spool").catch(() => {});
       return {
         size: metadata.size,
         digest: metadata.digest,
@@ -585,18 +607,27 @@ export class AgentObservationLog {
       SET trace_artifact_relative_path = ?
       WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
     `).run(input.destinationRelativePath, input.runId, input.attemptId, input.turn);
+    let destinationFile: RunFileToken | undefined;
     try {
-      await copyFile(source, destination, fsConstants.COPYFILE_EXCL);
-      if (this.layout.platform !== "win32") await chmod(destination, 0o600);
+      destinationFile = await copyRunFile(
+        run.token(),
+        sourceFile,
+        destination,
+        "Agent trace spool",
+      );
+      if (this.layout.platform !== "win32") {
+        await chmodTraceArtifact(destination, destinationFile, 0o600);
+      }
       await input.register({
         size: metadata.size,
         digest: metadata.digest,
         relativePath: input.destinationRelativePath,
+        file: destinationFile,
       });
     } catch (error) {
       let cleanupFailure: unknown;
       try {
-        await rm(destination, { force: true });
+        await removePreparedArtifact(destination, destinationFile);
       } catch (cleanupError) {
         cleanupFailure = cleanupError;
       }
@@ -610,8 +641,12 @@ export class AgentObservationLog {
       }
       throw error;
     }
+    if (!destinationFile) throw new Error("Published Agent trace artifact identity is missing.");
+    verifyPreparedRunFilePath(destination);
+    verifyRunFile(destination.run, destinationFile, destination.label);
+    run.verify();
     this.finalizeTracePublication(row, input.destinationRelativePath, metadata);
-    await rm(source, { force: true }).catch(() => {});
+    await removeRunFile(run.token(), sourceFile, "Agent trace spool").catch(() => {});
     return {
       size: metadata.size,
       digest: metadata.digest,
@@ -636,6 +671,7 @@ export class AgentObservationLog {
     const promptDigest = digest(Buffer.from(record.prompt));
     const initialCurrent = writer.initialCurrent(record.observedAt);
     const currentJson = boundedCurrentJson(initialCurrent);
+    writer.verifyRunDirectory();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireStartedAttempt(writer.context);
@@ -681,6 +717,7 @@ export class AgentObservationLog {
         paths.trace?.relativePath ?? null,
         record.observedAt,
       );
+      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -718,6 +755,7 @@ export class AgentObservationLog {
       operation.fileWritten = true;
     }
     await writer.flushTrace(true);
+    writer.verifyRunDirectory();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const version = this.advanceObservationVersion(writer.context.runId, record.observedAt);
@@ -748,6 +786,7 @@ export class AgentObservationLog {
       this.updateObservationCounts(writer);
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
+      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
       writer.indexedBytes = offset + line.byteLength;
     } catch (error) {
@@ -780,13 +819,15 @@ export class AgentObservationLog {
     const bytes = Buffer.concat(records.map(recordLine));
     const offset = writer.indexedBytes;
     await writer.writeEvidence(bytes, true);
-    await writer.closeEvidence();
     const sealedPath = writer.evidencePath.absolutePath.replace(/\.partial$/, "");
-    await rename(writer.evidencePath.absolutePath, sealedPath);
-    if (this.layout.platform !== "win32") await chmod(sealedPath, 0o600);
-    const sealed = await fileMetadata(sealedPath);
+    const sealedFile = await writer.sealEvidence(sealedPath);
+    if (this.layout.platform !== "win32") {
+      await chmodRunFile(writer.runFence.token(), sealedFile, 0o600, "Private evidence file");
+    }
+    const sealed = await fileMetadata(sealedPath, writer.runFence, sealedFile);
     const relativePath = writer.evidencePath.relativePath.replace(/\.partial$/, "");
     const outcome = providerOutcome(result);
+    writer.verifyRunDirectory();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const version = this.advanceObservationVersion(writer.context.runId, result.timing.finishedAt);
@@ -841,6 +882,7 @@ export class AgentObservationLog {
       );
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
+      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
       writer.indexedBytes = offset + bytes.byteLength;
       writer.markEvidenceFinished();
@@ -855,6 +897,16 @@ export class AgentObservationLog {
 
   async markWriterPartial(writer: AgentTurnWriter, cause: unknown): Promise<void> {
     if (writer.evidenceFinished) return;
+    try {
+      writer.verifyEvidenceDirectory();
+    } catch (error) {
+      try {
+        await writer.closeOpenHandles();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], "Agent evidence identity failed and its open handles could not be closed.");
+      }
+      throw error;
+    }
     const at = new Date().toISOString();
     const record: Extract<AgentTurnEvidenceRecord, { type: "gap" }> = {
       schemaVersion: evidenceSchemaVersion,
@@ -874,6 +926,7 @@ export class AgentObservationLog {
       await writer.writeEvidence(line, true);
       await writer.closeEvidence();
       await writer.markTracePartial();
+      writer.verifyRunDirectory();
     } catch (error) {
       throw new AggregateError([cause, error], "Agent execution and private-evidence persistence both failed.");
     }
@@ -917,6 +970,7 @@ export class AgentObservationLog {
       );
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
+      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -952,8 +1006,9 @@ export class AgentObservationLog {
     if (input.eventSequence !== undefined && row.fence_event_sequence !== null) {
       throw new Error(`Agent evidence turn '${input.attemptId}:${row.turn_no}' already has a different durable fence.`);
     }
-    const path = await this.verifiedEvidencePath(input.runId, row.relative_path);
-    const info = await stat(path);
+    const run = this.runDirectoryFence(input.runId);
+    const file = await this.verifiedEvidencePath(run, row.relative_path);
+    const path = file.path;
     const record: Extract<AgentTurnEvidenceRecord, { type: "fence" }> = {
       schemaVersion: evidenceSchemaVersion,
       type: "fence",
@@ -971,14 +1026,26 @@ export class AgentObservationLog {
         : { responseAtFence: input.responseAtFence }),
     };
     const line = recordLine(record);
-    const handle = await open(path, "a");
+    let indexedBytes: number;
+    let sealed: { size: number; digest: string } | undefined;
+    run.verify();
+    const handle = await open(path, "a+");
     try {
+      run.verify();
+      const info = await handle.stat({ bigint: true });
+      if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
+      assertRunFileIdentity(file, info, `Evidence path '${path}'`);
+      indexedBytes = Number(info.size) + line.byteLength;
       await writeFully(handle, line);
       await handle.sync();
+      verifyRunFile(run.token(), file, `Evidence path '${path}'`);
+      run.verify();
+      sealed = row.state === "sealed" ? await fileMetadataHandle(handle, path, file) : undefined;
     } finally {
       await handle.close();
     }
-    const sealed = row.state === "sealed" ? await fileMetadata(path) : undefined;
+    verifyRunFile(run.token(), file, `Evidence path '${path}'`);
+    run.verify();
     const storedCurrent = parseCurrent(row.current_json);
     const recoveredEntry = storedCurrent
       ? entryFromCurrent(storedCurrent, row.last_record_sequence)
@@ -1013,7 +1080,7 @@ export class AgentObservationLog {
         input.responseAtFence === undefined ? null : digest(Buffer.from(input.responseAtFence)),
         input.responseAtFence === undefined ? 1 : 0,
         record.sequence,
-        info.size + line.byteLength,
+        indexedBytes,
         input.committedAt,
         version,
         sealed?.size ?? null,
@@ -1024,6 +1091,7 @@ export class AgentObservationLog {
       );
       this.touchAttempt(input.runId, input.attemptId, version);
       this.trimAttemptEntries(input.runId, input.attemptId);
+      run.verify();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1036,11 +1104,15 @@ export class AgentObservationLog {
     attemptIds?: readonly string[];
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
+    latestTurnOnly?: true;
   }): AgentObservationInspectionProjection {
+    if (input.latestTurnOnly && input.attemptIds?.length !== 1) {
+      throw new Error("Latest-turn inspection requires exactly one attempt.");
+    }
     const versionRow = this.db.prepare("SELECT observation_version FROM runs WHERE id = ?")
       .get(input.runId) as { observation_version: number } | undefined;
     if (!versionRow) throw new Error(`Run '${input.runId}' was not found.`);
-    const turns = this.turnRows(input.runId, input.attemptIds);
+    const turns = this.turnRows(input.runId, input.attemptIds, input.latestTurnOnly);
     const attempts = this.attemptRows(input.runId, input.attemptIds);
     const entryRows = input.entryLimit === undefined || input.attemptIds?.length === 0
       ? []
@@ -1072,10 +1144,14 @@ export class AgentObservationLog {
       row.retention_floor_version === null ? [] : [row.retention_floor_version]);
     const retentionFloorVersion = floors.length === 0 ? undefined : Math.max(...floors);
     const oldestObservationVersion = entries[0]?.observationVersion;
-    const eligibleEntryCount = input.entryLimit === undefined || input.attemptIds?.length === 0
-      ? 0
-      : this.countEntryRows(input);
-    const olderEntryCount = Math.max(0, eligibleEntryCount - chosenRows.length);
+    const olderEntryCount = input.latestTurnOnly
+      ? Number(entryRows.length > chosenRows.length)
+      : Math.max(
+          0,
+          (input.entryLimit === undefined || input.attemptIds?.length === 0
+            ? 0
+            : this.countEntryRows(input)) - chosenRows.length,
+        );
     const beforeEntryRetained = input.beforeEntry === undefined
       ? undefined
       : this.hasEntryBoundary(input.runId, input.attemptIds, input.beforeEntry);
@@ -1083,6 +1159,7 @@ export class AgentObservationLog {
       version: versionRow.observation_version,
       ...(latestRelevantVersion === undefined ? {} : { latestRelevantVersion }),
       turns: turns.map(turnEvidence),
+      ...(input.latestTurnOnly && (turns[0]?.turn_no ?? 0) > 1 ? { omittedTurnEvidence: true } : {}),
       currents,
       entries,
       retentionOmittedBefore,
@@ -1200,6 +1277,7 @@ export class AgentObservationLog {
   }
 
   private async recoverRun(runId: string): Promise<void> {
+    const run = this.runDirectoryFence(runId);
     const rows = this.db.prepare(`
       SELECT turns.*
       FROM agent_observation_turns AS turns
@@ -1214,24 +1292,25 @@ export class AgentObservationLog {
       const durableFence = this.durableSteerFence(row);
       if (row.state !== "sealed"
         || durableFence !== undefined && row.fence_event_sequence !== durableFence.eventSequence) {
-        await this.recoverTurn(row, durableFence);
+        await this.recoverTurn(row, run, durableFence);
       }
       let current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? row;
-      await this.reconcileTracePublication(current);
+      await this.reconcileTracePublication(current, run);
       current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? current;
-      await this.recoverTrace(current);
+      await this.recoverTrace(current, run);
       current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? current;
-      await this.reconcileTracePublication(current);
+      await this.reconcileTracePublication(current, run);
     }
-    await this.removeOrphanPartials(runId);
+    await this.removeOrphanPartials(run);
   }
 
   private async recoverTurn(
     row: TurnRow,
+    run: RunDirectoryFence,
     durableFence = this.durableSteerFence(row),
   ): Promise<void> {
-    const path = await this.verifiedEvidencePath(row.run_id, row.relative_path);
-    let bytes = await readFile(path);
+    let file = await this.verifiedEvidencePath(run, row.relative_path);
+    let bytes = await readVerifiedFile(run, file);
     if (row.indexed_bytes > bytes.byteLength) {
       throw new Error(`Evidence '${row.relative_path}' is shorter than its indexed boundary.`);
     }
@@ -1252,7 +1331,7 @@ export class AgentObservationLog {
         reason: "incomplete_tail_recovery",
       };
       const appended = Buffer.concat([Buffer.from("\n"), recordLine(gap)]);
-      await appendSynced(path, appended);
+      await appendSynced(file, appended, run);
       bytes = Buffer.concat([bytes, appended]);
       records = [...records, gap];
       changed = true;
@@ -1279,7 +1358,7 @@ export class AgentObservationLog {
         responseUnavailable: true,
       };
       const appended = recordLine(fence);
-      await appendSynced(path, appended);
+      await appendSynced(file, appended, run);
       bytes = Buffer.concat([bytes, appended]);
       records = [...records, fence];
       changed = true;
@@ -1298,7 +1377,7 @@ export class AgentObservationLog {
         reason: "provider_settlement_missing_recovery",
       };
       const appended = recordLine(gap);
-      await appendSynced(path, appended);
+      await appendSynced(file, appended, run);
       bytes = Buffer.concat([bytes, appended]);
       records = [...records, gap];
       changed = true;
@@ -1306,12 +1385,12 @@ export class AgentObservationLog {
     const finalRelative = terminal
       ? row.relative_path.replace(/\.partial$/, "")
       : row.relative_path;
-    const finalPath = terminal ? path.replace(/\.partial$/, "") : path;
-    if (terminal && path.endsWith(".partial")) {
-      await rename(path, finalPath);
+    const finalPath = terminal ? file.path.replace(/\.partial$/, "") : file.path;
+    if (terminal && file.path.endsWith(".partial")) {
+      file = await publishRunFile(run.token(), file, finalPath, "Private evidence file");
       changed = true;
     }
-    const metadata = await fileMetadata(finalPath);
+    const metadata = await fileMetadata(finalPath, run, file);
     const current = parseCurrent(row.current_json);
     const recoveredEntry = current
       ? entryFromCurrent(current, row.last_record_sequence)
@@ -1333,6 +1412,7 @@ export class AgentObservationLog {
       || row.fence_event_sequence !== (fence?.type === "fence" ? fence.schedulerEventSequence ?? null : null)
       || row.provider_status !== (terminal?.type === "turn_end" ? terminal.providerStatus : null);
     if (!needsMetadataUpdate) return;
+    run.verify();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const version = this.advanceObservationVersion(row.run_id, at);
@@ -1391,6 +1471,7 @@ export class AgentObservationLog {
       );
       this.touchAttempt(row.run_id, row.attempt_id, version);
       this.trimAttemptEntries(row.run_id, row.attempt_id);
+      run.verify();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1424,18 +1505,17 @@ export class AgentObservationLog {
     return undefined;
   }
 
-  private async recoverTrace(row: TurnRow): Promise<void> {
+  private async recoverTrace(row: TurnRow, run: RunDirectoryFence): Promise<void> {
     if (row.trace_enabled === 0
       || row.trace_relative_path === null
       || row.trace_state === "none"
       || row.trace_state === "sealed"
       || row.trace_state === "published") return;
-    const path = await this.verifiedEvidencePath(row.run_id, row.trace_relative_path);
+    let file = await this.verifiedEvidencePath(run, row.trace_relative_path);
     if (row.trace_state === "partial" && row.trace_bytes !== null) {
-      const info = await stat(path);
-      if (info.size === row.trace_bytes) return;
+      if (await verifiedFileSize(run, file) === row.trace_bytes) return;
     }
-    const bytes = await readFile(path);
+    const bytes = await readVerifiedFile(run, file);
     const records = parseCompleteJsonLines(bytes);
     const contiguous = records.every((record, index) =>
       record && typeof record === "object" && (record as { sequence?: unknown }).sequence === index);
@@ -1444,21 +1524,22 @@ export class AgentObservationLog {
       && terminal
       && typeof terminal === "object"
       && (terminal as { type?: unknown }).type === "turn_end";
-    let finalPath = path;
+    let finalPath = file.path;
     let relativePath = row.trace_relative_path;
     if (complete) {
       relativePath = relativePath.replace(/\.partial$/, "");
-      if (path.endsWith(".partial")) {
-        finalPath = path.replace(/\.partial$/, "");
-        await rename(path, finalPath);
+      if (file.path.endsWith(".partial")) {
+        finalPath = file.path.replace(/\.partial$/, "");
+        file = await publishRunFile(run.token(), file, finalPath, "Agent trace spool");
       }
     }
-    const metadata = await fileMetadata(finalPath);
+    const metadata = await fileMetadata(finalPath, run, file);
     const nextState = complete ? "sealed" : "partial";
     if (row.trace_state === nextState
       && row.trace_relative_path === relativePath
       && row.trace_bytes === metadata.size
       && row.trace_digest === metadata.digest) return;
+    run.verify();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const version = this.advanceObservationVersion(row.run_id, new Date().toISOString());
@@ -1481,6 +1562,7 @@ export class AgentObservationLog {
         row.turn_no,
       );
       this.touchAttempt(row.run_id, row.attempt_id, version);
+      run.verify();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1488,7 +1570,7 @@ export class AgentObservationLog {
     }
   }
 
-  private async reconcileTracePublication(row: TurnRow): Promise<void> {
+  private async reconcileTracePublication(row: TurnRow, run: RunDirectoryFence): Promise<void> {
     if (row.trace_relative_path === null
       || row.trace_artifact_relative_path === null
       || row.trace_bytes === null
@@ -1496,11 +1578,12 @@ export class AgentObservationLog {
     const metadata = { size: row.trace_bytes, digest: row.trace_digest };
     if (!this.registeredTraceArtifact(row.run_id, row.trace_artifact_relative_path, metadata)) return;
     if (row.trace_state !== "published") {
+      run.verify();
       this.finalizeTracePublication(row, row.trace_artifact_relative_path, metadata);
     }
     try {
-      const path = await this.verifiedEvidencePath(row.run_id, row.trace_relative_path);
-      await rm(path, { force: true });
+      const file = await this.verifiedEvidencePath(run, row.trace_relative_path);
+      await removeRunFile(run.token(), file, "Agent trace spool");
     } catch (error) {
       if (!missing(error)) throw error;
     }
@@ -1555,16 +1638,21 @@ export class AgentObservationLog {
     }
   }
 
-  private async removeOrphanPartials(runId: string): Promise<void> {
-    const runDir = await this.verifiedRunDirectory(runId);
+  private async removeOrphanPartials(run: RunDirectoryFence): Promise<void> {
+    const runId = run.runId;
+    const runDir = run.verify();
     const evidenceRoot = join(runDir, "evidence");
     let root;
     try {
       root = await lstat(evidenceRoot);
     } catch (error) {
-      if (missing(error)) return;
+      if (missing(error)) {
+        run.verify();
+        return;
+      }
       throw error;
     }
+    run.verify();
     if (root.isSymbolicLink() || !root.isDirectory()) {
       throw new Error(`Evidence root '${evidenceRoot}' is not a regular directory.`);
     }
@@ -1573,9 +1661,13 @@ export class AgentObservationLog {
     try {
       agentRootInfo = await lstat(agentRoot);
     } catch (error) {
-      if (missing(error)) return;
+      if (missing(error)) {
+        run.verify();
+        return;
+      }
       throw error;
     }
+    run.verify();
     if (agentRootInfo.isSymbolicLink() || !agentRootInfo.isDirectory()) {
       throw new Error(`Agent evidence root '${agentRoot}' is not a regular directory.`);
     }
@@ -1583,15 +1675,23 @@ export class AgentObservationLog {
       row.relative_path,
       ...(row.trace_relative_path ? [row.trace_relative_path] : []),
     ]));
+    run.verify();
     const attemptDirs = await readdir(agentRoot, { withFileTypes: true });
+    run.verify();
     for (const attemptDir of attemptDirs) {
       if (attemptDir.isSymbolicLink() || !attemptDir.isDirectory()) continue;
       const directory = join(agentRoot, attemptDir.name);
+      run.verify();
       const files = await readdir(directory, { withFileTypes: true });
+      run.verify();
       for (const file of files) {
         if (!file.isFile() || !file.name.endsWith(".partial")) continue;
-        const relativePath = relative(runDir, join(directory, file.name));
-        if (!indexed.has(relativePath)) await rm(join(directory, file.name));
+        const path = join(directory, file.name);
+        const relativePath = relative(runDir, path);
+        if (!indexed.has(relativePath)) {
+          const orphan = captureRunFile(run.token(), path, "Orphan Agent evidence partial");
+          await removeRunFile(run.token(), orphan, "Orphan Agent evidence partial");
+        }
       }
     }
   }
@@ -1599,23 +1699,45 @@ export class AgentObservationLog {
   private async prepareTurnPaths(context: AgentObservationTurnContext): Promise<PreparedTurnPaths> {
     if (!safePathSegment(context.runId)) throw new Error(`Run id '${context.runId}' is not safe for private evidence storage.`);
     if (!safePathSegment(context.attemptId)) throw new Error(`Attempt id '${context.attemptId}' is not safe for private evidence storage.`);
-    const runDir = await this.verifiedRunDirectory(context.runId);
-    const evidenceRoot = join(runDir, "evidence");
-    const agentsRoot = join(evidenceRoot, "agents");
-    const attemptDir = join(agentsRoot, context.attemptId);
-    await ensurePrivateDirectory(evidenceRoot, this.layout.platform);
-    await ensurePrivateDirectory(agentsRoot, this.layout.platform);
-    await ensurePrivateDirectory(attemptDir, this.layout.platform);
-    const realRun = await realpath(runDir);
-    const realAttempt = await realpath(attemptDir);
-    if (!contained(realRun, realAttempt)) throw new Error(`Evidence directory '${attemptDir}' escapes run '${context.runId}'.`);
+    const run = this.runDirectoryFence(context.runId);
+    const runDir = run.verify();
     const prefix = `turn-${String(context.turn).padStart(3, "0")}`;
     const evidenceName = `${prefix}.evidence.jsonl.partial`;
     const traceName = `${prefix}.trace.jsonl.partial`;
+    const evidenceRelativePath = join("evidence", "agents", context.attemptId, evidenceName);
+    const evidencePrepared = await prepareRunFilePath(
+      run.token(),
+      evidenceRelativePath,
+      `Private evidence turn '${context.attemptId}:${context.turn}'`,
+    );
+    const evidenceAbsolutePath = evidencePrepared.path;
+    const expectedEvidencePath = join(runDir, evidenceRelativePath);
+    if (evidenceAbsolutePath !== expectedEvidencePath) {
+      throw new Error(`Evidence path '${evidenceAbsolutePath}' does not match '${expectedEvidencePath}'.`);
+    }
+    const evidenceRoot = join(runDir, "evidence");
+    const agentsRoot = join(evidenceRoot, "agents");
+    const attemptDir = join(agentsRoot, context.attemptId);
+    const directories = [
+      captureDirectoryIdentity(evidenceRoot, "Evidence root"),
+      captureDirectoryIdentity(agentsRoot, "Agent evidence root"),
+      captureDirectoryIdentity(attemptDir, "Agent evidence directory"),
+    ];
+    for (const directory of directories) {
+      if (this.layout.platform !== "win32") {
+        await chmodDirectoryVerified(run, directory, 0o700, "Private evidence directory");
+      } else {
+        verifyDirectoryIdentity(directory, "Private evidence directory");
+        run.verify();
+      }
+    }
+    const directory = directories.at(-1)!;
     return {
+      run,
+      directory,
       evidence: {
-        absolutePath: join(attemptDir, evidenceName),
-        relativePath: join("evidence", "agents", context.attemptId, evidenceName),
+        absolutePath: evidenceAbsolutePath,
+        relativePath: evidenceRelativePath,
       },
       ...(context.trace
         ? {
@@ -1796,31 +1918,38 @@ export class AgentObservationLog {
     `).run(deleted, floor!, runId, attemptId);
   }
 
-  private turnRows(runId: string, attemptIds?: readonly string[]): TurnRow[] {
-    const rows = this.db.prepare(`
+  private turnRows(
+    runId: string,
+    attemptIds?: readonly string[],
+    latestOnly?: true,
+  ): TurnRow[] {
+    if (attemptIds?.length === 0) return [];
+    const attemptClause = attemptIds === undefined
+      ? ""
+      : ` AND attempt_id IN (${attemptIds.map(() => "?").join(", ")})`;
+    return this.db.prepare(`
       SELECT *
       FROM agent_observation_turns
-      WHERE run_id = ?
-      ORDER BY attempt_no, turn_no
-    `).all(runId) as TurnRow[];
-    if (attemptIds === undefined) return rows;
-    const selected = new Set(attemptIds);
-    return rows.filter(row => selected.has(row.attempt_id));
+      WHERE run_id = ?${attemptClause}
+      ORDER BY ${latestOnly ? "turn_no DESC" : "attempt_no, turn_no"}
+      ${latestOnly ? "LIMIT 1" : ""}
+    `).all(runId, ...(attemptIds ?? [])) as TurnRow[];
   }
 
   private attemptRows(
     runId: string,
     attemptIds?: readonly string[],
   ): Map<string, AttemptObservationRow> {
+    if (attemptIds?.length === 0) return new Map();
+    const attemptClause = attemptIds === undefined
+      ? ""
+      : ` AND attempt_id IN (${attemptIds.map(() => "?").join(", ")})`;
     const rows = this.db.prepare(`
       SELECT attempt_id, latest_observation_version, retention_omitted_count, retention_floor_version
       FROM agent_observation_attempts
-      WHERE run_id = ?
-    `).all(runId) as Array<AttemptObservationRow & { attempt_id: string }>;
-    const selected = attemptIds === undefined ? undefined : new Set(attemptIds);
-    return new Map(rows
-      .filter(row => selected === undefined || selected.has(row.attempt_id))
-      .map(row => [row.attempt_id, row]));
+      WHERE run_id = ?${attemptClause}
+    `).all(runId, ...(attemptIds ?? [])) as Array<AttemptObservationRow & { attempt_id: string }>;
+    return new Map(rows.map(row => [row.attempt_id, row]));
   }
 
   private turnRow(runId: string, attemptId: string, turn: number): TurnRow | undefined {
@@ -1842,15 +1971,20 @@ export class AgentObservationLog {
     return evidence;
   }
 
-  private async verifiedEvidencePath(runId: string, relativePath: string): Promise<string> {
+  private async verifiedEvidencePath(
+    run: RunDirectoryFence,
+    relativePath: string,
+  ): Promise<RunFileToken> {
+    const runId = run.runId;
     if (!safePathSegment(runId)) throw new Error(`Run id '${runId}' is not safe for private evidence storage.`);
-    const runDir = await this.verifiedRunDirectory(runId);
+    const runDir = run.verify();
     const evidenceRoot = resolve(runDir, "evidence");
     let absolute = resolve(runDir, relativePath);
     if (isAbsolute(relativePath) || absolute === evidenceRoot || !contained(evidenceRoot, absolute)) {
       throw new Error(`Evidence path '${relativePath}' escapes run '${runId}'.`);
     }
     await requireDirectory(evidenceRoot, "Evidence root");
+    run.verify();
     let info: Awaited<ReturnType<typeof lstat>>;
     try {
       info = await lstat(absolute);
@@ -1859,60 +1993,57 @@ export class AgentObservationLog {
       absolute = absolute.replace(/\.partial$/, "");
       info = await lstat(absolute);
     }
+    run.verify();
     const attemptDirectory = resolve(absolute, "..");
     await requireDirectory(attemptDirectory, "Agent evidence directory");
     if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Evidence path '${absolute}' is not a regular file.`);
+    const file = captureRunFile(run.token(), absolute, `Evidence path '${absolute}'`);
     const realRun = await realpath(runDir);
     const realRoot = await realpath(evidenceRoot);
     const realAttempt = await realpath(attemptDirectory);
     const real = await realpath(absolute);
+    run.verify();
     if (resolve(realRoot, "..") !== realRun
       || !contained(realRoot, realAttempt)
       || !contained(realAttempt, real)) {
       throw new Error(`Evidence path '${absolute}' escapes its private root.`);
     }
-    return absolute;
+    verifyRunFile(run.token(), file, `Evidence path '${absolute}'`);
+    return file;
   }
 
   private async verifiedArtifactDestination(
-    runId: string,
-    absolutePath: string,
+    run: RunDirectoryFence,
     relativePath: string,
-  ): Promise<string> {
-    const runDir = await this.verifiedRunDirectory(runId);
+  ): Promise<PreparedRunFilePath> {
+    const runId = run.runId;
+    const runDir = run.verify();
     const artifacts = resolve(runDir, "artifacts");
     const expected = resolve(runDir, relativePath);
     if (isAbsolute(relativePath)
-      || expected !== resolve(absolutePath)
       || expected === artifacts
       || !contained(artifacts, expected)) {
       throw new Error(`Trace artifact path '${relativePath}' escapes run '${runId}'.`);
     }
-    await ensurePrivateDirectory(artifacts, this.layout.platform);
-    await ensurePrivateDirectory(dirname(expected), this.layout.platform);
-    const realRun = await realpath(runDir);
-    const realArtifacts = await realpath(artifacts);
-    const realParent = await realpath(dirname(expected));
-    if (resolve(realArtifacts, "..") !== realRun || !contained(realArtifacts, realParent)) {
-      throw new Error(`Trace artifact destination '${absolutePath}' escapes its artifact root.`);
+    const token = run.token();
+    const label = `Agent trace artifact '${relativePath}'`;
+    const prepared = await prepareRunFilePath(token, relativePath, label);
+    if (prepared.path !== expected) {
+      throw new Error(`Trace artifact destination '${prepared.path}' does not match '${expected}'.`);
     }
-    return expected;
+    if (this.layout.platform !== "win32") {
+      await chmodDirectoryVerified(run, prepared.parent, 0o700, `${label} parent directory`);
+    }
+    return prepared;
   }
 
-  private async verifiedRunDirectory(runId: string): Promise<string> {
-    const runsRoot = resolve(this.layout.runsRoot);
-    const runDir = resolve(runsRoot, runId);
-    if (!safePathSegment(runId) || resolve(runDir, "..") !== runsRoot) {
-      throw new Error(`Run '${runId}' escapes the Runtime runs root.`);
+  private runDirectoryFence(runId: string): RunDirectoryFence {
+    const run = this.resolveRunDirectoryFence(runId);
+    if (run.runId !== runId) {
+      throw new Error(`Run directory fence '${run.runId}' does not match requested run '${runId}'.`);
     }
-    await requireDirectory(runsRoot, "Runtime runs root");
-    await requireDirectory(runDir, "Run capsule");
-    const realRunsRoot = await realpath(runsRoot);
-    const realRun = await realpath(runDir);
-    if (resolve(realRun, "..") !== realRunsRoot) {
-      throw new Error(`Run '${runId}' resolves outside the Runtime runs root.`);
-    }
-    return runDir;
+    run.verify();
+    return run;
   }
 }
 
@@ -1927,6 +2058,7 @@ export class AgentTurnWriter {
   evidenceFinished = false;
   private paths?: PreparedTurnPaths;
   private evidenceHandle: FileHandle | undefined;
+  private evidenceFile: RunFileToken | undefined;
   private traceWriter?: AgentTraceSpoolWriter;
   private boundarySequence = 0;
   private sealing = false;
@@ -1955,6 +2087,21 @@ export class AgentTurnWriter {
   get evidencePath(): PreparedTurnPaths["evidence"] {
     if (!this.paths) throw new Error("Agent evidence path is not initialized.");
     return this.paths.evidence;
+  }
+
+  get runFence(): RunDirectoryFence {
+    if (!this.paths) throw new Error("Agent run directory fence is not initialized.");
+    return this.paths.run;
+  }
+
+  verifyRunDirectory(): string {
+    return this.runFence.verify();
+  }
+
+  verifyEvidenceDirectory(): void {
+    if (!this.paths) throw new Error("Agent evidence directory fence is not initialized.");
+    verifyDirectoryIdentity(this.paths.directory, "Agent evidence directory");
+    this.paths.run.verify();
   }
 
   waitForSeal(): Promise<void> {
@@ -1992,14 +2139,27 @@ export class AgentTurnWriter {
   }
 
   async openFiles(evidenceLine: Buffer, traceLine: Buffer | undefined): Promise<void> {
+    this.verifyEvidenceDirectory();
     this.evidenceHandle = await open(this.evidencePath.absolutePath, "wx", 0o600);
+    this.evidenceFile = await captureOpenedRunFile(
+      this.runFence.token(),
+      this.evidenceHandle,
+      this.evidencePath.absolutePath,
+      "Private evidence file",
+    );
+    this.verifyEvidenceDirectory();
     await writeFully(this.evidenceHandle, evidenceLine, 0);
     await this.evidenceHandle.sync();
     this.indexedBytes = evidenceLine.byteLength;
     if (this.paths?.trace && traceLine) {
-      this.traceWriter = new AgentTraceSpoolWriter(this.paths.trace);
+      this.traceWriter = new AgentTraceSpoolWriter(
+        this.runFence,
+        this.paths.directory,
+        this.paths.trace,
+      );
       await this.traceWriter.start(traceLine);
     }
+    this.verifyEvidenceDirectory();
   }
 
   observe(observation: AgentTurnObservation): void {
@@ -2228,14 +2388,39 @@ export class AgentTurnWriter {
     await handle.close();
   }
 
+  async closeOpenHandles(): Promise<void> {
+    const results = await Promise.allSettled([
+      this.closeEvidence(),
+      this.traceWriter?.closeOpenFile() ?? Promise.resolve(),
+    ]);
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map(result => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Agent observation file handles could not be closed.");
+    }
+  }
+
+  async sealEvidence(sealedPath: string): Promise<RunFileToken> {
+    const file = this.evidenceFile;
+    if (!file) throw new Error("Private evidence file identity is not initialized.");
+    await this.closeEvidence();
+    this.verifyEvidenceDirectory();
+    const sealed = await publishRunFile(this.runFence.token(), file, sealedPath, "Private evidence file");
+    this.verifyEvidenceDirectory();
+    this.evidenceFile = sealed;
+    return sealed;
+  }
+
   async discardStartingFiles(): Promise<void> {
     await this.closeEvidence().catch(() => {});
-    await this.traceWriter?.discard().catch(() => {});
+    await this.traceWriter?.discard();
     if (this.paths) {
-      await Promise.all([
-        rm(this.paths.evidence.absolutePath, { force: true }),
-        ...(this.paths.trace ? [rm(this.paths.trace.absolutePath, { force: true })] : []),
-      ]);
+      if (this.evidenceFile) {
+        this.verifyEvidenceDirectory();
+        await removeRunFile(this.paths.run.token(), this.evidenceFile, "Private evidence file");
+        this.verifyEvidenceDirectory();
+      }
     }
   }
 
@@ -2502,6 +2687,7 @@ class AgentObservationSemanticReducer {
 
 class AgentTraceSpoolWriter {
   private fd: number | undefined;
+  private file: RunFileToken | undefined;
   private buffer: Buffer[] = [];
   private bufferedBytes = 0;
   private writtenBytes = 0;
@@ -2513,15 +2699,28 @@ class AgentTraceSpoolWriter {
   private size?: number;
   private fileDigest?: string;
 
-  constructor(private readonly path: { absolutePath: string; relativePath: string }) {
+  constructor(
+    private readonly run: RunDirectoryFence,
+    private readonly directory: DirectoryIdentity,
+    private readonly path: { absolutePath: string; relativePath: string },
+  ) {
     this.finalRelativePath = path.relativePath;
   }
 
   async start(header: Buffer): Promise<void> {
+    this.verifyDirectory();
     this.fd = openSync(this.path.absolutePath, "wx", 0o600);
+    this.file = captureOpenedRunFileSync(
+      this.run.token(),
+      this.fd,
+      this.path.absolutePath,
+      "Agent trace spool",
+    );
+    this.verifyDirectory();
     writeFullySync(this.fd, header, 0);
     fsyncSync(this.fd);
     this.writtenBytes = header.byteLength;
+    this.verifyDirectory();
   }
 
   observe(event: AgentTraceEvent): void {
@@ -2593,8 +2792,11 @@ class AgentTraceSpoolWriter {
       if (!this.terminalSeen) throw new Error("Agent trace ended without a terminal turn_end observation.");
       await this.close();
       const sealedPath = this.path.absolutePath.replace(/\.partial$/, "");
-      await rename(this.path.absolutePath, sealedPath);
-      const metadata = await fileMetadata(sealedPath);
+      if (!this.file) throw new Error("Agent trace spool identity is not initialized.");
+      this.verifyDirectory();
+      this.file = await publishRunFile(this.run.token(), this.file, sealedPath, "Agent trace spool");
+      this.verifyDirectory();
+      const metadata = await fileMetadata(sealedPath, this.run, this.file);
       this.state = "sealed";
       this.finalRelativePath = this.path.relativePath.replace(/\.partial$/, "");
       this.size = metadata.size;
@@ -2624,11 +2826,15 @@ class AgentTraceSpoolWriter {
     await this.close().catch(() => {});
     this.state = "partial";
     this.finalRelativePath = this.path.relativePath;
+    this.verifyDirectory();
     try {
-      const metadata = await fileMetadata(this.path.absolutePath);
+      if (!this.file) throw new Error("Agent trace spool identity is not initialized.");
+      const metadata = await fileMetadata(this.path.absolutePath, this.run, this.file);
       this.size = metadata.size;
       this.fileDigest = metadata.digest;
-    } catch {}
+    } catch {
+      this.verifyDirectory();
+    }
   }
 
   metadata(): {
@@ -2647,7 +2853,20 @@ class AgentTraceSpoolWriter {
 
   async discard(): Promise<void> {
     await this.close().catch(() => {});
-    await rm(this.path.absolutePath, { force: true });
+    if (this.file) {
+      this.verifyDirectory();
+      await removeRunFile(this.run.token(), this.file, "Agent trace spool");
+      this.verifyDirectory();
+    }
+  }
+
+  async closeOpenFile(): Promise<void> {
+    await this.close();
+  }
+
+  private verifyDirectory(): void {
+    verifyDirectoryIdentity(this.directory, "Agent evidence directory");
+    this.run.verify();
   }
 
   private async close(): Promise<void> {
@@ -2941,34 +3160,6 @@ function visible(value: string, maxCharacters: number): string {
   return [...value.replace(/\s+/g, " ").trim()].slice(0, maxCharacters).join("");
 }
 
-function utf8Head(value: string, maxBytes: number): string {
-  let end = 0;
-  let bytes = 0;
-  for (const character of value) {
-    const next = Buffer.byteLength(character);
-    if (bytes + next > maxBytes) break;
-    bytes += next;
-    end += character.length;
-  }
-  return value.slice(0, end);
-}
-
-function utf8Tail(value: string, maxBytes: number): string {
-  let start = value.length;
-  let bytes = 0;
-  while (start > 0) {
-    let characterStart = start - 1;
-    const code = value.charCodeAt(characterStart);
-    if (code >= 0xdc00 && code <= 0xdfff && characterStart > 0) characterStart -= 1;
-    const character = value.slice(characterStart, start);
-    const next = Buffer.byteLength(character);
-    if (bytes + next > maxBytes) break;
-    bytes += next;
-    start = characterStart;
-  }
-  return value.slice(start);
-}
-
 function eventText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(eventText).join("");
@@ -3084,11 +3275,121 @@ function digest(bytes: Buffer): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-async function fileMetadata(path: string): Promise<{ size: number; digest: string }> {
+async function fileMetadata(
+  path: string,
+  run: RunDirectoryFence,
+  expected?: RunFileToken,
+): Promise<{ size: number; digest: string }> {
+  run.verify();
+  if (expected) verifyRunFile(run.token(), expected, `Evidence path '${path}'`);
+  const handle = await open(path, "r");
+  try {
+    run.verify();
+    const metadata = await fileMetadataHandle(handle, path, expected);
+    if (expected) verifyRunFile(run.token(), expected, `Evidence path '${path}'`);
+    run.verify();
+    return metadata;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function fileMetadataHandle(
+  handle: FileHandle,
+  path: string,
+  expected?: RunFileToken,
+): Promise<{ size: number; digest: string }> {
+  const before = await handle.stat({ bigint: true });
+  if (!before.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
+  if (expected) assertRunFileIdentity(expected, before, `Evidence path '${path}'`);
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  const info = await stat(path);
-  return { size: info.size, digest: `sha256:${hash.digest("hex")}` };
+  let size = 0;
+  for await (const chunk of handle.createReadStream({ autoClose: false, start: 0 })) {
+    hash.update(chunk);
+    size += chunk.byteLength;
+  }
+  const after = await handle.stat({ bigint: true });
+  if (expected) assertRunFileIdentity(expected, after, `Evidence path '${path}'`);
+  if (after.size !== BigInt(size)) {
+    throw new Error(`Evidence path '${path}' changed while its metadata was read.`);
+  }
+  return { size, digest: `sha256:${hash.digest("hex")}` };
+}
+
+async function readVerifiedFile(
+  run: RunDirectoryFence,
+  file: RunFileToken,
+): Promise<Buffer> {
+  const path = verifyRunFile(run.token(), file, "Evidence file");
+  const handle = await open(path, "r");
+  try {
+    run.verify();
+    const info = await handle.stat({ bigint: true });
+    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
+    assertRunFileIdentity(file, info, "Evidence file");
+    const bytes = await readFile(handle);
+    assertRunFileIdentity(file, await handle.stat({ bigint: true }), "Evidence file");
+    verifyRunFile(run.token(), file, "Evidence file");
+    run.verify();
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function verifiedFileSize(
+  run: RunDirectoryFence,
+  file: RunFileToken,
+): Promise<number> {
+  const path = verifyRunFile(run.token(), file, "Evidence file");
+  const handle = await open(path, "r");
+  try {
+    run.verify();
+    const info = await handle.stat({ bigint: true });
+    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
+    assertRunFileIdentity(file, info, "Evidence file");
+    verifyRunFile(run.token(), file, "Evidence file");
+    run.verify();
+    return Number(info.size);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function chmodDirectoryVerified(
+  run: RunDirectoryFence,
+  directory: DirectoryIdentity,
+  mode: number,
+  label: string,
+): Promise<void> {
+  verifyDirectoryIdentity(directory, label);
+  run.verify();
+  await chmod(directory.path, mode);
+  verifyDirectoryIdentity(directory, label);
+  run.verify();
+}
+
+async function chmodTraceArtifact(
+  destination: PreparedRunFilePath,
+  file: RunFileToken,
+  mode: number,
+): Promise<void> {
+  verifyPreparedRunFilePath(destination);
+  await chmodRunFile(destination.run, file, mode, destination.label);
+  verifyPreparedRunFilePath(destination);
+}
+
+async function removePreparedArtifact(
+  destination: PreparedRunFilePath,
+  file: RunFileToken | undefined,
+): Promise<void> {
+  if (!file) {
+    verifyPreparedRunFilePath(destination);
+    return;
+  }
+  verifyPreparedRunFilePath(destination);
+  await removeRunFile(destination.run, file, destination.label);
+  verifyPreparedRunFilePath(destination);
 }
 
 async function writeFully(handle: FileHandle, bytes: Buffer, position?: number): Promise<void> {
@@ -3114,11 +3415,22 @@ function writeFullySync(fd: number, bytes: Buffer, position: number): void {
   }
 }
 
-async function appendSynced(path: string, bytes: Buffer): Promise<void> {
+async function appendSynced(
+  file: RunFileToken,
+  bytes: Buffer,
+  run: RunDirectoryFence,
+): Promise<void> {
+  const path = verifyRunFile(run.token(), file, "Evidence file");
   const handle = await open(path, "a");
   try {
+    run.verify();
+    const info = await handle.stat({ bigint: true });
+    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
+    assertRunFileIdentity(file, info, "Evidence file");
     await writeFully(handle, bytes);
     await handle.sync();
+    verifyRunFile(run.token(), file, "Evidence file");
+    run.verify();
   } finally {
     await handle.close();
   }
@@ -3143,16 +3455,6 @@ function safePathSegment(value: string): boolean {
   return value.length > 0 && value !== "." && value !== ".." && !/[\\/]/.test(value);
 }
 
-async function ensurePrivateDirectory(path: string, platform: NodeJS.Platform): Promise<void> {
-  try {
-    await mkdir(path, { mode: 0o700 });
-  } catch (error) {
-    if (!exists(error)) throw error;
-  }
-  await requireDirectory(path, "Private Runtime directory");
-  if (platform !== "win32") await chmod(path, 0o700);
-}
-
 async function requireDirectory(path: string, label: string): Promise<void> {
   const info = await lstat(path);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${label} '${path}' is not a regular directory.`);
@@ -3168,13 +3470,6 @@ function missing(error: unknown): boolean {
     && error !== null
     && "code" in error
     && ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "ENOTDIR");
-}
-
-function exists(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error as { code?: unknown }).code === "EEXIST";
 }
 
 function causeMessage(cause: unknown): string {

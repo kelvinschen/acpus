@@ -27,7 +27,6 @@ import {
   activeEdgeIds,
   buildProjectedEdgePaths,
   canStartPan,
-  centerViewportAt,
   compositeBadge,
   compositeStrategy,
   depth,
@@ -48,6 +47,7 @@ import {
   layoutWorkflow,
   minZoomScale,
   normalizeSelections,
+  planGraphNavigation,
   projectBoxes,
   selectionsForActiveRuntime,
   selectorOptionLabel,
@@ -55,6 +55,7 @@ import {
   wheelZoomScale,
   zoomViewport,
   type GraphSelections,
+  type GraphNavigationIntent,
   type GraphNodeTarget,
   type EdgePath,
   type GraphViewport,
@@ -218,19 +219,19 @@ export function RunGraph({
     setViewportWithOptionalAnimation(fitView(layout, shell.getBoundingClientRect()), animate);
   };
 
-  const focusRenderedItem = (id: string, inspect: boolean, animate = true) => {
-    const shell = shellRef.current;
-    const item = model.items.get(id);
-    if (!shell || !item) return;
-    const next = focusView(layout.boxes.get(id), shell.getBoundingClientRect());
-    if (next) setViewportWithOptionalAnimation(next, animate);
-    if (inspect) onSelectNode(graphNodeTarget(item));
-  };
-
-  const recenterGraphAt = (point: { x: number; y: number }) => {
+  const navigateGraph = (intent: GraphNavigationIntent) => {
     const shell = shellRef.current;
     if (!shell) return;
-    setViewportWithOptionalAnimation(centerViewportAt(viewportRef.current, shell.getBoundingClientRect(), point), true);
+    const plan = planGraphNavigation(model, layout, viewportRef.current, shell.getBoundingClientRect(), intent);
+    if (plan?.viewport) setViewportWithOptionalAnimation(plan.viewport, true);
+    if (plan?.inspectionTarget) onSelectNode(plan.inspectionTarget);
+  };
+
+  const focusRenderedItem = (id: string) => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const next = focusView(layout.boxes.get(id), shell.getBoundingClientRect());
+    if (next) setViewportWithOptionalAnimation(next, true);
   };
 
   const applyActiveFocus = (animate = false) => {
@@ -369,7 +370,7 @@ export function RunGraph({
       <GraphPathBreadcrumb
         model={model}
         selectedRenderId={selectedRenderId}
-        onNavigate={(item, inspect) => focusRenderedItem(item.id, inspect)}
+        onNavigate={navigateGraph}
       />
       <div className="graph-toolbar" onClick={event => event.stopPropagation()}>
         {onSelectWorkflow && (
@@ -378,7 +379,7 @@ export function RunGraph({
             <span>Workflow data</span>
           </Button>
         )}
-        <GraphNodeNavigator model={model} selectedRenderId={selectedRenderId} onNavigate={item => focusRenderedItem(item.id, true)} />
+        <GraphNodeNavigator model={model} selectedRenderId={selectedRenderId} onNavigate={navigateGraph} />
         {graph.mode === "runtime" && (
           <Button
             type="button"
@@ -393,7 +394,7 @@ export function RunGraph({
           </Button>
         )}
         {selectedRenderId && (
-          <Button type="button" variant="tool" className="graph-tool-button" title="Focus selected node" aria-label="Focus selected graph node" onClick={() => focusRenderedItem(selectedRenderId, false)}>
+          <Button type="button" variant="tool" className="graph-tool-button" title="Focus selected node" aria-label="Focus selected graph node" onClick={() => focusRenderedItem(selectedRenderId)}>
             <LocateFixed size={14} />
           </Button>
         )}
@@ -433,7 +434,7 @@ export function RunGraph({
         viewport={viewport}
         shellSize={shellSize}
         selectedRenderId={selectedRenderId}
-        onNavigate={recenterGraphAt}
+        onNavigate={navigateGraph}
       />
       <div
         className="graph-canvas"

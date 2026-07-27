@@ -1,13 +1,24 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
+import { readVerifiedArtifact } from "../artifacts/access.js";
 import { probeProcessLiveness } from "../process-liveness.js";
+import {
+  canCancelRun,
+  retryControlTargets,
+  settleRetryControlSnapshot,
+  type RuntimeControlTarget,
+} from "../scheduler/control-plan.js";
+import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
-import { readVerifiedArtifactBytes } from "../artifacts/path.js";
 import { resolveRuntimeLayout } from "../runtime-layout.js";
 import {
+  IncompatibleRuntimeDatabaseError,
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+  withRunInspectionSnapshot,
   type PreparedRunWorkflow,
   type RuntimeDiagnostics,
   type DaemonDiagnostics,
@@ -17,9 +28,17 @@ import {
 export type { ArtifactRecord };
 export type { RunDeleteFailure } from "../store/store.js";
 
-type RunVisualizationSnapshot = {
+export type RunVisualizationControlTarget = RuntimeControlTarget;
+
+export type RunVisualizationControls = {
+  canCancelRun: boolean;
+  retryTargets: RunVisualizationControlTarget[];
+};
+
+export type RunVisualizationSnapshot = {
   run: RunDetails;
   overlay: WorkflowVisualizationOverlay;
+  controls: RunVisualizationControls;
 };
 
 type RuntimeHealthStatus = "ok" | "warn" | "fail";
@@ -101,12 +120,7 @@ export async function readArtifact(
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
   try {
-    const artifact = store.getArtifact(runId, artifactId);
-    if (!artifact) return undefined;
-    return {
-      artifact,
-      bytes: readVerifiedArtifactBytes({ cwd, runId, store }, artifactId),
-    };
+    return readVerifiedArtifact({ cwd, runId, store }, artifactId);
   } finally {
     store.close();
   }
@@ -127,14 +141,26 @@ export async function getRunVisualizationSnapshot(cwd: string, runId: string): P
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return undefined;
   try {
-    const run = store.getRun(runId);
-    if (!run) return undefined;
-    const frozen = store.getFrozenRun(runId);
-    if (!frozen) throw new Error(`Run '${runId}' has no frozen workflow.`);
-    return {
-      run,
-      overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
-    };
+    return await withRunInspectionSnapshot(store, async () => {
+      const run = store.getRun(runId);
+      if (!run) return undefined;
+      const frozen = store.getFrozenRun(runId);
+      if (!frozen) throw new Error(`Run '${runId}' has no frozen workflow.`);
+      const scheduler = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(runId));
+      const retryScheduler = settleRetryControlSnapshot({
+        frozen,
+        snapshot: scheduler,
+        now: new Date(),
+      }).snapshot;
+      return {
+        run,
+        overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
+        controls: {
+          canCancelRun: canCancelRun(scheduler),
+          retryTargets: retryControlTargets(retryScheduler),
+        },
+      };
+    });
   } finally {
     store.close();
   }
@@ -176,6 +202,23 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
   try {
     store = await openExistingRuntimeStore(cwd);
   } catch (error) {
+    if (error instanceof IncompatibleRuntimeDatabaseError
+      && error.applicationId === RUNTIME_APPLICATION_ID
+      && error.userVersion >= 1
+      && error.userVersion < RUNTIME_STORAGE_VERSION) {
+      return {
+        ok: true,
+        phase: "doctor",
+        state: "unreadable",
+        persistence,
+        checks: [{
+          area: "store",
+          status: "warn",
+          message: `Runtime storage version ${error.userVersion} is older than the supported version ${RUNTIME_STORAGE_VERSION}. `
+            + "Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+        }],
+      };
+    }
     return {
       ok: false,
       phase: "doctor",

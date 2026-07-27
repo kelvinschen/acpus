@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { resolveRuntimeLayout } from "../../runtime/src/runtime-layout.js";
+import { openRuntimeStore } from "../../runtime/src/store/store.js";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -111,6 +114,7 @@ describe("CLI program usage contracts", () => {
         expect(result).toMatchObject({
           ok: true,
           phase: "doctor",
+          message: "Doctor checks passed.",
           persistence: { path: expect.any(String) },
           authoring: {
             cli: { version: getCliPackageInfo().version },
@@ -134,6 +138,47 @@ describe("CLI program usage contracts", () => {
         else process.env.HOME = previousHome;
         if (previousUserProfile === undefined) delete process.env.USERPROFILE;
         else process.env.USERPROFILE = previousUserProfile;
+      }
+    });
+  });
+
+  it("treats older Runtime storage as a recoverable Doctor warning", async () => {
+    await withPlainTestWorkspace("doctor-older-storage", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      store.close();
+      const databasePath = resolveRuntimeLayout(workspace).databasePath;
+      const db = new DatabaseSync(databasePath);
+      try {
+        db.exec("PRAGMA user_version = 1");
+      } finally {
+        db.close();
+      }
+
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
+      const result = JSON.parse(stdout.text);
+      const storeCheck = result.checks.find((check: { area: string }) => check.area === "store");
+
+      expect(exitCode).toBe(0);
+      expect(result).toMatchObject({
+        ok: true,
+        phase: "doctor",
+        message: "Doctor checks passed with warnings.",
+      });
+      expect(storeCheck).toEqual({
+        area: "store",
+        status: "warn",
+        message: "Runtime storage version 1 is older than the supported version 2. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+      });
+      expect(storeCheck).not.toHaveProperty("details");
+      expect(stderr.text).toBe("");
+
+      const unchanged = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        expect(unchanged.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+      } finally {
+        unchanged.close();
       }
     });
   });
@@ -162,6 +207,7 @@ describe("CLI program usage contracts", () => {
 
         expect(exitCode).toBe(0);
         expect(result.ok).toBe(true);
+        expect(result.message).toBe("Doctor checks passed with warnings.");
         expect(result.authoring.skills.installed).toEqual(expect.arrayContaining([
           expect.objectContaining({ scope: "project", agent: "universal", status: "stale", remediation: "acpus skill install --project --agent universal" }),
           expect.objectContaining({ scope: "project", agent: "claude", status: "unversioned", remediation: "acpus skill install --project --agent claude" }),

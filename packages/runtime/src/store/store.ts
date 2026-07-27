@@ -20,14 +20,15 @@ import type { HookJournalEntry } from "../hooks/journal.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { stableJson } from "../stable-json.js";
 import { selectNextAdmission } from "../scheduler/admission.js";
+import { planCancelControl, planRetryControl, settleRetryControlSnapshot, validateRetryControlRun } from "../scheduler/control-plan.js";
 import { indexNodes } from "../scheduler/ir-walk.js";
 import { scopeForNodeAttempt } from "../scheduler/scope.js";
-import { applySchedulerEvents, cancellationEventsForFrame, cancellationEventsForNode, createSchedulerProjection, signalTimeoutEvents, targetedRetryDependencyBlocker, targetedRetryGroupBlocker, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
-import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "../scheduler/membership.js";
+import { applySchedulerEvents, createSchedulerProjection, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
+import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
-import type { GroupMember, GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
+import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
 import { frozenRunScope, nextFrozenRunTransitionEvents, settleFrozenProjection } from "../scheduler/settle.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
@@ -41,6 +42,21 @@ import {
 } from "../runtime-layout.js";
 import { acquireRuntimeSharedLock, type RuntimeSharedLock } from "../runtime-lock.js";
 import { inspectRuntimeGeneration } from "../storage/generation.js";
+import {
+  captureDirectoryIdentity,
+  DirectoryFence,
+  isRuntimeRunId,
+  OpenedRuntimeGeneration,
+  verifyDirectoryIdentity,
+  type DirectoryIdentity,
+  type RunDirectoryFence,
+  type RunDirectoryToken,
+} from "./path-fence.js";
+import {
+  assertRunFileIdentity,
+  verifyRunFile,
+  type RunFileToken,
+} from "./run-file.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
 
@@ -111,7 +127,6 @@ const DUE_SIGNAL_WAIT_WHERE = `
   )
 `;
 
-const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 export const RUNTIME_APPLICATION_ID = 0x41435055;
 export const RUNTIME_STORAGE_VERSION = 2;
 
@@ -140,6 +155,7 @@ export type RuntimeStore = {
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
+  getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
   registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void>;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string): ArtifactRecord[];
@@ -488,6 +504,7 @@ export type RegisterArtifactInput = {
   digest: string;
   size: number;
   relativePath: string;
+  file: RunFileToken;
 };
 
 
@@ -617,7 +634,7 @@ export async function openRuntimeStoreAtLayout(
     await setPrivateFileMode(layout.databasePath, layout.platform);
     initializeDatabase(db, layout.databasePath);
     const store = new SqliteRuntimeStore(db, layout, lock);
-    await reconcileTrash(store, layout, db);
+    await reconcileTrash(store, db);
     return store;
   } catch (error) {
     db?.close();
@@ -675,7 +692,7 @@ export async function openExistingRuntimeStoreAtLayout(
   try {
     if (!db) throw new Error(`Runtime database '${layout.databasePath}' could not be opened.`);
     const store = new SqliteRuntimeStore(db, layout, lock);
-    await reconcileTrash(store, layout, db);
+    await reconcileTrash(store, db);
     return store;
   } catch (error) {
     db?.close();
@@ -849,10 +866,14 @@ async function validateDatabaseFileIfPresent(path: string): Promise<void> {
   }
 }
 
-async function reconcileTrash(store: RuntimeStore, layout: RuntimeLayout, db: DatabaseSync): Promise<void> {
+async function reconcileTrash(store: SqliteRuntimeStore, db: DatabaseSync): Promise<void> {
+  const generation = store.pathGeneration();
+  const runsRoot = generation.runsRoot.verify();
+  const trashRoot = generation.trashRoot.verify();
   let entries: string[];
   try {
-    entries = await readdir(layout.trashRoot);
+    entries = await readdir(trashRoot);
+    generation.trashRoot.verify();
   } catch (error) {
     if (isMissingPathError(error)) return;
     throw error;
@@ -864,26 +885,40 @@ async function reconcileTrash(store: RuntimeStore, layout: RuntimeLayout, db: Da
     transactionStarted = true;
     for (const entry of entries) {
       const runId = entry.slice(0, 34);
-      const trashPath = join(layout.trashRoot, entry);
-      const trashInfo = await lstat(trashPath);
-      if (trashInfo.isSymbolicLink() || !trashInfo.isDirectory()) {
-        throw new Error(`Runtime trash entry '${trashPath}' is not a regular directory.`);
-      }
-      if (!runIdPattern.test(runId)) {
+      const trashPath = join(trashRoot, entry);
+      generation.trashRoot.verify();
+      const trashed = captureDirectoryIdentity(trashPath, `Runtime trash entry '${trashPath}'`);
+      if (!isRuntimeRunId(runId)) {
         throw new Error(`Runtime trash entry '${trashPath}' has no valid run identity.`);
       }
-      const runPath = join(layout.runsRoot, runId);
+      const runPath = join(runsRoot, runId);
       if (!store.getRun(runId)) {
+        generation.runsRoot.verify();
+        generation.trashRoot.verify();
+        verifyDirectoryIdentity(trashed, `Runtime trash entry '${trashPath}'`);
         if (await pathExists(runPath)) {
           throw new Error(`Runtime trash entry '${trashPath}' collides with orphan run directory '${runPath}'.`);
         }
-        await rm(trashPath, { recursive: true, force: true });
+        generation.runsRoot.verify();
+        await removeOwnedDirectory(generation.trashRoot, trashed);
         continue;
       }
+      generation.runsRoot.verify();
+      generation.trashRoot.verify();
+      verifyDirectoryIdentity(trashed, `Runtime trash entry '${trashPath}'`);
       if (await pathExists(runPath)) {
         throw new Error(`Runtime trash entry '${trashPath}' cannot be restored because run directory '${runPath}' already exists.`);
       }
+      generation.runsRoot.verify();
+      generation.trashRoot.verify();
+      verifyDirectoryIdentity(trashed, `Runtime trash entry '${trashPath}'`);
       await rename(trashPath, runPath);
+      generation.runsRoot.verify();
+      generation.trashRoot.verify();
+      const restored = captureDirectoryIdentity(runPath, `Restored run directory '${runId}'`);
+      assertSameDirectory(trashed, restored, `Runtime trash entry '${trashPath}' changed during restoration.`);
+      generation.forgetRun(runId);
+      generation.run(runId);
     }
     db.exec("COMMIT");
     transactionStarted = false;
@@ -896,6 +931,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   private schedulerPort?: SqliteSchedulerStorePort;
   private observationLogInstance?: AgentObservationLog;
   private readonly cwd: string;
+  private readonly generation: OpenedRuntimeGeneration;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -903,6 +939,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     private readonly runtimeLock?: RuntimeSharedLock,
   ) {
     this.cwd = layout.canonicalPath;
+    this.generation = new OpenedRuntimeGeneration(layout);
   }
 
   get scheduler(): SchedulerStorePort {
@@ -910,7 +947,11 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   get observationLog(): AgentObservationLog {
-    this.observationLogInstance ??= new AgentObservationLog(this.db, this.layout);
+    this.observationLogInstance ??= new AgentObservationLog(
+      this.db,
+      this.layout,
+      runId => this.generation.run(runId),
+    );
     return this.observationLogInstance;
   }
 
@@ -927,7 +968,12 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   private schedulerStore(): SqliteSchedulerStorePort {
-    this.schedulerPort ??= new SqliteSchedulerStorePort(this.db, this.layout);
+    this.schedulerPort ??= new SqliteSchedulerStorePort(
+      this.db,
+      this.layout,
+      runId => this.generation.run(runId).verify(),
+      source => resolveFrozenSourceRoot(this.layout, source, this.generation.sourcesRoot),
+    );
     return this.schedulerPort;
   }
 
@@ -957,29 +1003,29 @@ class SqliteRuntimeStore implements RuntimeStore {
     if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(this.cwd))) {
       throw new Error("Admission workspace does not match the runtime store workspace.");
     }
-    await publishWorkflowSource(prepared.value, this.layout);
+    await publishWorkflowSource(prepared.value, this.layout, this.generation.sourcesRoot);
     const runId = newRunId();
     const now = new Date().toISOString();
     const workflowEntry = prepared.value.source.entry;
-    const runDir = join(this.layout.runsRoot, runId);
-    const stagedRunDir = join(this.layout.runsRoot, `.staging-${runId}`);
     const lockJson = stableJsonLine(prepared.value.lock);
     const eventPayload = {
       workflow: summarizeWorkflowForEvent(prepared.value.ir),
       input: normalizedInput.value,
       ...(Object.keys(agentOverrides.value).length > 0 ? { agentOverrides: agentOverrides.value } : {}),
     };
-    await publishRunDirectory({
-      runsRoot: this.layout.runsRoot,
-      stagedRunDir,
-      runDir,
+    const publishedRun = await publishRunDirectory({
+      runsRoot: this.generation.runsRoot,
+      runId,
       platform: this.layout.platform,
-      populate: async stagingDir => {
-        await writeFrozenRunFiles(stagingDir, prepared.value.irJson, lockJson);
+      populate: async (runDir, assertCurrent) => {
+        await writeFrozenRunFiles(runDir, prepared.value.irJson, lockJson, assertCurrent);
       },
     });
+    const run = this.generation.run(runId);
+    assertSameDirectory(publishedRun, run.token().runDirectory, `Run directory '${runId}' changed after publication.`);
     let transactionStarted = false;
     try {
+      run.verify();
       this.db.exec("BEGIN IMMEDIATE");
       transactionStarted = true;
       this.db.prepare(`
@@ -1017,10 +1063,16 @@ class SqliteRuntimeStore implements RuntimeStore {
           VALUES (?, ?, ?, 'pending')
         `).run(runId, nodeId, nodeId);
       }
+      run.verify();
       this.db.exec("COMMIT");
       transactionStarted = false;
     } catch (error) {
-      await removeOwnedPathAfterFailure(runDir, rollbackAfterFailure(this.db, transactionStarted, error));
+      this.generation.forgetRun(runId);
+      await removeOwnedDirectoryAfterFailure(
+        this.generation.runsRoot,
+        publishedRun,
+        rollbackAfterFailure(this.db, transactionStarted, error),
+      );
     }
 
     const record = this.getRunRecord(runId);
@@ -1039,14 +1091,18 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (this.getRunRecord(runId)) throw new Error(`Run '${runId}' has no frozen input.`);
       return undefined;
     }
-    const workflowIrJson = frozenWorkflowIrJson(this.layout.runsRoot, String(row.id), row);
+    const workflowIrJson = frozenWorkflowIrJson(this.generation.run(String(row.id)).verify(), row);
     const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
     const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
     return {
       ir: withAgentOverrides(originalIr, agentOverrides),
       input: JSON.parse(row.input_json) as JsonValue,
       agentOverrides,
-      sourceRoot: sourceRootForRun(this.layout, parseWorkflowSource(row.source_json)),
+      sourceRoot: resolveFrozenSourceRoot(
+        this.layout,
+        parseWorkflowSource(row.source_json),
+        this.generation.sourcesRoot,
+      ),
       meta: {
         runId: String(row.id),
         workflowPath: String(row.workflow_entry),
@@ -1300,9 +1356,13 @@ class SqliteRuntimeStore implements RuntimeStore {
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
     if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
-    if (options.prepared) await publishWorkflowSource(options.prepared, this.layout);
-    const sourceWorkflowIrJson = frozenWorkflowIrJson(this.layout.runsRoot, runId, input);
-    const sourceLockJson = frozenLockJson(this.layout.runsRoot, runId, input);
+    if (options.prepared) {
+      await publishWorkflowSource(options.prepared, this.layout, this.generation.sourcesRoot);
+    }
+    const sourceRun = this.generation.run(runId);
+    const sourceRunDir = sourceRun.verify();
+    const sourceWorkflowIrJson = frozenWorkflowIrJson(sourceRunDir, input);
+    const sourceLockJson = frozenLockJson(sourceRunDir, input);
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
     if (options.agentOverrides !== undefined) {
@@ -1333,9 +1393,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     const replacement = Boolean(options.prepared || options.input !== undefined || options.target !== undefined || options.agentOverrides !== undefined || options.unsafeReuse === true);
     const targetedReplacement = replacement;
     const forkStatus = source.status === "completed" && !replacement ? "completed" : "pending";
-    const sourceRunDir = containedRunDir(this.layout.runsRoot, runId);
-    const forkRunPath = join(this.layout.runsRoot, forkId);
-    const stagedForkRunPath = join(this.layout.runsRoot, `.staging-${forkId}`);
     const completedOutputRows = completedSchedulerOutputRows(this.db, runId);
     const completedNodeKeys = new Set([
       ...this.db.prepare(`
@@ -1436,19 +1493,27 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (rewritten.isErr()) return err(rewritten.error);
       rewrittenSeedPlan = rewritten.value;
     }
-    await publishRunDirectory({
-      runsRoot: this.layout.runsRoot,
-      stagedRunDir: stagedForkRunPath,
-      runDir: forkRunPath,
+    sourceRun.verify();
+    const publishedFork = await publishRunDirectory({
+      runsRoot: this.generation.runsRoot,
+      runId: forkId,
       platform: this.layout.platform,
-      populate: async stagingDir => {
-        await writeFrozenRunFiles(stagingDir, forkIrJson, forkLockJson);
-        await verifyFrozenRunFiles(stagingDir, forkLockJson, forkIrJson);
-        await copyVerifiedArtifacts(sourceRunDir, stagingDir, artifacts);
+      populate: async (runDir, assertCurrent) => {
+        sourceRun.verify();
+        await writeFrozenRunFiles(runDir, forkIrJson, forkLockJson, assertCurrent);
+        await verifyFrozenRunFiles(runDir, forkLockJson, forkIrJson);
+        assertCurrent();
+        sourceRun.verify();
+        await copyVerifiedArtifacts(sourceRun, runDir, artifacts, assertCurrent);
+        sourceRun.verify();
       },
     });
+    const forkRun = this.generation.run(forkId);
+    assertSameDirectory(publishedFork, forkRun.token().runDirectory, `Run directory '${forkId}' changed after publication.`);
     let transactionStarted = false;
     try {
+      sourceRun.verify();
+      forkRun.verify();
       this.db.exec("BEGIN IMMEDIATE");
       transactionStarted = true;
       this.db.prepare(`
@@ -1536,10 +1601,17 @@ class SqliteRuntimeStore implements RuntimeStore {
           now,
         );
       }
+      sourceRun.verify();
+      forkRun.verify();
       this.db.exec("COMMIT");
       transactionStarted = false;
     } catch (error) {
-      await removeOwnedPathAfterFailure(forkRunPath, rollbackAfterFailure(this.db, transactionStarted, error));
+      this.generation.forgetRun(forkId);
+      await removeOwnedDirectoryAfterFailure(
+        this.generation.runsRoot,
+        publishedFork,
+        rollbackAfterFailure(this.db, transactionStarted, error),
+      );
     }
     return ok({ ...this.requireRun(forkId), forkCreated: true });
   }
@@ -1547,7 +1619,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   async cleanupStagedRunDirectories(): Promise<void> {
     let runsDir: string;
     try {
-      runsDir = containedRunsRoot(this.layout.runsRoot);
+      runsDir = this.generation.runsRoot.verify();
     } catch (error) {
       if (isMissingPathError(error)) return;
       throw error;
@@ -1555,15 +1627,42 @@ class SqliteRuntimeStore implements RuntimeStore {
     let entries: string[];
     try {
       entries = await readdir(runsDir);
+      this.generation.runsRoot.verify();
     } catch (error) {
       if (isMissingPathError(error)) return;
       throw error;
     }
     for (const entry of entries) {
-      if (!entry.startsWith(".staging-")) continue;
+      if (!entry.startsWith(".staging-") && !entry.startsWith(".cleanup-")) continue;
       const absolutePath = join(runsDir, entry);
-      if (!(await isStalePath(absolutePath, 60_000))) continue;
-      await rm(absolutePath, { recursive: true, force: true });
+      this.generation.runsRoot.verify();
+      const owned = captureDirectoryIdentity(absolutePath, `Staged run directory '${absolutePath}'`);
+      const info = await lstat(absolutePath);
+      this.generation.runsRoot.verify();
+      verifyDirectoryIdentity(owned, `Staged run directory '${absolutePath}'`);
+      if (Date.now() - info.mtimeMs < 60_000) continue;
+      if (entry.startsWith(".cleanup-")) {
+        await removeOwnedDirectory(this.generation.runsRoot, owned);
+        continue;
+      }
+      const quarantinePath = join(runsDir, `.cleanup-${randomUUID()}`);
+      this.generation.runsRoot.verify();
+      verifyDirectoryIdentity(owned, `Staged run directory '${absolutePath}'`);
+      await rename(absolutePath, quarantinePath);
+      this.generation.runsRoot.verify();
+      const quarantine = captureDirectoryIdentity(quarantinePath, `Staged run quarantine '${quarantinePath}'`);
+      assertSameDirectory(owned, quarantine, `Staged run directory '${absolutePath}' changed during cleanup.`);
+      await removeOwnedDirectory(this.generation.runsRoot, quarantine);
+    }
+    for (const entry of entries) {
+      if (!isRuntimeRunId(entry) || this.getRunRecord(entry)) continue;
+      const absolutePath = join(runsDir, entry);
+      this.generation.runsRoot.verify();
+      const orphan = captureDirectoryIdentity(absolutePath, `Orphan run directory '${entry}'`);
+      this.generation.runsRoot.verify();
+      verifyDirectoryIdentity(orphan, `Orphan run directory '${entry}'`);
+      if (this.getRunRecord(entry)) continue;
+      throw new Error(`Orphan run directory '${entry}' has no database record and requires operator inspection.`);
     }
   }
 
@@ -1573,10 +1672,11 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   private async deleteRunResult(runId: string): Promise<Result<RunRecord | undefined, RunDeleteFailure>> {
     let transactionStarted = false;
-    let moved = false;
+    let runDirectory: RunDirectoryFence | undefined;
+    let sourceDirectoryIdentity: DirectoryIdentity | undefined;
+    let trashedDirectory: DirectoryIdentity | undefined;
+    let trashPath: string | undefined;
     let run: RunRecord;
-    let absoluteRunDir: string;
-    const trashPath = join(this.layout.trashRoot, `${runId}-${randomUUID()}`);
     try {
       this.db.exec("BEGIN IMMEDIATE");
       transactionStarted = true;
@@ -1609,25 +1709,49 @@ class SqliteRuntimeStore implements RuntimeStore {
           message: `Run '${runId}' has an active lease and cannot be deleted.`,
         });
       }
-      absoluteRunDir = containedRunDir(this.layout.runsRoot, runId);
-      await rename(absoluteRunDir, trashPath);
-      moved = true;
+      runDirectory = this.generation.run(runId);
+      sourceDirectoryIdentity = runDirectory.token().runDirectory;
+      const trashRoot = this.generation.trashRoot.verify();
+      trashPath = join(trashRoot, `${runId}-${randomUUID()}`);
+      await requireMissingPath(trashPath);
+      runDirectory.verify();
+      this.generation.trashRoot.verify();
+      await rename(sourceDirectoryIdentity.path, trashPath);
+      this.generation.runsRoot.verify();
+      this.generation.trashRoot.verify();
+      trashedDirectory = captureDirectoryIdentity(trashPath, `Runtime trash entry '${trashPath}'`);
+      assertSameDirectory(sourceDirectoryIdentity, trashedDirectory, `Run directory '${runId}' changed while it was moved to trash.`);
       this.db.prepare("DELETE FROM runs WHERE id = ?").run(runId);
+      this.generation.runsRoot.verify();
+      this.generation.trashRoot.verify();
+      verifyDirectoryIdentity(trashedDirectory, `Runtime trash entry '${trashPath}'`);
       this.db.exec("COMMIT");
       transactionStarted = false;
       run = existing;
     } catch (error) {
       let failure = rollbackAfterFailure(this.db, transactionStarted, error);
-      if (moved) {
+      if (runDirectory && sourceDirectoryIdentity && trashedDirectory && trashPath) {
         try {
-          await rename(trashPath, join(this.layout.runsRoot, runId));
+          const originalPath = sourceDirectoryIdentity.path;
+          this.generation.runsRoot.verify();
+          this.generation.trashRoot.verify();
+          verifyDirectoryIdentity(trashedDirectory, `Runtime trash entry '${trashPath}'`);
+          await requireMissingPath(originalPath);
+          await rename(trashPath, originalPath);
+          this.generation.runsRoot.verify();
+          this.generation.trashRoot.verify();
+          const restored = captureDirectoryIdentity(originalPath, `Run directory '${runId}'`);
+          assertSameDirectory(trashedDirectory, restored, `Run directory '${runId}' changed while it was restored from trash.`);
+          runDirectory.verify();
         } catch (restoreError) {
           failure = new AggregateError([failure, restoreError], `Run '${runId}' deletion failed and its trash entry could not be restored.`);
         }
       }
       throw failure;
     }
-    await rm(trashPath, { recursive: true, force: true });
+    this.generation.forgetRun(runId);
+    if (!trashedDirectory) throw new Error(`Run '${runId}' deletion committed without an owned trash entry.`);
+    await removeOwnedDirectory(this.generation.trashRoot, trashedDirectory);
     return ok(run);
   }
 
@@ -1797,8 +1921,18 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
   }
 
+  pathGeneration(): OpenedRuntimeGeneration {
+    return this.generation;
+  }
+
   getRunDir(runId: string): string | undefined {
-    return this.getRunRecord(runId) ? join(this.layout.runsRoot, runId) : undefined;
+    if (!this.getRunRecord(runId)) return undefined;
+    return this.generation.run(runId).verify();
+  }
+
+  getRunDirectoryToken(runId: string): RunDirectoryToken | undefined {
+    if (!this.getRunRecord(runId)) return undefined;
+    return this.generation.run(runId).token();
   }
 
   registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void> {
@@ -1823,15 +1957,18 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (attempt.status !== "started") {
         throwSchedulerStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
       }
-      const runDir = containedRunDir(this.layout.runsRoot, input.runId);
-      if (!resolveArtifactRegistrationPath({
-        runDir,
+      const run = this.generation.run(input.runId);
+      const artifactPath = resolveArtifactRegistrationPath({
+        runDir: run.verify(),
         nodeKey: input.nodeKey,
         attempt: input.attempt,
         relativePath: input.relativePath,
-      })) {
+      });
+      if (!artifactPath) {
         throw new Error(`Artifact '${input.id}' path must be inside its attempt artifact directory.`);
       }
+      verifyRegisteredArtifact(run, artifactPath, input);
+      run.verify();
       this.db.prepare(`
         INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1873,7 +2010,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   private artifactRoot(runId: string): string {
     const runDir = this.getRunDir(runId);
     if (!runDir) throw new Error(`Run '${runId}' has no run directory.`);
-    return containedRunDir(this.layout.runsRoot, runId);
+    return runDir;
   }
 
   private artifactRecord(row: ArtifactRow, root: string): ArtifactRecord {
@@ -2231,7 +2368,12 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
   private readonly snapshotCache = new Map<string, SchedulerSnapshot>();
   private readonly cwd: string;
 
-  constructor(private readonly db: DatabaseSync, private readonly layout: RuntimeLayout) {
+  constructor(
+    private readonly db: DatabaseSync,
+    layout: RuntimeLayout,
+    private readonly resolveRunDirectory: (runId: string) => string,
+    private readonly resolveSourceRoot: (source: WorkflowSourceRef) => string,
+  ) {
     this.cwd = layout.canonicalPath;
   }
 
@@ -2796,79 +2938,26 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
     const current = this.loadRunSnapshot(input.runId);
-    assertTargetedRetryRunOpen(input.runId, input.target, current.projection.run.status);
-    const settled = settleFrozenProjection({
+    validateRetryControlRun(current, input.target).match(
+      () => undefined,
+      failure => throwSchedulerStoreError(failure),
+    );
+    const settled = settleRetryControlSnapshot({
       frozen: this.loadFrozenRun(input.runId),
-      projection: current.projection,
+      snapshot: current,
       now: new Date(),
     });
-    const snapshot: SchedulerSnapshot = {
-      runId: current.runId,
-      version: current.version + settled.events.length,
-      projection: settled.projection,
-    };
-    assertTargetedRetryRunOpen(input.runId, input.target, snapshot.projection.run.status);
-    const targetKey = retryTargetKey(input.target, snapshot).match(
+    const plan = planRetryControl(settled.snapshot, input.target).match(
       value => value,
       failure => throwSchedulerStoreError(failure),
     );
-    const instance = snapshot.projection.instances[targetKey];
-    const frame = snapshot.projection.frames[targetKey];
-    if (!instance && !frame) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey, message: `Retry target '${targetKey}' was not found.` });
-    if (frame && !instance) {
-      if (frame.status !== "failed") {
-        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: frame.status, message: `Frame '${targetKey}' cannot be retried from ${frame.status}.` });
-      }
-      if (frame.frameKind !== "node" && frame.frameKind !== "loop") {
-        throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: frame.status, message: `Frame '${targetKey}' is not a retryable public node frame.` });
-      }
-      assertRetryableAncestorFrames(input.runId, targetKey, snapshot.projection, frame.parentFrameKey);
-      const plan = planRetryAncestorGroups(input.runId, targetKey, snapshot.projection, ancestorGroupMembersForFrame(snapshot.projection, frame.parentFrameKey));
-      const retryEvents: SchedulerEvent[] = [{
-        type: "frame.retry_requested",
-        payload: {
-          frameKey: targetKey,
-          ...(plan.retryDependencyMemberKeys.length === 0 ? {} : { retryDependencyMemberKeys: plan.retryDependencyMemberKeys }),
-        },
-      }, ...plan.events];
-      assertRetryDependenciesCanProgress(input.runId, targetKey, snapshot.projection, retryEvents, plan.retryDependencyMemberKeys);
-      return this.appendSchedulerEvents({
-        runId: input.runId,
-        expectedVersion: current.version,
-        ownerEpoch: input.ownerEpoch,
-        idempotencyKey,
-        intentDigest,
-        events: [...settled.events, ...retryEvents],
-      });
-    }
-    if (!instance) throwSchedulerStoreError({ type: "missing-retry-target", runId: input.runId, targetKey, message: `Retry target '${targetKey}' was not found.` });
-    if (instance.status !== "failed") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: instance.status, message: `Node instance '${targetKey}' cannot be retried from ${instance.status}.` });
-    }
-    if (instance.statusReason === "expression_resolution_failed") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, targetKey, status: instance.statusReason, message: `Node instance '${targetKey}' failed before execution and must be retried through its containing frame or run.` });
-    }
-    assertRetryableAncestorFrames(input.runId, targetKey, snapshot.projection, instance.parentFrameKey);
-    const plan = planRetryAncestorGroups(input.runId, targetKey, snapshot.projection, ancestorGroupMembersForNode(snapshot.projection, targetKey));
-    const retryEvents: SchedulerEvent[] = [
-      {
-        type: "instance.retry_requested",
-        payload: {
-          nodeKey: targetKey,
-          ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
-          ...(plan.retryDependencyMemberKeys.length === 0 ? {} : { retryDependencyMemberKeys: plan.retryDependencyMemberKeys }),
-        },
-      },
-      ...plan.events,
-    ];
-    assertRetryDependenciesCanProgress(input.runId, targetKey, snapshot.projection, retryEvents, plan.retryDependencyMemberKeys);
     return this.appendSchedulerEvents({
       runId: input.runId,
       expectedVersion: current.version,
       ownerEpoch: input.ownerEpoch,
       idempotencyKey,
       intentDigest,
-      events: [...settled.events, ...retryEvents],
+      events: [...settled.events, ...plan.events],
     });
   }
 
@@ -2881,42 +2970,17 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
     const snapshot = this.loadRunSnapshot(input.runId);
-    if (input.target === undefined && snapshot.projection.run.status === "canceled") {
-      return this.appendSchedulerEvents({
-        runId: input.runId,
-        expectedVersion: snapshot.version,
-        ownerEpoch: input.ownerEpoch,
-        idempotencyKey: input.idempotencyKey,
-        intentDigest,
-        events: [],
-      });
-    }
-    const targetKey = input.target === undefined ? "root" : cancelTargetKey(input.target, snapshot).match(
+    const plan = planCancelControl(snapshot, input.target).match(
       value => value,
       failure => throwSchedulerStoreError(failure),
     );
-    const events = targetKey === "root" && !snapshot.projection.frames.root && snapshot.projection.run.status === "pending"
-      ? [
-        { type: "frame.started", payload: { runId: input.runId, frameKey: "root", frameKind: "root" } },
-        { type: "frame.cancelled", payload: { frameKey: "root", cancelReason: "operator_cancelled" } },
-      ] satisfies SchedulerEvent[]
-      : targetKey === "root"
-        ? cancellationEventsForFrame(snapshot.projection, "root", "operator_cancelled")
-      : snapshot.projection.frames[targetKey]
-        ? cancellationEventsForFrame(snapshot.projection, targetKey, "operator_cancelled")
-        : cancellationEventsForNode(snapshot.projection, targetKey, "operator_cancelled");
-    if (events.length === 0) {
-      const status = snapshot.projection.frames[targetKey]?.status ?? snapshot.projection.instances[targetKey]?.status;
-      if (status) throwSchedulerStoreError({ type: "invalid-cancel-target", runId: input.runId, targetKey, status, message: `Cancel target '${targetKey}' is already ${status}.` });
-      throwSchedulerStoreError({ type: "missing-cancel-target", runId: input.runId, targetKey, message: `Cancel target '${targetKey}' was not found.` });
-    }
     return this.appendSchedulerEvents({
       runId: input.runId,
       expectedVersion: snapshot.version,
       ownerEpoch: input.ownerEpoch,
       idempotencyKey: input.idempotencyKey,
       intentDigest,
-      events,
+      events: plan.events,
     });
   }
 
@@ -3154,14 +3218,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       WHERE run_inputs.run_id = ?
     `).get(runId) as (FrozenWorkflowRow & { id: string; name: string; workflow_entry: string }) | undefined;
     if (!row) throw new Error(`Run '${runId}' has no frozen workflow.`);
-    const workflowIrJson = frozenWorkflowIrJson(this.layout.runsRoot, runId, row);
+    const workflowIrJson = frozenWorkflowIrJson(this.resolveRunDirectory(runId), row);
     const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
     const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
     return {
       ir: withAgentOverrides(originalIr, agentOverrides),
       input: JSON.parse(row.input_json) as JsonValue,
       agentOverrides,
-      sourceRoot: sourceRootForRun(this.layout, parseWorkflowSource(row.source_json)),
+      sourceRoot: this.resolveSourceRoot(parseWorkflowSource(row.source_json)),
       meta: {
         runId: String(row.id),
         workflowPath: String(row.workflow_entry),
@@ -4098,163 +4162,6 @@ function schedulerIntentDigest(intent: JsonValue): string {
   return createHash("sha256").update(stableJson(intent)).digest("hex");
 }
 
-function assertTargetedRetryRunOpen(
-  runId: string,
-  targetKey: string,
-  status: SchedulerProjection["run"]["status"],
-): void {
-  if (status !== "completed" && status !== "canceled" && status !== "paused") return;
-  throwSchedulerStoreError({
-    type: "invalid-retry-target",
-    runId,
-    targetKey,
-    status,
-    message: `Cannot retry target '${targetKey}' in a ${status} run.`,
-  });
-}
-
-function assertRetryDependenciesCanProgress(
-  runId: string,
-  targetKey: string,
-  projection: SchedulerProjection,
-  retryEvents: readonly SchedulerEvent[],
-  dependencyMemberKeys: readonly string[],
-): void {
-  const retried = applySchedulerEvents(projection, retryEvents);
-  const blockedDependency = targetedRetryDependencyBlocker(retried, dependencyMemberKeys);
-  if (blockedDependency) {
-    throwBlockedTargetedRetry(runId, targetKey, `completion dependency '${blockedDependency.memberKey}' contains an independent failure blocker`);
-  }
-}
-
-function throwBlockedTargetedRetry(runId: string, targetKey: string, reason: string): never {
-  throwSchedulerStoreError({
-    type: "invalid-retry-target",
-    runId,
-    targetKey,
-    status: "blocked",
-    message: `Target '${targetKey}' cannot make progress because ${reason}; use run-level retry or fork.`,
-  });
-}
-
-function planRetryAncestorGroups(
-  runId: string,
-  targetKey: string,
-  projection: SchedulerProjection,
-  members: readonly GroupMember[],
-): { events: SchedulerEvent[]; retryDependencyMemberKeys: string[] } {
-  const membersByGroup = new Map<string, GroupMember[]>();
-  for (const member of Object.values(projection.groupMembers)) {
-    const groupMembers = membersByGroup.get(member.groupKey) ?? [];
-    groupMembers.push(member);
-    membersByGroup.set(member.groupKey, groupMembers);
-  }
-  const events: SchedulerEvent[] = [];
-  const retryDependencyMemberKeys: string[] = [];
-  for (const member of members) {
-    if (member.status !== "failed") {
-      const detail = member.status === "cancelled" && member.terminalReason === "parent_failed"
-        ? " is outside the failed completion path"
-        : ` cannot be retried from ${member.status}`;
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: member.status, message: `Group member '${member.memberKey}'${detail}.` });
-    }
-    const group = projection.groups[member.groupKey];
-    if (!group) throw new Error(`Group member '${member.memberKey}' references missing group '${member.groupKey}'.`);
-    if (group.status === "completed" || group.status === "cancelled") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: group.status, message: `Target '${targetKey}' belongs to ${group.status} group '${group.groupKey}'.` });
-    }
-    const groupMembers = membersByGroup.get(member.groupKey) ?? [];
-    const dependencies = groupMembers
-      .filter(candidate => candidate.memberKey !== member.memberKey
-        && candidate.status === "cancelled"
-        && candidate.terminalReason === "parent_failed")
-      .sort((left, right) => left.readinessSequence - right.readinessSequence || left.memberKey.localeCompare(right.memberKey));
-    const reopenedMemberKeys = new Set([member.memberKey, ...dependencies.map(dependency => dependency.memberKey)]);
-    const blocker = targetedRetryGroupBlocker(group, groupMembers, reopenedMemberKeys);
-    if (blocker) {
-      throwSchedulerStoreError({
-        type: "invalid-retry-target",
-        runId,
-        targetKey,
-        status: "blocked",
-        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use run-level retry or fork.`,
-      });
-    }
-    events.push({
-      type: "group.member_retry_requested",
-      payload: { memberKey: member.memberKey, readinessSequence: member.readinessSequence },
-    });
-    for (const dependency of dependencies) {
-      retryDependencyMemberKeys.push(dependency.memberKey);
-    }
-  }
-  return { events, retryDependencyMemberKeys };
-}
-
-function assertRetryableAncestorFrames(
-  runId: string,
-  targetKey: string,
-  projection: SchedulerProjection,
-  frameKey: string | undefined,
-): void {
-  const seen = new Set<string>();
-  for (let current = frameKey; current !== undefined;) {
-    if (seen.has(current)) throw new Error(`Retry target '${targetKey}' has cyclic frame ancestry at '${current}'.`);
-    seen.add(current);
-    const frame = projection.frames[current];
-    if (!frame) throw new Error(`Retry target '${targetKey}' references missing ancestor frame '${current}'.`);
-    if (frame.status === "completed" || frame.status === "cancelled") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId, targetKey, status: frame.status, message: `Target '${targetKey}' belongs to ${frame.status} frame '${frame.frameKey}'.` });
-    }
-    if (frame.status !== "running" && frame.status !== "failed") {
-      throw new Error(`Retry target '${targetKey}' has non-runnable ancestor frame '${frame.frameKey}' in status '${frame.status}'.`);
-    }
-    current = frame.parentFrameKey;
-  }
-}
-
-function retryTargetKey(target: string, snapshot: SchedulerSnapshot): Result<string, SchedulerStoreError> {
-  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return ok(target);
-  const instanceMatches = Object.values(snapshot.projection.instances)
-    .filter(instance => instance.nodeId === target && instance.status === "failed")
-    .map(instance => instance.nodeKey);
-  const frameMatches = Object.values(snapshot.projection.frames)
-    .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && frame.status === "failed")
-    .map(frame => frame.frameKey);
-  const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return ok(matches[0]!);
-  if (matches.length > 1) return err({
-    type: "ambiguous-retry-target",
-    runId: snapshot.runId,
-    targetKey: target,
-    candidateKeys: matches,
-    message: `Scheduler retry target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
-  });
-  if (target === "root" && snapshot.projection.frames.root) return ok("root");
-  return ok(target);
-}
-
-function cancelTargetKey(target: string, snapshot: SchedulerSnapshot): Result<string, SchedulerStoreError> {
-  if (target !== "root" && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) return ok(target);
-  const instanceMatches = Object.values(snapshot.projection.instances)
-    .filter(instance => instance.nodeId === target && !isTerminalStatus(instance.status))
-    .map(instance => instance.nodeKey);
-  const frameMatches = Object.values(snapshot.projection.frames)
-    .filter(frame => (frame.frameKind === "node" || frame.frameKind === "loop") && frame.nodeId === target && !isTerminalStatus(frame.status))
-    .map(frame => frame.frameKey);
-  const matches = [...instanceMatches, ...frameMatches].sort();
-  if (matches.length === 1) return ok(matches[0]!);
-  if (matches.length > 1) return err({
-    type: "ambiguous-cancel-target",
-    runId: snapshot.runId,
-    targetKey: target,
-    candidateKeys: matches,
-    message: `Scheduler cancel target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
-  });
-  if (target === "root" && snapshot.projection.frames.root) return ok("root");
-  return ok(target);
-}
-
 type SteerAttemptTarget = {
   runId: string;
   attemptId: string;
@@ -4448,10 +4355,6 @@ function decodeSteerDirective(payloadJson: string): Omit<SteerDirective, "eventS
     fencedAttemptId: payload.fencedAttemptId,
     instruction: payload.instruction,
   };
-}
-
-function isTerminalStatus(status: string): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 function schedulerEventIdempotencyKey(runId: string, commitKey: string, index: number): string {
@@ -5209,7 +5112,11 @@ function collectArtifactIds(value: JsonValue, runId: string, out: Set<string>): 
   for (const item of Object.values(value)) collectArtifactIds(item as JsonValue, runId, out);
 }
 
-async function publishWorkflowSource(prepared: PreparedRunWorkflow, layout: RuntimeLayout): Promise<void> {
+async function publishWorkflowSource(
+  prepared: PreparedRunWorkflow,
+  layout: RuntimeLayout,
+  sourcesRoot: DirectoryFence,
+): Promise<void> {
   if (prepared.source.kind === "workspace") return;
   if (!/^[a-z0-9][a-z0-9-]*$/.test(prepared.source.name)
     || !/^[a-f0-9]{64}$/.test(prepared.source.digest)
@@ -5217,50 +5124,98 @@ async function publishWorkflowSource(prepared: PreparedRunWorkflow, layout: Runt
     throw new Error("Prepared global catalog source is invalid.");
   }
   const sourceRoot = resolve(prepared.sourceRoot);
+  const preparedSource = new DirectoryFence(sourceRoot, "Prepared global catalog source");
   const entryPath = resolve(sourceRoot, prepared.source.entry);
-  if (!isContainedPath(sourceRoot, entryPath) || !(await stat(entryPath)).isFile()) {
+  preparedSource.verify();
+  const entryInfo = await lstat(entryPath);
+  preparedSource.verify();
+  if (!isContainedPath(sourceRoot, entryPath)
+    || entryInfo.isSymbolicLink()
+    || !entryInfo.isFile()
+    || !isContainedPath(preparedSource.verifyIdentity().realpath, await realpath(entryPath))) {
     throw new Error(`Prepared global catalog entry '${prepared.source.entry}' escapes its snapshot.`);
   }
-  const actualDigest = await digestDirectory(sourceRoot);
+  const assertPreparedSource = (): void => {
+    preparedSource.verify();
+  };
+  const actualDigest = await digestDirectory(sourceRoot, assertPreparedSource);
+  preparedSource.verify();
   if (actualDigest !== prepared.source.digest) {
     throw new Error(`Prepared global catalog '${prepared.source.name}' digest does not match its snapshot.`);
   }
+  const root = sourcesRoot.verify();
   const target = sourceRootForRun(layout, prepared.source);
+  if (!isContainedPath(root, target)) {
+    throw new Error(`Frozen global catalog source '${target}' escapes runtime sources root.`);
+  }
   if (await ownedDirectoryExists(target)) {
-    if (await digestDirectory(target) !== prepared.source.digest) {
+    sourcesRoot.verify();
+    const existing = new DirectoryFence(target, `Frozen global catalog source '${target}'`);
+    const assertExisting = (): void => {
+      sourcesRoot.verify();
+      existing.verify();
+    };
+    if (await digestDirectory(target, assertExisting) !== prepared.source.digest) {
       throw new Error(`Frozen global catalog source '${target}' failed digest verification.`);
     }
+    assertExisting();
     return;
   }
-  const parent = dirname(target);
+  const catalog = await ensureFencedChildDirectory(
+    sourcesRoot,
+    "catalog",
+    "Runtime catalog root",
+    layout.platform,
+  );
+  const namespace = await ensureFencedChildDirectory(
+    catalog,
+    prepared.source.name,
+    `Runtime catalog namespace '${prepared.source.name}'`,
+    layout.platform,
+  );
+  const parent = namespace.verify();
   const staging = join(parent, `.staging-${prepared.source.digest}-${randomUUID()}`);
-  for (const directory of [
-    layout.sourcesRoot,
-    join(layout.sourcesRoot, "catalog"),
-    parent,
-  ]) {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const info = await lstat(directory);
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error(`Runtime catalog source path '${directory}' is not a regular directory.`);
-    }
-    if (layout.platform !== "win32") await chmod(directory, 0o700);
-  }
+  namespace.verify();
+  await mkdir(staging, { mode: 0o700 });
+  namespace.verify();
+  const staged = captureDirectoryIdentity(staging, `Frozen global catalog staging '${staging}'`);
+  const assertStaged = (): void => {
+    sourcesRoot.verify();
+    namespace.verify();
+    verifyDirectoryIdentity(staged, `Frozen global catalog staging '${staging}'`);
+  };
   try {
+    assertPreparedSource();
+    assertStaged();
     await cp(sourceRoot, staging, { recursive: true, dereference: true });
-    if (await digestDirectory(staging) !== prepared.source.digest) {
+    assertPreparedSource();
+    assertStaged();
+    if (await digestDirectory(staging, assertStaged) !== prepared.source.digest) {
       throw new Error(`Frozen global catalog source '${staging}' failed copy verification.`);
     }
-    await makeTreePrivate(staging, layout.platform);
+    await makeTreePrivate(staging, layout.platform, assertStaged);
+    assertPreparedSource();
+    assertStaged();
+    await requireMissingPath(target);
+    assertStaged();
     try {
       await rename(staging, target);
+      sourcesRoot.verify();
+      namespace.verify();
+      const published = captureDirectoryIdentity(target, `Frozen global catalog source '${target}'`);
+      assertSameDirectory(staged, published, `Frozen global catalog source '${target}' changed during publication.`);
     } catch (error) {
       if (!hasErrorCode(error, "EEXIST") && !hasErrorCode(error, "ENOTEMPTY")) throw error;
-      if (await digestDirectory(target) !== prepared.source.digest) throw error;
-      await rm(staging, { recursive: true, force: true });
+      sourcesRoot.verify();
+      const existing = new DirectoryFence(target, `Frozen global catalog source '${target}'`);
+      if (await digestDirectory(target, () => {
+        sourcesRoot.verify();
+        existing.verify();
+      }) !== prepared.source.digest) throw error;
+      await removeOwnedDirectory(sourcesRoot, staged);
     }
   } catch (error) {
-    await removeOwnedPathAfterFailure(staging, error);
+    await removeOwnedDirectoryAfterFailure(sourcesRoot, staged, error);
   }
 }
 
@@ -5268,6 +5223,24 @@ function sourceRootForRun(layout: RuntimeLayout, source: WorkflowSourceRef): str
   return source.kind === "workspace"
     ? layout.canonicalPath
     : join(layout.sourcesRoot, "catalog", source.name, source.digest);
+}
+
+function resolveFrozenSourceRoot(
+  layout: RuntimeLayout,
+  source: WorkflowSourceRef,
+  sourcesRoot: DirectoryFence,
+): string {
+  if (source.kind === "workspace") return layout.canonicalPath;
+  const root = sourcesRoot.verifyIdentity();
+  const target = captureDirectoryIdentity(
+    sourceRootForRun(layout, source),
+    `Frozen global catalog source '${source.name}'`,
+  );
+  if (!isContainedPath(root.realpath, target.realpath)) {
+    throw new Error(`Frozen global catalog source '${target.path}' escapes runtime sources root.`);
+  }
+  sourcesRoot.verify();
+  return target.path;
 }
 
 function parseWorkflowSource(json: string): WorkflowSourceRef {
@@ -5289,26 +5262,37 @@ function parseWorkflowSource(json: string): WorkflowSourceRef {
   throw new Error("Persisted workflow source reference is invalid.");
 }
 
-async function digestDirectory(root: string): Promise<string> {
+async function digestDirectory(root: string, assertCurrent: () => void = () => {}): Promise<string> {
   const hash = createHash("sha256");
-  await addDirectoryToDigest(hash, root, "");
+  await addDirectoryToDigest(hash, root, "", assertCurrent);
+  assertCurrent();
   return hash.digest("hex");
 }
 
-async function addDirectoryToDigest(hash: ReturnType<typeof createHash>, path: string, relativePath: string): Promise<void> {
+async function addDirectoryToDigest(
+  hash: ReturnType<typeof createHash>,
+  path: string,
+  relativePath: string,
+  assertCurrent: () => void,
+): Promise<void> {
+  assertCurrent();
   const item = await lstat(path);
+  assertCurrent();
   if (item.isSymbolicLink()) throw new Error(`Workflow source '${path}' is a symbolic link.`);
   const normalized = toPortablePath(relativePath);
   if (item.isDirectory()) {
     if (normalized) hash.update(`D ${normalized}\n`);
     for (const name of (await readdir(path)).sort()) {
-      await addDirectoryToDigest(hash, join(path, name), join(relativePath, name));
+      assertCurrent();
+      await addDirectoryToDigest(hash, join(path, name), join(relativePath, name), assertCurrent);
     }
     return;
   }
   if (!item.isFile()) return;
   hash.update(`F ${normalized}\n`);
+  assertCurrent();
   hash.update(await readFile(path));
+  assertCurrent();
   hash.update("\n");
 }
 
@@ -5325,6 +5309,37 @@ async function ownedDirectoryExists(path: string): Promise<boolean> {
   }
 }
 
+async function ensureFencedChildDirectory(
+  parent: DirectoryFence,
+  name: string,
+  label: string,
+  platform: NodeJS.Platform,
+): Promise<DirectoryFence> {
+  const parentIdentity = parent.verifyIdentity();
+  const path = resolve(parentIdentity.path, name);
+  if (dirname(path) !== parentIdentity.path || basename(path) !== name) {
+    throw new Error(`${label} '${path}' escapes its parent directory.`);
+  }
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) throw error;
+  }
+  parent.verify();
+  const child = new DirectoryFence(path, label);
+  if (dirname(child.verifyIdentity().realpath) !== parent.verifyIdentity().realpath) {
+    throw new Error(`${label} '${path}' escapes its parent directory.`);
+  }
+  if (platform !== "win32") {
+    parent.verify();
+    child.verify();
+    await chmod(path, 0o700);
+    parent.verify();
+    child.verify();
+  }
+  return child;
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -5335,34 +5350,71 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function makeTreePrivate(root: string, platform: NodeJS.Platform): Promise<void> {
+async function makeTreePrivate(
+  root: string,
+  platform: NodeJS.Platform,
+  assertCurrent: () => void = () => {},
+): Promise<void> {
   if (platform === "win32") return;
+  assertCurrent();
   const item = await lstat(root);
+  assertCurrent();
+  if (item.isSymbolicLink()) {
+    throw new Error(`Runtime-owned path '${root}' is a symbolic link.`);
+  }
+  if (!item.isDirectory() && !item.isFile()) {
+    throw new Error(`Runtime-owned path '${root}' is not a regular file or directory.`);
+  }
   await chmod(root, item.isDirectory() ? 0o700 : 0o600);
+  assertCurrent();
   if (!item.isDirectory()) return;
-  for (const name of await readdir(root)) await makeTreePrivate(join(root, name), platform);
+  for (const name of await readdir(root)) {
+    assertCurrent();
+    await makeTreePrivate(join(root, name), platform, assertCurrent);
+  }
 }
 
-async function publishRunDirectory(input: {
-  runsRoot: string;
-  stagedRunDir: string;
-  runDir: string;
+export async function publishRunDirectory(input: {
+  runsRoot: DirectoryFence;
+  runId: string;
   platform: NodeJS.Platform;
-  populate(stagingDir: string): Promise<void>;
-}): Promise<void> {
-  await mkdir(input.runsRoot, { recursive: true, mode: 0o700 });
-  const runsRoot = containedRunsRoot(input.runsRoot);
-  if (resolve(dirname(input.stagedRunDir)) !== runsRoot || resolve(dirname(input.runDir)) !== runsRoot) {
-    throw new Error(`Run directory must be inside runtime runs root '${runsRoot}'.`);
+  populate(runDir: string, assertCurrent: () => void): Promise<void>;
+}): Promise<DirectoryIdentity> {
+  const runsRoot = input.runsRoot.verify();
+  if (!isRuntimeRunId(input.runId)) {
+    throw new Error(`Run directory '${input.runId}' is outside runtime runs root '${runsRoot}'.`);
   }
-  await mkdir(input.stagedRunDir, { mode: 0o700 });
+  const stagedRunDir = join(runsRoot, `.staging-${input.runId}`);
+  const runDir = join(runsRoot, input.runId);
+  let staging: DirectoryIdentity | undefined;
+  let published: DirectoryIdentity | undefined;
   try {
-    await input.populate(input.stagedRunDir);
-    await makeTreePrivate(input.stagedRunDir, input.platform);
-    await requireMissingPath(input.runDir);
-    await rename(input.stagedRunDir, input.runDir);
+    input.runsRoot.verify();
+    await mkdir(stagedRunDir, { mode: 0o700 });
+    input.runsRoot.verify();
+    staging = captureDirectoryIdentity(stagedRunDir, `Run staging directory '${input.runId}'`);
+    verifyDirectoryIdentity(staging, `Run staging directory '${input.runId}'`);
+    await mkdir(runDir, { mode: 0o700 });
+    input.runsRoot.verify();
+    published = captureDirectoryIdentity(runDir, `Run directory '${input.runId}'`);
+    const assertCurrent = (): void => {
+      input.runsRoot.verify();
+      verifyDirectoryIdentity(staging!, `Run staging directory '${input.runId}'`);
+      verifyDirectoryIdentity(published!, `Run directory '${input.runId}'`);
+    };
+    await input.populate(runDir, assertCurrent);
+    assertCurrent();
+    await makeTreePrivate(runDir, input.platform, assertCurrent);
+    assertCurrent();
+    await removeOwnedDirectory(input.runsRoot, staging);
+    verifyDirectoryIdentity(published, `Run directory '${input.runId}'`);
+    return published;
   } catch (error) {
-    await removeOwnedPathAfterFailure(input.stagedRunDir, error);
+    return removeOwnedDirectoriesAfterFailure(
+      input.runsRoot,
+      [published, staging].filter((directory): directory is DirectoryIdentity => directory !== undefined),
+      error,
+    );
   }
 }
 
@@ -5376,7 +5428,13 @@ async function requireMissingPath(path: string): Promise<void> {
   throw new Error(`Run directory '${path}' already exists.`);
 }
 
-async function copyVerifiedArtifacts(sourceRunDir: string, stagingRunDir: string, artifacts: ArtifactRow[]): Promise<void> {
+async function copyVerifiedArtifacts(
+  sourceRun: RunDirectoryFence,
+  destinationRunDir: string,
+  artifacts: ArtifactRow[],
+  assertDestination: () => void,
+): Promise<void> {
+  const sourceRunDir = sourceRun.verify();
   const sourceArtifactRoot = resolve(sourceRunDir, "artifacts");
   if (artifacts.length > 0) {
     const info = await lstat(sourceArtifactRoot);
@@ -5385,16 +5443,18 @@ async function copyVerifiedArtifacts(sourceRunDir: string, stagingRunDir: string
     }
   }
   for (const artifact of artifacts) {
+    sourceRun.verify();
+    assertDestination();
     const relativePath = String(artifact.relative_path);
     const sourcePath = resolve(sourceRunDir, relativePath);
-    const stagingArtifactRoot = resolve(stagingRunDir, "artifacts");
-    const destination = resolve(stagingRunDir, relativePath);
+    const destinationArtifactRoot = resolve(destinationRunDir, "artifacts");
+    const destination = resolve(destinationRunDir, relativePath);
     if (
       isAbsolute(relativePath)
       || sourcePath === sourceArtifactRoot
-      || destination === stagingArtifactRoot
+      || destination === destinationArtifactRoot
       || !isContainedPath(sourceArtifactRoot, sourcePath)
-      || !isContainedPath(stagingArtifactRoot, destination)
+      || !isContainedPath(destinationArtifactRoot, destination)
     ) {
       throw new Error(`Fork artifact '${String(artifact.id)}' has invalid relative path.`);
     }
@@ -5405,6 +5465,8 @@ async function copyVerifiedArtifacts(sourceRunDir: string, stagingRunDir: string
       if (error instanceof PathEscapeError) throw new Error(`Fork artifact '${String(artifact.id)}' has invalid relative path.`);
       throw error;
     }
+    sourceRun.verify();
+    assertDestination();
     const expectedSize = Number(artifact.size);
     const expectedDigest = String(artifact.digest);
     const actualDigest = digest(bytes);
@@ -5412,13 +5474,25 @@ async function copyVerifiedArtifacts(sourceRunDir: string, stagingRunDir: string
       throw new Error(`Fork artifact '${String(artifact.id)}' failed source verification.`);
     }
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    sourceRun.verify();
+    assertDestination();
     await writeFile(destination, bytes, { mode: 0o600 });
+    sourceRun.verify();
+    assertDestination();
   }
 }
 
-async function writeFrozenRunFiles(runDir: string, workflowIrJson: string, lockJson: string): Promise<void> {
+async function writeFrozenRunFiles(
+  runDir: string,
+  workflowIrJson: string,
+  lockJson: string,
+  assertCurrent: () => void = () => {},
+): Promise<void> {
+  assertCurrent();
   await writeFile(join(runDir, "workflow.ir.json"), workflowIrJson, { mode: 0o600 });
+  assertCurrent();
   await writeFile(join(runDir, "lock.json"), lockJson, { mode: 0o600 });
+  assertCurrent();
 }
 
 async function verifyFrozenRunFiles(runDir: string, lockJson: string, workflowIrJson: string): Promise<void> {
@@ -5444,23 +5518,20 @@ async function readContainedFile(root: string, relativePath: string): Promise<Bu
 }
 
 function frozenWorkflowIrJson(
-  runsRoot: string,
-  runId: string,
+  runDir: string,
   row: Pick<RunInputRow, "workflow_ir_path" | "workflow_ir_digest">,
 ): string {
-  return readFrozenRunFile(runsRoot, runId, row.workflow_ir_path, row.workflow_ir_digest, "workflow IR");
+  return readFrozenRunFile(runDir, row.workflow_ir_path, row.workflow_ir_digest, "workflow IR");
 }
 
 function frozenLockJson(
-  runsRoot: string,
-  runId: string,
+  runDir: string,
   row: Pick<RunInputRow, "lock_path" | "lock_digest">,
 ): string {
-  return readFrozenRunFile(runsRoot, runId, row.lock_path, row.lock_digest, "workflow lock");
+  return readFrozenRunFile(runDir, row.lock_path, row.lock_digest, "workflow lock");
 }
 
-function readFrozenRunFile(runsRoot: string, runId: string, path: string, expectedDigest: string, label: string): string {
-  const runDir = containedRunDir(runsRoot, runId);
+function readFrozenRunFile(runDir: string, path: string, expectedDigest: string, label: string): string {
   const bytes = readContainedFileSync(runDir, path);
   if (digest(bytes) !== expectedDigest) throw new Error(`Frozen ${label} digest mismatch.`);
   return bytes.toString("utf8");
@@ -5477,6 +5548,30 @@ function readContainedFileSync(root: string, relativePath: string): Buffer {
   const realRoot = realpathSync(rootPath);
   if (!isContainedPath(realRoot, real)) throw new PathEscapeError(`Path '${relativePath}' escapes run directory.`);
   return readFileSync(absolutePath);
+}
+
+function verifyRegisteredArtifact(
+  run: RunDirectoryFence,
+  artifactPath: string,
+  expected: Pick<RegisterArtifactInput, "id" | "digest" | "size" | "file">,
+): void {
+  if (!Number.isSafeInteger(expected.size)
+    || expected.size < 0
+    || !/^sha256:[a-f0-9]{64}$/.test(expected.digest)) {
+    throw new Error(`Artifact '${expected.id}' has invalid size or digest metadata.`);
+  }
+  const label = `Artifact '${expected.id}'`;
+  const path = verifyRunFile(run.token(), expected.file, label);
+  if (path !== artifactPath) {
+    throw new Error(`${label} identity does not match its declared relative path.`);
+  }
+  const info = lstatSync(path, { bigint: true });
+  assertRunFileIdentity(expected.file, info, label);
+  if (info.size !== BigInt(expected.size)) {
+    throw new Error(`Artifact '${expected.id}' does not match its declared size.`);
+  }
+  verifyRunFile(run.token(), expected.file, label);
+  run.verify();
 }
 
 function forkRequestFingerprint(runId: string, options: ControlOptions): string {
@@ -5499,50 +5594,60 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
 
 class PathEscapeError extends Error {}
 
-function containedRunDir(root: string, runId: string): string {
-  const runsRoot = containedRunsRoot(root);
-  const absolute = resolve(runsRoot, runId);
-  if (dirname(absolute) !== runsRoot || basename(absolute) !== runId || !runIdPattern.test(runId)) {
-    throw new Error(`Run directory '${runId}' is outside runtime runs root '${runsRoot}'.`);
-  }
-  const info = lstatSync(absolute);
-  const realRunsRoot = realpathSync(runsRoot);
-  const realRunDir = realpathSync(absolute);
-  if (info.isSymbolicLink() || !info.isDirectory() || dirname(realRunDir) !== realRunsRoot) {
-    throw new Error(`Run directory '${runId}' is outside runtime runs root '${runsRoot}'.`);
-  }
-  return absolute;
-}
-
-function containedRunsRoot(root: string): string {
-  const runsRoot = resolve(root);
-  const info = lstatSync(runsRoot);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`Runtime runs root '${runsRoot}' is not a regular directory.`);
-  }
-  return runsRoot;
-}
-
 function isContainedPath(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
-async function isStalePath(path: string, olderThanMs: number): Promise<boolean> {
-  try {
-    const info = await stat(path);
-    return Date.now() - info.mtimeMs >= olderThanMs;
-  } catch (error) {
-    if (isMissingPathError(error)) return false;
-    throw error;
+function assertSameDirectory(
+  before: DirectoryIdentity,
+  after: DirectoryIdentity,
+  message: string,
+): void {
+  if (before.filesystemIdentity !== after.filesystemIdentity) {
+    throw new Error(message);
   }
 }
 
-async function removeOwnedPathAfterFailure(path: string, failure: unknown): Promise<never> {
+async function removeOwnedDirectory(
+  root: DirectoryFence,
+  owned: DirectoryIdentity,
+): Promise<void> {
+  root.verify();
+  verifyDirectoryIdentity(owned, `Owned directory '${owned.path}'`);
+  await rm(owned.path, { recursive: true, force: true });
+  root.verify();
+}
+
+async function removeOwnedDirectoryAfterFailure(
+  root: DirectoryFence,
+  owned: DirectoryIdentity,
+  failure: unknown,
+): Promise<never> {
   try {
-    await rm(path, { recursive: true, force: true });
+    await removeOwnedDirectory(root, owned);
   } catch (cleanupError) {
-    throw new AggregateError([failure, cleanupError], `Operation failed and owned path '${path}' could not be removed.`);
+    if (isMissingPathError(cleanupError)) throw failure;
+    throw new AggregateError([failure, cleanupError], `Operation failed and owned path '${owned.path}' could not be removed.`);
+  }
+  throw failure;
+}
+
+async function removeOwnedDirectoriesAfterFailure(
+  root: DirectoryFence,
+  owned: readonly DirectoryIdentity[],
+  failure: unknown,
+): Promise<never> {
+  const failures = [failure];
+  for (const directory of owned) {
+    try {
+      await removeOwnedDirectory(root, directory);
+    } catch (cleanupError) {
+      if (!isMissingPathError(cleanupError)) failures.push(cleanupError);
+    }
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Operation failed and its owned directories could not all be removed.");
   }
   throw failure;
 }

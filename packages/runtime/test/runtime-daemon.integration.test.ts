@@ -1,5 +1,5 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { access, mkdir, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -362,21 +362,18 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 
-  it("cleans stale staging once at startup and preserves all other run directories", async () => {
+  it("cleans stale staging once at startup and preserves committed run directories", async () => {
     await withRuntimeWorkspace("runtime-daemon-cleanup", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       const runsRoot = runtimeRunsRoot(workspace);
       const stale = join(runsRoot, ".staging-old");
       const fresh = join(runsRoot, ".staging-fresh");
       const late = join(runsRoot, ".staging-late");
-      const orphan = join(runsRoot, "20990101000000F2CF49A02B2A537F5E8A");
       await mkdir(stale, { recursive: true });
       await mkdir(fresh, { recursive: true });
-      await mkdir(orphan, { recursive: true });
       await writeFile(join(stale, "leftover.txt"), "staged");
       const old = new Date(Date.now() - 120_000);
       await utimes(stale, old, old);
-      await utimes(orphan, old, old);
 
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
@@ -386,7 +383,6 @@ describe.concurrent("runtime daemon ticks", () => {
       try {
         await expect(access(stale)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(access(fresh)).resolves.toBeUndefined();
-        await expect(access(orphan)).resolves.toBeUndefined();
         await expect(access(join(runsRoot, completed.run.id))).resolves.toBeUndefined();
 
         await mkdir(late);
@@ -404,6 +400,27 @@ describe.concurrent("runtime daemon ticks", () => {
       }
 
       expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([{ id: completed.run.id }]);
+    });
+  });
+
+  it("rejects an orphan final run directory at startup without deleting it", async () => {
+    await withRuntimeWorkspace("runtime-daemon-orphan-run", async workspace => {
+      const initialized = await openRuntimeStore(workspace);
+      initialized.close();
+      const orphan = join(runtimeRunsRoot(workspace), "20990101000000F2CF49A02B2A537F5E8A");
+      const sentinel = join(orphan, "sentinel.txt");
+      await mkdir(orphan, { recursive: true });
+      await writeFile(sentinel, "uncommitted publication");
+
+      await expect(startDaemonLoop(workspace, {
+        heartbeatMs: 5,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      })).rejects.toThrow();
+
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("uncommitted publication");
+      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      await expect(requestDaemonStatus(workspace)).rejects.toThrow();
     });
   });
 

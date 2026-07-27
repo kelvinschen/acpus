@@ -31,6 +31,7 @@ export type RunInspectionQuery =
       page?: { limit?: number; before?: string };
     }
   | { runId: string; mode: "details"; target: string; context?: RunInspectionContext }
+  | { runId: string; mode: "execution"; target: string; context?: RunInspectionContext }
   | { runId: string; mode: "raw" };
 
 export type FollowRunInspectionQuery = (
@@ -331,6 +332,11 @@ export type RunInspectionTargetSummary = {
   artifacts: ArtifactRecord[];
 };
 
+export type RunInspectionControl = {
+  type: "retry" | "cancel";
+  target: string;
+};
+
 export type RunInspectionTargetDetailsDocument = {
   schemaVersion: 2;
   kind: "details";
@@ -347,6 +353,7 @@ export type RunInspectionTargetDetailsDocument = {
   executionMetadata: RunExecutionMetadata[];
   progress: RunNodeProgress[];
   artifacts: ArtifactRecord[];
+  availableControls: RunInspectionControl[];
 };
 
 export type RunInspectionSubject = {
@@ -367,6 +374,60 @@ export type RunInspectionTargetState = {
   finishedAt?: string;
   deadlineAt?: string;
   durationMs?: number;
+};
+
+export type RunInspectionAgentExecutionToolCall = {
+  turn: number;
+  toolCallId?: string;
+  toolName?: string;
+  status?: string;
+  durationMs?: number;
+  inputPreview?: string;
+};
+
+export type RunInspectionAgentExecutionDocument = ({
+  available: true;
+  reason?: never;
+} | {
+  available: false;
+  reason: "not-agent" | "not-started";
+}) & {
+  schemaVersion: 2;
+  kind: "execution";
+  revision: RunInspectionRevision;
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  subject: RunInspectionSubject;
+  summary: {
+    status: RunInspectionStatus;
+    sessionName?: string;
+    turnCount?: number;
+    message?: string;
+  };
+  lastObservedAt?: string;
+  contextWindow?: {
+    used?: number;
+    size?: number;
+    percent?: number;
+    updatedAt?: string;
+  };
+  tokenUsage?: {
+    source?: "prompt_response" | "usage_update";
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
+  };
+  toolCallCount?: number;
+  lastToolCalls: RunInspectionAgentExecutionToolCall[];
+  recentToolsIncomplete: boolean;
 };
 
 export type RunInspectionPulse = {
@@ -597,6 +658,7 @@ export type RunInspectionDocument =
   | RunInspectionTargetSummaryDocument
   | RunInspectionTimelineDocument
   | RunInspectionTargetDetailsDocument
+  | RunInspectionAgentExecutionDocument
   | RunInspectionRaw;
 
 export type RunInspectionChange = {

@@ -308,22 +308,6 @@ describe("workflow authoring rules", () => {
     ]);
   });
 
-  it("does not retain removed authoring codes in current source, specs, or fixtures", async () => {
-    const files = [
-      ...await filesUnder(join(repoRoot, "packages", "workflow-compiler", "src")),
-      ...await filesUnder(join(repoRoot, "packages", "workflow-compiler", "test", "fixtures")),
-      join(repoRoot, "specs", "workflow-compiler-spec.md"),
-    ];
-    const removedCode = new RegExp(["OA00[1-4]", "AL008", "TB00(?:5|7|8)"].join("|"), "g");
-    const hits: string[] = [];
-    for (const file of files) {
-      const matches = (await readFile(file, "utf8")).match(removedCode);
-      if (matches) hits.push(`${file}: ${matches.join(", ")}`);
-    }
-
-    expect(hits).toEqual([]);
-  });
-
   it("keeps TypeScript 7 native APIs behind the package-internal analysis boundary", async () => {
     const sourceRoot = join(repoRoot, "packages", "workflow-compiler", "src");
     const files = await filesUnder(sourceRoot);

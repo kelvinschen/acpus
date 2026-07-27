@@ -1,8 +1,10 @@
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Snapshot } from "typescript/unstable/sync";
 import { describe, expect, it, vi } from "vitest";
 import { tryCompileWorkflowModule } from "../src/compiler/module.js";
+import { sha256Digest } from "../src/digest.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 
@@ -11,7 +13,9 @@ describe("TypeScript native compile boundary", () => {
     const getProject = vi.spyOn(Snapshot.prototype, "getProject").mockReturnValue(undefined);
     try {
       const entry = resolve(repoRoot, "packages/workflow-compiler/test/fixtures/workflows/release.workflow.ts");
-      const result = await tryCompileWorkflowModule(entry, repoRoot);
+      const result = await tryCompileWorkflowModule(entry, repoRoot, {
+        expectedSourceDigest: sha256Digest(await readFile(entry, "utf8")),
+      });
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) return;

@@ -218,7 +218,25 @@ describe("RunGraph interaction semantics", () => {
     expect(container.querySelector("nav[aria-label='Graph path']")?.textContent).toContain("item[0]");
     expect(container.querySelector("nav[aria-label='Graph path'] button")?.textContent).not.toBe("Workflow");
     expect(container.querySelectorAll("[aria-label='Fit graph to view']")).toHaveLength(1);
-    expect(container.querySelector<HTMLButtonElement>("[aria-label='Navigate graph overview']")).not.toBeNull();
+    const minimap = container.querySelector<HTMLButtonElement>("[aria-label='Navigate graph overview']")!;
+    expect(minimap).not.toBeNull();
+
+    const structuralPathItem = [...container.querySelectorAll<HTMLButtonElement>("nav[aria-label='Graph path'] button")]
+      .find(item => item.textContent === "item[0]")!;
+    const selectionCount = onSelectNode.mock.calls.length;
+    const viewportState = () => {
+      const canvas = container.querySelector<HTMLElement>(".graph-canvas")!;
+      const workBox = [...container.querySelectorAll<HTMLElement>(".graph-box.node")]
+        .find(item => item.textContent?.includes("work"))!;
+      return [canvas.style.transform, workBox.style.left, workBox.style.top].join("|");
+    };
+    const initialViewport = viewportState();
+    await act(async () => structuralPathItem.click());
+    const structuralViewport = viewportState();
+    expect(structuralViewport).not.toBe(initialViewport);
+    await act(async () => minimap.click());
+    expect(viewportState()).not.toBe(structuralViewport);
+    expect(onSelectNode).toHaveBeenCalledTimes(selectionCount);
 
     const trigger = container.querySelector<HTMLButtonElement>("[aria-label='Open graph navigator']")!;
     await act(async () => trigger.click());

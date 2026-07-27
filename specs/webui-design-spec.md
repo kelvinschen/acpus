@@ -51,5 +51,5 @@ The Acpus WebUI design system defines the visual and interaction language for th
 
 ## Verification
 
-- `pnpm test:unit -- packages/web`: verifies the shared logo asset, Gruvbox-derived Acpus Ink theme anchors, warm-charcoal large-area graph surfaces, accessible categorical highlight tokens, leaf-only rounded leading keylines, component states, reduced motion, soft node-shadow policy, and graph/status layer separation.
+- `pnpm test:unit packages/web`: verifies the shared logo asset, Gruvbox-derived Acpus Ink theme anchors, warm-charcoal large-area graph surfaces, accessible categorical highlight tokens, leaf-only rounded leading keylines, component states, reduced motion, soft node-shadow policy, and graph/status layer separation.
 - Manual browser review checks palette use, text contrast, elevation restraint, logo treatment, representative desktop widths, and reduced-motion settings.

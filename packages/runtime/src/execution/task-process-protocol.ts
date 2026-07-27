@@ -1,5 +1,7 @@
 import type { TaskExecutionTargetIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import type { RunDirectoryToken } from "../store/path-fence.js";
+import type { RunFileToken } from "../store/run-file.js";
 
 export type TaskArtifactRegistration = {
   id: string;
@@ -12,6 +14,7 @@ export type TaskArtifactRegistration = {
   digest: string;
   size: number;
   relativePath: string;
+  file: RunFileToken;
 };
 
 export type TaskProcessRequest = {
@@ -23,13 +26,12 @@ export type TaskProcessRequest = {
     defaultCommandTimeout?: string;
   };
   artifact: {
-    runId: string;
+    run: RunDirectoryToken;
     nodeKey: string;
     attemptId: string;
     attempt: number;
     ownerEpoch: number;
-    runDir: string;
-    paths: Record<string, string>;
+    paths: Record<string, RunFileToken>;
   };
 };
 

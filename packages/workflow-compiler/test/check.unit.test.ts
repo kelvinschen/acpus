@@ -2,10 +2,21 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkTypeScript } from "../src/check/typescript.js";
+import { sha256Digest } from "../src/digest.js";
 import { createScratchDir } from "../src/preflight/temp.js";
 import { runCheck, withCheckWorkspace } from "./support/check-workspace.js";
 
 describe("workflow TypeScript diagnostics", () => {
+  it("returns the digest of the source text supplied to the check", async () => {
+    await withCheckWorkspace("workflow-check-digest", async cwd => {
+      const source = "export default {};\n";
+
+      const result = await runCheck(cwd, source);
+
+      expect(result.sourceDigest).toBe(sha256Digest(source));
+    });
+  });
+
   it("converts TypeScript compiler diagnostics to DiagnosticIR", async () => {
     await withCheckWorkspace("workflow-ts-check", async cwd => {
       const result = await runCheck(cwd, `

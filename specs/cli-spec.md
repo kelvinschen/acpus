@@ -144,6 +144,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
 - On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
 - JSON Doctor output MUST expose that workspace shard root as `persistence.path`.
+- Doctor MUST succeed when its combined Runtime and authoring checks contain no failure, including when one or more checks warn.
+- A successful Doctor report with one or more warnings MUST use `Doctor checks passed with warnings.` as its message.
+- Doctor MUST fail when any combined Runtime or authoring check fails.
 - Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with remediation `acpus skill install --<scope> --agent <agent>`, while a simply missing installed copy remains structured `missing` without a warning.
 - Doctor installed-skill records MUST inspect only existing fixed skills roots and identify the target with `agent: "universal" | "claude"`.
 - Skill read MUST resolve resources only from the `acpus` skill bundled in the running CLI package.
@@ -271,7 +274,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 ## Verification
 
 - Cover leaf-local JSON capability boundaries, inspection pagination/follow grammar conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
-- `pnpm test:contract -- packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, opaque follow resume, and bounded semantic-delta rendering.
+- `pnpm test:contract packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, opaque follow resume, and bounded semantic-delta rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
 - Prove that read-only commands do not start the daemon or create runtime shards.

@@ -1,20 +1,14 @@
 {
-  "extends": "./tsconfig.base.json",
+  "extends": "./tsconfig.package.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "types": ["node", "vitest"],
-    "customConditions": ["development"],
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
-    "verbatimModuleSyntax": true,
     "noEmit": true
   },
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/src/**/*.tsx",
-    "packages/*/test/**/*.ts",
-    "packages/*/test/fixtures/**/*.ts",
-    "packages/*/test/**/*.type.test-d.ts"
+    "packages/*/test/**/*.ts"
   ]
 }

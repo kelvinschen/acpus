@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { discoverWorkflowCatalog } from "../src/catalog.js";
+import { discoverWorkflowCatalog, prepareWorkflowCatalogCommit } from "../src/catalog.js";
 import { repoRoot } from "./support/cli-runner.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
 
@@ -80,6 +80,36 @@ describe("workflow catalog discovery", () => {
         "name-not-static": "CATALOG_NAME_NOT_STATIC",
         "not-static": "CATALOG_WORKFLOW_NOT_STATIC",
         syntax: "CATALOG_SOURCE_INVALID",
+      });
+    });
+  });
+
+  it("publishes exactly one complete package when prepared Acpus writers race", async () => {
+    await withPlainTestWorkspace("catalog-publication-race", async workspace => {
+      const home = await testHome("catalog-publication-race-home");
+      await withHome(home, async () => {
+        const staged = [join(workspace, "staged", "one"), join(workspace, "staged", "two")];
+        await Promise.all(staged.map(async (path, index) => {
+          await rawWorkflowPackage(join(path, ".."), basename(path), workflowSource("release"));
+          await writeFile(join(path, "writer"), String(index));
+        }));
+        const prepared = await Promise.all([
+          prepareWorkflowCatalogCommit(workspace, "project", "release"),
+          prepareWorkflowCatalogCommit(workspace, "project", "release"),
+        ]);
+        const publications = prepared.map((result, index) => {
+          if (result.isErr()) throw new Error("Both writers must prepare before publication starts.");
+          return result.value.commit(staged[index]!);
+        });
+
+        const committed = await Promise.all(publications);
+        const winner = committed.findIndex(result => result.isOk());
+        const loser = committed.findIndex(result => result.isErr());
+
+        expect(committed.map(result => result.isOk() ? "success" : result.error.type).sort()).toEqual(["collision", "success"]);
+        expect(await readFile(join(workspace, ".acpus", "workflows", "release", "writer"), "utf8")).toBe(String(winner));
+        await expect(readFile(join(staged[winner]!, "workflow.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(staged[loser]!, "workflow.ts"), "utf8")).resolves.toContain('name: "release"');
       });
     });
   });

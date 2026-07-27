@@ -1,6 +1,7 @@
+import { mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { ok } from "neverthrow";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../../src/execution/task-executor.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
 import type { RegisterArtifactInput } from "../../src/store/store.js";
+import { captureDirectoryIdentity } from "../../src/store/path-fence.js";
 
 export type TaskExecutorFixture = {
   workspace: string;
@@ -34,6 +36,8 @@ export async function withTaskExecutorWorkspace<T>(
       workspace,
       runtimeRunDir,
       taskOptions(runId, registerArtifact = () => {}) {
+        const runDir = runtimeRunDir(runId);
+        mkdirSync(runDir, { recursive: true });
         return {
           cwd: workspace,
           runId,
@@ -41,7 +45,11 @@ export async function withTaskExecutorWorkspace<T>(
           attemptNo: 1,
           ownerEpoch: 1,
           store: {
-            getRunDir: () => runtimeRunDir(runId),
+            getRunDirectoryToken: () => ({
+              runId,
+              runsRoot: captureDirectoryIdentity(dirname(runDir), "Runtime runs root"),
+              runDirectory: captureDirectoryIdentity(runDir, `Run directory '${runId}'`),
+            }),
             getArtifact: () => undefined,
             registerArtifact: input => {
               registerArtifact(input);

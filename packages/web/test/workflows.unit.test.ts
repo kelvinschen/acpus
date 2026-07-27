@@ -1,92 +1,160 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
-import type { PreparedWorkflow } from "@acpus/workflow-compiler";
-import { listProjectWorkflowCatalog, listWorkflowFiles, renderWorkflowVizHtml, workflowVisualizationFromPrepared } from "../src/server/workflows.js";
+import type { WorkflowVisualizationResult } from "../src/api-types.js";
+import { renderWorkflowVizHtml, tryVisualizeWorkflowSource } from "../src/server/workflows.js";
 
 describe("workflow visualization helpers", () => {
-  it("lists project catalog entries without importing workflow modules", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "acpus-web-workflows-catalog-"));
-    await mkdir(join(cwd, ".acpus", "workflows", "release"), { recursive: true });
-    await writeFile(join(cwd, ".acpus", "workflows", "release", "workflow.ts"), "throw new Error('must not import');\n");
-    await mkdir(join(cwd, ".acpus", "workflows", "bad-name!"), { recursive: true });
-    await writeFile(join(cwd, ".acpus", "workflows", "bad-name!", "workflow.ts"), "export default {};\n");
-
-    await expect(listProjectWorkflowCatalog(cwd)).resolves.toEqual([{
-      name: "release",
-      entryPath: join(cwd, ".acpus", "workflows", "release", "workflow.ts"),
-    }]);
-  });
-
-  it("lists workflow files while filtering unsupported entries", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "acpus-web-workflows-files-"));
-    await mkdir(join(cwd, "src"), { recursive: true });
-    await mkdir(join(cwd, "node_modules"), { recursive: true });
-    await writeFile(join(cwd, "src", "flow.workflow.ts"), "export default {};\n");
-    await writeFile(join(cwd, "src", "notes.md"), "# nope\n");
-
-    const listed = await listWorkflowFiles(cwd, "src");
-    expect(listed.isOk() && listed.value).toMatchObject({
-      dir: "src",
-      entries: [{ name: "flow.workflow.ts", path: "src/flow.workflow.ts", kind: "workflow" }],
+  it("classifies a workspace path escape as a source failure before preparation", async () => {
+    const result = await tryVisualizeWorkflowSource("/workspace", {
+      kind: "file",
+      path: "../outside.workflow.ts",
     });
-    const escaped = await listWorkflowFiles(cwd, "..");
-    expect(escaped.isErr() && escaped.error).toMatchObject({
-      type: "workflow-browse-invalid",
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected source failure");
+    expect(result.error).toMatchObject({
+      type: "workflow-source-invalid",
       reason: "outside-workspace",
-      message: "Path escapes workspace.",
+      phase: "source",
     });
   });
 
-  it("returns static workflow input and output contract", async () => {
-    const result = workflowVisualizationFromPrepared(preparedWorkflow());
+  it("rejects a workflow symlink that resolves outside the workspace", async () => {
+    const [cwd, outside] = await Promise.all([
+      mkdtemp(join(tmpdir(), "acpus-web-source-workspace-")),
+      mkdtemp(join(tmpdir(), "acpus-web-source-outside-")),
+    ]);
+    try {
+      const target = join(outside, "workflow.ts");
+      await writeFile(target, "throw new Error('outside source must not be imported');\n");
+      await symlink(target, join(cwd, "release.workflow.ts"));
 
-    expect(result.status).toBe("ready");
-    expect(result.workflow.description).toBe("Prepared workflow description.");
-    expect(result.workflow.nodeCount).toBe(3);
-    expect(result.contract.inputSchema).toMatchObject({ kind: "object" });
-    expect(result.contract.output).toMatchObject({ kind: "object", fields: {
-      approved: expect.any(Object),
-      first_lane: expect.any(Object),
-    } });
-    expect(result.contract.outputShape).toEqual({ kind: "object", possibleKeys: ["approved", "first_lane"] });
+      const result = await tryVisualizeWorkflowSource(cwd, {
+        kind: "file",
+        path: "release.workflow.ts",
+      });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source failure");
+      expect(result.error).toMatchObject({
+        type: "workflow-source-invalid",
+        reason: "outside-workspace",
+        phase: "source",
+      });
+    } finally {
+      await Promise.all([
+        rm(cwd, { recursive: true, force: true }),
+        rm(outside, { recursive: true, force: true }),
+      ]);
+    }
   });
 
-  it("renders a self-contained HTML bundle with workflow metadata", () => {
-    const result = workflowVisualizationFromPrepared(preparedWorkflow());
+  it("rejects a project catalog root that resolves outside the workspace", async () => {
+    const [cwd, outside] = await Promise.all([
+      mkdtemp(join(tmpdir(), "acpus-web-catalog-workspace-")),
+      mkdtemp(join(tmpdir(), "acpus-web-catalog-outside-")),
+    ]);
+    try {
+      await mkdir(join(outside, "release"));
+      await writeFile(
+        join(outside, "release", "workflow.ts"),
+        "throw new Error('outside catalog must not be imported');\n",
+      );
+      await mkdir(join(cwd, ".acpus"));
+      await symlink(outside, join(cwd, ".acpus", "workflows"), "dir");
+
+      const result = await tryVisualizeWorkflowSource(cwd, {
+        kind: "catalog",
+        name: "release",
+      });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source failure");
+      expect(result.error).toMatchObject({
+        type: "workflow-source-invalid",
+        reason: "outside-workspace",
+        phase: "source",
+      });
+    } finally {
+      await Promise.all([
+        rm(cwd, { recursive: true, force: true }),
+        rm(outside, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  it("derives one consistent static bundle from workflow IR", () => {
+    const bundle = embeddedVisualization(renderWorkflowVizHtml({
+      ir: workflowIr(),
+      sourceGraphDigest,
+    }));
+
+    expect(bundle.workflow).toEqual({
+      name: hostileName,
+      description: hostileDescription,
+      irVersion: 6,
+      nodeCount: 3,
+    });
+    expect(bundle.contract).toEqual({
+      inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
+      output: {
+        kind: "object",
+        fields: {
+          approved: { kind: "literal", value: true },
+          first_lane: { kind: "literal", value: "lane-alpha" },
+        },
+      },
+      outputShape: { kind: "object", possibleKeys: ["approved", "first_lane"] },
+    });
+    expect(bundle.graph.mode).toBe("static");
+    expect(bundle.graph.nodes.map(node => [node.id, node.kind])).toEqual(expect.arrayContaining([
+      ["choose", "if"],
+      ["review", "task"],
+      ["fallback", "assert"],
+    ]));
+    expect(bundle.sourceGraphDigest).toBe(sourceGraphDigest);
+  });
+
+  it("renders an offline HTML shell that fences authored and embedded raw text", () => {
     const html = renderWorkflowVizHtml({
-      graph: result.graph,
-      workflow: result.workflow,
-      contract: result.contract,
-      sourceGraphDigest: result.sourceGraphDigest,
+      ir: workflowIr(),
+      sourceGraphDigest,
     });
 
     expect(html).toContain("<!doctype html>");
     expect(html).toContain("window.__ACPUS_WORKFLOW_VIZ__=");
     expect(html).toContain("<div id=\"root\"></div>");
-    expect(html).toContain("<title>prepared-static</title>");
+    expect(html).toContain("<title>prepared-static &lt;review &amp; &quot;ship&quot;&gt;</title>");
     expect(html).not.toMatch(/\s(?:src|href)=["']https?:\/\//);
-    expect(html).toContain(result.sourceGraphDigest);
-    expect(html).toContain("Prepared workflow description.");
-    expect(html).toContain("Output Expression");
-    expect(html).not.toContain("Output Mapping");
+    expect(html).not.toContain(hostileDescription);
+    expect(html.match(/<\/script(?=[\t\n\f\r />]|$)/giu)).toHaveLength(2);
+    expect(html.match(/<\/style(?=[\t\n\f\r />]|$)/giu)).toHaveLength(1);
+    expect(embeddedVisualization(html).workflow.description).toBe(hostileDescription);
   });
 });
 
-function preparedWorkflow(): PreparedWorkflow {
-  const ir: WorkflowIR = {
+const sourceGraphDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const hostileName = "prepared-static <review & \"ship\">";
+const hostileDescription = "Prepared </script><script>globalThis.compromised = true</script>";
+
+function workflowIr(): WorkflowIR {
+  return {
     irVersion: 6,
-    name: "prepared-static",
-    description: "Prepared workflow description.",
+    name: hostileName,
+    description: hostileDescription,
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
     root: {
-      output: { kind: "object", fields: {
-      approved: { kind: "literal", value: true },
-      first_lane: { kind: "literal", value: "lane-alpha" },
-    } },
+      output: {
+        kind: "object",
+        fields: {
+          approved: { kind: "literal", value: true },
+          first_lane: { kind: "literal", value: "lane-alpha" },
+        },
+      },
       nodes: [{
         id: "choose",
         kind: "if",
@@ -108,21 +176,15 @@ function preparedWorkflow(): PreparedWorkflow {
 
     diagnostics: [],
   };
-  return {
-    workflowPath: "/workspace/workflow.ts",
-    source: { kind: "workspace", entry: "workflow.ts" },
-    ir,
-    irJson: `${JSON.stringify(ir, null, 2)}\n`,
-    sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    lock: {
-      kind: "acpus_workflow_preparation_lock",
-      version: 1,
-      workflow: {
-        source: { kind: "workspace", entry: "workflow.ts" },
-        sourceDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      },
-      ir: { path: "workflow.ir.json", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-      sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    },
-  };
+}
+
+function embeddedVisualization(
+  html: string,
+): Omit<Extract<WorkflowVisualizationResult, { status: "ready" }>, "status"> {
+  const marker = "window.__ACPUS_WORKFLOW_VIZ__=";
+  const start = html.indexOf(marker);
+  const jsonStart = start + marker.length;
+  const jsonEnd = html.indexOf(";\n</script>", jsonStart);
+  if (start < 0 || jsonEnd < 0) throw new Error("static visualization bundle is missing");
+  return JSON.parse(html.slice(jsonStart, jsonEnd));
 }

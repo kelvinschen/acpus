@@ -260,24 +260,35 @@ describe.concurrent("daemon lease active execution", () => {
   }, 5_000);
 
   it("does not idle-stop while a run execution session is active", async () => {
-    await withDaemonLeaseWorkspace(async ({ dir }) => {
+    await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       const markerPath = join(dir, "idle-active.marker");
       const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
+      const admission = await store.admitRun({
+        prepared,
+        cwd: dir,
+        input: { markerPath },
+      });
+      if (admission.isErr()) throw new Error(admission.error.message);
+      const admitted = admission.value;
       const loop = await startDaemonLoop(dir, {
         heartbeatMs: 10,
-        idleStopMs: 20,
+        idleStopMs: 0,
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
-          prepared,
-          input: { markerPath },
-        });
-        const idleCheckAt = Date.now() + 50;
         await waitUntil(async () =>
           await readFile(markerPath, "utf8").catch(() => undefined) === "started");
-        await new Promise(resolve =>
-          setTimeout(resolve, Math.max(0, idleCheckAt - Date.now())));
+        let heartbeatAt = store.getRuntimeDiagnostics().daemon?.heartbeatAt;
+        expect(heartbeatAt).toBeDefined();
+        for (let count = 0; count < 2; count += 1) {
+          const previous = heartbeatAt;
+          await waitUntil(() => {
+            const current = store.getRuntimeDiagnostics().daemon?.heartbeatAt;
+            if (current === undefined || current === previous) return false;
+            heartbeatAt = current;
+            return true;
+          });
+        }
         await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });
         await expect(requestDaemonControl(dir, {
           requestId: "test-idle-active-cancel",

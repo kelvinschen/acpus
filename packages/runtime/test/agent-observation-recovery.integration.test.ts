@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
@@ -263,7 +263,7 @@ describe("Agent observation recovery", () => {
       const layout = resolveRuntimeLayout(workspace);
       const runDir = join(layout.runsRoot, runId);
       const traceRelativePath = `evidence/agents/${attemptId}/turn-001.trace.jsonl`;
-      const artifactRelativePath = "artifacts/agent~1/attempt-1/agent/turn-001.trace.jsonl";
+      const artifactRelativePath = `artifacts/agent~1/attempt-1/${attemptId}/agent/turn-001.trace.jsonl`;
       const trace = `${JSON.stringify({ schemaVersion: 1, sequence: 0, type: "turn_start" })}\n`;
       const digest = `sha256:${createHash("sha256").update(trace).digest("hex")}`;
       try {
@@ -337,6 +337,91 @@ describe("Agent observation recovery", () => {
         await store.observationLog.recoverPartialTurns(runId);
         expect(runtimeRow(workspace, "SELECT observation_version FROM runs WHERE id = ?", runId))
           .toEqual({ observation_version: 1 });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects a symlinked Trace artifact component without mutating its target", async () => {
+    await withRuntimeWorkspace("agent-observation-trace-parent-symlink", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      const runId = "20260726000000EEEEEEEEEEEEEEEEEEEE";
+      const attemptId = "attempt_trace_parent";
+      const runDir = join(resolveRuntimeLayout(workspace).runsRoot, runId);
+      const traceRelativePath = `evidence/agents/${attemptId}/turn-001.trace.jsonl`;
+      const artifactRelativePath = `artifacts/agent~1/attempt-1/${attemptId}/agent/turn-001.trace.jsonl`;
+      const trace = `${JSON.stringify({ schemaVersion: 1, sequence: 0, type: "turn_start" })}\n`;
+      const outside = join(workspace, "outside-trace-artifacts");
+      let registered = false;
+      try {
+        await Promise.all([
+          writeJournal(runDir, traceRelativePath, trace),
+          mkdir(join(runDir, "artifacts", "agent~1"), { recursive: true }),
+          mkdir(join(outside, attemptId), { recursive: true }),
+        ]);
+        await symlink(
+          outside,
+          join(runDir, "artifacts", "agent~1", "attempt-1"),
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        const db = new DatabaseSync(runtimeDatabasePath(workspace));
+        try {
+          db.exec("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE");
+          insertRun(db, runId);
+          db.prepare(`
+            INSERT INTO node_attempts (
+              run_id, attempt_id, node_key, node_id, attempt_no, owner_epoch,
+              status, started_at
+            )
+            VALUES (?, ?, 'agent~1', 'agent', 1, 1, 'started', ?)
+          `).run(runId, attemptId, observedAt);
+          insertObservationTurn(db, {
+            runId,
+            attemptId,
+            nodeKey: "agent~1",
+            nodeId: "agent",
+            attemptNo: 1,
+            relativePath: `evidence/agents/${attemptId}/turn-001.evidence.jsonl`,
+          });
+          db.prepare(`
+            UPDATE agent_observation_turns
+            SET state = 'sealed', trace_enabled = 1, trace_state = 'sealed',
+                trace_relative_path = ?
+            WHERE run_id = ? AND attempt_id = ?
+          `).run(traceRelativePath, runId, attemptId);
+          db.exec("COMMIT");
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        } finally {
+          db.close();
+        }
+
+        await expect(store.observationLog.publishTrace({
+          runId,
+          attemptId,
+          turn: 1,
+          destinationRelativePath: artifactRelativePath,
+          register: async () => {
+            registered = true;
+          },
+        })).rejects.toThrow();
+
+        expect(registered).toBe(false);
+        await expect(readdir(join(outside, attemptId))).resolves.toEqual([]);
+        await expect(readFile(join(runDir, traceRelativePath), "utf8")).resolves.toBe(trace);
+        expect(runtimeRow(
+          workspace,
+          `SELECT trace_state, trace_artifact_relative_path
+           FROM agent_observation_turns
+           WHERE run_id = ? AND attempt_id = ?`,
+          runId,
+          attemptId,
+        )).toEqual({
+          trace_state: "sealed",
+          trace_artifact_relative_path: null,
+        });
       } finally {
         store.close();
       }

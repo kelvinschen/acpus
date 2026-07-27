@@ -12,11 +12,11 @@ import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { createRuntimeNodeExecutor } from "./node-executor.js";
 import { indexNodes } from "./ir-walk.js";
 import { scopeForNodeAttempt } from "./scope.js";
-import { frozenRunScope, settleFrozenProjection } from "./settle.js";
+import { frozenRunScope, settleFrozenSnapshot } from "./settle.js";
 import { throwSchedulerStoreResult } from "./store-port.js";
 import type { SchedulerSnapshot } from "./store-port.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
-import { readVerifiedArtifactBytes } from "../artifacts/path.js";
+import { readVerifiedArtifact } from "../artifacts/access.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
 
@@ -335,7 +335,9 @@ function loadAgentPrompts(
     const turnArtifact = objectValue(firstTurn?.turnArtifact);
     const artifactId = typeof turnArtifact?.artifactId === "string" ? turnArtifact.artifactId : undefined;
     if (!artifactId) continue;
-    const artifact = objectValue(JSON.parse(readVerifiedArtifactBytes({ cwd, runId, store }, artifactId).toString("utf8")));
+    const read = readVerifiedArtifact({ cwd, runId, store }, artifactId);
+    if (!read) throw new Error(`Agent turn artifact '${artifactId}' is not registered for run '${runId}'.`);
+    const artifact = objectValue(JSON.parse(read.bytes.toString("utf8")));
     if (!artifact || typeof artifact.prompt !== "string") throw new Error(`Agent turn artifact '${artifactId}' has an invalid prompt.`);
     prompts.set(attemptId, artifact.prompt);
     break;
@@ -392,9 +394,9 @@ export function settleFrozenRunTransitions(input: {
   const frozen = input.store.getFrozenRun(input.runId);
   if (!frozen) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
   const current = throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId));
-  const settled = settleFrozenProjection({
+  const settled = settleFrozenSnapshot({
     frozen,
-    projection: current.projection,
+    snapshot: current,
     now: input.now ?? new Date(),
   });
   if (settled.events.length === 0) return current;

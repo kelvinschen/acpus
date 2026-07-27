@@ -1,24 +1,17 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { walkNodes } from "@acpus/core/ir";
+import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape } from "@acpus/expression/ir";
-import { tryPrepareWorkflow, type PreparedWorkflow } from "@acpus/workflow-compiler";
+import { tryPrepareWorkflow, type WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import type { WorkflowVisualizationResult, WorkflowVisualizationSource } from "../api-types.js";
-import { workflowIrToWebGraph, type WebGraph } from "./graph.js";
+import type {
+  ProjectWorkflowCatalogEntry,
+  WorkflowFiles,
+  WorkflowVisualizationResult,
+  WorkflowVisualizationSource,
+} from "../api-types.js";
+import { workflowIrToWebGraph } from "./graph.js";
 import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
-export type { WorkflowVisualizationResult, WorkflowVisualizationSource } from "../api-types.js";
-
-export type ProjectWorkflowCatalogEntry = {
-  name: string;
-  entryPath: string;
-};
-
-export type WorkflowFileEntry = {
-  name: string;
-  path: string;
-  kind: "directory" | "workflow";
-};
 
 export type WorkflowBrowseFailure = {
   type: "workflow-browse-invalid";
@@ -26,21 +19,37 @@ export type WorkflowBrowseFailure = {
   message: string;
 };
 
+type WorkflowSourceFailure = {
+  type: "workflow-source-invalid";
+  reason: "outside-workspace" | "not-found" | "not-file" | "unsupported-extension";
+  phase: "source";
+  message: string;
+};
+
+type WorkflowVisualizationFailure = WorkflowSourceFailure | WorkflowPreparationFailure;
+
+type ReadyWorkflowVisualization = Extract<WorkflowVisualizationResult, { status: "ready" }>;
+
+const workflowCatalogName = /^[a-z0-9][a-z0-9-]*$/;
+
 export async function listProjectWorkflowCatalog(cwd: string): Promise<ProjectWorkflowCatalogEntry[]> {
   const root = join(cwd, ".acpus", "workflows");
   let entries: string[];
+  let realRoot: string;
   try {
+    const realWorkspace = await realpath(resolve(cwd));
+    realRoot = await realpath(root);
+    if (!isContainedPath(realWorkspace, realRoot)) {
+      throw new Error("Project workflow catalog resolves outside the workspace.");
+    }
     entries = await readdir(root);
   } catch (error) {
     if (isMissingPathError(error)) return [];
     throw error;
   }
 
-  const realWorkspace = await realpath(resolve(cwd));
-  const realRoot = await realpath(root);
-  if (!isContainedPath(realWorkspace, realRoot)) throw new Error("Project workflow catalog resolves outside the workspace.");
   const catalog = await Promise.all(entries.map(async name => {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return undefined;
+    if (!workflowCatalogName.test(name)) return undefined;
     const packagePath = join(root, name);
     const entryPath = join(packagePath, "workflow.ts");
     if (!await isContainedFile(entryPath, realRoot)) return undefined;
@@ -49,11 +58,11 @@ export async function listProjectWorkflowCatalog(cwd: string): Promise<ProjectWo
   return catalog.flatMap(entry => entry ? [entry] : []).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function listWorkflowFiles(cwd: string, dir = ""): ResultAsync<{ dir: string; entries: WorkflowFileEntry[] }, WorkflowBrowseFailure> {
+export function listWorkflowFiles(cwd: string, dir = ""): ResultAsync<WorkflowFiles, WorkflowBrowseFailure> {
   return new ResultAsync(listWorkflowFilesResult(cwd, dir));
 }
 
-async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result<{ dir: string; entries: WorkflowFileEntry[] }, WorkflowBrowseFailure>> {
+async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result<WorkflowFiles, WorkflowBrowseFailure>> {
   const base = resolve(cwd);
   const current = resolveWorkspacePath(base, dir);
   if (!current) return err(workflowBrowseFailure("outside-workspace", "Path escapes workspace."));
@@ -88,61 +97,50 @@ async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result
   });
 }
 
-export async function visualizeWorkflowSource(cwd: string, source: WorkflowVisualizationSource): Promise<WorkflowVisualizationResult> {
-  const workflow = source.kind === "catalog"
-    ? (await catalogWorkflowPath(cwd, source.name))
-    : await workspaceWorkflowPath(cwd, source.path);
-  if (!workflow) {
-    return { status: "failed", phase: "compile", message: "Workflow source was not found." };
-  }
-
-  const prepared = await tryPrepareWorkflow({ cwd, workflow });
-  return prepared.match(
-    workflowVisualizationFromPrepared,
-    failure => ({ status: "failed", phase: failure.phase, message: failure.message }),
-  );
+export function tryVisualizeWorkflowSource(
+  cwd: string,
+  source: WorkflowVisualizationSource,
+): ResultAsync<ReadyWorkflowVisualization, WorkflowVisualizationFailure> {
+  return resolveWorkflowSource(cwd, source)
+    .andThen(workflow => tryPrepareWorkflow({ cwd, workflow }))
+    .map(prepared => staticWorkflowVisualization(prepared.ir, prepared.sourceGraphDigest));
 }
 
-export function workflowVisualizationFromPrepared(prepared: PreparedWorkflow): Extract<WorkflowVisualizationResult, { status: "ready" }> {
+function staticWorkflowVisualization(ir: WorkflowIR, sourceGraphDigest: string): ReadyWorkflowVisualization {
   return {
     status: "ready",
-    graph: workflowIrToWebGraph(prepared.ir),
+    graph: workflowIrToWebGraph(ir),
     workflow: {
-      name: prepared.ir.name,
-      ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
-      irVersion: prepared.ir.irVersion,
-      nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
+      name: ir.name,
+      ...(ir.description === undefined ? {} : { description: ir.description }),
+      irVersion: ir.irVersion,
+      nodeCount: Array.from(walkNodes(ir.root)).length,
     },
     contract: {
-      ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
-      output: prepared.ir.root.output,
-      outputShape: staticExprShape(prepared.ir.root.output),
+      ...(ir.inputSchema === undefined ? {} : { inputSchema: ir.inputSchema }),
+      output: ir.root.output,
+      outputShape: staticExprShape(ir.root.output),
     },
-    sourceGraphDigest: prepared.sourceGraphDigest,
+    sourceGraphDigest,
   };
 }
 
 export type WorkflowVizHtmlOptions = {
-  graph: WebGraph;
-  workflow: Extract<WorkflowVisualizationResult, { status: "ready" }>["workflow"];
-  contract: Extract<WorkflowVisualizationResult, { status: "ready" }>["contract"];
+  ir: WorkflowIR;
   sourceGraphDigest: string;
 };
 
 export function renderWorkflowVizHtml(options: WorkflowVizHtmlOptions): string {
-  const bundle = {
-    graph: options.graph,
-    workflow: options.workflow,
-    contract: options.contract,
-    sourceGraphDigest: options.sourceGraphDigest,
-  };
+  const { graph, workflow, contract, sourceGraphDigest } =
+    staticWorkflowVisualization(options.ir, options.sourceGraphDigest);
+  const bundle = { graph, workflow, contract, sourceGraphDigest };
   const bundleJson = JSON.stringify(bundle).replaceAll("</", "<\\/");
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(options.workflow.name)}</title>
+<title>${escapeHtml(workflow.name)}</title>
 <style>
 ${staticVizCss}
 </style>
@@ -160,24 +158,61 @@ ${staticVizJs}
 `;
 }
 
-async function catalogWorkflowPath(cwd: string, name: string): Promise<string | undefined> {
-  return (await listProjectWorkflowCatalog(cwd)).find(entry => entry.name === name)?.entryPath;
+function resolveWorkflowSource(
+  cwd: string,
+  source: WorkflowVisualizationSource,
+): ResultAsync<string, WorkflowSourceFailure> {
+  return new ResultAsync(source.kind === "catalog"
+    ? catalogWorkflowPath(cwd, source.name)
+    : workspaceWorkflowPath(cwd, source.path));
 }
 
-async function workspaceWorkflowPath(cwd: string, path: string): Promise<string | undefined> {
-  if (!isWorkflowFile(path)) return undefined;
+async function catalogWorkflowPath(cwd: string, name: string): Promise<Result<string, WorkflowSourceFailure>> {
+  if (!workflowCatalogName.test(name)) return err(workflowSourceFailure("not-found"));
+  const base = resolve(cwd);
+  const root = join(base, ".acpus", "workflows");
+  let realRoot: string;
+  try {
+    const realBase = await realpath(base);
+    realRoot = await realpath(root);
+    if (!isContainedPath(realBase, realRoot)) {
+      return err(workflowSourceFailure("outside-workspace"));
+    }
+  } catch (error) {
+    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
+    throw error;
+  }
+
+  const workflow = join(root, name, "workflow.ts");
+  try {
+    const [info, realWorkflow] = await Promise.all([stat(workflow), realpath(workflow)]);
+    if (!info.isFile()) return err(workflowSourceFailure("not-file"));
+    return isContainedPath(realRoot, realWorkflow)
+      ? ok(workflow)
+      : err(workflowSourceFailure("outside-workspace"));
+  } catch (error) {
+    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
+    throw error;
+  }
+}
+
+async function workspaceWorkflowPath(cwd: string, path: string): Promise<Result<string, WorkflowSourceFailure>> {
+  if (!isWorkflowFile(path)) return err(workflowSourceFailure("unsupported-extension"));
   const base = resolve(cwd);
   const candidate = resolveWorkspacePath(base, path);
-  if (!candidate) return undefined;
+  if (!candidate) return err(workflowSourceFailure("outside-workspace"));
   try {
     const [realBase, realCandidate, candidateStat] = await Promise.all([
       realpath(base),
       realpath(candidate),
       stat(candidate),
     ]);
-    return candidateStat.isFile() && isContainedPath(realBase, realCandidate) ? candidate : undefined;
+    if (!candidateStat.isFile()) return err(workflowSourceFailure("not-file"));
+    return isContainedPath(realBase, realCandidate)
+      ? ok(candidate)
+      : err(workflowSourceFailure("outside-workspace"));
   } catch (error) {
-    if (isMissingPathError(error)) return undefined;
+    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
     throw error;
   }
 }
@@ -185,8 +220,7 @@ async function workspaceWorkflowPath(cwd: string, path: string): Promise<string 
 function resolveWorkspacePath(base: string, path: string): string | undefined {
   if (isAbsolute(path) || path.includes("\0")) return undefined;
   const resolved = resolve(base, path || ".");
-  const rel = relative(base, resolved);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)) ? resolved : undefined;
+  return isContainedPath(base, resolved) ? resolved : undefined;
 }
 
 function isWorkflowFile(path: string): boolean {
@@ -232,4 +266,13 @@ function isMissingPathError(error: unknown): boolean {
 
 function workflowBrowseFailure(reason: WorkflowBrowseFailure["reason"], message: string): WorkflowBrowseFailure {
   return { type: "workflow-browse-invalid", reason, message };
+}
+
+function workflowSourceFailure(reason: WorkflowSourceFailure["reason"]): WorkflowSourceFailure {
+  return {
+    type: "workflow-source-invalid",
+    reason,
+    phase: "source",
+    message: "Workflow source was not found.",
+  };
 }

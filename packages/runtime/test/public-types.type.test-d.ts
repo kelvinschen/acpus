@@ -16,7 +16,11 @@ import type {
   RunDynamicNodeInstance,
   RunNodeProgress,
   RunInspectionEmission,
+  RunInspectionAgentExecutionDocument,
+  RunInspectionAgentExecutionToolCall,
   RunInspectionAction,
+  RunInspectionContext,
+  RunInspectionControl,
   RunInspectionDelta,
   RunInspectionDecisionRunSummary,
   RunInspectionDetailedFailure,
@@ -29,6 +33,7 @@ import type {
   RunInspectionRunSummary,
   RunInspectionSnapshot,
   RunInspectionScopeState,
+  RunInspectionStatus,
   RunInspectionTargetDetailsDocument,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
@@ -43,6 +48,7 @@ import type {
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimePersistence,
+  RunVisualizationSnapshot,
   RuntimeConfiguration,
   RuntimeConfigurationFailure,
   AgentHostPolicy,
@@ -77,7 +83,7 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
-  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<{ run: RunDetails; overlay: WorkflowVisualizationOverlay } | undefined>>();
+  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunVisualizationSnapshot | undefined>>();
   expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure>>();
   expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>>();
   expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>>();
@@ -218,10 +224,24 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<RunInspectionRevision>().toMatchTypeOf<string>();
   expectTypeOf<string>().not.toMatchTypeOf<RunInspectionRevision>();
   expectTypeOf<Extract<RunInspectionQuery, { mode: "timeline" }>["page"]>().toEqualTypeOf<{ limit?: number; before?: string } | undefined>();
+  expectTypeOf<Extract<RunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<{
+    runId: string;
+    mode: "execution";
+    target: string;
+    context?: RunInspectionContext;
+  }>();
   expectTypeOf<FollowRunInspectionQuery["after"]>().toEqualTypeOf<RunInspectionRevision | undefined>();
+  expectTypeOf<Extract<FollowRunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<never>();
   expectTypeOf<Extract<RunInspectionTargetSummaryDocument, { kind: "target" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionTimelineDocument, { kind: "timeline" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionTargetDetailsDocument, { kind: "details" }>["schemaVersion"]>().toEqualTypeOf<2>();
+  expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { kind: "execution" }>["schemaVersion"]>().toEqualTypeOf<2>();
+  expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { available: false }>["reason"]>()
+    .toEqualTypeOf<"not-agent" | "not-started">();
+  expectTypeOf<RunInspectionAgentExecutionDocument["summary"]["status"]>().toEqualTypeOf<RunInspectionStatus>();
+  expectTypeOf<RunInspectionAgentExecutionDocument["lastToolCalls"][number]>().toEqualTypeOf<RunInspectionAgentExecutionToolCall>();
+  expectTypeOf<RunInspectionAgentExecutionDocument["recentToolsIncomplete"]>().toEqualTypeOf<boolean>();
+  expectTypeOf<RunInspectionTargetDetailsDocument["availableControls"]>().toEqualTypeOf<RunInspectionControl[]>();
   expectTypeOf<Extract<RunInspectionError, { type: "target-ambiguous" }>>().toMatchTypeOf<{
     runId: string;
     target: string;

@@ -217,7 +217,7 @@ describe("CLI result output contracts", () => {
     expect(writeResult({
       ok: true,
       phase: "doctor",
-      message: "Doctor checks passed.",
+      message: "Doctor checks passed with warnings.",
       persistence: { path: "/home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef" },
       checks: [
         { status: "ok", area: "workspace", message: "Workspace resolved." },
@@ -226,7 +226,7 @@ describe("CLI result output contracts", () => {
     }, "text", { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
-      "Doctor checks passed.",
+      "Doctor checks passed with warnings.",
       "Persistence: /home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef",
       "ok    workspace  Workspace resolved.",
       "warn  store      Runtime store needs attention.",
@@ -239,7 +239,7 @@ describe("CLI result output contracts", () => {
     const report = {
       ok: true,
       phase: "doctor",
-      message: "Doctor checks passed.",
+      message: "Doctor checks passed with warnings.",
       persistence: { path: "/home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef" },
       checks: [
         { status: "ok", area: "workspace", message: "Workspace resolved." },
@@ -247,7 +247,7 @@ describe("CLI result output contracts", () => {
       ],
     } satisfies CliResult;
     const plain = [
-      "Doctor checks passed.",
+      "Doctor checks passed with warnings.",
       "Persistence: /home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef",
       "ok    workspace  Workspace resolved.",
       "warn  store      Runtime store needs attention.",
@@ -260,7 +260,7 @@ describe("CLI result output contracts", () => {
       const stderr = new TtyCaptureStream();
       expect(writeResult(report, "text", { stdout, stderr }, 0)).toBe(0);
       expect(stdout.text).toBe([
-        "\u001b[32mDoctor checks passed.\u001b[0m",
+        "\u001b[32mDoctor checks passed with warnings.\u001b[0m",
         "\u001b[36mPersistence:\u001b[0m \u001b[1m/home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef\u001b[0m",
         "\u001b[32mok  \u001b[0m  \u001b[36mworkspace\u001b[0m  Workspace resolved.",
         "\u001b[33mwarn\u001b[0m  \u001b[36mstore    \u001b[0m  Runtime store needs attention.",

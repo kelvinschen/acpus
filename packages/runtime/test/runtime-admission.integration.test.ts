@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { getRun, getRunInspection, listRuns, tryNormalizeWorkflowInput } from "@acpus/runtime";
@@ -373,105 +374,19 @@ describe.concurrent("runtime admission use cases", () => {
 
   it("loads package task source without ambient development conditions", async () => {
     const tsxImport = await import.meta.resolve("tsx");
-    const coreSourceURL = new URL("../../core/src/index.ts", import.meta.url).href;
     const sourceResolverImport = sourcePackageResolverImport({
       "@acpus/loader": new URL("../../loader/src/index.ts", import.meta.url).href,
     });
-    const script = `
-      import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-      import { tmpdir } from "node:os";
-      import { join } from "node:path";
-      import { executeTaskNode } from ${JSON.stringify(new URL("../src/execution/task-executor.ts", import.meta.url).href)};
-
-      const workspace = await mkdtemp(join(tmpdir(), "acpus-package-loader-"));
-      try {
-        const nodeModules = join(workspace, "node_modules");
-        const packageDir = join(nodeModules, "fallback-task-package");
-        await mkdir(packageDir, { recursive: true });
-        await writeFile(join(packageDir, "package.json"), JSON.stringify({
-          name: "fallback-task-package",
-          type: "module",
-          exports: {
-            "./task": {
-              development: "./task.ts",
-              default: "./dist/missing.js",
-            },
-            "./throwing": {
-              development: "./task.ts",
-              default: "./throwing.js",
-            },
-          },
-        }));
-        await writeFile(join(packageDir, "task.ts"), [
-          ${JSON.stringify(`import { task, z } from ${JSON.stringify(coreSourceURL)};`)},
-          "export const fallbackTask = task.define({",
-          "  inputSchema: z.object({ value: z.string() }),",
-          "  exec: async ({ input }) => ({ ok: true, value: 'dev:' + input.value }),",
-          "});",
-        ].join("\\n"));
-        await writeFile(join(packageDir, "throwing.js"), "throw new Error('default exploded');\\n");
-        await writeFile(join(workspace, "workflow.ts"), "");
-        const execution = await executeTaskNode({
-          id: "fallback",
-          kind: "task",
-          run: {
-            input: {
-              value: { kind: "literal", value: "loaded" },
-            },
-            target: {
-              kind: "module",
-              specifier: "fallback-task-package/task",
-              exportName: "fallbackTask",
-              referrer: { path: "workflow.ts" },
-            },
-          },
-        }, {}, {
-          cwd: workspace,
-          runId: "run_1",
-          store: { getRunDir: () => join(workspace, ".test-runtime", "runs", "run_1"), registerArtifact: () => {}, writeExecutionMetadata: () => {} },
-        });
-        if (execution.isErr()) throw new Error(execution.error.message);
-        const output = execution.value;
-        if (output.value !== "dev:loaded") throw new Error("development export fallback was not used");
-        let masked = false;
-        try {
-          const throwingExecution = await executeTaskNode({
-            id: "throwing",
-            kind: "task",
-            run: {
-              input: {
-                value: { kind: "literal", value: "loaded" },
-              },
-              target: {
-                kind: "module",
-                specifier: "fallback-task-package/throwing",
-                exportName: "fallbackTask",
-                referrer: { path: "workflow.ts" },
-              },
-            },
-          }, {}, {
-            cwd: workspace,
-            runId: "run_2",
-            store: { getRunDir: () => join(workspace, ".test-runtime", "runs", "run_2"), registerArtifact: () => {}, writeExecutionMetadata: () => {} },
-          });
-          if (throwingExecution.isErr()) {
-            if (!throwingExecution.error.message.includes("default exploded")) throw new Error(throwingExecution.error.message);
-          } else {
-            masked = true;
-          }
-        } catch (error) {
-          if (!String(error instanceof Error ? error.message : error).includes("default exploded")) throw error;
-        }
-        if (masked) throw new Error("development fallback masked a module evaluation error");
-      } finally {
-        await rm(workspace, { recursive: true, force: true });
-      }
-    `;
-
     const env: NodeJS.ProcessEnv = { ...process.env, NODE_NO_WARNINGS: "1" };
     delete env.NODE_OPTIONS;
     try {
-      await exec(process.execPath, ["--import", tsxImport, "--import", sourceResolverImport, "--eval", script], { cwd: process.cwd(), env });
+      await exec(process.execPath, [
+        "--import",
+        tsxImport,
+        "--import",
+        sourceResolverImport,
+        fileURLToPath(new URL("./fixtures/package-loader-subprocess.ts", import.meta.url)),
+      ], { cwd: process.cwd(), env });
     } catch (error) {
       const failed = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
       throw new Error([

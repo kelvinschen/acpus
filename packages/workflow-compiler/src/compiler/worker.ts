@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import type { WorkflowIR } from "@acpus/core/ir";
+import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
 import { runProcess, type ProcessResult } from "./process.js";
 
@@ -29,25 +29,37 @@ export type CompileWorkerEnvelope =
 
 type CompletedProcess = Extract<ProcessResult, { ok: true }>;
 
+type CompileWorkflowOptions = {
+  dependencyRoot?: string;
+  expectedSourceDigest: string;
+};
+
 export function compileWorkflow(
   entry: string,
   sourceRoot: string,
   scratchDir: string,
-  dependencyRoot = sourceRoot,
+  options: CompileWorkflowOptions,
 ): ResultAsync<CompiledWorkflowModule, CompileWorkerFailure> {
-  return new ResultAsync(compileWorkflowResult(entry, sourceRoot, scratchDir, dependencyRoot));
+  return new ResultAsync(compileWorkflowResult(entry, sourceRoot, scratchDir, options));
 }
 
 async function compileWorkflowResult(
   entry: string,
   sourceRoot: string,
   scratchDir: string,
-  dependencyRoot: string,
+  options: CompileWorkflowOptions,
 ): Promise<Result<CompiledWorkflowModule, CompileWorkerFailure>> {
   const out = join(scratchDir, "compile-result.json");
   const isSourceWorker = import.meta.url.endsWith(".ts");
   const worker = fileURLToPath(new URL(isSourceWorker ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
-  const args = [worker, entry, out, sourceRoot, dependencyRoot];
+  const args = [
+    worker,
+    entry,
+    out,
+    sourceRoot,
+    options.dependencyRoot ?? sourceRoot,
+    options.expectedSourceDigest,
+  ];
   if (isSourceWorker) {
     args.unshift("--import", await import.meta.resolve("tsx"));
     // Workspace development should compile workflows against live core source.
@@ -73,7 +85,7 @@ async function compileWorkflowResult(
     return err(classifyCompileWorkerResultReadFailure(processResult, out, error));
   }
 
-  return interpretCompileWorkerOutput(processResult, raw);
+  return interpretCompileWorkerOutput(processResult, raw, options.expectedSourceDigest);
 }
 
 export function classifyCompileWorkerResultReadFailure(
@@ -93,7 +105,11 @@ export function classifyCompileWorkerResultReadFailure(
   };
 }
 
-export function interpretCompileWorkerOutput(processResult: CompletedProcess, raw: string): Result<CompiledWorkflowModule, CompileWorkerFailure> {
+export function interpretCompileWorkerOutput(
+  processResult: CompletedProcess,
+  raw: string,
+  expectedSourceDigest: string,
+): Result<CompiledWorkflowModule, CompileWorkerFailure> {
   const envelope = parseCompileWorkerEnvelope(raw, processResult.stdoutTail, processResult.stderrTail);
   if (envelope.isErr()) return err(envelope.error);
   if (processResult.exitCode === 0 && !envelope.value.ok) {
@@ -101,6 +117,9 @@ export function interpretCompileWorkerOutput(processResult: CompletedProcess, ra
   }
   if (processResult.exitCode !== 0 && envelope.value.ok) {
     return err(invalidResult("Workflow compile worker exited unsuccessfully with a success result.", processResult));
+  }
+  if (envelope.value.ok && envelope.value.result.sourceDigest !== expectedSourceDigest) {
+    return err(invalidResult("Workflow compile worker source digest did not match the checked source digest.", processResult));
   }
   return envelope.value.ok ? ok(envelope.value.result) : err(envelope.value.error);
 }
@@ -142,14 +161,34 @@ function isCompiledWorkflowModule(value: unknown): value is CompiledWorkflowModu
 }
 
 function isWorkflowIR(value: unknown): value is WorkflowIR {
-  return isRecord(value)
+  if (!(isRecord(value)
     && hasExactKeys(value, ["irVersion", "name", "agents", "root", "diagnostics"], ["description", "inputSchema"])
     && value.irVersion === 6
     && typeof value.name === "string"
     && (value.description === undefined || typeof value.description === "string")
     && isRecord(value.agents)
     && isRecord(value.root)
-    && Array.isArray(value.diagnostics);
+    && Array.isArray(value.diagnostics))) return false;
+  const ir = value as WorkflowIR;
+  const findings = validateWorkflowIR(ir);
+  const authoritativeFindings = validateWorkflowIR({ ...ir, diagnostics: [] });
+  const authoritative = new Set(authoritativeFindings.map(diagnosticIdentity));
+  if (findings.some(finding => !authoritative.has(diagnosticIdentity(finding)))) return false;
+  const reported = new Set(ir.diagnostics.map(diagnosticIdentity));
+  return authoritativeFindings.every(finding => reported.has(diagnosticIdentity(finding)));
+}
+
+function diagnosticIdentity(diagnostic: DiagnosticIR): string {
+  return JSON.stringify([
+    diagnostic.code,
+    diagnostic.severity,
+    diagnostic.message,
+    diagnostic.path ?? null,
+    diagnostic.source?.file ?? null,
+    diagnostic.source?.line ?? null,
+    diagnostic.source?.column ?? null,
+    diagnostic.hint ?? null,
+  ]);
 }
 
 function isWorkerEnvelopeError(value: unknown): value is CompileWorkflowModuleError | WorkerSystemFailure {
@@ -157,6 +196,7 @@ function isWorkerEnvelopeError(value: unknown): value is CompileWorkflowModuleEr
   if (value.type === "worker-system-failed") return hasExactKeys(value, ["type", "message"]);
   if ([
     "workflow-source-read-failed",
+    "workflow-source-changed",
     "module-import-failed",
     "invalid-default-export",
     "workflow-build-failed",

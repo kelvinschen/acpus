@@ -1,28 +1,41 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import viteConfig from "../vite.config.js";
 
-describe("web Vite chunking", () => {
-  const source = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+type ChunkGroup = {
+  name(id: string): string | null;
+};
 
-  it("splits large third-party UI dependencies into explicit vendor chunks", () => {
-    expect(source).toContain("rolldownOptions");
-    expect(source).toContain("codeSplitting");
-    expect(source).toContain("groups: [{ name: packageChunk }]");
-    expect(source).toContain('return "vendor-react"');
-    expect(source).toContain('return "vendor-radix"');
-    expect(source).toContain('return "vendor-json-view"');
-    expect(source).toContain('return "vendor-icons"');
-    expect(source).toContain('return "vendor-query"');
-    expect(source).toContain('return "vendor"');
+const build = viteConfig.build;
+const output = build?.rolldownOptions?.output as {
+  codeSplitting?: { groups?: ChunkGroup[] };
+} | undefined;
+const chunkName = output?.codeSplitting?.groups?.[0]?.name;
+
+describe("web Vite configuration", () => {
+  it.each([
+    ["React", "/repo/node_modules/react/index.js", "vendor-react"],
+    ["pnpm React", "/repo/node_modules/.pnpm/react@19.1.0/node_modules/react/index.js", "vendor-react"],
+    ["Radix", "/repo/node_modules/@radix-ui/react-dialog/index.js", "vendor-radix"],
+    ["TanStack Query", "/repo/node_modules/@tanstack/react-query/index.js", "vendor-query"],
+    ["icons", "/repo/node_modules/lucide-react/index.js", "vendor-icons"],
+    ["JSON viewer", "/repo/node_modules/react-json-view-lite/index.js", "vendor-json-view"],
+    ["other dependency", "/repo/node_modules/other/index.js", "vendor"],
+    ["application source", "/repo/src/client/app.tsx", null],
+  ])("assigns %s modules to the intended chunk", (_label, id, expected) => {
+    expect(chunkName).toBeTypeOf("function");
+    expect(chunkName?.(id)).toBe(expected);
   });
 
   it("gives Vite sole ownership of the client output directory", () => {
-    expect(source).toContain('outDir: "../../dist/client"');
-    expect(source).toContain("emptyOutDir: true");
+    expect(build).toMatchObject({
+      outDir: "../../dist/client",
+      emptyOutDir: true,
+    });
   });
 
-  it("does not proxy the client api.ts module as a backend request", () => {
-    expect(source).toContain('"/api/": "http://localhost:4517"');
-    expect(source).not.toContain('"/api": "http://localhost:4517"');
+  it("proxies backend routes without intercepting the client api module", () => {
+    expect(viteConfig.server?.proxy).toEqual({
+      "/api/": "http://localhost:4517",
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { err } from "neverthrow";
@@ -56,6 +56,59 @@ describe("task executor artifacts", () => {
 
       await expect(executeTaskNode(node, {}, options))
         .resolves.toEqual({ before: path, after: path });
+    });
+  });
+
+  it("rejects artifact.path after its bound file is replaced at the same path", async () => {
+    await withTaskExecutorWorkspace(async ({ workspace, runtimeRunDir, taskOptions }) => {
+      const runId = "run_replaced_input_path";
+      const runDir = runtimeRunDir(runId);
+      const ready = join(workspace, "path-ready");
+      const release = join(workspace, "path-release");
+      const artifactId = "artifact_input";
+      const inputPath = join(runDir, "artifacts", "input.txt");
+      const options = taskOptions(runId);
+      await mkdir(join(runDir, "artifacts"), { recursive: true });
+      await writeFile(inputPath, "original\n");
+      options.store.getArtifact = () => ({
+        id: artifactId,
+        runId,
+        nodeKey: "produce",
+        attempt: 1,
+        mediaType: "text/plain",
+        digest: "sha256:test",
+        size: 9,
+        path: inputPath,
+      });
+      const execution = executeTaskNode(
+        inlineTask("replaced_input_path", barrierTaskSource(
+          ready,
+          release,
+          "return artifact.path(input.file);",
+        ), {
+          input: {
+            file: {
+              kind: "object",
+              fields: {
+                kind: { kind: "literal", value: "artifact" },
+                uri: { kind: "literal", value: `artifact://${runId}/${artifactId}` },
+              },
+            },
+          },
+        }),
+        {},
+        options,
+      );
+
+      await waitForPath(ready);
+      await rename(inputPath, `${inputPath}.opened`);
+      await writeFile(inputPath, "original\n");
+      await writeFile(release, "continue\n");
+
+      await expect(execution).rejects.toMatchObject({
+        name: "TaskProcessSystemError",
+      });
+      await expect(readFile(inputPath, "utf8")).resolves.toBe("original\n");
     });
   });
 
@@ -124,6 +177,35 @@ describe("task executor artifacts", () => {
     });
   });
 
+  it("does not write an artifact into a same-path replacement run directory", async () => {
+    await withTaskExecutorWorkspace(async ({ workspace, runtimeRunDir, taskOptions }) => {
+      const runId = "run_replaced_artifact_write";
+      const runDir = runtimeRunDir(runId);
+      const ready = join(workspace, "write-ready");
+      const release = join(workspace, "write-release");
+      const options = taskOptions(runId);
+      const execution = executeTaskNode(
+        inlineTask("replaced_artifact_write", barrierTaskSource(
+          ready,
+          release,
+          "return artifact.write('result.txt', 'result');",
+        )),
+        {},
+        options,
+      );
+
+      await waitForPath(ready);
+      await rename(runDir, `${runDir}.opened`);
+      await mkdir(runDir);
+      await writeFile(release, "continue\n");
+
+      await expect(execution).rejects.toMatchObject({
+        name: "TaskProcessSystemError",
+      });
+      await expect(readdir(runDir)).resolves.toEqual([]);
+    });
+  });
+
   it("rejects artifact writes after scheduler cancellation", async () => {
     await withTaskExecutorWorkspace(async ({ taskOptions }) => {
       const controller = new AbortController();
@@ -189,3 +271,28 @@ describe("task executor artifacts", () => {
     });
   });
 });
+
+function barrierTaskSource(ready: string, release: string, action: string): string {
+  return [
+    "async ({ input, artifact }) => {",
+    "  const fs = await import('node:fs/promises');",
+    `  await fs.writeFile(${JSON.stringify(ready)}, 'ready');`,
+    `  while (!await fs.access(${JSON.stringify(release)}).then(() => true, () => false)) {`,
+    "    await new Promise(resolve => setTimeout(resolve, 5));",
+    "  }",
+    `  ${action}`,
+    "}",
+  ].join("\n");
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  }
+  throw new Error(`Timed out waiting for '${path}'.`);
+}

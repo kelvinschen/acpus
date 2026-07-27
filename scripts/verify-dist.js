@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, matchesGlob, relative } from "node:path";
+import { dirname, join, matchesGlob, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { requestDaemonShutdown } from "@acpus/runtime";
@@ -22,9 +22,14 @@ const publishedPackageNames = [
   "acpus",
 ];
 
-const packages = await verifyPackages();
-await verifyPackedWorkflowCompiler(packages);
-await verifyPackedCli(packages);
+const artifactsRoot = await mkdtemp(join(tmpdir(), "acpus-packed-artifacts-"));
+try {
+  const packages = await packPublishedPackages(artifactsRoot);
+  await verifyPackedWorkflowCompiler(packages);
+  await verifyPackedCli(packages);
+} finally {
+  await rm(artifactsRoot, { recursive: true, force: true });
+}
 
 const workspace = await mkdtemp(join(tmpdir(), "acpus-dist-smoke-"));
 
@@ -54,7 +59,6 @@ try {
     ok: true,
     phase: "run",
     kind: "done",
-    name: "cli-concurrency-short-task",
     status: "completed",
     output: { ok: true },
   });
@@ -68,13 +72,13 @@ function pickRunResult(record) {
     ok: record?.ok,
     phase: record?.phase,
     kind: record?.kind,
-    name: record?.run?.name,
     status: record?.run?.status,
+    ...(record?.run?.name === undefined ? {} : { name: record.run.name }),
     ...(record?.output === undefined ? {} : { output: record.output }),
   };
 }
 
-async function verifyPackages() {
+async function packPublishedPackages(destination) {
   const packagesRoot = join(root, "packages");
   const packageDirectories = (await readdir(packagesRoot, { withFileTypes: true }))
     .filter(entry => entry.isDirectory() && existsSync(join(packagesRoot, entry.name, "package.json")))
@@ -88,27 +92,23 @@ async function verifyPackages() {
     packages.push({ packageDirectory, manifest });
   }
   assert.deepEqual(packages.map(({ manifest }) => manifest.name).sort(), publishedPackageNames, "published package inventory changed");
-  for (const { packageDirectory, manifest } of packages) await verifyPackage(packageDirectory, manifest);
-  return packages;
+  const packed = new Map();
+  for (const { packageDirectory, manifest } of packages) {
+    const artifact = await packPackage(packageDirectory, manifest, destination);
+    await verifyPackage(packageDirectory, manifest, artifact.files);
+    assert.equal(packed.has(manifest.name), false, `duplicate published package: ${manifest.name}`);
+    packed.set(manifest.name, { manifest, tarball: artifact.tarball });
+  }
+  return packed;
 }
 
 async function verifyPackedWorkflowCompiler(packages) {
   const workspace = await mkdtemp(join(tmpdir(), "acpus-packed-consumer-"));
   try {
-    const tarballsDirectory = join(workspace, "tarballs");
     const consumerDirectory = join(workspace, "consumer");
-    await mkdir(tarballsDirectory);
     await mkdir(consumerDirectory);
 
-    const packagesByName = new Map(packages.map(pkg => [pkg.manifest.name, pkg]));
-    const packageNames = localDependencyClosure("@acpus/workflow-compiler", packagesByName);
-    const tarballs = new Map();
-    for (const name of packageNames) {
-      const pkg = packagesByName.get(name);
-      assert.ok(pkg, `packed smoke dependency is not publishable: ${name}`);
-      tarballs.set(name, await pnpmPack(pkg.packageDirectory, tarballsDirectory));
-    }
-
+    const tarballs = packedDependencyClosure("@acpus/workflow-compiler", packages);
     const fileSpecs = Object.fromEntries([...tarballs].map(([name, tarball]) => [
       name,
       localFileSpec(consumerDirectory, tarball),
@@ -181,10 +181,7 @@ assert.ok(checked.error.diagnostics.some(diagnostic => diagnostic.code === "TS23
 `);
 
     await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
-    const lockfile = await readFile(join(consumerDirectory, "pnpm-lock.yaml"), "utf8");
-    for (const tarball of tarballs.values()) {
-      assert.ok(lockfile.includes(tarball.split(/[\\/]/).at(-1)), `consumer lockfile did not use local tarball: ${tarball}`);
-    }
+    await assertConsumerUsesTarballs(consumerDirectory, tarballs);
     await execFileAsync(process.execPath, [join(consumerDirectory, "smoke.mjs")], {
       cwd: consumerDirectory,
       env: smokeEnvironment(),
@@ -197,19 +194,10 @@ assert.ok(checked.error.diagnostics.some(diagnostic => diagnostic.code === "TS23
 async function verifyPackedCli(packages) {
   const workspace = await mkdtemp(join(tmpdir(), "acpus-packed-cli-"));
   try {
-    const tarballsDirectory = join(workspace, "tarballs");
     const consumerDirectory = join(workspace, "consumer");
-    await mkdir(tarballsDirectory);
     await mkdir(consumerDirectory);
 
-    const packagesByName = new Map(packages.map(pkg => [pkg.manifest.name, pkg]));
-    const packageNames = localDependencyClosure("acpus", packagesByName);
-    const tarballs = new Map();
-    for (const name of packageNames) {
-      const pkg = packagesByName.get(name);
-      assert.ok(pkg, `packed CLI dependency is not publishable: ${name}`);
-      tarballs.set(name, await pnpmPack(pkg.packageDirectory, tarballsDirectory));
-    }
+    const tarballs = packedDependencyClosure("acpus", packages);
     const fileSpecs = Object.fromEntries([...tarballs].map(([name, tarball]) => [
       name,
       localFileSpec(consumerDirectory, tarball),
@@ -222,6 +210,7 @@ async function verifyPackedCli(packages) {
     }, null, 2)}\n`);
     await writePnpmWorkspace(consumerDirectory, fileSpecs);
     await runPnpm(["install", "--ignore-scripts", "--no-frozen-lockfile", "--reporter=append-only"], consumerDirectory);
+    await assertConsumerUsesTarballs(consumerDirectory, tarballs);
 
     const cliEntry = join(consumerDirectory, "node_modules", "acpus", "dist", "cli.js");
     const homeDirectory = join(consumerDirectory, "home");
@@ -236,11 +225,11 @@ async function verifyPackedCli(packages) {
     const help = await runCli(["--help"]);
     assert.match(help.stdout, /Usage: acpus/u);
     const version = await runCli(["--version"]);
-    assert.equal(version.stdout.trim(), packagesByName.get("acpus").manifest.version);
+    assert.equal(version.stdout.trim(), packages.get("acpus").manifest.version);
 
     const doctor = JSON.parse((await runCli(["doctor", "--json"])).stdout);
     assert.equal(doctor.ok, true);
-    assert.equal(doctor.authoring.cli.version, packagesByName.get("acpus").manifest.version);
+    assert.equal(doctor.authoring.cli.version, packages.get("acpus").manifest.version);
     assert.ok(doctor.authoring.cli.packageRoot.startsWith(consumerDirectory));
     assert.equal(doctor.authoring.skills.bundled.status, "aligned");
     for (const authority of Object.values(doctor.authoring.imports)) {
@@ -250,13 +239,77 @@ async function verifyPackedCli(packages) {
     }
 
     const examplesRoot = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "workflows", "examples");
-    for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const workflow = join(examplesRoot, entry.name, "workflow.ts");
-      if (!existsSync(workflow)) continue;
-      const checked = JSON.parse((await runCli(["workflow", "check", workflow, "--json"])).stdout);
-      assert.equal(checked.ok, true, `packed skill example failed: ${entry.name}`);
-    }
+    const workflowSmoke = join(consumerDirectory, "skill-workflows-smoke.mjs");
+    await writeFile(workflowSmoke, `import assert from "node:assert/strict";
+import { existsSync, realpathSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const acpusRoot = resolve("node_modules/acpus");
+const acpusRequire = createRequire(realpathSync(join(acpusRoot, "package.json")));
+const compilerEntry = acpusRequire.resolve("@acpus/workflow-compiler");
+const coreIrEntry = acpusRequire.resolve("@acpus/core/ir");
+const { prepareWorkflow } = await import(pathToFileURL(compilerEntry));
+const { walkNodes } = await import(pathToFileURL(coreIrEntry));
+
+const examplesRoot = join(acpusRoot, "skills/acpus/workflows/examples");
+const examples = (await readdir(examplesRoot, { withFileTypes: true }))
+  .filter(entry => entry.isDirectory() && existsSync(join(examplesRoot, entry.name, "workflow.ts")))
+  .map(entry => ({ name: entry.name, workflow: join(examplesRoot, entry.name, "workflow.ts") }))
+  .sort((left, right) => left.name.localeCompare(right.name));
+assert.ok(examples.length > 0, "packed CLI contains no official workflow examples");
+
+const coveredNodeKinds = new Set();
+for (const example of examples) {
+  const prepared = await prepareWorkflow({ workflow: example.workflow, cwd: process.cwd() });
+  assert.deepEqual(prepared.ir.diagnostics, [], \`packed skill example failed: \${example.name}\`);
+  for (const { node } of walkNodes(prepared.ir.root)) coveredNodeKinds.add(node.kind);
+}
+assert.deepEqual([...coveredNodeKinds].sort(), [
+  "agent",
+  "assert",
+  "fanout",
+  "if",
+  "loop",
+  "parallel",
+  "signal",
+  "switch",
+  "task",
+], "packed official examples do not cover every workflow node kind");
+
+const deepResearch = await prepareWorkflow({
+  workflow: join(acpusRoot, "skills/acpus/workflows/library/deep-research/workflow.ts"),
+  cwd: process.cwd(),
+});
+assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow failed");
+`);
+    await execFileAsync(process.execPath, [workflowSmoke], {
+      cwd: consumerDirectory,
+      env: smokeEnvironment(),
+    });
+
+    const representativeWorkflow = join(examplesRoot, "typed-loop-state", "workflow.ts");
+    const checked = JSON.parse((await runCli(["workflow", "check", representativeWorkflow, "--json"])).stdout);
+    assert.equal(checked.ok, true, "packed CLI workflow check failed");
+
+    const visualizationPath = join(consumerDirectory, "workflow-viz.html");
+    await runCli(["workflow", "viz", representativeWorkflow, "--out", visualizationPath]);
+    const visualizationHtml = await readFile(visualizationPath, "utf8");
+    const marker = "window.__ACPUS_WORKFLOW_VIZ__=";
+    const bundleStart = visualizationHtml.indexOf(marker);
+    const bundleJsonStart = bundleStart + marker.length;
+    const bundleJsonEnd = visualizationHtml.indexOf(";\n</script>", bundleJsonStart);
+    assert.ok(bundleStart >= 0 && bundleJsonEnd >= 0, "packed CLI HTML visualization has no embedded bundle");
+    const visualization = JSON.parse(visualizationHtml.slice(bundleJsonStart, bundleJsonEnd));
+    assert.equal(visualization.workflow.name, "typed-loop-state");
+    assert.equal(visualization.graph.mode, "static");
+    assert.ok(
+      visualization.graph.nodes.some(node => node.id === "collect" && node.kind === "loop"),
+      "packed CLI HTML visualization omitted the workflow graph",
+    );
+    assert.match(visualization.sourceGraphDigest, /^sha256:[a-f0-9]{64}$/u);
 
     const installed = await runCli(["skill", "install", "--project", "--agent", "universal,claude"]);
     assert.match(installed.stdout, /installed\s+universal/u);
@@ -300,28 +353,61 @@ async function verifyPackedCli(packages) {
   }
 }
 
-function localDependencyClosure(rootName, packagesByName) {
-  const names = new Set();
+function packedDependencyClosure(rootName, packages) {
+  const closure = new Map();
   const pending = [rootName];
   while (pending.length > 0) {
     const name = pending.pop();
-    if (names.has(name)) continue;
-    const pkg = packagesByName.get(name);
+    if (closure.has(name)) continue;
+    const pkg = packages.get(name);
     assert.ok(pkg, `packed smoke root is not publishable: ${name}`);
-    names.add(name);
-    for (const dependency of Object.keys(pkg.manifest.dependencies ?? {})) {
-      if (packagesByName.has(dependency)) pending.push(dependency);
+    closure.set(name, pkg.tarball);
+    for (const [dependency, specifier] of Object.entries(pkg.manifest.dependencies ?? {})) {
+      if (packages.has(dependency)) pending.push(dependency);
+      else assert.ok(
+        typeof specifier !== "string" || !specifier.startsWith("workspace:"),
+        `${name}: workspace dependency is not publishable: ${dependency}`,
+      );
     }
   }
-  return [...names].sort();
+  return new Map([...closure].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-async function pnpmPack(packageDirectory, destination) {
-  const before = new Set(await readdir(destination));
-  await runPnpm(["pack", "--pack-destination", destination], packageDirectory);
-  const added = (await readdir(destination)).filter(file => file.endsWith(".tgz") && !before.has(file));
-  assert.equal(added.length, 1, `${packageDirectory}: pnpm pack produced ${added.length} tarballs`);
-  return join(destination, added[0]);
+async function packPackage(packageDirectory, manifest, destination) {
+  const { stdout } = await runPnpm(["pack", "--json", "--pack-destination", destination], packageDirectory);
+  const report = JSON.parse(stdout);
+  const name = manifest.name ?? packageDirectory;
+  assert.equal(report?.name, manifest.name, `${name}: pnpm pack returned a different package name`);
+  assert.equal(report?.version, manifest.version, `${name}: pnpm pack returned a different package version`);
+  assert.equal(typeof report?.filename, "string", `${name}: pnpm pack did not return a tarball path`);
+  assert.ok(Array.isArray(report?.files), `${name}: pnpm pack did not return a file inventory`);
+  assert.ok(report.files.every(file => file && typeof file.path === "string"), `${name}: pnpm pack returned an invalid file inventory`);
+  const tarball = resolve(packageDirectory, report.filename);
+  assert.equal(resolve(dirname(tarball)), resolve(destination), `${name}: pnpm pack wrote outside the artifact directory`);
+  assert.ok(existsSync(tarball), `${name}: pnpm pack did not create ${tarball}`);
+  return { tarball, files: report.files };
+}
+
+async function assertConsumerUsesTarballs(consumerDirectory, tarballs) {
+  const { stdout } = await runPnpm(["list", "--json", "--depth", "Infinity"], consumerDirectory);
+  const pending = JSON.parse(stdout);
+  assert.ok(Array.isArray(pending), "pnpm list did not return a dependency graph");
+  const installed = new Set();
+  while (pending.length > 0) {
+    const dependency = pending.pop();
+    if (!dependency || typeof dependency !== "object") continue;
+    if (typeof dependency.from === "string" && typeof dependency.resolved === "string") {
+      installed.add(JSON.stringify([dependency.from, dependency.resolved]));
+    }
+    pending.push(...Object.values(dependency.dependencies ?? {}));
+  }
+  for (const [name, tarball] of tarballs) {
+    const resolution = localFileSpec(consumerDirectory, tarball);
+    assert.ok(
+      installed.has(JSON.stringify([name, resolution])),
+      `consumer did not install ${name} from ${resolution}`,
+    );
+  }
 }
 
 function runPnpm(args, cwd) {
@@ -358,12 +444,9 @@ function localFileSpec(fromDirectory, target) {
   return `file:${path.startsWith(".") ? path : `./${path}`}`;
 }
 
-async function verifyPackage(packageDirectory, manifest) {
+async function verifyPackage(packageDirectory, manifest, files) {
   const name = manifest.name ?? packageDirectory;
-  const { stdout } = await npmPack(packageDirectory);
-  const results = JSON.parse(stdout);
-  assert.equal(results.length, 1, `${name}: npm pack returned ${results.length} results`);
-  const packed = new Set(results[0].files.map(file => normalizePackagePath(file.path)));
+  const packed = new Set(files.map(file => normalizePackagePath(file.path)));
 
   const caches = [...packed].filter(path => path.endsWith(".tsbuildinfo"));
   assert.equal(caches.length, 0, `${name}: packed build cache: ${caches.join(", ")}`);
@@ -380,6 +463,22 @@ async function verifyPackage(packageDirectory, manifest) {
     const path = normalizePackagePath(target);
     assert.ok(existsSync(join(packageDirectory, path)), `${name}: ${field} target is missing: ${target}`);
     assert.ok(packed.has(path), `${name}: ${field} target is not packed: ${target}`);
+  }
+
+  if (name === "@acpus/web") {
+    const declarationPath = "dist/server/static-viz-assets.generated.d.ts";
+    assert.ok(packed.has(declarationPath), `${name}: static visualization declaration is not packed`);
+    const declaration = await readFile(join(packageDirectory, declarationPath), "utf8");
+    assert.ok(
+      Buffer.byteLength(declaration) < 4 * 1024,
+      `${name}: static visualization declaration embeds its asset payload`,
+    );
+    assert.deepEqual(
+      [...declaration.matchAll(/^export declare const (\w+): ([^;]+);$/gmu)]
+        .map(([, identifier, type]) => [identifier, type]),
+      [["staticVizJs", "string"], ["staticVizCss", "string"]],
+      `${name}: static visualization declarations must expose two opaque strings`,
+    );
   }
 
   if (name === "acpus") {
@@ -402,18 +501,11 @@ async function verifyPackage(packageDirectory, manifest) {
     ]) {
       assert.ok(packed.has(path), `${name}: required package path is not packed: ${path}`);
     }
-    for (const { target } of binTargets(manifest.bin)) {
-      const path = normalizePackagePath(target);
-      assert.match(await readFile(join(packageDirectory, path), "utf8"), /^#![^\n]+/, `${name}: CLI bin has no shebang: ${target}`);
-    }
   }
-}
-
-function npmPack(packageDirectory) {
-  const args = ["pack", "--dry-run", "--json", "--ignore-scripts"];
-  return process.platform === "win32"
-    ? execFileAsync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", ...args], { cwd: packageDirectory })
-    : execFileAsync("npm", args, { cwd: packageDirectory });
+  for (const { target } of binTargets(manifest.bin)) {
+    const path = normalizePackagePath(target);
+    assert.match(await readFile(join(packageDirectory, path), "utf8"), /^#![^\n]+/, `${name}: bin has no shebang: ${target}`);
+  }
 }
 
 function packageTargets(manifest) {

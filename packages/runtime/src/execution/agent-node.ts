@@ -1,19 +1,29 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
-import { executeAgentTurn, type AgentBackendFailure, type AgentJsonValue, type AgentToolCallSummary, type AgentTraceEvent, type AgentTurnObservation, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
+import { executeAgentTurn, type AgentBackendFailure, type AgentTraceEvent, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { isArtifactRefCandidate, tryResolveArtifactPath, type ArtifactPathError } from "../artifacts/path.js";
+import {
+  removeRunFile,
+  verifyRunFile,
+  writeRunFile,
+} from "../store/run-file.js";
+import { isArtifactRefCandidate, tryBindArtifactRef, type ArtifactPathError } from "../artifacts/access.js";
 import type { AgentHostPolicy } from "../configuration.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { type EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
 import type { AgentObservationTurnEvidence } from "../observations/log.js";
-import type { RuntimeStore, WriteNodeProgressInput } from "../store/store.js";
+import { createAgentProgressTurn, type AgentProgressTerminalStatus, type AgentProgressTurn } from "../progress/agent.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
 import { schedulerStoreError, throwSchedulerStoreResult } from "../scheduler/store-port.js";
+import { pruneUndefined } from "../stable-json.js";
+import {
+  verifyRunDirectoryToken,
+  type RunDirectoryToken,
+} from "../store/path-fence.js";
+import type { RuntimeStore } from "../store/store.js";
 import {
   buildAgentOutputPrompt,
   buildAgentOutputRepairPrompt,
@@ -24,10 +34,6 @@ import { resolveAgentSessionIdentity } from "./agent-session.js";
 
 const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
-const PROGRESS_FLUSH_INTERVAL_MS = 1_000;
-const PROGRESS_OUTPUT_TAIL_BYTES = 16 * 1024;
-const PROGRESS_TOOL_LIMIT = 3;
-const PROGRESS_DETAIL_EDGE_BYTES = 2 * 1024;
 
 export type AgentNodeFailure =
   | {
@@ -136,17 +142,6 @@ type AgentArtifactRef = {
   mediaType: string;
 };
 
-type AgentProgressObservationState = {
-  intent?: JsonValue;
-  toolOutputs: Map<string, JsonValue>;
-};
-
-type AgentProgressReporter = {
-  state: AgentProgressObservationState;
-  onProgress: (progress: AgentTurnProgress) => void;
-  onObservation: (observation: AgentTurnObservation) => void;
-};
-
 type ObservedAgentTurn = {
   result: AgentTurnResult;
   evidence?: AgentObservationTurnEvidence;
@@ -158,27 +153,43 @@ export function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope, opti
 
 async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Promise<Result<JsonValue, AgentAttemptFailure>> {
   const turns: AgentTurnRecord[] = [];
+  const artifactRun = agentArtifactRun(options);
   let sessionNameForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
   let responseRepairMax: number | null | undefined;
-  let progressObservation: AgentProgressObservationState | undefined;
+  const progressWriter = options.progressWriter ?? options.store;
+  const progressContext = progressWriter
+    && options.runId
+    && options.nodeKey
+    && options.attemptId
+    && options.ownerEpoch !== undefined
+    ? {
+        writer: progressWriter,
+        runId: options.runId,
+        nodeKey: options.nodeKey,
+        nodeId: node.id,
+        attemptId: options.attemptId,
+        attemptNo: options.attemptNo ?? 1,
+        ownerEpoch: options.ownerEpoch,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }
+    : undefined;
+  let activeProgress: AgentProgressTurn | undefined;
   const writeTerminalState = async (
-    status: "completed" | "failed" | "cancelled" | "timed_out",
+    status: AgentProgressTerminalStatus,
     message?: string,
     result?: AgentTurnResult,
-    turn?: number,
   ): Promise<void> => {
-    if (result && turn !== undefined) writeAgentTerminalProgress(node, options, turn, result, progressObservation, status, message);
+    if (result) activeProgress?.publishTerminal(status, result, message);
     await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, responseRepairMax, status, turns, message);
   };
   const finishFailure = async (
     failure: AgentAttemptFailure,
     result?: AgentTurnResult,
-    turn?: number,
   ): Promise<Result<never, AgentAttemptFailure>> => {
     const status = failure.type === "cancelled" ? "cancelled" : failure.type === "timed_out" ? "timed_out" : "failed";
     try {
-      await writeTerminalState(status, failure.message, result, turn);
+      await writeTerminalState(status, failure.message, result);
     } catch (metadataError) {
       throw new AggregateError([failure, metadataError], `Agent node '${node.id}' failed and its terminal metadata could not be persisted.`);
     }
@@ -250,18 +261,16 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
       if (remaining.isErr()) return finishFailure(remaining.error);
-      const progressReporter = createAgentProgressReporter(node, options, turn + 1);
-      progressObservation = progressReporter?.state;
+      activeProgress = progressContext
+        ? createAgentProgressTurn({ ...progressContext, turn: turn + 1 })
+        : undefined;
       const request = {
         ...turnBase,
         prompt,
         ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
         ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
         ...(captureRawDebug ? { captureRawDebug: true } : {}),
-        ...(progressReporter ? {
-          onProgress: progressReporter.onProgress,
-          onObservation: progressReporter.onObservation,
-        } : {}),
+        ...(activeProgress?.callbacks ?? {}),
       } satisfies AgentTurnRequest;
       const observed = await executeObservedAgentTurn(
         node,
@@ -286,6 +295,7 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
           result,
           captureRawDebug,
           observed.evidence,
+          artifactRun,
         );
       } catch (error) {
         if (!isAttemptFenceError(error)) throw error;
@@ -295,32 +305,32 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       turns.push(turnRecord);
       if (options.signal?.aborted) return finishFailure(abortedTurnFailure(result));
       if (result.status === "cancelled") {
-        return finishFailure({ type: "cancelled", message: result.message }, result, turn + 1);
+        return finishFailure({ type: "cancelled", message: result.message }, result);
       }
       if (result.status === "failed" && result.failure.kind === "timeout") {
         const failure = agentNodeFailure(result.failure);
-        return finishFailure({ type: "timed_out", failure, message: failure.message }, result, turn + 1);
+        return finishFailure({ type: "timed_out", failure, message: failure.message }, result);
       }
       if (result.status === "failed") {
         const failure = agentNodeFailure(result.failure);
-        return finishFailure({ type: "failed", failure, message: failure.message }, result, turn + 1);
+        return finishFailure({ type: "failed", failure, message: failure.message }, result);
       }
       if (!node.outputSchema) {
-        await writeTerminalState("completed", undefined, result, turn + 1);
+        await writeTerminalState("completed", undefined, result);
         return ok(result.responseText);
       }
       const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
       const outputProcessing = conformed.isOk() ? conformed.value.outputProcessing : conformed.error.outputProcessing;
       turns[turn] = { ...turns[turn]!, outputProcessing };
       if (conformed.isOk()) {
-        await writeTerminalState("completed", undefined, result, turn + 1);
+        await writeTerminalState("completed", undefined, result);
         return ok(conformed.value.output);
       }
       const rejected = conformed.error;
       turns[turn] = { ...turns[turn]!, failure: { kind: rejected.kind, message: rejected.message } };
       if (turn === maxRepairTurns) {
         const failure: AgentNodeFailure = { origin: "provider", code: rejected.kind, message: rejected.message };
-        return finishFailure({ type: "failed", failure, message: failure.message }, result, turn + 1);
+        return finishFailure({ type: "failed", failure, message: failure.message }, result);
       }
       const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
       if (delayed.isErr()) return finishFailure(delayed.error);
@@ -395,9 +405,9 @@ function renderAgentPrompt(node: AgentNodeIR, scope: EvaluationScope, options: A
       formatTemplateValue: value => {
         if (!isArtifactRefCandidate(value)) return undefined;
         if (!options.store || !options.runId) throw new Error("Agent ArtifactRef interpolation requires runtime store and run id.");
-        const resolved = tryResolveArtifactPath(value, { cwd: options.cwd, runId: options.runId, store: options.store });
+        const resolved = tryBindArtifactRef(value, { cwd: options.cwd, runId: options.runId, store: options.store });
         if (resolved.isErr()) throw resolved.error;
-        return resolved.value;
+        return resolved.value.path;
       },
     });
   } catch (error) {
@@ -457,6 +467,7 @@ async function writeAgentTurnArtifacts(
   result: AgentTurnResult,
   captureRawDebug: boolean,
   evidence?: AgentObservationTurnEvidence,
+  artifactRun?: RunDirectoryToken,
 ): Promise<AgentTurnRecord> {
   const base = agentTurnRecord(turn, result);
   if (!options.store || !options.runId) return base;
@@ -479,12 +490,12 @@ async function writeAgentTurnArtifacts(
   };
   const record: AgentTurnRecord = {
     ...base,
-    turnArtifact: await writeAgentArtifact(options, turn, "json", `${JSON.stringify(turnArtifact, null, 2)}\n`, "application/json"),
-    ...(result.stderr ? { stderrArtifact: await writeAgentArtifact(options, turn, "stderr.log", result.stderr, "text/plain") } : {}),
-    ...(captureRawDebug && result.rawDebug ? { rawAcpDebugArtifact: await writeAgentArtifact(options, turn, "raw-acp.jsonl", result.rawDebug.stdout, "application/x-ndjson") } : {}),
+    turnArtifact: await writeAgentArtifact(options, artifactRun, turn, "json", `${JSON.stringify(turnArtifact, null, 2)}\n`, "application/json"),
+    ...(result.stderr ? { stderrArtifact: await writeAgentArtifact(options, artifactRun, turn, "stderr.log", result.stderr, "text/plain") } : {}),
+    ...(captureRawDebug && result.rawDebug ? { rawAcpDebugArtifact: await writeAgentArtifact(options, artifactRun, turn, "raw-acp.jsonl", result.rawDebug.stdout, "application/x-ndjson") } : {}),
   };
   if (evidence?.trace) {
-    record.traceArtifact = await publishAgentTraceArtifact(options, turn);
+    record.traceArtifact = await publishAgentTraceArtifact(options, artifactRun, turn);
   }
   return record;
 }
@@ -512,204 +523,27 @@ function summaryProjection(summary: AgentTurnSummary): AgentTurnSummaryProjectio
   }) as AgentTurnSummaryProjection;
 }
 
-function createAgentProgressReporter(node: AgentNodeIR, options: AgentExecutorOptions, turn: number): AgentProgressReporter | undefined {
-  const writer = progressTarget(options);
-  if (!writer || !options.runId || !options.nodeKey || !options.attemptId || options.ownerEpoch === undefined) return undefined;
-  const state: AgentProgressObservationState = { toolOutputs: new Map() };
-  let lastFlushAt: number | undefined;
-  let lastSignature = "";
-  return {
-    state,
-    onObservation: observation => updateProgressObservation(state, observation),
-    onProgress: progress => {
-      if (options.signal?.aborted) return;
-      const snapshot = progressSnapshot(node, options, turn, progress, state);
-      const signature = JSON.stringify([snapshot.context, snapshot.tokenUsage, snapshot.tools, snapshot.intent]);
-      const now = Date.now();
-      if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < PROGRESS_FLUSH_INTERVAL_MS) return;
-      lastFlushAt = now;
-      lastSignature = signature;
-      writer.writeNodeProgress(snapshot);
-    },
-  };
-}
-
-function writeAgentTerminalProgress(
-  node: AgentNodeIR,
+async function writeAgentArtifact(
   options: AgentExecutorOptions,
+  run: RunDirectoryToken | undefined,
   turn: number,
-  result: AgentTurnResult,
-  observation: AgentProgressObservationState | undefined,
-  status: "completed" | "failed" | "cancelled" | "timed_out",
-  message?: string,
-): void {
-  if (options.signal?.aborted) return;
-  const writer = progressTarget(options);
-  if (!writer || !options.runId || !options.nodeKey || !options.attemptId || options.ownerEpoch === undefined) return;
-  writer.writeNodeProgress(progressSnapshot(node, options, turn, {
-    responseText: result.responseText,
-    summary: result.summary,
-    updatedAt: new Date().toISOString(),
-  }, observation, status, message ?? `turn ${turn} ${status}`));
-}
-
-function progressTarget(options: AgentExecutorOptions): NodeProgressWriter | undefined {
-  return options.progressWriter ?? options.store;
-}
-
-function progressSnapshot(
-  node: AgentNodeIR,
-  options: AgentExecutorOptions,
-  turn: number,
-  progress: AgentTurnProgress,
-  observation?: AgentProgressObservationState,
-  status = "running",
-  message = `turn ${turn}`,
-): WriteNodeProgressInput {
-  if (!options.attemptId || options.ownerEpoch === undefined) throw new Error("Agent progress requires scheduler attempt ownership.");
-  const output = outputTail(progress.responseText);
-  return pruneUndefined({
-    runId: options.runId,
-    nodeKey: options.nodeKey ?? node.id,
-    nodeId: node.id,
-    attemptId: options.attemptId,
-    attemptNo: options.attemptNo ?? 1,
-    ownerEpoch: options.ownerEpoch,
-    kind: "agent",
-    status,
-    message,
-    output,
-    context: progress.summary.context,
-    tokenUsage: progress.summary.tokenUsage,
-    tools: progressTools(progress.summary.tools, turn, observation?.toolOutputs),
-    intent: observation?.intent,
-  }) as WriteNodeProgressInput;
-}
-
-function outputTail(value: string): NonNullable<WriteNodeProgressInput["output"]> | undefined {
-  if (value.length === 0) return undefined;
-  const totalBytes = Buffer.byteLength(value, "utf8");
-  if (totalBytes <= PROGRESS_OUTPUT_TAIL_BYTES) return { tail: value, totalBytes, truncated: false };
-  const chunks: string[] = [];
-  let bytes = 0;
-  for (let index = value.length; index > 0;) {
-    let start = index - 1;
-    const code = value.charCodeAt(start);
-    if (code >= 0xdc00 && code <= 0xdfff && start > 0) start -= 1;
-    const char = value.slice(start, index);
-    const nextBytes = Buffer.byteLength(char, "utf8");
-    if (bytes + nextBytes > PROGRESS_OUTPUT_TAIL_BYTES) break;
-    chunks.push(char);
-    bytes += nextBytes;
-    index = start;
-  }
-  return { tail: chunks.reverse().join(""), totalBytes, truncated: true };
-}
-
-function utf8Head(value: string, maxBytes: number): string {
-  let end = 0;
-  let bytes = 0;
-  for (const character of value) {
-    const next = Buffer.byteLength(character);
-    if (bytes + next > maxBytes) break;
-    bytes += next;
-    end += character.length;
-  }
-  return value.slice(0, end);
-}
-
-function utf8Tail(value: string, maxBytes: number): string {
-  let start = value.length;
-  let bytes = 0;
-  while (start > 0) {
-    let characterStart = start - 1;
-    const code = value.charCodeAt(characterStart);
-    if (code >= 0xdc00 && code <= 0xdfff && characterStart > 0) characterStart -= 1;
-    const character = value.slice(characterStart, start);
-    const next = Buffer.byteLength(character);
-    if (bytes + next > maxBytes) break;
-    bytes += next;
-    start = characterStart;
-  }
-  return value.slice(start);
-}
-
-function progressTools(
-  tools: AgentTurnSummary["tools"],
-  turn: number,
-  outputs?: ReadonlyMap<string, JsonValue>,
-): JsonValue {
-  return {
-    turn,
-    totalToolCallCount: tools.totalToolCallCount,
-    lastCalls: tools.calls.slice(-PROGRESS_TOOL_LIMIT).map(call => progressToolCall(call, outputs?.get(call.toolCallId))),
-  };
-}
-
-function progressToolCall(call: AgentToolCallSummary, output?: JsonValue): JsonValue {
-  return pruneUndefined({
-    toolCallId: call.toolCallId,
-    title: call.title,
-    kind: call.kind,
-    toolName: call.toolName,
-    status: call.status,
-    inputPreview: call.input?.preview,
-    output,
-    startedAt: call.startedAt,
-    updatedAt: call.updatedAt,
-    completedAt: call.completedAt,
-  }) as JsonValue;
-}
-
-function updateProgressObservation(state: AgentProgressObservationState, observation: AgentTurnObservation): void {
-  const event = observation.event;
-  if (event.type === "plan") {
-    state.intent = {
-      kind: "plan",
-      value: boundedProgressValue(event.value),
-      updatedAt: event.observedAt,
-    };
-    return;
-  }
-  if (event.type === "message" && event.channel === "thought") {
-    state.intent = {
-      kind: "reported-thought",
-      value: boundedProgressValue(event.content),
-      updatedAt: event.observedAt,
-    };
-    return;
-  }
-  if (event.type !== "tool" || !event.toolCallId) return;
-  const output = event.rawOutput ?? event.content;
-  if (output !== undefined) state.toolOutputs.set(event.toolCallId, boundedProgressValue(output));
-}
-
-function boundedProgressValue(value: AgentJsonValue): JsonValue {
-  const json = JSON.stringify(value);
-  const bytes = Buffer.byteLength(json);
-  if (bytes <= PROGRESS_DETAIL_EDGE_BYTES * 2) return value as JsonValue;
-  return {
-    truncated: true,
-    originalBytes: bytes,
-    head: utf8Head(json, PROGRESS_DETAIL_EDGE_BYTES),
-    tail: utf8Tail(json, PROGRESS_DETAIL_EDGE_BYTES),
-  };
-}
-
-async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, name: string, content: string, mediaType: string): Promise<AgentArtifactRef> {
+  name: string,
+  content: string,
+  mediaType: string,
+): Promise<AgentArtifactRef> {
   if (!options.store || !options.runId) throw new Error("Agent artifact storage requires runtime store and run id.");
   if (!options.attemptId || options.ownerEpoch === undefined) throw new Error("Agent artifact storage requires scheduler attempt ownership.");
-  const runDir = options.store.getRunDir(options.runId);
-  if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
+  if (!run) throw new Error("Agent artifact storage requires an opened run directory.");
   const nodeKey = options.nodeKey ?? "agent";
   const attempt = options.attemptNo ?? 1;
+  const attemptDirectory = agentAttemptDirectory(attempt, options.attemptId);
   const id = `artifact_${randomUUID()}`;
-  const relativePath = join("artifacts", nodeKey, `attempt-${attempt}`, "agent", `turn-${String(turn).padStart(3, "0")}.${name}`);
-  const absolutePath = join(runDir, relativePath);
+  const relativePath = join("artifacts", nodeKey, attemptDirectory, "agent", `turn-${String(turn).padStart(3, "0")}.${name}`);
   const bytes = Buffer.from(content, "utf8");
-  await mkdir(join(runDir, "artifacts", nodeKey, `attempt-${attempt}`, "agent"), { recursive: true, mode: 0o700 });
-  await writeFile(absolutePath, bytes, { mode: 0o600 });
+  const label = `Agent artifact '${id}'`;
+  const file = await writeRunFile({ run, relativePath, bytes, label });
   try {
+    verifyRunFile(run, file, label);
     throwSchedulerStoreResult(options.store.registerArtifact({
       id,
       runId: options.runId,
@@ -721,38 +555,43 @@ async function writeAgentArtifact(options: AgentExecutorOptions, turn: number, n
       digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
       size: bytes.byteLength,
       relativePath,
+      file,
     }));
   } catch (error) {
     try {
-      await rm(absolutePath, { force: true });
+      await removeRunFile(run, file, label);
     } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], `Agent artifact '${id}' registration failed and its unregistered file could not be removed.`);
     }
     throw error;
   }
+  verifyRunFile(run, file, label);
   return { artifactId: id, mediaType };
 }
 
-async function publishAgentTraceArtifact(options: AgentExecutorOptions, turn: number): Promise<AgentArtifactRef> {
+async function publishAgentTraceArtifact(
+  options: AgentExecutorOptions,
+  run: RunDirectoryToken | undefined,
+  turn: number,
+): Promise<AgentArtifactRef> {
   const { store, runId, attemptId, ownerEpoch } = options;
   if (!store || !runId) throw new Error("Agent trace publication requires runtime store and run id.");
   if (!attemptId || ownerEpoch === undefined) throw new Error("Agent trace publication requires scheduler attempt ownership.");
-  const runDir = store.getRunDir(runId);
-  if (!runDir) throw new Error(`Run '${runId}' has no run directory.`);
+  if (!run) throw new Error("Agent trace publication requires an opened run directory.");
+  verifyRunDirectoryToken(run);
   const nodeKey = options.nodeKey ?? "agent";
   const attempt = options.attemptNo ?? 1;
+  const attemptDirectory = agentAttemptDirectory(attempt, attemptId);
   const artifactId = `artifact_${randomUUID()}`;
   const mediaType = "application/x-ndjson";
-  const relativePath = join("artifacts", nodeKey, `attempt-${attempt}`, "agent", `turn-${String(turn).padStart(3, "0")}.trace.jsonl`);
-  const absolutePath = join(runDir, relativePath);
-  await mkdir(join(runDir, "artifacts", nodeKey, `attempt-${attempt}`, "agent"), { recursive: true, mode: 0o700 });
+  const relativePath = join("artifacts", nodeKey, attemptDirectory, "agent", `turn-${String(turn).padStart(3, "0")}.trace.jsonl`);
   const published = await store.observationLog.publishTrace({
     runId,
     attemptId,
     turn,
-    destinationAbsolutePath: absolutePath,
     destinationRelativePath: relativePath,
     register: async trace => {
+      verifyRunDirectoryToken(run);
       throwSchedulerStoreResult(store.registerArtifact({
         id: artifactId,
         runId,
@@ -764,11 +603,27 @@ async function publishAgentTraceArtifact(options: AgentExecutorOptions, turn: nu
         digest: trace.digest,
         size: trace.size,
         relativePath: trace.relativePath,
+        file: trace.file,
       }));
     },
   });
+  verifyRunDirectoryToken(run);
   if (!published) throw new Error(`Agent trace spool for turn ${turn} is missing.`);
   return { artifactId, mediaType };
+}
+
+function agentArtifactRun(options: AgentExecutorOptions): RunDirectoryToken | undefined {
+  if (!options.store || !options.runId) return undefined;
+  const run = options.store.getRunDirectoryToken(options.runId);
+  if (!run) throw new Error(`Run '${options.runId}' has no run directory.`);
+  return run;
+}
+
+function agentAttemptDirectory(attempt: number, attemptId: string): string {
+  if (!/^attempt_[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(attemptId)) {
+    throw new Error(`Agent artifact storage requires a scheduler-issued attempt id, received '${attemptId}'.`);
+  }
+  return join(`attempt-${attempt}`, attemptId);
 }
 
 async function writeAgentAttemptMetadata(
@@ -800,14 +655,6 @@ async function writeAgentAttemptMetadata(
       ...(message ? { message } : {}),
     }) as JsonValue,
   });
-}
-
-function pruneUndefined(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(pruneUndefined);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).map(([key, item]) => [key, pruneUndefined(item)]));
-  }
-  return value;
 }
 
 function delay(ms: number, signal: AbortSignal | undefined, deadline: number | undefined): Promise<Result<void, AgentAttemptFailure>> {

@@ -302,7 +302,7 @@ export function ambiguousTimelineCandidates(details: RunInspectionTargetDetailsD
   ])].sort();
 }
 
-function inspectionSubject(details: RunInspectionTargetDetailsDocument): RunInspectionSubject {
+export function inspectionSubject(details: RunInspectionTargetDetailsDocument): RunInspectionSubject {
   const aggregate = staticAggregate(details);
   const attempt = aggregate ? undefined : selectedAttempt(details);
   const item = attempt
@@ -322,7 +322,7 @@ function inspectionSubject(details: RunInspectionTargetDetailsDocument): RunInsp
   };
 }
 
-function inspectionTargetState(details: RunInspectionTargetDetailsDocument): RunInspectionTargetState {
+export function inspectionTargetState(details: RunInspectionTargetDetailsDocument): RunInspectionTargetState {
   const aggregate = staticAggregate(details);
   const attempt = aggregate ? undefined : selectedAttempt(details);
   const instance = attempt
@@ -344,11 +344,15 @@ function inspectionTargetState(details: RunInspectionTargetDetailsDocument): Run
 }
 
 function selectedAttempt(details: RunInspectionTargetDetailsDocument): RunDynamicAttempt | undefined {
-  if (details.target.kind === "attempt") {
-    return details.attempts.find(attempt => attempt.attemptId === details.target.id);
+  const selectedAttemptId = details.summary.latestAttempt?.attemptId
+    ?? (details.target.kind === "attempt" ? details.target.id : undefined);
+  if (selectedAttemptId) {
+    return details.attempts.find(attempt => attempt.attemptId === selectedAttemptId);
   }
   return [...details.attempts].sort((left, right) =>
-    right.attemptNo - left.attemptNo || right.startedAt.localeCompare(left.startedAt))[0];
+    right.attemptNo - left.attemptNo
+      || right.startedAt.localeCompare(left.startedAt)
+      || right.attemptId.localeCompare(left.attemptId))[0];
 }
 
 function staticAggregate(details: RunInspectionTargetDetailsDocument): boolean {
@@ -485,9 +489,9 @@ function targetActions(
   state: RunInspectionTargetState,
 ): RunInspectionTargetSummaryDocument["availableActions"] {
   if (state.status === "failed" || state.status === "timed_out") {
-    const target = details.summary.nodeKey ?? details.summary.frameKey ?? details.target.id;
+    const retry = details.availableControls.find(control => control.type === "retry");
     return [
-      { kind: "retry", target },
+      ...(retry ? [{ kind: "retry" as const, target: retry.target }] : []),
       { kind: "fork", ...(details.summary.nodeKey ? { target: details.summary.nodeKey } : {}) },
     ];
   }

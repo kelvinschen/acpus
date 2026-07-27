@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeEdgeIds, activeFocus, canStartPan, compositeBadge, compositeStrategy, graphItemZIndex, graphNodeTarget, isPanPastThreshold, normalizeSelections, safeParents, selectionsForActiveRuntime, selectorOptionLabel, toRenderModel } from "../src/graph-renderer.js";
+import { activeEdgeIds, activeFocus, canStartPan, compositeBadge, compositeStrategy, graphItemZIndex, graphNodeTarget, isPanPastThreshold, normalizeSelections, planGraphNavigation, safeParents, selectionsForActiveRuntime, selectorOptionLabel, toRenderModel } from "../src/graph-renderer.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 
 function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
@@ -330,6 +330,79 @@ describe("composite header metadata", () => {
 });
 
 describe("graph viewport interaction helpers", () => {
+  const model = toRenderModel(graphOf({
+    nodes: [
+      node({ id: "task", status: "running" }),
+      node({
+        id: "group",
+        kind: "parallel",
+        detail: { kind: "parallel", branches: [], strategy: "all" },
+        status: "running",
+      }),
+    ],
+    containers: [{
+      id: "scope",
+      nodeId: "group",
+      kind: "scope",
+      label: "scope",
+      path: ["root", "scope"],
+      parentId: "group",
+      status: "running",
+    }],
+  }));
+  const layout = {
+    boxes: new Map([
+      ["task", { id: "task", x: 56, y: 150, width: 488, height: 100 }],
+      ["scope", { id: "scope", x: 106, y: 56, width: 488, height: 288 }],
+    ]),
+  };
+  const viewport = { x: 7, y: 9, scale: 0.5 };
+  const rect = { width: 600, height: 400 };
+  const taskTarget = {
+    renderId: "task",
+    nodeId: "task",
+    label: "task",
+    context: [],
+    displayStatus: "running",
+  };
+
+  it("plans item navigation with one viewport rule and node-only inspection", () => {
+    expect(planGraphNavigation(model, layout, viewport, rect, {
+      type: "navigate-item",
+      renderId: "task",
+    })).toEqual({
+      viewport: { x: 0, y: 0, scale: 1 },
+      inspectionTarget: taskTarget,
+    });
+    expect(planGraphNavigation(model, layout, viewport, rect, {
+      type: "navigate-item",
+      renderId: "scope",
+    })).toEqual({
+      viewport: { x: -50, y: 0, scale: 1 },
+    });
+  });
+
+  it("keeps exact inspection available when layout is missing", () => {
+    const missingLayout = { boxes: new Map() };
+    expect(planGraphNavigation(model, missingLayout, viewport, rect, {
+      type: "navigate-item",
+      renderId: "task",
+    })).toEqual({ inspectionTarget: taskTarget });
+    expect(planGraphNavigation(model, layout, viewport, rect, {
+      type: "navigate-item",
+      renderId: "missing",
+    })).toBeUndefined();
+  });
+
+  it("recenters overview navigation without changing zoom", () => {
+    expect(planGraphNavigation(model, layout, viewport, rect, {
+      type: "recenter",
+      point: { x: 100, y: 50 },
+    })).toEqual({
+      viewport: { x: 250, y: 175, scale: 0.5 },
+    });
+  });
+
   it("allows panning from graph boxes but not interactive controls", () => {
     expect(canStartPan({ closest: () => null })).toBe(true);
     expect(canStartPan({ closest: selector => selector.includes("button") ? {} : null })).toBe(false);

@@ -170,7 +170,7 @@ const rounds = step("rounds").loop({
 return rounds.output;
 ```
 
-`parallel` and `fanout` accept runtime `maxConcurrency`: a positive integer, use only when user explicitly requested (acups already has a default cap limit).
+`parallel` and `fanout` accept a runtime `maxConcurrency`, which must be a positive integer. Half the branch count, rounded up and capped at 16, is usually appropriate.
 
 ## Choose An Example
 

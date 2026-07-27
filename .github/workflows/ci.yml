@@ -33,12 +33,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:clean
       - run: pnpm typecheck
-      - run: pnpm check:build-toolchain
-      - run: pnpm check:dead-code
-      - run: pnpm check:dependencies
-      - run: pnpm check:dependencies:strict
-      - run: pnpm check:docs
-      - run: pnpm check:security
+      - name: Check minimum-Node toolchain compatibility
+        if: matrix.node-version == '22.18.0'
+        run: pnpm check toolchain
+      - name: Check repository policy
+        if: matrix.node-version == '24.x'
+        run: pnpm check
       - run: pnpm test
       - run: pnpm test:dist
       - run: git diff --check

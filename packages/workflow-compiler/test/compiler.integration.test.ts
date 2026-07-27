@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
 } from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { evaluateExpr } from "@acpus/expression/evaluator";
+import { sha256Digest } from "../src/digest.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -165,7 +166,7 @@ export default defineWorkflow({
       const workflow = join(cwd, "invalid.workflow.ts");
       await writeFile(workflow, "export default {};\n");
 
-      const result = await tryCompileWorkflowModule(workflow, cwd);
+      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected invalid default export");
@@ -174,6 +175,33 @@ export default defineWorkflow({
         entry: workflow,
         message: `Default export of ${workflow} is not an Acpus workflow definition.`,
       });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a changed source before importing the workflow module", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "compiler-source-generation-"));
+    try {
+      const marker = join(cwd, "imported");
+      const workflow = join(cwd, "workflow.ts");
+      const source = `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "executed");
+export default {};
+`;
+      await writeFile(workflow, source);
+
+      const result = await tryCompileWorkflowModule(workflow, cwd, {
+        expectedSourceDigest: sha256Digest(`${source}\nchanged`),
+      });
+
+      expect(result.isErr()).toBe(true);
+      if (result.isOk()) throw new Error("expected source generation failure");
+      expect(result.error).toMatchObject({
+        type: "workflow-source-changed",
+        entry: workflow,
+      });
+      await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -202,7 +230,9 @@ export default defineWorkflow({
       const stdout = await runCompilerScript(`
 import { tryCompileWorkflowModule } from ${JSON.stringify(compilerEntry)};
 
-const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, ${JSON.stringify(cwd)});
+const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, ${JSON.stringify(cwd)}, {
+  expectedSourceDigest: ${JSON.stringify(await sourceDigest(workflow))},
+});
 if (result.isErr()) throw new Error(result.error.message);
 const node = result.value.ir.root.nodes.find(item => item.id === "run");
 console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target }));
@@ -227,13 +257,16 @@ console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target
     ]);
     try {
       const workflow = join(outside, "throws.workflow.ts");
-      await writeFile(workflow, `import { defineWorkflow } from "acpus/core";
+      const marker = join(outside, "imported");
+      await writeFile(workflow, `import { writeFileSync } from "node:fs";
+import { defineWorkflow } from "acpus/core";
+writeFileSync(${JSON.stringify(marker)}, "executed");
 
 export default defineWorkflow({ name: "outside" }).build(() => {
   throw new Error("build callback must not win source containment");
 });
 `);
-      const result = await tryCompileWorkflowModule(workflow, cwd);
+      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected outside workspace failure");
@@ -242,6 +275,7 @@ export default defineWorkflow({ name: "outside" }).build(() => {
         workflowFile: workflow,
         cwd,
       });
+      await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await Promise.all([
         rm(cwd, { recursive: true, force: true }),
@@ -258,7 +292,7 @@ export default defineWorkflow({ name: "outside" }).build(() => {
 export default defineWorkflow({ name: "dot_prefix" }).build(() => ({}));
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd);
+      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
 
       expect(result.isOk()).toBe(true);
       if (result.isErr()) throw new Error(result.error.message);
@@ -280,7 +314,7 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 });
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd);
+      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected workflow build failure");
@@ -313,7 +347,7 @@ export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
 });
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd);
+      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
 
       expect(result.isErr()).toBe(true);
       if (result.isOk()) throw new Error("expected missing reusable Task link");
@@ -498,9 +532,17 @@ async function compileModule(entry: string, cwd = repoRoot): Promise<WorkflowIR>
 }
 
 async function compileModuleResult(entry: string, cwd = repoRoot): Promise<CompiledWorkflowModule> {
-  const result = await tryCompileWorkflowModule(entry, cwd);
+  const result = await tryCompileWorkflowModule(entry, cwd, await compileOptions(entry));
   if (result.isErr()) throw new Error(result.error.message);
   return result.value;
+}
+
+async function compileOptions(entry: string) {
+  return { expectedSourceDigest: await sourceDigest(entry) };
+}
+
+async function sourceDigest(entry: string): Promise<string> {
+  return sha256Digest(await readFile(entry, "utf8"));
 }
 
 function fixture(relativePath: string): string {

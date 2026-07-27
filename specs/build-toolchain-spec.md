@@ -43,16 +43,35 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - The root build MUST start the full TypeScript solution after static visualization generation succeeds, while the main client bundle remains eligible to run concurrently.
 - A failed child build MUST fail the root build, and the root build MUST await every child process that it started.
 - Vite MUST own `packages/web/dist/client`; TypeScript MUST own the remaining Web distribution files. Neither builder MAY delete the other's output.
-- `pnpm typecheck` MUST run source-first package typechecks without a prerequisite emit.
-- `pnpm check:docs` MUST reject missing local targets in current public Markdown documentation and the static Pages entry point.
-- `pnpm check:release` MUST reject prerelease package versions, active or pending Changesets, an inconsistent Node.js engine, and a bundled Skill version that differs from the CLI version.
-- `pnpm check:security` MUST reject high- or critical-severity advisories in the complete locked dependency graph.
+- Libraries used only to build bundled Web browser assets MUST be development dependencies and MUST NOT expand the published Node runtime dependency surface.
+- The Web package MUST classify packages solely through `dependencies` and `devDependencies`; optional, peer, peer-metadata, and bundled dependency declarations MUST be absent.
+- The full dependency graph MUST include Web browser sources and development dependencies. The strict production graph MUST exclude browser sources while retaining published Web server/shared sources, so misplaced browser/runtime dependencies fail through the repository dependency checker rather than a source-text import parser.
+- Static workflow visualization generation MUST produce exactly one non-empty JavaScript asset, one non-empty CSS asset, and no other assets from the same Vite build.
+- Static workflow visualization generation MUST reject asset content that could close its owning inline HTML element.
+- Generated static workflow visualization declarations MUST expose asset payloads as opaque strings and MUST NOT duplicate the browser bundle bytes.
+- `pnpm typecheck` MUST run source-first package typechecks and a repository-wide test-source typecheck without a prerequisite emit.
+- A layer-specific test command MUST fail when its project and file filters select no tests.
+- Distribution verification MUST pack each publishable package exactly once per run, derive its packed-file inventory from that operation, and reuse the resulting archive for every consumer that depends on that package.
+- The workflow-compiler and CLI distribution smokes MUST install their local publishable dependency closures from that shared archive set in separate temporary consumers.
+- The packed CLI distribution smoke MUST render a workflow HTML visualization through its packed `@acpus/web` dependency and verify the embedded static graph bundle.
+- Repository checks MUST expose one executable interface through `pnpm check`.
+- With no task argument, `pnpm check` MUST run the named `toolchain`, `graph:source`, `graph:strict`, `docs`, and `security` tasks in that order and MUST stop after the first failed task.
+- `pnpm check <task>` MUST run only that named task and MUST reject unknown task names.
+- CI MUST execute the toolchain task on the minimum supported Node.js version and MUST execute the complete default task set only once on the primary Node.js version, avoiding duplicate repository-graph and security-policy work across the runtime matrix.
+- The `graph:source` task MUST check the complete source/development graph for dead files and symbols as well as dependency issues, including browser build inputs.
+- The `graph:strict` task MUST separately check the published production graph and reject runtime dependencies that are unused once browser sources are excluded.
+- The `docs` task MUST reject missing local targets in current public Markdown documentation and the static Pages entry point.
+- The `release` task MUST reject prerelease package versions, active or pending Changesets, an inconsistent Node.js engine, and a bundled Skill version that differs from the CLI version. It MUST remain available as a targeted task and MUST NOT run in the default task set.
+- The `security` task MUST reject high- or critical-severity advisories in the complete locked dependency graph.
 - Each package `clean` command MUST remove both package output and its package-root build cache. The Web clean command MUST also remove its temporary static visualization output.
 - Build cache files MUST be ignored by Git and MUST NOT be included in published packages.
 - The repository MUST NOT use Turbo, Nx, or another cross-command task cache.
 
 ## Verification
 
-- `pnpm check:build-toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, shared build settings, build and clean scripts, cache placement, and the absence of cross-command caches.
-- `pnpm check:docs`, `pnpm check:release`, and `pnpm check:security`: verify public documentation links, the stable package-release state, and the locked dependency graph.
-- `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership and publishable artifacts without build caches.
+- `pnpm check`: verifies the toolchain, complete source/development graph, strict published production graph, public documentation links, and locked dependency graph through the canonical fail-fast task sequence.
+- `pnpm check toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, shared source/test settings, build entrypoint configuration and isolated build-plan scheduling/failure semantics, check entrypoint and task definitions, Web manifest declaration boundaries, typecheck/clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm check graph:source` and `pnpm check graph:strict`: verify the complete source/development issue set and the distinct strict production dependency graph.
+- `pnpm check docs`, `pnpm check release`, and `pnpm check security`: verify public documentation links, the stable package-release state, and the locked dependency graph independently.
+- `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership, opaque generated asset declarations, and publishable artifacts without build caches.
+- `pnpm test:unit definitely-not-a-real-test-path` (expected failure): verifies that an empty filtered test selection cannot report success.

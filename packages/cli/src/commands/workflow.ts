@@ -2,9 +2,8 @@ import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
-import { walkNodes } from "@acpus/core/ir";
 import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
-import { staticExprShape, type JsonValue } from "@acpus/expression/ir";
+import type { JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../errors.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, resolveWorkflowReference, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
@@ -307,22 +306,10 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
       return;
     }
 
-    const { renderWorkflowVizHtml, workflowIrToWebGraph } = await import("@acpus/web");
+    const { renderWorkflowVizHtml } = await import("@acpus/web");
     const outputPath = resolve(ctx.cwd, options.out);
-    const graph = workflowIrToWebGraph(prepared.ir);
     const html = renderWorkflowVizHtml({
-      graph,
-      workflow: {
-        name: prepared.ir.name,
-        ...(prepared.ir.description === undefined ? {} : { description: prepared.ir.description }),
-        irVersion: prepared.ir.irVersion,
-        nodeCount: Array.from(walkNodes(prepared.ir.root)).length,
-      },
-      contract: {
-        ...(prepared.ir.inputSchema === undefined ? {} : { inputSchema: prepared.ir.inputSchema }),
-        output: prepared.ir.root.output,
-        outputShape: staticExprShape(prepared.ir.root.output),
-      },
+      ir: prepared.ir,
       sourceGraphDigest: prepared.sourceGraphDigest,
     });
     try {

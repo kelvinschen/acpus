@@ -1,4 +1,5 @@
 import type { SchemaIR } from "@acpus/core/ir";
+import { schemaToJsonSchema } from "@acpus/core/schema";
 import { describe, expect, it } from "vitest";
 import {
   buildAgentOutputPrompt,
@@ -21,28 +22,44 @@ describe("agent output prompts", () => {
   it("adds one minimal mandatory Tagged JSON contract and schema", () => {
     const prompt = buildAgentOutputPrompt("Do the work.", booleanObject);
 
-    expect(prompt).toContain(`Do the work.
-
-# OUTPUT [MANDATORY]
-End your response with exactly one JSON value matching the JSON Schema below, **wrapped in <ACPUS_OUTPUT>...</ACPUS_OUTPUT>**.
-
-JSON Schema:`);
-    expect(prompt).toContain('"type": "boolean"');
+    expect(prompt.startsWith("Do the work.")).toBe(true);
+    expect(protocolMarkers(prompt)).toEqual(["<ACPUS_OUTPUT>", "</ACPUS_OUTPUT>"]);
+    expect(embeddedJsonSchema(prompt)).toEqual(schemaToJsonSchema(booleanObject));
   });
 
-  it.each([
-    ["framing", /frame/i],
-    ["json", /JSON value/i],
-    ["schema", /schema/i],
-  ] as const)("uses a bounded %s repair reason and repeats the contract", (phase, reason) => {
-    const prompt = buildAgentOutputRepairPrompt(booleanObject, phase);
-    const repairInstruction = prompt.split("\n\n", 1)[0]!;
+  it("uses one bounded phase-specific repair instruction and repeats the contract", () => {
+    const prompts = (["framing", "json", "schema"] as const)
+      .map(phase => buildAgentOutputRepairPrompt(booleanObject, phase));
+    const contract = buildAgentOutputPrompt("", booleanObject);
+    const instructions = prompts.map(prompt => {
+      expect(prompt.endsWith(contract)).toBe(true);
+      return prompt.slice(0, -contract.length);
+    });
 
-    expect(repairInstruction).toMatch(reason);
-    expect(prompt).toContain("# OUTPUT [MANDATORY]");
-    expect(prompt).toContain('"type": "boolean"');
+    expect(new Set(instructions).size).toBe(3);
+    for (const [index, prompt] of prompts.entries()) {
+      expect(Buffer.byteLength(instructions[index]!)).toBeLessThanOrEqual(300);
+      expect(protocolMarkers(prompt)).toEqual(["<ACPUS_OUTPUT>", "</ACPUS_OUTPUT>"]);
+      expect(embeddedJsonSchema(prompt)).toEqual(schemaToJsonSchema(booleanObject));
+    }
   });
 });
+
+function protocolMarkers(prompt: string): string[] {
+  return [...prompt.matchAll(/<\/?ACPUS_OUTPUT>/gu)].map(match => match[0]);
+}
+
+function embeddedJsonSchema(prompt: string): unknown {
+  const starts = [...prompt.matchAll(/[\[{]/gu)]
+    .map(match => match.index)
+    .reverse();
+  for (const start of starts) {
+    try {
+      return JSON.parse(prompt.slice(start)) as unknown;
+    } catch {}
+  }
+  throw new Error("Agent output prompt is missing its JSON Schema.");
+}
 
 describe("Tagged JSON framing", () => {
   it.each([

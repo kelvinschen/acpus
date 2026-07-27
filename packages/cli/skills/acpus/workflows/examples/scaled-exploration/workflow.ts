@@ -1,7 +1,7 @@
 /*
  * Pattern: Plan a standard-scale fanout and reduce results in batches.
  * Nodes: agent, task, fanout
- * Scale: 1 planner + breadth explorers + ceil(breadth / batchSize) reducers + 1 final; defaults to 42.
+ * Scale: 1 planner + breadth explorers + ceil(breadth / batchSize) reducers + 1 final.
  */
 import { defineWorkflow, z } from "acpus/core";
 import { md } from "acpus/expression";

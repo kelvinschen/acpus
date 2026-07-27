@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { appendBranch, appendFanoutItem, appendNode } from "../src/scheduler/identity.js";
-import { applySchedulerEvents, createSchedulerProjection, nextGroupCompletionBatchEvents, targetedRetryDependencyBlocker, targetedRetryGroupBlocker } from "../src/scheduler/transitions.js";
+import { applySchedulerEvents, createSchedulerProjection, nextGroupCompletionBatchEvents, targetedRetryDependencyBlocker, targetedRetryGroupAssessment, targetedRetryGroupBlocker } from "../src/scheduler/transitions.js";
 import type { GroupMember, GroupMemberStatus, GroupProjection } from "../src/scheduler/types.js";
 
 describe("scheduler retry completion closure", () => {
@@ -313,6 +313,60 @@ describe("scheduler retry completion closure", () => {
       [fanoutMember("target", 0, "failed"), fanoutMember("done", 1, "completed", { completionSequence: 1 }), fanoutMember("independent", 2, "failed")],
       new Set(["target"]),
     )).toEqual({ status: "failed", reason: "quorum_impossible" });
+
+    for (const [group, members, dependencies] of [
+      [
+        all,
+        [
+          branchMember("target", "failed", { terminalReason: "target_failed" }),
+          branchMember("independent", "failed", { terminalReason: "independent_failed" }),
+          branchMember("dependency", "cancelled", { terminalReason: "parent_failed" }),
+        ],
+        new Set(["dependency"]),
+      ],
+      [
+        parallelGroup("race"),
+        [
+          branchMember("target", "failed"),
+          branchMember("winner", "completed", { completionSequence: 1 }),
+        ],
+        new Set<string>(),
+      ],
+      [
+        fanoutQuorum(3),
+        [
+          fanoutMember("target", 0, "failed"),
+          fanoutMember("done", 1, "completed", { completionSequence: 1 }),
+          fanoutMember("dependency", 2, "cancelled", { terminalReason: "parent_failed" }),
+        ],
+        new Set(["dependency"]),
+      ],
+    ] satisfies Array<[GroupProjection, GroupMember[], Set<string>]>) {
+      expect(targetedRetryGroupAssessment(group, members, dependencies).blockerFor("target"))
+        .toEqual(targetedRetryGroupBlocker(
+          group,
+          members,
+          new Set(["target", ...dependencies]),
+        ));
+    }
+  });
+
+  it("preserves corruption invariants in the batched assessment", () => {
+    const group = parallelGroup("race");
+    const corruptCompletion = [
+      branchMember("target", "failed"),
+      branchMember("ordered", "completed", { completionSequence: 1 }),
+      branchMember("corrupt", "completed"),
+    ];
+    expect(() => targetedRetryGroupAssessment(group, corruptCompletion, new Set()))
+      .toThrow("Completed group member 'corrupt' is missing completion sequence.");
+
+    const duplicateIdentity = [
+      branchMember("target", "failed"),
+      branchMember("target", "completed", { completionSequence: 1 }),
+    ];
+    expect(() => targetedRetryGroupAssessment(group, duplicateIdentity, new Set()))
+      .toThrow("Retry group 'group' contains duplicate member identity 'target'.");
   });
 
   it("rejects retry dependencies whose backing state cannot be scheduled", () => {

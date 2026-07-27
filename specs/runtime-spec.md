@@ -40,6 +40,9 @@
 - A missing manifest beside a non-empty active generation MUST NOT cause that generation to be adopted under a newly written manifest.
 - Only new-run preparation and real pruning MAY archive an incomplete generation as one unit and rebuild current storage; read/control access and dry-run pruning MUST leave it unchanged.
 - Runtime-owned layout roots, manifests, databases, run capsules, sources, trash, and archives MUST reject symbolic-link substitution instead of following it.
+- An opened Runtime store MUST bind its runs, sources, and trash roots, and every accessed run capsule, to the device/inode identity with a nonzero inode, resolved location, and available birth time observed by that store. Whenever one of those paths is accessed again, any observable identity or resolved-location mismatch MUST fail visibly rather than be followed or adopted.
+- Long-lived Runtime-owned Evidence, Trace, and artifact writes MUST bind created files to the same observable identity. Runtime MUST revalidate the relevant bound run, parent, and file identities at checkpoints surrounding sealing, publication, registration, and cleanup, and any observable mismatch MUST fail visibly.
+- Opening a Runtime-owned root, run capsule, or long-lived file that does not expose a device/inode identity with a nonzero inode MUST fail visibly instead of degrading to path-only verification. Identity fencing detects only changes distinguishable through values reported by the host filesystem; those values may be recycled, so equality is not proof of uninterrupted path ownership.
 - An existing manifest whose key, canonical path, platform, or available filesystem identity disagrees with the current workspace MUST fail visibly instead of being adopted or rewritten.
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
@@ -237,6 +240,7 @@ type PruneReport = {
 - An attempt result commit MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
 - An exact attempt-result idempotency replay by the original still-active owner MAY return the current snapshot without creating a new result commit.
 - Attempt-scoped artifact registration MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
+- A post-registration artifact checkpoint failure MUST reject as a system failure without removing the durably registered file.
 - Attempt-scoped progress writes MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
 - A rejected stale attempt result MUST NOT change durable scheduler state.
 - A rejected stale artifact registration MUST NOT add an artifact registry row.
@@ -248,6 +252,7 @@ type PruneReport = {
 - Inspection MUST derive authoritative attempt status and accepted output from durable scheduler projection rather than execution metadata.
 - Artifact writes MUST use attempt-local run paths while the runtime parent exclusively registers SQLite records and rejects registration after timeout/cancellation.
 - ArtifactRef resolution MUST return tagged failures for malformed/cross-run/unregistered refs and missing, symlink, or non-regular registered files.
+- ArtifactRef path resolution MUST NOT read file bodies or verify recorded size/digest.
 - Artifact registry escape, SQLite, permission, and I/O failures MUST propagate rather than become ArtifactRef validation failures.
 - Signal prompt, timeout message, and deadline MUST resolve once on awaiting entry; the persisted wait resumes durably from normalized input or fails ancestors with `signal_timeout` on expiry.
 - Pause/resume MUST suspend and restore Signal timeout budgets atomically; an unrepresentable restored deadline returns `deadline-out-of-range` without state change.
@@ -297,7 +302,7 @@ type PruneReport = {
 - A response-repair prompt MUST repeat the declared output schema.
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
-- A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
+- A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
 - A fenced Agent turn MUST NOT register a new ordinary turn, stderr, raw, or trace artifact after the fence.
 - Turn metadata MUST reference a registered canonical artifact when one exists and otherwise count sealed Private Turn Evidence without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr for a writable attempt uses a separate artifact.
 - `ACPUS_AGENT_RAW_ACP_DEBUG=1` MUST be captured at daemon startup and MAY persist exact wire output for a writable turn without affecting execution or repair.
@@ -310,7 +315,7 @@ type PruneReport = {
 
 - Runtime MUST capture each Agent turn through one observation module that owns Private Turn Evidence, bounded semantic projection, optional Trace spooling, fencing, sealing, publication, and recovery.
 - Runtime MUST persist each turn's Evidence beneath `runtime/runs/<run-id>/evidence/agents/<attempt-id>/turn-<NNN>.evidence.jsonl.partial`.
-- After persisting the provider terminal boundary, Runtime MUST atomically rename Evidence to the corresponding `.evidence.jsonl` path.
+- After persisting the provider terminal boundary, Runtime MUST atomically create the corresponding `.evidence.jsonl` path without replacing a different entry, then remove the partial path; retry MAY accept an existing final path only when it has the same opened file identity.
 - Runtime MUST persist a trace-enabled turn's private spool beside its Evidence as `turn-<NNN>.trace.jsonl.partial`.
 - The `evidence/` tree MUST remain private Runtime data and MUST NOT enter artifact listing, ArtifactRef resolution, Hooks, expressions, workflow output, fork inheritance, or another Agent prompt.
 - Runtime MUST create Evidence directories with mode `0700` and files with mode `0600` where POSIX modes are supported.
@@ -360,8 +365,8 @@ type PruneReport = {
 - A Trace spool MUST NOT contain a prompt, fence, steering instruction, or Runtime steering identity.
 - Runtime MUST use a fixed 64 KiB Trace write buffer and flush it when full and at fence or terminal boundaries.
 - Runtime MUST synchronize and seal a complete Trace spool after the provider process settles.
-- Runtime MUST atomically rename a complete sealed Trace spool to the corresponding private `.trace.jsonl` path.
-- After revalidating artifact ownership, Runtime MUST copy a sealed Trace spool to the deterministic trace-artifact path and register it with the spool's size and digest.
+- Runtime MUST atomically create the corresponding private `.trace.jsonl` path without replacing a different entry, then remove the partial path; retry MAY accept an existing final path only when it has the same opened file identity.
+- After revalidating artifact ownership, Runtime MUST copy a sealed Trace spool to `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.trace.jsonl` and register it with the spool's size and digest.
 - Runtime MUST remove the private Trace spool after successful artifact registration on a best-effort basis.
 - A failed Trace registration MUST remove only its unregistered public copy and retain the private spool.
 - A missing Trace spool or Trace copy/registration failure for a writable attempt MUST reject execution as a system failure.
@@ -469,6 +474,12 @@ type DaemonSteerControlResult = {
 - An accepted targeted retry MUST leave at least one reopened leaf eligible for admission or one reopened frame eligible to materialize work without another control.
 - Restored work MUST remain governed by each composite's persisted strategy, quorum, and concurrency policy.
 - Cancel MUST support run-level or unambiguous non-terminal dynamic/static targeting; run cancel yields `canceled`, targeted cancel yields `operator_cancelled`, and repeated run cancel is idempotent.
+- Run-level cancel MUST remain applicable before root-frame materialization, including after such a pending run has been paused.
+- Runtime MUST use one pure retry/cancel planner for mutation admission and read-side applicability; Web, CLI, and inspection projections MUST NOT reconstruct target legality from statuses or dynamic-table rows.
+- A read-side retry target MUST be an exact planner-approved `nodeKey` or public node/loop `frameKey`, MUST NOT be a group-member identity, and MUST be ordered by exact target key with duplicates rejected as corruption.
+- Read-side retry applicability MUST use the same pure frozen-workflow settlement that mutation admission performs before planning, without persisting its derived events; read-side cancel applicability MUST remain based on the durable pre-settlement snapshot used by cancel mutation.
+- Read-side cancel applicability MUST distinguish a useful run cancellation from an idempotently accepted terminal no-op and MUST expose a selected target only as an exact planner-approved dynamic key.
+- Read-side control applicability is advisory; every submitted control MUST resolve and validate again inside the control transaction.
 - Fork MUST create an idempotently identified child from verified frozen source data, optionally replacing prepared workflow, input, Agent overrides, or target without reading live source.
 - Fork MUST materialize only the child's frozen files and reachable registered artifacts selected for inheritance.
 - Fork MUST NOT copy unregistered or otherwise unknown source-run filesystem entries into the child.
@@ -483,7 +494,12 @@ type DaemonSteerControlResult = {
 
 - `listRuns`, `getRun`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
+- When an active database has the Acpus application id and a positive storage version older than the current version, `getRuntimeHealth` MUST return `ok: true`, `state: "unreadable"`, and a `store` warning.
+- That warning MUST use `Runtime storage version <observed> is older than the supported version <expected>. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`
+- `getRuntimeHealth` MUST retain a `store` failure for storage version zero, a newer storage version, a mismatched application id, and every other database-open failure.
 - `listRuns` MUST order by `updatedAt DESC, createdAt DESC`; `getRun` omits `dynamic` only when every dynamic collection is empty and fails visibly on decode/invariant errors.
+- `getRunVisualizationSnapshot` MUST return run details, visualization overlay, useful run-cancel applicability, and every exact planner-approved retry target from one SQLite read snapshot, including targets accepted during a non-terminal failure-propagation window.
+- Visualization control targets MUST contain only exact target, node/frame kind, and optional authored node id; they MUST NOT contain display labels, scheduler Result values, or group-member identities.
 - `getRunInspection(cwd, query)` MUST return tagged `ResultAsync` results in the following modes.
 
 | Mode | Projection |
@@ -492,7 +508,8 @@ type DaemonSteerControlResult = {
 | all | Complete occurrence-expanded execution tree without exposing raw tables. |
 | target | Bounded decision summary for one static node, dynamic node, frame, or attempt; an exact Agent attempt includes a bounded evidence capsule. |
 | timeline | Bounded current activity plus the latest closed semantic history for one resolved target. |
-| details | Rich node/frame/attempt dossier with history, progress, Signal, execution metadata, and artifact references for explicit Web/operator consumers. |
+| details | Rich node/frame/attempt dossier with history, progress, Signal, execution metadata, artifact references, and exact applicable retry/cancel controls for explicit Web/operator consumers. |
+| execution | Closed, bounded Agent execution telemetry for one resolved occurrence and selected attempt. |
 | raw | Unbounded run details, complete frozen `WorkflowIR`, and artifact registry. |
 
 ```ts
@@ -508,6 +525,7 @@ type RunInspectionQuery =
       page?: { limit?: number; before?: string };
     }
   | { runId: string; mode: "details"; target: string; context?: RunInspectionContext }
+  | { runId: string; mode: "execution"; target: string; context?: RunInspectionContext }
   | { runId: string; mode: "raw" };
 
 declare const inspectionRevisionBrand: unique symbol;
@@ -515,9 +533,89 @@ type RunInspectionRevision =
   string & { readonly [inspectionRevisionBrand]: true };
 ```
 
+Execution mode MUST use this closed document shape.
+
+```ts
+type RunInspectionAgentExecutionToolCall = {
+  turn: number;
+  toolCallId?: string;
+  toolName?: string;
+  status?: string;
+  durationMs?: number;
+  inputPreview?: string;
+};
+
+type RunInspectionSubject = {
+  targetKind: "static-node" | "dynamic-node" | "frame" | "attempt";
+  id: string;
+  label: string;
+  kind: string;
+  nodeId?: string;
+  nodeKey?: string;
+  attemptId?: string;
+  attemptNo?: number;
+};
+
+type RunInspectionAgentExecutionDocument = ({
+  available: true;
+  reason?: never;
+} | {
+  available: false;
+  reason: "not-agent" | "not-started";
+}) & {
+  schemaVersion: 2;
+  kind: "execution";
+  revision: RunInspectionRevision;
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  subject: RunInspectionSubject;
+  summary: {
+    status: RunInspectionStatus;
+    sessionName?: string;
+    turnCount?: number;
+    message?: string;
+  };
+  lastObservedAt?: string;
+  contextWindow?: {
+    used?: number;
+    size?: number;
+    percent?: number;
+    updatedAt?: string;
+  };
+  tokenUsage?: {
+    source?: "prompt_response" | "usage_update";
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  output?: {
+    tail: string;
+    totalBytes: number;
+    truncated: boolean;
+  };
+  toolCallCount?: number;
+  lastToolCalls: RunInspectionAgentExecutionToolCall[];
+  recentToolsIncomplete: boolean;
+};
+```
+
 - Details mode MUST NOT include timeline entries or Private Turn Evidence bodies.
+- Execution mode MUST return `available: false` with `reason: "not-agent"` for a resolved non-Agent target and `reason: "not-started"` for a resolved Agent occurrence without an attempt.
+- Execution mode MUST require one resolved occurrence. A static target with multiple occurrences MUST return typed `target-ambiguous` with deterministically sorted candidate node keys unless `context` disambiguates it.
+- An exact-attempt execution query MUST select that attempt. An unambiguous node, frame, or static-occurrence query MUST select its latest matched attempt by descending attempt number, then descending start time and attempt id.
+- Execution metadata, progress, and observations MUST be filtered to the selected attempt before projection; an exact historical attempt MUST NOT inherit telemetry from an earlier or later attempt on the same node.
+- Execution `summary.status` MUST come from the durable scheduler target state. Execution metadata, progress, and observations MAY supply supplementary telemetry but MUST NOT override scheduler lifecycle status.
+- Execution mode MUST perform at most one observation-projection read for the selected attempt and MUST request only the latest semantic page under the fixed 50-entry and 8 KiB page budgets.
+- That observation read MUST push the exact attempt filter into SQLite and materialize at most its latest durable turn evidence; it MUST NOT scan or materialize unrelated attempts or the selected attempt's complete turn history.
+- Execution mode MUST NOT read registered Agent turn artifacts, Private Turn Evidence bodies, Trace bodies, or any other artifact body.
+- Execution mode MUST exclude post-fence current activity and semantic tool entries from projected telemetry.
+- Execution `lastToolCalls` MUST contain at most three normalized calls.
+- For an available execution document, `recentToolsIncomplete` MUST be true whenever retention, pagination, observation gaps, post-fence exclusion, omitted or malformed activity, or a known tool-call count prevents Runtime from proving that `lastToolCalls` is complete. It MUST be false only when Runtime can prove completeness; unavailable documents MUST return an empty `lastToolCalls` and `recentToolsIncomplete: false`.
 - Raw mode MUST NOT append Private Turn Evidence, private Trace bodies, or provider raw payloads.
-- The public query union MUST use `context` only for target, timeline, and details resolution; target accepts only `view?: "summary"`, while timeline accepts only `page?: { limit?: number; before?: string }`.
+- The public query union MUST use `context` only for target, timeline, details, and execution resolution; target accepts only `view?: "summary"`, while timeline accepts only `page?: { limit?: number; before?: string }`.
 - Inspection schema version 2 MUST replace prior inspection schemas without a compatibility shim.
 - Every followable inspection document MUST contain an opaque branded revision.
 - A revision MUST bind the run, query/view fingerprint, resolved target identity, scheduler event sequence, progress version, observation version, encoding version, and bounded activity/visibility fingerprints needed to resume without replaying telemetry-only changes.
@@ -616,11 +714,14 @@ type RunInspectionExcerpt = {
 - When multiple visibility reasons apply, Runtime MUST select `boundary-evidence-unavailable`, then `observation-gap`, then `unrecognized-provider-activity`.
 - Visibility MUST describe inspection completeness without asserting an Agent execution fault or prescribing steering.
 - A target summary MUST contain no more than two available actions.
-- Available actions MUST be ordered by operator value: a started Agent exposes timeline then exact-attempt steer; a running Task/composite exposes timeline then follow; an awaiting Signal exposes signal then timeline; a failed/timed-out target exposes retry then fork.
+- Available actions MUST be ordered by operator value: a started Agent exposes timeline then exact-attempt steer; a running Task/composite exposes timeline then follow; an awaiting Signal exposes signal then timeline; a failed/timed-out target exposes planner-approved retry then fork, or fork alone when targeted retry is not applicable.
 - A steer action MUST target the exact started attempt id.
 - Retry and targeted-fork actions MUST use identities accepted by their control resolvers rather than scheduler attempt ids; fork MUST omit its optional target when no safe replacement-workflow target is available.
 - Completed and cancelled target summaries MUST expose no available actions.
 - An available action MUST express applicability without asserting that the operator ought to execute it.
+- Details `availableControls` MUST contain only exact retry/cancel targets accepted by the shared planner on that inspection snapshot and MUST be empty for aggregate, missing, completed/cancelled, ambiguous, or otherwise inapplicable targets.
+- When an untyped inspection target resolves to an exact scheduler identity that collides with an authored node id for a different entity, details controls MUST fail closed.
+- An exact historical attempt MUST NOT inherit controls for a later attempt with the same node key. The latest exact started attempt MAY expose cancel, and the latest exact failed/timed-out attempt MAY expose retry; completed, cancelled, superseded, and non-latest attempts MUST expose no controls.
 - An exact Agent attempt summary MUST include this evidence capsule.
 - Every other target summary MUST NOT include an evidence capsule.
 
@@ -799,6 +900,7 @@ type AgentDecisionState = {
 - `listArtifacts` MUST return registry metadata without reading file bodies.
 - `listArtifacts` MUST return `[]` for an empty existing run and `undefined` for a missing run or store.
 - `readArtifact(cwd, runId, artifactId): Promise<{ artifact: ArtifactRecord; bytes: Buffer } | undefined>` MUST return the artifact record and bytes after verifying the registered file's run containment, non-symlink regular-file identity, recorded size, and digest.
+- A verified artifact read MUST NOT consume or wait on a non-regular replacement target before validating its descriptor type and bound identity.
 - `readArtifact` MUST return `undefined` for a missing store, run, or artifact registry row.
 - A registered artifact that is missing, escapes its run, is a symlink or non-regular file, or fails its recorded size or digest MUST make `readArtifact` reject as durable corruption.
 - Runtime details inspection MUST represent a persisted canonical turn prompt as an artifact descriptor with `field: "prompt"` and MUST NOT embed the prompt body.
@@ -847,6 +949,7 @@ type RunInspectionEmission =
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
 - After acquiring the workspace lease and before its first scheduling tick, the daemon MUST remove `.staging-*` run directories that have been stale for at least 60 seconds.
 - Stale staging cleanup MUST leave ordinary run directories unchanged regardless of whether they have a database row.
+- An ordinary run directory with a valid run id but no database row MUST fail daemon startup visibly and remain unchanged for operator inspection.
 - Stale staging cleanup MUST ignore only paths that disappear during inspection; other directory read/stat failures MUST abort daemon startup.
 - Paused runs and untimed Signal waits alone MUST not keep the daemon resident; a non-terminal run with an immediately derivable transition, an expired owner's started attempt, or an admissible ready node MUST receive one recovery drive even when another branch is awaiting an untimed Signal. Derivable transitions include due attempt settlement, group terminalization, and leaf/frame/ancestor propagation. Timed waits keep the daemon resident until durably settled, and startup recovery is targeted rather than a whole-store repair sweep.
 - A recovered owner MUST settle already-due attempt deadlines before superseding remaining expired-owner `started` attempts.
@@ -857,8 +960,8 @@ type RunInspectionEmission =
 
 ## Verification
 
-- `pnpm test:unit -- packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, revision/cursor binding, and progress beyond internal count limits.
-- `pnpm test:integration -- packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
+- `pnpm test:unit packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, exact retry/cancel control planning, deterministic target ordering, high-cardinality failed-group projection, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, ArtifactRef identity binding/content-integrity separation, verified-read replacement fencing, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, exact bounded Agent execution projection without artifact reads, honest recent-tool incompleteness, revision/cursor binding, and progress beyond internal count limits.
+- `pnpm test:integration packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, read/write parity for projected control targets, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, bound ArtifactRef replacement fencing, exact public verified artifact reads, post-registration Agent/Trace file retention, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
 - Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.

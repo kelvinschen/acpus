@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
 import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
 import Search from "lucide-react/dist/esm/icons/search.js";
-import type { GraphViewport, PlacedBox, RenderLayout, RenderModel, RenderItem } from "../../graph-renderer.js";
+import type { GraphNavigationIntent, GraphViewport, PlacedBox, RenderLayout, RenderModel, RenderItem } from "../../graph-renderer.js";
 import { graphContextLabel } from "../../graph-renderer.js";
 import { Breadcrumb, BreadcrumbButton, BreadcrumbItem, BreadcrumbList, BreadcrumbSeparator } from "./shadcn/breadcrumb.js";
 import { Button } from "./shadcn/button.js";
@@ -18,7 +18,7 @@ export function GraphPathBreadcrumb({
 }: {
   model: RenderModel;
   selectedRenderId?: string | undefined;
-  onNavigate(item: RenderItem, inspect: boolean): void;
+  onNavigate(intent: GraphNavigationIntent): void;
 }) {
   const path = useMemo(() => navigationPath(selectedRenderId, model), [model, selectedRenderId]);
   if (!selectedRenderId) return null;
@@ -44,7 +44,7 @@ export function GraphPathBreadcrumb({
               <BreadcrumbButton
                 aria-current={isLast ? "page" : undefined}
                 title={navigationItemTitle(item)}
-                onClick={() => onNavigate(item, item.type === "node")}
+                onClick={() => onNavigate({ type: "navigate-item", renderId: item.id })}
               >
                 {item.label}
               </BreadcrumbButton>
@@ -63,7 +63,7 @@ export function GraphNodeNavigator({
 }: {
   model: RenderModel;
   selectedRenderId?: string | undefined;
-  onNavigate(item: RenderItem): void;
+  onNavigate(intent: GraphNavigationIntent): void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -105,7 +105,7 @@ export function GraphNodeNavigator({
                 aria-current={selected ? "true" : undefined}
                 title={navigationItemTitle(item)}
                 onClick={() => {
-                  onNavigate(item);
+                  onNavigate({ type: "navigate-item", renderId: item.id });
                   setOpen(false);
                 }}
               >
@@ -138,7 +138,7 @@ export function GraphMinimap({
   viewport: GraphViewport;
   shellSize: ShellSize;
   selectedRenderId?: string | undefined;
-  onNavigate(point: { x: number; y: number }): void;
+  onNavigate(intent: GraphNavigationIntent): void;
 }) {
   const size = minimapSize(layout);
   const visible = visibleGraphRect(viewport, shellSize);
@@ -162,8 +162,11 @@ export function GraphMinimap({
         const rect = event.currentTarget.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
         onNavigate({
-          x: Math.max(0, Math.min(layout.width, (event.clientX - rect.left) / rect.width * layout.width)),
-          y: Math.max(0, Math.min(layout.height, (event.clientY - rect.top) / rect.height * layout.height)),
+          type: "recenter",
+          point: {
+            x: Math.max(0, Math.min(layout.width, (event.clientX - rect.left) / rect.width * layout.width)),
+            y: Math.max(0, Math.min(layout.height, (event.clientY - rect.top) / rect.height * layout.height)),
+          },
         });
       }}
     >

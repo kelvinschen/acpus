@@ -35,10 +35,22 @@ export type NodeExecutor = {
 
 type AttemptDeadlineFailure = { status: "failed"; reason: string; error?: JsonObject };
 
+export type SchedulerExecutionStore = Pick<
+  SchedulerStorePort,
+  | "claimRun"
+  | "heartbeatRun"
+  | "releaseRun"
+  | "tryLoadRunSnapshot"
+  | "tryAppendSchedulerEvents"
+  | "tryStartAttempt"
+  | "tryCommitAttemptResult"
+  | "tryMarkExpiredOwnerAttemptsSuperseded"
+>;
+
 export type AdvanceRunInput = {
   runId: string;
   ownerId: string;
-  store: SchedulerStorePort;
+  store: SchedulerExecutionStore;
   executor: NodeExecutor;
   leaseMs?: number;
   maxLeafConcurrency?: number;
@@ -600,7 +612,7 @@ function minimumDefined(left: number | undefined, right: number | undefined): nu
 }
 
 function startRunHeartbeat(
-  store: SchedulerStorePort,
+  store: SchedulerExecutionStore,
   claim: RunOwnerClaim,
   leaseMs: number,
   active: ReadonlyMap<string, ActiveExecution>,

@@ -53,8 +53,11 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       const runId = JSON.parse(admitted.stdout).run.id as string;
       await waitForAwaitingSignal(workspace, runId, "approval");
       const followedPromise = runSourceCli(workspace, ["runs", "inspect", runId, "--follow", "--interval", "250ms"]);
-
-      const overview = await runSourceCli(workspace, ["runs", "inspect", runId]);
+      const [overview, summary, timeline] = await Promise.all([
+        runSourceCli(workspace, ["runs", "inspect", runId]),
+        runSourceCli(workspace, ["runs", "inspect", runId, "--target", "approval", "--json"]),
+        runSourceCli(workspace, ["runs", "inspect", runId, "--target", "approval", "--timeline", "--json"]),
+      ]);
       expect(overview.exitCode, overview.stdout || overview.stderr).toBe(0);
       expect(overview.stderr).toBe("");
       expect(overview.stdout).toContain("inspect-composite-smoke  awaiting");
@@ -72,14 +75,6 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(overview.stdout).toContain("Attention:");
       expect(overview.stdout).toContain(`Signal: acpus runs signal ${runId} --target approval`);
 
-      const summary = await runSourceCli(workspace, [
-        "runs",
-        "inspect",
-        runId,
-        "--target",
-        "approval",
-        "--json",
-      ]);
       expect(summary.exitCode, summary.stdout || summary.stderr).toBe(0);
       expect(summary.stderr).toBe("");
       expect(JSON.parse(summary.stdout)).toMatchObject({
@@ -95,15 +90,6 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         ],
       });
 
-      const timeline = await runSourceCli(workspace, [
-        "runs",
-        "inspect",
-        runId,
-        "--target",
-        "approval",
-        "--timeline",
-        "--json",
-      ]);
       expect(timeline.exitCode, timeline.stdout || timeline.stderr).toBe(0);
       expect(timeline.stderr).toBe("");
       expect(JSON.parse(timeline.stdout)).toMatchObject({

@@ -71,8 +71,14 @@ const fake = vi.hoisted(() => {
 
 vi.mock("node:child_process", () => ({ spawn: fake.spawn }));
 
-const removeRejectedArtifact = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("node:fs/promises", () => ({ rm: removeRejectedArtifact }));
+const removeRejectedArtifact = vi.hoisted(() => vi.fn(async (_path: string) => undefined));
+vi.mock("../src/store/path-fence.js", () => ({
+  verifyRunDirectoryToken: (token: { runDirectory: { path: string } }) => token.runDirectory.path,
+}));
+vi.mock("../src/store/run-file.js", () => ({
+  verifyRunFile: (_run: unknown, file: { path: string }) => file.path,
+  removeRunFile: (_run: unknown, file: { path: string }) => removeRejectedArtifact(file.path),
+}));
 
 import { runTaskAttempt } from "../src/execution/task-process.js";
 
@@ -123,6 +129,7 @@ describe("task process timeout budget", () => {
         digest: "sha256:late",
         size: 1,
         relativePath: "artifacts/late_message/attempt-1/artifact_1-late.txt",
+        file: { path: "/repo/.acpus/run_1/artifacts/late_message/attempt-1/artifact_1-late.txt" },
       },
     });
     child.emit("message", { type: "completed", hasOutput: true, output: { late: true } });
@@ -132,7 +139,6 @@ describe("task process timeout budget", () => {
     expect(registerArtifact).not.toHaveBeenCalled();
     expect(removeRejectedArtifact).toHaveBeenCalledWith(
       "/repo/.acpus/run_1/artifacts/late_message/attempt-1/artifact_1-late.txt",
-      { force: true },
     );
     expect(child.sent).toContainEqual(expect.objectContaining({ type: "artifact_result", requestId: "artifact_1", ok: false }));
     expect(child.sent).toContainEqual({ type: "abort" });
@@ -241,6 +247,7 @@ describe("task process timeout budget", () => {
         digest: "sha256:artifact",
         size: 1,
         relativePath: "artifacts/artifact_store_failure/attempt-1/artifact_1-output.txt",
+        file: { path: "/repo/.acpus/run_1/artifacts/artifact_store_failure/attempt-1/artifact_1-output.txt" },
       },
     });
 
@@ -279,7 +286,18 @@ function taskInput(
       target: { kind: "inline", source: "async () => undefined" },
       input: {},
       workspaceDir: "/repo",
-      artifact: { runId: "run_1", nodeKey: nodeId, attemptId: "attempt_1", attempt: 1, ownerEpoch: 1, runDir: "/repo/.acpus/run_1", paths: {} },
+      artifact: {
+        run: {
+          runId: "run_1",
+          runsRoot: { path: "/repo/.acpus", realpath: "/repo/.acpus", filesystemIdentity: "root" },
+          runDirectory: { path: "/repo/.acpus/run_1", realpath: "/repo/.acpus/run_1", filesystemIdentity: "run" },
+        },
+        nodeKey: nodeId,
+        attemptId: "attempt_1",
+        attempt: 1,
+        ownerEpoch: 1,
+        paths: {},
+      },
     },
     timeoutMs: 10,
     registerArtifact: vi.fn(),

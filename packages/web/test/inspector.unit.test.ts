@@ -127,25 +127,26 @@ describe("Inspector presence", () => {
 describe("Inspector primitives", () => {
   it("keeps resource telemetry out of the Agent overview", async () => {
     vi.setSystemTime(new Date("2026-07-01T00:00:06.000Z"));
-    await render(React.createElement(AgentOverview, {
-      agent: {
-        key: "observer",
-        backend: { kind: "command" },
-        availability: { context: "available", tokenUsage: "available" },
-        model: "opus",
-        turnCount: 2,
-        lastObservedAt: "2026-07-01T00:00:04.000Z",
-        context: { used: 26_100, size: 200_000 },
-        tokenUsage: { inputTokens: 51_800, outputTokens: 205, totalTokens: 52_005 },
-        tools: {
-          totalCallCount: 3,
-          recent: [
-            { command: "Read", status: "completed" },
-            { command: "Bash: rg", status: "in_progress" },
-            { command: "Write", status: "failed" },
-          ],
-        },
+    const agent = {
+      key: "observer",
+      backend: { kind: "command" },
+      availability: { context: "available", tokenUsage: "available" },
+      model: "opus",
+      turnCount: 2,
+      lastObservedAt: "2026-07-01T00:00:04.000Z",
+      context: { used: 26_100, size: 200_000 },
+      tokenUsage: { inputTokens: 51_800, outputTokens: 205, totalTokens: 52_005 },
+      tools: {
+        totalCallCount: 3,
+        recent: [
+          { command: "Read", status: "completed" },
+          { command: "Bash: rg", status: "in_progress" },
+          { command: "Write", status: "failed" },
+        ],
       },
+    };
+    await render(React.createElement(AgentOverview, {
+      agent,
     }));
 
     expect(container.querySelector("h3")?.textContent).toBe("Agent State");

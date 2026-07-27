@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { JsonValue } from "@acpus/expression/ir";
+import { removeRunFile, verifyRunFile } from "../store/run-file.js";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
 import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
+import { verifyRunDirectoryToken } from "../store/path-fence.js";
 import type { TaskArtifactRegistration, TaskProcessChildMessage, TaskProcessParentMessage, TaskProcessRequest } from "./task-process-protocol.js";
 
 const COOPERATIVE_ABORT_GRACE_MS = 1_000;
@@ -287,33 +288,41 @@ function spawnFailure(input: RunTaskAttemptInput, error: unknown): TaskAttemptFa
 }
 
 function assertArtifactIdentity(request: TaskProcessRequest, artifact: TaskArtifactRegistration): void {
-  if (artifact.runId !== request.artifact.runId
+  if (artifact.runId !== request.artifact.run.runId
     || artifact.nodeKey !== request.artifact.nodeKey
     || artifact.attemptId !== request.artifact.attemptId
     || artifact.attempt !== request.artifact.attempt
     || artifact.ownerEpoch !== request.artifact.ownerEpoch) {
     throw new Error("Task process artifact identity does not match its attempt.");
   }
+  const runDir = verifyRunDirectoryToken(request.artifact.run);
   const path = resolveArtifactRegistrationPath({
-    runDir: request.artifact.runDir,
+    runDir,
     nodeKey: artifact.nodeKey,
     attempt: artifact.attempt,
     relativePath: artifact.relativePath,
   });
-  if (!path || typeof artifact.id !== "string" || !basename(path).startsWith(`${artifact.id}-`)) {
+  if (!path
+    || typeof artifact.id !== "string"
+    || !basename(path).startsWith(`${artifact.id}-`)
+    || !artifact.file
+    || typeof artifact.file.path !== "string"
+    || resolve(artifact.file.path) !== path) {
     throw new Error("Task process artifact path is outside its attempt artifact directory.");
   }
+  verifyRunFile(request.artifact.run, artifact.file, `Task artifact '${artifact.id}'`);
 }
 
 async function removeRejectedArtifact(request: TaskProcessRequest, artifact: TaskArtifactRegistration): Promise<void> {
+  const runDir = verifyRunDirectoryToken(request.artifact.run);
   const path = resolveArtifactRegistrationPath({
-    runDir: request.artifact.runDir,
+    runDir,
     nodeKey: artifact.nodeKey,
     attempt: artifact.attempt,
     relativePath: artifact.relativePath,
   });
-  if (!path) return;
-  await rm(path, { force: true });
+  if (!path || resolve(artifact.file.path) !== path) return;
+  await removeRunFile(request.artifact.run, artifact.file, `Task artifact '${artifact.id}'`);
 }
 
 function appendTail(previous: string, chunk: unknown): string {

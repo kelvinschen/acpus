@@ -1,3 +1,5 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,12 +7,14 @@ import { ok, okAsync } from "neverthrow";
 import type { TaskExecutorOptions } from "../src/execution/task-executor.js";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import type { RegisterArtifactInput } from "../src/store/store.js";
+import { captureDirectoryIdentity } from "../src/store/path-fence.js";
 import { inlineTask } from "./support/task-executor-fixture.js";
 import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";
 
 const taskProcessMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
 }));
+let taskRuntimeRoot: string;
 
 vi.mock("../src/execution/task-process.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/execution/task-process.js")>(),
@@ -18,10 +22,12 @@ vi.mock("../src/execution/task-process.js", async importOriginal => ({
 }));
 
 beforeEach(() => {
+  taskRuntimeRoot = mkdtempSync(join(tmpdir(), "acpus-task-executor-unit-"));
   taskProcessMocks.runTaskAttempt.mockReset();
 });
 
 afterEach(() => {
+  rmSync(taskRuntimeRoot, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
@@ -116,6 +122,8 @@ describe("task executor rules", () => {
 });
 
 function taskOptions(runId: string): TaskExecutorOptions {
+  const runDir = join(taskRuntimeRoot, runId);
+  mkdirSync(runDir, { recursive: true });
   return {
     cwd: process.cwd(),
     runId,
@@ -123,7 +131,11 @@ function taskOptions(runId: string): TaskExecutorOptions {
     attemptNo: 1,
     ownerEpoch: 1,
     store: {
-      getRunDir: () => join(process.cwd(), ".tmp-tests", runId),
+      getRunDirectoryToken: () => ({
+        runId,
+        runsRoot: captureDirectoryIdentity(taskRuntimeRoot, "Runtime runs root"),
+        runDirectory: captureDirectoryIdentity(runDir, `Run directory '${runId}'`),
+      }),
       getArtifact: () => undefined,
       registerArtifact: (_input: RegisterArtifactInput) => ok(undefined),
       writeExecutionMetadata: () => {},

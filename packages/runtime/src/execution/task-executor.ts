@@ -2,11 +2,12 @@ import { isAbsolute, resolve } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { isArtifactRefCandidate, tryResolveArtifactPath } from "../artifacts/path.js";
+import { isArtifactRefCandidate, tryBindArtifactRef } from "../artifacts/access.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveDuration, tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
+import type { RunFileToken } from "../store/run-file.js";
 import type { RuntimeStore } from "../store/store.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { runTaskAttempt, type TaskAttemptFailure } from "./task-process.js";
@@ -15,7 +16,7 @@ export type TaskExecutorOptions = {
   cwd: string;
   sourceRoot?: string;
   runId: string;
-  store: Pick<RuntimeStore, "getRunDir" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
+  store: Pick<RuntimeStore, "getRunDirectoryToken" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
   nodeKey?: string;
   attemptId: string;
   attemptNo: number;
@@ -35,10 +36,9 @@ export function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, option
 }
 
 async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<Result<JsonValue | undefined, TaskNodeFailure>> {
-  const runDir = options.store.getRunDir(options.runId);
-  if (!runDir) throw new Error(`Run '${options.runId}' has no run directory.`);
+  const run = options.store.getRunDirectoryToken(options.runId);
+  if (!run) throw new Error(`Run '${options.runId}' has no run directory.`);
   const workspaceDir = resolve(options.cwd);
-  const absoluteRunDir = resolve(runDir);
   const input = evaluateTaskInput(node, scope);
   if (input.isErr()) return err(input.error);
   const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, workspaceDir, options);
@@ -85,7 +85,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
       workspaceDir,
       sourceRoot: options.sourceRoot ?? workspaceDir,
       ...(execution === undefined ? {} : { execution }),
-      artifact: { runId: options.runId, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, runDir: absoluteRunDir, paths: artifactPaths.value },
+      artifact: { run, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, paths: artifactPaths.value },
     },
     ...(runnerTimeoutMs.value === undefined ? {} : { timeoutMs: runnerTimeoutMs.value }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -118,11 +118,11 @@ function resolveTaskArtifactPaths(
   nodeId: string,
   cwd: string,
   options: TaskExecutorOptions,
-): Result<Record<string, string>, ResolutionError> {
-  const paths: Record<string, string> = {};
+): Result<Record<string, RunFileToken>, ResolutionError> {
+  const paths: Record<string, RunFileToken> = {};
   const visit = (value: unknown): Result<void, ResolutionError> => {
     if (isArtifactRefCandidate(value)) {
-      const resolved = tryResolveArtifactPath(value, { cwd, runId: options.runId, store: options.store });
+      const resolved = tryBindArtifactRef(value, { cwd, runId: options.runId, store: options.store });
       if (resolved.isErr()) {
         return err({
           type: "evaluation",

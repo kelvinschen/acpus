@@ -45,6 +45,9 @@ export {
   type RuntimeHealthReport,
   type RuntimePersistence,
   type ArtifactRecord,
+  type RunVisualizationControlTarget,
+  type RunVisualizationControls,
+  type RunVisualizationSnapshot,
 } from "./runs/use-cases.js";
 export type {
   AgentTraceRecord,
@@ -62,10 +65,13 @@ export type {
   AgentCurrentActivity,
   FollowableInspectionDocument,
   FollowRunInspectionQuery,
+  RunInspectionAgentExecutionDocument,
+  RunInspectionAgentExecutionToolCall,
   RunInspectionAction,
   RunInspectionAttention,
   RunInspectionChange,
   RunInspectionContext,
+  RunInspectionControl,
   RunInspectionCurrentActivity,
   RunInspectionCurrentActivityPatch,
   RunInspectionDelta,

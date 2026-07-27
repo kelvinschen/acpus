@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PreparedRunWorkflow } from "../src/store/store.js";
@@ -54,6 +54,45 @@ describe("global catalog runtime sources", () => {
       } finally {
         firstStore.close();
         secondStore.close();
+      }
+    });
+  });
+
+  it("rejects a same-path runtime sources-root replacement without publishing into it", async () => {
+    await withSharedStorageHome("catalog-source-root-identity", async ({ home, first }) => {
+      const packageRoot = join(home, "workflows", "global-source");
+      const workflowPath = join(packageRoot, "workflow.ts");
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(workflowPath, "export const source = 'frozen';\n");
+      const source: Extract<WorkflowSourceRef, { kind: "global_catalog" }> = {
+        kind: "global_catalog",
+        name: "global-source",
+        digest: await digestDirectory(packageRoot),
+        entry: "workflow.ts",
+      };
+      const base = await prepareSyntheticWorkflow(first, validWorkflow());
+      const prepared = globalPrepared(base, workflowPath, packageRoot, source);
+      const store = await openRuntimeStore(first);
+      const sourcesRoot = resolveRuntimeLayout(first).sourcesRoot;
+      const openedSourcesRoot = `${sourcesRoot}.opened`;
+      try {
+        await rename(sourcesRoot, openedSourcesRoot);
+        await mkdir(sourcesRoot);
+        await writeFile(join(sourcesRoot, "sentinel"), "replacement");
+        try {
+          await expect(admitRunForTest(store, {
+            prepared,
+            cwd: first,
+            input: { ready: true },
+          })).rejects.toThrow();
+          await expect(readdir(sourcesRoot)).resolves.toEqual(["sentinel"]);
+          expect(store.listRuns()).toEqual([]);
+        } finally {
+          await rm(sourcesRoot, { recursive: true });
+          await rename(openedSourcesRoot, sourcesRoot);
+        }
+      } finally {
+        store.close();
       }
     });
   });

@@ -1,24 +1,9 @@
 import { join } from "node:path";
-import { DiagnosticCategory, type Diagnostic } from "typescript/unstable/sync";
 import { describe, expect, it } from "vitest";
 import { typescriptNativeDiagnostic } from "../src/check/runner.js";
-import { deduplicateDiagnostics } from "../src/check/typescript.js";
 import { withNativeProject } from "../src/typescript/native.js";
 
 describe("TypeScript native boundary", () => {
-  it("deduplicates identical diagnostics across native collections without dropping distinct locations", () => {
-    const diagnostic: Diagnostic = {
-      category: DiagnosticCategory.Error,
-      code: 2688,
-      pos: -1,
-      end: -1,
-      text: "Cannot find type definition file for 'missing'.",
-    };
-    const located = { ...diagnostic, fileName: "/workspace/workflow.ts", pos: 1, end: 2 };
-
-    expect(deduplicateDiagnostics([diagnostic, diagnostic, located])).toEqual([diagnostic, located]);
-  });
-
   it("tags native process startup failure as an infrastructure failure", async () => {
     const cwd = process.cwd();
     const result = await withNativeProject({

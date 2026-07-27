@@ -7,7 +7,7 @@ const projects = [
   { name: "type", args: ["--typecheck.only", "--project", "type-contract"] },
   { name: "unit", args: ["--project", "unit"], maxWorkers: "13%" },
   { name: "contract", args: ["--project", "contract"], maxWorkers: "13%" },
-  { name: "integration", args: ["--project", "integration"], maxWorkers: "19%" },
+  { name: "integration", args: ["--project", "integration"], maxWorkers: "25%" },
   { name: "e2e", args: ["--project", "e2e"] },
   { name: "regression", args: ["--project", "regression"] },
 ];
