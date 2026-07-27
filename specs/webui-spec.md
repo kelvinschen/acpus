@@ -146,7 +146,7 @@
 - The WebUI API MUST reject incomplete or malformed inspection context.
 - Runtime node inspection APIs MUST consume the shared runtime target inspection projection rather than independently resolving static nodes, dynamic instances, frames, attempts, signals, progress, execution metadata, or artifact references in the Web server.
 - Runtime node inspection HTTP responses MUST be closed Web-owned projections containing only the node and frame identity, optional exact cancel target, runtime timing, latest attempt, compact Agent identity, selected input, prompt, loop progress, output, structured failure, public artifact identity, and optional actionable Signal fields used by the Inspector.
-- Runtime node inspection HTTP responses MUST NOT expose Runtime inspection schema markers, revision, run, target, static-node document, raw items, instances, frames, attempts, signal waits, execution metadata, progress, registry artifact fields, or unrendered Agent telemetry.
+- Runtime node inspection HTTP responses MUST NOT expose Runtime inspection schema markers, run, target, static-node document, raw items, instances, frames, attempts, signal waits, execution metadata, progress, registry artifact fields, or unrendered Agent telemetry.
 - An actionable Signal projection MUST use the normalized target inspection Signal only when its normalized node status is `awaiting`. An aggregate target without one normalized Signal action MUST omit the action rather than select an arbitrary dynamic wait.
 - Runtime node Overview inspection MUST refresh once per second while the run is non-terminal and MUST stop periodic refresh after terminal state.
 - Runtime Agent Overview data MUST use the authored Agent key, model, and last-observed time from normalized compact Agent state supplied by runtime target inspection. Turn, context-window, token-usage, output, and tool telemetry MUST remain in the lazy Execution response and MUST NOT be duplicated in Overview. The Web server MUST NOT re-resolve the effective Agent or re-parse tool input previews for Overview.
@@ -210,7 +210,7 @@ type NodeExecutionInspection = ({
 };
 ```
 
-- Agent execution responses MUST NOT expose Runtime schema markers, revision, run, subject, details arrays, registry fields, or unrendered telemetry.
+- Agent execution responses MUST NOT expose Runtime schema markers, run, subject, details arrays, registry fields, or unrendered telemetry.
 - The browser decoder MUST reject unrecognized root, summary, context-window, token-usage, output, or tool-call fields; invalid availability/reason combinations; malformed or negative metrics; and more than three recent tool calls.
 - When `recentToolsIncomplete` is true, the Execution tab MUST identify retained tool details as incomplete. An empty partial list MUST NOT render the definitive `No tool calls` state.
 - Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.

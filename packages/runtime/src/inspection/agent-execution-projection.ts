@@ -7,14 +7,10 @@ import { utf8Head } from "../utf8.js";
 import {
   inspectionSubject,
   inspectionTargetState,
-  resolvedTargetIdentity,
 } from "./decision-projection.js";
-import { inspectionRevision } from "./revision.js";
 import type {
   RunInspectionAgentExecutionDocument,
   RunInspectionAgentExecutionToolCall,
-  RunInspectionCursor,
-  RunInspectionQuery,
   RunInspectionTargetDetailsDocument,
 } from "./types.js";
 
@@ -35,20 +31,12 @@ type ProjectedToolCall = {
 
 export function projectAgentExecution(input: {
   details: RunInspectionTargetDetailsDocument;
-  cursor: RunInspectionCursor;
-  query: Extract<RunInspectionQuery, { mode: "execution" }>;
   observations?: AgentObservationInspectionProjection;
 }): RunInspectionAgentExecutionDocument {
   const state = inspectionTargetState(input.details);
   const common = {
     schemaVersion: 2 as const,
     kind: "execution" as const,
-    revision: inspectionRevision({
-      runId: input.details.run.id,
-      query: input.query,
-      resolvedTarget: resolvedTargetIdentity(input.details),
-      cursor: input.cursor,
-    }),
     run: {
       id: input.details.run.id,
       status: input.details.run.status,

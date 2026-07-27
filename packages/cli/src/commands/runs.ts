@@ -2,7 +2,7 @@ import type { Readable, Writable } from "node:stream";
 import { Command } from "commander";
 import { tryParseDurationMs } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, pruneRuns as pruneRuntimeRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type FollowRunInspectionQuery, type PreparedRunWorkflow, type PruneReport, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunInspectionRevision, type RunRecord } from "@acpus/runtime";
+import { deleteRun as deleteRuntimeRun, getRun, getRunInspection, listArtifacts, listRuns, pruneRuns as pruneRuntimeRuns, tryNormalizeForkInput, type ArtifactRecord, type DaemonControlIntent, type DaemonControlResult, type FollowRunInspectionQuery, type PreparedRunWorkflow, type PruneReport, type RunDetails, type RunInspectionError, type RunInspectionQuery, type RunRecord } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
 import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followRun, parseFollowInterval } from "../run-follow.js";
@@ -56,7 +56,6 @@ type InspectRunOptions = JsonOutputOptions & {
   limit?: string;
   before?: string;
   follow?: boolean;
-  after?: string;
   interval?: string;
   raw?: boolean;
 };
@@ -98,7 +97,6 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--before <page-cursor>", "read an older Timeline page")
     .option("--all", "expand every dynamic run context")
     .option("--follow", "follow run status until completion or Ctrl-C")
-    .option("--after <revision>", "resume follow after an inspection revision")
     .option("--interval <duration>", "refresh followed status (default: 1s, minimum: 250ms)")
     .option("--raw", "emit the raw scheduler inspection bundle (requires --json)")
     ).action(async (runId: string | undefined, options: InspectRunOptions) => {
@@ -203,7 +201,6 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
     const followQuery: FollowRunInspectionQuery = {
       ...query,
       intervalMs: parseFollowInterval(options.interval),
-      ...(options.after === undefined ? {} : { after: options.after as RunInspectionRevision }),
     };
     const outcome = await followRun(ctx.cwd, followQuery, {
       phase: "inspect",
@@ -310,9 +307,6 @@ function validateInspectOptions(options: InspectRunOptions): void {
   if (options.before !== undefined && options.before.trim().length === 0) {
     throw usageError("--before must be a non-empty cursor.");
   }
-  if (options.after !== undefined && options.after.trim().length === 0) {
-    throw usageError("--after must be a non-empty revision.");
-  }
   if (options.target !== undefined && options.all) throw usageError("--target cannot be used with --all.");
   if (options.timeline && options.target === undefined) throw usageError("--timeline requires --target.");
   if (options.timeline && (options.all || options.raw)) throw usageError("--timeline cannot be used with --all or --raw.");
@@ -321,10 +315,9 @@ function validateInspectOptions(options: InspectRunOptions): void {
   if (options.limit !== undefined && (!/^\d+$/.test(options.limit) || Number(options.limit) < 1 || Number(options.limit) > 50)) {
     throw usageError("--limit must be an integer from 1 to 50.");
   }
-  if (options.before !== undefined && (options.follow || options.after !== undefined)) {
-    throw usageError("--before cannot be used with --follow or --after.");
+  if (options.before !== undefined && options.follow) {
+    throw usageError("--before cannot be used with --follow.");
   }
-  if (options.after !== undefined && !options.follow) throw usageError("--after requires --follow.");
   if (options.interval !== undefined && !options.follow) throw usageError("--interval requires --follow.");
   if (options.raw && outputFormatFor(options) !== "json") throw usageError("--raw requires --json.");
   if (options.raw && (options.follow || options.all || options.target !== undefined)) {

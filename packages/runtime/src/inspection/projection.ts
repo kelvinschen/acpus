@@ -17,7 +17,6 @@ import type {
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../scheduler/identity.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
 import { compactSchemaSummary } from "../schema-summary.js";
-import { decodeInspectionRevision, inspectionRevision } from "./revision.js";
 import type {
   AgentDecisionState,
   AgentInspectionState,
@@ -25,7 +24,6 @@ import type {
   RunInspectionChange,
   RunInspectionControl,
   RunInspectionContext,
-  RunInspectionCursor,
   RunInspectionDocument,
   RunInspectionDetailedFailure,
   RunInspectionItem,
@@ -63,7 +61,6 @@ export function projectRunInspection(input: {
   ir: WorkflowIR;
   run: RunDetails;
   artifacts: ArtifactRecord[];
-  cursor: RunInspectionCursor;
   query: RunInspectionQuery;
   availableControls?: readonly RunInspectionControl[];
 }): RunInspectionDocument | undefined {
@@ -71,7 +68,6 @@ export function projectRunInspection(input: {
     return {
       schemaVersion: 2,
       kind: "raw",
-      revision: inspectionRevision({ runId: input.run.id, query: input.query, cursor: input.cursor }),
       run: input.run,
       workflow: input.ir,
       artifacts: input.artifacts,
@@ -83,7 +79,6 @@ export function projectRunInspection(input: {
       input.ir,
       input.run,
       input.artifacts,
-      input.cursor,
       staticNodes,
       input.query.target,
       input.query.context ?? [],
@@ -96,7 +91,6 @@ export function projectRunInspection(input: {
   return projectSnapshot(
     input.ir,
     input.run,
-    input.cursor,
     staticNodes,
     input.query.mode === "all",
     input.availableControls ?? [],
@@ -152,10 +146,11 @@ export function semanticChanges(events: readonly CommittedRuntimeEventRow[], doc
   });
 }
 
-export function progressChanges(previous: RunInspectionDocument, current: RunInspectionDocument): RunInspectionChange[] {
-  const previousCursor = decodeInspectionRevision(previous.revision);
-  const currentCursor = decodeInspectionRevision(current.revision);
-  if (!previousCursor || !currentCursor || currentCursor.progress === previousCursor.progress) return [];
+export function progressChanges(
+  previous: RunInspectionDocument,
+  current: RunInspectionDocument,
+  progressVersion: number,
+): RunInspectionChange[] {
   const beforeItems = new Map(inspectionItems(previous).map(item => [item.key, item]));
   const afterItems = inspectionItems(current);
   const occurrenceCounts = inspectionOccurrenceCounts(afterItems);
@@ -167,7 +162,7 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
     action: "progress",
     status: item.status,
     ...(item.attemptNo === undefined ? {} : { attemptNo: item.attemptNo }),
-    progressVersion: currentCursor.progress,
+    progressVersion,
     itemKey: item.key,
   }));
   if (current.kind !== "details") return changes;
@@ -186,7 +181,7 @@ export function progressChanges(previous: RunInspectionDocument, current: RunIns
       action: "progress",
       status: normalizeInspectionStatus(value.status),
       ...(value.attemptNo === undefined ? {} : { attemptNo: value.attemptNo }),
-      progressVersion: currentCursor.progress,
+      progressVersion,
       ...(item ? { itemKey: item.key } : {}),
       ...(value.message ? { message: value.message } : {}),
     });
@@ -241,7 +236,6 @@ export function terminalRun(status: string): boolean {
 function projectSnapshot(
   ir: WorkflowIR,
   run: RunDetails,
-  cursor: RunInspectionCursor,
   staticNodes: RunInspectionStaticNode[],
   all: boolean,
   availableControls: readonly RunInspectionControl[],
@@ -280,7 +274,6 @@ function projectSnapshot(
   return {
     schemaVersion: 2,
     kind: "snapshot",
-    revision: inspectionRevision({ runId: run.id, query: { mode: all ? "all" : "overview" }, cursor }),
     run: runSummary(ir, run, false),
     counts: inspectionStatusCounts(tree.executionStatuses),
     items: compact.items,
@@ -914,7 +907,6 @@ function projectTarget(
   ir: WorkflowIR,
   run: RunDetails,
   artifacts: ArtifactRecord[],
-  cursor: RunInspectionCursor,
   staticNodes: RunInspectionStaticNode[],
   targetId: string,
   context: RunInspectionContext,
@@ -1007,12 +999,6 @@ function projectTarget(
   return {
     schemaVersion: 2,
     kind: "details",
-    revision: inspectionRevision({
-      runId: run.id,
-      query: { mode: "details", context },
-      resolvedTarget: `${target.kind}:${target.id}`,
-      cursor,
-    }),
     run: runSummary(ir, run, true),
     target,
     ...(resolvedStatic ? { staticNode: resolvedStatic } : {}),

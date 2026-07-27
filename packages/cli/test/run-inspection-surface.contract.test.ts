@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
   RunInspectionEmission,
-  RunInspectionRevision,
   RunInspectionSnapshot,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
@@ -57,7 +56,6 @@ describe("Inspection v2 text surface", () => {
     const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [{ kind: "visibility", visibility: null }],
     };
 
@@ -183,7 +181,6 @@ describe("Inspection v2 text surface", () => {
     const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [
         {
           kind: "current",
@@ -212,7 +209,7 @@ describe("Inspection v2 text surface", () => {
 
     const updated = applyRunInspectionUpdate(initial, delta);
 
-    expect(updated.revision).toBe("rev:2");
+    expect(updated).not.toHaveProperty("revision");
     expect(updated.kind).toBe("timeline");
     if (updated.kind !== "timeline") throw new Error("expected Timeline");
     expect(updated.current?.phase).toBe("settling");
@@ -247,7 +244,6 @@ describe("Inspection v2 text surface", () => {
     const updated = applyRunInspectionUpdate(initial, {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [{
         kind: "recent",
         upsert,
@@ -282,7 +278,6 @@ describe("Inspection v2 text surface", () => {
     const updated = applyRunInspectionUpdate(initial, {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [{
         kind: "current-patch",
         patch: {
@@ -314,7 +309,6 @@ describe("Inspection v2 text surface", () => {
     const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [{
         kind: "current-patch",
         patch: {
@@ -345,7 +339,6 @@ describe("Inspection v2 text surface", () => {
     const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
       schemaVersion: 2,
       kind: "delta",
-      revision: revision("rev:2"),
       changes: [{
         kind: "available-actions",
         availableActions: [
@@ -378,7 +371,6 @@ function targetSummary(
   return {
     schemaVersion: 2,
     kind: "target",
-    revision: revision("rev:1"),
     run: {
       id: "run_1",
       status: "running",
@@ -421,7 +413,6 @@ function overview(): RunInspectionSnapshot {
   return {
     schemaVersion: 2,
     kind: "snapshot",
-    revision: revision("rev:1"),
     run: {
       id: "run_1",
       name: "review",
@@ -457,7 +448,6 @@ function timeline(): RunInspectionTimelineDocument {
   return {
     schemaVersion: 2,
     kind: "timeline",
-    revision: revision("rev:1"),
     run: {
       id: "run_1",
       status: "running",
@@ -549,8 +539,4 @@ function timeline(): RunInspectionTimelineDocument {
       retentionOmittedBefore: 7,
     },
   };
-}
-
-function revision(value: string): RunInspectionRevision {
-  return value as RunInspectionRevision;
 }

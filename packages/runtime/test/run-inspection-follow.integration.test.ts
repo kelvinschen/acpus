@@ -7,9 +7,8 @@ import type { Result } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { followRunInspection, getRunInspection } from "../src/inspection/use-cases.js";
 import { AgentObservationLog } from "../src/observations/log.js";
-import { decodeTimelinePageCursor } from "../src/inspection/revision.js";
+import { decodeTimelinePageCursor } from "../src/inspection/timeline-cursor.js";
 import type {
-  FollowRunInspectionQuery,
   RunInspectionEmission,
   RunInspectionError,
 } from "../src/inspection/types.js";
@@ -67,6 +66,57 @@ describe("run inspection follow", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("starts a terminal follow with a fresh snapshot before done", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-done", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      try {
+        const claim = store.scheduler.claimRun(run.id, "inspection-done", 60_000);
+        if (!claim) throw new Error("expected run claim");
+        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+          runId: run.id,
+          expectedVersion: 1,
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "inspection:done",
+          events: [
+            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+            { type: "frame.completed", payload: { frameKey: "root", result: { ok: true }, terminalReason: "root_completed" } },
+          ],
+        });
+
+        const emissions: RunInspectionEmission[] = [];
+        for await (const result of followRunInspection(workspace, {
+          runId: run.id,
+          mode: "overview",
+          intervalMs: 250,
+        })) {
+          if (result.isErr()) throw result.error;
+          emissions.push(result.value);
+        }
+
+        expect(emissions).toEqual([
+          expect.objectContaining({
+            schemaVersion: 2,
+            kind: "snapshot",
+            document: expect.objectContaining({
+              kind: "snapshot",
+              run: expect.objectContaining({ id: run.id, status: "completed" }),
+            }),
+          }),
+          {
+            schemaVersion: 2,
+            kind: "done",
+            run: { id: run.id, status: "completed" },
+            output: { ok: true },
+          },
+        ]);
+        expect(emissions.some(emission => "revision" in emission)).toBe(false);
+      } finally {
+        store.close();
+      }
+    });
   });
 
   it("emits compact Agent activity once and coalesces rapid metric-only updates", async () => {
@@ -150,67 +200,6 @@ describe("run inspection follow", () => {
       } finally {
         controller.abort();
         await iterator.return?.();
-        store.close();
-      }
-    });
-  });
-
-  it("does not replay metric-only Agent progress when resuming any decision view", async () => {
-    await withRuntimeWorkspace("run-inspection-follow-resume-metrics", async workspace => {
-      const store = await admittedAgentStore(workspace);
-      const run = store.listRuns()[0]!;
-      const attempt = startAgent(store, run.id);
-      const writeProgress = (used: number, totalTokens: number) => store.writeNodeProgress({
-        runId: run.id,
-        nodeKey: "observe~1",
-        nodeId: "observe",
-        attemptId: attempt.attemptId,
-        attemptNo: attempt.attemptNo,
-        ownerEpoch: attempt.ownerEpoch,
-        kind: "agent",
-        status: "running",
-        context: { used, size: 200_000 },
-        tokenUsage: { inputTokens: totalTokens - 100, outputTokens: 100, totalTokens },
-        tools: { turn: 1, totalToolCallCount: 1, lastCalls: [{ toolName: "Read", status: "running" }] },
-      });
-      try {
-        writeProgress(1_000, 1_000);
-        const [overview, target, timeline] = await Promise.all([
-          getRunInspection(workspace, { runId: run.id, mode: "overview" }),
-          getRunInspection(workspace, { runId: run.id, mode: "target", target: attempt.attemptId }),
-          getRunInspection(workspace, { runId: run.id, mode: "timeline", target: attempt.attemptId }),
-        ]);
-        if (overview.isErr() || target.isErr() || timeline.isErr()) {
-          throw new Error("expected resumable inspection documents");
-        }
-        writeProgress(1_100, 1_100);
-        const queries = [
-          { runId: run.id, mode: "overview", after: overview.value.revision },
-          { runId: run.id, mode: "target", target: attempt.attemptId, after: target.value.revision },
-          { runId: run.id, mode: "timeline", target: attempt.attemptId, after: timeline.value.revision },
-        ] satisfies FollowRunInspectionQuery[];
-
-        for (const query of queries) {
-          const controller = new AbortController();
-          const iterator = followRunInspection(workspace, {
-            ...query,
-            intervalMs: 250,
-            signal: controller.signal,
-          })[Symbol.asyncIterator]();
-          try {
-            const pending = iterator.next();
-            let settled = false;
-            void pending.then(() => { settled = true; });
-            await vi.advanceTimersByTimeAsync(250);
-            expect(settled).toBe(false);
-            controller.abort();
-            expect((await pending).done).toBe(true);
-          } finally {
-            controller.abort();
-            await iterator.return?.();
-          }
-        }
-      } finally {
         store.close();
       }
     });
@@ -321,46 +310,52 @@ describe("run inspection follow", () => {
         });
         expect(inspected.value.evidence).toBeUndefined();
 
-        const restorationDb = new DatabaseSync(runtimeDatabasePath(workspace));
-        try {
-          const row = restorationDb.prepare("SELECT observation_version FROM runs WHERE id = ?")
-            .get(run.id) as { observation_version: number };
-          const version = row.observation_version + 1;
-          restorationDb.exec("BEGIN IMMEDIATE");
-          restorationDb.prepare(`
-            UPDATE agent_observation_turns
-            SET degraded = 0, gap_count = 0
-            WHERE run_id = ? AND attempt_id = ?
-          `).run(run.id, attempt.attemptId);
-          restorationDb.prepare(`
-            UPDATE agent_observation_attempts
-            SET latest_observation_version = ?
-            WHERE run_id = ? AND attempt_id = ?
-          `).run(version, run.id, attempt.attemptId);
-          restorationDb.prepare(`
-            UPDATE runs
-            SET observation_version = ?, observation_updated_at = ?
-            WHERE id = ?
-          `).run(version, new Date().toISOString(), run.id);
-          restorationDb.exec("COMMIT");
-        } catch (error) {
-          restorationDb.exec("ROLLBACK");
-          throw error;
-        } finally {
-          restorationDb.close();
-        }
-
         const controller = new AbortController();
         const iterator = followRunInspection(workspace, {
           runId: run.id,
           mode: "target",
           target: "observe~1",
-          after: inspected.value.revision,
           intervalMs: 250,
           signal: controller.signal,
         })[Symbol.asyncIterator]();
         try {
           expect(await nextEmission(iterator)).toMatchObject({
+            kind: "snapshot",
+            document: {
+              kind: "target",
+              visibility: { state: "degraded", reason: "observation-gap" },
+            },
+          });
+          const restorationDb = new DatabaseSync(runtimeDatabasePath(workspace));
+          try {
+            const row = restorationDb.prepare("SELECT observation_version FROM runs WHERE id = ?")
+              .get(run.id) as { observation_version: number };
+            const version = row.observation_version + 1;
+            restorationDb.exec("BEGIN IMMEDIATE");
+            restorationDb.prepare(`
+              UPDATE agent_observation_turns
+              SET degraded = 0, gap_count = 0
+              WHERE run_id = ? AND attempt_id = ?
+            `).run(run.id, attempt.attemptId);
+            restorationDb.prepare(`
+              UPDATE agent_observation_attempts
+              SET latest_observation_version = ?
+              WHERE run_id = ? AND attempt_id = ?
+            `).run(version, run.id, attempt.attemptId);
+            restorationDb.prepare(`
+              UPDATE runs
+              SET observation_version = ?, observation_updated_at = ?
+              WHERE id = ?
+            `).run(version, new Date().toISOString(), run.id);
+            restorationDb.exec("COMMIT");
+          } catch (error) {
+            restorationDb.exec("ROLLBACK");
+            throw error;
+          } finally {
+            restorationDb.close();
+          }
+
+          expect(await nextPolledEmission(iterator)).toMatchObject({
             kind: "delta",
             changes: expect.arrayContaining([{ kind: "visibility", visibility: null }]),
           });
@@ -1116,18 +1111,24 @@ describe("run inspection follow", () => {
     });
   });
 
-  it("resumes a Timeline with only semantic observation deltas after the opaque revision", async () => {
-    await withRuntimeWorkspace("run-inspection-follow-observation-resume", async workspace => {
+  it("emits Timeline semantic observation deltas within one follow connection", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-observation-delta", async workspace => {
       const store = await admittedAgentStore(workspace);
       const run = store.listRuns()[0]!;
       const attempt = startAgent(store, run.id);
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "timeline",
+        target: attempt.attemptId,
+        intervalMs: 250,
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
       try {
-        const initial = await getRunInspection(workspace, {
-          runId: run.id,
-          mode: "timeline",
-          target: attempt.attemptId,
+        expect(await nextEmission(iterator)).toMatchObject({
+          kind: "snapshot",
+          document: { kind: "timeline" },
         });
-        if (initial.isErr() || initial.value.kind !== "timeline") throw new Error("expected Timeline snapshot");
 
         await store.observationLog.captureTurn({
           runId: run.id,
@@ -1138,7 +1139,7 @@ describe("run inspection follow", () => {
           turn: 1,
           promptKind: "task",
           agentKey: "observer",
-          sessionName: "inspection-observation-resume",
+          sessionName: "inspection-observation-delta",
           cwd: workspace,
           trace: false,
         }, {
@@ -1146,84 +1147,34 @@ describe("run inspection follow", () => {
           prompt: "Inspect",
           cwd: workspace,
           env: {},
-          sessionName: "inspection-observation-resume",
+          sessionName: "inspection-observation-delta",
           permissionMode: "deny-all",
         });
 
-        const controller = new AbortController();
-        const iterator = followRunInspection(workspace, {
-          runId: run.id,
-          mode: "timeline",
-          target: attempt.attemptId,
-          after: initial.value.revision,
-          intervalMs: 250,
-          signal: controller.signal,
-        })[Symbol.asyncIterator]();
-        try {
-          const resumed = await nextEmission(iterator);
-          expect(resumed).toMatchObject({
-            kind: "delta",
-            changes: expect.arrayContaining([
-              expect.objectContaining({
-                kind: "recent",
-                upsert: [expect.objectContaining({
-                  kind: "activity",
-                  channel: "response",
-                  summary: expect.objectContaining({ text: "durable observation" }),
-                })],
-              }),
-            ]),
-          });
-          expect(resumed.kind).not.toBe("snapshot");
-          expect(resumed.kind).not.toBe("resync");
-          if (resumed.kind !== "delta") throw new Error("expected resumed Timeline delta");
-          const recentIndex = resumed.changes.findIndex(change => change.kind === "recent");
-          const currentIndex = resumed.changes.findIndex(change =>
-            change.kind === "current" || change.kind === "current-patch");
-          expect(recentIndex).toBeGreaterThanOrEqual(0);
-          expect(currentIndex).toBeGreaterThan(recentIndex);
-          expect(resumed.changes.some(change => change.kind === "visibility")).toBe(false);
-        } finally {
-          controller.abort();
-          await iterator.return?.();
-        }
+        const delta = await nextPolledEmission(iterator);
+        expect(delta).toMatchObject({
+          kind: "delta",
+          changes: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "recent",
+              upsert: [expect.objectContaining({
+                kind: "activity",
+                channel: "response",
+                summary: expect.objectContaining({ text: "durable observation" }),
+              })],
+            }),
+          ]),
+        });
+        if (delta.kind !== "delta") throw new Error("expected Timeline delta");
+        const recentIndex = delta.changes.findIndex(change => change.kind === "recent");
+        const currentIndex = delta.changes.findIndex(change =>
+          change.kind === "current" || change.kind === "current-patch");
+        expect(recentIndex).toBeGreaterThanOrEqual(0);
+        expect(currentIndex).toBeGreaterThan(recentIndex);
+        expect(delta.changes.some(change => change.kind === "visibility")).toBe(false);
       } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("rejects a Timeline revision resumed with a different page limit", async () => {
-    await withRuntimeWorkspace("run-inspection-follow-revision-limit", async workspace => {
-      const store = await admittedAgentStore(workspace);
-      const run = store.listRuns()[0]!;
-      const attempt = startAgent(store, run.id);
-      try {
-        const initial = await getRunInspection(workspace, {
-          runId: run.id,
-          mode: "timeline",
-          target: attempt.attemptId,
-          page: { limit: 12 },
-        });
-        if (initial.isErr() || initial.value.kind !== "timeline") throw new Error("expected Timeline snapshot");
-        const iterator = followRunInspection(workspace, {
-          runId: run.id,
-          mode: "timeline",
-          target: attempt.attemptId,
-          page: { limit: 1 },
-          after: initial.value.revision,
-          intervalMs: 250,
-        })[Symbol.asyncIterator]();
-
-        const result = await iterator.next();
-        expect(result.done).toBe(false);
-        expect(result.value?.isErr() && result.value.error).toMatchObject({
-          type: "invalid-cursor",
-          runId: run.id,
-          target: attempt.attemptId,
-        });
+        controller.abort();
         await iterator.return?.();
-      } finally {
         store.close();
       }
     });

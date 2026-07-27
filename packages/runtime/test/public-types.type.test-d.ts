@@ -29,7 +29,6 @@ import type {
   RunInspectionPatch,
   RunInspectionQuery,
   RunInspectionRaw,
-  RunInspectionRevision,
   RunInspectionRunSummary,
   RunInspectionSnapshot,
   RunInspectionScopeState,
@@ -260,8 +259,13 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   }>();
   expectTypeOf<Extract<RunInspectionEmission, { kind: "delta" }>["changes"][number]>().toEqualTypeOf<RunInspectionDelta>();
   expectTypeOf<Extract<RunInspectionEmission, { kind: "snapshot" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<RunInspectionRevision>().toMatchTypeOf<string>();
-  expectTypeOf<string>().not.toMatchTypeOf<RunInspectionRevision>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionEmission>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionSnapshot>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTargetSummaryDocument>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTimelineDocument>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTargetDetailsDocument>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionRaw>();
   expectTypeOf<Extract<RunInspectionQuery, { mode: "timeline" }>["page"]>().toEqualTypeOf<{ limit?: number; before?: string } | undefined>();
   expectTypeOf<Extract<RunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<{
     runId: string;
@@ -269,7 +273,7 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     target: string;
     context?: RunInspectionContext;
   }>();
-  expectTypeOf<FollowRunInspectionQuery["after"]>().toEqualTypeOf<RunInspectionRevision | undefined>();
+  expectTypeOf<"after">().not.toMatchTypeOf<keyof FollowRunInspectionQuery>();
   expectTypeOf<Extract<FollowRunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<never>();
   expectTypeOf<Extract<RunInspectionTargetSummaryDocument, { kind: "target" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionTimelineDocument, { kind: "timeline" }>["schemaVersion"]>().toEqualTypeOf<2>();

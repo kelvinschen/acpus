@@ -847,7 +847,6 @@ function executionInspection(): JsonBody {
   return {
     schemaVersion: 2,
     kind: "execution",
-    revision: "inspection-v2:execution",
     run: {
       id: "run_1",
       status: "running",
@@ -917,7 +916,6 @@ function targetInspection(overrides: {
   return {
     schemaVersion: 2,
     kind: "details",
-    revision: "inspection-v2:test",
     run: {
       id: "run_1",
       name: "review-workflow",

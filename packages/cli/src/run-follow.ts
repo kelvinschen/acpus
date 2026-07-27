@@ -97,7 +97,6 @@ export async function followRun(
   if (detached) {
     const stream = options.format === "ndjson" ? options.stderr : options.stdout;
     stream.write(`Detached from run ${query.runId}. Background daemon continues running.\n`);
-    stream.write(`Resume: ${resumeCommand(query, presenter.revision ?? query.after)}\n`);
     stream.write(`Cancel: acpus runs cancel ${query.runId}\n`);
     return { kind: "detached" };
   }
@@ -122,7 +121,6 @@ class RunFollowPresenter {
   private transcriptContextCount = 0;
   private readonly pendingTranscriptOmissions = new Map<string, RunInspectionChange>();
   private lastTranscriptOmissionAt: number | undefined;
-  revision: string | undefined;
 
   constructor(
     private readonly options: FollowOptions,
@@ -132,7 +130,6 @@ class RunFollowPresenter {
   ) {}
 
   emission(emission: RunInspectionEmission): void {
-    this.revision = emission.revision;
     if (this.options.format === "ndjson") {
       this.writeJson(emission);
       return;
@@ -568,16 +565,6 @@ function withoutTerminalOutput(document: FollowableInspectionDocument): Followab
   const snapshot = { ...document };
   delete snapshot.output;
   return snapshot;
-}
-
-function resumeCommand(query: FollowRunInspectionQuery, revision: string | undefined): string {
-  const target = "target" in query ? ` --target ${query.target}` : "";
-  const timeline = query.mode === "timeline" ? " --timeline" : query.mode === "all" ? " --all" : "";
-  const limit = query.mode === "timeline" && query.page?.limit !== undefined
-    ? ` --limit ${query.page.limit}`
-    : "";
-  const after = revision ? ` --after ${revision}` : "";
-  return `acpus runs inspect ${query.runId}${target}${timeline}${limit} --follow${after}`;
 }
 
 function writeFollowError(error: RunInspectionError, options: FollowOptions): void {

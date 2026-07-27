@@ -20,7 +20,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
-| `runs inspect [run-id]` | `--target`, `--timeline`, `--limit`, `--before`, `--follow`, `--after`, `--interval`, `--all`, and `--raw` as constrained below. |
+| `runs inspect [run-id]` | `--target`, `--timeline`, `--limit`, `--before`, `--follow`, `--interval`, `--all`, and `--raw` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
@@ -117,9 +117,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `--timeline` MUST conflict with `--all` and `--raw`.
 - `--limit` and `--before` MUST require `--timeline`.
 - `--limit` MUST accept only integers from 1 through 50.
-- `--before` MUST conflict with `--follow` and `--after`.
-- `--after` MUST require `--follow`.
-- `--after` MUST conflict with `--before`.
+- `--before` MUST conflict with `--follow`.
 - `--all` MUST conflict with `--target`.
 - `--raw` MUST require JSON and conflict with target, timeline, all, and follow.
 - Empty or whitespace-only target input MUST fail as usage before reading Runtime state.
@@ -223,8 +221,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful foreground run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
 - Foreground admitted JSON and replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
 - Foreground run text MUST write preparation diagnostics once before follow; replacement-fork text MUST use the ordinary diagnostic presentation.
-- Inspect follow with `--after` MUST omit the initial snapshot and resume from the supplied opaque revision.
-- An invalid `--after` or `--before` value MUST surface Runtime's typed invalid-cursor failure.
+- An invalid `--before` value MUST surface Runtime's typed invalid-cursor failure.
 - A non-usage one-shot inspection JSON failure MUST expose the Runtime-owned typed failure as `inspectionError`, preserving `runId`, `target`, and `candidateKeys` when present.
 - Public `inspectionError` MUST NOT expose a Runtime failure cause.
 - A foreground run admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
@@ -293,7 +290,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 ## Verification
 
 - Cover leaf-local JSON capability boundaries, inspection pagination/follow grammar conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
-- `pnpm test:contract packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, opaque follow resume, and bounded semantic-delta rendering.
+- `pnpm test:contract packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, initial follow snapshots, and bounded semantic-delta rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
 - Cover direct outside paths, live project paths, compiler-owned global snapshots, checked-import diagnostics, exact raw-stdin mapping and command plumbing, and exact daemon protocol rejection without mutation or replacement.

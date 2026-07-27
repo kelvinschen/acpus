@@ -373,9 +373,10 @@ describe("CLI program usage contracts", () => {
     expect(await runCli(["runs", "inspect", "--help"], {
       cwd: process.cwd(), stdout: inspectStdout, stderr: inspectStderr,
     })).toBe(0);
-    for (const option of ["--target", "--timeline", "--limit", "--before", "--all", "--follow", "--after", "--interval", "--raw", "--json"]) {
+    for (const option of ["--target", "--timeline", "--limit", "--before", "--all", "--follow", "--interval", "--raw", "--json"]) {
       expect(inspectStdout.text).toContain(option);
     }
+    expect(inspectStdout.text).not.toContain("--after");
 
     const runStdout = new CaptureStream();
     const runStderr = new CaptureStream();
@@ -456,8 +457,8 @@ describe("CLI program usage contracts", () => {
       { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--limit", "0", "--json"], message: "--limit must be an integer from 1 to 50" },
       { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--limit", "51", "--json"], message: "--limit must be an integer from 1 to 50" },
       { argv: ["runs", "inspect", "run_1", "--before", "page", "--json"], message: "--before requires --timeline" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--before", "page", "--follow", "--json"], message: "--before cannot be used with --follow or --after" },
-      { argv: ["runs", "inspect", "run_1", "--after", "revision", "--json"], message: "--after requires --follow" },
+      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--before", "page", "--follow", "--json"], message: "--before cannot be used with --follow" },
+      { argv: ["runs", "inspect", "run_1", "--after", "revision", "--json"], message: "unknown option '--after'" },
       { argv: ["runs", "inspect", "run_1", "--interval", "1s", "--json"], message: "--interval requires --follow" },
       { argv: ["runs", "inspect", "run_1", "--follow", "--interval", "100ms", "--json"], message: "--interval must be at least 250ms" },
       { argv: ["runs", "inspect", "run_1", "--raw", "--follow", "--json"], message: "--raw cannot be used" },

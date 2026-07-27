@@ -517,7 +517,7 @@ type DaemonSteerControlResult = {
 
 | Mode | Projection |
 | --- | --- |
-| overview | Versioned compact occurrence tree, exact status counts, opaque revision, sparse items, available operations, omitted counts, terminal output. |
+| overview | Versioned compact occurrence tree, exact status counts, sparse items, available operations, omitted counts, terminal output. |
 | all | Complete occurrence-expanded execution tree without exposing raw tables. |
 | target | Bounded decision summary for one static node, dynamic node, frame, or attempt; an exact Agent attempt includes a bounded evidence capsule. |
 | timeline | Bounded current activity plus the latest closed semantic history for one resolved target. |
@@ -540,10 +540,6 @@ type RunInspectionQuery =
   | { runId: string; mode: "details"; target: string; context?: RunInspectionContext }
   | { runId: string; mode: "execution"; target: string; context?: RunInspectionContext }
   | { runId: string; mode: "raw" };
-
-declare const inspectionRevisionBrand: unique symbol;
-type RunInspectionRevision =
-  string & { readonly [inspectionRevisionBrand]: true };
 ```
 
 Execution mode MUST use this closed document shape.
@@ -578,7 +574,6 @@ type RunInspectionAgentExecutionDocument = ({
 }) & {
   schemaVersion: 2;
   kind: "execution";
-  revision: RunInspectionRevision;
   run: {
     id: string;
     status: RunStatus;
@@ -630,13 +625,10 @@ type RunInspectionAgentExecutionDocument = ({
 - Raw mode MUST NOT append Private Turn Evidence, private Trace bodies, or provider raw payloads.
 - The public query union MUST use `context` only for target, timeline, details, and execution resolution; target accepts only `view?: "summary"`, while timeline accepts only `page?: { limit?: number; before?: string }`.
 - Inspection schema version 2 MUST replace prior inspection schemas without a compatibility shim.
-- Every followable inspection document MUST contain an opaque branded revision.
-- A revision MUST bind the run, query/view fingerprint, resolved target identity, scheduler event sequence, progress version, observation version, encoding version, and bounded activity/visibility fingerprints needed to resume without replaying telemetry-only changes.
-- A caller MUST treat a revision as an opaque save/compare/replay value.
 - A timeline page cursor MUST be opaque and bind the run, resolved target, ordering version, and page boundary.
 - Opaque encodings MUST bind authored target identities through fixed-size fingerprints rather than copy unbounded authored text into bounded inspection documents.
-- A revision or page cursor used with a different run, query, view, or target MUST return typed `invalid-cursor`.
-- An unsupported revision or page-cursor encoding version MUST return typed `invalid-cursor`.
+- A timeline page cursor used with a different run or resolved target MUST return typed `invalid-cursor`.
+- An unsupported timeline page-cursor encoding version MUST return typed `invalid-cursor`.
 - A timeline page cursor whose boundary has expired from semantic retention MUST return typed `invalid-cursor`.
 - Ambiguous target resolution MUST return typed `target-ambiguous` with deterministically sorted candidate node keys when the requested view requires one occurrence.
 - `target-ambiguous` MUST contain the run id, requested target, sorted `candidateKeys`, and message.
@@ -647,7 +639,6 @@ type RunInspectionAgentExecutionDocument = ({
 type RunInspectionTargetSummaryDocument = {
   schemaVersion: 2;
   kind: "target";
-  revision: RunInspectionRevision;
   run: { id: string; status: RunStatus; updatedAt: string };
   subject: {
     targetKind: "static-node" | "dynamic-node" | "frame" | "attempt";
@@ -781,7 +772,6 @@ type AgentAttemptEvidenceCapsule = {
 type RunInspectionTimelineDocument = {
   schemaVersion: 2;
   kind: "timeline";
-  revision: RunInspectionRevision;
   run: { id: string; status: RunStatus; updatedAt: string };
   subject: RunInspectionTargetSummaryDocument["subject"];
   state: RunInspectionTargetSummaryDocument["state"];
@@ -929,16 +919,14 @@ type AgentDecisionState = {
 
 ```ts
 type RunInspectionEmission =
-  | { schemaVersion: 2; kind: "snapshot"; revision: RunInspectionRevision; document: FollowableInspectionDocument }
-  | { schemaVersion: 2; kind: "delta"; revision: RunInspectionRevision; changes: RunInspectionDelta[] }
-  | { schemaVersion: 2; kind: "resync"; revision: RunInspectionRevision; reason: "cursor-gap" | "projection-drift"; document: FollowableInspectionDocument }
-  | { schemaVersion: 2; kind: "done"; revision: RunInspectionRevision; run: { id: string; status: RunStatus }; output?: JsonValue };
+  | { schemaVersion: 2; kind: "snapshot"; document: FollowableInspectionDocument }
+  | { schemaVersion: 2; kind: "delta"; changes: RunInspectionDelta[] }
+  | { schemaVersion: 2; kind: "resync"; reason: "cursor-gap" | "projection-drift"; document: FollowableInspectionDocument }
+  | { schemaVersion: 2; kind: "done"; run: { id: string; status: RunStatus }; output?: JsonValue };
 ```
 
-- Follow without an `after` revision MUST begin with a bounded snapshot.
-- Follow with an `after` revision MUST emit only semantic changes after that revision unless resynchronization is required.
+- Follow MUST begin with a bounded snapshot.
 - A cursor gap or projection drift MUST emit a bounded `resync`.
-- Resuming a timeline from a revision older than the applicable attempt retention floor MUST emit a bounded `projection-drift` resynchronization.
 - Follow MUST emit status, control, fence, tool-start, tool-terminal, failure, and gap changes immediately.
 - Follow MUST emit phase changes immediately.
 - Follow MUST emit accumulated response or intent after at least 512 additional bytes or ten seconds since its preceding emission.
@@ -949,7 +937,6 @@ type RunInspectionEmission =
 - Current-activity deltas MUST use a full replacement only when current identity changes or clears; otherwise they MUST contain only changed fields, using `null` to clear an optional field.
 - An Agent current-activity patch MUST carry its attempt id and optional attempt/turn identity independently of a preceding snapshot.
 - A target available-operation change MUST use `kind: "available-actions"` and the `availableActions` field.
-- A resumed Timeline backlog that cannot fit its entry-count or 8 KiB delta budget MUST emit a bounded `projection-drift` resynchronization instead of silently dropping semantic changes.
 - Visibility degradation and restoration MUST emit an immediate semantic delta.
 - Ordinary coalescing MUST NOT be represented as an observation gap.
 - A 30-second checkpoint MUST NOT repeat activity bodies.
@@ -973,7 +960,7 @@ type RunInspectionEmission =
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, exact retry/cancel control planning, deterministic target ordering, high-cardinality failed-group projection, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, ArtifactRef identity binding/content-integrity separation, verified-read replacement fencing, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, exact bounded Agent execution projection without artifact reads, honest recent-tool incompleteness, revision/cursor binding, and progress beyond internal count limits.
+- `pnpm test:unit packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, exact retry/cancel control planning, deterministic target ordering, high-cardinality failed-group projection, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, ArtifactRef identity binding/content-integrity separation, verified-read replacement fencing, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, exact bounded Agent execution projection without artifact reads, honest recent-tool incompleteness, Timeline cursor binding, and progress beyond internal count limits.
 - `pnpm test:integration packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, read/write parity for projected control targets, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, bound ArtifactRef replacement fencing, exact public verified artifact reads, post-registration Agent/Trace file retention, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.

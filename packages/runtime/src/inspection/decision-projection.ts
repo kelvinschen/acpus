@@ -13,14 +13,13 @@ import {
   normalizeInspectionStatus,
   semanticChanges,
 } from "./projection.js";
-import { inspectionRevision, timelinePageCursor } from "./revision.js";
+import { timelinePageCursor } from "./timeline-cursor.js";
 import type {
   AgentAttemptEvidenceCapsule,
   AgentCurrentActivity,
   RunInspectionAction,
   RunInspectionAttention,
   RunInspectionCurrentActivity,
-  RunInspectionCursor,
   RunInspectionExcerpt,
   RunInspectionPulse,
   RunInspectionQuery,
@@ -53,8 +52,6 @@ const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "cance
 export function projectTargetSummary(input: {
   run: RunDetails;
   details: RunInspectionTargetDetailsDocument;
-  cursor: RunInspectionCursor;
-  query: Extract<RunInspectionQuery, { mode: "target" }>;
   observations?: AgentObservationInspectionProjection;
   runDir?: string;
 }): RunInspectionTargetSummaryDocument {
@@ -73,12 +70,6 @@ export function projectTargetSummary(input: {
   const document: RunInspectionTargetSummaryDocument = {
     schemaVersion: 2,
     kind: "target",
-    revision: inspectionRevision({
-      runId: input.run.id,
-      query: input.query,
-      resolvedTarget: resolvedTargetIdentity(input.details),
-      cursor: input.cursor,
-    }),
     run: { id: input.run.id, status: input.run.status, updatedAt: input.run.updatedAt },
     subject,
     state,
@@ -200,7 +191,6 @@ function boundedString(value: string, bytes: number): string {
 export function projectTimeline(input: {
   run: RunDetails;
   details: RunInspectionTargetDetailsDocument;
-  cursor: RunInspectionCursor;
   query: Extract<RunInspectionQuery, { mode: "timeline" }>;
   events: readonly CommittedRuntimeEventRow[];
   observations: AgentObservationInspectionProjection;
@@ -234,12 +224,6 @@ export function projectTimeline(input: {
   return {
     schemaVersion: 2,
     kind: "timeline",
-    revision: inspectionRevision({
-      runId: input.run.id,
-      query: input.query,
-      resolvedTarget: resolvedTargetIdentity(input.details),
-      cursor: input.cursor,
-    }),
     run: { id: input.run.id, status: input.run.status, updatedAt: input.run.updatedAt },
     subject,
     state,
@@ -247,34 +231,6 @@ export function projectTimeline(input: {
     ...(current ? { current } : {}),
     recent,
   };
-}
-
-export function timelineEntriesAfter(input: {
-  run: RunDetails;
-  details: RunInspectionTargetDetailsDocument;
-  events: readonly CommittedRuntimeEventRow[];
-  observations: AgentObservationInspectionProjection;
-  afterObservationVersion: number;
-}): RunInspectionTimelineEntry[] {
-  const allowedAttemptIds = new Set(timelineAttemptIds(input.details));
-  const newObservationEntries = observationTimelineEntries(
-    input.observations,
-    input.details,
-    allowedAttemptIds,
-    input.afterObservationVersion,
-  );
-  return [
-    ...newObservationEntries,
-    ...schedulerTimelineEntries(input.events, input.details, input.run, input.observations),
-  ].sort(compareTimelineEntries);
-}
-
-export function timelineHasRelevantEvents(input: {
-  run: RunDetails;
-  details: RunInspectionTargetDetailsDocument;
-  events: readonly CommittedRuntimeEventRow[];
-}): boolean {
-  return schedulerTimelineEntries(input.events, input.details, input.run).length > 0;
 }
 
 export function resolvedTargetIdentity(details: RunInspectionTargetDetailsDocument): string {
@@ -754,12 +710,10 @@ function observationTimelineEntries(
   observations: AgentObservationInspectionProjection,
   details: RunInspectionTargetDetailsDocument,
   allowedAttemptIds: ReadonlySet<string>,
-  afterObservationVersion?: number,
 ): RunInspectionTimelineEntry[] {
   const attemptNoById = new Map(details.attempts.map(attempt => [attempt.attemptId, attempt.attemptNo]));
   return observations.entries
-    .filter(entry => allowedAttemptIds.has(entry.attemptId)
-      && (afterObservationVersion === undefined || entry.observationVersion > afterObservationVersion))
+    .filter(entry => allowedAttemptIds.has(entry.attemptId))
     .map(entry => entry.kind === "activity"
       ? {
           id: entry.id,

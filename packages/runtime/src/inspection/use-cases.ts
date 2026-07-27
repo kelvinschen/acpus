@@ -21,8 +21,6 @@ import {
   projectTimeline,
   resolvedTargetIdentity,
   targetAttemptId,
-  timelineEntriesAfter,
-  timelineHasRelevantEvents,
   timelineAttemptIds,
 } from "./decision-projection.js";
 import { projectAgentExecution } from "./agent-execution-projection.js";
@@ -34,12 +32,9 @@ import {
   terminalRun,
 } from "./projection.js";
 import {
-  decodeInspectionRevision,
   decodeTimelinePageCursor,
-  inspectionFingerprint,
-  inspectionRevisionWithState,
   inspectionTargetFingerprint,
-} from "./revision.js";
+} from "./timeline-cursor.js";
 import type {
   FollowRunInspectionQuery,
   FollowableInspectionDocument,
@@ -54,14 +49,11 @@ import type {
   RunInspectionControl,
   RunInspectionTargetDetailsDocument,
   RunInspectionTargetSummaryDocument,
-  RunInspectionTimelineEntry,
   RunInspectionTimelineDocument,
 } from "./types.js";
 
 const responseEmissionBytes = 512;
 const activityEmissionIntervalMs = 10_000;
-const timelineDefaultLimit = 12;
-const timelineResumeBodyBytes = 8 * 1024;
 
 export function getRunInspection(cwd: string, query: RunInspectionQuery): ResultAsync<RunInspectionDocument, RunInspectionError> {
   return new ResultAsync(readInspection(cwd, query));
@@ -77,12 +69,7 @@ export async function* followRunInspection(
     return;
   }
 
-  const after = query.after ? decodeInspectionRevision(query.after) : undefined;
-  if (query.after && !after) {
-    yield err(invalidRevision(query, "Inspection revision is invalid."));
-    return;
-  }
-  let cycle = await readFollowCycle(cwd, query, after?.event, after?.observation);
+  const cycle = await readFollowCycle(cwd, query);
   if (cycle.isErr()) {
     yield err(cycle.error);
     return;
@@ -92,49 +79,7 @@ export async function* followRunInspection(
   let emitted = withoutWorkflowOutput(current);
   let lastEmissionAt = Date.now();
 
-  if (after) {
-    const invalid = validateAfterRevision(query, after, current);
-    if (invalid) {
-      yield err(invalid);
-      return;
-    }
-    const cursorGap = hasCursorGap(after.event, cursor.eventSequence, cycle.value.events);
-    if (cursorGap) {
-      yield okEmission({
-        schemaVersion: 2,
-        kind: "resync",
-        revision: emitted.revision,
-        reason: "cursor-gap",
-        document: emitted,
-      });
-    } else if (cycle.value.resumeProjectionDrift) {
-      yield okEmission({
-        schemaVersion: 2,
-        kind: "resync",
-        revision: emitted.revision,
-        reason: "projection-drift",
-        document: emitted,
-      });
-    } else if (after.event !== cursor.eventSequence
-      || after.progress !== cursor.progressVersion
-      || after.observation !== cursor.observationVersion) {
-      const currentRevision = decodeInspectionRevision(current.revision);
-      if (!currentRevision) {
-        yield err(invalidRevision(query, "Inspection revision is invalid."));
-        return;
-      }
-      const changes = resumedDeltas(cycle.value, current, {
-        observationChanged: after.observation !== cursor.observationVersion,
-        activityChanged: after.activity !== currentRevision.activity,
-        visibilityChanged: after.visibility !== currentRevision.visibility,
-      });
-      if (changes.length > 0) {
-        yield okEmission({ schemaVersion: 2, kind: "delta", revision: current.revision, changes });
-      }
-    }
-  } else {
-    yield okEmission({ schemaVersion: 2, kind: "snapshot", revision: emitted.revision, document: emitted });
-  }
+  yield okEmission({ schemaVersion: 2, kind: "snapshot", document: emitted });
 
   if (terminalRun(current.run.status)) {
     yield okEmission(doneEmission(query, cycle.value));
@@ -162,7 +107,6 @@ export async function* followRunInspection(
       yield okEmission({
         schemaVersion: 2,
         kind: "resync",
-        revision: emitted.revision,
         reason: cursorGap ? "cursor-gap" : "projection-drift",
         document: emitted,
       });
@@ -173,6 +117,9 @@ export async function* followRunInspection(
         current,
         next.value.events,
         next.value.run,
+        nextCursor.progressVersion === cursor.progressVersion
+          ? undefined
+          : nextCursor.progressVersion,
         isTerminal,
         lastEmissionAt,
         nowMs,
@@ -180,7 +127,7 @@ export async function* followRunInspection(
       if (changes.length > 0) {
         emitted = withoutWorkflowOutput(current);
         lastEmissionAt = nowMs;
-        yield okEmission({ schemaVersion: 2, kind: "delta", revision: current.revision, changes });
+        yield okEmission({ schemaVersion: 2, kind: "delta", changes });
       }
     }
     cursor = nextCursor;
@@ -202,10 +149,9 @@ async function readInspection(
 async function readFollowCycle(
   cwd: string,
   query: FollowRunInspectionQuery,
-  afterEventSequence?: number,
-  afterObservationVersion?: number,
+  eventSequence?: number,
 ): Promise<Result<FollowCycle, RunInspectionError>> {
-  const cycle = await readInspectionCycle(cwd, query, afterEventSequence, afterObservationVersion);
+  const cycle = await readInspectionCycle(cwd, query, eventSequence);
   if (cycle.isErr()) return err(cycle.error);
   if (!followableDocument(cycle.value.document)) {
     return err({ type: "invalid-query", message: "This inspection view cannot be followed." });
@@ -216,8 +162,7 @@ async function readFollowCycle(
 async function readInspectionCycle(
   cwd: string,
   query: RunInspectionQuery,
-  afterEventSequence?: number,
-  afterObservationVersion?: number,
+  eventSequence?: number,
 ): Promise<Result<InspectionCycle, RunInspectionError>> {
   try {
     const invalid = validateInspectionQuery(query);
@@ -226,7 +171,7 @@ async function readInspectionCycle(
     if (!store) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
     try {
       return await withRunInspectionSnapshot(store, async () => {
-        const read = store.readRunInspection(query.runId, afterEventSequence);
+        const read = store.readRunInspection(query.runId, eventSequence);
         if (!read.run) {
           return err({
             type: "run-not-found",
@@ -256,7 +201,6 @@ async function readInspectionCycle(
             ir: read.frozen.ir,
             run,
             artifacts: read.artifacts,
-            cursor: read.cursor,
             query,
             ...(query.mode === "raw"
               ? {}
@@ -276,7 +220,6 @@ async function readInspectionCycle(
           ir: read.frozen.ir,
           run,
           artifacts: read.artifacts,
-          cursor: read.cursor,
           query: detailsQuery,
         });
         if (!projectedDetails || projectedDetails.kind !== "details") {
@@ -312,8 +255,6 @@ async function readInspectionCycle(
           if (observationResult?.isErr()) throw observationResult.error;
           return ok(followCycle(read, projectAgentExecution({
             details: projectedDetails,
-            cursor: read.cursor,
-            query,
             ...(observationResult?.isOk() ? { observations: observationResult.value } : {}),
           })));
         }
@@ -344,18 +285,10 @@ async function readInspectionCycle(
           const document = projectTargetSummary({
             run,
             details,
-            cursor: read.cursor,
-            query,
             ...(observationResult?.isOk() ? { observations: observationResult.value } : {}),
             ...(runDir ? { runDir } : {}),
           });
-          return ok(followCycle(read, document, {
-            relevantDurableChanged: timelineHasRelevantEvents({ run, details, events: read.events }),
-            relevantObservationChanged: afterObservationVersion !== undefined
-              && (observationResult?.isOk()
-                ? (observationResult.value.latestRelevantVersion ?? -1) > afterObservationVersion
-                : false),
-          }));
+          return ok(followCycle(read, document));
         }
 
         const candidates = ambiguousTimelineCandidates(details);
@@ -400,41 +333,12 @@ async function readInspectionCycle(
         const document = projectTimeline({
           run,
           details,
-          cursor: read.cursor,
           query,
           events: store.getCommittedRuntimeEventsAfter(query.runId, 0),
           observations: observationResult.value,
           ...(before ? { before: { at: before.at, id: before.id, ordinal: before.ordinal } } : {}),
         });
-        const resumedRecent = afterObservationVersion === undefined
-          ? undefined
-          : timelineEntriesAfter({
-              run,
-              details,
-              events: read.events,
-              observations: observationResult.value,
-              afterObservationVersion,
-            });
-        const resumeLimit = query.page?.limit ?? timelineDefaultLimit;
-        const omittedAfterRevision = afterObservationVersion !== undefined
-          && observationResult.value.retentionFloorVersion !== undefined
-          && afterObservationVersion < observationResult.value.retentionFloorVersion;
-        const unreadEntriesMayFollowRevision = afterObservationVersion !== undefined
-          && observationResult.value.olderEntryCount > 0
-          && observationResult.value.oldestObservationVersion !== undefined
-          && afterObservationVersion < observationResult.value.oldestObservationVersion;
-        const resumeProjectionDrift = resumedRecent !== undefined
-          && (resumedRecent.length > resumeLimit
-            || Buffer.byteLength(JSON.stringify(resumedRecent)) > timelineResumeBodyBytes
-            || omittedAfterRevision
-            || unreadEntriesMayFollowRevision);
-        return ok(followCycle(read, document, {
-          ...(resumedRecent === undefined ? {} : { resumedRecent }),
-          resumeProjectionDrift,
-          relevantDurableChanged: timelineHasRelevantEvents({ run, details, events: read.events }),
-          relevantObservationChanged: afterObservationVersion !== undefined
-            && (observationResult.value.latestRelevantVersion ?? -1) > afterObservationVersion,
-        }));
+        return ok(followCycle(read, document));
       });
     } finally {
       store.close();
@@ -518,10 +422,6 @@ type InspectionCycle = {
   cursor: RunInspectionStoreRead["cursor"];
   run: NonNullable<RunInspectionStoreRead["run"]>;
   output?: JsonValue;
-  resumedRecent?: RunInspectionTimelineEntry[];
-  resumeProjectionDrift?: boolean;
-  relevantDurableChanged?: boolean;
-  relevantObservationChanged?: boolean;
 };
 
 type FollowCycle = Omit<InspectionCycle, "document"> & {
@@ -531,66 +431,18 @@ type FollowCycle = Omit<InspectionCycle, "document"> & {
 function followCycle(
   read: RunInspectionStoreRead,
   document: RunInspectionDocument,
-  options: {
-    resumedRecent?: RunInspectionTimelineEntry[];
-    resumeProjectionDrift?: boolean;
-    relevantDurableChanged?: boolean;
-    relevantObservationChanged?: boolean;
-  } = {},
 ): InspectionCycle {
-  const boundDocument = followableDocument(document)
-    ? bindResumeState(document)
-    : document;
   return {
-    document: boundDocument,
+    document,
     events: read.events,
     cursor: read.cursor,
     run: read.run!,
     ...(read.run?.output === undefined ? {} : { output: read.run.output }),
-    ...(options.resumedRecent === undefined ? {} : { resumedRecent: options.resumedRecent }),
-    ...(options.resumeProjectionDrift === undefined
-      ? {}
-      : { resumeProjectionDrift: options.resumeProjectionDrift }),
-    ...(options.relevantDurableChanged === undefined
-      ? {}
-      : { relevantDurableChanged: options.relevantDurableChanged }),
-    ...(options.relevantObservationChanged === undefined
-      ? {}
-      : { relevantObservationChanged: options.relevantObservationChanged }),
   };
 }
 
 function followableDocument(document: RunInspectionDocument): document is FollowableInspectionDocument {
   return document.kind === "snapshot" || document.kind === "target" || document.kind === "timeline";
-}
-
-function bindResumeState<T extends FollowableInspectionDocument>(document: T): T {
-  const activity = document.kind === "snapshot"
-    ? document.items.flatMap(item => item.agent ? [{ key: item.key, agent: item.agent }] : [])
-    : document.kind === "target"
-      ? meaningfulPulse(document.pulse)
-      : meaningfulCurrent(document.current);
-  const visibility = document.kind === "snapshot" ? null : document.visibility ?? null;
-  return {
-    ...document,
-    revision: inspectionRevisionWithState(document.revision, { activity, visibility }),
-  };
-}
-
-function meaningfulCurrent(current: RunInspectionTimelineDocument["current"]): unknown {
-  if (!current) return null;
-  const { updatedAt: _updatedAt, ...meaningful } = current;
-  if (current.kind !== "agent" || !current.tools) return meaningful;
-  return {
-    ...meaningful,
-    tools: {
-      ...current.tools,
-      active: current.tools.active.map(tool => {
-        const { updatedAt: _toolUpdatedAt, ...activity } = tool;
-        return activity;
-      }),
-    },
-  };
 }
 
 function validateInspectionQuery(query: RunInspectionQuery): RunInspectionError | undefined {
@@ -618,122 +470,12 @@ function validateFollowQuery(query: FollowRunInspectionQuery): RunInspectionErro
   return undefined;
 }
 
-function validateAfterRevision(
-  query: FollowRunInspectionQuery,
-  previous: NonNullable<ReturnType<typeof decodeInspectionRevision>>,
-  current: FollowableInspectionDocument,
-): RunInspectionError | undefined {
-  const currentRevision = decodeInspectionRevision(current.revision);
-  if (!currentRevision
-    || previous.runId !== query.runId
-    || previous.fingerprint !== inspectionFingerprint(query)
-    || previous.fingerprint !== currentRevision.fingerprint
-    || previous.target !== currentRevision.target
-    || previous.event > currentRevision.event
-    || previous.progress > currentRevision.progress
-    || previous.observation > currentRevision.observation) {
-    return invalidRevision(query, "Inspection revision does not match the run, view, or resolved target.");
-  }
-  return undefined;
-}
-
-function invalidRevision(query: FollowRunInspectionQuery, message: string): RunInspectionError {
-  return {
-    type: "invalid-cursor",
-    runId: query.runId,
-    ...("target" in query ? { target: query.target } : {}),
-    message,
-  };
-}
-
-function resumedDeltas(
-  cycle: FollowCycle,
-  current: FollowableInspectionDocument,
-  versions: {
-    observationChanged: boolean;
-    activityChanged: boolean;
-    visibilityChanged: boolean;
-  },
-): RunInspectionDelta[] {
-  const observationChanged = cycle.relevantObservationChanged ?? versions.observationChanged;
-  if (current.kind === "snapshot") {
-    const changes = semanticChanges(cycle.events, current, cycle.run);
-    const changedItemKeys = new Set(changes.flatMap(change => change.itemKey ? [change.itemKey] : []));
-    const projectionChanged = versions.activityChanged;
-    return changes.length === 0 && !projectionChanged ? [] : [{
-      kind: "overview",
-      run: current.run,
-      changes,
-      patch: {
-        upsertItems: current.items.filter(item => projectionChanged || changedItemKeys.has(item.key)),
-        removeItemKeys: [],
-        ...(changes.length > 0 ? {
-          counts: current.counts,
-          availableActions: current.availableActions,
-          omitted: current.omitted ?? null,
-          hooks: current.hooks ?? [],
-        } : {}),
-      },
-    }];
-  }
-  if (current.kind === "target") {
-    const durableChanged = cycle.relevantDurableChanged ?? (cycle.events.length > 0);
-    return [
-      ...(durableChanged
-        ? [
-            { kind: "run" as const, run: current.run },
-            { kind: "state" as const, state: current.state },
-            {
-              kind: "available-actions" as const,
-              availableActions: current.availableActions,
-            },
-          ]
-        : []),
-      ...(versions.activityChanged
-        ? [{ kind: "pulse" as const, pulse: current.pulse ?? null }]
-        : []),
-      ...(durableChanged
-        ? [{ kind: "attention" as const, attention: current.attention ?? null }]
-        : []),
-      ...(versions.visibilityChanged
-        ? [{ kind: "visibility" as const, visibility: current.visibility ?? null }]
-        : []),
-      ...(durableChanged || observationChanged
-        ? [{ kind: "evidence" as const, evidence: current.evidence ?? null }]
-        : []),
-    ];
-  }
-  const durableChanged = cycle.relevantDurableChanged ?? (cycle.events.length > 0);
-  const resumedRecent = cycle.resumedRecent ?? [];
-  return [
-    ...(durableChanged
-      ? [
-          { kind: "run" as const, run: current.run },
-          { kind: "state" as const, state: current.state },
-        ]
-      : []),
-    ...(versions.visibilityChanged
-      ? [{ kind: "visibility" as const, visibility: current.visibility ?? null }]
-      : []),
-    ...(resumedRecent.length > 0
-      ? [{
-          kind: "recent" as const,
-          upsert: resumedRecent,
-          order: current.recent.entries.map(entry => entry.id),
-          page: timelinePageMetadata(current),
-        }]
-      : []),
-    ...(versions.activityChanged
-      ? [{ kind: "current" as const, current: current.current ?? null }]
-      : []),
-  ];
-}
-
 function inspectionDeltas(
   previous: FollowableInspectionDocument,
   current: FollowableInspectionDocument,
   events: RunInspectionStoreRead["events"],
   run: NonNullable<RunInspectionStoreRead["run"]>,
+  progressVersion: number | undefined,
   terminal: boolean,
   lastEmissionAt: number,
   nowMs: number,
@@ -744,7 +486,10 @@ function inspectionDeltas(
       && events.length === 0
       && !overviewAgentStructureChanged(previous, current)
       && nowMs - lastEmissionAt < activityEmissionIntervalMs) return [];
-    const changes = [...semanticChanges(events, current, run), ...progressChanges(previous, current)];
+    const changes = [
+      ...semanticChanges(events, current, run),
+      ...(progressVersion === undefined ? [] : progressChanges(previous, current, progressVersion)),
+    ];
     const delta = itemDelta(previous.items, current.items);
     const patch = inspectionPatch(previous, current, delta);
     return changes.length === 0 && !patchChanged(patch) && sameDurableRun(previous.run, current.run)
@@ -1040,7 +785,6 @@ function doneEmission(query: FollowRunInspectionQuery, cycle: FollowCycle): RunI
   return {
     schemaVersion: 2,
     kind: "done",
-    revision: cycle.document.revision,
     run: { id: cycle.run.id, status: cycle.run.status },
     ...(includeOutput && cycle.output !== undefined ? { output: cycle.output } : {}),
   };

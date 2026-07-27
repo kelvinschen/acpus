@@ -39,7 +39,7 @@ Inspection is read-only and does not wake the daemon. A target returns a bounded
 
 Use focused `jq` for structured output.
 Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details)
-if you need pagination, follow resume, or private Evidence details.
+if you need pagination, follow mechanics, or private Evidence details.
 
 ## Runtime controls
 

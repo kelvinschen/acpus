@@ -90,7 +90,6 @@ export type {
   RunInspectionPulse,
   RunInspectionQuery,
   RunInspectionRaw,
-  RunInspectionRevision,
   RunInspectionRunSummary,
   RunInspectionScopeState,
   RunInspectionSnapshot,

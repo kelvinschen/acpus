@@ -9,14 +9,9 @@ import {
   resolvedTargetIdentity,
 } from "../src/inspection/decision-projection.js";
 import {
-  decodeInspectionRevision,
   decodeTimelinePageCursor,
-  inspectionFingerprint,
-} from "../src/inspection/revision.js";
-import type {
-  RunInspectionRevision,
-  RunInspectionTargetDetailsDocument,
-} from "../src/inspection/types.js";
+} from "../src/inspection/timeline-cursor.js";
+import type { RunInspectionTargetDetailsDocument } from "../src/inspection/types.js";
 import type {
   AgentObservationInspectionProjection,
   AgentObservationTurnEvidence,
@@ -51,8 +46,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
       observations,
       runDir: "/private/runtime/runs/run-1",
     });
@@ -125,8 +118,6 @@ describe("inspection v2 decision projections", () => {
     const summary = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 0 },
-      query: { runId: run.id, mode: "target", target: longNodeId },
     });
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThanOrEqual(4 * 1024);
     expect(summary.availableActions).toEqual([
@@ -137,8 +128,6 @@ describe("inspection v2 decision projections", () => {
     const evidenceSummary = projectTargetSummary({
       run,
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
       observations: observationProjection([
         evidence(1, { state: "sealed", providerStatus: "completed" }),
       ]),
@@ -161,8 +150,6 @@ describe("inspection v2 decision projections", () => {
     const summary = projectTargetSummary({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 5, progressVersion: 0, observationVersion: 0 },
-      query: { runId: "run-1", mode: "target", target: "attempt-1" },
       observations,
       runDir: "/private/runtime/runs/run-1",
     });
@@ -186,7 +173,6 @@ describe("inspection v2 decision projections", () => {
     const timeline = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 5, progressVersion: 0, observationVersion: 0 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations,
@@ -211,8 +197,6 @@ describe("inspection v2 decision projections", () => {
     const summary = projectTargetSummary({
       run: { ...agentRun(), status: "failed" },
       details,
-      cursor: { eventSequence: 5, progressVersion: 2, observationVersion: 0 },
-      query: { runId: "run-1", mode: "target", target: "attempt-1" },
     });
 
     expect(summary.availableActions).toEqual([
@@ -253,7 +237,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
       query: { runId: run.id, mode: "timeline", target: "attempt-1" },
       events: [],
       observations,
@@ -292,7 +275,6 @@ describe("inspection v2 decision projections", () => {
     const project = (phase: "thinking" | "repairing") => projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 2 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection(
@@ -325,8 +307,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 3, observationVersion: 0 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
     });
     expect(document.pulse).toMatchObject({
       phase: "planning",
@@ -352,7 +332,6 @@ describe("inspection v2 decision projections", () => {
     const timeline = projectTimeline({
       run,
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 3, observationVersion: 1 },
       query: { runId: run.id, mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection([evidence(1)]),
@@ -383,7 +362,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 2 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations,
@@ -406,8 +384,6 @@ describe("inspection v2 decision projections", () => {
     const summary = projectTargetSummary({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 2 },
-      query: { runId: "run-1", mode: "target", target: "attempt-1" },
       observations,
     });
     expect(summary.pulse).toMatchObject({
@@ -442,8 +418,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 5, progressVersion: 3, observationVersion: 4 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
       observations: observationProjection([
         evidence(1, { state: "partial", completeness: "degraded" }),
       ]),
@@ -476,8 +450,6 @@ describe("inspection v2 decision projections", () => {
     const completed = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 5, progressVersion: 3, observationVersion: 0 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
     });
     expect(completed.attention).toBeUndefined();
 
@@ -485,8 +457,6 @@ describe("inspection v2 decision projections", () => {
     const withoutProgress = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 5, progressVersion: 3, observationVersion: 0 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
     });
     expect(withoutProgress.pulse).toEqual({
       phase: "settled",
@@ -510,8 +480,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 1 },
-      query: { runId: "run-1", mode: "target", target: "attempt-1" },
       observations: observationProjection([
         evidence(1, { completeness: "degraded", gapCount: 1 }),
       ]),
@@ -541,8 +509,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 3, observationVersion: 0 },
-      query: { runId: run.id, mode: "target", target: "attempt-1" },
     });
 
     expect(document.attention).toBeUndefined();
@@ -584,7 +550,6 @@ describe("inspection v2 decision projections", () => {
     const timeline = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 7, progressVersion: 2, observationVersion: 4 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [{
         runId: "run-1",
@@ -629,7 +594,6 @@ describe("inspection v2 decision projections", () => {
     const schedulerOnly = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 5, progressVersion: 2, observationVersion: 0 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [{
         runId: "run-1",
@@ -656,8 +620,6 @@ describe("inspection v2 decision projections", () => {
     const summary = projectTargetSummary({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 7, progressVersion: 2, observationVersion: 4 },
-      query: { runId: "run-1", mode: "target", target: "attempt-1" },
       observations,
       runDir: "/private/runtime/runs/run-1",
     });
@@ -698,7 +660,6 @@ describe("inspection v2 decision projections", () => {
     const timeline = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 7, progressVersion: 2, observationVersion: 3 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [{
         runId: "run-1",
@@ -750,7 +711,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 5, progressVersion: 2, observationVersion: 4 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [{
         runId: "run-1",
@@ -779,7 +739,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 7, progressVersion: 2, observationVersion: 3 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection(
@@ -812,7 +771,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 6, progressVersion: 2, observationVersion: 3 },
       query: { runId: "run-1", mode: "timeline", target: "agent~1" },
       events: [
         {
@@ -872,7 +830,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details,
-      cursor: { eventSequence: 5, progressVersion: 2, observationVersion: 0 },
       query: { runId: "run-1", mode: "timeline", target: "agent" },
       events: [{
         runId: "run-1",
@@ -940,7 +897,6 @@ describe("inspection v2 decision projections", () => {
       return projectTimeline({
         run: agentRun(),
         details,
-        cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 0 },
         query: { runId: "run-1", mode: "timeline", target: "agent~1" },
         events: [],
         observations: observationProjection([]),
@@ -976,7 +932,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 5 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection([
@@ -1029,7 +984,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 3 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection([
@@ -1075,8 +1029,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTargetSummary({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 0 },
-      query: { runId: "run-1", mode: "target", target: "agent" },
     });
     expect(document).toMatchObject({
       subject: { targetKind: "static-node", id: "agent" },
@@ -1089,52 +1041,8 @@ describe("inspection v2 decision projections", () => {
     expect(document.pulse).toBeUndefined();
   });
 
-  it("binds revisions to the normalized Timeline limit", () => {
-    expect(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-    })).toBe(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-      page: { limit: 12 },
-    }));
-    expect(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-      page: { limit: 1 },
-    })).not.toBe(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-      page: { limit: 50 },
-    }));
-    expect(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-      page: { before: "older-page-a" },
-    })).not.toBe(inspectionFingerprint({
-      runId: "run-1",
-      mode: "timeline",
-      target: "attempt-1",
-      page: { before: "older-page-b" },
-    }));
-  });
-
-  it("rejects prior revision and page cursor encodings", () => {
+  it("rejects prior page cursor encodings", () => {
     const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    expect(decodeInspectionRevision(encoded({
-      v: 3,
-      kind: "inspection",
-      runId: "run-1",
-      fingerprint: "old",
-      event: 1,
-      progress: 1,
-      observation: 1,
-    }))).toBeUndefined();
     expect(decodeTimelinePageCursor(encoded({
       v: 3,
       kind: "timeline-page",
@@ -1158,7 +1066,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 30 },
       query: { runId: run.id, mode: "timeline", target: "attempt-1" },
       events: [],
       observations: observationProjection(turns, records),
@@ -1184,7 +1091,6 @@ describe("inspection v2 decision projections", () => {
     const older = projectTimeline({
       run,
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 30 },
       query: {
         runId: run.id,
         mode: "timeline",
@@ -1213,7 +1119,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 128 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations,
@@ -1242,7 +1147,6 @@ describe("inspection v2 decision projections", () => {
     const first = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 10 },
       query: {
         runId: "run-1",
         mode: "timeline",
@@ -1276,7 +1180,6 @@ describe("inspection v2 decision projections", () => {
     const older = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 10 },
       query: {
         runId: "run-1",
         mode: "timeline",
@@ -1302,7 +1205,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 10 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1" },
       events: [],
       observations,
@@ -1331,7 +1233,6 @@ describe("inspection v2 decision projections", () => {
     const document = projectTimeline({
       run: agentRun(),
       details: agentDetails(),
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 100 },
       query: { runId: "run-1", mode: "timeline", target: "attempt-1", page: { limit: 50 } },
       events: [],
       observations: observationProjection(turns, records),
@@ -1448,8 +1349,6 @@ describe("inspection v2 decision projections", () => {
 
     const document = projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations: observationProjection([
         evidence(1, { finishedAt: "2026-07-25T00:00:01.500Z" }),
         evidence(2, { finishedAt: "2026-07-25T00:00:02.500Z" }),
@@ -1503,8 +1402,6 @@ describe("inspection v2 decision projections", () => {
 
     expect(projectAgentExecution({
       details,
-      cursor: { eventSequence: 0, progressVersion: 0, observationVersion: 0 },
-      query: { runId: details.run.id, mode: "execution", target: "agent" },
     })).toMatchObject({
       available: false,
       reason: "not-started",
@@ -1515,8 +1412,6 @@ describe("inspection v2 decision projections", () => {
     details.staticNode = { ...details.staticNode!, kind: "task" };
     expect(projectAgentExecution({
       details,
-      cursor: { eventSequence: 0, progressVersion: 0, observationVersion: 0 },
-      query: { runId: details.run.id, mode: "execution", target: "agent" },
     })).toMatchObject({
       available: false,
       reason: "not-agent",
@@ -1601,8 +1496,6 @@ describe("inspection v2 decision projections", () => {
 
     const document = projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations,
     });
 
@@ -1642,8 +1535,6 @@ describe("inspection v2 decision projections", () => {
 
     const document = projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations,
     });
 
@@ -1678,8 +1569,6 @@ describe("inspection v2 decision projections", () => {
 
     const document = projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations,
     });
 
@@ -1702,8 +1591,6 @@ describe("inspection v2 decision projections", () => {
     }];
     expect(projectAgentExecution({
       details: noTools,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: noTools.run.id, mode: "execution", target: "attempt-1" },
     })).toMatchObject({
       toolCallCount: 0,
       lastToolCalls: [],
@@ -1727,8 +1614,6 @@ describe("inspection v2 decision projections", () => {
     };
     expect(projectAgentExecution({
       details: obscured,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: obscured.run.id, mode: "execution", target: "attempt-1" },
       observations,
     })).toMatchObject({
       lastToolCalls: [expect.objectContaining({ toolCallId: "a" }), expect.objectContaining({ toolCallId: "b" })],
@@ -1752,8 +1637,6 @@ describe("inspection v2 decision projections", () => {
 
     expect(projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations,
     })).toMatchObject({
       toolCallCount: 0,
@@ -1784,8 +1667,6 @@ describe("inspection v2 decision projections", () => {
 
     const document = projectAgentExecution({
       details,
-      cursor: { eventSequence: 4, progressVersion: 2, observationVersion: 9 },
-      query: { runId: details.run.id, mode: "execution", target: "attempt-1" },
       observations,
     });
 
@@ -1862,7 +1743,6 @@ function agentDetails(): RunInspectionTargetDetailsDocument {
   return {
     schemaVersion: 2,
     kind: "details",
-    revision: "opaque" as RunInspectionRevision,
     run: {
       id: run.id,
       name: run.name,

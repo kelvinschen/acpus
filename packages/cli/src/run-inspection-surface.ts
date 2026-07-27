@@ -116,7 +116,7 @@ export function applyRunInspectionUpdate(
   update: RunInspectionDeltaEmission,
   timelineLimit = 12,
 ): FollowableInspectionDocument {
-  let next: FollowableInspectionDocument = { ...document, revision: update.revision };
+  let next = document;
   for (const delta of update.changes) next = applyInspectionDelta(next, delta, timelineLimit);
   return next;
 }

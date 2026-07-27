@@ -41,18 +41,7 @@ export type FollowRunInspectionQuery = (
 ) & {
   intervalMs?: number;
   signal?: AbortSignal;
-  after?: RunInspectionRevision;
 };
-
-/** Internal projection versions. Public inspection documents expose only a revision. */
-export type RunInspectionCursor = {
-  eventSequence: number;
-  progressVersion: number;
-  observationVersion: number;
-};
-
-declare const inspectionRevisionBrand: unique symbol;
-export type RunInspectionRevision = string & { readonly [inspectionRevisionBrand]: true };
 
 export type RunInspectionRunSummary = {
   id: string;
@@ -267,7 +256,6 @@ export type RunInspectionStaticNode = {
 export type RunInspectionSnapshot = {
   schemaVersion: 2;
   kind: "snapshot";
-  revision: RunInspectionRevision;
   run: RunInspectionDecisionRunSummary;
   counts: RunInspectionStatusCounts;
   items: RunInspectionItem[];
@@ -340,7 +328,6 @@ export type RunInspectionControl = {
 export type RunInspectionTargetDetailsDocument = {
   schemaVersion: 2;
   kind: "details";
-  revision: RunInspectionRevision;
   run: RunInspectionRunSummary;
   target: RunInspectionTarget;
   staticNode?: RunInspectionStaticNode;
@@ -394,7 +381,6 @@ export type RunInspectionAgentExecutionDocument = ({
 }) & {
   schemaVersion: 2;
   kind: "execution";
-  revision: RunInspectionRevision;
   run: {
     id: string;
     status: RunStatus;
@@ -483,7 +469,6 @@ export type AgentAttemptEvidenceCapsule = {
 export type RunInspectionTargetSummaryDocument = {
   schemaVersion: 2;
   kind: "target";
-  revision: RunInspectionRevision;
   run: {
     id: string;
     status: RunStatus;
@@ -624,7 +609,6 @@ export type RunInspectionTimelineEntry =
 export type RunInspectionTimelineDocument = {
   schemaVersion: 2;
   kind: "timeline";
-  revision: RunInspectionRevision;
   run: {
     id: string;
     status: RunStatus;
@@ -647,7 +631,6 @@ export type RunInspectionTimelineDocument = {
 export type RunInspectionRaw = {
   schemaVersion: 2;
   kind: "raw";
-  revision: RunInspectionRevision;
   run: RunDetails;
   workflow: WorkflowIR;
   artifacts: ArtifactRecord[];
@@ -769,26 +752,22 @@ export type RunInspectionEmission =
   | {
       schemaVersion: 2;
       kind: "snapshot";
-      revision: RunInspectionRevision;
       document: FollowableInspectionDocument;
     }
   | {
       schemaVersion: 2;
       kind: "delta";
-      revision: RunInspectionRevision;
       changes: RunInspectionDelta[];
     }
   | {
       schemaVersion: 2;
       kind: "resync";
-      revision: RunInspectionRevision;
       reason: "cursor-gap" | "projection-drift";
       document: FollowableInspectionDocument;
     }
   | {
       schemaVersion: 2;
       kind: "done";
-      revision: RunInspectionRevision;
       run: { id: string; status: RunStatus };
       output?: JsonValue;
     };

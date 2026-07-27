@@ -2,7 +2,6 @@ import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RunInspectionError,
-  RunInspectionRevision,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
 } from "@acpus/runtime";
@@ -58,12 +57,16 @@ describe("runs inspect v2", () => {
     });
   });
 
-  it("passes an opaque revision only to follow", async () => {
+  it("starts follow without a cross-connection cursor", async () => {
     runtime.followRunInspection.mockImplementation(async function* () {
       yield ok({
         schemaVersion: 2,
+        kind: "snapshot",
+        document: timeline(),
+      });
+      yield ok({
+        schemaVersion: 2,
         kind: "done",
-        revision: revision("rev:done"),
         run: { id: "run_1", status: "completed" },
       });
     });
@@ -75,8 +78,6 @@ describe("runs inspect v2", () => {
       "attempt_1",
       "--timeline",
       "--follow",
-      "--after",
-      "opaque-revision",
       "--json",
     ]);
 
@@ -86,10 +87,14 @@ describe("runs inspect v2", () => {
       runId: "run_1",
       mode: "timeline",
       target: "attempt_1",
-      after: "opaque-revision",
       intervalMs: 1_000,
       signal: expect.any(AbortSignal),
     }));
+    expect(runtime.followRunInspection.mock.calls[0]?.[1]).not.toHaveProperty("after");
+    expect(JSON.parse(result.stdout.split("\n")[0]!)).toMatchObject({
+      kind: "snapshot",
+      document: { kind: "timeline" },
+    });
   });
 
   it("emits the target Decision Summary without private bodies", async () => {
@@ -245,7 +250,6 @@ function timeline(): RunInspectionTimelineDocument {
   return {
     schemaVersion: 2,
     kind: "timeline",
-    revision: revision("rev:1"),
     run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:00.000Z" },
     subject: {
       targetKind: "dynamic-node",
@@ -264,7 +268,6 @@ function summary(): RunInspectionTargetSummaryDocument {
   return {
     schemaVersion: 2,
     kind: "target",
-    revision: revision("rev:1"),
     run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:00.000Z" },
     subject: {
       targetKind: "attempt",
@@ -319,8 +322,4 @@ function err(error: RunInspectionError) {
     isOk: () => false as const,
     isErr: () => true as const,
   };
-}
-
-function revision(value: string): RunInspectionRevision {
-  return value as RunInspectionRevision;
 }

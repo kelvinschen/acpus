@@ -4,7 +4,6 @@ import type {
   RunInspectionEmission,
   FollowRunInspectionQuery,
   RunInspectionItem,
-  RunInspectionRevision,
   RunInspectionSnapshot,
   RunInspectionTimelineDocument,
 } from "@acpus/runtime";
@@ -33,7 +32,6 @@ describe("Inspection v2 follow", () => {
       {
         schemaVersion: 2,
         kind: "delta",
-        revision: revision("rev:2"),
         changes: [{
           kind: "overview",
           run: { ...snapshot().run, updatedAt: "2026-07-25T00:00:01.000Z" },
@@ -81,7 +79,6 @@ describe("Inspection v2 follow", () => {
       {
         schemaVersion: 2,
         kind: "delta",
-        revision: revision("rev:2"),
         changes: [
           {
             kind: "current",
@@ -160,84 +157,6 @@ describe("Inspection v2 follow", () => {
     });
   });
 
-  it("forwards an opaque revision when resuming follow", async () => {
-    runtime.followRunInspection.mockImplementation(() => emissions([done("completed")]));
-    const after = revision("opaque:resume");
-
-    await followRun("/workspace", {
-      runId: "run_1",
-      mode: "target",
-      target: "attempt_1",
-      after,
-    }, {
-      phase: "inspect",
-      format: "text",
-      stdout: new CaptureStream(),
-      stderr: new CaptureStream(),
-    });
-
-    expect(runtime.followRunInspection).toHaveBeenCalledWith("/workspace", expect.objectContaining({
-      runId: "run_1",
-      mode: "target",
-      target: "attempt_1",
-      after,
-      signal: expect.any(AbortSignal),
-    }));
-  });
-
-  it("prints resumed semantic deltas without adding a terminal header", async () => {
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      {
-        schemaVersion: 2,
-        kind: "delta",
-        revision: revision("rev:2"),
-        changes: [
-          {
-            kind: "current-patch",
-            patch: {
-              kind: "agent",
-              attemptId: "attempt_1",
-              attemptNo: 1,
-              changes: {
-                response: {
-                  text: "new response bytes",
-                  originalBytes: 18,
-                  truncated: false,
-                },
-              },
-            },
-          },
-          {
-            kind: "run",
-            run: {
-              id: "run_1",
-              status: "completed",
-              updatedAt: "2026-07-25T00:00:02.000Z",
-            },
-          },
-        ],
-      },
-      done("completed"),
-    ]));
-    const stdout = new CaptureStream();
-
-    await followRun("/workspace", {
-      runId: "run_1",
-      mode: "timeline",
-      target: "attempt_1",
-      after: revision("rev:1"),
-    }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-
-    expect(stdout.text).toContain("Current updated · attempt=1 · Response: new response bytes");
-    expect(stdout.text).not.toContain("updated · agent");
-    expect(stdout.text.match(/^Run run_1  completed$/gm)).toHaveLength(1);
-  });
-
   it("redraws a bounded Timeline document for TTY consumers", async () => {
     const current = timeline().current;
     if (current?.kind !== "agent") throw new Error("expected Agent current activity");
@@ -246,7 +165,6 @@ describe("Inspection v2 follow", () => {
       {
         schemaVersion: 2,
         kind: "delta",
-        revision: revision("rev:2"),
         changes: [{ kind: "current", current: { ...current, phase: "settling" } }],
       },
       done("completed"),
@@ -472,43 +390,12 @@ describe("Inspection v2 follow", () => {
     expect(outcome).toEqual({ kind: "detached" });
     expect(stdout.text.trim().split("\n").map(line => JSON.parse(line).kind)).toEqual(["snapshot"]);
     expect(stderr.text).toContain("Detached from run run_1");
-    expect(stderr.text).toContain("--after rev:1");
     expect(stderr.text).toContain("acpus runs cancel run_1");
+    expect(stderr.text).not.toContain("Resume:");
+    expect(stderr.text).not.toContain("--after");
   });
 
-  it("preserves a custom Timeline limit in the detach resume command", async () => {
-    let release!: () => void;
-    const released = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    runtime.followRunInspection.mockImplementation(async function* () {
-      yield ok(snapshotEmission(timeline()));
-      await released;
-    });
-    const stdout = new CaptureStream();
-    const followed = followRun("/workspace", {
-      runId: "run_1",
-      mode: "timeline",
-      target: "attempt_1",
-      page: { limit: 24 },
-    }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-    await vi.waitFor(() => expect(stdout.text).toContain("Timeline"));
-
-    process.emit("SIGINT");
-    release();
-    await followed;
-
-    expect(stdout.text).toContain(
-      "acpus runs inspect run_1 --target attempt_1 --timeline --limit 24 --follow --after rev:1",
-    );
-  });
-
-  it("retains the supplied revision when resumed follow detaches before its first emission", async () => {
+  it("detaches before the first emission without printing a resume hint", async () => {
     let started!: () => void;
     const providerStarted = new Promise<void>(resolve => {
       started = resolve;
@@ -528,7 +415,6 @@ describe("Inspection v2 follow", () => {
       runId: "run_1",
       mode: "timeline",
       target: "attempt_1",
-      after: revision("rev:resume"),
     }, {
       phase: "inspect",
       format: "text",
@@ -541,9 +427,10 @@ describe("Inspection v2 follow", () => {
     const outcome = await followed;
 
     expect(outcome).toEqual({ kind: "detached" });
-    expect(stdout.text).toContain(
-      "acpus runs inspect run_1 --target attempt_1 --timeline --follow --after rev:resume",
-    );
+    expect(stdout.text).toContain("Detached from run run_1");
+    expect(stdout.text).toContain("acpus runs cancel run_1");
+    expect(stdout.text).not.toContain("Resume:");
+    expect(stdout.text).not.toContain("--after");
   });
 
   it("emits a public schema-v2 error without internal cause", async () => {
@@ -590,7 +477,6 @@ function snapshot(): RunInspectionSnapshot {
   return {
     schemaVersion: 2,
     kind: "snapshot",
-    revision: revision("rev:1"),
     run: {
       id: "run_1",
       name: "review",
@@ -687,7 +573,6 @@ function overviewDelta(
   return {
     schemaVersion: 2,
     kind: "delta",
-    revision: revision(`rev:${sequence}`),
     changes: [{
       kind: "overview",
       run: {
@@ -704,7 +589,6 @@ function timeline(): RunInspectionTimelineDocument {
   return {
     schemaVersion: 2,
     kind: "timeline",
-    revision: revision("rev:1"),
     run: {
       id: "run_1",
       status: "running",
@@ -752,7 +636,6 @@ function snapshotEmission(
   return {
     schemaVersion: 2,
     kind: "snapshot",
-    revision: document.revision,
     document,
   };
 }
@@ -761,7 +644,6 @@ function done(status: "completed", output?: unknown): RunInspectionEmission {
   return {
     schemaVersion: 2,
     kind: "done",
-    revision: revision("rev:done"),
     run: { id: "run_1", status },
     ...(output === undefined ? {} : { output: output as never }),
   };
@@ -779,8 +661,4 @@ function ok<T>(value: T) {
 
 async function* errorEmissions(error: unknown) {
   yield { isErr: () => true as const, error };
-}
-
-function revision(value: string): RunInspectionRevision {
-  return value as RunInspectionRevision;
 }

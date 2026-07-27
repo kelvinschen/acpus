@@ -325,7 +325,6 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
   return {
     schemaVersion: 2,
     kind: "execution",
-    revision: "inspection-v2:execution" as RunInspectionAgentExecutionDocument["revision"],
     run: {
       id: "run_1",
       status: "running",
@@ -381,7 +380,6 @@ function targetInspection(overrides: Partial<Pick<
   return {
     schemaVersion: 2,
     kind: "details",
-    revision: "inspection-v2:test" as RunInspectionTargetDetailsDocument["revision"],
     run: {
       id: "run_1",
       name: "review-workflow",

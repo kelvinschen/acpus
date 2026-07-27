@@ -21,7 +21,7 @@ Use the same selected path, catalog, or `-` stdin source as `workflow run`. `wor
 
 ```sh
 acpus runs inspect <run-id> --target <target> [--timeline [--limit <1-50>] [--before <cursor>]]
-acpus runs inspect <run-id> --target <target> --timeline --follow [--limit <1-50>] [--after <revision>]
+acpus runs inspect <run-id> --target <target> --timeline --follow [--limit <1-50>]
 ```
 
 Start with Summary. Runtime resolves `attemptId`, `nodeKey`, `frameKey`, then
@@ -32,11 +32,10 @@ Trace state.
 Use Timeline for current/recent activity. It defaults to 12 entries;
 `--limit` accepts 1–50 and `--before` pages older entries. `--timeline` requires
 `--target`, conflicts with `--all`/`--raw`, and `--before` conflicts with
-`--follow`/`--after`.
+`--follow`.
 
-Follow emits a bounded snapshot and semantic deltas. Resume with `--after`
-using the returned revision unchanged. Revisions and page cursors are opaque
-and bound to their run, view, and target.
+Follow emits a bounded snapshot followed by semantic deltas for that connection.
+Timeline page cursors are opaque and bound to their run and resolved target.
 
 Read a Private Turn Evidence path only for an exact prompt, fence, or terminal
 diagnosis. Full provider-frame history exists only when `trace: true`.
