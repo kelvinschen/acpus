@@ -611,7 +611,7 @@ describe("run inspection follow", () => {
     await withRuntimeWorkspace("run-inspection-follow-omitted-progress", async workspace => {
       const store = await admittedRepeatedAgentStore(workspace);
       const run = store.listRuns()[0]!;
-      const attempts = startAgents(store, run.id, 21);
+      const attempts = startAgents(store, run.id, 24);
       const controller = new AbortController();
       const iterator = followRunInspection(workspace, {
         runId: run.id,
@@ -1395,7 +1395,7 @@ async function admittedRepeatedAgentStore(workspace: string): Promise<RuntimeSto
     agents: { observer: { use: "claude" } },
   }).build(({ agents, step }) => {
     const observed = step("batch").fanout({
-      over: Array.from({ length: 21 }, (_, index) => index),
+      over: Array.from({ length: 24 }, (_, index) => index),
       do() {
         const item = step("observe").agent({ agent: agents.observer, prompt: "Inspect" });
         return item.output;

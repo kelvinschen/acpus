@@ -49,6 +49,39 @@ describe("Inspection v2 text surface", () => {
     expect(text).not.toContain("no update yet");
   });
 
+  it("renders concrete Active rows before summarizing hidden running leaves", () => {
+    const document = overview();
+    document.counts = { total: 6, starting: 1, running: 5 };
+    document.items = Array.from({ length: 3 }, (_, index) => ({
+      key: `work~${index}`,
+      role: "instance",
+      path: [`work[${index}]`],
+      label: `work${index}`,
+      kind: "task",
+      status: "running",
+      nodeId: "work",
+      nodeKey: `work~${index}`,
+    }));
+    document.omitted = {
+      reason: "context-limit",
+      limit: 20,
+      dynamicContexts: 3,
+      counts: { total: 3, starting: 1, running: 2 },
+    };
+    document.availableActions = [{ kind: "inspect-all", omitted: 3 }];
+
+    const text = formatRunInspectionDocument(document);
+
+    expect(text).toContain([
+      "Active:",
+      "  ⠋ work0 · task",
+      "  ⠋ work1 · task",
+      "  ⠋ work2 · task",
+      "  … 3 more running",
+    ].join("\n"));
+    expect(text).not.toContain("Active:\n  …");
+  });
+
   it("reports degraded visibility separately and makes restoration explicit", () => {
     const document = targetSummary({
       visibility: { state: "degraded", reason: "observation-gap" },

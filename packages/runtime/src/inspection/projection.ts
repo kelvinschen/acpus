@@ -38,6 +38,7 @@ import type {
 } from "./types.js";
 
 const overviewContextLimit = 20;
+const activePreviewLimit = 3;
 const schedulerFailureReasons = new Set([
   "assert_failed",
   "attempt_timeout",
@@ -760,6 +761,17 @@ function compactOccurrenceTree(tree: OccurrenceTree): { items: RunInspectionItem
     if (!item.parentKey || !byKey.has(item.parentKey)) roots.push(item);
     else addToMapArray(children, item.parentKey, item);
   }
+  const activePreviewTreeKeys = new Set<string>();
+  const activePreview = tree.items
+    .filter(item => tree.executionItemKeys.has(item.key) && (item.status === "starting" || item.status === "running"))
+    .slice(0, activePreviewLimit);
+  for (const item of activePreview) {
+    let current: RunInspectionItem | undefined = item;
+    while (current) {
+      activePreviewTreeKeys.add(current.key);
+      current = current.parentKey ? byKey.get(current.parentKey) : undefined;
+    }
+  }
   type Summary = { actionable: boolean; executionCount: number; localCost: number };
   const summaries = new Map<string, Summary>();
   const summarize = (item: RunInspectionItem): Summary => {
@@ -797,7 +809,7 @@ function compactOccurrenceTree(tree: OccurrenceTree): { items: RunInspectionItem
       const summary = summaries.get(child.key)!;
       const repeatedFold = foldableStatus(child.status) && (foldableCounts.get(`${child.kind}\0${child.status}`) ?? 0) > 3;
       const cost = Math.max(1, summary.executionCount);
-      if (summary.actionable || budgetCovered) continue;
+      if (summary.actionable || activePreviewTreeKeys.has(child.key) || budgetCovered) continue;
       if (repeatedFold) hidden.add(child.key);
       else if (ordinary + cost <= overviewContextLimit) {
         ordinary += cost;

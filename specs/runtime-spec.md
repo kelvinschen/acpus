@@ -895,6 +895,7 @@ type AgentDecisionState = {
 - Overview and all-mode Agent items MUST NOT expose backend, model, telemetry availability, context, token usage, aggregate Agent usage counters, stop reason, or observation time. Current turn identity remains lifecycle attribution, not a usage counter.
 - Overview MUST count every dynamic leaf context, represent an unmaterialized authored leaf once, and exclude grouping rows.
 - Overview MUST bound ordinary expanded dynamic leaf contexts to 20 while retaining every failed, timed-out, awaiting, or retried occurrence and its ancestry outside that budget.
+- Overview MUST retain the first `min(3, N)` starting or running executable leaf occurrences in inspection preorder and their ancestry outside the ordinary context budget, where `N` is the total number of such occurrences.
 - Overview MUST compact repeated completed or cancelled occurrences when needed to preserve its bounded presentation and MUST retain valid parent links after compaction. Each fold MUST replace one contiguous run of hidden sibling occurrences under the same parent and MUST NOT aggregate across an outer occurrence.
 - Overview and all-mode run summaries MUST NOT expose aggregate Agent usage counts.
 - A failed inspection run summary MUST expose the compact failure from its persisted root frame when that frame contains an error.

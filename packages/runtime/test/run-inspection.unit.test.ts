@@ -162,6 +162,49 @@ describe("run inspection projection", () => {
     }
   });
 
+  it("retains three active leaves outside the ordinary overview context budget", () => {
+    const run = repeatedAgentRun(26);
+    for (const [index, instance] of run.dynamic!.nodeInstances.entries()) {
+      if (index >= 20) instance.status = index % 2 === 0 ? "running" : "starting";
+    }
+    const overview = projectRunInspection({
+      ir: compositeWorkflow(),
+      run,
+      artifacts: [],
+      query: { runId: run.id, mode: "overview" },
+    });
+    const all = projectRunInspection({
+      ir: compositeWorkflow(),
+      run,
+      artifacts: [],
+      query: { runId: run.id, mode: "all" },
+    });
+
+    if (overview?.kind !== "snapshot" || all?.kind !== "snapshot") throw new Error("expected snapshots");
+    expect(overview.items.filter(item => item.role === "instance" && item.status === "ready")).toHaveLength(20);
+    expect(overview.items
+      .filter(item => item.role === "instance" && (item.status === "starting" || item.status === "running"))
+      .map(item => item.nodeKey)).toEqual(["review~20", "review~21", "review~22"]);
+    expect(overview.omitted).toMatchObject({
+      dynamicContexts: 3,
+      counts: { total: 3, starting: 2, running: 1 },
+    });
+    expect(overview.availableActions).toContainEqual({ kind: "inspect-all", omitted: 3 });
+    const keys = new Set(overview.items.map(item => item.key));
+    expect(overview.items.filter(item => item.parentKey && !keys.has(item.parentKey))).toEqual([]);
+    expect(all.items
+      .filter(item => item.role === "instance" && (item.status === "starting" || item.status === "running"))
+      .map(item => item.nodeKey)).toEqual([
+        "review~20",
+        "review~21",
+        "review~22",
+        "review~23",
+        "review~24",
+        "review~25",
+      ]);
+    expect(all.omitted).toBeUndefined();
+  });
+
   it("counts leaf execution contexts independently from compact folding", () => {
     const unmaterialized = repeatedAgentRun(0);
     const repeated = repeatedAgentRun(25);
