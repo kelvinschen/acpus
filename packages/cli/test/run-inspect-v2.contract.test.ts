@@ -87,7 +87,7 @@ describe("runs inspect v2", () => {
       runId: "run_1",
       mode: "timeline",
       target: "attempt_1",
-      intervalMs: 1_000,
+      intervalMs: 3_000,
       signal: expect.any(AbortSignal),
     }));
     expect(runtime.followRunInspection.mock.calls[0]?.[1]).not.toHaveProperty("after");

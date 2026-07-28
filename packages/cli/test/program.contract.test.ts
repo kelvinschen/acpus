@@ -367,7 +367,7 @@ describe("CLI program usage contracts", () => {
     }
   });
 
-  it("documents the run inspection and foreground refresh options", async () => {
+  it("documents run submission, explicit follow, and inspection options", async () => {
     const inspectStdout = new CaptureStream();
     const inspectStderr = new CaptureStream();
     expect(await runCli(["runs", "inspect", "--help"], {
@@ -383,6 +383,7 @@ describe("CLI program usage contracts", () => {
     expect(await runCli(["workflow", "run", "--help"], {
       cwd: process.cwd(), stdout: runStdout, stderr: runStderr,
     })).toBe(0);
+    expect(runStdout.text).toContain("--follow");
     expect(runStdout.text).toContain("--interval");
     expect(runStdout.text).toContain("--input <json|file.json>");
     expect(runStdout.text).toContain("- for stdin");
@@ -480,17 +481,22 @@ describe("CLI program usage contracts", () => {
     expect(stderr.text).toContain("--raw requires --json");
   });
 
-  it("rejects a background refresh interval before workflow preparation", async () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    const exitCode = await runCli(["workflow", "run", "missing.workflow.ts", "--background", "--interval", "1s", "--json"], {
-      cwd: process.cwd(), stdout, stderr,
-    });
+  it("rejects invalid workflow follow intervals before preparation", async () => {
+    for (const testCase of [
+      { argv: ["workflow", "run", "missing.workflow.ts", "--interval", "1s", "--json"], message: "--interval requires --follow" },
+      { argv: ["workflow", "run", "missing.workflow.ts", "--follow", "--interval", "100ms", "--json"], message: "--interval must be at least 250ms" },
+    ]) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runCli(testCase.argv, {
+        cwd: process.cwd(), stdout, stderr,
+      });
 
-    expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
-    expect(stdout.text).toContain("--interval cannot be used with --background");
-    expect(stderr.text).toBe("");
+      expect(exitCode).toBe(2);
+      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
+      expect(stdout.text).toContain(testCase.message);
+      expect(stderr.text).toBe("");
+    }
   });
 
   it("queries an empty workflow catalog", async () => {

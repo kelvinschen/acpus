@@ -76,7 +76,7 @@ npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 >
 > 这就够了。Orchestrator Agent 会决定如何组织、运行和观察整个工作。你也可以指定要编排的 Worker Agents，例如让 Claude 负责审查、Codex 负责总结。
 
-### 3. 审查并运行生成的 TypeScript
+### 3. 审查并启动生成的 TypeScript
 
 下面这个示例让两个 ACP-compatible Agent 独立审查，再由第三个角色综合结果，因此可以直接通过带引号的 heredoc 运行：
 
@@ -137,6 +137,8 @@ export default defineWorkflow({
 WORKFLOW
 ```
 
+`workflow run` 提交持久化 run 后会返回一份紧凑回执。当当前 shell 需要保持连接直到 run 进入终态时，添加 `--follow`。
+
 ### 4. 观察运行，或保存以便复用
 
 ```sh
@@ -150,7 +152,7 @@ acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
 acpus runs inspect <run-id>
 ```
 
-`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 创建并执行持久化 run；`runs inspect` 从紧凑的持久化状态视图开始。
+`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 提交持久化 run，并给出 sparse inspect/follow 指南；`runs inspect` 从紧凑的持久化状态视图开始。
 
 ### 常用运行控制
 

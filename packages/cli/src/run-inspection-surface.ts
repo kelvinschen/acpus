@@ -377,6 +377,16 @@ function formatTargetSummary(document: RunInspectionTargetSummaryDocument): stri
 
 function formatSummaryActions(actions: readonly RunInspectionAction[], runId: string): string[] {
   if (actions.length === 0) return [];
+  const timeline = actions.find(action => action.kind === "inspect-timeline");
+  const follow = actions.find(action => action.kind === "follow-target");
+  if (timeline?.kind === "inspect-timeline"
+    && follow?.kind === "follow-target"
+    && timeline.target === follow.target) {
+    return [
+      "Available operations:",
+      `  Inspect: acpus runs inspect ${runId} --target ${timeline.target} [--timeline] [--follow]`,
+    ];
+  }
   return [
     "Available operations:",
     ...actions.slice(0, 2)

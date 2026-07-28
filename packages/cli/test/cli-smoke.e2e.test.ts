@@ -9,20 +9,37 @@ import { withDaemonTestWorkspace } from "./support/workspace.js";
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("acpus CLI subprocess smoke", () => {
-  it("runs a workflow path in foreground JSON mode", async () => {
+  it("follows a workflow path in JSON mode", async () => {
     await withDaemonTestWorkspace("e2e-run-path", async (workspace, home) => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
       const input = "sample input.JSON";
       await writeFile(join(workspace, input), "{\"ready\":true}\n");
 
-      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", input, "--json"]);
+      const result = await runSourceCli(workspace, ["workflow", "run", workflow, "--input", input, "--follow", "--json"]);
 
       expect(result.exitCode, result.stdout || result.stderr).toBe(0);
       expect(result.stderr).toBe("");
       const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
-      expect(records[0]).toMatchObject({ ok: true, phase: "run", kind: "admitted" });
+      expect(records[0]).toMatchObject({ schemaVersion: 1, ok: true, phase: "run", kind: "admitted" });
       expect(records[0].run.id).toMatch(runIdPattern);
+      expect(records[1]).toMatchObject({
+        schemaVersion: 2,
+        ok: true,
+        phase: "run",
+        kind: "snapshot",
+        document: {
+          schemaVersion: 2,
+          kind: "snapshot",
+          run: { id: records[0].run.id },
+        },
+      });
+      expect(records.slice(2, -1).every(record =>
+        record.schemaVersion === 2
+        && record.phase === "run"
+        && (record.kind === "delta" || record.kind === "resync")
+      )).toBe(true);
       expect(records.at(-1)).toMatchObject({
+        schemaVersion: 2,
         ok: true,
         phase: "run",
         kind: "done",
@@ -44,13 +61,21 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         "workflow",
         "run",
         workflow,
-        "--background",
         "--input",
         '{"items":["alpha","beta"],"rounds":1,"usePrimary":true}',
         "--json",
       ]);
       expect(admitted.exitCode, admitted.stdout || admitted.stderr).toBe(0);
-      const runId = JSON.parse(admitted.stdout).run.id as string;
+      const admission = JSON.parse(admitted.stdout);
+      expect(admission).toMatchObject({
+        schemaVersion: 1,
+        ok: true,
+        phase: "run",
+        message: "Run submitted.",
+        workflow: { name: "inspect-composite-smoke" },
+        run: { id: expect.stringMatching(runIdPattern) },
+      });
+      const runId = admission.run.id as string;
       await waitForAwaitingSignal(workspace, runId, "approval");
       const followedPromise = runSourceCli(workspace, ["runs", "inspect", runId, "--follow", "--interval", "250ms"]);
       const [overview, summary, timeline] = await Promise.all([
@@ -156,11 +181,13 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     throw new Error(`Signal target ${target} did not become awaiting; last status: ${lastStatus ?? "unavailable"}.`);
   }
 
-  it("runs concurrent foreground workflows through a shared daemon", async () => {
+  it("follows concurrent workflows through a shared daemon", async () => {
     await withDaemonTestWorkspace("e2e-concurrent-run", async workspace => {
       const workflow = await copyWorkflowFixture(workspace, "workflows/concurrency/short-task.workflow.ts");
 
-      const results = await Promise.all(Array.from({ length: 2 }, () => runSourceCli(workspace, ["workflow", "run", workflow, "--json"])));
+      const results = await Promise.all(Array.from({ length: 2 }, () => runSourceCli(workspace, [
+        "workflow", "run", workflow, "--follow", "--json",
+      ])));
 
       const runIds = new Set<string>();
       for (const [index, result] of results.entries()) {

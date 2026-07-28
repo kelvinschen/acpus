@@ -467,7 +467,7 @@ describe("Inspection v2 follow", () => {
   });
 
   it("parses the bounded follow polling interval", () => {
-    expect(parseFollowInterval(undefined)).toBe(1_000);
+    expect(parseFollowInterval(undefined)).toBe(3_000);
     expect(parseFollowInterval("250ms")).toBe(250);
     expect(() => parseFollowInterval("100ms")).toThrow("--interval must be at least 250ms");
   });

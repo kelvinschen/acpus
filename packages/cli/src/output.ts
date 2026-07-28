@@ -215,6 +215,7 @@ export function writeResult(
     return exitCode;
   }
   if (writeWorkflowPreparationSummary(result, stream, streams.cwd)) return exitCode;
+  if (writeRunSubmissionReceipt(result, stream, streams.cwd)) return exitCode;
   const namedCatalogQuery = result.phase === "inspect" && result.catalog !== undefined;
   const doctorColor = result.phase === "doctor" && supportsColor(stream);
   if (!result.hooks && result.message !== undefined) {
@@ -284,6 +285,14 @@ export function writeResult(
     }
   }
   return exitCode;
+}
+
+function writeRunSubmissionReceipt(result: CliResult, stream: Writable, cwd: string | undefined): boolean {
+  if (!result.ok || result.phase !== "run" || result.run === undefined || result.followRunId === undefined) return false;
+  stream.write(`Run ${result.run.id}  ${result.run.name}  ${result.run.status}\n`);
+  stream.write(`Inspect: acpus runs inspect ${result.run.id} [--follow]\n`);
+  writeDiagnostics(stream, result.diagnostics, cwd);
+  return true;
 }
 
 function writeWorkflowPreparationSummary(result: CliResult, stream: Writable, cwd: string | undefined): boolean {

@@ -57,7 +57,7 @@ describe("workflow source command plumbing", () => {
 
   it.each([
     { action: "check", flags: ["--json"] },
-    { action: "run", flags: ["--background", "--json"] },
+    { action: "run", flags: ["--json"] },
     { action: "viz", flags: [] },
   ] as const)("passes stdin through the shared source preparer for workflow $action -", async ({ action, flags }) => {
     const stdin = Readable.from(["export default {};\n"]);
@@ -84,6 +84,64 @@ describe("workflow source command plumbing", () => {
       });
     }
     expect(setExitCode).toHaveBeenLastCalledWith(0);
+  });
+
+  it("submits by default with compact inspection guidance and preparation warnings", async () => {
+    const stdout = new CaptureStream();
+    mock.prepareWorkflowForCli.mockResolvedValue({
+      prepared: preparedWorkflow([sourceCaptureWarning()]),
+    });
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await command.parseAsync(["run", "workflow.ts"], { from: "user" });
+
+    expect(stdout.text).toBe([
+      "Run run_admitted  dynamic-source  pending",
+      "Inspect: acpus runs inspect run_admitted [--follow]",
+      "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
+      "",
+    ].join("\n"));
+    expect(mock.followRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves preparation fields in the default JSON submission receipt", async () => {
+    const stdout = new CaptureStream();
+    mock.prepareWorkflowForCli.mockResolvedValue({
+      prepared: preparedWorkflow([sourceCaptureWarning()]),
+      catalog: catalogEntry(),
+    });
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await command.parseAsync(["run", "dynamic-source", "--global", "--json"], { from: "user" });
+
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      schemaVersion: 1,
+      ok: true,
+      phase: "run",
+      message: "Run submitted.",
+      workflow: {
+        name: "dynamic-source",
+        diagnostics: { total: 1, errors: 0, warnings: 1, infos: 0 },
+      },
+      diagnostics: [sourceCaptureWarning()],
+      sourceGraphDigest: preparedSourceGraphDigest,
+      run: publicRunRecord(),
+      followRunId: "run_admitted",
+      catalog: catalogEntry(),
+    });
+    expect(mock.followRun).not.toHaveBeenCalled();
   });
 
   it("passes stdin through the shared source preparer for a fork replacement", async () => {
@@ -147,7 +205,7 @@ describe("workflow source command plumbing", () => {
     });
   });
 
-  it("prints preparation warnings before following a foreground run in text mode", async () => {
+  it("prints preparation warnings before following a workflow run in text mode", async () => {
     const stdout = new CaptureStream();
     mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
       output.stdout.write("FOLLOW\n");
@@ -164,7 +222,7 @@ describe("workflow source command plumbing", () => {
       setExitCode: vi.fn(),
     });
 
-    await command.parseAsync(["run", "workflow.ts"], { from: "user" });
+    await command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
 
     expect(stdout.text).toBe([
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
@@ -175,11 +233,26 @@ describe("workflow source command plumbing", () => {
     expect(mock.followRun).toHaveBeenCalledOnce();
   });
 
-  it("preserves preparation fields in a foreground JSON admission record", async () => {
+  it("emits followed JSON admission before the Runtime follow stream", async () => {
     const stdout = new CaptureStream();
-    const followRecord = { schemaVersion: 2, ok: true, phase: "run", kind: "done" };
+    const followRecords = [
+      {
+        schemaVersion: 2,
+        ok: true,
+        phase: "run",
+        kind: "snapshot",
+        document: { schemaVersion: 2, kind: "snapshot" },
+      },
+      {
+        schemaVersion: 2,
+        ok: true,
+        phase: "run",
+        kind: "done",
+        run: { id: "run_admitted", status: "completed" },
+      },
+    ];
     mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
-      output.stdout.write(`${JSON.stringify(followRecord)}\n`);
+      for (const record of followRecords) output.stdout.write(`${JSON.stringify(record)}\n`);
       return { kind: "done", run: { status: "completed" } };
     });
     mock.prepareWorkflowForCli.mockResolvedValue({
@@ -194,10 +267,10 @@ describe("workflow source command plumbing", () => {
       setExitCode: vi.fn(),
     });
 
-    await command.parseAsync(["run", "dynamic-source", "--global", "--json"], { from: "user" });
+    await command.parseAsync(["run", "dynamic-source", "--global", "--follow", "--json"], { from: "user" });
 
     const records = stdout.text.trim().split("\n").map(line => JSON.parse(line));
-    expect(records).toHaveLength(2);
+    expect(records).toHaveLength(3);
     expect(records[0]).toEqual({
       schemaVersion: 1,
       ok: true,
@@ -208,7 +281,7 @@ describe("workflow source command plumbing", () => {
       run: publicRunRecord(),
       catalog: catalogEntry(),
     });
-    expect(records[1]).toEqual(followRecord);
+    expect(records.slice(1)).toEqual(followRecords);
     expect(mock.followRun).toHaveBeenCalledOnce();
   });
 

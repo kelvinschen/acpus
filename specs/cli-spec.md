@@ -16,7 +16,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
 | `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
-| `workflow run <workflow>` | Check options plus `--background`; foreground `--interval <duration>` defaults to 1s, has a 250ms minimum, and conflicts with `--background`. |
+| `workflow run <workflow>` | Check options plus `--follow`; `--interval <duration>` requires follow, defaults to 3s, and has a 250ms minimum. |
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
@@ -39,6 +39,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
+- `workflow run --help` MUST present follow as an explicit wait for completion or `Ctrl-C`.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
 - Fork catalog scope flags MUST be mutually exclusive.
@@ -91,13 +92,15 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Input files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
 - `--agents` MUST parse as a JSON object before preparation or mutation.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
-- Foreground and background runs MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
+- Every workflow run MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
 - The CLI MUST accept a live workspace daemon only when its status protocol version exactly equals the Runtime-exported current protocol version.
 - A daemon protocol mismatch MUST fail actionably without killing, replacing, or spawning around that daemon.
 - Admission MUST probe daemon status before writable storage preparation.
 - A compatible live daemon MUST skip writable storage preparation.
 - An absent or refused daemon MUST prepare current storage before ensure/spawn so fresh and older-storage archival behavior remains Runtime-owned.
-- Foreground run MUST follow the read-only inspection stream to terminal status; background run returns after daemon acceptance.
+- `workflow run` MUST return after daemon acceptance by default.
+- `workflow run --follow` MUST follow the read-only inspection stream to terminal status.
+- Workflow run interval MUST require follow, default to 3s, and reject values below 250ms.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
 - Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.
@@ -123,7 +126,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Empty or whitespace-only target input MUST fail as usage before reading Runtime state.
 - The CLI MUST pass target strings to Runtime without pre-resolution.
 - Raw structured inspection MUST NOT append Private Turn Evidence, private Trace bodies, or provider payloads.
-- Inspect interval MUST require follow, default to 1s, and reject values below 250ms.
+- Inspect interval MUST require follow, default to 3s, and reject values below 250ms.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
 - `runs prune` MUST delegate eligible-run, archive, source, trash, and empty-shard semantics to the [Runtime](runtime-spec.md#pruning) without starting the daemon.
@@ -150,7 +153,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Text and structured steer receipts MUST NOT echo the instruction.
 - Successful text steer output MUST point `Next` to follow inspection of the resolved dynamic node key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
-- Foreground run and follow `Ctrl-C` MUST detach without canceling the run; foreground run prints its run id and an explicit cancel command. No hidden double-`Ctrl-C` control exists.
+- Workflow run follow and inspection follow `Ctrl-C` MUST detach without canceling the run; workflow run follow prints its run id and an explicit cancel command. No hidden double-`Ctrl-C` control exists.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
 - Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
 - On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
@@ -217,14 +220,19 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - A successful checked import MUST retain preparation diagnostics and the source-graph digest in structured output.
 - Successful checked-import text output MUST print the source-graph digest followed by diagnostics in compiler order.
 - An unchecked import MUST expose neither preparation diagnostics nor a source-graph digest.
-- Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission or bounded snapshot, ordered delta/resync records, and a terminal done record.
-- Successful foreground run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
-- Foreground admitted JSON and replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
-- Foreground run text MUST write preparation diagnostics once before follow; replacement-fork text MUST use the ordinary diagnostic presentation.
+- A successful `workflow run --follow --json` MUST emit NDJSON in this order: one schema-version-1 `admitted` record, one schema-version-2 bounded `snapshot`, zero or more ordered schema-version-2 `delta` or `resync` records, then one schema-version-2 `done` record.
+- A successful `runs inspect --follow --json` MUST emit NDJSON in this order: one schema-version-2 bounded `snapshot`, zero or more ordered schema-version-2 `delta` or `resync` records, then one schema-version-2 `done` record.
+- Successful workflow run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
+- Followed workflow admission JSON and replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
+- Workflow run follow text MUST write preparation diagnostics once before follow; replacement-fork text MUST use the ordinary diagnostic presentation.
+- Default workflow run text MUST render `Run <run-id>  <workflow-name>  <status>`, then `Inspect: acpus runs inspect <run-id> [--follow]` on the next line.
+- Default workflow run text MUST append preparation diagnostics after the compact receipt.
+- Default workflow run text MUST omit the generic workflow metadata summary and catalog paths.
+- Default workflow run JSON MUST emit one schema-version-1 result containing the workflow summary, preparation diagnostics, source-graph digest, public run record, follow run id, and applicable catalog provenance.
 - An invalid `--before` value MUST surface Runtime's typed invalid-cursor failure.
 - A non-usage one-shot inspection JSON failure MUST expose the Runtime-owned typed failure as `inspectionError`, preserving `runId`, `target`, and `candidateKeys` when present.
 - Public `inspectionError` MUST NOT expose a Runtime failure cause.
-- A foreground run admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
+- A followed workflow admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
 - Text follow MUST redraw a TTY tree or append semantic non-TTY changes; unchanged non-TTY sessions emit at most one exact-count checkpoint per 30 seconds without advancing the runtime cursor.
 - Target/timeline TTY follow MUST retain only bounded current activity and the bounded recent page while redrawing.
 - Target/timeline piped follow MUST append only semantic deltas and resynchronization records rather than repeating complete documents.
@@ -248,6 +256,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Static target text with multiple matching contexts MUST show aggregate total/status counts and MUST NOT select the first same-node item for details.
 - Target-summary text MUST render the subject and state, at most one pulse headline, at most one hard attention item, optional degraded visibility, and at most two available operations without complete payloads or Runtime arrays.
 - Target-summary text MUST label controls `Available operations` rather than `Actions`.
+- Target-summary text MUST combine same-target Timeline and follow variants as `Inspect: acpus runs inspect <run-id> --target <target> [--timeline] [--follow]`.
 - Target-summary visibility MUST state that inspection may be incomplete and Agent execution health is unknown.
 - Target-summary text MUST contain no more than 1.5 KiB.
 - Target-summary text for a started Agent MUST expose timeline and a copyable steer command using its exact attempt id.
@@ -285,11 +294,11 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
 - Successful web JSON MUST use the ordinary result envelope and place its URL and optional token under `web`.
 - A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
-- Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; foreground run instead maps completed to 0 and failed/canceled to 1, while successful Ctrl-C detach exits 0.
+- Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; default workflow run returns 0 after daemon acceptance, while workflow run follow maps completed to 0 and failed/canceled to 1 and successful Ctrl-C detach exits 0.
 
 ## Verification
 
-- Cover leaf-local JSON capability boundaries, inspection pagination/follow grammar conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
+- Cover leaf-local JSON capability boundaries, workflow submission/follow grammar and receipts, inspection pagination/follow conflicts, phase/exit-code mapping, versioned JSON envelopes, and NDJSON ordering with CLI contract tests and type tests.
 - `pnpm test:contract packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, initial follow snapshots, and bounded semantic-delta rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.

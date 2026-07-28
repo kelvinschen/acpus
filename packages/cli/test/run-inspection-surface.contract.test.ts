@@ -356,6 +356,21 @@ describe("Inspection v2 text surface", () => {
     ].join("\n"));
   });
 
+  it("combines Timeline and follow variants for the same target", () => {
+    const text = formatRunInspectionDocument(targetSummary({
+      availableActions: [
+        { kind: "inspect-timeline", target: "review~abc" },
+        { kind: "follow-target", target: "review~abc" },
+      ],
+    }));
+
+    expect(text).toContain(
+      "Available operations:\n  Inspect: acpus runs inspect run_1 --target review~abc [--timeline] [--follow]",
+    );
+    expect(text).not.toContain("Timeline:");
+    expect(text).not.toContain("Follow:");
+  });
+
   it("keeps checkpoints compact instead of replaying activity bodies", () => {
     const text = formatRunInspectionCheckpoint(timeline());
 

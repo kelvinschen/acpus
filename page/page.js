@@ -821,7 +821,7 @@ function startRun() {
 function scheduleRun() {
   at(0, () => {
     setStatus("running — extract_claims", "is-running");
-    termCmd(`acpus workflow run workflow.ts`, () => {
+    termCmd(`acpus workflow run workflow.ts --follow`, () => {
       termLine(`run <span class="t-gilt">${RUN_ID}</span> admitted <span class="t-dim">· 5 root steps · 6 static nodes · workspace-local state</span>`);
     });
   });

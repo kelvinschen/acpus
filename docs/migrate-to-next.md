@@ -277,9 +277,9 @@ TypeScript type when necessary.
 | 0.5 spec/run visualizer | `acpus workflow viz ... --out workflow.html` for static HTML; `acpus web` for the local operator console |
 | `acpus runs replay <run-id>` | No 0.6 equivalent |
 
-`wf` remains an alias for the singular `workflow` command. 0.6 foreground
-`workflow run` follows the run; `Ctrl-C` detaches without canceling it. Use
-`--background` for admission without following.
+`wf` remains an alias for the singular `workflow` command. `workflow run`
+submits and returns by default; use `--follow` to wait for terminal status.
+`Ctrl-C` during follow detaches without canceling the run.
 
 ### Hooks
 

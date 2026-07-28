@@ -39,25 +39,35 @@ try {
   await cp(join(root, "packages/cli/test/fixtures/workflows/concurrency/short-task.workflow.ts"), workflow);
   await writeFile(join(workspace, "input.json"), "{}\n");
 
-  const { stdout, stderr } = await execFileAsync(process.execPath, [
+  const submitted = await execFileAsync(process.execPath, [
     join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--input", "input.json", "--json",
   ], {
     cwd: workspace,
     env: cliEnvironment(),
   });
-  assert.equal(stderr, "");
+  assert.equal(submitted.stderr, "");
 
-  const records = stdout.trim().split("\n").map(line => JSON.parse(line));
-  assert.deepEqual(pickRunResult(records[0]), {
+  const submission = JSON.parse(submitted.stdout);
+  assert.deepEqual(pickRunResult(submission), {
     ok: true,
     phase: "run",
-    kind: "admitted",
+    kind: undefined,
     name: "cli-concurrency-short-task",
     status: "pending",
   });
+  assert.equal(submission.message, "Run submitted.");
+
+  const followed = await execFileAsync(process.execPath, [
+    join(root, "packages/cli/dist/cli.js"), "runs", "inspect", submission.run.id, "--follow", "--json",
+  ], {
+    cwd: workspace,
+    env: cliEnvironment(),
+  });
+  assert.equal(followed.stderr, "");
+  const records = followed.stdout.trim().split("\n").map(line => JSON.parse(line));
   assert.deepEqual(pickRunResult(records.at(-1)), {
     ok: true,
-    phase: "run",
+    phase: "inspect",
     kind: "done",
     status: "completed",
     output: { ok: true },

@@ -137,8 +137,8 @@ Import copies one snapshot: it does not install dependencies, track the source, 
 acpus workflow viz <workflow> [--out <file.html> [--force]]
 ```
 
-This accepts the same path, catalog, or `-` stdin source as run and prepares it without creating a run. With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
-Visualization is text/HTML only and does not accept `--json`.
+This accepts the same path, catalog, or `-` stdin source as run and prepares it without creating a run. 
+With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
 
 ## Web operator console
 
@@ -172,4 +172,14 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Ordinary result envelopes use `schemaVersion: 1`; successful inspection documents and follow snapshot/delta/resync/done records use Runtime inspection `schemaVersion: 2`. Machine-visible result phases are `usage`, `source`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.
+Put `--json` after the executable leaf. Root/group help, version,
+visualization, and skill install/uninstall do not support it.
+
+| Command shape | Output |
+| --- | --- |
+| One-shot leaf with `--json` | One JSON object |
+| `workflow run --follow --json` | NDJSON: `admitted → snapshot → (delta \| resync)* → done` |
+| `runs inspect --follow --json` | NDJSON: `snapshot → (delta \| resync)* → done` |
+
+Every record includes `ok` and `phase`; stream records also include `kind`.
+Read NDJSON one line at a time, preserve order, and use focused `jq` filters.

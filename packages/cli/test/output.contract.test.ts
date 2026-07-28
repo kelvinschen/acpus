@@ -342,14 +342,15 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("writes text summaries for commands that return a run record", () => {
+  it("writes the compact workflow submission receipt", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const exitCode = writeResult({
       ok: true,
       phase: "run",
-      message: "Run admitted in background.",
+      message: "Run submitted.",
       workflow: checkResult().workflow!,
+      diagnostics: [{ code: "RUN001", severity: "warning", message: "Review this run." }],
       run: {
         id: "run_1",
         name: "cli-valid",
@@ -360,13 +361,16 @@ describe("CLI result output contracts", () => {
         updatedAt: "2026-06-29T00:00:01.000Z",
         progressVersion: 0,
       },
+      followRunId: "run_1",
     }, "text", { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
-    expect(stdout.text).toContain("Run admitted in background.");
-    expect(stdout.text).toContain("Run: run_1");
-    expect(stdout.text).toContain("Status: running");
-    expect(stdout.text).toContain("Workflow entry: /tmp/workflow.ts");
+    expect(stdout.text).toBe([
+      "Run run_1  cli-valid  running",
+      "Inspect: acpus runs inspect run_1 [--follow]",
+      "[warning RUN001] Review this run.",
+      "",
+    ].join("\n"));
     expect(stderr.text).toBe("");
   });
 

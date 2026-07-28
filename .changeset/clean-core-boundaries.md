@@ -87,7 +87,7 @@ Make prepared workflow source identity single-owned:
 - CLI and Web workflow-visualization output expose the corresponding `source`
   phase as part of their closed result unions.
 
-Restrict the foreground run NDJSON admission record to the public `RunRecord`
+Restrict the followed workflow run NDJSON admission record to the public `RunRecord`
 projection. This removes previously exposed normalized input, Agent overrides,
 hook history, execution state, dynamic details, and internal event/node counts;
 subsequent follow records are unchanged.

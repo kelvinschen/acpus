@@ -97,7 +97,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--before <page-cursor>", "read an older Timeline page")
     .option("--all", "expand every dynamic run context")
     .option("--follow", "follow run status until completion or Ctrl-C")
-    .option("--interval <duration>", "refresh followed status (default: 1s, minimum: 250ms)")
+    .option("--interval <duration>", "refresh followed status (default: 3s, minimum: 250ms)")
     .option("--raw", "emit the raw scheduler inspection bundle (requires --json)")
     ).action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);

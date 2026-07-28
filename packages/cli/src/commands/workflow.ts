@@ -35,7 +35,7 @@ type WorkflowInputOptions = {
 } & CatalogOutputOptions;
 
 type RunWorkflowOptions = WorkflowInputOptions & {
-  background?: boolean;
+  follow?: boolean;
   interval?: string;
 };
 
@@ -89,12 +89,12 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
 
   command.addCommand(withJsonOutput(new Command("run")
     .exitOverride()
-    .description("Typecheck, compile, and validate a workflow. Execute it only if there are no diagnostics.")
+    .description("Typecheck, compile, validate, and submit a workflow run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
-    .option("--background", "admit the run and execute it in the background")
-    .option("--interval <duration>", "refresh foreground run status (default: 1s, minimum: 250ms)")
+    .option("--follow", "follow run status until completion or Ctrl-C")
+    .option("--interval <duration>", "refresh followed run status (default: 3s, minimum: 250ms)")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
     ).action(async (workflow: string, options: RunWorkflowOptions) => {
@@ -218,8 +218,8 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
-  if (options.background && options.interval !== undefined) throw usageError("--interval cannot be used with --background.");
-  const intervalMs = parseFollowInterval(options.interval);
+  if (!options.follow && options.interval !== undefined) throw usageError("--interval requires --follow.");
+  const intervalMs = options.follow ? parseFollowInterval(options.interval) : undefined;
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const { prepared, catalog } = await prepareWorkflowForCli({
@@ -236,11 +236,11 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
   const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, normalizedInput.value, admittedOverrides);
 
-  if (options.background) {
+  if (!options.follow) {
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
-      message: "Run admitted in background.",
+      message: "Run submitted.",
       workflow: summarizeWorkflow(prepared.ir),
       diagnostics: prepared.ir.diagnostics,
       sourceGraphDigest: prepared.sourceGraphDigest,
@@ -266,7 +266,11 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   } else {
     writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
   }
-  const outcome = await followRun(ctx.cwd, { runId: admitted.id, mode: "overview", intervalMs }, {
+  const outcome = await followRun(ctx.cwd, {
+    runId: admitted.id,
+    mode: "overview",
+    ...(intervalMs === undefined ? {} : { intervalMs }),
+  }, {
     phase: "run",
     format: structured ? "ndjson" : "text",
     stdout: ctx.stdout,

@@ -87,7 +87,7 @@ export async function* followRunInspection(
   }
 
   while (!query.signal?.aborted) {
-    await delay(query.intervalMs ?? 1_000, query.signal);
+    await delay(query.intervalMs ?? 3_000, query.signal);
     if (query.signal?.aborted) return;
     const next = await readFollowCycle(cwd, query, cursor.eventSequence);
     if (next.isErr()) {
@@ -460,7 +460,7 @@ function validateInspectionQuery(query: RunInspectionQuery): RunInspectionError 
 function validateFollowQuery(query: FollowRunInspectionQuery): RunInspectionError | undefined {
   const invalid = validateInspectionQuery(query);
   if (invalid) return invalid;
-  const intervalMs = query.intervalMs ?? 1_000;
+  const intervalMs = query.intervalMs ?? 3_000;
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 250) {
     return { type: "invalid-query", message: "Inspection follow interval must be an integer of at least 250ms." };
   }

@@ -139,6 +139,8 @@ export default defineWorkflow({
 WORKFLOW
 ```
 
+`workflow run` submits the durable run and returns a compact receipt. Add `--follow` when this shell should remain attached until terminal status.
+
 ### 4. Inspect—or save it for reuse
 
 ```sh
@@ -153,7 +155,7 @@ acpus runs inspect <run-id>
 ```
 
 `workflow check` typechecks, compiles, and validates without admitting a run.
-`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` admits and executes a durable run; `runs inspect` starts with a compact durable status view.
+`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` submits a durable run and prints sparse inspect/follow guidance; `runs inspect` starts with a compact durable status view.
 
 Narrow inspection only as far as the next decision requires:
 

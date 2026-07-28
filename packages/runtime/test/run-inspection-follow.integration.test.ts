@@ -119,6 +119,40 @@ describe("run inspection follow", () => {
     });
   });
 
+  it("polls every three seconds when the follow interval is omitted", async () => {
+    await withRuntimeWorkspace("run-inspection-follow-default-interval", async workspace => {
+      const store = await admittedAgentStore(workspace);
+      const run = store.listRuns()[0]!;
+      const controller = new AbortController();
+      const iterator = followRunInspection(workspace, {
+        runId: run.id,
+        mode: "overview",
+        signal: controller.signal,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(await nextEmission(iterator)).toMatchObject({ kind: "snapshot" });
+        startAgent(store, run.id);
+
+        const pending = iterator.next();
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(2_999);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending).toMatchObject({
+          done: false,
+          value: expect.objectContaining({
+            value: expect.objectContaining({ kind: "delta" }),
+          }),
+        });
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+        store.close();
+      }
+    });
+  });
+
   it("emits compact Agent activity once and coalesces rapid metric-only updates", async () => {
     await withRuntimeWorkspace("run-inspection-follow-progress", async workspace => {
       const store = await admittedAgentStore(workspace);

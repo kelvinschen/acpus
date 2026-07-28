@@ -22,7 +22,7 @@ import {
   formatTerminalOutput,
 } from "./run-inspection-surface.js";
 
-const defaultFollowIntervalMs = 1_000;
+const defaultFollowIntervalMs = 3_000;
 const minimumFollowIntervalMs = 250;
 const checkpointIntervalMs = 30_000;
 const overviewTranscriptContextLimit = 20;
