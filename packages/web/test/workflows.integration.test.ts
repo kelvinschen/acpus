@@ -36,7 +36,7 @@ export default defineWorkflow({
       expect(result.value.workflow).toEqual({
         name: "web-integration",
         description: "Prepared through the Web compiler seam.",
-        irVersion: 6,
+        irVersion: 7,
         nodeCount: 1,
       });
       expect(result.value.contract.inputSchema).toEqual({

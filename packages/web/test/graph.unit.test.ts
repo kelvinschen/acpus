@@ -28,6 +28,36 @@ describe("graphFromOverlay", () => {
     expect(graph.nodes.every(node => node.status === "not_started")).toBe(true);
   });
 
+  it("formats durable Task input shapes as one browser definition value", () => {
+    const graph = graphFromOverlay(compositeRunOverlay(), "static");
+
+    expect(graph.nodes.find(node => node.id === "auto_route")?.detail).toEqual({
+      kind: "task",
+      input: "{ lane: fanout.lanes.item.lane, score: fanout.lanes.item.score }",
+      target: "inline",
+    });
+    expect(graph.nodes.find(node => node.id === "skip_agent")?.detail).toEqual({
+      kind: "task",
+      input: "null",
+      target: "inline",
+    });
+    expect(graph.nodes.find(node => node.id === "cache_hit")?.detail).toEqual({
+      kind: "task",
+      input: "[\"cache\"]",
+      target: "inline",
+    });
+    expect(graph.nodes.find(node => node.id === "manual_route")?.detail).toEqual({
+      kind: "task",
+      input: "fanout.lanes.item.lane",
+      target: "inline",
+    });
+    expect(graph.nodes.find(node => node.id === "compute_value")?.detail).toEqual({
+      kind: "task",
+      input: "\"compute\"",
+      target: "inline",
+    });
+  });
+
   it("models the composite run with containers and valid semantic edge endpoints", () => {
     const graph = graphFromOverlay(compositeRunOverlay(), "runtime");
     const ids = new Set([...graph.nodes.map(node => node.id), ...graph.containers.map(container => container.id)]);
@@ -269,12 +299,22 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("auto_route", "task", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "case:0", "auto_route"], {
         parentNodeId: "route",
-        detail: { kind: "task", inputs: ["lane", "score"], target: "inline" },
+        detail: {
+          kind: "task",
+          input: {
+            kind: "object",
+            fields: {
+              lane: ref("fanout", "lanes", "item", "lane"),
+              score: ref("fanout", "lanes", "item", "score"),
+            },
+          },
+          target: "inline",
+        },
         instances: [instance("auto_route.alpha", "auto_route", "completed", [...branchFanoutPath(0), { kind: "branch", nodeId: "route", branchId: "case:0" }, { kind: "node", nodeId: "auto_route" }])],
       }),
       node("manual_route", "task", ["root", "execution", "branch:lane_matrix", "lanes", "do", "route", "default", "manual_route"], {
         parentNodeId: "route",
-        detail: { kind: "task", inputs: ["lane", "score"], target: "inline" },
+        detail: { kind: "task", input: ref("fanout", "lanes", "item", "lane"), target: "inline" },
         instances: [instance("manual_route.beta", "manual_route", "completed", [...branchFanoutPath(1), { kind: "branch", nodeId: "route", branchId: "default" }, { kind: "node", nodeId: "manual_route" }])],
       }),
       node("repair_loop", "loop", ["root", "execution", "branch:lane_matrix", "lanes", "do", "repair_loop"], {
@@ -309,7 +349,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("skip_agent", "task", ["root", "execution", "branch:agent_preview", "agent_gate", "else", "skip_agent"], {
         parentNodeId: "agent_gate",
-        detail: { kind: "task", inputs: [], target: "inline" },
+        detail: { kind: "task", input: lit(null), target: "inline" },
         instances: [instance("skip_agent", "skip_agent", "completed", [{ kind: "branch", nodeId: "execution", branchId: "agent_preview" }, { kind: "branch", nodeId: "agent_gate", branchId: "else" }, { kind: "node", nodeId: "skip_agent" }])],
       }),
       node("race", "parallel", ["root", "execution", "branch:race_preview", "race"], {
@@ -323,12 +363,12 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("cache_hit", "task", ["root", "execution", "branch:race_preview", "race", "branch:cache", "cache_hit"], {
         parentNodeId: "race",
-        detail: { kind: "task", inputs: [], target: "inline" },
+        detail: { kind: "task", input: { kind: "array", items: [lit("cache")] }, target: "inline" },
         instances: [instance("cache_hit", "cache_hit", "cancelled", [{ kind: "branch", nodeId: "execution", branchId: "race_preview" }, { kind: "branch", nodeId: "race", branchId: "cache" }, { kind: "node", nodeId: "cache_hit" }])],
       }),
       node("compute_value", "task", ["root", "execution", "branch:race_preview", "race", "branch:compute", "compute_value"], {
         parentNodeId: "race",
-        detail: { kind: "task", inputs: [], target: "inline" },
+        detail: { kind: "task", input: lit("compute"), target: "inline" },
         instances: [instance("compute_value", "compute_value", "completed", [{ kind: "branch", nodeId: "execution", branchId: "race_preview" }, { kind: "branch", nodeId: "race", branchId: "compute" }, { kind: "node", nodeId: "compute_value" }])],
       }),
       node("operator_gate", "if", ["root", "operator_gate"], {
@@ -344,7 +384,7 @@ function compositeRunOverlay(): WorkflowVisualizationOverlay {
       }),
       node("auto_operator_gate", "task", ["root", "operator_gate", "else", "auto_operator_gate"], {
         parentNodeId: "operator_gate",
-        detail: { kind: "task", inputs: [], target: "inline" },
+        detail: { kind: "task", input: lit(null), target: "inline" },
         instances: [instance("auto_operator_gate", "auto_operator_gate", "completed", [{ kind: "branch", nodeId: "operator_gate", branchId: "else" }, { kind: "node", nodeId: "auto_operator_gate" }])],
       }),
       node("final_gate", "assert", ["root", "final_gate"], {

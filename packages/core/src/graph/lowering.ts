@@ -3,15 +3,7 @@ import { NODE_REF } from "../internal/symbols.js";
 import type { ExprIR } from "../ir/types.js";
 import type { EnvInput } from "../nodes/leaf/shared.js";
 
-export function bindingsToIR(bindings: Record<string, unknown>): Record<string, ExprIR> {
-  if (!isPlainObject(bindings) || isExpr(bindings) || isNodeRef(bindings)) {
-    throw new Error("Expression bindings must be plain objects.");
-  }
-  assertNoNodeRef(bindings);
-  return (valueToExprIR(bindings) as Extract<ExprIR, { kind: "object" }>).fields;
-}
-
-export function outputToIR(value: unknown): ExprIR {
+export function durableValueToIR(value: unknown): ExprIR {
   assertNoNodeRef(value);
   return valueToExprIR(value);
 }

@@ -52,7 +52,10 @@
 - `eq(a, b)` and `ne(a, b)` MUST accept only string, number, boolean, or null values and MUST lower through `lift` callbacks using JavaScript strict equality and inequality.
 - `lt(a, b)`, `lte(a, b)`, `gt(a, b)`, and `gte(a, b)` MUST accept only number values and MUST lower through `lift` callbacks using the corresponding JavaScript numeric comparison.
 - `not(value)` MUST lower through unary `lift`. `and(...values)` and `or(...values)` MUST require at least two boolean operands and lower through unary `lift` over the operand array using eager `every` and `some` evaluation.
-- Callback helpers MUST be typed as `ExprValue<R>` where callback return type `R` extends `WorkflowData`.
+- Callback helpers MUST infer `R` before applying an internal recursive durable-result check and MUST return `ExprValue<R>`.
+- The callback result check MUST accept finite plain/interface-shaped durable object types, including optional properties, without requiring a string index signature. It MUST preserve exact inferred fields and nested shapes.
+- Lift dependencies and callback results MUST reject unconstrained `object` and ordinary object types with symbol keys because those types do not prove a lowerable plain-object shape; an explicitly empty `{}` shape remains valid.
+- Callback results MUST reduce `any` to `never` and reject `unknown`, unconstrained `object`, symbol-keyed objects, expressions, raw or required-property `undefined`, array-element `undefined`, functions, promises, dates, maps, sets, symbols, bigint, and other non-durable values.
 - Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
 - Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
 - `template` MUST accept `Resolvable` interpolations and lower tagged template strings to a flat `ExprIR.kind: "template"` node with `parts` while preserving authored whitespace exactly.

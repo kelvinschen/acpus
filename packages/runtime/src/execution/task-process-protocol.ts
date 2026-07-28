@@ -19,7 +19,7 @@ export type TaskArtifactRegistration = {
 
 export type TaskProcessRequest = {
   target: TaskExecutionTargetIR;
-  input: Record<string, JsonValue>;
+  input: JsonValue;
   workspaceDir: string;
   sourceRoot?: string;
   execution?: {

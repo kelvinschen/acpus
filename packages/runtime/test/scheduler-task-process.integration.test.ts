@@ -165,7 +165,7 @@ describe("runtime scheduler task process", () => {
             nodeId: "context_task",
             nodeKey: "context_task.dynamic",
             attemptNo: 1,
-            input: {},
+            input: null,
             cwd: workspace,
           }),
         });
@@ -242,7 +242,7 @@ function taskRuntimeContextWorkflow() {
     name: "scheduler-node-executor-task",
   }).build(({ step }) => {
     step("context_task").task({
-      input: {},
+      input: null,
       exec: async ({ artifact }) => ({
         artifact: await artifact.write("result.txt", "dynamic artifact\n"),
       }),
@@ -256,7 +256,7 @@ function nonAdmissibleTaskWorkflow() {
     name: "scheduler-node-executor-non-admissible-output",
   }).build(({ step }) => {
     step("bad_output").task({
-      input: {},
+      input: null,
       exec: async () => ({ when: new Date() }),
     } as never);
     return {};
@@ -268,7 +268,7 @@ function retryingTaskWorkflow() {
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
-      input: {},
+      input: null,
       exec: async ({ artifact }) => {
         const globalKey = "__acpus_scheduler_node_executor_retry_count";
         const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;

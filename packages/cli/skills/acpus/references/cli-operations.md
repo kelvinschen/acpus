@@ -4,11 +4,13 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ## Agent overrides
 
-`workflow run` and `runs fork` accept a JSON object keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, and `env`; they reject unknown Agents, extra fields, simultaneous `use`/`command`, and tracing policy.
+`workflow run` and `runs fork` accept a JSON object keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, and `env`;
 
 ## Run and observe
 
-Run from the intended workspace. Prefer heredoc for one-off workflow executions:
+Run from the intended workspace. 
+
+Prefer HEREDOC for one-off workflow executions, as it avoids polluting the user workspace:
 
 ```sh
 acpus workflow run [--input <json>] - <<'WORKFLOW'
@@ -17,7 +19,7 @@ export default defineWorkflow(...).build(...);
 WORKFLOW
 ```
 
-Use a file-backed `workflow.ts` for imported Task/helper modules or planned edits/reuse:
+Prefer a file-backed `workflow.ts` only when you need to import task/helper modules or plan to edit or reuse the workflow: 
 
 ```sh
 acpus workflow run <workflow> [--input <json|file.json>] [--background]

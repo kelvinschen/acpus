@@ -62,7 +62,7 @@
 - Plain `T` in an authoring type MUST mean declaration-time structure. `Resolvable<T>` MUST mean a value evaluated from durable workflow scope at run time.
 - Core MUST use `Resolvable<T>` from `@acpus/expression` as the sole public runtime-value seam and MUST NOT define duplicate value-or-expression or template-input types.
 - Every `Resolvable` field, including literal input, MUST lower through `valueToExprIR` to `ExprIR`. Template tokens MUST be stored only as `ExprIR.kind: "template"`; node fields MUST NOT store `TemplateIR` directly.
-- Workflow, composite-scope, and Task-input authored bindings MUST reject raw `undefined` at every nesting level instead of omitting it during lowering. Runtime Task outputs remain governed by runtime output normalization.
+- Workflow, composite-scope, and Task-input authored values MUST reject raw `undefined` at every nesting level instead of omitting it during lowering. Runtime Task outputs remain governed by runtime output normalization.
 - Template interpolation MUST preserve expressions inside the template `ExprIR`; rendering policy belongs to runtime consumers.
 
 ### Nodes
@@ -96,7 +96,7 @@
 - Workflow and composite callbacks MUST declare one durable output value. They MUST accept primitives, `null`, arrays, plain objects, `ArtifactRef`, and `Expr` values whose resolved type is durable workflow data.
 - A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST be rejected both as a direct scope return and when nested at any depth. A direct `Expr` such as `task.output` MUST remain valid.
 - TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
-- Workflow root and composite callback return types MUST use a position-sensitive recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, and unions while rejecting raw `undefined`, `unknown`, functions, promises, dates, maps, sets, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
+- Workflow root and composite callback return types MUST use a position-sensitive recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, and unions while rejecting raw `undefined`, `unknown`, unconstrained `object`, functions, promises, dates, maps, sets, symbol-keyed objects, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
 - A scope output MUST NOT be raw `undefined` or an `Expr<T | undefined>` at the top level.
 - An object field MAY be an `Expr<T | undefined>` and remains optional to downstream projection.
 - An array element MUST NOT be raw `undefined` or an `Expr<T | undefined>`.
@@ -123,7 +123,13 @@
 - A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
 - A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
 - A reusable Task definition's `inputSchema` MUST infer the TypeScript input type of its `exec` function and call sites. It MUST NOT be retained on the executable Task token or promise runtime parsing, defaults, or transforms.
-- A reusable Task node call site's top-level `input` MUST be the graph expression binding checked against that inferred input type.
+- Inline and reusable Task `input` MUST accept one durable authored value: a primitive, `null`, array or tuple, plain object shape, `ArtifactRef`, or `Expr` whose resolved value is durable. An unconstrained `object` type and an ordinary object type with symbol keys MUST be rejected because neither proves a lowerable plain-object shape.
+- Task input MUST use the same position-sensitive recursive durable constraint as graph output: raw `undefined` MUST be rejected at every position, a top-level or array-element `Expr<T | undefined>` MUST be rejected, and an object field expression MAY resolve missing.
+- Task input constraints and materialization transforms MUST remain internal; Core MUST NOT export standalone `StepInput`, `GraphInput`, or `RuntimeInput` authoring types.
+- Task `exec` input MUST recursively unwrap authored expressions, preserve unions, optional properties, and tuple positions, and remove authoring-side `readonly`.
+- A reusable Task node call site's complete materialized `input` value MUST be checked non-distributively against the input type inferred from its reusable Task token. Structural extra fields remain permitted.
+- Reusable Task input validation MUST remain a config-time TypeScript check; Core MUST NOT parse, default, or transform the value through `inputSchema` at runtime.
+- Task input errors MUST remain local to the Task call without removing contextual typing from `exec` or poisoning an otherwise valid Task output type.
 - Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
 - Task node lifecycle options MAY support top-level `timeout`.
 - Task invocation options MAY support top-level `cwd`, `env`, and `execution.defaultCommandTimeout`.
@@ -142,7 +148,7 @@
 
 ### IR And Validation
 
-- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 6` on success.
+- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 7` on success.
 - `tryCompileWorkflowDefinition(...)` MUST retain an ordinary build/lowering exception as the `workflow-lowering-failed` cause.
 - `compileWorkflowDefinition(definition, options?)` MUST rethrow an ordinary build/lowering cause unchanged and MUST preserve a tagged Task/link failure as the thrown error's cause.
 - `WorkflowCompilationFailure` MUST distinguish workflow lowering failure, malformed Task authoring specs, missing reusable-Task links, and invalid reusable-Task link fields.
@@ -157,12 +163,12 @@
 - Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
 - `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
 - `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `AgentDefinitionIR` MUST retain optional boolean `trace` and optional `config: Record<string, string>` in IR version 6. It MUST NOT retain `agentMode`. Agent node and Agent run IR MUST remain closed shapes without a `trace` or `config` field.
+- `AgentDefinitionIR` MUST retain optional boolean `trace` and optional `config: Record<string, string>` in IR version 7. It MUST NOT retain `agentMode`. Agent node and Agent run IR MUST remain closed shapes without a `trace` or `config` field.
 - `childScopes(node)` MUST return every direct composite child scope and none for leaf nodes, ordered as `then` before `else`, authored switch cases before `default`, authored parallel keys, then fanout or loop body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
-- `validateWorkflowIR(ir)` MUST require IR version 6 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST require IR version 7 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
 - Node builders MUST NOT emit `ID001`.
 - `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation but MUST NOT bypass Task spec or reusable-Task link completeness.
@@ -181,6 +187,7 @@
 - Literal quorum counts MUST be positive integers. Literal concurrency limits MUST be positive integers or zero, where zero means no authored local concurrency cap.
 - `@acpus/core/ir` MUST expose the shared positive-integer predicate used by frozen-IR validation and runtime resource resolution.
 - Agent, Task, and Signal runs MUST serialize only their meaningful execution fields and MUST NOT contain singleton run-kind tags.
+- `TaskRunIR.input` MUST be one `ExprIR`. Object-shaped input MUST lower as an object expression; scalar, `null`, array, and direct expression input MUST NOT be wrapped in a named binding map.
 - Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
 - Inline task targets MUST contain `{ kind: "inline", source }`, where `source` is the self-contained `exec` function source.
 - Reusable task targets MUST contain `{ kind: "module", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.

@@ -284,7 +284,7 @@ function taskInput(
     env: {},
     request: {
       target: { kind: "inline", source: "async () => undefined" },
-      input: {},
+      input: null,
       workspaceDir: "/repo",
       artifact: {
         run: {

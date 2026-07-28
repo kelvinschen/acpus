@@ -46,6 +46,23 @@ interface OptionalPayload {
   title: string;
   note?: string;
 }
+interface LiftResult {
+  title: string;
+  nested: {
+    count: number;
+  };
+  note?: string;
+}
+interface DeepInvalidLiftResult {
+  a: { b: { c: { d: { e: { f: { g: { h: { i: { createdAt: Date } } } } } } } } };
+}
+declare const symbolKey: unique symbol;
+interface SymbolKeyPayload {
+  [symbolKey]: string;
+}
+type SymbolKeyAlias = {
+  [symbolKey]: string;
+};
 
 const items = refExpr<readonly Item[]>(["input", "items"]);
 const count = refExpr<number>(["input", "count"]);
@@ -65,6 +82,29 @@ function mapResolvable<T extends string | number>(dependency: Resolvable<T>): Ex
     assertType<typeof value>(null as unknown as T);
     return value;
   });
+}
+
+function mapWorkflowData<T extends WorkflowData>(dependency: Resolvable<T>): ExprValue<T> {
+  return lift(dependency, value => value);
+}
+
+function mapInterfaceResolvable<T extends Payload>(dependency: Resolvable<T>): ExprValue<string> {
+  return lift(dependency, value => value.title);
+}
+
+function mapTwoResolvables<A extends string | number, B extends string | number>(
+  a: Resolvable<A>,
+  b: Resolvable<B>,
+): ExprValue<string> {
+  return lift(a, b, (left, right) => `${left}:${right}`);
+}
+
+function mapThreeResolvables<A extends string | number, B extends string | number, C extends string | number>(
+  a: Resolvable<A>,
+  b: Resolvable<B>,
+  c: Resolvable<C>,
+): ExprValue<string> {
+  return lift(a, b, c, (first, second, third) => `${first}:${second}:${third}`);
 }
 
 test("authoring helpers infer expression shapes", () => {
@@ -89,6 +129,10 @@ test("authoring helpers infer expression shapes", () => {
   const genericMapped = mapResolvable(kind);
   assertType<ExprValue<string>>(genericMapped);
   assertType<typeof genericMapped>(null as unknown as ExprValue<string>);
+  void mapWorkflowData;
+  assertType<ExprValue<string>>(mapInterfaceResolvable(payload));
+  assertType<ExprValue<string>>(mapTwoResolvables(kind, count));
+  assertType<ExprValue<string>>(mapThreeResolvables(kind, count, maxItems));
   assertType<ExprValue<string>>(lift(payload, value => {
     expectTypeOf(value).toEqualTypeOf<Readonly<Payload>>();
     return `${value.title}:${value.count}`;
@@ -118,6 +162,24 @@ test("authoring helpers infer expression shapes", () => {
     return resolvedReady && resolvedKind === "release" && resolvedMaxItems > 0;
   });
   expectTypeOf(ternary).toEqualTypeOf<ExprValue<boolean>>();
+  const interfaceUnary = lift(count, (value): LiftResult => ({
+    title: String(value),
+    nested: { count: value },
+  }));
+  expectTypeOf(interfaceUnary).toEqualTypeOf<ExprValue<LiftResult>>();
+  const interfaceBinary = lift(kind, count, (title, value): LiftResult => ({
+    title,
+    nested: { count: value },
+    note: "binary",
+  }));
+  expectTypeOf(interfaceBinary).toEqualTypeOf<ExprValue<LiftResult>>();
+  const interfaceTernary = lift(kind, count, ready, (title, value, resolvedReady): LiftResult => ({
+    title,
+    nested: { count: value },
+    ...(resolvedReady ? { note: "ready" } : {}),
+  }));
+  expectTypeOf(interfaceTernary).toEqualTypeOf<ExprValue<LiftResult>>();
+  expectTypeOf(interfaceTernary.nested.count).toEqualTypeOf<Expr<number>>();
   const named = lift({ ready, kind, maxItems }, dependencies => {
     expectTypeOf(dependencies).toEqualTypeOf<Readonly<{ ready: boolean; kind: string; maxItems: number }>>();
     return dependencies.ready && dependencies.kind === "release" && dependencies.maxItems > 0;
@@ -163,7 +225,8 @@ test("authoring helpers infer expression shapes", () => {
 test("authoring helpers reject unsupported shapes where static typing can prove it", () => {
   lift(refExpr<{ title: string }>(["input", "issue"]), issue => {
     // @ts-expect-error lift callback parameter is inferred from the dependency.
-    return issue.missing;
+    const missing: string = issue.missing;
+    return missing;
   });
   // @ts-expect-error async callbacks return Promise, not WorkflowData.
   lift(count, async value => value + 1);
@@ -173,6 +236,29 @@ test("authoring helpers reject unsupported shapes where static typing can prove 
   lift(count, () => undefined);
   // @ts-expect-error functions are not WorkflowData.
   lift(count, () => () => 1);
+  const escapedAny = lift(count, (): any => 1);
+  expectTypeOf(escapedAny).toEqualTypeOf<never>();
+  // @ts-expect-error unknown callback results must be narrowed.
+  lift(count, (): unknown => 1);
+  // @ts-expect-error required fields cannot contain undefined.
+  lift(count, (): { value: string | undefined } => ({ value: undefined }));
+  // @ts-expect-error arrays cannot contain undefined.
+  lift(count, (): Array<string | undefined> => ["ok", undefined]);
+  // @ts-expect-error deeply nested non-durable values remain rejected.
+  lift(count, (): DeepInvalidLiftResult => null as unknown as DeepInvalidLiftResult);
+  // @ts-expect-error a durable union cannot hide a non-durable branch.
+  lift(count, (): WorkflowData | Date => new Date());
+  const symbolKeyPayload = null as unknown as SymbolKeyPayload;
+  // @ts-expect-error symbol-keyed callback results cannot be lowered.
+  lift(count, (): SymbolKeyPayload => symbolKeyPayload);
+  // @ts-expect-error symbol-keyed type aliases cannot bypass the durable result check.
+  lift(count, (): SymbolKeyAlias => symbolKeyPayload);
+  const expressionResult = refExpr<string>(["input", "result"]);
+  // @ts-expect-error lift callbacks return materialized data, not Expr tokens.
+  lift(count, () => expressionResult);
+  // @ts-expect-error broad object callback results are not known to be durable.
+  lift(count, (): object => ({}));
+  assertType<ExprValue<{}>>(lift(count, (): {} => ({})));
   // @ts-expect-error raw undefined is not a resolvable input.
   lift(undefined, value => value);
   // @ts-expect-error raw Date dependencies are not resolvable.
@@ -183,6 +269,7 @@ test("authoring helpers reject unsupported shapes where static typing can prove 
   lift(Promise.resolve(1), value => value);
   // @ts-expect-error nested Date dependencies are not resolvable.
   lift({ releasedAt: new Date() }, value => value.releasedAt.toISOString());
+  assertType<ExprValue<{}>>(lift({}, value => value));
   // @ts-expect-error positional lift supports at most three dependencies.
   lift(ready, kind, count, maxItems, () => true);
   // @ts-expect-error comparisons only accept number values.

@@ -991,7 +991,7 @@ function failingExpressionCallbackWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-failing-expression-callback",
   }).build(({ step }) => {
-    step("fail").assert({ condition: lift(true, _value => new Date() as any) });
+    step("fail").assert({ condition: lift(true, ((_value: boolean) => new Date()) as never) });
     return {};
   });
 }
@@ -1032,7 +1032,7 @@ function signalWakeRefillWorkflow() {
       branches: {
         long() {
           const task = step("long_task").task({
-            input: {}, exec: async () => ({ value: "long" }),
+            input: null, exec: async () => ({ value: "long" }),
           });
           return { value: task.output.value };
         },
@@ -1058,7 +1058,7 @@ function sequentialRootTaskWorkflow() {
     name: "scheduler-node-executor-root-sequence",
   }).build(({ step }) => {
     const first = step("first_task").task({
-      input: {}, exec: async () => ({ value: "first" }),
+      input: null, exec: async () => ({ value: "first" }),
     });
     const second = step("second_task").task({
       input: { value: first.output.value },
@@ -1078,7 +1078,7 @@ function rootIfTaskWorkflow() {
       condition: input.shouldRun,
       then() {
         const task = step("then_task").task({
-          input: {}, exec: async () => ({ value: "then" }),
+          input: null, exec: async () => ({ value: "then" }),
         });
         return { value: task.output.value };
       },
@@ -1101,7 +1101,7 @@ function rootIfSequentialTaskWorkflow() {
       condition: input.shouldRun,
       then() {
         const first = step("then_first").task({
-          input: {}, exec: async () => ({ value: "first" }),
+          input: null, exec: async () => ({ value: "first" }),
         });
         const second = step("then_second").task({
           input: { value: first.output.value },
@@ -1130,7 +1130,7 @@ function rootSwitchSequentialTaskWorkflow() {
           when: lift(input.mode, mode => mode === "case"),
           then() {
             const first = step("case_first").task({
-              input: {}, exec: async () => ({ value: "case" }),
+              input: null, exec: async () => ({ value: "case" }),
             });
             const second = step("case_second").task({
               input: { value: first.output.value },
@@ -1156,13 +1156,13 @@ function rootParallelTaskWorkflow(options: { maxConcurrency?: number; dynamicMax
       branches: {
         left() {
           const task = step("left_task").task({
-            input: {}, exec: async () => ({ value: "left" }),
+            input: null, exec: async () => ({ value: "left" }),
           });
           return { value: task.output.value, rootPrefix: "root" };
         },
         right() {
           const task = step("right_task").task({
-            input: {}, exec: async () => ({ value: "right" }),
+            input: null, exec: async () => ({ value: "right" }),
           });
           return { value: task.output.value };
         },
@@ -1177,7 +1177,7 @@ function sequentialRootParallelWorkflow() {
     name: "scheduler-node-executor-root-sequence-parallel",
   }).build(({ step }) => {
     const prepare = step("prepare_task").task({
-      input: {}, exec: async () => ({ prefix: "root" }),
+      input: null, exec: async () => ({ prefix: "root" }),
     });
     const combined = step("combine").parallel({
       branches: {
@@ -1209,10 +1209,10 @@ function multiNodeRootParallelWorkflow() {
       branches: {
         mixed() {
           step("first_task").task({
-            input: {}, exec: async () => ({ value: "first" }),
+            input: null, exec: async () => ({ value: "first" }),
           });
           const second = step("second_task").task({
-            input: {}, exec: async () => ({ value: "second" }),
+            input: null, exec: async () => ({ value: "second" }),
           });
           return { value: second.output.value };
         },
@@ -1251,7 +1251,7 @@ function nestedFanoutInParallelWorkflow() {
     inputSchema: z.object({ items: z.array(z.string()), parallelism: z.number() }),
   }).build(({ input, step }) => {
     const prepare = step("prepare").task({
-      input: {}, exec: async () => ({ prefix: "root" }),
+      input: null, exec: async () => ({ prefix: "root" }),
     });
     const combined = step("combine").parallel({
       maxConcurrency: input.parallelism,

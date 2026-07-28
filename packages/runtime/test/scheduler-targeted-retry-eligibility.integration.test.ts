@@ -808,11 +808,11 @@ function atomicRetryWorkflow() {
       strategy: "all",
       branches: {
         target() {
-          const target = step("target").task({ input: {}, exec: async () => ({ ok: true }) });
+          const target = step("target").task({ input: null, exec: async () => ({ ok: true }) });
           return { ok: target.output.ok };
         },
         sibling() {
-          const sibling = step("sibling").task({ input: {}, exec: async () => ({ ok: true }) });
+          const sibling = step("sibling").task({ input: null, exec: async () => ({ ok: true }) });
           return { ok: sibling.output.ok };
         },
       },
@@ -831,11 +831,11 @@ function nestedAtomicRetryWorkflow() {
             strategy: "all",
             branches: {
               target() {
-                const target = step("target").task({ input: {}, exec: async () => ({ ok: true }) });
+                const target = step("target").task({ input: null, exec: async () => ({ ok: true }) });
                 return { ok: target.output.ok };
               },
               sibling() {
-                const sibling = step("inner_sibling").task({ input: {}, exec: async () => ({ ok: true }) });
+                const sibling = step("inner_sibling").task({ input: null, exec: async () => ({ ok: true }) });
                 return { ok: sibling.output.ok };
               },
             },
@@ -843,7 +843,7 @@ function nestedAtomicRetryWorkflow() {
           return { result: inner.output };
         },
         right() {
-          const sibling = step("outer_sibling").task({ input: {}, exec: async () => ({ ok: true }) });
+          const sibling = step("outer_sibling").task({ input: null, exec: async () => ({ ok: true }) });
           return { ok: sibling.output.ok };
         },
       },
@@ -854,7 +854,7 @@ function nestedAtomicRetryWorkflow() {
 
 function rootIdWorkflow() {
   return defineWorkflow({ name: "scheduler-root-id-collision" }).build(({ step }) => {
-    const root = step("root").task({ input: {}, exec: async () => ({ ok: true }) });
+    const root = step("root").task({ input: null, exec: async () => ({ ok: true }) });
     return { ok: root.output.ok };
   });
 }

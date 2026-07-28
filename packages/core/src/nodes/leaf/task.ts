@@ -1,14 +1,14 @@
 import { TASK } from "../../internal/symbols.js";
 import type { Simplify } from "../../internal/type-utils.js";
-import { envToIR, bindingsToIR, stripUndefined } from "../../graph/lowering.js";
+import { durableValueToIR, envToIR, stripUndefined } from "../../graph/lowering.js";
 import { valueToExprIR } from "@acpus/expression/ir";
 import type { z } from "zod";
 import { type Schema } from "../../schema/index.js";
 import type { Resolvable } from "@acpus/expression";
 import type { TaskExecutionTargetIR, TaskNodeIR } from "../../ir/types.js";
 import type { TaskFunction } from "../../runtime/task-context.js";
-import type { EnvInput, RuntimeInput, StepInput } from "./shared.js";
-import type { TaskOutputCheck } from "../../graph/scope.js";
+import type { EnvInput, MaterializedTaskInput } from "./shared.js";
+import type { DurableAuthoredValueCheck, TaskOutputCheck } from "../../graph/scope.js";
 import { isRootedPath } from "../../internal/path.js";
 
 type BaseTaskToken<Input, Output> = {
@@ -76,33 +76,50 @@ type TaskNodeOptions = {
   timeout?: Resolvable<string>;
 };
 
-export type InlineTaskStepSpec<
-  Input extends StepInput,
-  Exec extends TaskFunction<RuntimeInput<Input>, any> = TaskFunction<RuntimeInput<Input>, any>,
-> = Simplify<TaskNodeOptions & TaskStepOptions & {
+export type TaskStepSpecBase<Input> = TaskNodeOptions & TaskStepOptions & {
   outputSchema?: never;
   input: Input;
-  exec: Exec & TaskOutputCheck<TaskResult<NoInfer<Exec>>>;
+};
+
+export type InlineTaskStepSpecBase<
+  Input,
+  Exec extends TaskFunction<MaterializedTaskInput<Input>, any> = TaskFunction<MaterializedTaskInput<Input>, any>,
+> = TaskStepSpecBase<Input> & {
+  exec: Exec;
   task?: never;
-}>;
+};
+
+type InlineTaskStepSpec<
+  Input,
+  Exec extends TaskFunction<MaterializedTaskInput<Input>, any> = TaskFunction<MaterializedTaskInput<Input>, any>,
+> = InlineTaskStepSpecBase<Input, Exec>
+  & { exec: Exec & TaskOutputCheck<TaskResult<NoInfer<Exec>>> }
+  & (DurableAuthoredValueCheck<NoInfer<Input>> extends never ? { input: never } : unknown);
 
 export type TaskResult<Exec extends (...args: any[]) => any> =
   0 extends (1 & Awaited<ReturnType<Exec>>) ? never : Awaited<ReturnType<Exec>>;
 
-export type ReusableTaskStepSpec<Input extends StepInput, TaskInput, Output> = Simplify<TaskNodeOptions & TaskStepOptions & {
-  outputSchema?: never;
-  input: Input;
-  task: ReusableTaskToken<TaskInput, Output>;
+type ReusableTaskStepSpecBase<Input, Token extends ReusableTaskToken<any, any>> = Simplify<TaskStepSpecBase<Input> & {
+  task: Token;
   exec?: never;
 }>;
 
-export type TaskStepSpec<Input extends StepInput> =
-  | InlineTaskStepSpec<Input>
-  | ReusableTaskStepSpec<Input, any, any>;
+export type ReusableTaskStepSpec<Input, TaskInput, Output> =
+  ReusableTaskStepSpecBase<Input, ReusableTaskToken<TaskInput, Output>>
+  & {
+    input: Input
+      & (DurableAuthoredValueCheck<NoInfer<Input>> extends never ? never : unknown)
+      & ([MaterializedTaskInput<NoInfer<Input>>] extends [NoInfer<TaskInput>] ? unknown : never);
+    task: ReusableTaskToken<TaskInput, Output> & TaskOutputCheck<NoInfer<Output>>;
+  };
 
-type ValidTaskSpec<Input extends StepInput> = {
-  target: TaskToken<RuntimeInput<Input>, any>;
-  inputBindings: StepInput;
+export type TaskStepSpec<Input = unknown> =
+  | InlineTaskStepSpec<Input>
+  | ReusableTaskStepSpecBase<Input, ReusableTaskToken<any, any>>;
+
+type ValidTaskSpec = {
+  target: TaskToken<any, any>;
+  input: unknown;
 };
 
 function createInlineTaskToken<Input, Output>(fn: TaskFunction<Input, Output>): InlineTaskToken<Input, Output> {
@@ -144,7 +161,7 @@ export const task: TaskFactory = {
   },
 };
 
-export function buildTaskNode<const Input extends StepInput>(
+export function buildTaskNode<const Input>(
   id: string,
   spec: TaskStepSpec<Input>,
   links: ReusableTaskLinkPlan | undefined,
@@ -161,7 +178,7 @@ export function buildTaskNode<const Input extends StepInput>(
     id,
     kind: "task",
     run: {
-      input: bindingsToIR(parsed.inputBindings),
+      input: durableValueToIR(parsed.input),
       target: taskTarget(id, parsed.target, links),
       cwd: spec.cwd === undefined ? undefined : valueToExprIR(spec.cwd),
       env: envToIR(spec.env),
@@ -175,21 +192,21 @@ export function buildTaskNode<const Input extends StepInput>(
   }) as TaskNodeIR;
 }
 
-function taskSpecParts<const Input extends StepInput>(spec: TaskStepSpec<Input>): ValidTaskSpec<Input> | undefined {
+function taskSpecParts<const Input>(spec: TaskStepSpec<Input>): ValidTaskSpec | undefined {
   const maybeExec = (spec as { exec?: unknown }).exec;
   if (typeof maybeExec === "function") {
     const inlineSpec = spec as InlineTaskStepSpec<Input>;
     return {
       target: createInlineTaskToken(inlineSpec.exec),
-      inputBindings: inlineSpec.input,
+      input: inlineSpec.input,
     };
   }
   const maybeTask = (spec as { task?: unknown }).task;
   if (task.isToken(maybeTask)) {
-    const reusableSpec = spec as ReusableTaskStepSpec<Input, any, any>;
+    const reusableSpec = spec as ReusableTaskStepSpecBase<Input, ReusableTaskToken<any, any>>;
     return {
       target: reusableSpec.task,
-      inputBindings: reusableSpec.input,
+      input: reusableSpec.input,
     };
   }
   return undefined;

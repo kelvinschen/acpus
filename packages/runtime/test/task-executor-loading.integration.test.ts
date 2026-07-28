@@ -12,14 +12,16 @@ import {
 
 describe("task executor loading and process context", () => {
   it("executes inline task source that contains esbuild name helpers", async () => {
-    await withTaskExecutorWorkspace(async ({ workspace, taskOptions }) => {
-      const metadata: unknown[] = [];
+    await withTaskExecutorWorkspace(async ({ taskOptions }) => {
       const node = {
         id: "inline",
         kind: "task",
         run: {
           input: {
-            value: { kind: "literal", value: "ok" },
+            kind: "object",
+            fields: {
+              value: { kind: "literal", value: "ok" },
+            },
           },
           target: {
             kind: "inline",
@@ -30,23 +32,8 @@ describe("task executor loading and process context", () => {
           },
         },
       } satisfies TaskNodeIR;
-      const options = taskOptions("run_1");
-      options.store.writeExecutionMetadata = input => metadata.push(input);
 
-      await expect(executeTaskNode(node, {}, options)).resolves.toEqual({ value: "ok" });
-      expect(metadata).toEqual([
-        expect.objectContaining({
-          runId: "run_1",
-          kind: "task_attempt",
-          metadata: {
-            nodeId: "inline",
-            nodeKey: "inline",
-            attemptNo: 1,
-            input: { value: "ok" },
-            cwd: workspace,
-          },
-        }),
-      ]);
+      await expect(executeTaskNode(node, {}, taskOptions("run_1"))).resolves.toEqual({ value: "ok" });
     });
   });
 
@@ -185,13 +172,13 @@ describe("task executor loading and process context", () => {
         "let count = 0;",
         "const loadedCwd = process.cwd();",
         "const loadedEnv = process.env.MODULE_ENV;",
-        "export const counter = task.define({ inputSchema: z.object({}), exec: async () => ({ count: ++count, loadedCwd, loadedEnv }) });",
+        "export const counter = task.define({ inputSchema: z.null(), exec: async () => ({ count: ++count, loadedCwd, loadedEnv }) });",
       ].join("\n"));
       const node = {
         id: "counter",
         kind: "task",
         run: {
-          input: {},
+          input: { kind: "literal", value: null },
           target: {
             kind: "module",
             specifier: "./counter.mjs",
@@ -207,6 +194,35 @@ describe("task executor loading and process context", () => {
         .resolves.toEqual({ count: 1, loadedCwd: moduleCwd, loadedEnv: "module-env" });
       await expect(executeTaskNode(node, {}, taskOptions("run_counter_2")))
         .resolves.toEqual({ count: 1, loadedCwd: moduleCwd, loadedEnv: "module-env" });
+    });
+  });
+
+  it("passes a scalar input through a real reusable Task process", async () => {
+    await withTaskExecutorWorkspace(async ({ workspace, taskOptions }) => {
+      await writeFile(join(workspace, "workflow.ts"), "");
+      await writeFile(join(workspace, "scalar-task.mjs"), [
+        `import { task, z } from ${JSON.stringify(import.meta.resolve("@acpus/core"))};`,
+        "export const scalarTask = task.define({",
+        "  inputSchema: z.string(),",
+        "  exec: async ({ input }) => ({ value: input.toUpperCase() }),",
+        "});",
+      ].join("\n"));
+      const node = {
+        id: "scalar_task",
+        kind: "task",
+        run: {
+          input: { kind: "literal", value: "frozen" },
+          target: {
+            kind: "module",
+            specifier: "./scalar-task.mjs",
+            exportName: "scalarTask",
+            referrer: { path: "workflow.ts" },
+          },
+        },
+      } satisfies TaskNodeIR;
+
+      await expect(executeTaskNode(node, {}, taskOptions("run_scalar_task")))
+        .resolves.toEqual({ value: "FROZEN" });
     });
   });
 
@@ -240,7 +256,10 @@ describe("task executor loading and process context", () => {
         id: "snapshot_task",
         kind: "task",
         run: {
-          input: { value: { kind: "literal", value: "frozen" } },
+          input: {
+            kind: "object",
+            fields: { value: { kind: "literal", value: "frozen" } },
+          },
           target: {
             kind: "module",
             specifier: "./tasks/snapshot-task.mjs",

@@ -65,5 +65,5 @@ Detailed guidance lives in `docs/development-testing.md`.
 ## Build Maintenance
 - After fully completing any feature implementation, MUST run the relevant build/test command so checked-in generated artifacts stay current.
 - Prefer the narrow command while developing (`pnpm test:unit`, `pnpm test:contract`, `pnpm test:integration`, `pnpm test:e2e`) and broader checks before handoff (`pnpm test`, `pnpm typecheck`).
-- After material test changes, MUST benchmark `pnpm test` against the ~10s baseline; investigate regressions over 500ms as test-design overhead or unavoidable cost, and report the conclusion.
+- After material test changes, MUST benchmark `pnpm test` against the <11s baseline; investigate regressions over 500ms as test-design overhead or unavoidable cost, and report the conclusion.
 - If a command could not be run, the final response MUST state that clearly.

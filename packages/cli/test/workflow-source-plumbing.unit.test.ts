@@ -375,7 +375,7 @@ function preparedWorkflow(
   diagnostics: PreparedWorkflow["ir"]["diagnostics"] = [],
 ): PreparedWorkflow {
   const ir: PreparedWorkflow["ir"] = {
-    irVersion: 6,
+    irVersion: 7,
     name: "dynamic-source",
     agents: {},
     root: {

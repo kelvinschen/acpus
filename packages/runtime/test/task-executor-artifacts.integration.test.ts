@@ -41,12 +41,15 @@ describe("task executor artifacts", () => {
         "}",
       ].join("\n"), {
         input: {
-          file: {
-            kind: "object",
-            fields: {
-              kind: { kind: "literal", value: ref.kind },
-              uri: { kind: "literal", value: ref.uri },
-              mediaType: { kind: "literal", value: ref.mediaType },
+          kind: "object",
+          fields: {
+            file: {
+              kind: "object",
+              fields: {
+                kind: { kind: "literal", value: ref.kind },
+                uri: { kind: "literal", value: ref.uri },
+                mediaType: { kind: "literal", value: ref.mediaType },
+              },
             },
           },
         },
@@ -87,11 +90,14 @@ describe("task executor artifacts", () => {
           "return artifact.path(input.file);",
         ), {
           input: {
-            file: {
-              kind: "object",
-              fields: {
-                kind: { kind: "literal", value: "artifact" },
-                uri: { kind: "literal", value: `artifact://${runId}/${artifactId}` },
+            kind: "object",
+            fields: {
+              file: {
+                kind: "object",
+                fields: {
+                  kind: { kind: "literal", value: "artifact" },
+                  uri: { kind: "literal", value: `artifact://${runId}/${artifactId}` },
+                },
               },
             },
           },
@@ -128,11 +134,14 @@ describe("task executor artifacts", () => {
     await withTaskExecutorWorkspace(async ({ taskOptions }) => {
       const foreign = inlineTask("foreign", "async () => ({ ok: true })", {
         input: {
-          file: {
-            kind: "object",
-            fields: {
-              kind: { kind: "literal", value: "artifact" },
-              uri: { kind: "literal", value: "artifact://run_other/artifact_1" },
+          kind: "object",
+          fields: {
+            file: {
+              kind: "object",
+              fields: {
+                kind: { kind: "literal", value: "artifact" },
+                uri: { kind: "literal", value: "artifact://run_other/artifact_1" },
+              },
             },
           },
         },

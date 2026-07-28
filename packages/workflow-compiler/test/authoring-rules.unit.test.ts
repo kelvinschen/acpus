@@ -145,11 +145,11 @@ describe("workflow authoring rules", () => {
       const prefix = "x";
       const Math = { max: (...values: number[]) => values[0] ?? 0 };
       step("merged").task({
-        input: {},
+        input: null,
         exec: async () => ({ value: prefix + Math.max(1, 2) }),
       });
-      step("one").task({ input: {}, exec: async () => ({ value: prefix }) });
-      step("two").task({ input: {}, exec: async () => ({ value: prefix }) });
+      step("one").task({ input: null, exec: async () => ({ value: prefix }) });
+      step("two").task({ input: null, exec: async () => ({ value: prefix }) });
     `;
     const diagnostics = await checkAuthoringWithProgram(source);
     const captures = diagnostics.filter(diagnostic => diagnostic.code === "TB003");
@@ -236,7 +236,7 @@ describe("workflow authoring rules", () => {
       void \`value: \${expr}\`;
       step(String(expr)).assert({ condition: true });
       const prefix = "x";
-      step("capture").task({ input: {}, exec: async () => ({ value: prefix }) });
+      step("capture").task({ input: null, exec: async () => ({ value: prefix }) });
       void [asserted, array, generic, returnsAny, rest, anything];
     `);
     const callbackDiagnostics = await checkAuthoringWithProgram(`

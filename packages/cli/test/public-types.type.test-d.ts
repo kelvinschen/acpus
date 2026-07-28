@@ -22,7 +22,7 @@ test("acpus facade subpaths expose separated authoring surfaces", () => {
   assertType<Expr<boolean>>(and(true, true));
   assertType<Expr<boolean>>(or(false, true));
   assertType<Expr<string>>(template`repo ${"."}`);
-  assertType<TaskContext<{}>>(null as unknown as TaskContext<{}>);
+  assertType<TaskContext<string>>(null as unknown as TaskContext<string>);
   assertType(task);
   assertType<"external">(createWorktree.kind);
 

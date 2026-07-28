@@ -459,7 +459,7 @@ function preparedRunWorkflow(): PreparedRunWorkflow {
   const digest = `sha256:${"a".repeat(64)}` as Sha256Digest;
   const source = { kind: "workspace", entry: "test.workflow.ts" } as const;
   const ir: PreparedRunWorkflow["ir"] = {
-    irVersion: 6,
+    irVersion: 7,
     name: "test",
     agents: {},
     root: { nodes: [], output: { kind: "object", fields: {} } },

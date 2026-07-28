@@ -14,7 +14,7 @@ describe("workflow valid authoring checks", () => {
           return { ok: true };
         }
         const inlineHidden = task.define({
-          inputSchema: z.object({}),
+          inputSchema: z.string(),
           exec: async (): Promise<Output> => helper(),
         });
 
@@ -38,10 +38,10 @@ describe("workflow valid authoring checks", () => {
           };
           thirdPartyTask.define({ exec: async () => ({ when: new Date() }) });
           step("inline_hidden").task({
-            input: {},
+            input: null,
             exec: async (): Promise<Output> => helper(),
           });
-          step("same_file_hidden").task({ input: {}, task: inlineHidden });
+          step("same_file_hidden").task({ input: "value", task: inlineHidden });
           step("loop").loop({
             state: { ok: true, count: 0, summary: "" },
             do({ round, state }) {
@@ -98,13 +98,125 @@ describe("workflow valid authoring checks", () => {
     });
   });
 
+  it("accepts the original schema-less Agent RPS workflow with a direct Expr Task input", async () => {
+    await withCheckWorkspace("workflow-direct-task-expression", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+        import { lift, md } from "acpus/expression";
+
+        export default defineWorkflow({
+          name: "claude-vs-pi-rps",
+          description: "Let Claude and Pi play one round of rock paper scissors.",
+          agents: {
+            claude: { use: "claude" },
+            pi: { use: "pi" },
+          },
+        }).build(({ agents, step }) => {
+          const moves = step("choose_moves").parallel({
+            branches: {
+              claude: () => step("claude_move").agent({
+                agent: agents.claude,
+                prompt: md\`Play one round of rock paper scissors against Pi.
+
+        Choose exactly one move. Reply with only one lowercase word: rock, paper, or scissors.\`,
+              }).output,
+              pi: () => step("pi_move").agent({
+                agent: agents.pi,
+                prompt: md\`Play one round of rock paper scissors against Claude.
+
+        Choose exactly one move. Reply with only one lowercase word: rock, paper, or scissors.\`,
+              }).output,
+            },
+          });
+
+          const normalized = lift(moves.output, raw => {
+            const normalize = (value: string) => {
+              const text = value.toLowerCase();
+              if (text.includes("rock")) return "rock";
+              if (text.includes("paper")) return "paper";
+              if (text.includes("scissors")) return "scissors";
+              return "invalid";
+            };
+            const claude = normalize(raw.claude);
+            const pi = normalize(raw.pi);
+            let winner = "draw";
+            if (claude === "invalid" || pi === "invalid") {
+              winner = "invalid";
+            } else if (claude !== pi) {
+              const claudeWins =
+                (claude === "rock" && pi === "scissors") ||
+                (claude === "paper" && pi === "rock") ||
+                (claude === "scissors" && pi === "paper");
+              winner = claudeWins ? "claude" : "pi";
+            }
+
+            return {
+              raw,
+              moves: { claude, pi },
+              winner,
+            };
+          });
+
+          const verdict = step("judge").task({
+            input: normalized,
+            exec: async ({ input }) => input,
+          });
+
+          return verdict.output;
+        });
+      `);
+
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("keeps invalid inline and reusable Task input diagnostics local without cascade fallout", async () => {
+    await withCheckWorkspace("workflow-invalid-task-input", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow, task, z } from "acpus/core";
+
+        export const StringTask = task.define({
+          inputSchema: z.string(),
+          exec: async ({ input }) => input.length,
+        });
+
+        export default defineWorkflow({ name: "invalid_task_input" }).build(({ step }) => {
+          const invalidInline = step("invalid_inline").task({
+            input: undefined,
+            exec: async ({ input }) => String(input),
+          });
+          const invalidReusable = step("invalid_reusable").task({
+            task: StringTask,
+            input: 1,
+          });
+          return { inline: invalidInline.output, reusable: invalidReusable.output };
+        });
+      `);
+
+      const typescript = result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("TS"));
+      expect(result.diagnostics).toHaveLength(2);
+      expect(typescript).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "TS2769",
+          source: expect.objectContaining({ line: 11 }),
+        }),
+        expect.objectContaining({
+          code: "TS2769",
+          source: expect.objectContaining({ line: 16 }),
+        }),
+      ]));
+      expect(typescript.map(diagnostic => diagnostic.code)).not.toContain("TS7031");
+      expect(typescript.map(diagnostic => diagnostic.code)).not.toContain("TS2345");
+    });
+  });
+
   it("reports durable output and loop contract violations as TypeScript diagnostics only", async () => {
     await withCheckWorkspace("workflow-output-types", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow } from "acpus/core";
 
         export default defineWorkflow({ name: "output_types" }).build(({ step }) => {
-          step("date").task({ input: {}, exec: async () => ({ when: new Date() }) });
+          step("date").task({ input: null, exec: async () => ({ when: new Date() }) });
           step("if_date").if({
             condition: true,
             then() { return { when: new Date() }; },

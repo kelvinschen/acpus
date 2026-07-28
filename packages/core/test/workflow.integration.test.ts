@@ -119,7 +119,7 @@ describe("workflow compilation", () => {
     });
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.irVersion).toBe(6);
+    expect(ir.irVersion).toBe(7);
     expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
@@ -158,7 +158,10 @@ describe("workflow compilation", () => {
           referrer: { path: "workflows/release.workflow.ts" },
         },
         input: {
-          packageName: { kind: "ref", path: ["input", "packageName"] },
+          kind: "object",
+          fields: {
+            packageName: { kind: "ref", path: ["input", "packageName"] },
+          },
         },
       },
     });
@@ -167,9 +170,12 @@ describe("workflow compilation", () => {
       run: {
         target: { kind: "inline", source: expect.any(String) },
         input: {
-          slug: {
-            kind: "ref",
-            path: ["nodes", "normalize_package", "output", "slug"],
+          kind: "object",
+          fields: {
+            slug: {
+              kind: "ref",
+              path: ["nodes", "normalize_package", "output", "slug"],
+            },
           },
         },
         cwd: { kind: "ref", path: ["input", "repoPath"] },
@@ -307,7 +313,41 @@ describe("workflow compilation", () => {
     expect(compileWorkflowDefinition(definition)).toEqual(compileWorkflowDefinition(definition));
   });
 
-  it("rejects literal undefined graph binding fields during lowering", () => {
+  it("lowers raw scalar, direct Expr, null, array, and object Task inputs as one expression", () => {
+    const definition = defineWorkflow({
+      name: "task_input_shapes",
+      inputSchema: z.object({ value: z.string() }),
+    }).build(({ input, step }) => {
+      step("scalar").task({ input: "literal", exec: async ({ input }) => input });
+      step("expr").task({ input: input.value, exec: async ({ input }) => input });
+      step("null").task({ input: null, exec: async ({ input }) => input });
+      step("array").task({ input: [input.value, 1] as const, exec: async ({ input }) => input });
+      step("object").task({ input: { value: input.value }, exec: async ({ input }) => input });
+      return {};
+    });
+
+    const ir = compileWorkflowDefinition(definition);
+    expect(ir.root.nodes.map(node => node.kind === "task" ? node.run.input : undefined)).toEqual([
+      { kind: "literal", value: "literal" },
+      { kind: "ref", path: ["input", "value"] },
+      { kind: "literal", value: null },
+      {
+        kind: "array",
+        items: [
+          { kind: "ref", path: ["input", "value"] },
+          { kind: "literal", value: 1 },
+        ],
+      },
+      {
+        kind: "object",
+        fields: {
+          value: { kind: "ref", path: ["input", "value"] },
+        },
+      },
+    ]);
+  });
+
+  it("rejects raw undefined durable values during lowering", () => {
     expect(() => compileWorkflowDefinition(defineWorkflow({
       name: "reject_undefined_outputs",
       // Exercise the runtime lowering backstop independently of authoring types.
@@ -317,8 +357,15 @@ describe("workflow compilation", () => {
       name: "reject_nested_undefined_outputs",
     }).build((() => ({ payload: { kept: "nested", omitted: undefined } })) as any))).toThrow("Unsupported expression value at key 'omitted': undefined.");
 
+    expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_top_level_undefined_task_input" }).build(({ step }) => {
+      (step("task").task as any)({
+        input: undefined, exec: async () => ({}),
+      });
+      return {};
+    }))).toThrow("Unsupported expression value: undefined.");
+
     expect(() => compileWorkflowDefinition(defineWorkflow({ name: "reject_undefined_task_input" }).build(({ step }) => {
-      step("task").task({
+      (step("task").task as any)({
         input: { omitted: undefined as any }, exec: async () => ({}),
       });
       return {};
@@ -508,7 +555,7 @@ describe("workflow compilation", () => {
     });
   });
 
-  it("preserves own __proto__ fields through workflow object-map lowering", () => {
+  it("preserves own __proto__ fields through plain-object expression lowering", () => {
     const taskInput = Object.fromEntries([["__proto__", "safe"]]);
     const agents = Object.fromEntries([["__proto__", { use: "codex" }]]);
     const definition = defineWorkflow({ name: "proto_fields", agents }).build(({ agents, step }) => {
@@ -528,9 +575,11 @@ describe("workflow compilation", () => {
 
     expect(task?.kind).toBe("task");
     if (!task || task.kind !== "task") throw new Error("Expected Task node.");
-    expect(Object.getPrototypeOf(task.run.input)).toBe(Object.prototype);
-    expect(Object.hasOwn(task.run.input, "__proto__")).toBe(true);
-    expect(task.run.input.__proto__).toEqual({ kind: "literal", value: "safe" });
+    expect(task.run.input.kind).toBe("object");
+    if (task.run.input.kind !== "object") throw new Error("Expected object Task input.");
+    expect(Object.getPrototypeOf(task.run.input.fields)).toBe(Object.prototype);
+    expect(Object.hasOwn(task.run.input.fields, "__proto__")).toBe(true);
+    expect(task.run.input.fields.__proto__).toEqual({ kind: "literal", value: "safe" });
     expect(Object.getPrototypeOf(ir.agents)).toBe(Object.prototype);
     expect(Object.hasOwn(ir.agents, "__proto__")).toBe(true);
     expect(ir.agents.__proto__).toEqual({ kind: "agent_definition", use: "codex" });
@@ -762,11 +811,11 @@ describe("workflow compilation", () => {
       "step() can only be called during workflow graph declaration.",
     );
     expect(() => savedStep?.("late").task({
-      input: {},
+      input: null,
       exec: async () => ({}),
     })).toThrow("step() can only be called during workflow graph declaration.");
     expect(() => savedDeclaration?.task({
-      input: {},
+      input: null,
       exec: async () => ({}),
     })).toThrow("step() can only be called during workflow graph declaration.");
   });
@@ -774,7 +823,7 @@ describe("workflow compilation", () => {
   it("allows node output fields named ir to be wired as normal user fields", () => {
     const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
       const inspect = step("inspect").task({
-        input: {},
+        input: null,
         exec: async () => ({ ir: "ok" }),
       });
 
@@ -813,11 +862,11 @@ describe("workflow compilation", () => {
 
   it("fails malformed Task specs instead of compiling an empty executable sentinel", () => {
     const definition = defineWorkflow({ name: "malformed_task" }).build(({ step }) => {
-      step("bad_task").task({
+      (step("bad_task").task as any)({
         run: {
-          input: {},
+          input: null,
         },
-      } as any);
+      });
       return {};
     });
 
@@ -1179,7 +1228,7 @@ describe("workflow compilation", () => {
     expect(compileWorkflowDefinition(stringRoot).root.output).toEqual({ kind: "literal", value: "ok" });
 
     const exprRoot = defineWorkflow({ name: "expr_root" }).build((({ step }: any) => {
-      const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+      const leaf = step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) });
       return leaf.output.value;
     }) as any);
     expect(compileWorkflowDefinition(exprRoot).root.output).toEqual({ kind: "ref", path: ["nodes", "leaf", "output", "value"] });
@@ -1195,11 +1244,11 @@ describe("workflow compilation", () => {
     });
 
     const directRef = defineWorkflow({ name: "direct_ref" }).build((({ step }: any) =>
-      step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) })) as any);
+      step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) })) as any);
     expect(() => compileWorkflowDefinition(directRef)).toThrow("NodeRef cannot be lowered as durable data");
 
     const nestedRef = defineWorkflow({ name: "nested_ref" }).build((({ step }: any) => {
-      const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+      const leaf = step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) });
       return { leaf };
     }) as any);
     expect(() => compileWorkflowDefinition(nestedRef)).toThrow("NodeRef cannot be lowered as durable data");

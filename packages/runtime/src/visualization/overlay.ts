@@ -22,7 +22,7 @@ export type WorkflowVisualizationOverlay = {
 
 // Semantic summary of a node's authored configuration, rendered by browser-facing packages.
 export type NodeDetail =
-  | { kind: "task"; inputs: string[]; target: "inline" | "module" }
+  | { kind: "task"; input: ExprIR; target: "inline" | "module" }
   | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: SchemaIR }
   | { kind: "signal"; outputSchema?: SchemaIR }
   | { kind: "assert"; condition: ExprIR; message?: ExprIR }
@@ -145,7 +145,7 @@ function safeNodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail 
 function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
   switch (node.kind) {
     case "task":
-      return { kind: "task", inputs: Object.keys(node.run.input), target: node.run.target.kind };
+      return { kind: "task", input: node.run.input, target: node.run.target.kind };
     case "agent": {
       const definition: AgentDefinitionIR | undefined = agents[node.run.agent];
       const model = definition?.config?.model ?? definition?.model;

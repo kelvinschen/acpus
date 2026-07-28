@@ -126,7 +126,7 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
 
   defineWorkflow({ name: "typed-nested-output" }).build(({ step }) => {
     const nestedTask = step("task").task({
-      input: {},
+      input: null,
       exec: async () => ({
         nested: { title: "ok" },
         items: [{ title: "ok" }],
@@ -145,7 +145,7 @@ test("nested objects and arrays are inferred from task and fanout callbacks", ()
     });
 
     const parallel = step("parallel").parallel({ branches: { branchCallback } });
-    const callbackTask = step("callback_task").task({ input: {}, exec: taskCallback });
+    const callbackTask = step("callback_task").task({ input: null, exec: taskCallback });
     expectTypeOf(parallel.output.branchCallback.computed).toEqualTypeOf<Expr<boolean>>();
     expectTypeOf(callbackTask.output.title).toEqualTypeOf<Expr<string>>();
 
@@ -179,7 +179,7 @@ test("parallel all output is keyed by branch", () => {
           return { summary: review.output.summary };
         },
         taskBranch() {
-          const task = step("task").task({ input: {}, exec: async () => ({ ok: true }) });
+          const task = step("task").task({ input: null, exec: async () => ({ ok: true }) });
           return { ok: task.output.ok };
         },
       },
@@ -317,17 +317,17 @@ test("fanout all and quorum output are arrays of accepted item outputs", () => {
 test("task outputs may be primitive, array, object, union, or undefined", () => {
   defineWorkflow({ name: "typed-task-leaf-outputs" }).build(({ step }) => {
     const primitive = step("primitive").task({
-      input: {}, exec: async () => "ok",
+      input: null, exec: async () => "ok",
     });
     expectTypeOf(primitive.output).toEqualTypeOf<Expr<string>>();
 
     const array = step("array").task({
-      input: {}, exec: async () => [{ id: "a" }],
+      input: null, exec: async () => [{ id: "a" }],
     });
     expectTypeOf(lift(array.output, items => items[0]?.id ?? null)).toEqualTypeOf<Expr<string | null>>();
 
     const maybe = step("maybe").task({
-      input: {}, exec: async (): Promise<{ ok: true } | undefined> => undefined,
+      input: null, exec: async (): Promise<{ ok: true } | undefined> => undefined,
     });
     expectTypeOf(maybe.output.ok).toEqualTypeOf<Expr<true | undefined>>();
 
@@ -339,19 +339,20 @@ test("workflow and task output types enforce durable data", () => {
   const artifactRef = {} as ArtifactRef;
   const jsonValue = {} as JsonValue;
   const opaque = "value" as unknown;
+  const broadObject = new Date() as object;
   const escape = undefined as any;
-  const broadTask = undefined as unknown as TaskFunction<{}, any>;
+  const broadTask = undefined as unknown as TaskFunction<string, any>;
 
   defineWorkflow({
     name: "typed-durable-outputs",
     agents: { worker: { command: "worker" } },
   }).build(({ agents, step }) => {
     step("valid_task").task({
-      input: {},
+      input: null,
       exec: async () => ({ artifactRef, jsonValue, optional: undefined }),
     });
     const escaped = step("escaped_task").task({
-      input: {}, exec: async () => escape,
+      input: null, exec: async () => escape,
     });
     // @ts-expect-error poisoned any output cannot cross a string seam.
     step("escaped_prompt").agent({ agent: agents.worker, prompt: escaped.output });
@@ -361,7 +362,7 @@ test("workflow and task output types enforce durable data", () => {
       then: () => ({}),
       else: () => ({}),
     });
-    const escapedExecutor = step("escaped_executor").task({ input: {}, exec: escape });
+    const escapedExecutor = step("escaped_executor").task({ input: null, exec: escape });
     // @ts-expect-error an any executor cannot produce a consumable string output.
     step("escaped_executor_prompt").agent({ agent: agents.worker, prompt: escapedExecutor.output });
 
@@ -397,7 +398,7 @@ test("workflow and task output types enforce durable data", () => {
       do() { return opaque; },
     });
 
-    const broadResult = step("broad_task").task({ input: {}, exec: broadTask });
+    const broadResult = step("broad_task").task({ input: "broad", exec: broadTask });
     step("broad_condition").if({
       // @ts-expect-error broad Task any output cannot cross a boolean seam.
       condition: broadResult.output,
@@ -411,49 +412,54 @@ test("workflow and task output types enforce durable data", () => {
     // @ts-expect-error unknown callback outputs cannot cross a composite seam.
     step("unknown_parallel").parallel({ branches: { explicitlyUnknown } });
 
-    // @ts-expect-error unknown is not a durable Task output.
     step("invalid_unknown_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error unknown is not a durable Task output.
       exec: async () => opaque,
     });
-    // @ts-expect-error Date is not a durable Task output.
     step("invalid_date_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error Date is not a durable Task output.
       exec: async () => new Date(),
     });
-    // @ts-expect-error functions are not durable Task outputs.
+    step("invalid_broad_object_task").task({
+      input: null,
+      // @ts-expect-error broad object types do not prove a durable Task output shape.
+      exec: async () => broadObject,
+    });
     step("invalid_function_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error functions are not durable Task outputs.
       exec: async () => () => true,
     });
-    // @ts-expect-error nested promises are not durable Task outputs.
     step("invalid_promise_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error nested promises are not durable Task outputs.
       exec: async () => ({ pending: Promise.resolve("later") }),
     });
-    // @ts-expect-error Map is not a durable Task output.
     step("invalid_map_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error Map is not a durable Task output.
       exec: async () => new Map([["key", "value"]]),
     });
-    // @ts-expect-error Set is not a durable Task output.
     step("invalid_set_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error Set is not a durable Task output.
       exec: async () => new Set(["value"]),
     });
-    // @ts-expect-error symbols are not durable Task outputs.
     step("invalid_symbol_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error symbols are not durable Task outputs.
       exec: async () => Symbol("value"),
     });
-    // @ts-expect-error bigint is not a durable Task output.
     step("invalid_bigint_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error bigint is not a durable Task output.
       exec: async () => 1n,
     });
-    // @ts-expect-error undefined array entries are not durable.
     step("invalid_array_undefined_task").task({
-      input: {},
+      input: null,
+      // @ts-expect-error undefined array entries are not durable.
       exec: async () => ["ok", undefined],
     });
 
@@ -461,7 +467,7 @@ test("workflow and task output types enforce durable data", () => {
   });
 
   const escapedReusable = task.define({
-    inputSchema: z.object({}),
+    inputSchema: z.null(),
     exec: async () => escape,
   });
   expectTypeOf<Awaited<ReturnType<typeof escapedReusable.fn>>>().toEqualTypeOf<never>();
@@ -472,6 +478,8 @@ test("workflow and task output types enforce durable data", () => {
   defineWorkflow({ name: "invalid-root-output" }).build(() => ({ opaque }));
   // @ts-expect-error root workflow output cannot contain Date.
   defineWorkflow({ name: "invalid-root-date" }).build(() => ({ when: new Date() }));
+  // @ts-expect-error broad object types do not prove a durable root output shape.
+  defineWorkflow({ name: "invalid-root-broad-object" }).build(() => broadObject);
   // @ts-expect-error root workflow output cannot contain raw undefined.
   defineWorkflow({ name: "invalid-root-undefined" }).build(() => ({ optional: undefined }));
   // @ts-expect-error nested root workflow output cannot contain raw undefined.
@@ -525,7 +533,7 @@ test("branch outputs infer unions while loop transitions remain exact", () => {
 
 test("scope callbacks return arbitrary workflow data while NodeRef stays a control handle", () => {
   defineWorkflow({ name: "typed-scope-workflow-data-output" }).build(({ step }) => {
-    const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
+    const leaf = step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) });
 
     step("bad_direct_ref").parallel({
       branches: {
@@ -633,7 +641,7 @@ test("scope callbacks return arbitrary workflow data while NodeRef stays a contr
   defineWorkflow({ name: "direct-root-array" }).build(() => ["ok", 1, null]);
   // @ts-expect-error workflow callbacks cannot return NodeRef control handles.
   defineWorkflow({ name: "bad-direct-root-ref" }).build(({ step }) =>
-    step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) }));
+    step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) }));
   // @ts-expect-error scope callbacks are synchronous and promises are not durable values.
   defineWorkflow({ name: "bad-root-promise" }).build(async () => "later");
 });

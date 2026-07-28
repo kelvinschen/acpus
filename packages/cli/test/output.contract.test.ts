@@ -155,7 +155,7 @@ describe("CLI result output contracts", () => {
 
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "nested",
       agents: {},
       root: {
@@ -169,7 +169,10 @@ describe("CLI result output contracts", () => {
             nodes: [{
               id: "then_task",
               kind: "task",
-              run: { input: {}, target: { kind: "inline", source: "async function task() {}" } },
+              run: {
+                input: { kind: "literal", value: "nested" },
+                target: { kind: "inline", source: "async function task() {}" },
+              },
             }],
           },
           else: { output: { kind: "object", fields: {} }, nodes: [{ id: "otherwise", kind: "assert", condition: { kind: "literal", value: true } }] },
@@ -198,7 +201,7 @@ describe("CLI result output contracts", () => {
       workflow: {
         name: "cli-valid",
         description: "Validate CLI workflow summaries.",
-        irVersion: 6,
+        irVersion: 7,
         nodeCount: 1,
         outputShape: { kind: "object", possibleKeys: ["ready"] },
         diagnostics: {
@@ -648,7 +651,7 @@ function checkResult(): CliResult {
     workflow: {
       name: "cli-valid",
       description: "Validate CLI workflow summaries.",
-      irVersion: 6,
+      irVersion: 7,
       nodeCount: 1,
       outputShape: { kind: "object", possibleKeys: ["ready"] },
       diagnostics: {

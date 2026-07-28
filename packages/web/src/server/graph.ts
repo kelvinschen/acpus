@@ -524,7 +524,11 @@ function uniqueEdges(edges: WebGraphEdge[]): WebGraphEdge[] {
 function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
   switch (detail.kind) {
     case "task":
-      return detail;
+      return {
+        kind: "task",
+        input: printExpr(detail.input),
+        target: detail.target,
+      };
     case "agent":
       return {
         kind: "agent",

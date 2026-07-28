@@ -4,7 +4,7 @@ export default defineWorkflow({
   name: "cli-task",
 }).build(({ step }) => {
   const result = step("local_task").task({
-    input: {},
+    input: null,
     exec: async ({ artifact }) => ({
       ok: true,
       artifact: await artifact.write("result.txt", "artifact-ok\n"),

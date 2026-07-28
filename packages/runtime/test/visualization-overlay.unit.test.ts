@@ -80,7 +80,16 @@ describe("workflow visualization overlay", () => {
     const overlay = createWorkflowVisualizationOverlay(detailWorkflow());
     const detailById = new Map(overlay.nodes.map(node => [node.nodeId, node.detail]));
 
-    expect(detailById.get("prepare")).toEqual({ kind: "task", inputs: ["lane"], target: "inline" });
+    expect(detailById.get("prepare")).toEqual({
+      kind: "task",
+      input: { kind: "object", fields: { lane: ref("input", "lane") } },
+      target: "inline",
+    });
+    expect(detailById.get("fallback")).toEqual({
+      kind: "task",
+      input: lit(null),
+      target: "inline",
+    });
     expect(detailById.get("review")).toMatchObject({
       kind: "agent",
       agent: "reviewer",
@@ -126,7 +135,7 @@ describe("workflow visualization overlay", () => {
 
 function compositePathWorkflow(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "composite-paths",
     agents: {},
     root: {
@@ -173,7 +182,7 @@ function compositePathWorkflow(): WorkflowIR {
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet", config: { model: "opus" } } },
@@ -183,7 +192,10 @@ function detailWorkflow(): WorkflowIR {
         {
           id: "prepare",
           kind: "task",
-          run: { input: { lane: ref("input", "lane") }, target: { kind: "inline", source: "async function t() {}" } },
+          run: {
+            input: { kind: "object", fields: { lane: ref("input", "lane") } },
+            target: { kind: "inline", source: "async function t() {}" },
+          },
         },
         {
           id: "review",
@@ -203,7 +215,17 @@ function detailWorkflow(): WorkflowIR {
           id: "router",
           kind: "switch",
           cases: [{ when: call("eq", ref("input", "mode"), lit("auto")), then: { output: { kind: "object", fields: {} }, nodes: [] } }],
-          default: { output: { kind: "object", fields: {} }, nodes: [{ id: "fallback", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function t() {}" } } }] },
+          default: {
+            output: { kind: "object", fields: {} },
+            nodes: [{
+              id: "fallback",
+              kind: "task",
+              run: {
+                input: { kind: "literal", value: null },
+                target: { kind: "inline", source: "async function t() {}" },
+              },
+            }],
+          },
         },
         {
           id: "lanes",
@@ -239,7 +261,7 @@ function call(fn: string, ...args: ExprIR[]): ExprIR {
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},
@@ -267,7 +289,10 @@ function task(id: string): WorkflowIR["root"]["nodes"][number] {
   return {
     id,
     kind: "task",
-    run: { input: {}, target: { kind: "inline", source: "async function task() {}" } },
+    run: {
+      input: { kind: "literal", value: null },
+      target: { kind: "inline", source: "async function task() {}" },
+    },
   };
 }
 

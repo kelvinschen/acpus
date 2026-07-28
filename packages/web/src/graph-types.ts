@@ -15,7 +15,7 @@ export type WebGraph = {
 
 // Compact authored definition rendered by the Inspector.
 export type NodeDetail =
-  | { kind: "task"; inputs: string[]; target: "inline" | "module" }
+  | { kind: "task"; input: string; target: "inline" | "module" }
   | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: string }
   | { kind: "signal"; outputSchema?: string }
   | { kind: "assert"; condition: string; message?: string }

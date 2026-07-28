@@ -386,6 +386,22 @@ function malformedVisualizationCases() {
       },
     },
     {
+      name: "a legacy task inputs detail",
+      body: {
+        ok: true,
+        result: {
+          ...ready,
+          graph: {
+            ...graph,
+            nodes: [{
+              ...graph.nodes[0],
+              detail: { kind: "task", inputs: ["release"], target: "inline" },
+            }, ...graph.nodes.slice(1)],
+          },
+        },
+      },
+    },
+    {
       name: "an invalid nested graph selection",
       body: {
         ok: true,
@@ -633,7 +649,7 @@ function readyVisualization(): ReadyVisualization {
 
 function producerWorkflow(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "release",
     description: "Release workflow",
     inputSchema: {
@@ -658,7 +674,7 @@ function producerWorkflow(): WorkflowIR {
             id: "ship",
             kind: "task",
             run: {
-              input: {},
+              input: { kind: "ref", path: ["input", "release"] },
               target: { kind: "inline", source: "async function ship() {}" },
             },
           }],
@@ -764,7 +780,7 @@ function nodeExecution(): NodeExecutionInspection {
 
 function runtimeGraph(): WebGraph {
   const details: NonNullable<WebGraph["nodes"][number]["detail"]>[] = [
-    { kind: "task", inputs: ["release"], target: "inline" },
+    { kind: "task", input: "input.release", target: "inline" },
     { kind: "agent", agent: "reviewer", use: "claude", model: "review-model", outputSchema: "{approved:boolean}" },
     { kind: "signal", outputSchema: "{approved:boolean}" },
     { kind: "assert", condition: "input.release", message: "release required" },

@@ -81,7 +81,7 @@ export type TaskNodeIR = BaseNodeIR & {
 };
 
 export type TaskRunIR = {
-  input: Record<string, ExprIR>;
+  input: ExprIR;
   target: TaskExecutionTargetIR;
   cwd?: ExprIR;
   env?: Record<string, ExprIR>;
@@ -181,7 +181,7 @@ export type SourceLocationIR = {
 };
 
 export type WorkflowIR = {
-  irVersion: 6;
+  irVersion: 7;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;

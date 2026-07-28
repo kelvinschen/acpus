@@ -564,11 +564,11 @@ function targetedForkFailedSourceWorkflow() {
     name: "scheduler-node-executor-targeted-fork-source",
   }).build(({ step }) => {
     const first = step("first").task({
-      input: {},
+      input: null,
       exec: async () => ({ ok: true }),
     });
     step("boom").task({
-      input: { ok: first.output.ok },
+      input: first.output.ok,
       exec: async () => {
         throw new Error("boom");
       },
@@ -582,7 +582,7 @@ function targetedForkReplacementWorkflow() {
     name: "scheduler-node-executor-targeted-fork-replacement",
   }).build(({ step }) => {
     const first = step("first").task({
-      input: {},
+      input: null,
       exec: async () => ({ ok: true }),
     });
     const fixed = step("fixed").task({
@@ -598,7 +598,7 @@ function targetedForkCompletedSourceWorkflow() {
     name: "scheduler-node-executor-targeted-fork-completed",
   }).build(({ step }) => {
     const first = step("first").task({
-      input: {},
+      input: null,
       exec: async () => ({ ok: true }),
     });
     const second = step("second").task({

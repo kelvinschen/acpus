@@ -88,7 +88,7 @@ export function inlineTask(
     id,
     kind: "task",
     run: {
-      input: {},
+      input: { kind: "literal", value: null },
       target: { kind: "inline", source },
       ...invocation,
     },

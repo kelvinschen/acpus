@@ -46,6 +46,24 @@ import type { WorkflowIR as RootWorkflowIR } from "@acpus/core";
 import type { OutputValue as RootOutputValue, OutputValues as RootOutputValues } from "@acpus/core";
 // @ts-expect-error workflow subpath does not expose standalone output helper types.
 import type { OutputValue as WorkflowOutputValue, OutputValues as WorkflowOutputValues } from "@acpus/core/workflow";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { StepInput } from "@acpus/core";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { GraphInput } from "@acpus/core";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { RuntimeInput } from "@acpus/core";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { StepInput as WorkflowStepInput } from "@acpus/core/workflow";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { GraphInput as WorkflowGraphInput } from "@acpus/core/workflow";
+// @ts-expect-error Task input constraints are internal implementation details.
+import type { RuntimeInput as WorkflowRuntimeInput } from "@acpus/core/workflow";
+void (null as unknown as StepInput);
+void (null as unknown as GraphInput);
+void (null as unknown as RuntimeInput);
+void (null as unknown as WorkflowStepInput);
+void (null as unknown as WorkflowGraphInput);
+void (null as unknown as WorkflowRuntimeInput);
 
 test("public package subpaths expose the intended type surface", () => {
   const Input = z.object({ ready: z.boolean(), name: z.string().optional() });
@@ -94,8 +112,9 @@ test("public package subpaths expose the intended type surface", () => {
   >();
 
   assertType<Dollar>(createDollar());
-  const ctx = null as unknown as TaskContext<{}>;
-  expectTypeOf<keyof TaskContext<{}>>().toEqualTypeOf<"input" | "$" | "artifact" | "env" | "abortSignal">();
+  const ctx = null as unknown as TaskContext<string>;
+  expectTypeOf<keyof TaskContext<string>>().toEqualTypeOf<"input" | "$" | "artifact" | "env" | "abortSignal">();
+  expectTypeOf(ctx.input).toEqualTypeOf<string>();
   expectTypeOf(ctx.env).toEqualTypeOf<Record<string, string | undefined>>();
   assertType<Dollar>(ctx.$);
   assertType<AbortSignal>(ctx.abortSignal);

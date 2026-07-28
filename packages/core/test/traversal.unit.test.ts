@@ -9,7 +9,7 @@ function taskNode(id: string): TaskNodeIR {
     id,
     kind: "task",
     run: {
-      input: {},
+      input: { kind: "literal", value: null },
       target: { kind: "inline", source: "async () => ({})" },
     },
   };

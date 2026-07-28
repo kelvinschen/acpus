@@ -78,7 +78,7 @@ describe("runtime admission normalization", () => {
       const workflowPath = join(cwd, "workflow.ts");
       await writeFile(workflowPath, "");
       const unsupportedVersion = workflow();
-      (unsupportedVersion as { irVersion: number }).irVersion = 999;
+      (unsupportedVersion as { irVersion: number }).irVersion = 6;
       for (const ir of [
         unsupportedVersion,
         workflow({ root: { nodes: [], output: { kind: "object", fields: {} }, extra: true } as any }),
@@ -117,7 +117,7 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflow(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, output = { kind: "object", fields: {} }, root, ...rest } = partial;
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "normalization",
     agents: {},
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

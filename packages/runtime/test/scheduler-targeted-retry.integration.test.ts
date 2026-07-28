@@ -1,5 +1,6 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
+import type { JsonValue } from "@acpus/expression/ir";
 import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAgentHostPolicy } from "../src/configuration.js";
@@ -23,7 +24,7 @@ beforeEach(() => {
   taskAttemptHarness = createInlineTaskAttemptHarness();
   let failedOnce = false;
   taskMocks.runTaskAttempt.mockReset().mockImplementation(input => {
-    if (input.nodeId === "item_task" && input.request.input.item === "fail" && !failedOnce) {
+    if (input.nodeId === "item_task" && taskInputItem(input.request.input) === "fail" && !failedOnce) {
       failedOnce = true;
       return errAsync({ type: "failed" as const, message: "fail once" });
     }
@@ -109,11 +110,11 @@ describe("runtime targeted retry completion closure", () => {
         });
         expect(completed.groupMembers[itemMemberKeys[2]!]).toMatchObject({ status: "completed" });
         expect(completed.groupMembers[siblingBranchKey]).toMatchObject({ status: "completed" });
-        expect(taskAttemptHarness.calls.filter(call => call.input.item === "done")).toHaveLength(1);
-        expect(taskAttemptHarness.calls.filter(call => call.input.item === "fail")).toHaveLength(1);
-        expect(taskAttemptHarness.calls.filter(call => call.input.item === "recover")).toHaveLength(1);
+        expect(taskAttemptHarness.calls.filter(call => taskInputItem(call.input) === "done")).toHaveLength(1);
+        expect(taskAttemptHarness.calls.filter(call => taskInputItem(call.input) === "fail")).toHaveLength(1);
+        expect(taskAttemptHarness.calls.filter(call => taskInputItem(call.input) === "recover")).toHaveLength(1);
         expect(taskAttemptHarness.calls.filter(call => call.nodeId === "prepare")).toHaveLength(1);
-        expect(taskMocks.runTaskAttempt.mock.calls.filter(([input]) => input.request.input.item === "fail")).toHaveLength(2);
+        expect(taskMocks.runTaskAttempt.mock.calls.filter(([input]) => taskInputItem(input.request.input) === "fail")).toHaveLength(2);
       } finally {
         store.close();
       }
@@ -121,13 +122,17 @@ describe("runtime targeted retry completion closure", () => {
   });
 });
 
+function taskInputItem(input: JsonValue): JsonValue | undefined {
+  return input !== null && typeof input === "object" && !Array.isArray(input) ? input.item : undefined;
+}
+
 function nestedAllRetryWorkflow() {
   return defineWorkflow({
     name: "scheduler-targeted-retry-completion-closure",
     inputSchema: z.object({ items: z.array(z.string()) }),
   }).build(({ input, step }) => {
     const prepare = step("prepare").task({
-      input: {},
+      input: null,
       exec: async () => ({ prefix: "root" }),
     });
     const combined = step("combine").parallel({

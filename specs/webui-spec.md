@@ -65,6 +65,8 @@
 - A runtime snapshot controls projection MUST contain only Runtime-approved exact retry targets and useful run-cancel applicability. Each retry target MUST contain a non-blank exact target, node/frame kind, and optional authored node id, without status rows, group-member identities, display labels, or additional Runtime fields.
 - Runtime visualization overlays MAY expose semantic node detail derived from frozen `WorkflowIR`, but MUST NOT pre-render WebUI display strings.
 - WebUI server code MUST own graph labels and Inspector definition, schema preview, expression preview, and template preview formatting.
+- A Web graph Task `NodeDetail` MUST contain the complete authored input expression formatted as one `input` string and the Task target kind.
+- A Web graph Task `NodeDetail` MUST NOT reduce an object input to a field-name list.
 - Browser HTTP transport MUST distinguish network failure, invalid JSON, invalid envelopes, and application request failures before the React Query adapter converts them to thrown query errors.
 - Before returning a successful JSON API response to React Query, Browser HTTP transport MUST validate the payload against the endpoint's Web-owned result shape; a mismatch MUST be classified as `response-invalid-envelope`.
 - Recoverable workflow browsing and preparation failures MUST remain tagged Results until the Hono adapter converts them to an HTTP response; permission, I/O, and other unknown failures MUST propagate to the redacted `500` boundary.
@@ -213,7 +215,8 @@ type NodeExecutionInspection = ({
 - Agent execution responses MUST NOT expose Runtime schema markers, run, subject, details arrays, registry fields, or unrendered telemetry.
 - The browser decoder MUST reject unrecognized root, summary, context-window, token-usage, output, or tool-call fields; invalid availability/reason combinations; malformed or negative metrics; and more than three recent tool calls.
 - When `recentToolsIncomplete` is true, the Execution tab MUST identify retained tool details as incomplete. An empty partial list MUST NOT render the definitive `No tool calls` state.
-- Task input MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata, with authored input expression preview as fallback for unexecuted tasks.
+- Task input inspection MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata.
+- An unexecuted Task input inspection MUST render the complete authored input expression as one preview value.
 - Prompt and structured output/error content MUST render through Markdown and JSON viewer components.
 - Inspector key/value rows MUST expose full values on hover and keyboard focus. They MUST NOT rely on copy buttons as the primary way to read truncated values.
 - Signal prompt information MUST appear only for signal nodes or selected signal waits, and artifacts MUST appear only when leaf-node artifacts exist.

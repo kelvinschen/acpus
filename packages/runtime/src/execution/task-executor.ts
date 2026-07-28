@@ -93,28 +93,24 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
   });
 }
 
-function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<Record<string, JsonValue>, TaskNodeFailure> {
-  const entries: Array<[string, unknown]> = [];
-  for (const [key, expression] of Object.entries(node.run.input)) {
-    const evaluated = tryEvaluateExpr(expression, scope);
-    if (evaluated.isErr()) {
-      return resolutionFailure({
-        type: "evaluation",
-        field: `Task node '${node.id}' input '${key}'`,
-        message: evaluated.error.message,
-      });
-    }
-    entries.push([key, evaluated.value]);
+function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<JsonValue, TaskNodeFailure> {
+  const field = `Task node '${node.id}' input`;
+  const evaluated = tryEvaluateExpr(node.run.input, scope);
+  if (evaluated.isErr()) {
+    return resolutionFailure({
+      type: "evaluation",
+      field,
+      message: evaluated.error.message,
+    });
   }
-  const input = Object.fromEntries(entries);
-  const normalized = tryNormalizeWorkflowData(input, `Task node '${node.id}' input`);
+  const normalized = tryNormalizeWorkflowData(evaluated.value, field);
   return normalized.isErr()
-    ? resolutionFailure({ type: "evaluation", field: `Task node '${node.id}' input`, message: normalized.error.message })
-    : ok(normalized.value as Record<string, JsonValue>);
+    ? resolutionFailure({ type: "evaluation", field, message: normalized.error.message })
+    : ok(normalized.value as JsonValue);
 }
 
 function resolveTaskArtifactPaths(
-  input: Record<string, JsonValue>,
+  input: JsonValue,
   nodeId: string,
   cwd: string,
   options: TaskExecutorOptions,

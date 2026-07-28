@@ -2,7 +2,9 @@
 
 ## Start
 
-Prefer use a quoted heredoc for a disposable, self-contained workflow; use a file-backed workflow—typically `workflow.ts`—for task/helper imports or planned edits/reuse. Import only the symbols used:
+**For workflow authoring, use HEREDOC for one-off workflows; use a file-backed workflow.ts only for workflows requiring imports, edits, or reuse.**
+
+Import only the symbols used:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -95,19 +97,18 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 Leaf nodes use the enclosing `step` dispatcher:
 
 ```ts
-// leave `timeout` unset unless the user or workflow explicitly requires a hard elapsed deadline.
-// set a stable, non-empty `sessionKey` for agent only when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
-// read `acpx-agents.md` before choosing agent backends/models.
 const review = step("review").agent({
-  agent: agents.worker,
+  // `timeout`: leave unset unless the user or workflow explicitly requires a hard elapsed deadline
+  // `sessionKey`: only set for when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
+  agent: agents.worker, // read `acpx-agents.md` before choosing agent backends/models.
   prompt: template`Review ${input.topic}.`,
 });
 
 const facts = step("facts").task({
-  input: { topic: input.topic },
+  input: input.topic, // use `null` explicitly for a Task with no input dependency.
   exec: async ({ input }) => {
     // Keep inline exec self-contained: pass runtime data through input; DO NOT capture outer values.
-    return { normalized: input.topic.trim() }
+    return { normalized: input.trim() }
   },
 });
 
@@ -124,6 +125,7 @@ step("require_approval").assert({ condition: approval.output.approved });
 Composite callbacks return one durable value; return `{}` for control-only scopes:
 
 ```ts
+// `if`, `switch`, and parallel race preserve heterogeneous unions. narrow inside `lift` before branch-specific access.
 const gate = step("gate").if({
   condition: input.ready,
   then() { return { status: "ready" as const, detail: "go" }; },
@@ -132,13 +134,9 @@ const gate = step("gate").if({
 const status = gate.output.status;
 const detail = lift(gate.output, result =>
   result.status === "ready" ? result.detail : result.reason);
-```
 
-`if`, `switch`, and parallel race preserve heterogeneous unions. Project common fields directly; narrow inside `lift` before branch-specific access.
-
-`parallel` runs a fixed set of branches; `fanout` repeats one subgraph over a runtime array:
-
-```ts
+// parallel runs a fixed set of branches;
+// Default parallel returns a branch-keyed record such as `checks.output.security`; `strategy: "race"` returns the first success as `{ winner, result }` and cancels the rest. 
 const checks = step("checks").parallel({
   branches: {
     security: () => step("security_review").agent({
@@ -150,19 +148,22 @@ const checks = step("checks").parallel({
   },
 });
 
+
+// fanout repeats one subgraph over a runtime array
+// Default fanout returns input-order results through `reviews.output`; `strategy: "quorum"` plus `count` returns accepted successes in completion order.
 const reviews = step("reviews").fanout({
   over: input.items,
   do: ({ item, itemIndex }) => step("review_item").agent({
     agent: agents.worker, prompt: template`Review item ${itemIndex}: ${item}.`,
   }).output,
 });
+
+// Note: parallel and fanout accept a runtime `maxConcurrency`, a positive integer, specify it only when explicitly requested.
+
 ```
 
-Default parallel returns a branch-keyed record such as `checks.output.security`; `strategy: "race"` returns the first success as `{ winner, result }` and cancels the rest. Default fanout returns input-order results through `reviews.output`; `strategy: "quorum"` plus `count` returns accepted successes in completion order.
-
-**Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
-
 ```ts
+// **Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
 const initial: State = { items: [], note: null };
 const rounds = step("rounds").loop({
   state: initial,
@@ -176,7 +177,6 @@ const rounds = step("rounds").loop({
 return rounds.output;
 ```
 
-`parallel` and `fanout` accept a runtime `maxConcurrency`, a positive integer, specify it only when explicitly requested.
 
 ## Choose An Example
 

@@ -36,55 +36,134 @@ type ResolvedDependency<T> =
                   : T
         : ResolvedExpressionValue<T>;
 type NextDepth = [1, 2, 3, 4, 5, 6, 7, 8, 8];
+type InvalidOrdinaryObjectShape<T> =
+  T extends Expr<any>
+    ? never
+    : T extends readonly unknown[]
+      ? never
+      : T extends (...args: any[]) => any
+        ? never
+        : T extends object
+          ? [Extract<keyof T, symbol>] extends [never]
+            ? [object] extends [T]
+              ? [string] extends [T] ? never : T
+              : never
+            : T
+          : never;
 type InvalidLiftDependency<T, Depth extends number = 0> =
   Depth extends 8
     ? never
-    : [T] extends [LiftDependency]
-      ? never
-      : T extends readonly (infer Item)[]
-        ? InvalidLiftDependency<Item, NextDepth[Depth]>
-        : T extends (...args: any[]) => any
-          ? T
-          : T extends object
-            ? { [K in keyof T]-?: InvalidLiftDependency<{} extends Pick<T, K> ? Exclude<T[K], undefined> : T[K], NextDepth[Depth]> }[keyof T]
-            : T;
-type ValidLiftDependency<T> = [T] extends [WorkflowData]
-  ? unknown
-  : [InvalidLiftDependency<T>] extends [never] ? unknown : never;
+    : [InvalidOrdinaryObjectShape<T>] extends [never]
+      ? [T] extends [LiftDependency]
+        ? never
+        : T extends readonly (infer Item)[]
+          ? InvalidLiftDependency<Item, NextDepth[Depth]>
+          : T extends (...args: any[]) => any
+            ? T
+            : T extends object
+              ? { [K in keyof T]-?: InvalidLiftDependency<{} extends Pick<T, K> ? Exclude<T[K], undefined> : T[K], NextDepth[Depth]> }[keyof T]
+              : T
+      : InvalidOrdinaryObjectShape<T>;
+type ValidLiftDependency<T> =
+  [T] extends [string | number | boolean | null]
+    ? unknown
+    : [InvalidLiftDependency<T>] extends [never] ? unknown : never;
+
+type InvalidLiftResult<T> =
+  IsAny<T> extends true
+    ? unknown
+    : unknown extends T
+      ? unknown
+      : undefined extends T
+        ? unknown
+        : [InvalidOrdinaryObjectShape<T>] extends [never]
+          ? [T] extends [WorkflowData]
+            ? never
+            : T extends Expr<any>
+              ? T
+              : T extends string | number | boolean | null
+                ? never
+                : T extends (...args: any[]) => any
+                  ? T
+                  : T extends abstract new (...args: any[]) => any
+                    ? T
+                    : T extends readonly (infer Item)[]
+                      ? InvalidLiftResult<Item>
+                      : T extends object
+                        ? {
+                            [K in keyof T]-?: InvalidLiftResult<
+                              {} extends Pick<T, K> ? Exclude<T[K], undefined> : T[K]
+                            >
+                          }[keyof T]
+                        : T
+          : InvalidOrdinaryObjectShape<T>;
+type ValidLiftResult<T> =
+  [InvalidLiftResult<T>] extends [never] ? unknown : never;
+type LiftCallback<Args extends readonly unknown[], Result> =
+  ((...args: Args) => Result)
+  & ((...args: Args) => Result & ValidLiftResult<Result>);
+type SafeLiftResult<Result> =
+  ExprValue<Result>
+  & ValidLiftResult<Result>
+  & (IsAny<Result> extends true ? never : unknown);
+type LiftFallbackValidation<Result> =
+  IsAny<Result> extends true
+    ? []
+    : ValidLiftResult<Result> extends never
+      ? [invalidLiftResult: never]
+      : [];
 
 // Authored-shape signatures preserve structured inference; Resolvable fallbacks keep generic wrappers reducible.
-export function lift<const A, R extends WorkflowData>(
+export function lift<const A, R>(
   value: A & ValidLiftDependency<A>,
-  fn: (value: ResolvedDependency<A>) => R,
+  fn: LiftCallback<[value: ResolvedDependency<A>], R>,
+): ExprValue<R>;
+export function lift<A, R>(
+  value: Resolvable<A>,
+  fn: LiftCallback<[value: A], R>,
 ): ExprValue<R>;
 export function lift<A, R extends WorkflowData>(
   value: Resolvable<A>,
   fn: (value: A) => R,
-): ExprValue<R>;
-export function lift<const A, const B, R extends WorkflowData>(
+  ...invalidResult: LiftFallbackValidation<NoInfer<R>>
+): SafeLiftResult<R>;
+export function lift<const A, const B, R>(
   a: A & ValidLiftDependency<A>,
   b: B & ValidLiftDependency<B>,
-  fn: (a: ResolvedDependency<A>, b: ResolvedDependency<B>) => R,
+  fn: LiftCallback<[a: ResolvedDependency<A>, b: ResolvedDependency<B>], R>,
+): ExprValue<R>;
+export function lift<A, B, R>(
+  a: Resolvable<A>,
+  b: Resolvable<B>,
+  fn: LiftCallback<[a: A, b: B], R>,
 ): ExprValue<R>;
 export function lift<A, B, R extends WorkflowData>(
   a: Resolvable<A>,
   b: Resolvable<B>,
   fn: (a: A, b: B) => R,
-): ExprValue<R>;
-export function lift<const A, const B, const C, R extends WorkflowData>(
+  ...invalidResult: LiftFallbackValidation<NoInfer<R>>
+): SafeLiftResult<R>;
+export function lift<const A, const B, const C, R>(
   a: A & ValidLiftDependency<A>,
   b: B & ValidLiftDependency<B>,
   c: C & ValidLiftDependency<C>,
-  fn: (a: ResolvedDependency<A>, b: ResolvedDependency<B>, c: ResolvedDependency<C>) => R,
+  fn: LiftCallback<[a: ResolvedDependency<A>, b: ResolvedDependency<B>, c: ResolvedDependency<C>], R>,
+): ExprValue<R>;
+export function lift<A, B, C, R>(
+  a: Resolvable<A>,
+  b: Resolvable<B>,
+  c: Resolvable<C>,
+  fn: LiftCallback<[a: A, b: B, c: C], R>,
 ): ExprValue<R>;
 export function lift<A, B, C, R extends WorkflowData>(
   a: Resolvable<A>,
   b: Resolvable<B>,
   c: Resolvable<C>,
   fn: (a: A, b: B, c: C) => R,
-): ExprValue<R>;
-export function lift(...args: [...unknown[], (...dependencies: any[]) => WorkflowData]): ExprValue<WorkflowData> {
-  const fn = args.at(-1) as (...dependencies: any[]) => WorkflowData;
+  ...invalidResult: LiftFallbackValidation<NoInfer<R>>
+): SafeLiftResult<R>;
+export function lift(...args: [...unknown[], (...dependencies: any[]) => unknown]): ExprValue<any> {
+  const fn = args.at(-1) as (...dependencies: any[]) => unknown;
   return liftExpr(args.slice(0, -1), fn);
 }
 
@@ -149,7 +228,7 @@ export function md(strings: TemplateStringsArray, ...values: Resolvable<any>[]):
   return templateExpr(dedentTemplateParts(templateParts(strings, values)));
 }
 
-function liftExpr<R extends WorkflowData>(dependencies: readonly unknown[], fn: (...dependencies: any[]) => R): ExprValue<R> {
+function liftExpr<R>(dependencies: readonly unknown[], fn: (...dependencies: any[]) => R): ExprValue<R> {
   return callExpr<R>("lift", [...dependencies, fn.toString()]);
 }
 

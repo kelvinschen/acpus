@@ -220,7 +220,7 @@ function preparedSnapshot(
   })}\n`);
   const source = { kind: "snapshot" as const, entry, digest: sourceGraphDigest };
   const ir: WorkflowIR = {
-    irVersion: 6,
+    irVersion: 7,
     name: "snapshot-validation",
     agents: {},
     inputSchema: {

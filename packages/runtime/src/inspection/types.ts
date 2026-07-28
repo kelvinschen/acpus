@@ -246,7 +246,6 @@ export type RunInspectionStaticNode = {
   order: number;
   path: string[];
   parentNodeId?: string;
-  input?: Record<string, ExprIR>;
   prompt?: ExprIR;
   outputSchema?: SchemaIR;
   agent?: string;
@@ -284,7 +283,7 @@ export type RunInspectionTargetSummary = {
   counts?: RunInspectionStatusCounts;
   staticKind?: string;
   staticOrder?: number;
-  input?: { kind: "runtime" | "authored"; value: unknown };
+  input?: { kind: "runtime"; value: JsonValue } | { kind: "authored"; value: string };
   output?: unknown;
   failure?: RunInspectionDetailedFailure;
   prompt?: {

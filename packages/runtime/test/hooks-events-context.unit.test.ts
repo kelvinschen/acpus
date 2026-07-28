@@ -174,7 +174,7 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "release",
     agents: {},
     root: {
@@ -185,13 +185,16 @@ function workflow(): WorkflowIR {
           kind: "task",
           run: {
             input: {
-              packageName: {
-                kind: "call",
-                fn: "lift",
-                args: [
-                  { kind: "literal", value: "authored" },
-                  { kind: "literal", value: "value => { throw new Error(`task input must not re-evaluate: ${value}`); }" },
-                ],
+              kind: "object",
+              fields: {
+                packageName: {
+                  kind: "call",
+                  fn: "lift",
+                  args: [
+                    { kind: "literal", value: "authored" },
+                    { kind: "literal", value: "value => { throw new Error(`task input must not re-evaluate: ${value}`); }" },
+                  ],
+                },
               },
             },
             target: { kind: "inline", source: "export default async () => ({ ok: true })" },

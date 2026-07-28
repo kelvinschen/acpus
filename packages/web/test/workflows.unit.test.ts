@@ -95,7 +95,7 @@ describe("workflow visualization helpers", () => {
     expect(bundle.workflow).toEqual({
       name: hostileName,
       description: hostileDescription,
-      irVersion: 6,
+      irVersion: 7,
       nodeCount: 3,
     });
     expect(bundle.contract).toEqual({
@@ -142,7 +142,7 @@ const hostileDescription = "Prepared </script><script>globalThis.compromised = t
 
 function workflowIr(): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: hostileName,
     description: hostileDescription,
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
@@ -164,7 +164,10 @@ function workflowIr(): WorkflowIR {
           nodes: [{
             id: "review",
             kind: "task",
-            run: { input: {}, target: { kind: "inline", source: "async function task() {}" } },
+            run: {
+              input: { kind: "literal", value: "review" },
+              target: { kind: "inline", source: "async function task() {}" },
+            },
           }],
         },
         else: {

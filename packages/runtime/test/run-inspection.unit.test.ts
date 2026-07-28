@@ -1,11 +1,74 @@
 import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { SchemaIR, WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { progressChanges, projectRunInspection, semanticChanges } from "../src/inspection/projection.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { ArtifactRecord, RunDetails, RunDynamicNodeInstance } from "../src/store/store.js";
 
 describe("run inspection projection", () => {
+  it("shows one complete authored Task input without duplicating it in static topology", () => {
+    const ir = taskWorkflow({
+      kind: "array",
+      items: [{ kind: "literal", value: "raw" }, { kind: "literal", value: 2 }],
+    });
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+
+    const details = projectRunInspection({
+      ir,
+      run,
+      artifacts: [],
+      query: { runId: run.id, mode: "details", target: "work" },
+    });
+
+    expect(details).toMatchObject({
+      kind: "details",
+      summary: {
+        input: { kind: "authored", value: "[\"raw\", 2]" },
+      },
+    });
+    if (details?.kind !== "details") throw new Error("expected details");
+    expect(details.staticNode).not.toHaveProperty("input");
+  });
+
+  it("prefers the exact runtime Task input shape over the authored expression", () => {
+    const ir = taskWorkflow({ kind: "literal", value: "authored" });
+    const run = repeatedAgentRun(1);
+    run.name = ir.name;
+    run.dynamic!.nodeInstances[0] = {
+      ...run.dynamic!.nodeInstances[0]!,
+      nodeKey: "work~0",
+      nodeId: "work",
+      instancePath: [{ kind: "node", nodeId: "work" }],
+    };
+    run.dynamic!.attempts[0] = {
+      ...run.dynamic!.attempts[0]!,
+      nodeKey: "work~0",
+      nodeId: "work",
+    };
+    run.dynamic!.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-0",
+      kind: "task_attempt",
+      metadata: { input: ["runtime", 2] },
+      createdAt: "2026-07-01T00:00:02.000Z",
+    }];
+
+    const details = projectRunInspection({
+      ir,
+      run,
+      artifacts: [],
+      query: { runId: run.id, mode: "details", target: "work~0" },
+    });
+
+    expect(details).toMatchObject({
+      kind: "details",
+      summary: {
+        input: { kind: "runtime", value: ["runtime", 2] },
+      },
+    });
+  });
+
   it("leaves execution queries to the dedicated exact-attempt projection", () => {
     const run = repeatedAgentRun(1);
     expect(projectRunInspection({
@@ -116,7 +179,7 @@ describe("run inspection projection", () => {
 
   it("keeps a partial outer occurrence while folding over-budget inner items", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "nested-context-budget",
       agents: { reviewer: { kind: "agent_definition", use: "claude" } },
       root: {
@@ -224,7 +287,7 @@ describe("run inspection projection", () => {
 
   it("counts every repeated Assert frame as a distinct execution context", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "repeated-assert",
       agents: {},
       root: {
@@ -449,7 +512,7 @@ describe("run inspection projection", () => {
 
   it("emits failed scope-frame changes with exact occurrence identity while suppressing terminal bookkeeping", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "scope-frame-changes",
       agents: {},
       root: {
@@ -635,7 +698,7 @@ describe("run inspection projection", () => {
 
   it("keeps materialized Assert nodes in the authored compact tree", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "assert-inspection",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "require_ready", kind: "assert", condition: { kind: "literal", value: true } }] },
@@ -799,7 +862,7 @@ describe("run inspection projection", () => {
     const fields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`field_${index}`, { kind: "string" as const }]));
     const outputSchema: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "signal-inspection",
       agents: {},
       root: {
@@ -864,7 +927,7 @@ describe("run inspection projection", () => {
 
   it("keeps repeated Signal aggregate and scoped details occurrence-exact", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "repeated-signal-inspection",
       agents: {},
       root: {
@@ -935,7 +998,7 @@ describe("run inspection projection", () => {
 
   it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "signal-timeout",
       agents: {},
       root: {
@@ -1054,10 +1117,10 @@ describe("run inspection projection", () => {
     });
 
     const taskIr: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "task-failure",
       agents: {},
-      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
+      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: { kind: "literal", value: null }, target: { kind: "inline", source: "async function task() {}" } } }] },
 
       diagnostics: [],
     };
@@ -1114,7 +1177,7 @@ describe("run inspection projection", () => {
 
   it("keeps conditional selection and empty branches local to each repeated occurrence", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "repeated-routes",
       agents: {},
       root: {
@@ -1133,7 +1196,7 @@ describe("run inspection projection", () => {
               then: { output: { kind: "object", fields: {} }, nodes: [] },
               else: {
                 output: { kind: "object", fields: {} },
-                nodes: [{ id: "fallback", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }],
+                nodes: [{ id: "fallback", kind: "task", run: { input: { kind: "literal", value: null }, target: { kind: "inline", source: "async function task() {}" } } }],
               },
             }],
           },
@@ -1224,7 +1287,7 @@ describe("run inspection projection", () => {
 
   it("projects a failed root frame as run-level failure without inventing an overview item", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "root-output-failure",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [] },
@@ -1287,7 +1350,7 @@ describe("run inspection projection", () => {
 
   it("targets the deepest failed or timed-out scope without repeating its failed ancestor", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "scope-root-cause",
       agents: {},
       root: {
@@ -1344,9 +1407,9 @@ describe("run inspection projection", () => {
   });
 
   it("keeps switch route order undecided and collapsed when condition evaluation fails", () => {
-    const task = (id: string) => ({ id, kind: "task" as const, run: { input: {}, target: { kind: "inline" as const, source: "async function task() {}" } } });
+    const task = (id: string) => ({ id, kind: "task" as const, run: { input: { kind: "literal" as const, value: null }, target: { kind: "inline" as const, source: "async function task() {}" } } });
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "failed-switch",
       agents: {},
       root: {
@@ -1393,10 +1456,10 @@ describe("run inspection projection", () => {
 
   it("keeps the derived node item key stable when a placeholder materializes and retries", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "stable-node-key",
       agents: {},
-      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: {}, target: { kind: "inline", source: "async function task() {}" } } }] },
+      root: { output: { kind: "object", fields: {} }, nodes: [{ id: "work", kind: "task", run: { input: { kind: "literal", value: null }, target: { kind: "inline", source: "async function task() {}" } } }] },
       diagnostics: [],
     };
     const path = appendNode([], "work");
@@ -1416,7 +1479,7 @@ describe("run inspection projection", () => {
 
   it("orders only persisted loop rounds and preserves empty rounds", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "persisted-loop-rounds",
       agents: {},
       root: { output: { kind: "object", fields: {} }, nodes: [{ id: "repeat", kind: "loop", state: { kind: "object", fields: {} }, do: { output: { kind: "object", fields: { state: { kind: "object", fields: {} }, stop: { kind: "literal", value: true } } }, nodes: [] } }] },
@@ -1442,7 +1505,7 @@ describe("run inspection projection", () => {
 
   it("selects composite member counts from the matching repeated group instance", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "repeated-composite",
       agents: {},
       root: {
@@ -1514,7 +1577,7 @@ describe("run inspection projection", () => {
 
 function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_definition", use: "claude", model: "sonnet" }): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "inspection-composite",
     agents: { reviewer: agent },
     root: {
@@ -1535,6 +1598,26 @@ function compositeWorkflow(agent: WorkflowIR["agents"][string] = { kind: "agent_
       }],
     },
 
+    diagnostics: [],
+  };
+}
+
+function taskWorkflow(input: ExprIR): WorkflowIR {
+  return {
+    irVersion: 7,
+    name: "inspection-task",
+    agents: {},
+    root: {
+      output: { kind: "object", fields: {} },
+      nodes: [{
+        id: "work",
+        kind: "task",
+        run: {
+          input,
+          target: { kind: "inline", source: "async function task() {}" },
+        },
+      }],
+    },
     diagnostics: [],
   };
 }

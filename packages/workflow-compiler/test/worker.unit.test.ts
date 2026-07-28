@@ -9,7 +9,7 @@ import {
 const compiled = {
   sourceDigest: `sha256:${"a".repeat(64)}` as const,
   ir: {
-    irVersion: 6 as const,
+    irVersion: 7 as const,
     name: "worker-result",
     agents: {},
     root: { nodes: [], output: { kind: "literal" as const, value: null } },
@@ -64,6 +64,21 @@ describe("compile worker protocol", () => {
     expect(result.isOk()).toBe(true);
     if (result.isErr()) throw new Error(result.error.message);
     expect(result.value).toEqual({ schemaVersion: 1, ok: true, result: compiled });
+  });
+
+  it("rejects a compile result carrying the previous WorkflowIR version", () => {
+    const result = parseCompileWorkerEnvelope(JSON.stringify({
+      schemaVersion: 1,
+      ok: true,
+      result: {
+        ...compiled,
+        ir: { ...compiled.ir, irVersion: 6 },
+      },
+    }));
+
+    expect(result.isErr()).toBe(true);
+    if (result.isOk()) throw new Error("expected protocol failure");
+    expect(result.error.type).toBe("worker-result-invalid");
   });
 
   it.each([

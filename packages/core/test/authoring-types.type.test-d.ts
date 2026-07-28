@@ -7,12 +7,19 @@ import {
   type AgentMap,
   type AgentStepSpec,
   type AgentToken,
+  type ArtifactRef,
   type JsonObject,
   type JsonValue,
   type ReusableTaskToken,
   type StepDeclaration,
 } from "../src/index.js";
 import { lift, md, template, type Expr } from "@acpus/expression";
+
+declare const durableSymbolKey: unique symbol;
+
+interface SymbolKeyInput {
+  [durableSymbolKey]: string;
+}
 
 test("step declaration object exposes kind methods", () => {
   defineWorkflow({ name: "typed-step-declaration", description: "Type-level workflow metadata." }).build(({ input, step }) => {
@@ -146,12 +153,247 @@ test("task outputs are inferred from inline and reusable exec", () => {
 
     step("ambiguous_target").task({
       input: { packageName: input.packageName, version: input.version },
-      // @ts-expect-error a Task step must choose exactly one execution target.
       exec: async () => ({ ok: true }),
+      // @ts-expect-error a Task step must choose exactly one execution target.
       task: reusablePackageTask,
     });
 
     return { ok: inline.output.ok, version: reusable.output.version };
+  });
+});
+
+test("Task input accepts each durable authored value category and preserves its materialized type", () => {
+  const StringTask = task.define({
+    inputSchema: z.string(),
+    exec: async ({ input }) => {
+      expectTypeOf(input).toEqualTypeOf<string>();
+      return input.length;
+    },
+  });
+  const ArrayTask = task.define({
+    inputSchema: z.array(z.string()),
+    exec: async ({ input }) => {
+      expectTypeOf(input).toEqualTypeOf<string[]>();
+      return input.length;
+    },
+  });
+  const TupleTask = task.define({
+    inputSchema: z.tuple([z.string(), z.number()]),
+    exec: async ({ input }) => {
+      expectTypeOf(input).toEqualTypeOf<[string, number]>();
+      return input[1];
+    },
+  });
+  const ObjectTask = task.define({
+    inputSchema: z.object({ title: z.string() }),
+    exec: async ({ input }) => input.title,
+  });
+  const UnionTask = task.define({
+    inputSchema: z.union([z.string(), z.number()]),
+    exec: async ({ input }) => input,
+  });
+  const UnknownTask = task.define({
+    inputSchema: z.unknown(),
+    exec: async ({ input }) => input === null,
+  });
+
+  interface AuthoredInput {
+    readonly title: Expr<string>;
+    readonly note?: Expr<string>;
+  }
+
+  defineWorkflow({
+    name: "durable-task-input",
+    inputSchema: z.object({
+      title: z.string(),
+      items: z.array(z.string()),
+      optional: z.string().optional(),
+    }),
+  }).build(({ input, step }) => {
+    step("raw_number").task({
+      input: 1,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<1>();
+        return input;
+      },
+    });
+    step("string").task({
+      input: input.title,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<string>();
+        return input.length;
+      },
+    });
+    step("null").task({
+      input: null,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<null>();
+        return input;
+      },
+    });
+    step("tuple").task({
+      input: [input.title, 1] as const,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<[string, 1]>();
+        return input;
+      },
+    });
+    step("array_expr").task({
+      input: input.items,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<string[]>();
+        return input;
+      },
+    });
+    const authored: AuthoredInput = { title: input.title };
+    step("interface").task({
+      input: authored,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<{ title: string; note?: string }>();
+        return input.title;
+      },
+    });
+    const artifact = {
+      kind: "artifact",
+      uri: "artifact://run/output",
+    } as const satisfies ArtifactRef;
+    step("artifact").task({
+      input: artifact,
+      exec: async ({ input }) => {
+        assertType<ArtifactRef>(input);
+        return input.uri;
+      },
+    });
+    step("optional_object_field").task({
+      input: { optional: input.optional },
+      exec: async ({ input }) => input.optional ?? "missing",
+    });
+    const optionalObjectExpr = null as unknown as Expr<{ note?: string }>;
+    step("optional_expr_object").task({
+      input: optionalObjectExpr,
+      exec: async ({ input }) => input.note ?? "missing",
+    });
+    const unionExpr = null as unknown as Expr<string | number>;
+    step("union_expr").task({
+      input: unionExpr,
+      exec: async ({ input }) => {
+        expectTypeOf(input).toEqualTypeOf<string | number>();
+        return input;
+      },
+    });
+
+    step("reusable_string").task({ task: StringTask, input: input.title });
+    step("reusable_array").task({ task: ArrayTask, input: input.items });
+    step("reusable_tuple").task({ task: TupleTask, input: [input.title, 1] as const });
+    step("reusable_object").task({ task: ObjectTask, input: { title: input.title, extra: true } });
+    step("reusable_union").task({ task: UnionTask, input: input.title });
+    step("reusable_unknown").task({ task: UnknownTask, input: [input.title] });
+
+    const scalarMismatch = step("reusable_scalar_mismatch").task({
+      task: StringTask,
+      // @ts-expect-error reusable scalar input must match its schema witness.
+      input: 1,
+    });
+    expectTypeOf(scalarMismatch.output).toEqualTypeOf<Expr<number>>();
+    const tupleMismatch = step("reusable_tuple_mismatch").task({
+      task: TupleTask,
+      // @ts-expect-error tuple positions are checked independently.
+      input: [input.title, "wrong"] as const,
+    });
+    expectTypeOf(tupleMismatch.output).toEqualTypeOf<Expr<number>>();
+    const requiredMismatch = step("reusable_required_mismatch").task({
+      task: ObjectTask,
+      // @ts-expect-error reusable object input must contain required fields.
+      input: {},
+    });
+    expectTypeOf(requiredMismatch.output).toEqualTypeOf<Expr<string>>();
+    const missingExpressionMismatch = step("reusable_missing_expression_mismatch").task({
+      task: ObjectTask,
+      // @ts-expect-error an expression that may resolve missing cannot satisfy a required string.
+      input: { title: input.optional },
+    });
+    expectTypeOf(missingExpressionMismatch.output).toEqualTypeOf<Expr<string>>();
+    return {};
+  });
+});
+
+test("Task input rejects values outside the durable authored boundary", () => {
+  const unknownValue = undefined as unknown;
+  const anyValue = undefined as any;
+  const anyExpr = undefined as unknown as Expr<any>;
+  const unknownExpr = undefined as unknown as Expr<unknown>;
+  const nestedExpr = undefined as unknown as Expr<{ nested: Expr<string> }>;
+  const nestedNodeRef =
+    undefined as unknown as Expr<{ nested: ReturnType<StepDeclaration["agent"]> }>;
+  const rawNodeRef = undefined as unknown as ReturnType<StepDeclaration["agent"]>;
+  const symbolKeyInput = undefined as unknown as SymbolKeyInput;
+  const broadObject = new Date() as object;
+  const broadObjectExpr = undefined as unknown as Expr<object>;
+  const promise = undefined as unknown as Promise<string>;
+  const callback = undefined as unknown as () => string;
+  const requiredUndefinedExpr =
+    undefined as unknown as Expr<{ value: string | undefined }>;
+  const requiredMaybe = undefined as string | undefined;
+
+  defineWorkflow({
+    name: "invalid-task-input",
+    inputSchema: z.object({ optional: z.string().optional() }),
+  }).build(({ input, step }) => {
+    // @ts-expect-error Task input is required even when exec ignores it.
+    step("missing_input").task({ exec: async () => null });
+    // @ts-expect-error top-level raw undefined is not durable Task input.
+    step("undefined").task({ input: undefined, exec: async ({ input }) => input });
+    // @ts-expect-error a top-level expression that can resolve missing is not durable Task input.
+    step("optional_expr").task({ input: input.optional, exec: async ({ input }) => input });
+    // @ts-expect-error a required property inside an opaque expression cannot resolve undefined.
+    step("required_undefined_expr").task({ input: requiredUndefinedExpr, exec: async ({ input }) => input });
+    // @ts-expect-error arrays cannot contain raw undefined.
+    step("array_undefined").task({ input: ["ok", undefined], exec: async ({ input }) => input });
+    // @ts-expect-error arrays cannot contain expressions that may resolve missing.
+    step("array_optional_expr").task({ input: [input.optional], exec: async ({ input }) => input });
+    // @ts-expect-error required object fields cannot include raw undefined.
+    step("object_undefined").task({ input: { value: undefined }, exec: async ({ input }) => input });
+    // @ts-expect-error required object fields cannot include a raw undefined union.
+    step("object_required_maybe").task({ input: { value: requiredMaybe }, exec: async ({ input }) => input });
+    // @ts-expect-error any cannot escape the durable Task input check.
+    step("any").task({ input: anyValue, exec: async ({ input }) => input });
+    // @ts-expect-error nested any cannot escape the durable Task input check.
+    step("nested_any").task({ input: { value: anyValue }, exec: async ({ input }) => input });
+    // @ts-expect-error unknown must be narrowed before authoring Task input.
+    step("unknown").task({ input: unknownValue, exec: async ({ input }) => input });
+    // @ts-expect-error nested unknown must be narrowed before authoring Task input.
+    step("nested_unknown").task({ input: { value: unknownValue }, exec: async ({ input }) => input });
+    // @ts-expect-error an expression payload cannot be any.
+    step("expr_any").task({ input: anyExpr, exec: async ({ input }) => input });
+    // @ts-expect-error an expression payload cannot be unknown.
+    step("expr_unknown").task({ input: unknownExpr, exec: async ({ input }) => input });
+    // @ts-expect-error an evaluated expression cannot contain another expression token.
+    step("nested_expr").task({ input: nestedExpr, exec: async ({ input }) => input });
+    // @ts-expect-error an evaluated expression cannot contain a NodeRef control handle.
+    step("nested_node_ref").task({ input: nestedNodeRef, exec: async ({ input }) => input });
+    // @ts-expect-error a raw NodeRef is a control handle, not durable Task input.
+    step("raw_node_ref").task({ input: rawNodeRef, exec: async ({ input }) => input });
+    // @ts-expect-error durable objects cannot contain symbol-keyed fields.
+    step("symbol_key").task({ input: symbolKeyInput, exec: async ({ input }) => input });
+    // @ts-expect-error broad object types do not prove a durable plain-object shape.
+    step("broad_object").task({ input: broadObject, exec: async ({ input }) => input });
+    // @ts-expect-error expression payloads must prove a durable runtime shape.
+    step("expr_broad_object").task({ input: broadObjectExpr, exec: async ({ input }) => input });
+    // @ts-expect-error Date is not a durable Task input value.
+    step("date").task({ input: new Date(), exec: async ({ input }) => input });
+    // @ts-expect-error functions are not durable Task input values.
+    step("function").task({ input: callback, exec: async ({ input }) => input });
+    // @ts-expect-error promises are not durable Task input values.
+    step("promise").task({ input: promise, exec: async ({ input }) => input });
+    // @ts-expect-error Map is not a durable Task input value.
+    step("map").task({ input: new Map<string, string>(), exec: async ({ input }) => input });
+    // @ts-expect-error Set is not a durable Task input value.
+    step("set").task({ input: new Set<string>(), exec: async ({ input }) => input });
+    // @ts-expect-error bigint is not a durable Task input value.
+    step("bigint").task({ input: 1n, exec: async ({ input }) => input });
+    // @ts-expect-error symbol is not a durable Task input value.
+    step("symbol").task({ input: Symbol("input"), exec: async ({ input }) => input });
+    return {};
   });
 });
 
@@ -202,7 +444,7 @@ test("nested composite callbacks close over root agents", () => {
 test("task options accept only string cwd and string env values", () => {
   defineWorkflow({ name: "typed-task-options", inputSchema: z.object({ cwd: z.string(), token: z.string() }) }).build(({ input, step }) => {
     step("options_ok").task({
-      input: {},
+      input: null,
       cwd: input.cwd,
       env: {
         TOKEN: input.token,
@@ -211,17 +453,17 @@ test("task options accept only string cwd and string env values", () => {
       exec: async () => ({ ok: true }),
     });
 
-    // @ts-expect-error cwd must be a string workflow value.
     step("bad_cwd").task({
-      input: {},
+      input: null,
+      // @ts-expect-error cwd must be a string workflow value.
       cwd: 1,
       exec: async () => ({ ok: true }),
     });
 
-    // @ts-expect-error env values must be string workflow values.
     step("bad_env").task({
-      input: {},
+      input: null,
       env: {
+        // @ts-expect-error env values must be string workflow values.
         VALUE: 1,
       },
       exec: async () => ({ ok: true }),
@@ -234,7 +476,7 @@ test("task options accept only string cwd and string env values", () => {
 test("lift preserves selected output object types", () => {
   defineWorkflow({ name: "typed-lift-selected-object" }).build(({ step }) => {
     const review = step("review").task({
-      input: {},
+      input: null,
       exec: async () => ({
         ready: true,
         summary: "ok",
@@ -256,7 +498,7 @@ test("lift preserves selected output object types", () => {
 test("boolean node conditions require boolean workflow values", () => {
   defineWorkflow({ name: "typed-conditions" }).build(({ step }) => {
     const review = step("review").task({
-      input: {},
+      input: null,
       exec: async () => ({ ok: true, summary: "done" }),
     });
     step("ok_if").if({ condition: review.output.ok, then() { return {}; }, else() { return {}; } });
@@ -411,9 +653,9 @@ test("declaration-time structure stays plain", () => {
     // @ts-expect-error output schemas are declaration-time structure.
     step("schema").agent({ outputSchema: input.strategy, agent: agents.reviewer, prompt: "review" });
     // @ts-expect-error reusable task targets are declaration-time structure.
-    step("target").task({ task: input.strategy, input: {} });
-    // @ts-expect-error Task input cannot contain raw undefined.
+    step("target").task({ task: input.strategy, input: null });
     step("invalid_input").task({
+      // @ts-expect-error Task input cannot contain raw undefined.
       input: {
         omitted: undefined,
       },

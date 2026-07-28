@@ -18,11 +18,11 @@ describe("workflow check authoring boundaries", () => {
             ready: z.boolean(),
           }),
         }).build(({ input, step }) => {
-          const inherited = step("inherited").task({ input: {}, exec: async () => helper() });
+          const inherited = step("inherited").task({ input: null, exec: async () => helper() });
           step("inherited_branch").parallel({ branches: { only() { return helper(); } } });
-          const leaf = step("leaf").task({ input: {}, exec: async () => ({ value: "ok" }) });
-          step("leaf").task({ input: {}, exec: async () => ({ value: "duplicate" }) });
-          step("date").task({ input: {}, exec: async () => new Date() });
+          const leaf = step("leaf").task({ input: null, exec: async () => ({ value: "ok" }) });
+          step("leaf").task({ input: null, exec: async () => ({ value: "duplicate" }) });
+          step("date").task({ input: null, exec: async () => new Date() });
           step("bad_expr").parallel({ branches: { only() { return leaf.output.value; } } });
           const branch = step("branch").if({
             condition: true,
@@ -50,7 +50,7 @@ describe("workflow check authoring boundaries", () => {
         "TB003",
         "TS2769",
         "TB004",
-        "TS2769",
+        "TS2322",
         "TS2322",
         "AL007",
         "AL001",
@@ -66,7 +66,7 @@ describe("workflow check authoring boundaries", () => {
         { code: "TB003", line: 11 },
         { code: "TS2769", line: 12 },
         { code: "TB004", line: 14 },
-        { code: "TS2769", line: 15 },
+        { code: "TS2322", line: 15 },
         { code: "TS2322", line: 22 },
         { code: "AL007", line: 23 },
         { code: "AL001", line: 24 },
@@ -77,7 +77,7 @@ describe("workflow check authoring boundaries", () => {
       expect(result.diagnostics).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: "TS2345", hint: expect.stringContaining("Return node.output") }),
         expect.objectContaining({ code: "TB004", source: expect.objectContaining({ line: 14 }), hint: expect.stringContaining("13:") }),
-        expect.objectContaining({ code: "TS2769", source: expect.objectContaining({ line: 15 }), hint: expect.stringContaining("convert Date") }),
+        expect.objectContaining({ code: "TS2322", source: expect.objectContaining({ line: 15 }), hint: expect.stringContaining("convert Date") }),
         expect.objectContaining({ code: "AL001", hint: expect.any(String) }),
         expect.objectContaining({
           code: "AL007",
@@ -106,6 +106,31 @@ describe("workflow check authoring boundaries", () => {
       expect(result.diagnostics.every(diagnostic => diagnostic.source?.file?.endsWith("workflow.ts"))).toBe(true);
       expect(codes(result.diagnostics)).not.toContain("W001");
       expect(codes(result.diagnostics)).not.toContain("B001");
+    });
+  });
+
+  it("does not attribute a nested helper return type to its enclosing Task callback", async () => {
+    await withCheckWorkspace("workflow-nested-helper-return", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+
+        export default defineWorkflow({ name: "nested_helper_return" }).build(({ step }) => {
+          const work = step("work").task({
+            input: null,
+            exec: async () => {
+              const helper = () => new Date();
+              const wrong: string = 1;
+              void helper;
+              return wrong;
+            },
+          });
+          return work.output;
+        });
+      `);
+
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]).toMatchObject({ code: "TS2322" });
+      expect(result.diagnostics[0]?.hint).toBeUndefined();
     });
   });
 

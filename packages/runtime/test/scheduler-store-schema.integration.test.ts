@@ -53,7 +53,7 @@ describe("scheduler store format", () => {
     }
   });
 
-  it("owns bounded Agent observation projections and private turn evidence in storage v3", () => {
+  it("owns bounded Agent observation projections and private turn evidence in current storage", () => {
     const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
     try {
       expect(tableColumns(db, "runs")).toEqual(expect.arrayContaining([
@@ -108,20 +108,20 @@ describe("scheduler store format", () => {
     }
   });
 
-  it("rejects storage v2 without a compatibility read path", async () => {
+  it("rejects storage v3 without a compatibility read path", async () => {
     store?.close();
     store = undefined;
     const layout = resolveRuntimeLayout(dir);
     setDatabaseFormat(layout.databasePath, {
       applicationId: RUNTIME_APPLICATION_ID,
-      userVersion: 2,
+      userVersion: 3,
     });
     const beforeDoctor = await runtimeStateFingerprint(layout.workspaceRoot);
 
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
       name: "IncompatibleRuntimeDatabaseError",
       applicationId: RUNTIME_APPLICATION_ID,
-      userVersion: 2,
+      userVersion: 3,
     });
     await expect(getRuntimeHealth(dir)).resolves.toEqual({
       ok: true,
@@ -131,7 +131,7 @@ describe("scheduler store format", () => {
       checks: [{
         area: "store",
         status: "warn",
-        message: `Runtime storage version 2 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
+        message: `Runtime storage version 3 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
       }],
     });
     expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeDoctor);

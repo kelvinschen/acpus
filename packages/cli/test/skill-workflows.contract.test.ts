@@ -142,7 +142,10 @@ describe("skill workflow contracts", () => {
       },
     });
     expect(fetchGate.node.run.input).toEqual({
-      result: { kind: "ref", path: ["nodes", "fetch_source", "output"] },
+      kind: "object",
+      fields: {
+        result: { kind: "ref", path: ["nodes", "fetch_source", "output"] },
+      },
     });
 
     const fetchScope = fetch.ancestry[0];

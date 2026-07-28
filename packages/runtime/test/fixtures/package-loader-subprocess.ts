@@ -76,7 +76,10 @@ function packageTask(id: string, specifier: string): TaskNodeIR {
     kind: "task",
     run: {
       input: {
-        value: { kind: "literal", value: "loaded" },
+        kind: "object",
+        fields: {
+          value: { kind: "literal", value: "loaded" },
+        },
       },
       target: {
         kind: "module",

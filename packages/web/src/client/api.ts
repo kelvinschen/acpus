@@ -683,7 +683,9 @@ function isNodeDetail(value: unknown): value is NodeDetail {
   if (!isRecord(value)) return false;
   switch (value.kind) {
     case "task":
-      return isStringArray(value.inputs) && (value.target === "inline" || value.target === "module");
+      return hasOnlyKeys(value, ["kind", "input", "target"])
+        && typeof value.input === "string"
+        && (value.target === "inline" || value.target === "module");
     case "agent":
       return typeof value.agent === "string"
         && isOptionalString(value.use)

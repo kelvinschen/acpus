@@ -247,7 +247,7 @@ describe("expression evaluator", () => {
     expect(evaluateSource("value => /* comment */ { return value; }")).toBe(1);
     expect(() => evaluateExpr({ kind: "call", fn: "lift", args: [{ kind: "literal", value: 1 }, { kind: "ref", path: ["input", "source"] }] }, adapter))
       .toThrow("lift(...) expected callback source string.");
-    expect(() => evaluateExpr(lift(1, _value => Promise.resolve(1) as any).__ir, adapter))
+    expect(() => evaluateExpr((lift as any)(1, (_value: number) => Promise.resolve(1)).__ir, adapter))
       .toThrow("lift(...) callback must return synchronously.");
     for (const source of [
       "_value => new Date(0)",
@@ -274,9 +274,9 @@ describe("expression evaluator", () => {
   });
 
   it.each([
-    ["unary", () => lift(1, _value => undefined as any).__ir],
-    ["binary", () => lift(1, 2, (_a, _b) => undefined as any).__ir],
-    ["ternary", () => lift(1, 2, 3, (_a, _b, _c) => undefined as any).__ir],
+    ["unary", () => (lift as any)(1, (_value: number) => undefined).__ir],
+    ["binary", () => (lift as any)(1, 2, (_a: number, _b: number) => undefined).__ir],
+    ["ternary", () => (lift as any)(1, 2, 3, (_a: number, _b: number, _c: number) => undefined).__ir],
   ])("rejects non-admissible callback output from %s", (_name, build) => {
     expect(() => evaluateExpr(build(), adapter)).toThrow("expected JSON-compatible values");
   });

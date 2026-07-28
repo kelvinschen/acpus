@@ -90,7 +90,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
   command.addCommand(withJsonOutput(new Command("run")
     .exitOverride()
     .description("Typecheck, compile, and validate a workflow. Execute it only if there are no diagnostics.")
-    .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin")
+    .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
     .option("--background", "admit the run and execute it in the background")

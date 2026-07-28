@@ -161,7 +161,7 @@ export default defineWorkflow({
     },
     else() {
       const automatic = step("automatic_approval").task({
-        input: {},
+        input: null,
         exec: async () => ({
           approved: true,
           notes: "auto-approved",

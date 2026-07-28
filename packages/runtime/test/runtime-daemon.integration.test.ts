@@ -111,13 +111,13 @@ describe.concurrent("runtime daemon ticks", () => {
           code: "INVALID_REQUEST",
           message: expect.stringContaining("does not match prepared IR"),
         });
-        const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
+        const invalidIr = { ...prepared.ir, irVersion: 6 } as any;
         await expect(requestDaemonAdmitRun(workspace, {
           prepared: preparedWorkflow(invalidIr, join(workspace, prepared.source.entry), workspace),
           input: { ready: true },
         })).rejects.toMatchObject({
           code: "INVALID_REQUEST",
-          message: expect.stringContaining("WorkflowIR irVersion must be 6"),
+          message: expect.stringContaining("WorkflowIR irVersion must be 7"),
         });
         expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
       } finally {
@@ -903,7 +903,7 @@ function parallelTaskSignalRecoveryWorkflow(maxConcurrency?: number) {
       ...(maxConcurrency === undefined ? {} : { maxConcurrency }),
       branches: {
         task() {
-          const work = step("work").task({ input: {}, exec: async () => ({ ok: true }) });
+          const work = step("work").task({ input: null, exec: async () => ({ ok: true }) });
           return { ok: work.output.ok };
         },
         signal() {

@@ -108,7 +108,7 @@ function committedRow(sequence: number, mapped = false) {
 function frozenRun(): FrozenRun {
   return {
     ir: {
-      irVersion: 6,
+      irVersion: 7,
       name: "hooks",
       agents: {},
       root: { nodes: [], output: { kind: "literal", value: null } },

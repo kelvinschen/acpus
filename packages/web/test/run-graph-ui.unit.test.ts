@@ -15,7 +15,7 @@ const graph: WebGraph = {
   mode: "runtime",
   nodes: [
     { id: "jobs", nodeId: "jobs", kind: "fanout", label: "jobs", path: ["root", "jobs"], detail: { kind: "fanout", over: "input.jobs", strategy: "all" }, status: "running" },
-    { id: "work", nodeId: "work", kind: "task", label: "work", path: ["root", "jobs", "do", "work"], parentId: "jobs::do", detail: { kind: "task", inputs: [], target: "inline" }, status: "running" },
+    { id: "work", nodeId: "work", kind: "task", label: "work", path: ["root", "jobs", "do", "work"], parentId: "jobs::do", detail: { kind: "task", input: "input.jobs", target: "inline" }, status: "running" },
   ],
   containers: [
     { id: "jobs::do", nodeId: "jobs", kind: "scope", label: "do", path: ["root", "jobs", "do"], parentId: "jobs", status: "running" },
@@ -114,7 +114,7 @@ describe("RunGraph interaction semantics", () => {
       label: "work",
       context,
       displayStatus: "running",
-      detail: { kind: "task", inputs: [], target: "inline" },
+      detail: { kind: "task", input: "input.jobs", target: "inline" },
     }));
     expect(onSelectNode.mock.lastCall?.[0].renderId).not.toBe("work");
   });

@@ -113,7 +113,7 @@ describe("scheduler task and signal leaf executor", () => {
             nodeId: "retry_task",
             nodeKey: "retry_task.dynamic",
             attempt: 1,
-            input: {},
+            input: null,
             cwd: workspace,
           });
         } finally {
@@ -315,7 +315,7 @@ describe("scheduler task and signal leaf executor", () => {
             nodeId: "abort_task",
             nodeKey: "abort_task.dynamic",
             attempt: 3,
-            input: {},
+            input: null,
             cwd: workspace,
             signal: controller.signal,
           });
@@ -331,7 +331,7 @@ function abortStatusTaskWorkflow() {
     name: "scheduler-node-executor-abort",
   }).build(({ step }) => {
     step("abort_task").task({
-      input: {},
+      input: null,
       exec: async ({ abortSignal }) => ({ aborted: abortSignal.aborted }),
     });
     return {};
@@ -343,7 +343,7 @@ function failingInvocationTaskWorkflow() {
     name: "scheduler-node-executor-retry",
   }).build(({ step }) => {
     step("retry_task").task({
-      input: {},
+      input: null,
       exec: async () => {
         throw new Error("first invocation fails");
       },
@@ -358,7 +358,7 @@ function wrongTypeTaskConfigWorkflow() {
     inputSchema: z.object({ cwd: z.string() }),
   }).build(({ input, step }) => {
     step("build").task({
-      input: {},
+      input: null,
       cwd: lift(input.cwd, value => value.length) as any,
       exec: async () => ({ ok: true }),
     });
@@ -385,7 +385,7 @@ function timeoutTaskWorkflow() {
   }).build(({ input, step }) => {
     const task = step("timeout_task").task({
       timeout: input.timeout,
-      input: {},
+      input: null,
       exec: async () => ({ ok: true }),
     });
     return { ok: task.output.ok };

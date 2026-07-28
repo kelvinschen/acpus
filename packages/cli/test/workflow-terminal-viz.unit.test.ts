@@ -21,7 +21,7 @@ agents: none
 
   it("renders every remaining node kind, detached roots, arrays, and Agent disclosure", () => {
     const ir: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "semantic-fixture",
       agents: {
         triager: {
@@ -108,7 +108,7 @@ agents: triager (codex, gpt-5, plan)
     expect(colored).toContain("\u001b[96m≡\u001b[0m approvals\u001b[2m · parallel\u001b[0m");
 
     const empty: WorkflowIR = {
-      irVersion: 6,
+      irVersion: 7,
       name: "empty-workflow",
       agents: {},
       root: scope([]),
@@ -136,7 +136,7 @@ function parallelApprovals(): WorkflowIR {
     nodeOutput(id),
   );
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "parallel-approvals",
     inputSchema: {
       kind: "object",
@@ -178,7 +178,10 @@ function task(id: string): Extract<NodeIR, { kind: "task" }> {
   return {
     id,
     kind: "task",
-    run: { input: {}, target: { kind: "inline", source: "async () => ({})" } },
+    run: {
+      input: { kind: "literal", value: null },
+      target: { kind: "inline", source: "async () => ({})" },
+    },
   };
 }
 

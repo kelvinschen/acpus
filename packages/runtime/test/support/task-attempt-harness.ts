@@ -12,7 +12,7 @@ export type InlineTaskAttemptCall = {
   nodeId: string;
   nodeKey: string;
   attempt: number;
-  input: Record<string, JsonValue>;
+  input: JsonValue;
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;

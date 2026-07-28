@@ -8,23 +8,30 @@ import { agentToken, buildAgentNode, lowerAgentDefinitions, type AgentDefinition
 import {
   buildTaskNode,
   TaskCompilationAbort,
-  type InlineTaskStepSpec,
+  type InlineTaskStepSpecBase,
   type ReusableTaskLinkPlan,
   type ReusableTaskStepSpec,
+  type ReusableTaskToken,
   type TaskCompilationFailure,
   type TaskResult,
+  type TaskStepSpecBase,
   type TaskStepSpec,
 } from "../nodes/leaf/task.js";
 import { buildSignalNode, type SignalStepSpec } from "../nodes/leaf/signal.js";
-import type { RuntimeInput, StepInput } from "../nodes/leaf/shared.js";
+import type { MaterializedTaskInput } from "../nodes/leaf/shared.js";
 import { buildAssertNode, type AssertSpec } from "../nodes/control/assert.js";
 import { buildIfNode, type IfNodeRefOutput, type IfStepSpec } from "../nodes/composite/if.js";
 import { buildSwitchNode, type SwitchNodeRefOutput, type SwitchStepSpec } from "../nodes/composite/switch.js";
 import { buildParallelNode, type ParallelNodeRefOutput, type ParallelStepSpec } from "../nodes/composite/parallel.js";
 import { buildFanoutNode, type FanoutNodeRefOutput, type FanoutStepSpec } from "../nodes/composite/fanout.js";
 import { buildLoopNode, type LoopStepSpec, type LoopTransitionOutput } from "../nodes/composite/loop.js";
-import { buildImplicitScope as buildScopeIR, type GraphOutputCheck, type TaskOutputCheck } from "./scope.js";
-import { outputToIR, stripUndefined } from "./lowering.js";
+import {
+  buildImplicitScope as buildScopeIR,
+  type DurableAuthoredValueCheck,
+  type GraphOutputCheck,
+  type TaskOutputCheck,
+} from "./scope.js";
+import { durableValueToIR, stripUndefined } from "./lowering.js";
 import type { FanoutStrategy, ParallelStrategy, ResolvableArray, RuntimeValueOf, ScopeCallback } from "../nodes/composite/shared.js";
 import type { TaskFunction } from "../runtime/task-context.js";
 import type {
@@ -39,7 +46,6 @@ import { validateWorkflowIR } from "../ir/validator.js";
 export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
-export type { StepInput, GraphInput, RuntimeInput } from "../nodes/leaf/shared.js";
 export type AgentMap = Record<string, AgentDefinitionSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
   ? { readonly [K in Extract<keyof Agents, string>]: AgentToken<K> }
@@ -119,15 +125,32 @@ export type StepDeclaration = {
   ): NodeRef<string>;
 
   /** Declares a Task node for deterministic local automation and artifact writing. */
-  task<const Input extends StepInput, Exec extends TaskFunction<RuntimeInput<Input>, any>>(
-    spec: InlineTaskStepSpec<Input, Exec>,
+  // The error-path default keeps an unrelated malformed inline call from
+  // inferring reusable output as unknown before the recovery overload applies.
+  task<const Input, TaskInput, Output = null>(
+    spec: ReusableTaskStepSpec<Input, TaskInput, Output>,
+  ): NodeRef<Output>;
+
+  task<const Input, Exec extends TaskFunction<MaterializedTaskInput<Input>, any>>(
+    spec: InlineTaskStepSpecBase<Input, Exec>,
+    ...invalidTask: InlineTaskStepValidation<NoInfer<Input>, NoInfer<Exec>>
   ): NodeRef<TaskResult<Exec>>;
 
-  task<const Input extends StepInput, TaskInput, Output>(
-    spec: ReusableTaskStepSpec<Input, TaskInput, Output>
-      & (RuntimeInput<Input> extends TaskInput ? unknown : never)
-      & TaskOutputCheck<Output>,
-  ): NodeRef<Output>;
+  task<
+    const Input,
+    const Target extends RecoveryTaskTarget<Input>,
+  >(
+    spec: TaskStepSpecBase<Input> & Target & {
+      input: Input & RecoveryTaskInputCheck<
+        NoInfer<Input>,
+        RecoveryTaskToken<NoInfer<Target>>
+      >;
+    },
+    ...onlyInvalid: RecoveryTaskValidation<
+      NoInfer<Input>,
+      RecoveryTaskToken<NoInfer<Target>>
+    >
+  ): NodeRef<RecoveryTaskOutput<RecoveryTaskToken<Target>>>;
 
   /** Declares a Signal node that waits for operator input. */
   signal<OutSchema extends Schema<any>>(
@@ -175,6 +198,53 @@ export type StepDeclaration = {
   ): NodeRef<RuntimeValueOf<Initial>>;
 };
 
+type AnyReusableTaskToken = ReusableTaskToken<any, any>;
+
+type ReusableTaskInput<Token> =
+  Token extends ReusableTaskToken<infer Input, any> ? Input : never;
+
+type ReusableTaskTokenOutput<Token> =
+  Token extends ReusableTaskToken<any, infer Output> ? Output : never;
+
+type RecoveryTaskTarget<Input> = {
+  exec?: TaskFunction<MaterializedTaskInput<Input>, any>;
+  task?: AnyReusableTaskToken;
+};
+
+type RecoveryTaskToken<Target> =
+  Target extends { task: infer Token extends AnyReusableTaskToken }
+    ? Token
+    : never;
+
+type RecoveryTaskInputCheck<Input, Token> =
+  [Token] extends [never]
+    ? DurableAuthoredValueCheck<Input>
+    : DurableAuthoredValueCheck<Input> extends never
+      ? never
+      : [MaterializedTaskInput<Input>] extends [ReusableTaskInput<Token>]
+        ? unknown
+        : never;
+
+type RecoveryTaskValidation<Input, Token> =
+  RecoveryTaskInputCheck<Input, Token> extends never
+    ? []
+    : [validTask: never];
+
+type RecoveryTaskOutput<Token> =
+  [Token] extends [never]
+    ? null
+    : ReusableTaskTokenOutput<Token>;
+
+type InlineTaskStepValidation<
+  Input,
+  Exec extends TaskFunction<MaterializedTaskInput<Input>, any>,
+> =
+  DurableAuthoredValueCheck<Input> extends never
+    ? [invalidTaskInput: never]
+    : TaskOutputCheck<TaskResult<Exec>> extends never
+      ? [invalidTaskOutput: never]
+      : [];
+
 export type StepFactory = (id: string) => StepDeclaration;
 
 type GraphBuildState = {
@@ -219,8 +289,8 @@ class GraphBuildContext {
     this.activeScope();
     const agent = ((spec: AgentStepSpec<Schema<any> | undefined>) =>
       this.appendNode(id, () => buildAgentNode(id, spec))) as StepDeclaration["agent"];
-    const task = ((spec: TaskStepSpec<StepInput>) =>
-      this.appendNode(id, () => buildTaskNode(id, spec, this.reusableTasks))) as StepDeclaration["task"];
+    const task = ((spec: TaskStepSpec<any>) =>
+      this.appendNode(id, () => buildTaskNode(id, spec, this.reusableTasks))) as unknown as StepDeclaration["task"];
     const signal = ((spec: SignalStepSpec<Schema<any> | undefined>) =>
       this.appendNode(id, () => buildSignalNode(id, spec))) as StepDeclaration["signal"];
     const assert: StepDeclaration["assert"] = spec => {
@@ -326,14 +396,14 @@ function lowerWorkflowDefinition(
         meta: refExpr<WorkflowMeta>(["meta"]),
         step: context.step,
       });
-      output = outputToIR(result);
+      output = durableValueToIR(result);
     });
   } finally {
     context.close();
   }
 
   const ir = stripUndefined({
-    irVersion: 6,
+    irVersion: 7,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,

@@ -23,7 +23,7 @@ describe.concurrent("workflow module compiler", () => {
     const compiled = await compileFixtureResult("release.workflow.ts");
     const { ir } = compiled;
 
-    expect(ir.irVersion).toBe(6);
+    expect(ir.irVersion).toBe(7);
     expect(ir.name).toBe("release-readiness");
     expect(ir.diagnostics).toEqual([]);
     expect(compiled.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -214,7 +214,7 @@ export default {};
       await writeFile(workflow, `import { defineWorkflow, task, z } from "acpus/core";
 
 export const noop = task.define({
-  inputSchema: z.object({}),
+  inputSchema: z.string(),
   exec: async () => ({ ok: true }),
 });
 
@@ -222,7 +222,7 @@ export default defineWorkflow({
   name: "direct-import",
   inputSchema: z.object({}),
 }).build(({ step }) => {
-  const result = step("run").task({ task: noop, input: {} });
+  const result = step("run").task({ task: noop, input: "value" });
   return { ok: result.output.ok };
 });
 `);
@@ -336,13 +336,13 @@ export default defineWorkflow({ name: "throws" }).build(() => {
       await writeFile(workflow, `import { defineWorkflow, task, z } from "acpus/core";
 
 const noop = task.define({
-  inputSchema: z.object({}),
+  inputSchema: z.string(),
   exec: async () => ({ ok: true }),
 });
 const tasks = { noop };
 
 export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
-  step("run").task({ task: tasks.noop, input: {} });
+  step("run").task({ task: tasks.noop, input: "value" });
   return {};
 });
 `);
@@ -509,7 +509,6 @@ export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
           {
             id: "automatic_approval",
             kind: "task",
-            run: { input: {} },
           },
         ],
       },

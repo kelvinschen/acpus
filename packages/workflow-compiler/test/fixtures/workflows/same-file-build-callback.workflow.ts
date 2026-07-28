@@ -1,7 +1,7 @@
 import { defineWorkflow, task, z } from "acpus/core";
 
 export const stableTask = task.define({
-  inputSchema: z.object({}),
+  inputSchema: z.string(),
   exec: async () => ({ ok: true }),
 });
 
@@ -13,7 +13,7 @@ export default defineWorkflow({
   }
 
   const result = step("stable_task").task({
-    task: stableTask, input: {},
+    task: stableTask, input: "value",
   });
   return { ok: result.output.ok };
 });

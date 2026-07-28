@@ -29,8 +29,8 @@ describe("workflow check loop diagnostics", () => {
             state: { round: 0, shouldContinue: true },
             do({ round }) {
               const current = step("current_round").task({
-                input: { round },
-                exec: async ({ input }) => ({ count: input.round }),
+                input: round,
+                exec: async ({ input }) => ({ count: input }),
               });
               const state = { round: current.output.count, shouldContinue: input.shouldContinue };
               const stop = lift(input.shouldContinue, round, (shouldContinue, currentRound) => !shouldContinue || currentRound >= 2);

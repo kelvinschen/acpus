@@ -165,7 +165,7 @@ export function taskArtifactWorkflow() {
     name: "cli-task",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      input: {},
+      input: null,
       exec: async ({ artifact }) => ({
         ok: true,
         artifact: await artifact.write("result.txt", "artifact-ok\n"),
@@ -216,14 +216,14 @@ export function replacementTaskWorkflow() {
     name: "cli-task-replacement",
   }).build(({ step }) => {
     const result = step("local_task").task({
-      input: {},
+      input: null,
       exec: async ({ artifact }) => ({
         ok: true,
         artifact: await artifact.write("result.txt", "replacement\n"),
       }),
     });
     const extra = step("extra").task({
-      input: {},
+      input: null,
       exec: async () => ({ extra: true }),
     });
     return { ok: result.output.ok, artifact: result.output.artifact, extra: extra.output.extra };
@@ -235,7 +235,7 @@ export function failingTaskWorkflow() {
     name: "cli-failing-task",
   }).build(({ step }) => {
     step("boom").task({
-      input: {},
+      input: null,
       exec: async () => {
         throw new Error("task exploded");
       },
@@ -250,7 +250,7 @@ export function failOnceTaskWorkflow() {
     inputSchema: z.object({ workDir: z.string() }),
   }).build(({ input, step }) => {
     const result = step("eventual").task({
-      input: {},
+      input: null,
       cwd: input.workDir,
       exec: async ({ $ }) => {
         await $`sh -c "if [ -f .retry-marker ]; then exit 0; fi; touch .retry-marker; exit 1"`;

@@ -12,7 +12,7 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     return diagnostics;
   }
   validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "diagnostics"], diagnostics, "");
-  if (ir.irVersion !== 6) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 6.", "irVersion");
+  if (ir.irVersion !== 7) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 7.", "irVersion");
   if (typeof ir.name !== "string") {
     addError(diagnostics, "IR002", "WorkflowIR name must be a string.", "name");
   } else if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
@@ -322,7 +322,7 @@ function validateAgentTrace(value: unknown, diagnostics: DiagnosticIR[], path: s
 function validateTaskRun(run: unknown, diagnostics: DiagnosticIR[], path: string, refs: RefContext): void {
   if (!requireRecord(run, diagnostics, path, "T007", "Task run must be an object.")) return;
   validateKnownFields(run, ["input", "target", "cwd", "env", "execution"], diagnostics, path);
-  validateExprObject(run.input, diagnostics, `${path}.input`, refs);
+  validateExpr(run.input, diagnostics, `${path}.input`, refs);
   validateTaskTarget(run.target, diagnostics, `${path}.target`);
   if (run.cwd !== undefined) validateStringExpr(run.cwd, diagnostics, `${path}.cwd`, "Task cwd", "T007", refs);
   validateDynamicEnv(run.env, diagnostics, `${path}.env`, refs);
@@ -378,15 +378,6 @@ function validateFanoutOver(expr: ExprIR, diagnostics: DiagnosticIR[], path: str
   if (expr.kind === "object") {
     addError(diagnostics, "F004", "Fanout over object expression must be an array value.", path);
   }
-}
-
-function validateExprObject(values: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): void {
-  if (!values) {
-    addError(diagnostics, "E000", "Expression object is required.", path);
-    return;
-  }
-  if (!requireRecord(values, diagnostics, path, "E004", "Expression object fields must be an object.")) return;
-  for (const [key, expr] of Object.entries(values)) validateExpr(expr, diagnostics, `${path}.${key}`, refs);
 }
 
 function validateDynamicEnv(values: unknown, diagnostics: DiagnosticIR[], path: string, refs?: RefContext): void {

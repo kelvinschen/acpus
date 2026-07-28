@@ -157,7 +157,7 @@ describe("scheduler materialization", () => {
     const taskEvents = bootstrapRootEvents("run_1", workflowWithRootNode({
       id: "task",
       kind: "task",
-      run: { input: {}, target: inlineTaskTarget() },
+      run: { input: { kind: "literal", value: null }, target: inlineTaskTarget() },
     }));
     const nodeKey = deriveInstanceKey(appendNode([], "task"));
 
@@ -1216,7 +1216,7 @@ function taskNode(id: string): NodeIR {
   return {
     id,
     kind: "task",
-    run: { input: {}, target: inlineTaskTarget() },
+    run: { input: { kind: "literal", value: null }, target: inlineTaskTarget() },
   };
 }
 
@@ -1269,7 +1269,7 @@ function workflowWithRootNode(node: NodeIR): WorkflowIR {
 
 function workflowWithRootNodes(nodes: NodeIR[]): WorkflowIR {
   return {
-    irVersion: 6,
+    irVersion: 7,
     name: "test",
     inputSchema: objectSchema(),
     root: { nodes, output: { kind: "object", fields: {} } },

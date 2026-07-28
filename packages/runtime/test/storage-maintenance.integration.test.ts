@@ -56,7 +56,7 @@ describe("runtime storage maintenance", () => {
       const selectedArchive = join(layout.archivesRoot, "20200101T000000.000Z-v1");
       await mkdir(selectedArchive);
       await writeFile(join(selectedArchive, "marker"), "selected");
-      setDatabaseVersion(layout.databasePath, 2);
+      setDatabaseVersion(layout.databasePath, 3);
       const before = await treeFingerprint(layout.workspaceRoot);
 
       let readFailure: unknown;
@@ -68,7 +68,7 @@ describe("runtime storage maintenance", () => {
       expect(readFailure).toMatchObject({
         name: "IncompatibleRuntimeDatabaseError",
         applicationId: RUNTIME_APPLICATION_ID,
-        userVersion: 2,
+        userVersion: 3,
       } satisfies Partial<IncompatibleRuntimeDatabaseError>);
       expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
 
@@ -101,7 +101,7 @@ describe("runtime storage maintenance", () => {
       });
       const remaining = await readdir(layout.archivesRoot);
       expect(remaining).toHaveLength(1);
-      expect(remaining[0]).toMatch(/-v2$/);
+      expect(remaining[0]).toMatch(/-v3$/);
     });
   });
 

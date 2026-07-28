@@ -47,7 +47,7 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 3` as the current storage version.
+- The active database MUST use SQLite `user_version = 4` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index private Agent evidence and bounded semantic inspection through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -239,7 +239,9 @@ type PruneReport = {
 - Task cwd MUST default to workspace, resolve relative values from workspace, and be observed by process code, filesystem access, module initialization, and the default command wrapper without changing module resolution.
 - Task environment MUST start from host environment plus evaluated overrides and remain live for process code, task context, modules, and later command invocations.
 - Task input/cwd/env and default command timeout MUST resolve once before invocation and be recorded as effective attempt metadata where applicable.
-- Evaluated Task input MUST preserve every own WorkflowData field, including `__proto__`, without changing the input object's ordinary prototype.
+- Runtime MUST evaluate a Task's complete authored input expression once and normalize the result as one WorkflowData value before recording attempt metadata or starting the Task process.
+- Evaluated Task input MUST preserve its exact WorkflowData shape, including a top-level primitive, `null`, array, or object and every own object field such as `__proto__`, without changing an input object's ordinary prototype.
+- Task input artifact binding MUST recursively accept an `ArtifactRef` at the input root, in an object field, or in an array element.
 - Runtime output normalization MUST treat Task top-level `undefined` as no output, reject scope/array `undefined`, omit undefined object properties, and reject non-WorkflowData values without adding business schemas.
 - Task output MUST be normalized immediately before child-process IPC and again at durable result commit; the parent node-executor layer MUST NOT add another cloning or normalization pass.
 - Recoverable Task attempt failure MUST contain only `failed`, `cancelled`, or `timed_out` status plus a complete display message; cwd, errno, exit code, signal, and bounded process output details MUST be folded into that message when applicable.
@@ -899,6 +901,8 @@ type AgentDecisionState = {
 - A root-frame failure MUST NOT create a synthetic overview/all item.
 - Target `root` MUST retain the bounded root-frame failure in its decision summary.
 - A static target matching multiple dynamic contexts MUST expose aggregate status and exact status counts while omitting instance-specific input, output, failure, keys, prompt, attempt, Agent, and Signal detail; a single matching context retains its resolved summary and zero matches remain `not_started`.
+- Inspection static topology nodes MUST NOT duplicate Task input expressions.
+- Task details MUST expose the exact normalized runtime input when attempt metadata exists and otherwise expose one rendering of the complete authored input expression.
 - Public artifact records MUST expose absolute `path` without exposing internal relative storage coordinates.
 - `listArtifacts` MUST return registry metadata without reading file bodies.
 - `listArtifacts` MUST return `[]` for an empty existing run and `undefined` for a missing run or store.
@@ -960,8 +964,8 @@ type RunInspectionEmission =
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, exact retry/cancel control planning, deterministic target ordering, high-cardinality failed-group projection, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, ArtifactRef identity binding/content-integrity separation, verified-read replacement fencing, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, exact bounded Agent execution projection without artifact reads, honest recent-tool incompleteness, Timeline cursor binding, and progress beyond internal count limits.
-- `pnpm test:integration packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, read/write parity for projected control targets, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, bound ArtifactRef replacement fencing, exact public verified artifact reads, post-registration Agent/Trace file retention, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
+- `pnpm test:unit packages/runtime`: proves oldest-admissible FIFO, direct-member identity, continuous refill, all-group canceled-member terminalization, exact retry/cancel control planning, deterministic target ordering, high-cardinality failed-group projection, targeted-retry completion closure and atomic blocker rejection, versioned wakeup, stop/cleanup checkpoints, dual leaf caps, shared-Agent-session admission, exact Task input normalization/metadata and authored inspection fallback, ArtifactRef identity binding/content-integrity separation, verified-read replacement fencing, fixed inspection/semantic-retention budgets, write-time timeline folding, target resolution, exact bounded Agent execution projection without artifact reads, honest recent-tool incompleteness, Timeline cursor binding, and progress beyond internal count limits.
+- `pnpm test:integration packages/runtime`: proves the production execution seam, arbitrary durable Task input over real process IPC, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, read/write parity for projected control targets, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, root/nested ArtifactRef binding and replacement fencing, exact public verified artifact reads, storage-generation archive/rebuild, post-registration Agent/Trace file retention, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
 - Storage integration uses one tracer per cross-layer risk: shard isolation, workflow-snapshot publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.

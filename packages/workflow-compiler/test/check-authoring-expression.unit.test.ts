@@ -143,8 +143,8 @@ describe("workflow check expression diagnostics", () => {
             do({ round }) {
               step(\`review_\${round}\`).agent({ agent: agents.worker, prompt: "review" });
               const current = step(\`record_\${round}\`).task({
-                input: { round },
-                exec: async ({ input }) => ({ count: input.round }),
+                input: round,
+                exec: async ({ input }) => ({ count: input }),
               });
               return { state: { count: current.output.count }, stop: gte(round, 2) };
             },

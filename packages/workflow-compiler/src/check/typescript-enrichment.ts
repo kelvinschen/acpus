@@ -125,6 +125,19 @@ export function enrichTypeScriptDiagnostic(
     };
   }
 
+  if (diagnostic.code === 2322 || diagnostic.code === 2345 || diagnostic.code === 2769) {
+    const call = ancestor(node, ts.isCallExpression);
+    const callback = call && callbackForWorkflowDataCall(call);
+    if (call && callback && (isOfficialLiftCall(call, project) || isOfficialInlineTaskCall(call, checker, project, roots))) {
+      const kind = invalidReturnKind(callback, checker);
+      if (kind) {
+        return { hint: kind === "undefined"
+          ? "Return null for absence; lift and Task callbacks must return JSON-compatible WorkflowData, not undefined."
+          : "Return JSON-compatible WorkflowData; convert Date and other class instances to strings or plain objects before returning them." };
+      }
+    }
+  }
+
   if (diagnostic.code === 2345) {
     const callback = enclosingFunction(node);
     if (callback && isGraphCallback(callback, checker, project, roots)) {
@@ -137,18 +150,6 @@ export function enrichTypeScriptDiagnostic(
     }
   }
 
-  if (diagnostic.code === 2769) {
-    const call = ancestor(node, ts.isCallExpression);
-    const callback = call && callbackForWorkflowDataCall(call);
-    if (call && callback && (isOfficialLiftCall(call, project) || isOfficialInlineTaskCall(call, checker, project, roots))) {
-      const kind = invalidReturnKind(callback, checker);
-      if (kind) {
-        return { hint: kind === "undefined"
-          ? "Return null for absence; lift and Task callbacks must return JSON-compatible WorkflowData, not undefined."
-          : "Return JSON-compatible WorkflowData; convert Date and other class instances to strings or plain objects before returning them." };
-      }
-    }
-  }
 }
 
 export function suppressCausalMissingLiftDiagnostics(
@@ -533,16 +534,7 @@ function propertyName(name: ts.PropertyName): string | undefined {
 }
 
 function invalidReturnKind(callback: ts.FunctionLikeDeclaration, checker: Project["checker"]): "undefined" | "non-durable" | undefined {
-  const expressions: ts.Expression[] = [];
-  if (callback.body && ts.isExpression(callback.body)) expressions.push(callback.body);
-  if (callback.body && ts.isBlock(callback.body)) {
-    const visit = (node: ts.Node): void => {
-      if (ts.isReturnStatement(node) && node.expression) expressions.push(node.expression);
-      else node.forEachChild(visit);
-    };
-    visit(callback.body);
-  }
-  for (const expression of expressions) {
+  for (const expression of returnExpressions(callback)) {
     const type = checker.getTypeAtLocation(expression);
     if (!type) continue;
     const rendered = checker.typeToString(type, expression);

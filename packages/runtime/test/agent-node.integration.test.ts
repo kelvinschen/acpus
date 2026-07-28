@@ -2342,7 +2342,7 @@ JSON Schema:`);
             agents: { reviewer: { use: "mock" } },
           }).build(({ input, agents, step }) => {
             const produced = step("produce").task({
-              input: {},
+              input: null,
               exec: async ({ artifact }) => ({ patch: await artifact.write("patch.diff", "diff\n") }),
             });
             step("review").agent({

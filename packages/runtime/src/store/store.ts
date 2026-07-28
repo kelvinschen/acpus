@@ -128,7 +128,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 3;
+export const RUNTIME_STORAGE_VERSION = 4;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;

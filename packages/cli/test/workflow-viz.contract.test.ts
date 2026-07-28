@@ -145,7 +145,7 @@ async function writeWorkflowEntry(workspace: string): Promise<string> {
 function preparedWorkflow(): PreparedWorkflow {
   const emptyOutput = { kind: "object", fields: {} } as const;
   const ir: WorkflowIR = {
-    irVersion: 6,
+    irVersion: 7,
     name: "program-viz",
     description: "Program viz description.",
     inputSchema: {

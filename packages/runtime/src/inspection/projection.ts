@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import { isJsonValue, type JsonPrimitive, type TemplateIR } from "@acpus/expression/ir";
+import { isJsonValue, type JsonPrimitive, type JsonValue, type TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
 import type {
   ArtifactRecord,
@@ -222,7 +222,6 @@ function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
     order,
     path: [...ancestry.map(item => item.owner.id), node.id],
     ...(ancestry.at(-1)?.owner.id ? { parentNodeId: ancestry.at(-1)!.owner.id } : {}),
-    ...(node.kind === "task" ? { input: node.run.input } : {}),
     ...(node.kind === "agent" || node.kind === "signal" ? { prompt: node.run.prompt } : {}),
     ...(node.kind === "signal" ? { outputSchema: node.outputSchema } : {}),
     ...(node.kind === "agent" ? { agent: node.run.agent, ...(ir.agents[node.run.agent] ? { agentDefinition: ir.agents[node.run.agent] } : {}) } : {}),
@@ -961,8 +960,8 @@ function projectTarget(
     .filter(item => latestAttempt === undefined || item.attempt === latestAttempt.attemptNo)
     .sort((left, right) => left.path.localeCompare(right.path))
     .find(item => /^turn-\d+\.json$/.test(basename(item.path)));
-  const authoredInput = node?.kind === "task" ? Object.fromEntries(Object.entries(node.run.input).map(([key, expr]) => [key, renderExpr(expr)])) : undefined;
-  const runtimeInput = record(metadata?.metadata)?.input;
+  const authoredInput = node?.kind === "task" ? renderExpr(node.run.input) : undefined;
+  const runtimeInput = record(metadata?.metadata)?.input as JsonValue | undefined;
   const loopProgress = summarizeLoopProgress(frames);
   const signalStatus = node?.kind === "signal" && (latestWait?.status === "awaiting" || latestWait?.status === "timed_out")
     ? latestWait.status
