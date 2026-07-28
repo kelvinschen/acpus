@@ -15,16 +15,16 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | Command | Options and behavior |
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
-| `workflow check <workflow>` | `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
+| `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
 | `workflow run <workflow>` | Check options plus `--background`; foreground `--interval <duration>` defaults to 1s, has a 250ms minimum, and conflicts with `--background`. |
-| `workflow viz <workflow>` | Optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
+| `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--target`, `--timeline`, `--limit`, `--before`, `--follow`, `--after`, `--interval`, `--all`, and `--raw` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
-| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`. |
+| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept `--target`; signal requires `--target` and `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
 | `runs steer <run-id>` | Requires `--target <attemptId\|nodeKey\|agentId>` and direct `--instruction <text>`; optional `--json`. |
 | `doctor` | Read-only runtime and authoring health. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
@@ -41,6 +41,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
+- Fork catalog scope flags MUST be mutually exclusive.
+- Fork catalog scope flags MUST require `--workflow`.
 - Empty or whitespace-only steer target input MUST fail before daemon startup.
 - Empty or whitespace-only steer instruction input MUST fail before daemon startup.
 
@@ -61,9 +63,13 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - A catalog prompt selection MUST perform named lookup with the selected entry's scope; prompt cancellation is a usage failure.
 - Unscoped lookup MUST require a name unique across project and global catalogs; scoped lookup searches only the selected scope.
 - Path-like workflow arguments MUST use direct preparation unless a scope flag is present; other arguments resolve as catalog names.
-- Global catalog preparation MUST materialize one private `$HOME/.acpus/tmp/catalog-snapshots/<name>-*/package/` snapshot that follows symlinks and copies their target content.
-- Global catalog preparation MUST remove its temporary snapshot after check, visualization, admission, or failure.
-- A global catalog preparation MUST pass only the compiler-owned source identity and snapshot root to preparation; the compiler derives the entry, and durable source ownership after admission delegates to the [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
+- Check, run, visualization, checked import, and fork replacement MUST share one CLI workflow-source resolver.
+- Direct paths and resolved catalog entries MUST reach the compiler as a `path` source without CLI-owned copying, source-root flags, or snapshot cleanup.
+- The CLI MUST retain the invocation workspace as compiler dependency authority.
+- Catalog scope MUST remain CLI provenance and MUST NOT override the [Workflow Compiler's physical-workspace-containment source classification](workflow-compiler-spec.md#prepared-workflow-data).
+- For check, run, visualization, and fork replacement, workflow `-` MUST read stdin once as raw, valid UTF-8 TypeScript and map it exactly to a one-file compiler source with entry `workflow.ts` and files `[{ path: "workflow.ts", content }]`.
+- Workflow `-` MUST conflict with `--project` and `--global` before stdin is consumed.
+- The CLI MUST NOT expose JSON bundle input, source-root, snapshot, or other alternate dynamic-source flags.
 - Import MUST accept local regular `.ts`, `.zip`, `.tar.gz`, and `.tgz` files, local directories, and anonymous HTTP(S) URLs with those suffixes, matched case-insensitively from the URL pathname.
 - Remote import MUST follow no more than five anonymous HTTP(S) redirects; unsupported suffixes, URL credentials, non-HTTP(S) URLs, and conflicting scopes are usage errors.
 - Import MUST create a one-time snapshot without dependency installation, provenance/update metadata, identical-content special cases, or replacement of an existing same-scope name.
@@ -86,6 +92,11 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `--agents` MUST parse as a JSON object before preparation or mutation.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
 - Foreground and background runs MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
+- The CLI MUST accept a live workspace daemon only when its status protocol version exactly equals the Runtime-exported current protocol version.
+- A daemon protocol mismatch MUST fail actionably without killing, replacing, or spawning around that daemon.
+- Admission MUST probe daemon status before writable storage preparation.
+- A compatible live daemon MUST skip writable storage preparation.
+- An absent or refused daemon MUST prepare current storage before ensure/spawn so fresh and older-storage archival behavior remains Runtime-owned.
 - Foreground run MUST follow the read-only inspection stream to terminal status; background run returns after daemon acceptance.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
@@ -131,7 +142,9 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 ### Controls, Doctor, Skills, And Hooks
 
-- Fork replacement workflow, input, and Agent overrides MUST be prepared or normalized against frozen workflow data before daemon control; the daemon never imports replacement source.
+- Fork replacement workflow, input, and Agent overrides MUST be prepared or normalized against frozen workflow data before daemon control.
+- Fork replacement workflow resolution MUST have check/run/viz path, catalog-scope, and stdin parity.
+- The daemon MUST NOT import fork replacement source.
 - Mutating controls MUST start or wake the daemon, dispatch one closed intent, and wait up to 30 seconds for the requested effect to be applied or fail.
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
 - Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; target fields appear only when requested and fork results identify source and child separately.
@@ -203,7 +216,13 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
+- A successful checked import MUST retain preparation diagnostics and the source-graph digest in structured output.
+- Successful checked-import text output MUST print the source-graph digest followed by diagnostics in compiler order.
+- An unchecked import MUST expose neither preparation diagnostics nor a source-graph digest.
 - Foreground run and inspect follow invoked with their local `--json` option MUST emit NDJSON with an initial admission or bounded snapshot, ordered delta/resync records, and a terminal done record.
+- Successful foreground run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
+- Foreground admitted JSON and replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
+- Foreground run text MUST write preparation diagnostics once before follow; replacement-fork text MUST use the ordinary diagnostic presentation.
 - Inspect follow with `--after` MUST omit the initial snapshot and resume from the supplied opaque revision.
 - An invalid `--after` or `--before` value MUST surface Runtime's typed invalid-cursor failure.
 - A non-usage one-shot inspection JSON failure MUST expose the Runtime-owned typed failure as `inspectionError`, preserving `runId`, `target`, and `candidateKeys` when present.
@@ -277,6 +296,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - `pnpm test:contract packages/cli`: verifies steer argument validation, receipt redaction, high-density target/timeline formatting, exact-attempt Evidence/Trace metadata, retention-expiry guidance, opaque follow resume, and bounded semantic-delta rendering.
 - CLI prune contract tests own duration parsing, consent, one-preview/one-delete fencing, exit status, and JSON projection; Runtime tests own candidate and deletion semantics.
 - Exercise preparation, admission, catalog/import, visualization, inspection failure fallback/deduplication, artifacts, controls, deletion, pruning, hooks, Doctor persistence projection, and skills at their delegated boundaries.
+- Cover direct outside paths, live project paths, compiler-owned global snapshots, checked-import diagnostics, exact raw-stdin mapping and command plumbing, and exact daemon protocol rejection without mutation or replacement.
 - Prove that read-only commands do not start the daemon or create runtime shards.
 - Contract-test bundled lifecycle routing, example disclosure, and workflow-library isolation; typecheck and apply native authoring checks to official examples and library workflows, require examples to cover every node kind, while one representative CLI E2E covers full preparation and public API contracts cover authoring-facade exports.
 - Cover input mode selection, archive safety, workspace containment, private home/project staging, cleanup on success and failure, collisions, and mutation-free failures.

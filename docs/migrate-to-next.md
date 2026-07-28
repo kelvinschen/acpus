@@ -334,10 +334,10 @@ facts ineligible. Task side effects and artifact provenance still require human
 review. `--unsafe-reuse` is an explicit dangerous override, not a cache switch or
 a fix for an invalid target.
 
-Reusable Tasks remain live module references. The frozen run contains their
-reference and WorkflowIR, not a copy of the Task module and its dependencies.
-Do not delete or mutate required modules while an active run may still load
-them.
+Workspace-source reusable Tasks remain live module references. Snapshot
+admission durably captures supported local Task modules and dependencies.
+Do not delete or mutate required live workspace modules while a run may still
+load them.
 
 ## A complete YAML-to-TypeScript example
 

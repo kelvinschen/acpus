@@ -169,7 +169,7 @@ describe("CLI program usage contracts", () => {
       expect(storeCheck).toEqual({
         area: "store",
         status: "warn",
-        message: "Runtime storage version 1 is older than the supported version 2. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+        message: "Runtime storage version 1 is older than the supported version 3. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
       });
       expect(storeCheck).not.toHaveProperty("details");
       expect(stderr.text).toBe("");
@@ -384,6 +384,7 @@ describe("CLI program usage contracts", () => {
     })).toBe(0);
     expect(runStdout.text).toContain("--interval");
     expect(runStdout.text).toContain("--input <json|file.json>");
+    expect(runStdout.text).toContain("- for stdin");
 
     const checkStdout = new CaptureStream();
     const checkStderr = new CaptureStream();
@@ -391,6 +392,7 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: checkStdout, stderr: checkStderr,
     })).toBe(0);
     expect(checkStdout.text).toContain("--input <json|file.json>");
+    expect(checkStdout.text).toContain("- for stdin");
 
     const forkStdout = new CaptureStream();
     const forkStderr = new CaptureStream();
@@ -398,6 +400,10 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: forkStdout, stderr: forkStderr,
     })).toBe(0);
     expect(forkStdout.text).toContain("--input <json|file.json>");
+    expect(forkStdout.text).toContain("path or - for");
+    expect(forkStdout.text).toContain("stdin");
+    expect(forkStdout.text).toContain("--project");
+    expect(forkStdout.text).toContain("--global");
     expect(inspectStderr.text).toBe("");
     expect(runStderr.text).toBe("");
     expect(checkStderr.text).toBe("");

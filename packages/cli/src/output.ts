@@ -101,17 +101,47 @@ type ResultRecord<
   & Pick<CliResultFields, Exclude<Fields, RequiredFields>>
   & Partial<Record<Exclude<keyof CliResultFields, Fields>, never>>;
 
-type ImportSuccessCliResult = Omit<ResultRecord<"import", true, "message" | "catalog" | "checked", "message" | "catalog" | "checked">, "catalog"> & {
+type UncheckedImportSuccessCliResult = Omit<
+  ResultRecord<"import", true, "message" | "catalog" | "checked", "message" | "catalog" | "checked">,
+  "catalog" | "checked"
+> & {
   catalog: AvailableWorkflowCatalogEntry;
+  checked: false;
 };
+
+type CheckedImportSuccessCliResult = Omit<
+  ResultRecord<
+    "import",
+    true,
+    "message" | "catalog" | "checked" | "diagnostics" | "sourceGraphDigest",
+    "message" | "catalog" | "checked" | "diagnostics" | "sourceGraphDigest"
+  >,
+  "catalog" | "checked"
+> & {
+  catalog: AvailableWorkflowCatalogEntry;
+  checked: true;
+};
+
+type ImportSuccessCliResult = UncheckedImportSuccessCliResult | CheckedImportSuccessCliResult;
 
 type ControlFailureCliResult = Omit<ResultRecord<"control", false, "message" | "run" | "control" | "errorCode", "message">, "control"> & {
   control?: CliUnappliedControl;
 };
 
-type ControlSuccessCliResult = Omit<ResultRecord<"control", true, "message" | "run" | "followRunId" | "control", "message" | "run" | "control">, "control"> & {
-  control: CliAppliedControl;
+type NonForkControlSuccessCliResult = Omit<ResultRecord<"control", true, "message" | "run" | "followRunId" | "control", "message" | "run" | "control">, "control"> & {
+  control: Exclude<CliAppliedControl, { type: "fork" }>;
 };
+
+type ForkControlSuccessCliResult = Omit<ResultRecord<
+  "control",
+  true,
+  "message" | "run" | "followRunId" | "control" | "diagnostics" | "sourceGraphDigest" | "catalog",
+  "message" | "run" | "control"
+>, "control"> & {
+  control: Extract<CliAppliedControl, { type: "fork" }>;
+};
+
+type ControlSuccessCliResult = NonForkControlSuccessCliResult | ForkControlSuccessCliResult;
 
 export type CliResult =
   | ResultRecord<"usage", false, "message", "message">
@@ -208,6 +238,9 @@ export function writeResult(
   }
   if (result.catalog) writeCatalogEntry(stream, result.catalog, namedCatalogQuery);
   if (result.checked !== undefined) stream.write(`Checked: ${result.checked ? "yes" : "no"}\n`);
+  if (result.phase === "import" && result.ok && result.checked) {
+    stream.write(`Source graph: ${result.sourceGraphDigest}\n`);
+  }
   if (result.catalogEntries) {
     writeCatalogEntries(stream, result.catalogEntries);
   }
@@ -322,7 +355,7 @@ function formatStaticNodeCount(count: number): string {
   return `${count} static ${count === 1 ? "node" : "nodes"}`;
 }
 
-function writeDiagnostics(stream: Writable, diagnostics: DiagnosticIR[] | undefined, cwd: string | undefined): void {
+export function writeDiagnostics(stream: Writable, diagnostics: DiagnosticIR[] | undefined, cwd: string | undefined): void {
   for (const diagnostic of diagnostics ?? []) writeDiagnostic(stream, diagnostic, cwd);
 }
 

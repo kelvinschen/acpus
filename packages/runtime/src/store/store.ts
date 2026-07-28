@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { access, chmod, cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -62,7 +62,7 @@ export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed"
 
 export type PreparedRunValidationFailure = {
   type: "prepared-workflow-invalid";
-  reason: "invalid-ir-json" | "invalid-ir" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "package-lock-mismatch" | "entry-mismatch";
+  reason: "invalid-ir-json" | "invalid-ir" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "source-bundle-mismatch" | "package-lock-mismatch" | "entry-mismatch";
   message: string;
 };
 
@@ -128,7 +128,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 2;
+export const RUNTIME_STORAGE_VERSION = 3;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -212,33 +212,53 @@ type AgentOverrideSpec = {
 
 export type RunWorkflowLockArtifact = {
   kind: "acpus_workflow_preparation_lock";
-  version: 1;
+  version: 2;
   workflow: {
     source: WorkflowSourceRef;
-    sourceDigest: string;
+    entryDigest: Sha256Digest;
   };
   ir: {
     path: "workflow.ir.json";
-    digest: string;
+    digest: Sha256Digest;
   };
-  packageLockDigest?: string;
-  sourceGraphDigest: string;
+  packageLockDigest?: Sha256Digest;
+  sourceGraphDigest: Sha256Digest;
 };
+
+export type Sha256Digest = `sha256:${string}`;
 
 export type WorkflowSourceRef =
   | { kind: "workspace"; entry: string }
-  | { kind: "global_catalog"; name: string; digest: string; entry: string };
+  | { kind: "snapshot"; entry: string; digest: Sha256Digest };
 
-export type PreparedRunWorkflow = {
-  workflowPath: string;
-  source: WorkflowSourceRef;
-  sourceRoot?: string;
+export type WorkflowSourceFile = {
+  path: string;
+  content: string;
+};
+
+export type WorkflowSourceBundle = {
+  kind: "acpus_workflow_source_bundle";
+  version: 1;
+  files: readonly WorkflowSourceFile[];
+};
+
+type PreparedRunWorkflowBase = {
   ir: WorkflowIR;
   irJson: string;
-  sourceGraphDigest: string;
-  packageLockDigest?: string;
+  sourceGraphDigest: Sha256Digest;
+  packageLockDigest?: Sha256Digest;
   lock: RunWorkflowLockArtifact;
 };
+
+export type PreparedRunWorkflow =
+  | PreparedRunWorkflowBase & {
+    source: Extract<WorkflowSourceRef, { kind: "workspace" }>;
+    sourceBundle?: never;
+  }
+  | PreparedRunWorkflowBase & {
+    source: Extract<WorkflowSourceRef, { kind: "snapshot" }>;
+    sourceBundle: WorkflowSourceBundle;
+  };
 
 export type RunRecord = {
   id: string;
@@ -563,7 +583,10 @@ type RunInputRow = {
   source_json: string;
 };
 
-type FrozenWorkflowRow = Pick<RunInputRow, "workflow_ir_path" | "workflow_ir_digest" | "input_json" | "agent_overrides_json" | "source_json">;
+type FrozenSourceRow =
+  & Pick<RunInputRow, "workflow_ir_path" | "workflow_ir_digest" | "lock_path" | "lock_digest" | "source_json">
+  & Pick<RunRow, "id" | "name" | "workflow_entry" | "source_graph_digest">;
+type FrozenWorkflowRow = FrozenSourceRow & Pick<RunInputRow, "input_json" | "agent_overrides_json">;
 type RunDetailsInputRow = Pick<RunInputRow, "input_json" | "agent_overrides_json" | "output_json">;
 
 type CountRow = {
@@ -1081,35 +1104,30 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   getFrozenRun(runId: string): FrozenRun | undefined {
+    return this.readFrozenRun(runId, true);
+  }
+
+  private readFrozenRun(runId: string, resolveSource: boolean): FrozenRun | undefined {
     const row = this.db.prepare(`
-      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json, run_inputs.agent_overrides_json, run_inputs.source_json
+      SELECT runs.id, runs.name, runs.workflow_entry, runs.source_graph_digest,
+        run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json,
+        run_inputs.agent_overrides_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
-    `).get(runId) as (FrozenWorkflowRow & { id: string; name: string; workflow_entry: string }) | undefined;
+    `).get(runId) as FrozenWorkflowRow | undefined;
     if (!row) {
       if (this.getRunRecord(runId)) throw new Error(`Run '${runId}' has no frozen input.`);
       return undefined;
     }
-    const workflowIrJson = frozenWorkflowIrJson(this.generation.run(String(row.id)).verify(), row);
-    const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
-    const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
-    return {
-      ir: withAgentOverrides(originalIr, agentOverrides),
-      input: JSON.parse(row.input_json) as JsonValue,
-      agentOverrides,
-      sourceRoot: resolveFrozenSourceRoot(
-        this.layout,
-        parseWorkflowSource(row.source_json),
-        this.generation.sourcesRoot,
-      ),
-      meta: {
-        runId: String(row.id),
-        workflowPath: String(row.workflow_entry),
-        workflowName: String(row.name),
-        workspaceDir: resolve(this.cwd),
-      },
-    };
+    return decodeFrozenRun(
+      row,
+      this.generation.run(row.id).verify(),
+      this.cwd,
+      resolveSource
+        ? source => resolveFrozenSourceRoot(this.layout, source, this.generation.sourcesRoot)
+        : undefined,
+    );
   }
 
   claimDaemon(input: ClaimDaemonInput): DaemonLease {
@@ -1362,7 +1380,14 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceRun = this.generation.run(runId);
     const sourceRunDir = sourceRun.verify();
     const sourceWorkflowIrJson = frozenWorkflowIrJson(sourceRunDir, input);
-    const sourceLockJson = frozenLockJson(sourceRunDir, input);
+    const persisted = verifiedFrozenWorkflowSource(sourceRunDir, {
+      ...input,
+      id: source.id,
+      name: source.name,
+      workflow_entry: source.workflowEntry,
+      source_graph_digest: source.sourceGraphDigest,
+    });
+    const sourceLockJson = persisted.lockJson;
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
     if (options.agentOverrides !== undefined) {
@@ -1384,7 +1409,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkInputJson = forkInput === undefined ? input.input_json : stableJsonLine(forkInput);
     const forkLockJson = options.prepared ? stableJsonLine(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
-    const forkSource = options.prepared?.source ?? parseWorkflowSource(input.source_json);
+    const forkSource = options.prepared?.source ?? persisted.source;
     const forkName = options.prepared ? forkIr.name : source.name;
     const forkWorkflowEntry = forkSource.entry;
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
@@ -1894,7 +1919,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     try {
       if (ownsTransaction) this.db.exec("BEGIN");
       const run = this.getRun(runId);
-      const frozen = run ? this.getFrozenRun(runId) : undefined;
+      const frozen = run ? this.readFrozenRun(runId, false) : undefined;
       const eventSequence = run ? this.getLastRunEventSequence(runId) : 0;
       const observation = run
         ? this.db.prepare("SELECT observation_version FROM runs WHERE id = ?").get(runId) as { observation_version: number }
@@ -2257,8 +2282,17 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   listWorkflowSources(): WorkflowSourceRef[] {
-    const rows = this.db.prepare("SELECT source_json FROM run_inputs").all() as Array<{ source_json: string }>;
-    return rows.map(row => parseWorkflowSource(row.source_json));
+    const rows = this.db.prepare(`
+      SELECT runs.id, runs.name, runs.workflow_entry, runs.source_graph_digest,
+        run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest,
+        run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
+      FROM run_inputs
+      JOIN runs ON runs.id = run_inputs.run_id
+    `).all() as FrozenSourceRow[];
+    return rows.map(row => verifiedFrozenWorkflowSource(
+      this.generation.run(row.id).verify(),
+      row,
+    ).source);
   }
 
   getRuntimeDiagnostics(): RuntimeDiagnostics {
@@ -3212,27 +3246,15 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   private loadFrozenRun(runId: string): FrozenRun {
     const row = this.db.prepare(`
-      SELECT runs.id, runs.name, runs.workflow_entry, run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json, run_inputs.agent_overrides_json, run_inputs.source_json
+      SELECT runs.id, runs.name, runs.workflow_entry, runs.source_graph_digest,
+        run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json,
+        run_inputs.agent_overrides_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
-    `).get(runId) as (FrozenWorkflowRow & { id: string; name: string; workflow_entry: string }) | undefined;
+    `).get(runId) as FrozenWorkflowRow | undefined;
     if (!row) throw new Error(`Run '${runId}' has no frozen workflow.`);
-    const workflowIrJson = frozenWorkflowIrJson(this.resolveRunDirectory(runId), row);
-    const originalIr = JSON.parse(workflowIrJson) as WorkflowIR;
-    const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
-    return {
-      ir: withAgentOverrides(originalIr, agentOverrides),
-      input: JSON.parse(row.input_json) as JsonValue,
-      agentOverrides,
-      sourceRoot: this.resolveSourceRoot(parseWorkflowSource(row.source_json)),
-      meta: {
-        runId: String(row.id),
-        workflowPath: String(row.workflow_entry),
-        workflowName: String(row.name),
-        workspaceDir: resolve(this.cwd),
-      },
-    };
+    return decodeFrozenRun(row, this.resolveRunDirectory(runId), this.cwd, this.resolveSourceRoot);
   }
 
   private assertOwnerEpochExpired(runId: string, ownerEpoch: number): void {
@@ -4929,13 +4951,17 @@ function nodeSignatures(scope: ScopeIR): Map<string, string> {
 }
 
 export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
+  if (!isPreparedRunWorkflow(prepared)) {
+    return preparedInvalid("source-bundle-mismatch", "Prepared workflow does not match the current closed format.");
+  }
+  const candidate = prepared;
   let ir: unknown;
   try {
-    ir = JSON.parse(prepared.irJson);
+    ir = JSON.parse(candidate.irJson);
   } catch {
     return preparedInvalid("invalid-ir-json", "Prepared workflow IR JSON is invalid.");
   }
-  if (stableJsonLine(ir) !== stableJsonLine(prepared.ir)) {
+  if (stableJsonLine(ir) !== stableJsonLine(candidate.ir)) {
     return preparedInvalid("ir-mismatch", "Prepared workflow IR JSON does not match prepared IR.");
   }
   const parsedIr = ir as WorkflowIR;
@@ -4947,30 +4973,160 @@ export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRu
   if (existingError) {
     return preparedInvalid("invalid-ir", `Prepared workflow IR contains an error diagnostic: ${existingError.code}: ${existingError.message}`);
   }
-  if (digest(Buffer.from(prepared.irJson)) !== prepared.lock.ir.digest) {
+  if (digest(Buffer.from(candidate.irJson)) !== candidate.lock.ir.digest) {
     return preparedInvalid("ir-digest-mismatch", "Prepared workflow lock IR digest does not match IR JSON.");
   }
-  if (prepared.lock.sourceGraphDigest !== prepared.sourceGraphDigest) {
+  if (candidate.lock.sourceGraphDigest !== candidate.sourceGraphDigest) {
     return preparedInvalid("source-graph-mismatch", "Prepared workflow lock source graph digest does not match prepared source graph digest.");
   }
-  const hasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared, "packageLockDigest");
-  const lockHasPackageLockDigest = Object.prototype.hasOwnProperty.call(prepared.lock, "packageLockDigest");
-  if (hasPackageLockDigest !== lockHasPackageLockDigest || prepared.packageLockDigest !== prepared.lock.packageLockDigest) {
+  const hasPackageLockDigest = Object.prototype.hasOwnProperty.call(candidate, "packageLockDigest");
+  const lockHasPackageLockDigest = Object.prototype.hasOwnProperty.call(candidate.lock, "packageLockDigest");
+  if (hasPackageLockDigest !== lockHasPackageLockDigest || candidate.packageLockDigest !== candidate.lock.packageLockDigest) {
     return preparedInvalid("package-lock-mismatch", "Prepared workflow lock package lock digest does not match prepared package lock digest.");
   }
-  const sourceGraphDigest = digest(Buffer.from([prepared.lock.workflow.sourceDigest, prepared.packageLockDigest ?? ""].join("\n")));
-  if (prepared.sourceGraphDigest !== sourceGraphDigest) {
-    return preparedInvalid("source-graph-mismatch", "Prepared workflow source graph digest does not match workflow and package lock digests.");
-  }
-  if (stableJsonLine(prepared.lock.workflow.source) !== stableJsonLine(prepared.source)) {
+  if (stableJsonLine(candidate.lock.workflow.source) !== stableJsonLine(candidate.source)) {
     return preparedInvalid("entry-mismatch", "Prepared workflow lock source does not match prepared workflow source.");
   }
-  const sourceRoot = resolve(prepared.source.kind === "workspace" ? cwd : prepared.sourceRoot ?? "");
-  const workflowEntry = toPortablePath(relative(sourceRoot, resolve(prepared.workflowPath)));
-  if (workflowEntry.startsWith("../") || workflowEntry === ".." || prepared.source.entry !== workflowEntry) {
-    return preparedInvalid("entry-mismatch", "Prepared workflow source entry does not match prepared workflow path.");
+  if (candidate.source.kind === "snapshot") {
+    const files = candidate.sourceBundle!.files;
+    const entry = files.find(file => file.path === candidate.source.entry);
+    if (!entry) {
+      return preparedInvalid("entry-mismatch", "Prepared workflow source entry is missing from its source bundle.");
+    }
+    if (digest(Buffer.from(entry.content)) !== candidate.lock.workflow.entryDigest) {
+      return preparedInvalid("entry-mismatch", "Prepared workflow entry digest does not match its source bundle.");
+    }
+    const graphDigest = workflowSourceGraphDigest(candidate.source.entry, files);
+    if (candidate.source.digest !== graphDigest || candidate.sourceGraphDigest !== graphDigest) {
+      return preparedInvalid("source-graph-mismatch", "Prepared workflow source graph digest does not match its source bundle.");
+    }
+  } else {
+    const entryMismatch = () => preparedInvalid("entry-mismatch", "Prepared workspace entry does not match its preparation lock.");
+    const root = realpathSync(resolve(cwd));
+    try {
+      const entry = resolve(root, candidate.source.entry);
+      const info = lstatSync(entry);
+      if (!isContainedPath(root, entry)
+        || info.isSymbolicLink()
+        || !info.isFile()
+        || !isContainedPath(root, realpathSync(entry))
+        || digest(readFileSync(entry)) !== candidate.lock.workflow.entryDigest) {
+        return entryMismatch();
+      }
+    } catch (error) {
+      if (isMissingPathError(error)) return entryMismatch();
+      throw error;
+    }
   }
-  return ok({ ...prepared, ir: parsedIr });
+  return ok({ ...structuredClone(candidate), ir: parsedIr });
+}
+
+export function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
+  if (!isPlainObject(value)
+    || !isPlainObject(value.source)
+    || !isWorkflowSourceRef(value.source)
+    || !isPlainObject(value.ir)
+    || typeof value.ir.name !== "string"
+    || !isPlainObject(value.ir.root)
+    || typeof value.irJson !== "string"
+    || !isSha256Digest(value.sourceGraphDigest)
+    || (Object.prototype.hasOwnProperty.call(value, "packageLockDigest") && !isSha256Digest(value.packageLockDigest))
+    || !isRunWorkflowLockArtifact(value.lock)) {
+    return false;
+  }
+  if (value.source.kind === "workspace") {
+    return hasExactObjectKeys(value, ["source", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"]);
+  }
+  return hasExactObjectKeys(value, ["source", "sourceBundle", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"])
+    && isWorkflowSourceBundle(value.sourceBundle);
+}
+
+function isRunWorkflowLockArtifact(value: unknown): value is RunWorkflowLockArtifact {
+  return isPlainObject(value)
+    && hasExactObjectKeys(value, ["kind", "version", "workflow", "ir", "sourceGraphDigest"], ["packageLockDigest"])
+    && value.kind === "acpus_workflow_preparation_lock"
+    && value.version === 2
+    && isSha256Digest(value.sourceGraphDigest)
+    && (!Object.prototype.hasOwnProperty.call(value, "packageLockDigest") || isSha256Digest(value.packageLockDigest))
+    && isPlainObject(value.workflow)
+    && hasExactObjectKeys(value.workflow, ["source", "entryDigest"])
+    && isWorkflowSourceRef(value.workflow.source)
+    && isSha256Digest(value.workflow.entryDigest)
+    && isPlainObject(value.ir)
+    && hasExactObjectKeys(value.ir, ["path", "digest"])
+    && value.ir.path === "workflow.ir.json"
+    && isSha256Digest(value.ir.digest);
+}
+
+function isWorkflowSourceRef(value: unknown): value is WorkflowSourceRef {
+  if (!isPlainObject(value) || !isPortableSourcePath(value.entry)) return false;
+  if (value.kind === "workspace") return hasExactObjectKeys(value, ["kind", "entry"]);
+  return value.kind === "snapshot"
+    && hasExactObjectKeys(value, ["kind", "entry", "digest"])
+    && isSha256Digest(value.digest);
+}
+
+function isWorkflowSourceBundle(value: unknown): value is WorkflowSourceBundle {
+  if (!isPlainObject(value)
+    || !hasExactObjectKeys(value, ["kind", "version", "files"])
+    || value.kind !== "acpus_workflow_source_bundle"
+    || value.version !== 1
+    || !Array.isArray(value.files)) {
+    return false;
+  }
+  let previous: string | undefined;
+  const paths: string[] = [];
+  for (const file of value.files) {
+    if (!isPlainObject(file)
+      || !hasExactObjectKeys(file, ["path", "content"])
+      || !isPortableSourcePath(file.path)
+      || typeof file.content !== "string"
+      || previous !== undefined && previous >= file.path) {
+      return false;
+    }
+    previous = file.path;
+    paths.push(file.path);
+  }
+  return !hasSourcePathInventoryCollision(paths);
+}
+
+function isPortableSourcePath(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && !value.startsWith("/")
+    && !/^[A-Za-z]:/.test(value)
+    && !value.includes("\\")
+    && !value.includes("\0")
+    && value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function isSha256Digest(value: unknown): value is Sha256Digest {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
+function hasExactObjectKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
+    && Object.keys(value).every(key => allowed.has(key));
+}
+
+function workflowSourceGraphDigest(entry: string, files: readonly WorkflowSourceFile[]): Sha256Digest {
+  return workflowSourceGraphDigestFromDigests(
+    entry,
+    files.map(file => ({ path: file.path, digest: digest(Buffer.from(file.content)) })),
+  );
+}
+
+function workflowSourceGraphDigestFromDigests(
+  entry: string,
+  files: readonly { path: string; digest: Sha256Digest }[],
+): Sha256Digest {
+  return digest(Buffer.from(stableJsonLine({
+    kind: "acpus_workflow_source_graph",
+    version: 1,
+    entry,
+    files,
+  })));
 }
 
 function preparedInvalid(reason: PreparedRunValidationFailure["reason"], message: string): Result<never, PreparedRunValidationFailure> {
@@ -4979,10 +5135,6 @@ function preparedInvalid(reason: PreparedRunValidationFailure["reason"], message
 
 function stableJsonLine(value: unknown): string {
   return `${stableJson(value)}\n`;
-}
-
-function toPortablePath(path: string): string {
-  return path.split(/[\\/]/).join("/");
 }
 
 function assertJsonValue(value: unknown, path: string): JsonValue {
@@ -5118,111 +5270,96 @@ async function publishWorkflowSource(
   sourcesRoot: DirectoryFence,
 ): Promise<void> {
   if (prepared.source.kind === "workspace") return;
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(prepared.source.name)
-    || !/^[a-f0-9]{64}$/.test(prepared.source.digest)
-    || !prepared.sourceRoot) {
-    throw new Error("Prepared global catalog source is invalid.");
-  }
-  const sourceRoot = resolve(prepared.sourceRoot);
-  const preparedSource = new DirectoryFence(sourceRoot, "Prepared global catalog source");
-  const entryPath = resolve(sourceRoot, prepared.source.entry);
-  preparedSource.verify();
-  const entryInfo = await lstat(entryPath);
-  preparedSource.verify();
-  if (!isContainedPath(sourceRoot, entryPath)
-    || entryInfo.isSymbolicLink()
-    || !entryInfo.isFile()
-    || !isContainedPath(preparedSource.verifyIdentity().realpath, await realpath(entryPath))) {
-    throw new Error(`Prepared global catalog entry '${prepared.source.entry}' escapes its snapshot.`);
-  }
-  const assertPreparedSource = (): void => {
-    preparedSource.verify();
-  };
-  const actualDigest = await digestDirectory(sourceRoot, assertPreparedSource);
-  preparedSource.verify();
-  if (actualDigest !== prepared.source.digest) {
-    throw new Error(`Prepared global catalog '${prepared.source.name}' digest does not match its snapshot.`);
-  }
+  const sourceBundle = prepared.sourceBundle!;
   const root = sourcesRoot.verify();
-  const target = sourceRootForRun(layout, prepared.source);
+  const snapshots = await ensureFencedChildDirectory(
+    sourcesRoot,
+    "snapshots",
+    "Runtime workflow snapshots",
+    layout.platform,
+  );
+  const target = snapshotRootForSource(layout, prepared.source);
   if (!isContainedPath(root, target)) {
-    throw new Error(`Frozen global catalog source '${target}' escapes runtime sources root.`);
+    throw new Error(`Frozen workflow snapshot '${target}' escapes runtime sources root.`);
   }
   if (await ownedDirectoryExists(target)) {
     sourcesRoot.verify();
-    const existing = new DirectoryFence(target, `Frozen global catalog source '${target}'`);
-    const assertExisting = (): void => {
-      sourcesRoot.verify();
-      existing.verify();
-    };
-    if (await digestDirectory(target, assertExisting) !== prepared.source.digest) {
-      throw new Error(`Frozen global catalog source '${target}' failed digest verification.`);
-    }
-    assertExisting();
+    snapshots.verify();
+    verifyPublishedWorkflowSource(target, prepared.source, layout.platform);
+    sourcesRoot.verify();
+    snapshots.verify();
     return;
   }
-  const catalog = await ensureFencedChildDirectory(
-    sourcesRoot,
-    "catalog",
-    "Runtime catalog root",
-    layout.platform,
-  );
-  const namespace = await ensureFencedChildDirectory(
-    catalog,
-    prepared.source.name,
-    `Runtime catalog namespace '${prepared.source.name}'`,
-    layout.platform,
-  );
-  const parent = namespace.verify();
-  const staging = join(parent, `.staging-${prepared.source.digest}-${randomUUID()}`);
-  namespace.verify();
+  const digestHex = digestHexForPath(prepared.source.digest);
+  const parent = snapshots.verify();
+  const staging = join(parent, `.staging-${digestHex}-${randomUUID()}`);
+  snapshots.verify();
   await mkdir(staging, { mode: 0o700 });
-  namespace.verify();
-  const staged = captureDirectoryIdentity(staging, `Frozen global catalog staging '${staging}'`);
+  snapshots.verify();
+  const staged = captureDirectoryIdentity(staging, `Frozen workflow snapshot staging '${staging}'`);
+  let published: DirectoryIdentity | undefined;
   const assertStaged = (): void => {
     sourcesRoot.verify();
-    namespace.verify();
-    verifyDirectoryIdentity(staged, `Frozen global catalog staging '${staging}'`);
+    snapshots.verify();
+    verifyDirectoryIdentity(staged, `Frozen workflow snapshot staging '${staging}'`);
   };
   try {
-    assertPreparedSource();
     assertStaged();
-    await cp(sourceRoot, staging, { recursive: true, dereference: true });
-    assertPreparedSource();
-    assertStaged();
-    if (await digestDirectory(staging, assertStaged) !== prepared.source.digest) {
-      throw new Error(`Frozen global catalog source '${staging}' failed copy verification.`);
+    const filesRoot = join(staging, "files");
+    await mkdir(filesRoot, { mode: 0o700 });
+    for (const file of sourceBundle.files) {
+      assertStaged();
+      const path = resolve(filesRoot, file.path);
+      if (!isContainedPath(filesRoot, path)) {
+        throw new Error(`Workflow source file '${file.path}' escapes its snapshot.`);
+      }
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      assertStaged();
+      await writeFile(path, file.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
     }
-    await makeTreePrivate(staging, layout.platform, assertStaged);
-    assertPreparedSource();
+    const manifest = workflowSourceSnapshotManifest(prepared.source, sourceBundle.files);
     assertStaged();
+    await writeFile(join(staging, "manifest.json"), stableJsonLine(manifest), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    assertStaged();
+    await makeTreePrivate(staging, layout.platform, assertStaged);
+    assertStaged();
+    verifyPublishedWorkflowSource(staging, prepared.source, layout.platform);
     await requireMissingPath(target);
     assertStaged();
     try {
       await rename(staging, target);
       sourcesRoot.verify();
-      namespace.verify();
-      const published = captureDirectoryIdentity(target, `Frozen global catalog source '${target}'`);
-      assertSameDirectory(staged, published, `Frozen global catalog source '${target}' changed during publication.`);
+      snapshots.verify();
+      published = captureDirectoryIdentity(target, `Frozen workflow snapshot '${target}'`);
+      assertSameDirectory(staged, published, `Frozen workflow snapshot '${target}' changed during publication.`);
+      verifyPublishedWorkflowSource(target, prepared.source, layout.platform);
     } catch (error) {
       if (!hasErrorCode(error, "EEXIST") && !hasErrorCode(error, "ENOTEMPTY")) throw error;
       sourcesRoot.verify();
-      const existing = new DirectoryFence(target, `Frozen global catalog source '${target}'`);
-      if (await digestDirectory(target, () => {
-        sourcesRoot.verify();
-        existing.verify();
-      }) !== prepared.source.digest) throw error;
+      snapshots.verify();
+      verifyPublishedWorkflowSource(target, prepared.source, layout.platform);
       await removeOwnedDirectory(sourcesRoot, staged);
     }
   } catch (error) {
-    await removeOwnedDirectoryAfterFailure(sourcesRoot, staged, error);
+    await removeOwnedDirectoriesAfterFailure(
+      sourcesRoot,
+      [published, staged].filter((directory): directory is DirectoryIdentity => directory !== undefined),
+      error,
+    );
   }
 }
 
 function sourceRootForRun(layout: RuntimeLayout, source: WorkflowSourceRef): string {
   return source.kind === "workspace"
     ? layout.canonicalPath
-    : join(layout.sourcesRoot, "catalog", source.name, source.digest);
+    : join(snapshotRootForSource(layout, source), "files");
+}
+
+function snapshotRootForSource(
+  layout: RuntimeLayout,
+  source: Extract<WorkflowSourceRef, { kind: "snapshot" }>,
+): string {
+  return join(layout.sourcesRoot, "snapshots", digestHexForPath(source.digest));
 }
 
 function resolveFrozenSourceRoot(
@@ -5232,12 +5369,22 @@ function resolveFrozenSourceRoot(
 ): string {
   if (source.kind === "workspace") return layout.canonicalPath;
   const root = sourcesRoot.verifyIdentity();
+  const snapshotRoot = snapshotRootForSource(layout, source);
+  const snapshot = captureDirectoryIdentity(
+    snapshotRoot,
+    `Frozen workflow snapshot '${source.digest}'`,
+  );
+  if (!isContainedPath(root.realpath, snapshot.realpath)) {
+    throw new Error(`Frozen workflow snapshot '${snapshot.path}' escapes runtime sources root.`);
+  }
+  verifyPublishedWorkflowSource(snapshotRoot, source, layout.platform);
+  sourcesRoot.verify();
   const target = captureDirectoryIdentity(
     sourceRootForRun(layout, source),
-    `Frozen global catalog source '${source.name}'`,
+    `Frozen workflow snapshot files '${source.digest}'`,
   );
   if (!isContainedPath(root.realpath, target.realpath)) {
-    throw new Error(`Frozen global catalog source '${target.path}' escapes runtime sources root.`);
+    throw new Error(`Frozen workflow snapshot files '${target.path}' escape runtime sources root.`);
   }
   sourcesRoot.verify();
   return target.path;
@@ -5245,68 +5392,190 @@ function resolveFrozenSourceRoot(
 
 function parseWorkflowSource(json: string): WorkflowSourceRef {
   const value = JSON.parse(json) as unknown;
-  if (!isPlainObject(value) || typeof value.entry !== "string") {
-    throw new Error("Persisted workflow source reference is invalid.");
-  }
-  if (value.kind === "workspace" && Object.keys(value).sort().join(",") === "entry,kind") {
-    return { kind: "workspace", entry: value.entry };
-  }
-  if (value.kind === "global_catalog"
-    && typeof value.name === "string"
-    && /^[a-z0-9][a-z0-9-]*$/.test(value.name)
-    && typeof value.digest === "string"
-    && /^[a-f0-9]{64}$/.test(value.digest)
-    && Object.keys(value).sort().join(",") === "digest,entry,kind,name") {
-    return { kind: "global_catalog", name: value.name, digest: value.digest, entry: value.entry };
-  }
-  throw new Error("Persisted workflow source reference is invalid.");
-}
-
-async function digestDirectory(root: string, assertCurrent: () => void = () => {}): Promise<string> {
-  const hash = createHash("sha256");
-  await addDirectoryToDigest(hash, root, "", assertCurrent);
-  assertCurrent();
-  return hash.digest("hex");
-}
-
-async function addDirectoryToDigest(
-  hash: ReturnType<typeof createHash>,
-  path: string,
-  relativePath: string,
-  assertCurrent: () => void,
-): Promise<void> {
-  assertCurrent();
-  const item = await lstat(path);
-  assertCurrent();
-  if (item.isSymbolicLink()) throw new Error(`Workflow source '${path}' is a symbolic link.`);
-  const normalized = toPortablePath(relativePath);
-  if (item.isDirectory()) {
-    if (normalized) hash.update(`D ${normalized}\n`);
-    for (const name of (await readdir(path)).sort()) {
-      assertCurrent();
-      await addDirectoryToDigest(hash, join(path, name), join(relativePath, name), assertCurrent);
-    }
-    return;
-  }
-  if (!item.isFile()) return;
-  hash.update(`F ${normalized}\n`);
-  assertCurrent();
-  hash.update(await readFile(path));
-  assertCurrent();
-  hash.update("\n");
+  if (!isWorkflowSourceRef(value)) throw new Error("Persisted workflow source reference is invalid.");
+  return value;
 }
 
 async function ownedDirectoryExists(path: string): Promise<boolean> {
   try {
     const info = await lstat(path);
     if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error(`Runtime catalog source '${path}' is not a regular directory.`);
+      throw new Error(`Runtime workflow snapshot '${path}' is not a regular directory.`);
     }
     return true;
   } catch (error) {
     if (isMissingPathError(error)) return false;
     throw error;
   }
+}
+
+type WorkflowSourceSnapshotManifest = {
+  kind: "acpus_workflow_source_snapshot";
+  version: 1;
+  entry: string;
+  digest: Sha256Digest;
+  files: Array<{ path: string; digest: Sha256Digest }>;
+};
+
+function workflowSourceSnapshotManifest(
+  source: Extract<WorkflowSourceRef, { kind: "snapshot" }>,
+  files: readonly WorkflowSourceFile[],
+): WorkflowSourceSnapshotManifest {
+  return {
+    kind: "acpus_workflow_source_snapshot",
+    version: 1,
+    entry: source.entry,
+    digest: source.digest,
+    files: files.map(file => ({ path: file.path, digest: digest(Buffer.from(file.content)) })),
+  };
+}
+
+function verifyPublishedWorkflowSource(
+  root: string,
+  source: Extract<WorkflowSourceRef, { kind: "snapshot" }>,
+  platform: NodeJS.Platform,
+): void {
+  const snapshot = new DirectoryFence(root, `Frozen workflow snapshot '${source.digest}'`);
+  assertPrivateSnapshotMode(snapshot.verify(), 0o700, platform);
+  assertPrivateSnapshotMode(dirname(snapshot.verify()), 0o700, platform);
+  assertPrivateSnapshotMode(join(snapshot.verify(), "manifest.json"), 0o600, platform);
+  const manifestBytes = readContainedFileSync(snapshot.verify(), "manifest.json");
+  snapshot.verify();
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(manifestBytes.toString("utf8"));
+  } catch {
+    throw new Error(`Frozen workflow snapshot '${source.digest}' has an invalid manifest.`);
+  }
+  if (!isWorkflowSourceSnapshotManifest(manifest)
+    || manifestBytes.toString("utf8") !== stableJsonLine(manifest)
+    || manifest.entry !== source.entry
+    || manifest.digest !== source.digest
+    || workflowSourceGraphDigestFromManifest(manifest) !== source.digest) {
+    throw new Error(`Frozen workflow snapshot '${source.digest}' failed manifest verification.`);
+  }
+  const filesRoot = join(snapshot.verify(), "files");
+  const files = new DirectoryFence(filesRoot, `Frozen workflow snapshot files '${source.digest}'`);
+  assertPrivateSnapshotMode(files.verify(), 0o700, platform);
+  const actualPaths = collectSnapshotFilePaths(files.verify(), "", platform);
+  const expectedPaths = manifest.files.map(file => file.path);
+  if (stableJsonLine(actualPaths) !== stableJsonLine(expectedPaths)) {
+    throw new Error(`Frozen workflow snapshot '${source.digest}' has unexpected files.`);
+  }
+  for (const file of manifest.files) {
+    snapshot.verify();
+    files.verify();
+    const bytes = readContainedFileSync(filesRoot, file.path);
+    if (digest(bytes) !== file.digest) {
+      throw new Error(`Frozen workflow snapshot file '${file.path}' failed digest verification.`);
+    }
+  }
+  snapshot.verify();
+  files.verify();
+}
+
+function isWorkflowSourceSnapshotManifest(value: unknown): value is WorkflowSourceSnapshotManifest {
+  if (!isPlainObject(value)
+    || !hasExactObjectKeys(value, ["kind", "version", "entry", "digest", "files"])
+    || value.kind !== "acpus_workflow_source_snapshot"
+    || value.version !== 1
+    || !isPortableSourcePath(value.entry)
+    || !isSha256Digest(value.digest)
+    || !Array.isArray(value.files)) {
+    return false;
+  }
+  let previous: string | undefined;
+  const paths: string[] = [];
+  for (const file of value.files) {
+    if (!isPlainObject(file)
+      || !hasExactObjectKeys(file, ["path", "digest"])
+      || !isPortableSourcePath(file.path)
+      || !isSha256Digest(file.digest)
+      || previous !== undefined && previous >= file.path) {
+      return false;
+    }
+    previous = file.path;
+    paths.push(file.path);
+  }
+  return !hasSourcePathInventoryCollision(paths)
+    && value.files.some(file => file.path === value.entry);
+}
+
+function workflowSourceGraphDigestFromManifest(manifest: WorkflowSourceSnapshotManifest): Sha256Digest {
+  return workflowSourceGraphDigestFromDigests(manifest.entry, manifest.files);
+}
+
+function collectSnapshotFilePaths(
+  root: string,
+  relativeRoot: string,
+  platform: NodeJS.Platform,
+): string[] {
+  const paths: string[] = [];
+  for (const entry of readdirSync(resolve(root, relativeRoot), { withFileTypes: true })) {
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    const path = resolve(root, relativePath);
+    const info = lstatSync(path);
+    if (info.isSymbolicLink()) {
+      throw new Error(`Frozen workflow snapshot path '${relativePath}' is a symbolic link.`);
+    }
+    if (info.isDirectory()) {
+      assertPrivateSnapshotMode(path, 0o700, platform);
+      const nested = collectSnapshotFilePaths(root, relativePath, platform);
+      if (nested.length === 0) {
+        throw new Error(`Frozen workflow snapshot directory '${relativePath}' is empty.`);
+      }
+      paths.push(...nested);
+      continue;
+    }
+    if (!info.isFile()) {
+      throw new Error(`Frozen workflow snapshot path '${relativePath}' is not a regular file.`);
+    }
+    assertPrivateSnapshotMode(path, 0o600, platform);
+    paths.push(relativePath);
+  }
+  return paths.sort(compareSourcePaths);
+}
+
+function assertPrivateSnapshotMode(
+  path: string,
+  expected: 0o600 | 0o700,
+  platform: NodeJS.Platform,
+): void {
+  if (platform === "win32") return;
+  if ((lstatSync(path).mode & 0o777) !== expected) {
+    throw new Error(`Frozen workflow snapshot path '${path}' is not private.`);
+  }
+}
+
+function compareSourcePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function hasSourcePathInventoryCollision(paths: readonly string[]): boolean {
+  const inventory = new Map<string, { spelling: string; kind: "directory" | "file" }>();
+  for (const path of paths) {
+    const segments = path.split("/");
+    for (let index = 0; index < segments.length; index += 1) {
+      const spelling = segments.slice(0, index + 1).join("/");
+      const key = portableCaseFold(spelling);
+      const kind = index === segments.length - 1 ? "file" : "directory";
+      const existing = inventory.get(key);
+      if (existing) {
+        if (existing.spelling !== spelling || existing.kind !== kind || kind === "file") return true;
+      } else {
+        inventory.set(key, { spelling, kind });
+      }
+    }
+  }
+  return false;
+}
+
+function portableCaseFold(value: string): string {
+  return value.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+}
+
+function digestHexForPath(value: Sha256Digest): string {
+  return value.slice("sha256:".length);
 }
 
 async function ensureFencedChildDirectory(
@@ -5531,6 +5800,62 @@ function frozenLockJson(
   return readFrozenRunFile(runDir, row.lock_path, row.lock_digest, "workflow lock");
 }
 
+function decodeFrozenRun(
+  row: FrozenWorkflowRow,
+  runDir: string,
+  cwd: string,
+  resolveSourceRoot?: (source: WorkflowSourceRef) => string,
+): FrozenRun {
+  const workflowIrJson = frozenWorkflowIrJson(runDir, row);
+  const { source } = verifiedFrozenWorkflowSource(runDir, row);
+  const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
+  return {
+    ir: withAgentOverrides(JSON.parse(workflowIrJson) as WorkflowIR, agentOverrides),
+    input: JSON.parse(row.input_json) as JsonValue,
+    agentOverrides,
+    ...(resolveSourceRoot === undefined ? {} : { sourceRoot: resolveSourceRoot(source) }),
+    meta: {
+      runId: row.id,
+      workflowPath: row.workflow_entry,
+      workflowName: row.name,
+      workspaceDir: resolve(cwd),
+    },
+  };
+}
+
+function verifiedFrozenWorkflowSource(
+  runDir: string,
+  row: FrozenSourceRow,
+): { source: WorkflowSourceRef; lockJson: string } {
+  const source = parseWorkflowSource(row.source_json);
+  if (source.entry !== row.workflow_entry) {
+    throw new Error("Frozen workflow source entry does not match persisted run metadata.");
+  }
+  if (source.kind === "snapshot" && source.digest !== row.source_graph_digest) {
+    throw new Error("Frozen workflow source graph digest does not match persisted run metadata.");
+  }
+  const lockJson = frozenLockJson(runDir, row);
+  const lock = parseFrozenWorkflowLock(lockJson);
+  if (stableJsonLine(lock.workflow.source) !== stableJsonLine(source)) {
+    throw new Error("Frozen workflow source does not match its preparation lock.");
+  }
+  if (lock.sourceGraphDigest !== row.source_graph_digest) {
+    throw new Error("Frozen workflow source graph digest does not match its preparation lock.");
+  }
+  if (lock.ir.path !== row.workflow_ir_path || lock.ir.digest !== row.workflow_ir_digest) {
+    throw new Error("Frozen workflow IR metadata does not match its preparation lock.");
+  }
+  return { source, lockJson };
+}
+
+function parseFrozenWorkflowLock(json: string): RunWorkflowLockArtifact {
+  const value = JSON.parse(json) as unknown;
+  if (!isRunWorkflowLockArtifact(value)) {
+    throw new Error("Frozen workflow preparation lock is invalid.");
+  }
+  return value;
+}
+
 function readFrozenRunFile(runDir: string, path: string, expectedDigest: string, label: string): string {
   const bytes = readContainedFileSync(runDir, path);
   if (digest(bytes) !== expectedDigest) throw new Error(`Frozen ${label} digest mismatch.`);
@@ -5579,10 +5904,9 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
     runId,
     ...(options.prepared === undefined ? {} : {
       prepared: {
-        workflowPath: options.prepared.workflowPath,
+        source: options.prepared.source,
         irFileDigest: options.prepared.lock.ir.digest,
         sourceGraphDigest: options.prepared.sourceGraphDigest,
-        ...(options.prepared.packageLockDigest === undefined ? {} : { packageLockDigest: options.prepared.packageLockDigest }),
       },
     }),
     ...(options.input === undefined ? {} : { input: options.input }),
@@ -5723,7 +6047,7 @@ function requireActiveOwnerEpoch(db: DatabaseSync, runId: string, ownerEpoch: nu
   }
 }
 
-function digest(bytes: Uint8Array): string {
+function digest(bytes: Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 

@@ -19,7 +19,7 @@ vi.mock("../src/workflow-preparation.js", async importOriginal => ({
 describe("workflow visualization CLI contract", () => {
   beforeEach(() => {
     mock.prepareWorkflowForCli.mockReset();
-    mock.prepareWorkflowForCli.mockResolvedValue(preparedWorkflow());
+    mock.prepareWorkflowForCli.mockResolvedValue({ prepared: preparedWorkflow() });
   });
 
   it("renders the semantic tree as terminal text", async () => {
@@ -178,17 +178,16 @@ function preparedWorkflow(): PreparedWorkflow {
     diagnostics: [],
   };
   return {
-    workflowPath: "/workspace/workflow.ts",
     source: { kind: "workspace", entry: "workflow.ts" },
     ir,
     irJson: `${JSON.stringify(ir, null, 2)}\n`,
     sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     lock: {
       kind: "acpus_workflow_preparation_lock",
-      version: 1,
+      version: 2,
       workflow: {
         source: { kind: "workspace", entry: "workflow.ts" },
-        sourceDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        entryDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       },
       ir: {
         path: "workflow.ir.json",

@@ -169,11 +169,17 @@ const platformManifestPath = typescriptRequire.resolve(installedPlatformPackages
 assert.ok(platformManifestPath.startsWith(consumerNodeModules), "TypeScript platform binary resolved outside the packed consumer");
 assert.equal(typescriptRequire(installedPlatformPackages[0] + "/package.json").version, "7.0.2");
 
-const prepared = await prepareWorkflow({ workflow: "valid.workflow.ts", cwd: process.cwd() });
+const prepared = await prepareWorkflow({
+  workspaceDir: process.cwd(),
+  source: { kind: "path", entry: "valid.workflow.ts" },
+});
 assert.equal(prepared.ir.name, "packed-consumer");
 assert.deepEqual(prepared.ir.diagnostics, []);
 
-const checked = await tryPrepareWorkflow({ workflow: "invalid.workflow.ts", cwd: process.cwd() });
+const checked = await tryPrepareWorkflow({
+  workspaceDir: process.cwd(),
+  source: { kind: "path", entry: "invalid.workflow.ts" },
+});
 assert.equal(checked.isErr(), true, "invalid workflow unexpectedly prepared");
 if (checked.isOk()) throw new Error("invalid workflow unexpectedly prepared");
 assert.equal(checked.error.type, "check-failed");
@@ -263,7 +269,10 @@ assert.ok(examples.length > 0, "packed CLI contains no official workflow example
 
 const coveredNodeKinds = new Set();
 for (const example of examples) {
-  const prepared = await prepareWorkflow({ workflow: example.workflow, cwd: process.cwd() });
+  const prepared = await prepareWorkflow({
+    workspaceDir: process.cwd(),
+    source: { kind: "path", entry: example.workflow },
+  });
   assert.deepEqual(prepared.ir.diagnostics, [], \`packed skill example failed: \${example.name}\`);
   for (const { node } of walkNodes(prepared.ir.root)) coveredNodeKinds.add(node.kind);
 }
@@ -280,8 +289,11 @@ assert.deepEqual([...coveredNodeKinds].sort(), [
 ], "packed official examples do not cover every workflow node kind");
 
 const deepResearch = await prepareWorkflow({
-  workflow: join(acpusRoot, "skills/acpus/workflows/library/deep-research/workflow.ts"),
-  cwd: process.cwd(),
+  workspaceDir: process.cwd(),
+  source: {
+    kind: "path",
+    entry: join(acpusRoot, "skills/acpus/workflows/library/deep-research/workflow.ts"),
+  },
 });
 assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow failed");
 `);

@@ -569,16 +569,70 @@ describe("CLI result output contracts", () => {
     }
   });
 
-  it("keeps successful warnings visible without restoring generic metadata", () => {
+  it("renders successful workflow warnings with their stable source location", () => {
     const summaryStdout = new CaptureStream();
     const summaryStderr = new CaptureStream();
     const summary = checkResult();
-    summary.diagnostics = [{ code: "I", severity: "info", message: "info" }];
+    summary.workflow!.diagnostics = {
+      total: 1,
+      errors: 0,
+      warnings: 1,
+      infos: 0,
+    };
+    summary.diagnostics = [{
+      code: "SC001",
+      severity: "warning",
+      message: "Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
+      source: { file: "workflow.ts", line: 2, column: 62 },
+    }];
     writeResult(summary, "text", { stdout: summaryStdout, stderr: summaryStderr }, 0);
-    expect(summaryStdout.text).toContain("✓ WorkflowIR          0 errors · 1 static node");
-    expect(summaryStdout.text).toContain("[info I] info");
-    expect(summaryStdout.text).not.toContain("Diagnostics:");
+    expect(summaryStdout.text).toBe([
+      "✓ typescript          0 errors",
+      "✓ authoring rules     0 errors",
+      "✓ WorkflowIR          0 errors · 1 static node",
+      "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
+      "",
+    ].join("\n"));
     expect(summaryStderr.text).toBe("");
+  });
+
+  it("renders checked-import source identity before its preparation warnings", () => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    writeResult({
+      ok: true,
+      phase: "import",
+      message: "Workflow imported.",
+      catalog: {
+        scope: "project",
+        name: "dynamic-import",
+        packagePath: "/workspace/.acpus/workflows/dynamic-import",
+        entryPath: "/workspace/.acpus/workflows/dynamic-import/workflow.ts",
+        status: "available",
+        requiresScope: false,
+      },
+      checked: true,
+      diagnostics: [{
+        code: "SC001",
+        severity: "warning",
+        message: "Dynamic local load is outside the captured graph.",
+        source: { file: "workflow.ts", line: 2, column: 5 },
+      }],
+      sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    }, "text", { stdout, stderr, cwd: "/workspace" }, 0);
+
+    expect(stdout.text).toBe([
+      "Workflow imported.",
+      "Catalog: project/dynamic-import",
+      "Catalog status: available",
+      "Catalog package: /workspace/.acpus/workflows/dynamic-import",
+      "Catalog entry: /workspace/.acpus/workflows/dynamic-import/workflow.ts",
+      "Checked: yes",
+      "Source graph: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workflow.ts:2:5 [warning SC001] Dynamic local load is outside the captured graph.",
+      "",
+    ].join("\n"));
+    expect(stderr.text).toBe("");
   });
 });
 

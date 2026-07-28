@@ -8,21 +8,27 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ## Run and observe
 
+Run from the intended workspace. Prefer heredoc for one-off workflow executions:
+
 ```sh
-acpus workflow run workflow.ts --input sample-input.json
-acpus workflow run workflow.ts --background --input sample-input.json
-acpus runs inspect <run-id>
-acpus runs inspect <run-id> --target <target>
-acpus runs inspect <run-id> --target <target> --timeline
+acpus workflow run [--input <json>] - <<'WORKFLOW'
+import { defineWorkflow, z } from "acpus/core";
+export default defineWorkflow(...).build(...);
+WORKFLOW
 ```
 
-`workflow run` performs workflow check internally before starting it. If the workflow has issues, `run` exits with diagnostics and does not create a run. Fix the reported issues and run again. **If the goal is to run the workflow, there is no need for a separate `workflow check` step**.
+Use a file-backed `workflow.ts` for imported Task/helper modules or planned edits/reuse:
+
+```sh
+acpus workflow run <workflow> [--input <json|file.json>] [--background]
+acpus runs inspect <run-id> [--target <target> [--timeline]]
+```
+
+`workflow run` performs workflow check internally before starting it.
 
 Foreground mode follows the run. `--interval` defaults to `1s` with a `250ms` minimum and is invalid with `--background`. `Ctrl-C` only detaches.
 
-Inspection is read-only and does not wake the daemon. A target returns a
-bounded decision Summary; an exact Agent attempt adds metadata-only Private
-Turn Evidence and Trace state. Add `--timeline` for current and recent activity.
+Inspection is read-only and does not wake the daemon. A target returns a bounded decision Summary; an exact Agent attempt adds metadata-only Private Turn Evidence and Trace state. Add `--timeline` for current and recent activity.
 
 ### Low-context monitoring
 

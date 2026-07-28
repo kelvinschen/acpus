@@ -4,12 +4,13 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { pruneRuns } from "../src/index.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStore, type PreparedRunWorkflow } from "../src/store/store.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import {
   prepareSyntheticWorkflow,
   runtimeDatabasePath,
   runtimeRunDir,
+  snapshotPreparedWorkflow,
   validWorkflow,
 } from "./support/runtime-fixtures.js";
 import { withSharedStorageHome, withStorageWorkspace } from "./support/storage-workspace.js";
@@ -18,20 +19,23 @@ import { treeFingerprint } from "./support/tree-fingerprint.js";
 describe("runtime run pruning", () => {
   it("previews and deletes one fenced selection while retaining active data and referenced sources", async () => {
     await withStorageWorkspace("runs-prune-selection", async workspace => {
-      const [completed, failed, equal, running] = await admitRuns(workspace, 4);
+      const base = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const removedSource = snapshotPreparedWorkflow(base, [
+        { path: "workflow.ts", content: "remove" },
+      ]);
+      const retainedSource = snapshotPreparedWorkflow(base, [
+        { path: "workflow.ts", content: "retain" },
+      ]);
+      const [completed, failed] = await admitRuns(workspace, 2, removedSource);
+      const [equal] = await admitRuns(workspace, 1, retainedSource);
+      const [running] = await admitRuns(workspace, 1, base);
       const cutoff = "2026-07-24T12:00:00.000Z";
-      const removedSource = catalogSource("removed", "a");
-      const retainedSource = catalogSource("retained", "b");
-      setRunState(workspace, completed!, "completed", "2026-07-24T11:59:58.000Z", removedSource);
-      setRunState(workspace, failed!, "failed", "2026-07-24T11:59:59.000Z", removedSource);
-      setRunState(workspace, equal!, "canceled", cutoff, retainedSource);
+      setRunState(workspace, completed!, "completed", "2026-07-24T11:59:58.000Z");
+      setRunState(workspace, failed!, "failed", "2026-07-24T11:59:59.000Z");
+      setRunState(workspace, equal!, "canceled", cutoff);
       setRunState(workspace, running!, "running", "2026-07-01T00:00:00.000Z");
 
       const layout = resolveRuntimeLayout(workspace);
-      await Promise.all([
-        writeCatalogSource(layout.sourcesRoot, removedSource, "remove"),
-        writeCatalogSource(layout.sourcesRoot, retainedSource, "retain"),
-      ]);
       const removedArchive = join(layout.archivesRoot, "20260724T115959.000Z-v1");
       const retainedArchive = join(layout.archivesRoot, "20260724T120000.000Z-v1");
       await Promise.all([mkdir(removedArchive), mkdir(retainedArchive)]);
@@ -81,8 +85,8 @@ describe("runtime run pruning", () => {
       }
       await expect(access(removedArchive)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(readFile(join(retainedArchive, "marker"), "utf8")).resolves.toBe("retain");
-      await expect(access(catalogSourcePath(layout.sourcesRoot, removedSource))).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readFile(join(catalogSourcePath(layout.sourcesRoot, retainedSource), "workflow.ts"), "utf8"))
+      await expect(access(snapshotSourcePath(layout.sourcesRoot, removedSource.source))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(snapshotSourcePath(layout.sourcesRoot, retainedSource.source), "files", "workflow.ts"), "utf8"))
         .resolves.toBe("retain");
     });
   });
@@ -128,7 +132,7 @@ describe("runtime run pruning", () => {
       const store = await openRuntimeStore(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
-      const orphan = join(layout.sourcesRoot, "catalog", "orphan", "a".repeat(64));
+      const orphan = join(layout.sourcesRoot, "snapshots", "a".repeat(64));
       await mkdir(orphan, { recursive: true });
       await writeFile(join(orphan, "workflow.ts"), "orphan");
 
@@ -168,14 +172,18 @@ describe("runtime run pruning", () => {
   });
 });
 
-async function admitRuns(workspace: string, count: number): Promise<string[]> {
-  const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+async function admitRuns(
+  workspace: string,
+  count: number,
+  prepared?: PreparedRunWorkflow,
+): Promise<string[]> {
+  const workflow = prepared ?? await prepareSyntheticWorkflow(workspace, validWorkflow());
   const store = await openRuntimeStore(workspace);
   try {
     const ids: string[] = [];
     for (let index = 0; index < count; index += 1) {
       ids.push((await admitRunForTest(store, {
-        prepared,
+        prepared: workflow,
         input: { ready: true },
         cwd: workspace,
       })).id);
@@ -191,15 +199,10 @@ function setRunState(
   runId: string,
   status: string,
   updatedAt = "2026-07-24T00:00:00.000Z",
-  source?: ReturnType<typeof catalogSource>,
 ): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ?").run(status, updatedAt, runId);
-    if (source) {
-      db.prepare("UPDATE run_inputs SET source_json = ? WHERE run_id = ?")
-        .run(JSON.stringify(source), runId);
-    }
   } finally {
     db.close();
   }
@@ -217,25 +220,9 @@ function readRunStates(workspace: string): Array<{ id: string; status: string }>
   }
 }
 
-function catalogSource(name: string, digestCharacter: string) {
-  return {
-    kind: "global_catalog" as const,
-    name,
-    digest: digestCharacter.repeat(64),
-    entry: "workflow.ts",
-  };
-}
-
-async function writeCatalogSource(
+function snapshotSourcePath(
   root: string,
-  source: ReturnType<typeof catalogSource>,
-  contents: string,
-): Promise<void> {
-  const path = catalogSourcePath(root, source);
-  await mkdir(path, { recursive: true });
-  await writeFile(join(path, "workflow.ts"), contents);
-}
-
-function catalogSourcePath(root: string, source: ReturnType<typeof catalogSource>): string {
-  return join(root, "catalog", source.name, source.digest);
+  source: Extract<PreparedRunWorkflow["source"], { kind: "snapshot" }>,
+): string {
+  return join(root, "snapshots", source.digest.slice("sha256:".length));
 }

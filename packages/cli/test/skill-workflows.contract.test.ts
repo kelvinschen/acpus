@@ -168,8 +168,11 @@ describe("skill workflow contracts", () => {
 
 function prepareDeepResearch(): ReturnType<typeof prepareWorkflow> {
   return deepResearchPreparation ??= prepareWorkflow({
-    workflow: skillLibraryWorkflowPath("deep-research"),
-    cwd: cliPackageRoot,
+    workspaceDir: cliPackageRoot,
+    source: {
+      kind: "path",
+      entry: skillLibraryWorkflowPath("deep-research"),
+    },
   });
 }
 

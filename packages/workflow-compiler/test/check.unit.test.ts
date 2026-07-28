@@ -17,6 +17,16 @@ describe("workflow TypeScript diagnostics", () => {
     });
   });
 
+  it("retains a UTF-8 BOM in the checked source graph", async () => {
+    await withCheckWorkspace("workflow-check-bom", async cwd => {
+      const source = "\ufeffexport default {};\n";
+
+      const result = await runCheck(cwd, source);
+
+      expect(result.sourceFiles?.find(file => file.path === join(cwd, "workflow.ts"))?.content).toBe(source);
+    });
+  });
+
   it("converts TypeScript compiler diagnostics to DiagnosticIR", async () => {
     await withCheckWorkspace("workflow-ts-check", async cwd => {
       const result = await runCheck(cwd, `
@@ -47,6 +57,75 @@ describe("workflow TypeScript diagnostics", () => {
         }),
       ]));
       expect(result.diagnostics.filter(diagnostic => diagnostic.source?.file?.includes("unrelated.ts"))).toEqual([]);
+    });
+  });
+
+  it("warns for every recognizable module load outside the tracked source graph", async () => {
+    await withCheckWorkspace("workflow-source-capture-warnings", async cwd => {
+      const result = await runCheck(cwd, `
+        import { createRequire as makeRequire } from "node:module";
+        import { defineWorkflow } from "acpus/core";
+        import type { DeclaredOnly } from "./declared-only.js";
+
+        const requireFromHere = makeRequire(import.meta.url);
+        export function dynamic(name: string): Promise<unknown> { return import(name); }
+        export function relativeRequire(): unknown { return require("./helper.js"); }
+        export function absoluteLoad(): Promise<unknown> { return import("file:///tmp/acpus-untracked.js"); }
+        void requireFromHere;
+        void (null as DeclaredOnly | null);
+
+        export default defineWorkflow({ name: "source_capture_warnings" }).build(() => ({}));
+      `, {
+        "declared-only.d.ts": "export type DeclaredOnly = { ok: true };\n",
+        "helper.ts": "export const helper = true;\n",
+      });
+
+      const warnings = result.diagnostics.filter(diagnostic => diagnostic.code === "SC001");
+      expect(warnings.map(diagnostic => diagnostic.source?.line)).toEqual([4, 6, 7, 8, 9]);
+      expect(warnings.every(
+        diagnostic => diagnostic.severity === "warning" && diagnostic.source?.file?.endsWith("workflow.ts") === true,
+      )).toBe(true);
+    });
+  });
+
+  it("does not treat shadowed require and createRequire names as runtime loaders", async () => {
+    await withCheckWorkspace("workflow-source-capture-shadows", async cwd => {
+      const result = await runCheck(cwd, `
+        import { defineWorkflow } from "acpus/core";
+
+        function require(value: string): string { return value; }
+        function createRequire(value: string): string { return value; }
+        void require("./helper.js");
+        void createRequire(import.meta.url);
+
+        export default defineWorkflow({ name: "source_capture_shadows" }).build(() => ({}));
+      `, {
+        "helper.ts": "export const helper = true;\n",
+      });
+
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "SC001")).toEqual([]);
+    });
+  });
+
+  it("warns and stops when a static local import resolves to unsupported source", async () => {
+    await withCheckWorkspace("workflow-source-capture-json", async cwd => {
+      const result = await runCheck(cwd, `
+        // @ts-ignore JSON is intentionally outside the supported source graph.
+        import value from "./data.json";
+        void value;
+        export default {};
+      `, {
+        "data.json": "{\"value\":true}\n",
+      });
+
+      expect(result.diagnostics.filter(diagnostic => diagnostic.code === "SC001")).toEqual([
+        expect.objectContaining({
+          severity: "warning",
+          message: expect.stringContaining("resolves to an unsupported source file"),
+          source: expect.objectContaining({ file: expect.stringContaining("workflow.ts"), line: 3 }),
+        }),
+      ]);
+      expect(result.sourceFiles?.map(file => file.path)).toEqual([join(cwd, "workflow.ts")]);
     });
   });
 

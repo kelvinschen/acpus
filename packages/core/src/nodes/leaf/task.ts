@@ -211,10 +211,10 @@ function taskTarget(
     invalidLink(id, "referrerPath", "Reusable Task referrer path must be a non-empty string.");
   }
   if (isRootedPath(referrerPath)) {
-    invalidLink(id, "referrerPath", "Reusable Task referrer path must be workspace-relative.");
+    invalidLink(id, "referrerPath", "Reusable Task referrer path must be source-root-relative.");
   }
   if (referrerPath.split(/[\\/]/).includes("..")) {
-    invalidLink(id, "referrerPath", "Reusable Task referrer path must stay inside the workspace.");
+    invalidLink(id, "referrerPath", "Reusable Task referrer path must stay inside the source root.");
   }
   return {
     kind: "module",

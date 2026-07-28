@@ -16,6 +16,7 @@ export {
   type RuntimeConfigurationFailure,
 } from "./configuration.js";
 export {
+  DAEMON_PROTOCOL_VERSION,
   daemonEndpoint,
   requestDaemonAdmitRun,
   requestDaemonControl,
@@ -156,6 +157,9 @@ export {
   type RunRecord,
   type RunStatus,
   type RunWorkflowLockArtifact,
+  type Sha256Digest,
+  type WorkflowSourceBundle,
+  type WorkflowSourceFile,
   type WorkflowSourceRef,
 } from "./store/store.js";
 export { prepareRuntimeForNewRun } from "./storage/maintenance.js";

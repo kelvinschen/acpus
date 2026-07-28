@@ -102,7 +102,10 @@ export function tryVisualizeWorkflowSource(
   source: WorkflowVisualizationSource,
 ): ResultAsync<ReadyWorkflowVisualization, WorkflowVisualizationFailure> {
   return resolveWorkflowSource(cwd, source)
-    .andThen(workflow => tryPrepareWorkflow({ cwd, workflow }))
+    .andThen(workflow => tryPrepareWorkflow({
+      workspaceDir: cwd,
+      source: { kind: "path", entry: workflow },
+    }))
     .map(prepared => staticWorkflowVisualization(prepared.ir, prepared.sourceGraphDigest));
 }
 

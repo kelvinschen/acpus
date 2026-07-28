@@ -11,7 +11,7 @@ import {
 } from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { evaluateExpr } from "@acpus/expression/evaluator";
-import { sha256Digest } from "../src/digest.js";
+import { sha256Digest, type Sha256Digest } from "../src/digest.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -541,7 +541,7 @@ async function compileOptions(entry: string) {
   return { expectedSourceDigest: await sourceDigest(entry) };
 }
 
-async function sourceDigest(entry: string): Promise<string> {
+async function sourceDigest(entry: string): Promise<Sha256Digest> {
   return sha256Digest(await readFile(entry, "utf8"));
 }
 

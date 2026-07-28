@@ -32,23 +32,23 @@ Give an orchestrator agent a task. It designs the workflow with TypeScript, dire
 
 ```text
 Describe the task
-  → Orchestrator agent orchestrates workers with workflow.ts
+  → Orchestrator agent orchestrates workers with TypeScript
   → Acpus checks and runs it while the orchestrator observes
   → Orchestrator agent reports the outcome to you
 ```
 
-One orchestrator agent owns the work end to end: it decomposes the task, assigns roles, writes `workflow.ts`, starts the run, watches its progress, and intervenes through Acpus until the work converges. Worker agents stay focused on the research, implementation, review, or synthesis assigned to their nodes; they do not own the overall plan or run.
+One orchestrator agent owns the work end to end: it decomposes the task, assigns roles, authors the TypeScript workflow, starts the run, watches its progress, and intervenes through Acpus until the work converges. Worker agents stay focused on the research, implementation, review, or synthesis assigned to their nodes; they do not own the overall plan or run.
 
 Acpus is the durable execution and control boundary. It checks the authored graph, schedules nodes, records state, artifacts, and results, and exposes the controls the orchestrator uses to inspect, steer active Agent work, pause, resume, retry failed work, or fork the run.
 
 Simple work should still go directly to one agent. Reach for Acpus when a task needs multiple independent contexts, different agent strengths, local commands or artifacts, human input, or recovery without starting over.
 
-## Why `workflow.ts`
+## Why TypeScript Workflows
 
-- **Agent-authored, human-reviewable.** The orchestration is a real TypeScript module that you can read, edit, and review.
+- **Agent-authored, human-reviewable.** The orchestration is a real TypeScript module supplied directly or kept as a file.
 - **ACP-native.** Different roles in one workflow can use different ACP-compatible agents without binding the graph to one model product.
 - **Acpus-operated.** Before execution, Acpus checks the authored structure and lowers it to frozen, serializable `WorkflowIR`. During execution, it records durable workspace-local state.
-- **Disposable or durable.** Delete a one-off workflow after the task, or keep the same file in your repository or Skill as an engineering asset.
+- **Disposable or reusable.** Run a self-contained one-off module through stdin; keep modular or reusable work at a TypeScript file path.
 
 ## Quick Start
 
@@ -78,11 +78,12 @@ If you don't want to install the acpus skill, it's ok, agent can use `acpus skil
 > the work. You can also choose which worker agents to orchestrate—for example,
 > ask Claude to review and Codex to synthesize the result.
 
-### 3. Review the generated TypeScript
+### 3. Review and run the generated TypeScript
 
-This compact example uses two ACP-compatible agents for independent reviews and a third role to synthesize them:
+This self-contained example uses two ACP-compatible agents for independent reviews and a third role to synthesize them, so it runs directly through a quoted heredoc:
 
-```ts
+```sh
+acpus workflow run --input '{"topic":"release readiness"}' - <<'WORKFLOW'
 import { defineWorkflow, z } from "acpus/core";
 import { md } from "acpus/expression";
 
@@ -135,15 +136,19 @@ export default defineWorkflow({
     decision: decision.output,
   };
 });
+WORKFLOW
 ```
 
-### 4. Check, visualize, run, and inspect
+### 4. Inspect—or save it for reuse
 
 ```sh
+# Alternative to the heredoc above: save it for local Task/helper modules or planned edits/reuse.
 acpus workflow check workflow.ts --input '{"topic":"release readiness"}'
 acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow.html
 acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
+
+# Inspect the run admitted by either source form.
 acpus runs inspect <run-id>
 ```
 
@@ -210,7 +215,7 @@ Then reference that name in the workflow with `{ use: "my-agent" }`. See the `ac
 
 | Concept | Meaning |
 | --- | --- |
-| Workflow module | The authored `workflow.ts` file: definitions, agent roles, nodes, value flow, and outputs. |
+| Workflow module | Authored TypeScript supplied through stdin or a file path: definitions, agent roles, nodes, value flow, and outputs. |
 | `WorkflowIR` | The frozen, serializable graph produced after authoring checks and lowering. |
 | Run | One admitted execution with frozen workflow data, input, and agent mapping. |
 | Node | A stable authored unit with runtime attempts and, for dynamic control flow, addressable instances. |
@@ -218,7 +223,7 @@ Then reference that name in the workflow with `{ use: "my-agent" }`. See the `ac
 
 ## Run It Once—or Keep It
 
-A `workflow.ts` can exist only for the task in front of you. When the work is done, delete it. If the orchestration proves useful, commit the same file, publish it with a Skill, or adapt it for the next run. Acpus does not require a second format for the reusable version.
+Use a quoted heredoc for a new, self-contained one-off workflow. Otherwise preserve its existing path or create `workflow.ts` by convention; temporary file-backed sources can stay outside the project.
 
 ## Migrate from Acpus 0.5
 

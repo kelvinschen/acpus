@@ -21,7 +21,7 @@ describe("private Acpus home directories", () => {
     process.env.USERPROFILE = home;
     const acpusHome = join(home, ".acpus");
     const tmp = join(acpusHome, "tmp");
-    const target = join(tmp, "catalog-snapshots");
+    const target = join(tmp, "workflow-imports");
 
     try {
       await mkdir(tmp, { recursive: true });

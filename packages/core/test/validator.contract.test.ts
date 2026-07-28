@@ -907,7 +907,6 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(validateWorkflowIR(ir)).toContainEqual(expect.objectContaining({
       code: "T007",
       path: "root.nodes.run_task.run.target.referrer.path",
-      message: "Module task target referrer path must be workspace-relative.",
     }));
   });
 

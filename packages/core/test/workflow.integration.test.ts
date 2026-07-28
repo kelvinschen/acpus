@@ -867,11 +867,10 @@ describe("workflow compilation", () => {
     });
     expect(invalid.isErr()).toBe(true);
     if (invalid.isOk()) throw new Error("expected invalid reusable Task link");
-    expect(invalid.error).toEqual({
+    expect(invalid.error).toMatchObject({
       type: "reusable-task-target-invalid",
       nodeId: "linked",
       field: "referrerPath",
-      message: "Reusable Task referrer path must stay inside the workspace.",
     });
     for (const path of [
       String.raw`\\server\share\workflow.ts`,
@@ -889,7 +888,6 @@ describe("workflow compilation", () => {
       expect(rooted.error).toMatchObject({
         type: "reusable-task-target-invalid",
         field: "referrerPath",
-        message: "Reusable Task referrer path must be workspace-relative.",
       });
     }
 

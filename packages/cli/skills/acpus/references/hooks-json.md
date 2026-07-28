@@ -72,12 +72,8 @@ Each hook entry must contain a non-empty `command`. It may contain `id`, `timeou
 ## CLI
 
 ```sh
-acpus hooks validate
-acpus hooks validate --project
-acpus hooks validate --global
-acpus hooks list
-acpus hooks list --project
-acpus hooks list --global
+acpus hooks validate [--project | --global]
+acpus hooks list [--project | --global]
 ```
 
 Reject simultaneous `--project` and `--global`.

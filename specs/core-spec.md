@@ -187,7 +187,7 @@
 - Core MUST construct reusable task targets from complete caller-provided links and MUST never publish an incomplete reusable descriptor. `validateWorkflowIR(...)` MUST continue to reject incomplete hand-authored or externally supplied IR.
 - Reusable task `exportName` MUST identify one exported binding; source-language derivation rules belong to [Workflow Compiler Task Analysis](workflow-compiler-spec.md#task-analysis-and-reusable-references).
 - Reusable task target referrers MUST use the closed shape `{ path: string }`.
-- Reusable task target referrer paths MUST be workspace-relative workflow paths, not absolute filesystem paths or paths that escape the workspace.
+- Reusable task target referrer paths MUST be source-root-relative workflow paths, not absolute filesystem paths or paths that escape the source root.
 - Serialized Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the serialized task node top level.
 - Workflow lowering MUST preserve every own field of authored object maps, including `__proto__`, as ordinary data without changing the lowered map's prototype.
 - Parallel node branch values MUST be child `ScopeIR` objects directly, without a single-field branch wrapper.

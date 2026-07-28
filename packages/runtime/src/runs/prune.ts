@@ -484,31 +484,26 @@ async function pruneUnreferencedSources(
   sources: WorkflowSourceRef[],
   onDelete: (bytes: number) => void,
 ): Promise<void> {
-  const referenced = new Set(sources.flatMap(source => source.kind === "global_catalog"
-    ? [`${source.name}\0${source.digest}`]
+  const referenced = new Set(sources.flatMap(source => source.kind === "snapshot"
+    ? [source.digest.slice("sha256:".length)]
     : []));
-  const root = join(layout.sourcesRoot, "catalog");
-  const names = await readOwnedDirectory(root, "Runtime catalog sources");
-  for (const name of names) {
-    if (!name.isDirectory() || name.isSymbolicLink()) {
-      throw new Error(`Catalog source '${join(root, name.name)}' is not a regular directory.`);
+  const root = join(layout.sourcesRoot, "snapshots");
+  const snapshots = await readOwnedDirectory(root, "Runtime workflow snapshots");
+  for (const snapshot of snapshots) {
+    const path = join(root, snapshot.name);
+    if (!snapshot.isDirectory() || snapshot.isSymbolicLink()) {
+      throw new Error(`Workflow snapshot '${path}' is not a regular directory.`);
     }
-    const nameRoot = join(root, name.name);
-    for (const digest of await readdir(nameRoot, { withFileTypes: true })) {
-      const path = join(nameRoot, digest.name);
-      if (!digest.isDirectory() || digest.isSymbolicLink()) {
-        throw new Error(`Catalog source '${path}' is not a regular directory.`);
-      }
-      if (referenced.has(`${name.name}\0${digest.name}`)) continue;
-      const size = await treeSize(path);
-      await rm(path, { recursive: true });
-      onDelete(size);
+    if (!/^[a-f0-9]{64}$/.test(snapshot.name)
+      && !/^\.staging-[a-f0-9]{64}-[0-9a-f-]+$/.test(snapshot.name)) {
+      throw new Error(`Workflow snapshot '${path}' has an invalid name.`);
     }
-    if ((await readOwnedDirectory(nameRoot, "Runtime catalog source name")).length === 0) {
-      await rm(nameRoot, { recursive: true, force: true });
-    }
+    if (referenced.has(snapshot.name)) continue;
+    const size = await treeSize(path);
+    await rm(path, { recursive: true });
+    onDelete(size);
   }
-  if ((await readOwnedDirectory(root, "Runtime catalog sources")).length === 0) {
+  if ((await readOwnedDirectory(root, "Runtime workflow snapshots")).length === 0) {
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -604,10 +599,10 @@ async function assertEmptyOwnedDirectory(root: string, label: string): Promise<v
 async function assertEmptySourcesRoot(root: string): Promise<void> {
   const entries = await readOwnedDirectory(root, "Runtime sources root");
   for (const entry of entries) {
-    if (entry.name !== "catalog" || entry.isSymbolicLink() || !entry.isDirectory()) {
+    if (entry.name !== "snapshots" || entry.isSymbolicLink() || !entry.isDirectory()) {
       throw new Error(`Runtime sources root '${root}' contains unexpected entry '${entry.name}'.`);
     }
-    await assertEmptyOwnedDirectory(join(root, entry.name), "Runtime catalog sources");
+    await assertEmptyOwnedDirectory(join(root, entry.name), "Runtime workflow snapshots");
   }
 }
 

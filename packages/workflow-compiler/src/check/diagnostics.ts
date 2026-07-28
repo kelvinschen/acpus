@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { DiagnosticIR } from "@acpus/core/ir";
 
-export type DiagnosticOrigin = "config" | "program" | "global" | "syntactic" | "semantic" | "authoring";
+export type DiagnosticOrigin = "config" | "program" | "global" | "syntactic" | "semantic" | "authoring" | "source";
 
 export type AuthoringOwnership =
   | "expr-condition"
@@ -75,7 +75,9 @@ function diagnosticGroup(candidate: DiagnosticCandidate, entry: string): number 
     case "program": return 1;
     case "global": return 2;
     case "syntactic": return 3;
-    case "authoring": return 4;
+    case "authoring":
+    case "source":
+      return candidate.file && sameFile(candidate.file, entry) ? 4 : 5;
     case "semantic": return sameFile(candidate.file, entry) ? 4 : 5;
   }
 }

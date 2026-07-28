@@ -1,7 +1,8 @@
 import { admitRunForTest } from "./runtime-store.js";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
@@ -9,15 +10,23 @@ import { lift } from "@acpus/expression";
 import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { tryNormalizeWorkflowInput, type PreparedRunWorkflow, type RunWorkflowLockArtifact } from "@acpus/runtime";
+import {
+  tryNormalizeWorkflowInput,
+  type PreparedRunWorkflow,
+  type RunWorkflowLockArtifact,
+  type Sha256Digest,
+  type WorkflowSourceFile,
+} from "@acpus/runtime";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
+import { stableJson } from "../../src/stable-json.js";
 import { advanceRuntimeRun } from "./scheduler.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const runtimeFixtureRoot = join(repoRoot, "packages", "runtime", "test", "fixtures");
+type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;
 
 function fixturePath(relativePath: string): string {
   return join(runtimeFixtureRoot, relativePath);
@@ -74,7 +83,10 @@ async function linkWorkspaceCore(workspace: string): Promise<void> {
 export async function prepareFixture(workspace: string, relativePath: string): Promise<PreparedRunWorkflow> {
   const target = join(workspace, basename(relativePath).replace(/\.fixture$/, ".ts"));
   await copyFile(fixturePath(relativePath), target);
-  return prepareWorkflow({ workflow: target, cwd: workspace }) as Promise<PreparedRunWorkflow>;
+  return prepareWorkflow({
+    workspaceDir: workspace,
+    source: { kind: "path", entry: target },
+  }) as Promise<PreparedRunWorkflow>;
 }
 
 export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {
@@ -382,15 +394,21 @@ export function parallelSignalRaceWorkflow() {
 export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: string): PreparedRunWorkflow {
   const irJson = `${JSON.stringify(ir, null, 2)}\n`;
   const irFileDigest = digest(irJson);
-  const sourceDigest = digest(irJson);
-  const sourceGraphDigest = digest(`${sourceDigest}\n`);
-  const source = { kind: "workspace" as const, entry: workflowPath.slice(cwd.length + 1) };
+  const entry = relative(cwd, workflowPath).split(/[\\/]/).join("/");
+  const entryDigest = digest(readFileSync(workflowPath));
+  const sourceGraphDigest = digest(`${stableJson({
+    kind: "acpus_workflow_source_graph",
+    version: 1,
+    entry,
+    files: [{ path: entry, digest: entryDigest }],
+  })}\n`);
+  const source = { kind: "workspace" as const, entry };
   const lock: RunWorkflowLockArtifact = {
     kind: "acpus_workflow_preparation_lock",
-    version: 1,
+    version: 2,
     workflow: {
       source,
-      sourceDigest,
+      entryDigest,
     },
     ir: {
       path: "workflow.ir.json",
@@ -399,7 +417,6 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
     sourceGraphDigest,
   };
   return {
-    workflowPath,
     source,
     ir,
     irJson,
@@ -408,7 +425,40 @@ export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: stri
   };
 }
 
-function digest(value: string | Uint8Array): string {
+export function snapshotPreparedWorkflow(
+  prepared: PreparedRunWorkflow,
+  files: WorkflowSourceFile[],
+  entry = "workflow.ts",
+): SnapshotPreparedWorkflow {
+  const sortedFiles = [...files].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const sourceGraphDigest = digest(`${stableJson({
+    kind: "acpus_workflow_source_graph",
+    version: 1,
+    entry,
+    files: sortedFiles.map(file => ({ path: file.path, digest: digest(file.content) })),
+  })}\n`);
+  const source = { kind: "snapshot" as const, entry, digest: sourceGraphDigest };
+  return {
+    ...prepared,
+    source,
+    sourceBundle: {
+      kind: "acpus_workflow_source_bundle",
+      version: 1,
+      files: sortedFiles,
+    },
+    sourceGraphDigest,
+    lock: {
+      ...prepared.lock,
+      sourceGraphDigest,
+      workflow: {
+        source,
+        entryDigest: digest(sortedFiles.find(file => file.path === entry)!.content),
+      },
+    },
+  };
+}
+
+function digest(value: string | Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 

@@ -7,6 +7,7 @@ import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
 import type { Result } from "neverthrow";
 import {
+  DAEMON_PROTOCOL_VERSION,
   daemonEndpoint,
   getRun,
   requestDaemonAdmitRun as requestDaemonAdmitRunResult,
@@ -15,6 +16,7 @@ import {
   requestDaemonStatus as requestDaemonStatusResult,
   startDaemonLoop,
   type DaemonClientFailure,
+  type Sha256Digest,
 } from "@acpus/runtime";
 import { runDaemonTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
@@ -61,6 +63,9 @@ describe.concurrent("runtime daemon ticks", () => {
         packageVersion: "test",
       });
       try {
+        expect(await requestDaemonStatus(workspace)).toMatchObject({
+          protocolVersion: DAEMON_PROTOCOL_VERSION,
+        });
         const admitted = await requestDaemonAdmitRun(workspace, {
           prepared,
           input: { ready: true },
@@ -108,7 +113,7 @@ describe.concurrent("runtime daemon ticks", () => {
         });
         const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
         await expect(requestDaemonAdmitRun(workspace, {
-          prepared: preparedWorkflow(invalidIr, prepared.workflowPath, workspace),
+          prepared: preparedWorkflow(invalidIr, join(workspace, prepared.source.entry), workspace),
           input: { ready: true },
         })).rejects.toMatchObject({
           code: "INVALID_REQUEST",
@@ -172,8 +177,8 @@ describe.concurrent("runtime daemon ticks", () => {
   it("rejects inconsistent prepared workflow lock digests before admission", async () => {
     await withRuntimeWorkspace("runtime-daemon-admit-inconsistent-lock", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const otherDigest = `sha256:${"a".repeat(64)}`;
-      const thirdDigest = `sha256:${"b".repeat(64)}`;
+      const otherDigest: Sha256Digest = `sha256:${"a".repeat(64)}`;
+      const thirdDigest: Sha256Digest = `sha256:${"b".repeat(64)}`;
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -184,10 +189,6 @@ describe.concurrent("runtime daemon ticks", () => {
           {
             candidate: { ...prepared, lock: { ...prepared.lock, sourceGraphDigest: otherDigest } },
             message: "lock source graph digest",
-          },
-          {
-            candidate: { ...prepared, sourceGraphDigest: otherDigest, lock: { ...prepared.lock, sourceGraphDigest: otherDigest } },
-            message: "source graph digest does not match workflow and package lock digests",
           },
           {
             candidate: { ...prepared, packageLockDigest: otherDigest },

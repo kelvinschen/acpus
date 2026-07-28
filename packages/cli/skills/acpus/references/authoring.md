@@ -2,7 +2,7 @@
 
 ## Start
 
-Write the workflow and import only the symbols it uses:
+Prefer use a quoted heredoc for a disposable, self-contained workflow; use a file-backed workflow—typically `workflow.ts`—for task/helper imports or planned edits/reuse. Import only the symbols used:
 
 ```ts
 import { defineWorkflow, z } from "acpus/core";
@@ -49,21 +49,12 @@ State `N = planners + rounds × (workers + reducers + judges)` and peak ready Ag
 
 Assign every occurrence a distinct item, lens, hypothesis, or verification duty;
 
-## Core Rules
-
-- Project fields and indexes directly; **MUST use `lift` or predicate helpers for JavaScript operators, `.length`, array methods, and control flow over `Expr` values**.
-- `lift` callbacks must be inline synchronous arrows. Pass runtime data as dependencies; never capture workflow values or helpers such as `md`. Return plain data, then render outside `lift`.
-- Inline Task `exec` must be self-contained. Bind data through Task `input` and use only its context.
-- Use an inline Task first. Upgrade at the second authored call site or when module/third-party imports are required; loop/fanout runtime instances do not count.
-- Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
-- Set a stable, non-empty `sessionKey` for agent step only when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it.
-- Leave Agent `timeout` unset unless the user or workflow explicitly requires a hard elapsed deadline.
-- Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`.
-- Never add `outputSchema` to Task or composite nodes; their outputs are TypeScript-inferred.
 
 ## Expressions And Shapes
 
 Project fields and indexes directly, such as `review.output.ready` or `items[0]`. Use helpers for everything else:
+
+**MUST use `lift` or predicate helpers for JavaScript operators, `.length`, array methods, and control flow over `Expr` values**
 
 ```ts
 import { and, eq, gte, lift, md } from "acpus/expression";
@@ -79,6 +70,7 @@ const prompt = md`Review ${label}: ${summary}`;
 ```
 
 Unary, two-value, and three-value positional `lift` forms are supported; use the named-object form for more dependencies. Return only durable data.
+`lift` callbacks **MUST** be inline synchronous arrows. Pass runtime data as dependencies; **NEVER** capture workflow values or helpers such as `md`. Return plain data, then render outside `lift`.
 
 Graph boundaries support the documented Zod 4 subset; Use `z.infer` when a TypeScript annotation must stabilize the same shape:
 
@@ -95,25 +87,39 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 
 ## Nodes And Composites
 
+> Basic Rules
+> - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`
+> - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+> - No `outputSchema` in task and composites.
+
 Leaf nodes use the enclosing `step` dispatcher:
 
 ```ts
+// leave `timeout` unset unless the user or workflow explicitly requires a hard elapsed deadline.
+// set a stable, non-empty `sessionKey` for agent only when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
+// read `acpx-agents.md` before choosing agent backends/models.
 const review = step("review").agent({
   agent: agents.worker,
   prompt: template`Review ${input.topic}.`,
 });
+
 const facts = step("facts").task({
   input: { topic: input.topic },
-  exec: async ({ input }) => ({ normalized: input.topic.trim() }),
+  exec: async ({ input }) => {
+    // Keep inline exec self-contained: pass runtime data through input; DO NOT capture outer values.
+    return { normalized: input.topic.trim() }
+  },
 });
+
 const approval = step("approval").signal({
   outputSchema: z.object({ approved: z.boolean() }),
   prompt: template`Approve ${review.output}?`,
 });
+
 step("require_approval").assert({ condition: approval.output.approved });
 ```
 
-Read `acpx-agents.md` before choosing agent backends/models or using raw `{ command: "..." }`. Read `advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing. Read `signal-authoring.md` for parallel waits, payload, or timeout semantics.
+
 
 Composite callbacks return one durable value; return `{}` for control-only scopes:
 
@@ -170,7 +176,7 @@ const rounds = step("rounds").loop({
 return rounds.output;
 ```
 
-`parallel` and `fanout` accept a runtime `maxConcurrency`, which must be a positive integer. Half the branch count, rounded up and capped at 16, is usually appropriate.
+`parallel` and `fanout` accept a runtime `maxConcurrency`, a positive integer, specify it only when explicitly requested.
 
 ## Choose An Example
 
@@ -192,4 +198,6 @@ Only look up declaration when the above rules and examples don't already answer 
 1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
-For operation commands read `cli-operations.md`; for runtime recovery strategy read `runtime-recovery.md`.
+## Advance
+- Read `advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.
+- Read `signal-authoring.md` only for parallel waits, payload, or timeout semantics.

@@ -1,21 +1,25 @@
 import { constants, createWriteStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { extractWorkflowMetadata, tryPrepareWorkflow, type WorkflowPreparationFailure } from "@acpus/workflow-compiler";
+import {
+  extractWorkflowMetadata,
+  tryPrepareWorkflow,
+  type PreparedWorkflow,
+  type WorkflowPreparationFailure,
+} from "@acpus/workflow-compiler";
 import { type Entry, Reader, ZipReader } from "@zip.js/zip.js";
 import { ResultAsync } from "neverthrow";
 import { extract as extractTar, list as listTar, type ReadEntry } from "tar";
 import {
   prepareWorkflowCatalogCommit,
-  digestWorkflowPackage,
   type AvailableWorkflowCatalogEntry,
   type WorkflowCatalogScope,
 } from "./catalog.js";
 import { ensurePrivateAcpusDirectory, removePrivateTree } from "./private-directory.js";
-import { exposeWorkspaceDependencies } from "./workspace-dependencies.js";
+import { resolveWorkflowSourceForCli } from "./workflow-preparation.js";
 
 export type WorkflowImportFailure =
   | { type: "usage"; message: string }
@@ -24,8 +28,13 @@ export type WorkflowImportFailure =
 
 export type WorkflowImportResult = {
   catalog: AvailableWorkflowCatalogEntry;
-  checked: boolean;
-};
+} & ({
+  checked: false;
+} | {
+  checked: true;
+  diagnostics: PreparedWorkflow["ir"]["diagnostics"];
+  sourceGraphDigest: PreparedWorkflow["sourceGraphDigest"];
+});
 
 type ImportOptions = {
   cwd: string;
@@ -70,10 +79,17 @@ async function runImport(options: ImportOptions): Promise<WorkflowImportResult> 
     const commit = await prepareWorkflowCatalogCommit(options.cwd, options.scope, name);
     if (commit.isErr()) abortImport(catalogImportErrorCode(commit.error.type), commit.error.message);
 
-    if (options.check) await checkStagedWorkflow(options.cwd, options.scope, stagedPackage, name);
+    const preparation = options.check
+      ? await checkStagedWorkflow(options.cwd, stagedPackage, name)
+      : undefined;
     const committed = await commit.value.commit(stagedPackage);
     if (committed.isErr()) abortImport(catalogImportErrorCode(committed.error.type), committed.error.message);
-    outcome = { ok: true, value: { checked: options.check, catalog: committed.value } };
+    outcome = {
+      ok: true,
+      value: preparation === undefined
+        ? { checked: false, catalog: committed.value }
+        : { checked: true, catalog: committed.value, ...preparation },
+    };
   } catch (error) {
     outcome = {
       ok: false,
@@ -413,24 +429,36 @@ async function copyDirectory(source: string, target: string, relativePath: strin
   await chmod(target, item.mode & 0o777);
 }
 
-async function checkStagedWorkflow(cwd: string, scope: WorkflowCatalogScope, stagedPackage: string, expectedName: string): Promise<void> {
-  if (scope === "global") await exposeWorkspaceDependencies(dirname(stagedPackage), cwd);
-  const prepared = await tryPrepareWorkflow({
+async function checkStagedWorkflow(
+  cwd: string,
+  stagedPackage: string,
+  expectedName: string,
+): Promise<Pick<Extract<WorkflowImportResult, { checked: true }>, "diagnostics" | "sourceGraphDigest">> {
+  const resolved = await resolveWorkflowSourceForCli({
+    workspaceDir: cwd,
     workflow: join(stagedPackage, "workflow.ts"),
-    cwd,
-    ...(scope === "global" ? {
-      sourceRoot: stagedPackage,
-      source: {
-        kind: "global_catalog" as const,
-        name: expectedName,
-        digest: await digestWorkflowPackage(stagedPackage),
-      },
-    } : {}),
+  });
+  const prepared = await tryPrepareWorkflow({
+    workspaceDir: cwd,
+    source: resolved.source,
   });
   if (prepared.isErr()) throw new ImportAbort({ type: "preparation", failure: prepared.error });
   if (prepared.value.ir.name !== expectedName) {
     abortImport("IMPORT_CHECK_NAME_MISMATCH", `Prepared workflow name '${prepared.value.ir.name}' does not match static authored name '${expectedName}'.`);
   }
+  return {
+    diagnostics: prepared.value.ir.diagnostics.map(diagnostic => {
+      const file = diagnostic.source?.file;
+      if (!file) return diagnostic;
+      const packagePath = relative(stagedPackage, resolve(cwd, file));
+      if (packagePath === "" || packagePath === ".." || packagePath.startsWith(`..${sep}`) || isAbsolute(packagePath)) return diagnostic;
+      return {
+        ...diagnostic,
+        source: { ...diagnostic.source, file: packagePath.split(sep).join("/") },
+      };
+    }),
+    sourceGraphDigest: prepared.value.sourceGraphDigest,
+  };
 }
 
 async function isRegularFile(path: string): Promise<boolean> {

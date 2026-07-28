@@ -5,7 +5,12 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import {
+  openRuntimeStore,
+  type PreparedRunWorkflow,
+  type RunDetails,
+  type Sha256Digest,
+} from "../src/store/store.js";
 import { err, ok, ResultAsync } from "neverthrow";
 
 const runtimeHomeCleanups: Array<() => Promise<void>> = [];
@@ -92,6 +97,37 @@ describe("daemon socket server", () => {
     } finally {
       releaseShutdown.resolve();
       if (request) await request;
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not abandon an admission while the daemon still owns its outcome", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-admission-wait-");
+    const started = deferred();
+    const release = deferred();
+    const server = await startDaemonServer(workspace, {
+      ...testHandlers(),
+      admitRun: () => new ResultAsync((async () => {
+        started.resolve();
+        await release.promise;
+        return ok(runDetails());
+      })()),
+    });
+    vi.useFakeTimers();
+    const request = requestDaemonAdmitRun(workspace, {
+      prepared: preparedRunWorkflow(),
+      input: {},
+    });
+    try {
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(31_000);
+      release.resolve();
+      expect(await request).toEqual(ok(runDetails()));
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+      await request;
       await server.close();
       await rm(workspace, { recursive: true, force: true });
     }
@@ -419,23 +455,32 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   throw new Error("condition was not met");
 }
 
-function preparedRunWorkflow() {
+function preparedRunWorkflow(): PreparedRunWorkflow {
+  const digest = `sha256:${"a".repeat(64)}` as Sha256Digest;
+  const source = { kind: "workspace", entry: "test.workflow.ts" } as const;
+  const ir: PreparedRunWorkflow["ir"] = {
+    irVersion: 6,
+    name: "test",
+    agents: {},
+    root: { nodes: [], output: { kind: "object", fields: {} } },
+    diagnostics: [],
+  };
   return {
-    workflowPath: "/tmp/test.workflow.ts",
-    ir: { name: "test", root: {} },
-    irJson: "{}",
-    sourceGraphDigest: "source-digest",
+    source,
+    ir,
+    irJson: `${JSON.stringify(ir)}\n`,
+    sourceGraphDigest: digest,
     lock: {
       kind: "acpus_workflow_preparation_lock",
-      version: 1,
-      workflow: { entry: "test.workflow.ts", sourceDigest: "source-digest" },
-      ir: { path: "workflow.ir.json", digest: "ir-digest" },
-      sourceGraphDigest: "source-digest",
+      version: 2,
+      workflow: { source, entryDigest: digest },
+      ir: { path: "workflow.ir.json", digest },
+      sourceGraphDigest: digest,
     },
   };
 }
 
-function runDetails() {
+function runDetails(): RunDetails {
   return {
     id: "run_1",
     name: "test",
@@ -450,7 +495,7 @@ function runDetails() {
     eventCount: 1,
     nodeCount: 1,
     execution: { state: "active", lastStatus: "running" },
-  } as const;
+  };
 }
 
 function controlIntent(type: string): Parameters<typeof requestDaemonControl>[1] {

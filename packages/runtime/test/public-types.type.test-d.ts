@@ -45,6 +45,10 @@ import type {
   RunRecord,
   RunStatus,
   RunWorkflowLockArtifact,
+  Sha256Digest,
+  WorkflowSourceBundle,
+  WorkflowSourceFile,
+  WorkflowSourceRef,
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimePersistence,
@@ -72,10 +76,18 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides } from "@acpus/runtime";
+import { DAEMON_PROTOCOL_VERSION, createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
+import type {
+  PreparedWorkflow as CompilerPreparedWorkflow,
+  Sha256Digest as CompilerSha256Digest,
+  WorkflowPreparationLock as CompilerWorkflowPreparationLock,
+  WorkflowSourceBundle as CompilerWorkflowSourceBundle,
+  WorkflowSourceFile as CompilerWorkflowSourceFile,
+  WorkflowSourceRef as CompilerWorkflowSourceRef,
+} from "@acpus/workflow-compiler";
 import type { Result, ResultAsync } from "neverthrow";
 
 test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
@@ -114,6 +126,33 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<2>();
+  expectTypeOf<WorkflowSourceFile>().toEqualTypeOf<{ path: string; content: string }>();
+  expectTypeOf<WorkflowSourceBundle>().toEqualTypeOf<{
+    kind: "acpus_workflow_source_bundle";
+    version: 1;
+    files: readonly WorkflowSourceFile[];
+  }>();
+  expectTypeOf<WorkflowSourceRef>().toEqualTypeOf<
+    | { kind: "workspace"; entry: string }
+    | { kind: "snapshot"; entry: string; digest: Sha256Digest }
+  >();
+  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "workspace" } }>["sourceBundle"]>()
+    .toEqualTypeOf<undefined>();
+  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>["sourceBundle"]>()
+    .toEqualTypeOf<WorkflowSourceBundle>();
+  expectTypeOf<CompilerPreparedWorkflow>().toMatchTypeOf<PreparedRunWorkflow>();
+  expectTypeOf<PreparedRunWorkflow>().toMatchTypeOf<CompilerPreparedWorkflow>();
+  expectTypeOf<CompilerWorkflowPreparationLock>().toMatchTypeOf<RunWorkflowLockArtifact>();
+  expectTypeOf<RunWorkflowLockArtifact>().toMatchTypeOf<CompilerWorkflowPreparationLock>();
+  expectTypeOf<CompilerWorkflowSourceRef>().toMatchTypeOf<WorkflowSourceRef>();
+  expectTypeOf<WorkflowSourceRef>().toMatchTypeOf<CompilerWorkflowSourceRef>();
+  expectTypeOf<CompilerWorkflowSourceBundle>().toMatchTypeOf<WorkflowSourceBundle>();
+  expectTypeOf<WorkflowSourceBundle>().toMatchTypeOf<CompilerWorkflowSourceBundle>();
+  expectTypeOf<CompilerWorkflowSourceFile>().toMatchTypeOf<WorkflowSourceFile>();
+  expectTypeOf<WorkflowSourceFile>().toMatchTypeOf<CompilerWorkflowSourceFile>();
+  expectTypeOf<CompilerSha256Digest>().toMatchTypeOf<Sha256Digest>();
+  expectTypeOf<Sha256Digest>().toMatchTypeOf<CompilerSha256Digest>();
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
   expectTypeOf<RunDetails["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
   expectTypeOf<RunForkInfo>().toEqualTypeOf<{ sourceRunId: string; target?: string; unsafeReuse?: true }>();

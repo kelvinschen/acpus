@@ -32,23 +32,23 @@
 
 ```text
 描述任务
-  → Orchestrator Agent 通过 workflow.ts 编排 Worker Agents
+  → Orchestrator Agent 通过 TypeScript 编排 Worker Agents
   → Acpus 检查并运行，Orchestrator Agent 持续观察
   → Orchestrator Agent 向你报告结果
 ```
 
-一个 Orchestrator Agent 端到端负责整项工作：拆解任务、分配角色、编写`workflow.ts`、启动 run、观察进展，并通过 Acpus 介入，直到工作收敛。Worker Agents 专注于各自节点中的研究、实现、审查或综合任务；它们不负责整体计划或整次运行。
+一个 Orchestrator Agent 端到端负责整项工作：拆解任务、分配角色、编写 TypeScript Workflow、启动 run、观察进展，并通过 Acpus 介入，直到工作收敛。Worker Agents 专注于各自节点中的研究、实现、审查或综合任务；它们不负责整体计划或整次运行。
 
 Acpus 是持久化执行与控制边界。它检查工作流图、调度节点、记录状态、artifact 与结果，并提供 inspect、pause、resume、局部 retry 和 fork 等控制能力，供 Orchestrator Agent 使用。
 
 简单任务仍然适合直接交给单个 Agent。当任务需要多个独立上下文、不同 Agent 能力、本地命令或 artifact、人工输入，或者失败后不适合从头再来时，再使用 Acpus。
 
-## 为什么是 `workflow.ts`
+## 为什么使用 TypeScript Workflow
 
-- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以阅读、修改和审查。
+- **Agent 编写，人可以审查。** 编排结果是真实的 TypeScript 模块，可以直接输入，也可以保存为文件。
 - **原生面向 ACP。** 同一张 workflow 可以让不同角色使用不同的 ACP-compatible Agents，而不把整张图绑定到单一模型产品。
 - **由 Acpus 运行。** 执行前，Acpus 检查 authored structure，并将其降低为冻结、可序列化的 `WorkflowIR`；执行中，Acpus 在当前 workspace 保存持久化状态。
-- **一次性与持久化使用同一个文件。** 任务结束后可以删除，也可以提交进仓库或随 Skill 分发，沉淀为工程资产。
+- **一次性或可复用。** 自包含的一次性模块通过 stdin 运行；模块化或需要复用时使用 TypeScript 文件路径。
 
 ## 快速开始
 
@@ -76,11 +76,12 @@ npx skills add kelvinschen/acpus/packages/cli/skills/acpus
 >
 > 这就够了。Orchestrator Agent 会决定如何组织、运行和观察整个工作。你也可以指定要编排的 Worker Agents，例如让 Claude 负责审查、Codex 负责总结。
 
-### 3. 审查生成的 TypeScript
+### 3. 审查并运行生成的 TypeScript
 
-下面这个紧凑示例让两个 ACP-compatible Agent 独立审查，再由第三个角色综合结果：
+下面这个示例让两个 ACP-compatible Agent 独立审查，再由第三个角色综合结果，因此可以直接通过带引号的 heredoc 运行：
 
-```ts
+```sh
+acpus workflow run --input '{"topic":"release readiness"}' - <<'WORKFLOW'
 import { defineWorkflow, z } from "acpus/core";
 import { md } from "acpus/expression";
 
@@ -133,19 +134,23 @@ export default defineWorkflow({
     decision: decision.output,
   };
 });
+WORKFLOW
 ```
 
-### 4. 检查、可视化、运行与观察
+### 4. 观察运行，或保存以便复用
 
 ```sh
+# 作为前述 heredoc 的替代：需要本地 Task/helper 模块、后续修改或复用时保存为 workflow.ts。
 acpus workflow check workflow.ts --input '{"topic":"release readiness"}'
 acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow.html
 acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
+
+# 观察通过任一 source form 创建的 run。
 acpus runs inspect <run-id>
 ```
 
-`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 创建并执行持久化 run；`runs inspect` 读取它的结构、状态、attempt、artifact 与结果。
+`workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 创建并执行持久化 run；`runs inspect` 从紧凑的持久化状态视图开始。
 
 ### 常用运行控制
 
@@ -189,7 +194,7 @@ Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配
 
 | 概念 | 含义 |
 | --- | --- |
-| Workflow module | Agent 编写的 `workflow.ts`：声明 Agent 角色、节点、值流与输出。 |
+| Workflow module | 通过 stdin 或文件路径提供的 TypeScript：声明 Agent 角色、节点、值流与输出。 |
 | `WorkflowIR` | 经过 authoring check 与 lowering 后得到的冻结、可序列化工作流图。 |
 | Run | 一次已创建的执行，包含冻结的工作流数据、input 与 Agent mapping。 |
 | Node | 稳定的 authored unit；运行时拥有 attempt，动态控制流还会产生可寻址实例。 |
@@ -197,7 +202,7 @@ Acpus 的具名 Agent 配置以 `acpx` 为准。在 `~/.acpx/config.json` 中配
 
 ## 运行一次，或长期保留
 
-`workflow.ts` 可以只服务眼前这一次任务，结束后直接删除。如果 Agent 写出的编排值得复用，就提交同一个文件、随 Skill 分发，或在下一次运行前继续修改。一次性与持久化版本不需要两套格式。
+新的自包含一次性 Workflow 优先使用带引号的 heredoc；其他情况保留现有路径，或按惯例新建 `workflow.ts`。临时文件式源码可以放在项目外。
 
 ## 从旧版本迁移
 

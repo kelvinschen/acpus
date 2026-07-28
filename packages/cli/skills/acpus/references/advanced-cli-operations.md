@@ -12,17 +12,16 @@ If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 Use `workflow check` only when validation without execution is the goal:
 
 ```sh
-acpus workflow check workflow.ts --input sample-input.json
+acpus workflow check <workflow> [--input <json|file.json>]
 ```
 
-`workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
+Use the same selected path, catalog, or `-` stdin source as `workflow run`. `workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
 
 ## Inspection details
 
 ```sh
-acpus runs inspect <run-id> --target <attemptId|nodeKey|frameKey|nodeId>
-acpus runs inspect <run-id> --target <target> --timeline [--limit <1-50>] [--before <cursor>]
-acpus runs inspect <run-id> --target <target> --timeline --follow [--after <revision>]
+acpus runs inspect <run-id> --target <target> [--timeline [--limit <1-50>] [--before <cursor>]]
+acpus runs inspect <run-id> --target <target> --timeline --follow [--limit <1-50>] [--after <revision>]
 ```
 
 Start with Summary. Runtime resolves `attemptId`, `nodeKey`, `frameKey`, then
@@ -86,8 +85,7 @@ Pause and resume are idempotent. Pause fences active attempts from late commits 
 ### Retry
 
 ```sh
-acpus runs retry <run-id>
-acpus runs retry <run-id> --target <nodeKey-or-frameKey-or-static-alias>
+acpus runs retry <run-id> [--target <nodeKey-or-frameKey-or-static-alias>]
 ```
 
 Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame; Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
@@ -98,19 +96,23 @@ Resume a paused run before retrying it. Retry rejects completed/canceled blocker
 
 ```sh
 acpus runs fork <run-id> \
-  [--workflow <workflow.ts>] [--input <json|file.json>] \
-  [--agents '<json>'] [--target <replacement-target>] [--unsafe-reuse]
+  [--workflow <workflow> [--project | --global]] [--input <json|file.json>] \
+  [--agents '<json>'] \
+  [--target <replacement-target>] [--unsafe-reuse]
 ```
 
 Fork creates a child run and leaves the source unchanged. Its receipt identifies both runs; continue inspection on the child. Unspecified workflow, input, and Agent overrides are inherited. Providing new input disables normal completed-output reuse.
+
+Replacement workflows have the same resolution as check/run/viz: use a path,
+a catalog name with optional scope, or `--workflow -` for raw UTF-8 TypeScript
+on stdin. Scope flags require `--workflow` and cannot be used with `-`.
 
 Omit `--target` unless recovery should begin at one point in the replacement workflow. Fork targets belong to that replacement workflow, so source-run dynamic keys may not resolve. Safe reuse carries only compatible completed prerequisites and registered artifacts. `--unsafe-reuse` relaxes workflow/input/signature compatibility checks; use it only when reusing earlier results and side effects is intentional.
 
 ### Cancel
 
 ```sh
-acpus runs cancel <run-id>
-acpus runs cancel <run-id> --target <nodeKey-or-frameKey-or-static-alias>
+acpus runs cancel <run-id> [--target <nodeKey-or-frameKey-or-static-alias>]
 ```
 
 Run-level cancel is idempotent. A targeted cancel must resolve unambiguously to one non-terminal node or frame; it terminalizes that scheduler subtree as `operator_cancelled`. Both forms durably fence late result, artifact, and progress commits.
@@ -119,11 +121,11 @@ Treat cancel as destructive and ask before using it unless cancellation was alre
 
 ## Catalog and import
 
-Project entries live under `.acpus/workflows/<name>/workflow.ts`; global entries under `$HOME/.acpus/workflows/<name>/workflow.ts`. The direct lower-kebab `defineWorkflow({ name })` must equal the package directory. Catalog names work with check, run, and viz; pass `--project` or `--global` when names collide. Discovery is static: invalid first-level packages remain listable but cannot be used.
+Catalog and import are for named or reusable workflows, not disposable heredoc runs. Project entries live under `.acpus/workflows/<name>/workflow.ts`; global entries under `$HOME/.acpus/workflows/<name>/workflow.ts`. The direct lower-kebab `defineWorkflow({ name })` must equal the package directory. Catalog names work with check, run, and viz; pass `--project` or `--global` when names collide. Discovery is static: invalid first-level packages remain listable but cannot be used.
 
-```sh
-acpus workflow catalog [name] [--project|--global]
-acpus workflow import <file|directory|zip|tgz|http-url> [--project|--global]
+```
+acpus workflow catalog [name] [--project | --global]
+acpus workflow import <file|directory|zip|tgz|http-url> [--project | --global] [--check]
 ```
 
 Omit `name` in an interactive terminal to select an available workflow; piped text lists compact scope/status/name rows without paths, and `--json` returns the complete catalog projection without prompting. Provide a name to inspect its unique available entry; its TTY detail view uses restrained semantic color and honors `NO_COLOR`. Use a scope flag when project and global catalogs contain the same name.
@@ -133,11 +135,10 @@ Import copies one snapshot: it does not install dependencies, track the source, 
 ## Static visualization
 
 ```sh
-acpus workflow viz <workflow.ts-or-catalog>
-acpus workflow viz <workflow.ts-or-catalog> --out workflow.html [--force]
+acpus workflow viz <workflow> [--out <file.html> [--force]]
 ```
 
-This prepares the workflow without creating a run. With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
+This accepts the same path, catalog, or `-` stdin source as run and prepares it without creating a run. With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
 Visualization is text/HTML only and does not accept `--json`.
 
 ## Web operator console
@@ -151,8 +152,8 @@ The command ensures the workspace daemon is running, binds to localhost and a ra
 ## Bundled skill and version
 
 ```sh
-acpus skill install [--project|--global] [--agent <universal[,claude]>] [--dry-run]
-acpus skill uninstall [--project|--global] [--agent <universal[,claude]>] [--dry-run]
+acpus skill install [--project | --global] [--agent <universal|claude|universal,claude>] [--dry-run]
+acpus skill uninstall [--project | --global] [--agent <universal|claude|universal,claude>] [--dry-run]
 acpus --version
 ```
 
@@ -172,4 +173,4 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Ordinary result envelopes use `schemaVersion: 1`; successful inspection documents and follow snapshot/delta/resync/done records use Runtime inspection `schemaVersion: 2`. Machine-visible result phases are `usage`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.
+`--json` belongs to structured-output leaf commands and must appear after that leaf name; root/group help, version, visualization, and skill install/uninstall do not accept it. Ordinary result envelopes use `schemaVersion: 1`; successful inspection documents and follow snapshot/delta/resync/done records use Runtime inspection `schemaVersion: 2`. Machine-visible result phases are `usage`, `source`, `check`, `compile`, `lock`, `validate`, `import`, `run`, `inspect`, `control`, `delete`, `doctor`, and `viz`. Foreground run and inspect-follow share event kinds but use `run` and `inspect` phases respectively. Pipe run inspection JSON/NDJSON through focused `jq` queries as required by the skill guardrails.

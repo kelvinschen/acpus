@@ -352,9 +352,9 @@ function validateTaskReferrer(referrer: unknown, diagnostics: DiagnosticIR[], pa
   if (typeof referrer.path !== "string" || referrer.path.length === 0) {
     addError(diagnostics, "T007", "Module task target referrer path must be a non-empty string.", `${path}.path`);
   } else if (isRootedPath(referrer.path)) {
-    addError(diagnostics, "T007", "Module task target referrer path must be workspace-relative.", `${path}.path`);
+    addError(diagnostics, "T007", "Module task target referrer path must be source-root-relative.", `${path}.path`);
   } else if (referrer.path.split(/[\\/]/).includes("..")) {
-    addError(diagnostics, "T007", "Module task target referrer path must stay inside the workspace.", `${path}.path`);
+    addError(diagnostics, "T007", "Module task target referrer path must stay inside the source root.", `${path}.path`);
   }
 }
 

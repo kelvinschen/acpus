@@ -64,8 +64,7 @@ required. Enabling it after history expires cannot reconstruct that history.
 ## Locate One Execution
 
 ```sh
-acpus runs inspect <run-id> --target <agent-node-or-attempt>
-acpus runs inspect <run-id> --target <agent-node-or-attempt> --timeline
+acpus runs inspect <run-id> --target <agent-node-or-attempt> [--timeline]
 acpus runs artifacts <run-id> --target <agent-node-or-attempt>
 ```
 

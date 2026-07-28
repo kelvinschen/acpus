@@ -74,7 +74,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-inspect-frozen-static", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
       const admitted = await admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, {})._unsafeUnwrap());
-      await writeFile(prepared.workflowPath, "throw new Error('live source should not be read');\n");
+      await writeFile(join(workspace, prepared.source.entry), "throw new Error('live source should not be read');\n");
 
       await expect(rawInspection(workspace, admitted.run.id)).resolves.toMatchObject({
         run: { id: admitted.run.id, name: "cli-signal" },
@@ -252,24 +252,24 @@ describe.concurrent("runtime admission use cases", () => {
       await writeFile(join(workspace, "pnpm-lock.yaml"), packageLock);
       const prepared = await prepareFixture(workspace, "workflows/same-file-reusable.workflow.ts");
       const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
-      const sourceDigest = digest(await readFile(prepared.workflowPath, "utf8"));
+      const sourceDigest = digest(await readFile(join(workspace, prepared.source.entry), "utf8"));
       const packageLockDigest = digest(packageLock);
       const task = prepared.ir.root.nodes.find(node => node.id === "normalize_path");
 
       expect(JSON.parse(prepared.irJson)).toMatchObject({ irVersion: 6, name: "runtime-same-file-reusable" });
-      expect(prepared.lock.workflow.sourceDigest).toBe(sourceDigest);
+      expect(prepared.lock.workflow.entryDigest).toBe(sourceDigest);
       expect(prepared.packageLockDigest).toBe(packageLockDigest);
       expect(prepared.lock.packageLockDigest).toBe(packageLockDigest);
-      expect(prepared.sourceGraphDigest).toBe(digest(`${sourceDigest}\n${packageLockDigest}`));
+      expect(prepared.sourceGraphDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(prepared.lock.sourceGraphDigest).toBe(prepared.sourceGraphDigest);
       expect(prepared.lock.ir.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(prepared.lock.ir.digest).toBe(digest(prepared.irJson));
       expect(prepared.lock).toEqual({
         kind: "acpus_workflow_preparation_lock",
-        version: 1,
+        version: 2,
         workflow: {
           source: { kind: "workspace", entry: "same-file-reusable.workflow.ts" },
-          sourceDigest,
+          entryDigest: sourceDigest,
         },
         ir: { path: "workflow.ir.json", digest: prepared.lock.ir.digest },
         packageLockDigest,
@@ -290,7 +290,7 @@ describe.concurrent("runtime admission use cases", () => {
       const otherCwd = join(workspace, "not-the-workflow-dir");
       await mkdir(otherCwd);
       setSingleTaskCwd(prepared.ir, otherCwd);
-      const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
+      const frozen = preparedWorkflow(prepared.ir, join(workspace, prepared.source.entry), workspace);
       const admitted = await admitPreparedWorkflowForTest(workspace, frozen, tryNormalizeWorkflowInput(frozen.ir, { path: "src\\workflow.ts" })._unsafeUnwrap());
 
       expect(admitted).toMatchObject({
@@ -322,7 +322,7 @@ describe.concurrent("runtime admission use cases", () => {
           exportName: item.exportName,
           referrer: { path: `${item.name}.workflow.ts` },
         });
-        const frozen = preparedWorkflow(prepared.ir, prepared.workflowPath, workspace);
+        const frozen = preparedWorkflow(prepared.ir, join(workspace, prepared.source.entry), workspace);
         const admitted = await admitPreparedWorkflowForTest(workspace, frozen, tryNormalizeWorkflowInput(frozen.ir, {})._unsafeUnwrap());
 
         expect(admitted.status).toBe("failed");

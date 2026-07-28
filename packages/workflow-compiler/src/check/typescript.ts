@@ -12,9 +12,12 @@ import { collectWorkflowAuthoringCandidates } from "./authoring-rules/index.js";
 import { normalizeDiagnostics, type DiagnosticCandidate, type DiagnosticOrigin } from "./diagnostics.js";
 import { officialAuthoringRoots } from "./official-types.js";
 import { enrichTypeScriptDiagnostic, suppressCausalMissingLiftDiagnostics } from "./typescript-enrichment.js";
+import { collectCheckedSourceGraph, type CheckedSourceFile } from "./source-capture.js";
 
 export type TypeScriptCheck = {
   diagnostics: DiagnosticIR[];
+  sourceFiles: CheckedSourceFile[];
+  packageImportReferrers: string[];
 };
 
 export async function checkTypeScript(
@@ -22,6 +25,7 @@ export async function checkTypeScript(
   cwd: string,
   scratchDir: string,
   source: string,
+  options: { dependencyFallback?: boolean } = {},
 ): Promise<Result<TypeScriptCheck, TypeScriptNativeFailure>> {
   let tsconfig: string;
   try {
@@ -29,7 +33,13 @@ export async function checkTypeScript(
   } catch (cause) {
     return err(nativeFailure(cause));
   }
-  return withNativeProject({ configPath: tsconfig, cwd, sourcePath: entry, source }, ({ project, sourceFile }) => {
+  return withNativeProject({
+    configPath: tsconfig,
+    cwd,
+    sourcePath: entry,
+    source,
+    ...(options.dependencyFallback ? { dependencyRoot: cwd } : {}),
+  }, ({ project, sourceFile }) => {
     const program = project.program;
     const roots = officialAuthoringRoots();
     const candidates: DiagnosticCandidate[] = [];
@@ -53,7 +63,15 @@ export async function checkTypeScript(
     for (const candidate of collectWorkflowAuthoringCandidates({ project, sourceFile, taskAnalysis, roots })) {
       candidates.push({ ...candidate, sequence: sequence++ });
     }
-    return { diagnostics: normalizeDiagnostics(candidates, entry) };
+    const sourceGraph = collectCheckedSourceGraph(entry, program, project);
+    for (const candidate of sourceGraph.diagnostics) {
+      candidates.push({ ...candidate, sequence: sequence++ });
+    }
+    return {
+      diagnostics: normalizeDiagnostics(candidates, entry),
+      sourceFiles: sourceGraph.files,
+      packageImportReferrers: sourceGraph.packageImportReferrers,
+    };
   });
 }
 

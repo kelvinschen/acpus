@@ -28,6 +28,7 @@ import {
   signalWorkflow,
   taskArtifactWorkflow,
   timedSignalWorkflow,
+  validWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
 import { advanceRuntimeRun, applySchedulerControlIntent } from "./support/scheduler.js";
@@ -269,6 +270,38 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(third.run.id).toBe(forkId);
       expect((await listRuns(workspace)).map(run => run.id).sort())
         .toEqual([source.run.id, forkId].sort());
+    });
+  });
+
+  it("keeps fork identity independent of package-lock metadata", async () => {
+    await withRuntimeWorkspace("runtime-fork-package-lock-independent", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const firstPackageLock = `sha256:${"a".repeat(64)}` as const;
+      const secondPackageLock = `sha256:${"b".repeat(64)}` as const;
+      const firstPrepared: PreparedRunWorkflow = {
+        ...prepared,
+        packageLockDigest: firstPackageLock,
+        lock: { ...prepared.lock, packageLockDigest: firstPackageLock },
+      };
+      const secondPrepared: PreparedRunWorkflow = {
+        ...prepared,
+        packageLockDigest: secondPackageLock,
+        lock: { ...prepared.lock, packageLockDigest: secondPackageLock },
+      };
+
+      const first = await forkRun(workspace, source.run.id, {
+        requestId: "package-lock-independent",
+        prepared: firstPrepared,
+      });
+      const replay = await forkRun(workspace, source.run.id, {
+        requestId: "package-lock-independent",
+        prepared: secondPrepared,
+      });
+
+      expect(replay.run.id).toBe(first.run.id);
+      expect((await listRuns(workspace)).map(run => run.id).sort())
+        .toEqual([source.run.id, first.run.id].sort());
     });
   });
 

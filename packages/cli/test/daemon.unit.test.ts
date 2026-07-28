@@ -15,6 +15,7 @@ const mock = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => ({ spawn: mock.spawn }));
 vi.mock("@acpus/runtime", () => ({
+  DAEMON_PROTOCOL_VERSION: 2,
   getRun: mock.getRun,
   prepareRuntimeForNewRun: mock.prepareRuntimeForNewRun,
   requestDaemonAdmitRun: mock.requestDaemonAdmitRun,
@@ -38,7 +39,7 @@ describe("CLI daemon client", () => {
   });
 
   it("does not spawn when an existing daemon is ready", async () => {
-    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7 }));
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 2 }));
 
     const ready = await ensureDaemonRunning("/workspace");
 
@@ -52,7 +53,7 @@ describe("CLI daemon client", () => {
     mock.requestDaemonStatus
       .mockReturnValueOnce(errAsync(transportFailure("not-found", "socket missing")))
       .mockReturnValueOnce(errAsync(transportFailure("refused", "socket not ready")))
-      .mockReturnValueOnce(okAsync({ status: "ok", generation: 8 }));
+      .mockReturnValueOnce(okAsync({ status: "ok", generation: 8, protocolVersion: 2 }));
 
     const ready = ensureDaemonRunning("/workspace");
     await vi.advanceTimersByTimeAsync(200);
@@ -78,7 +79,7 @@ describe("CLI daemon client", () => {
     vi.useFakeTimers();
     mock.requestDaemonStatus
       .mockReturnValueOnce(errAsync(rejectedFailure("EXECUTION_UNAVAILABLE", "Daemon lease is not ready.")))
-      .mockReturnValueOnce(okAsync({ status: "ok", generation: 9 }));
+      .mockReturnValueOnce(okAsync({ status: "ok", generation: 9, protocolVersion: 2 }));
 
     const ready = ensureDaemonRunning("/workspace");
     await vi.advanceTimersByTimeAsync(100);
@@ -127,7 +128,7 @@ describe("CLI daemon client", () => {
     mock.spawn.mockReturnValue(child);
     mock.requestDaemonStatus
       .mockReturnValueOnce(errAsync(transportFailure("not-found", "missing")))
-      .mockReturnValueOnce(okAsync({ status: "ok", generation: 10 }));
+      .mockReturnValueOnce(okAsync({ status: "ok", generation: 10, protocolVersion: 2 }));
 
     const ready = ensureDaemonRunning("/workspace");
     await vi.advanceTimersByTimeAsync(0);
@@ -166,10 +167,28 @@ describe("CLI daemon client", () => {
     expect(mock.spawn).not.toHaveBeenCalled();
   });
 
+  it("rejects a live daemon with a different protocol without spawning", async () => {
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 1 }));
+
+    const result = await ensureDaemonRunning("/workspace");
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error).toMatchObject({
+        type: "daemon-protocol-mismatch",
+        expectedProtocolVersion: 2,
+        actualProtocolVersion: 1,
+      });
+      expect(result.error.message).toContain("restart");
+    }
+    expect(mock.requestDaemonStatus).toHaveBeenCalledOnce();
+    expect(mock.spawn).not.toHaveBeenCalled();
+  });
+
   it("dispatches one control request after readiness", async () => {
     const intent = { requestId: "cli:1", type: "pause", runId: "run_1" } as const;
     const value = { type: "pause", run: { id: "run_1", status: "paused" } };
-    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7 }));
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 2 }));
     mock.requestDaemonControl.mockReturnValue(okAsync(value));
 
     const result = await sendDaemonControl("/workspace", intent);
@@ -177,24 +196,51 @@ describe("CLI daemon client", () => {
     if (result.isOk()) expect(result.value).toBe(value);
   });
 
-  it("dispatches the current admission input once after readiness", async () => {
+  it("dispatches admission directly through an already-compatible daemon", async () => {
     const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
     const run = { id: "run_1", status: "pending" };
-    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7 }));
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 2 }));
     mock.requestDaemonAdmitRun.mockReturnValue(okAsync(run));
 
     const result = await sendDaemonAdmitRun("/workspace", input);
     expect(result.isOk()).toBe(true);
     if (result.isOk()) expect(result.value).toBe(run);
-    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledOnce();
-    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledWith("/workspace");
+    expect(mock.prepareRuntimeForNewRun).not.toHaveBeenCalled();
     expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
     expect(mock.requestDaemonAdmitRun).toHaveBeenCalledWith("/workspace", input);
   });
 
+  it("prepares storage before spawning a missing daemon for admission", async () => {
+    const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
+    mock.requestDaemonStatus
+      .mockReturnValueOnce(errAsync(transportFailure("not-found", "socket missing")))
+      .mockReturnValueOnce(okAsync({ status: "ok", generation: 8, protocolVersion: 2 }));
+    mock.requestDaemonAdmitRun.mockReturnValue(okAsync({ id: "run_1", status: "pending" }));
+
+    const result = await sendDaemonAdmitRun("/workspace", input);
+
+    expect(result.isOk()).toBe(true);
+    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledOnce();
+    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledWith("/workspace");
+    expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an incompatible live daemon before storage preparation or admission", async () => {
+    const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 1 }));
+
+    const result = await sendDaemonAdmitRun("/workspace", input);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) expect(result.error.type).toBe("daemon-protocol-mismatch");
+    expect(mock.prepareRuntimeForNewRun).not.toHaveBeenCalled();
+    expect(mock.requestDaemonAdmitRun).not.toHaveBeenCalled();
+    expect(mock.spawn).not.toHaveBeenCalled();
+  });
+
   it("enriches a daemon control failure with current run state", async () => {
     const run = { id: "run_1", name: "review", status: "completed", updatedAt: "2026-07-01T00:00:00.000Z" };
-    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7 }));
+    mock.requestDaemonStatus.mockReturnValue(okAsync({ status: "ok", generation: 7, protocolVersion: 2 }));
     mock.requestDaemonControl.mockReturnValue(errAsync(rejectedFailure("RUN_NOT_CONTROLLABLE", "Run is terminal.")));
     mock.getRun.mockResolvedValue(run);
 

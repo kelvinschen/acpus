@@ -1,10 +1,11 @@
 import { writeFile } from "node:fs/promises";
+import type { Sha256Digest } from "../digest.js";
 import { tryCompileWorkflowModule } from "./module.js";
 import type { CompileWorkerEnvelope } from "./worker.js";
 
 const [entry, out, sourceRoot, dependencyRoot, expectedSourceDigest] = process.argv.slice(2);
 
-if (!entry || !out || !sourceRoot || !dependencyRoot || !expectedSourceDigest) {
+if (!entry || !out || !sourceRoot || !dependencyRoot || !isSha256Digest(expectedSourceDigest)) {
   console.error("Usage: compile-worker <entry> <out> <source-root> <dependency-root> <expected-source-digest>");
   process.exit(2);
 }
@@ -31,4 +32,8 @@ try {
   };
   await writeFile(out, `${JSON.stringify(envelope, null, 2)}\n`);
   process.exitCode = 1;
+}
+
+function isSha256Digest(value: unknown): value is Sha256Digest {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }

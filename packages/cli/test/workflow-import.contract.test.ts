@@ -162,15 +162,34 @@ describe("workflow import contracts", () => {
     });
   });
 
-  it("checks a global import in current-workspace dependency context and preserves exact preparation failures", async () => {
+  it("returns checked global-import diagnostics in workspace context and preserves preparation failures", async () => {
     await withAuthoringTestWorkspace("workflow-import-check", async workspace => {
       await withTestHome("workflow-import-check-home", async home => {
         await installWorkspaceOnlyDependency(workspace);
         const checkedSource = join(workspace, "workspace-checked.ts");
         await writeFile(checkedSource, workspaceDependencyWorkflowSource("workspace-checked"));
 
-        const checked = await importDirect(workspace, checkedSource, { scope: "global", check: true });
-        expectOk(checked, "workspace-checked", "global", true);
+        const checked = await runJson(workspace, [
+          "workflow",
+          "import",
+          checkedSource,
+          "--global",
+          "--check",
+          "--json",
+        ]);
+        expect(checked.exitCode).toBe(0);
+        expect(checked.json).toMatchObject({
+          ok: true,
+          phase: "import",
+          checked: true,
+          catalog: { name: "workspace-checked", scope: "global", status: "available" },
+          diagnostics: [{
+            code: "SC001",
+            severity: "warning",
+            source: { file: "workflow.ts", line: 3 },
+          }],
+          sourceGraphDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        });
         await expect(access(join(home, ".acpus", "workflows", "workspace-checked", "workflow.ts"))).resolves.toBeUndefined();
         expect(await readNames(globalImportRoot(home))).toEqual([]);
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
@@ -316,6 +335,7 @@ function workspaceDependencyWorkflowSource(name: string): string {
   return [
     'import { defineWorkflow } from "acpus/core";',
     'import { workspaceValue } from "workspace-only";',
+    "export async function load(moduleName: string): Promise<unknown> { return import(moduleName); }",
     `export default defineWorkflow({ name: ${JSON.stringify(name)}, description: workspaceValue }).build(() => ({ ok: true }));`,
     "",
   ].join("\n");

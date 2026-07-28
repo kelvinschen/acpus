@@ -5,7 +5,15 @@ import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { probeProcessLiveness } from "../process-liveness.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout } from "../runtime-layout.js";
-import { openExistingRuntimeStore, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "../store/store.js";
+import {
+  isPreparedRunWorkflow,
+  openExistingRuntimeStore,
+  type AgentOverrideMap,
+  type PreparedRunWorkflow,
+  type RunDetails,
+} from "../store/store.js";
+
+export const DAEMON_PROTOCOL_VERSION = 2;
 
 export type DaemonStatus = {
   status: "ok";
@@ -250,23 +258,29 @@ function requestDaemon(cwd: string, request: DaemonRequest): ResultAsync<DaemonR
   return new ResultAsync(new Promise(resolveRequest => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "admitRun" || request.method === "control" ? 30_000 : 1_000;
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      resolveRequest(err({
-        type: "transport",
-        reason: "timeout",
-        method: request.method,
-        message: `Timed out waiting for daemon ${describeRequest(request)} response.`,
-      }));
-    }, timeoutMs);
+    const timeoutMs = request.method === "admitRun"
+      ? undefined
+      : request.method === "control"
+        ? 30_000
+        : 1_000;
+    const timeout = timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          socket.destroy();
+          resolveRequest(err({
+            type: "transport",
+            reason: "timeout",
+            method: request.method,
+            message: `Timed out waiting for daemon ${describeRequest(request)} response.`,
+          }));
+        }, timeoutMs);
     socket.once("error", error => {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       resolveRequest(err(daemonTransportFailure(request, error)));
     });
     socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
     socket.once("end", () => {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       try {
         const response = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
         if (!isDaemonResponse(response)) {
@@ -577,49 +591,6 @@ function isAdmitRunRequest(value: Record<string, unknown>): value is DaemonAdmit
     && hasOwn(value, "input")
     && isJsonValue(value.input)
     && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides));
-}
-
-function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
-  if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["workflowPath", "source", "ir", "irJson", "sourceGraphDigest", "lock"], ["sourceRoot", "packageLockDigest"])) return false;
-  const ir = value.ir;
-  return typeof value.workflowPath === "string"
-    && isWorkflowSourceRef(value.source)
-    && (value.sourceRoot === undefined || typeof value.sourceRoot === "string")
-    && isPlainRecord(ir)
-    && typeof ir.name === "string"
-    && isPlainRecord(ir.root)
-    && typeof value.irJson === "string"
-    && typeof value.sourceGraphDigest === "string"
-    && (value.packageLockDigest === undefined || typeof value.packageLockDigest === "string")
-    && isRunWorkflowLockArtifact(value.lock);
-}
-
-function isRunWorkflowLockArtifact(value: unknown): boolean {
-  if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["kind", "version", "workflow", "ir", "sourceGraphDigest"], ["packageLockDigest"])
-    || value.kind !== "acpus_workflow_preparation_lock"
-    || value.version !== 1
-    || typeof value.sourceGraphDigest !== "string"
-    || (value.packageLockDigest !== undefined && typeof value.packageLockDigest !== "string")
-    || !isPlainRecord(value.workflow)
-    || !hasExactKeys(value.workflow, ["source", "sourceDigest"])
-    || !isWorkflowSourceRef(value.workflow.source)
-    || typeof value.workflow.sourceDigest !== "string"
-    || !isPlainRecord(value.ir)
-    || !hasExactKeys(value.ir, ["path", "digest"])
-    || value.ir.path !== "workflow.ir.json"
-    || typeof value.ir.digest !== "string") return false;
-  return true;
-}
-
-function isWorkflowSourceRef(value: unknown): boolean {
-  if (!isPlainRecord(value) || typeof value.entry !== "string") return false;
-  if (value.kind === "workspace") return hasExactKeys(value, ["kind", "entry"]);
-  return value.kind === "global_catalog"
-    && hasExactKeys(value, ["kind", "name", "digest", "entry"])
-    && typeof value.name === "string"
-    && /^[a-f0-9]{64}$/.test(String(value.digest));
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

@@ -30,7 +30,7 @@ describe("runtime run directory publication", () => {
       try {
         const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
         expect((await store.admitRun({
-          prepared: preparedWorkflow(invalidIr, prepared.workflowPath, workspace),
+          prepared: preparedWorkflow(invalidIr, join(workspace, prepared.source.entry), workspace),
           cwd: workspace,
           input: { ready: true },
         }))._unsafeUnwrapErr()).toMatchObject({

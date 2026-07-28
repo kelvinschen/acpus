@@ -1,10 +1,10 @@
-import { isRuntimeStoreBusyError, openRuntimeStore, tryValidatePreparedRunWorkflow } from "../store/store.js";
+import { isRuntimeStoreBusyError, openRuntimeStore } from "../store/store.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
 import { tryLoadRuntimeConfiguration } from "../configuration.js";
 import { RunExecutionSessions, type RunIncident, type RunSessionControlFailure } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
-import { startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure, type DaemonServerHandle } from "./socket.js";
+import { DAEMON_PROTOCOL_VERSION, startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure, type DaemonServerHandle } from "./socket.js";
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
 
@@ -46,7 +46,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
           status: "ok",
           pid: process.pid,
           generation: leaseGeneration,
-          protocolVersion: 1,
+          protocolVersion: DAEMON_PROTOCOL_VERSION,
           packageVersion: options.packageVersion,
         });
       },
@@ -69,11 +69,6 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       control: intent => new ResultAsync(mutations.enqueue(async () => {
         if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
         if (!store.getRun(intent.runId)) return err(handlerFailure("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`));
-        if (intent.type === "fork" && intent.prepared !== undefined) {
-          const prepared = tryValidatePreparedRunWorkflow(cwd, intent.prepared);
-          if (prepared.isErr()) return err(handlerFailure("INVALID_REQUEST", prepared.error.message));
-          intent = { ...intent, prepared: prepared.value };
-        }
         try {
           const result = await sessions.control(intent);
           if (result.isErr()) return err(daemonControlFailure(intent, result.error));
@@ -103,7 +98,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     lease = store.claimDaemon({
       workspaceRealpath: cwd,
       pid: process.pid,
-      protocolVersion: 1,
+      protocolVersion: DAEMON_PROTOCOL_VERSION,
       packageVersion: options.packageVersion,
       nodeVersion: process.version,
       execPath: process.execPath,

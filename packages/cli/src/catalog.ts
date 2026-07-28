@@ -1,13 +1,11 @@
-import { createHash } from "node:crypto";
 import { type Dirent } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { extractWorkflowMetadata, type WorkflowMetadataError, type WorkflowPreparationSource } from "@acpus/workflow-compiler";
+import { extractWorkflowMetadata, type WorkflowMetadataError } from "@acpus/workflow-compiler";
 import { ResultAsync, type Result } from "neverthrow";
 import { CliError, usageError } from "./errors.js";
-import { ensurePrivateAcpusDirectory, ensurePrivateDirectory, removePrivateTree } from "./private-directory.js";
-import { exposeWorkspaceDependencies } from "./workspace-dependencies.js";
+import { ensurePrivateAcpusDirectory, ensurePrivateDirectory } from "./private-directory.js";
 
 export type WorkflowCatalogScope = "project" | "global";
 
@@ -52,9 +50,6 @@ export type WorkflowCatalogEntry = AvailableWorkflowCatalogEntry | InvalidWorkfl
 export type ResolvedWorkflowReference = {
   workflow: string;
   catalog?: AvailableWorkflowCatalogEntry;
-  source?: WorkflowPreparationSource;
-  sourceRoot?: string;
-  cleanup?: () => Promise<void>;
 };
 
 type WorkflowCatalogCommitFailure = {
@@ -118,8 +113,7 @@ export async function lookupWorkflowCatalogEntry(cwd: string, name: string, opti
 export async function resolveWorkflowReference(cwd: string, workflow: string, options: WorkflowCatalogScopeOptions = {}): Promise<ResolvedWorkflowReference> {
   if (!hasSelectedScope(options) && await isPathLikeWorkflowReference(cwd, workflow)) return { workflow };
   const catalog = await lookupWorkflowCatalogEntry(cwd, workflow, options);
-  if (catalog.scope === "project") return { workflow: catalog.entryPath, catalog };
-  return { ...(await materializeGlobalCatalogEntry(cwd, catalog)), catalog };
+  return { workflow: catalog.entryPath, catalog };
 }
 
 export function prepareWorkflowCatalogCommit(
@@ -272,61 +266,6 @@ async function isPathLikeWorkflowReference(cwd: string, workflow: string): Promi
     return true;
   }
   return isFile(resolve(cwd, workflow));
-}
-
-async function materializeGlobalCatalogEntry(cwd: string, entry: AvailableWorkflowCatalogEntry): Promise<ResolvedWorkflowReference> {
-  let snapshotRoot: string | undefined;
-  try {
-    const digest = await digestWorkflowPackage(entry.packagePath);
-    const stagingRoot = join(homedir(), ".acpus", "tmp", "catalog-snapshots");
-    await ensurePrivateAcpusDirectory(stagingRoot);
-    snapshotRoot = await mkdtemp(join(stagingRoot, `${entry.name}-`));
-    const target = join(snapshotRoot, "package");
-    const targetEntry = join(target, catalogWorkflowEntry);
-    await cp(entry.packagePath, target, { recursive: true, dereference: true });
-    await ensurePrivateDirectory(target);
-    if (!await isFile(targetEntry)) throw new Error(`materialized package is missing ${catalogWorkflowEntry}`);
-    if (await digestWorkflowPackage(target) !== digest) {
-      throw new Error("catalog package changed while its snapshot was being created");
-    }
-    await exposeWorkspaceDependencies(snapshotRoot, cwd);
-    return {
-      workflow: targetEntry,
-      sourceRoot: target,
-      source: { kind: "global_catalog", name: entry.name, digest },
-      cleanup: () => removePrivateTree(snapshotRoot!),
-    };
-  } catch (error) {
-    if (snapshotRoot) {
-      try {
-        await removePrivateTree(snapshotRoot);
-      } catch (cleanupError) {
-        throw inspectError(`Workflow catalog entry '${entry.name}' could not be materialized: ${causeMessage(error)} Snapshot cleanup also failed: ${causeMessage(cleanupError)}`);
-      }
-    }
-    throw inspectError(`Workflow catalog entry '${entry.name}' could not be materialized: ${causeMessage(error)}`);
-  }
-}
-
-export async function digestWorkflowPackage(root: string): Promise<string> {
-  const hash = createHash("sha256");
-  await addToDigest(hash, root, "");
-  return hash.digest("hex");
-}
-
-async function addToDigest(hash: ReturnType<typeof createHash>, path: string, relativePath: string): Promise<void> {
-  const item = await stat(path);
-  const normalizedPath = relativePath.split(/[\\/]/).filter(Boolean).join("/");
-  if (item.isDirectory()) {
-    if (normalizedPath) hash.update(`D ${normalizedPath}\n`);
-    const names = (await readdir(path)).sort();
-    for (const name of names) await addToDigest(hash, join(path, name), join(relativePath, name));
-    return;
-  }
-  if (!item.isFile()) return;
-  hash.update(`F ${normalizedPath}\n`);
-  hash.update(await readFile(path));
-  hash.update("\n");
 }
 
 async function isFile(path: string): Promise<boolean> {

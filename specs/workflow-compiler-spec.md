@@ -12,7 +12,7 @@
 - The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `extractWorkflowMetadata(source, fileName)` as a `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
-- The package MUST expose `WorkflowSourceRef`.
+- The package MUST expose `Sha256Digest`, `WorkflowSourceFile`, `WorkflowSourceInput`, `WorkflowSourceRef`, and `WorkflowSourceBundle`.
 - The package MUST expose `CompileWorkerFailure` and `PackageLockFailure` as public failure types without exposing the worker process entrypoint.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
@@ -34,7 +34,7 @@
 - When those digests differ, internal module compilation MUST return a serializable `workflow-source-changed` failure without importing the workflow module.
 - After importing and verifying the workflow definition, internal module compilation MUST analyze Task call sites before invoking the workflow build callback.
 - An otherwise successful internal module compilation MUST read the entry source text again before returning and MUST return `workflow-source-changed` when its digest no longer matches the checked digest.
-- The source-generation fence applies only to the workflow entry source text. It MUST NOT snapshot imported helper modules or reusable Task modules and does not establish an atomic filesystem snapshot.
+- The compile-worker source-generation fence applies to the frozen workflow entry text; snapshot preparation separately freezes and verifies the supported local static module graph before invoking the worker.
 - Recoverable internal module compilation failures MUST use a serializable tagged union covering source read failure, source-generation change, module import failure, invalid default export, workflow build/lowering failure, task analysis failure, and workflow path outside its source root.
 - Internal module compilation MUST convert reusable-Task source facts into one immutable Core link plan and lower through `tryCompileWorkflowDefinition(...)`.
 - Task-analysis and source-containment failures MUST therefore take precedence over failures thrown by the workflow build callback.
@@ -58,6 +58,7 @@
 - Normal TypeScript 7 native shutdown MUST close the service input and await clean process exit before releasing the API; successful workflow checks MUST NOT emit native shutdown noise on process stderr.
 - The TypeScript check MUST use a scratch tsconfig with NodeNext module resolution and no emit.
 - The TypeScript check MUST keep the scratch tsconfig self-contained to the workflow entry and its import graph; it MUST NOT inherit host `tsconfig.json` `files`, `include`, or project references.
+- For an entry outside the workspace, TypeScript dependency resolution MUST use `workspaceDir/node_modules` as the fallback authority without creating a `node_modules` entry beside the caller's source.
 - The TypeScript check MUST obtain supported official facade paths and the workspace-source flag from the [Loader](loader-spec.md).
 - When the Loader reports workspace-source facade targets, the TypeScript check MUST enable the `development` condition needed to consume them.
 - Published installs MUST rely on normal package resolution for non-Acpus dependencies.
@@ -105,6 +106,10 @@
 - Diagnostic origin, source offsets, ownership, and original sequence MUST remain package-private candidate metadata and MUST NOT be added to `DiagnosticIR`, preparation JSON, worker JSON, or CLI JSON.
 - Diagnostic normalization MUST order config, program, global, and syntactic TypeScript categories first; then entry-file semantic TypeScript and AL/TB diagnostics by source position; then imported semantic diagnostics by lexical file name and source position. A raw non-empty TypeScript span that contains another same-file diagnostic MUST follow the contained diagnostic, while a standalone raw diagnostic MUST retain normal source order.
 - Exact deduplication MUST compare all user-visible diagnostic fields: code, severity, message, path, source file/line/column, and hint. Diagnostics at different source locations MUST NOT be merged, and ordering or cascade classification MUST NOT depend on diagnostic message text, `never`, `CheckedBuildFn`, or another internal type name.
+- The check phase MUST emit `SC001` as a non-blocking warning at each statically recognizable module load outside the tracked source graph, including nonliteral dynamic imports, relative `require`, `createRequire`, absolute or `file:` loads, local modules represented only by declarations, and static local imports that resolve to an unsupported source format.
+- `require` and `createRequire` warning recognition MUST follow binding provenance. An aliased `createRequire` imported from `node:module` or `module` MUST be recognized, while a user-defined binding that merely has either name MUST NOT be treated as a runtime loader.
+- A local declaration file reached by a static edge MUST remain in the checked source graph and snapshot bundle as TypeScript checking support while retaining its `SC001` warning. A statically resolved unsupported local source file MUST produce `SC001` without being traversed or added to the source graph.
+- Successful preparation MUST merge non-blocking check diagnostics into the returned `WorkflowIR.diagnostics` without duplicating an identical compiler diagnostic.
 
 - Full preparation MUST compile through a worker/import path that loads TypeScript workflow modules and supported official `acpus/*` authoring facade specifiers through `@acpus/loader`.
 - The internal `compileWorkflow(...)` boundary MUST return `ResultAsync<CompiledWorkflowModule, CompileWorkerFailure>` for recoverable worker, protocol, and module failures.
@@ -143,7 +148,9 @@
 - Reusable module metadata MUST record `exportName: "default"` for default imports, the original exported binding name for named imports even when locally aliased, and the exported workflow-module binding name for same-file task exports.
 - Same-file reusable task metadata MUST identify the workflow source module and exported task name.
 - Imported reusable task metadata MUST keep the workflow import specifier rather than a resolved absolute filesystem path.
-- Reusable task modules MUST remain live module references; the compiler MUST NOT generate executable task artifacts from their source or dependencies.
+- Workspace reusable task modules MUST remain live module references.
+- Snapshot preparation MUST include a reusable task module reached through a supported local static import and its supported local static dependencies in the source bundle.
+- Bare-package reusable tasks and dependencies MUST remain environment-provided references and MUST NOT be included in a source bundle.
 - Package imports and barrel re-exports MUST NOT be rejected solely because they cross package or module boundaries.
 - Unsupported source forms such as namespace/property access MUST produce check diagnostics when statically recognizable.
 - Task callsites that cannot be joined to lowered task nodes by step id MUST produce check diagnostics rather than module descriptors.
@@ -158,42 +165,79 @@
 
 ### Prepared Workflow Data
 
-- `WorkflowSourceRef` MUST use the following closed union.
+- `WorkflowPreparationOptions` MUST use the following closed input shape.
 
 ```ts
+type WorkflowPreparationOptions = {
+  workspaceDir: string;
+  source:
+    | { kind: "path"; entry: string }
+    | { kind: "files"; entry: string; files: readonly WorkflowSourceFile[] };
+};
+```
+
+- A path entry MAY be absolute or relative to `workspaceDir`.
+- An existing path physically contained by `workspaceDir` MUST produce a live workspace source.
+- A path outside `workspaceDir` MUST produce a captured snapshot source.
+- `workspaceDir` MUST remain the workflow cwd and bare-package dependency authority for both source kinds.
+- A files-input path MUST be a non-empty portable POSIX relative path with no absolute prefix, drive prefix, NUL, backslash, empty segment, `.` segment, or `..` segment.
+- Files input MUST reject duplicate paths, file/directory-prefix collisions, and NFC-plus-case-fold-equivalent segment collisions.
+- A files-input entry MUST identify exactly one supplied file.
+- Preparation MUST retain every supplied files-input file in the canonical bundle and source-graph digest, including a file not reached from the entry.
+
+- `WorkflowSourceRef` and `WorkflowSourceBundle` MUST use these closed shapes.
+
+```ts
+type Sha256Digest = `sha256:${string}`;
+
 type WorkflowSourceRef =
   | { kind: "workspace"; entry: string }
-  | { kind: "global_catalog"; name: string; digest: string; entry: string };
+  | { kind: "snapshot"; entry: string; digest: Sha256Digest };
+
+type WorkflowSourceBundle = {
+  kind: "acpus_workflow_source_bundle";
+  version: 1;
+  files: readonly { path: string; content: string }[];
+};
 ```
 
-- Preparation input source identity MUST use the following closed union and MUST NOT accept an entry independently from the workflow path.
+- Snapshot path discovery MUST follow static relative imports and re-exports, literal relative `import()`, local `#imports`, reusable Task modules, and their supported local TypeScript dependencies, including declaration files used for checking.
+- Snapshot path discovery MUST stop at bare packages, official Acpus facades, `node:`, and `data:` dependencies.
+- Snapshot path discovery MUST warn and stop at a static local edge whose resolved implementation is not a supported TypeScript source file.
+- Snapshot path discovery MUST include each nearest `package.json` that affects a captured module's NodeNext semantics.
+- Snapshot projection MUST use the captured TypeScript files' common ancestor as its canonical root. When a captured source actually uses a local `#imports` target, projection MUST instead retain that target's package-root-relative layout; otherwise an affecting ancestor manifest above the canonical root MUST be projected as root `package.json` so unrelated physical parent segments do not enter source identity.
+- Relative static imports MAY cross entry-parent directories; preparation MUST derive one internal common ancestor and project only captured files beneath it.
+- Snapshot path capture MUST reject symlinks, hard links, special files, non-UTF-8 content, path collisions, and a file that changes between TypeScript discovery and stable capture. Valid UTF-8 content, including an initial byte-order mark, MUST be preserved exactly.
+- Preparation MUST rerun authoritative check and compilation from a private materialization of the captured bundle.
+- A supported local module discovered only after materialization, or a previously discovered module that disappears, MUST fail with type `source-changed` and phase `source`.
+- A snapshot source reference, source bundle, preparation lock, and source-graph digest payload MUST NOT encode the original external physical root or the physical common-ancestor path.
+- Compiler scratch and private materialization paths, including their `file:` URL forms, MUST NOT appear in a public prepared result, diagnostic, or typed preparation failure.
+- A snapshot IR value that retains the private materialization path MUST fail with type `source-invalid` and phase `source` before preparation returns either a prepared workflow or a validation failure.
+
+- Bundle files MUST be sorted by locale-independent path code-unit order.
+- Source-file content digests MUST be SHA-256 of UTF-8 content.
+- `sourceGraphDigest` MUST be SHA-256 of recursively key-sorted stable JSON plus one trailing newline for this payload:
 
 ```ts
-type WorkflowPreparationSource =
-  | { kind: "workspace" }
-  | { kind: "global_catalog"; name: string; digest: string };
+{
+  kind: "acpus_workflow_source_graph",
+  version: 1,
+  entry,
+  files: [{ path, digest }]
+}
 ```
 
-- `prepareWorkflow(options)` MUST accept optional preparation source identity and `sourceRoot` values for a caller-owned source snapshot.
-- Preparation MUST derive the prepared source entry exactly once from the workflow path relative to the selected source root.
-- Workspace preparation MUST use `cwd` as its source root. An explicit workspace `sourceRoot` that differs from `cwd` MUST fail with type `source-invalid` and phase `source`.
-- Global-catalog preparation MUST require an explicit source root.
-- A workflow path that is lexically outside the selected source root MUST fail with type `source-invalid` and phase `source` before check or compilation; successful preparation remains subject to physical containment.
-- An existing workflow path whose resolved target is outside the resolved source root, including a symlink escape, MUST fail with type `source-invalid` and phase `source` before check or compilation.
-- Preparation MUST keep `cwd` as the dependency-resolution authority when a caller-owned source snapshot is outside the workspace.
-- A prepared source entry and each reusable-task referrer MUST be portable relative paths physically contained by the selected source root.
-- Containment MUST reject an actual `..` parent segment, not a contained file or directory name that merely begins with two dots.
-- A global-catalog source reference MUST preserve the caller-provided catalog name and package digest and MUST use the compiler-derived package-relative entry.
-- Absolute temporary source roots MUST remain in-memory admission inputs.
-- `WorkflowIR` and preparation-lock metadata MUST NOT contain an absolute temporary source root.
-- `prepareWorkflow(options)` MUST return a prepared workflow containing workflow path, source reference, optional temporary source root, `WorkflowIR`, serialized IR JSON, IR digest, source graph digest, optional package lock digest, and lock metadata.
+- The source-graph payload files MUST be path-sorted and contain no absolute paths, mtimes, modes, source roots, or package-lock data.
+- A snapshot source digest MUST equal its prepared `sourceGraphDigest`.
+- A workspace source graph MUST use paths relative to `workspaceDir` and the same digest payload without returning a bundle. A supported local static source or affecting nearest package manifest outside `workspaceDir` MUST remain live and use a leading `../` path; a path on a different volume that cannot be represented relative to `workspaceDir` MUST fail with type `source-invalid` and phase `source`.
+- `PreparedWorkflow` MUST be a closed union in which workspace sources have no `sourceBundle` and snapshot sources require the matching inline `sourceBundle`.
 - The IR digest MUST be a `sha256:` digest of stable pretty JSON written as `workflow.ir.json`.
-- The source graph digest MUST be derived from workflow source digest and package lock digest when present.
 - Package lock digest MAY be computed from `pnpm-lock.yaml`, `package-lock.json`, or `yarn.lock`.
+- Package lock digest MUST remain optional environment metadata and MUST NOT affect source-graph or source-reference identity.
 - Package lock discovery MUST continue to the next candidate only when the current path fails with `ENOENT` or `ENOTDIR`.
 - An unreadable package lock, directory in place of a lockfile, or symlink-resolution failure MUST return `PackageLockFailure` rather than being treated as absence.
-- The lock metadata MUST use kind `acpus_workflow_preparation_lock`.
-- The lock metadata MUST reference the closed workflow source, workflow source digest, IR digest, source graph digest, and optional package lock digest.
+- Lock metadata MUST use kind `acpus_workflow_preparation_lock`, version `2`, and workflow fields `{ source, entryDigest }`.
+- Lock metadata MUST reference the IR digest, source graph digest, and optional package lock digest.
 - Preparation lock metadata MUST be deterministic for identical workflow source, IR, and package lock inputs; it MUST NOT contain a generation timestamp.
 - Workflow preparation scratch data MUST use a private system temporary directory.
 - Workflow preparation MUST remove its scratch data after success or failure.
@@ -201,6 +245,6 @@ type WorkflowPreparationSource =
 
 ## Verification
 
-- Unit, contract, and integration tests cover compile-worker protocol validation, metadata extraction, phase ordering, source-root containment, workflow entry source-generation fencing, portable source/referrer metadata, prepared workflow data, deterministic locks/digests, scratch cleanup, and tagged failures.
+- Unit, type-contract, and integration tests cover compile-worker protocol validation, metadata extraction, path/files inputs, portable path rejection, hard-link and invalid-UTF-8 rejection, BOM preservation, sparse static closure capture, declaration support, loader-binding provenance, unsupported static targets, external dependency authority, `SC001`, source-generation fencing, location-independent canonical bundles and digests, live sources outside the workspace, lock v2, scratch cleanup and path redaction, and tagged failures.
 - Authoring-rule tests cover diagnostic ownership, declaration provenance, callback serialization, `any` rejection, stable ordering, and metadata boundaries.
 - Task-analysis tests cover inline capture, reusable references, stable module metadata, unsupported callsites, and validation backstops.

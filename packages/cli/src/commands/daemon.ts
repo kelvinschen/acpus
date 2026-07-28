@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  DAEMON_PROTOCOL_VERSION,
   getRun,
   prepareRuntimeForNewRun,
   requestDaemonAdmitRun,
@@ -22,6 +23,7 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 export type CliDaemonFailure =
   | { type: "runtime-configuration-invalid"; message: string }
   | { type: "runtime-preparation-failed"; message: string }
+  | { type: "daemon-protocol-mismatch"; expectedProtocolVersion: number; actualProtocolVersion: number; message: string }
   | { type: "daemon-status-failed"; failure: DaemonClientFailure; message: string }
   | { type: "daemon-spawn-failed"; errno?: string; message: string }
   | { type: "daemon-exited-before-ready"; exitCode: number | null; signal: NodeJS.Signals | null; message: string }
@@ -56,7 +58,9 @@ async function ensureDaemonRunningResult(cwd: string): Promise<Result<void, CliD
 
   while (Date.now() <= deadline) {
     const status = await requestDaemonStatus(cwd);
-    if (status.isOk()) return ok(undefined);
+    if (status.isOk()) {
+      return daemonProtocolResult(status.value.protocolVersion);
+    }
     if (childState?.error !== undefined) {
       return err({
         type: "daemon-spawn-failed",
@@ -118,15 +122,25 @@ export function sendDaemonAdmitRun(
   input: { prepared: PreparedRunWorkflow; input: JsonValue; agentOverrides?: AgentOverrideMap },
 ): ResultAsync<RunDetails, CliDaemonFailure> {
   return new ResultAsync((async () => {
-    try {
-      await prepareRuntimeForNewRun(cwd);
-    } catch (error) {
-      return err({
-        type: "runtime-preparation-failed" as const,
-        message: errorMessage(error, "Runtime storage could not be prepared for a new run."),
-      });
+    const status = await requestDaemonStatus(cwd);
+    let ready: Result<void, CliDaemonFailure>;
+    if (status.isOk()) {
+      ready = daemonProtocolResult(status.value.protocolVersion);
+    } else if (isStartupConnectionFailure(status.error)) {
+      try {
+        await prepareRuntimeForNewRun(cwd);
+      } catch (error) {
+        return err({
+          type: "runtime-preparation-failed" as const,
+          message: errorMessage(error, "Runtime storage could not be prepared for a new run."),
+        });
+      }
+      ready = await ensureDaemonRunning(cwd);
+    } else if (isInitializingFailure(status.error)) {
+      ready = await ensureDaemonRunning(cwd);
+    } else {
+      ready = err({ type: "daemon-status-failed", failure: status.error, message: status.error.message });
     }
-    const ready = await ensureDaemonRunning(cwd);
     if (ready.isErr()) return err(ready.error);
     return requestDaemonAdmitRun(cwd, input).mapErr(failure => ({
       type: "request-failed" as const,
@@ -155,6 +169,17 @@ function isStartupConnectionFailure(failure: DaemonClientFailure): boolean {
 
 function isInitializingFailure(failure: DaemonClientFailure): boolean {
   return failure.type === "rejected" && failure.code === "EXECUTION_UNAVAILABLE";
+}
+
+function daemonProtocolResult(actualProtocolVersion: number): Result<void, CliDaemonFailure> {
+  return actualProtocolVersion === DAEMON_PROTOCOL_VERSION
+    ? ok(undefined)
+    : err({
+        type: "daemon-protocol-mismatch",
+        expectedProtocolVersion: DAEMON_PROTOCOL_VERSION,
+        actualProtocolVersion,
+        message: `Workspace daemon protocol version ${actualProtocolVersion} does not match this CLI's version ${DAEMON_PROTOCOL_VERSION}. Wait for the existing daemon to exit or restart it with the current Acpus version, then retry.`,
+      });
 }
 
 async function controlFailure(

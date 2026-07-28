@@ -10,12 +10,12 @@ import {
 } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata } from "../task-analysis/index.js";
-import { sha256Digest } from "../digest.js";
+import { sha256Digest, type Sha256Digest } from "../digest.js";
 import { err, ok, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
 export type CompiledWorkflowModule = {
   ir: WorkflowIR;
-  sourceDigest: string;
+  sourceDigest: Sha256Digest;
 };
 
 export type CompileWorkflowModuleError =
@@ -29,7 +29,7 @@ export type CompileWorkflowModuleError =
 
 export type CompileWorkflowModuleOptions = {
   dependencyRoot?: string;
-  expectedSourceDigest: string;
+  expectedSourceDigest: Sha256Digest;
 };
 
 export function tryCompileWorkflowModule(

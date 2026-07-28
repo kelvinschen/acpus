@@ -22,7 +22,7 @@
 | Active database | `runtime/runtime.db` |
 | Run capsule | `runtime/runs/<run-id>/` |
 | Private Turn Evidence | `runtime/runs/<run-id>/evidence/agents/` |
-| Durable global-catalog source | `runtime/sources/catalog/<name>/<digest>/` |
+| Durable workflow snapshot | `runtime/sources/snapshots/<sha256-hex>/manifest.json` and `files/` |
 | Interrupted deletion | `runtime/trash/` |
 | Archived storage generation | `archives/<utc>-v<storage-version>/` |
 
@@ -47,7 +47,7 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 2` as the current storage version.
+- The active database MUST use SQLite `user_version = 3` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index private Agent evidence and bounded semantic inspection through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -73,14 +73,23 @@
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
 - `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, and `AgentOverrideValidationFailure`; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
-- `PreparedRunValidationFailure.reason` MUST distinguish `invalid-ir-json`, `invalid-ir`, `ir-mismatch`, `ir-digest-mismatch`, `source-graph-mismatch`, `package-lock-mismatch`, and `entry-mismatch`.
-- New-run and replacement-fork admission MUST validate the closed preparation-lock shape, canonical frozen IR, matching digests, compiler-owned workflow source reference, and `sha256([sourceDigest, packageLockDigest ?? ""].join("\n"))` source-graph digest before mutation; daemon failures use `INVALID_REQUEST`.
+- `PreparedRunValidationFailure.reason` MUST distinguish `invalid-ir-json`, `invalid-ir`, `ir-mismatch`, `ir-digest-mismatch`, `source-graph-mismatch`, `source-bundle-mismatch`, `package-lock-mismatch`, and `entry-mismatch`.
+- New-run and replacement-fork admission MUST validate the closed preparation-lock v2 shape, canonical frozen IR, matching lock metadata, and compiler-owned workflow source reference before mutation; daemon failures use `INVALID_REQUEST`.
+- Successful prepared-workflow validation MUST return a Runtime-owned detached value so caller mutation cannot change source, bundle, lock, or IR data after validation and before durable publication.
+- A missing, changed, escaping, symbolic-link, or non-regular workspace entry is `entry-mismatch`; runtime-workspace and other filesystem or system failures MUST reject rather than become a prepared-workflow validation failure.
 - Canonical frozen-IR admission MUST delegate to Core `validateWorkflowIR(...)`, reject validator errors or existing error diagnostics as `invalid-ir`, accept warning-only diagnostics, and MUST NOT append to or mutate prepared diagnostics.
 - A workspace source reference MUST resolve its portable entry and reusable-task referrers beneath the canonical workspace root.
-- A global-catalog source reference MUST identify its catalog name, package digest, and portable entry without persisting a temporary absolute source path.
-- Admission of a global-catalog source MUST verify the supplied package snapshot against its package digest before publishing or reusing `runtime/sources/catalog/<name>/<digest>/`.
-- Runtime execution MUST resolve frozen global-catalog reusable-task referrers from the Runtime-owned durable source snapshot.
-- Runtime execution MUST use the run workspace as the fallback dependency authority for bare imports originating in a frozen global-catalog source.
+- A snapshot source reference MUST contain exactly its portable entry and `sha256:<hex>` source-graph digest.
+- A snapshot prepared workflow MUST contain one canonical `acpus_workflow_source_bundle` v1; workspace prepared workflows MUST NOT contain a source bundle.
+- Bundle file paths MUST be safe portable POSIX relative paths in ascending ordinal order, with no duplicates, file/directory prefix conflicts, or NFC/case-folded path or directory-segment collisions, and the exact entry MUST be present.
+- Runtime MUST recompute the snapshot source graph as `sha256(stableJsonLine({ kind: "acpus_workflow_source_graph", version: 1, entry, files: [{ path, digest: sha256(utf8Content) }] }))`; it MUST equal both the source reference digest and prepared `sourceGraphDigest`.
+- Runtime MUST verify the lock entry digest against the corresponding bundle file for snapshots and the live regular non-symbolic-link workspace entry for workspace sources.
+- A source bundle is admission-only: Runtime MUST NOT persist it in SQLite, run capsules, locks, events, fork fingerprints, or public run metadata.
+- Admission MUST publish a verified snapshot through a private staging directory, `0700` directories, `0600` files, and atomic rename to `runtime/sources/snapshots/<sha256-hex>/`; an existing digest path MUST have its private modes, manifest, inventory, and contents fully verified before reuse on POSIX platforms.
+- A durable snapshot manifest MUST use a closed versioned shape containing the entry, source-graph digest, and ordered file digest inventory; recovery MUST verify its canonical bytes, private modes on POSIX platforms, exact file inventory, and file contents before resolving reusable-task source from `files/`.
+- Recovery MUST reject persisted source metadata unless `source_json` agrees with the run workflow entry, source-graph digest, and digest-verified preparation lock source, source-graph, and IR metadata.
+- Runtime execution MUST use the run workspace as cwd and fallback dependency authority for bare imports originating in a frozen snapshot.
+- `packageLockDigest`, when present, is environment metadata only and MUST NOT contribute to source-graph or fork identity.
 - Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
 - Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, and the optional private `evidence/` tree.
@@ -88,7 +97,7 @@
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
 - Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
 - Admission MUST atomically persist `run.admitted`, run/public node projections, scheduler bootstrap state, and separately stored Agent overrides before daemon-owned advancement.
-- Execution MUST use frozen IR instead of live workflow source and never copy reusable task source or dependencies into the run directory.
+- Execution MUST use frozen IR instead of live workflow source and MUST NOT copy reusable task source or dependencies into the run directory; snapshot reusable source lives only in the Runtime source store.
 - Completed runs MUST persist normalized root output and `run.completed`; runtime failures after admission persist failed state and `run.failed`.
 - A run row without its required frozen input/files MUST fail as durable corruption rather than appear absent.
 - `deleteRun` MUST return `ResultAsync<RunRecord | undefined, RunDeleteFailure>`, with `undefined` for an absent store/run and `run-delete-active` as its only recoverable error.
@@ -113,8 +122,8 @@
 - Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery, include those candidates in a failing dry-run report, and MUST NOT select an archive created by recovery during that same invocation.
 - Real pruning MUST delete selected runs through the Runtime-owned trash protocol.
 - Real pruning and generation archival MUST fail while another process holds the workspace runtime for writable use.
-- After selected run deletion, Runtime MUST delete only global-catalog source snapshots that no remaining run references.
-- A shard MUST be removed only when it has no runs, archives, catalog snapshots, unresolved trash, or live daemon.
+- After selected run deletion, Runtime MUST delete only workflow snapshots whose digest no remaining run references.
+- A shard MUST be removed only when it has no runs, archives, workflow snapshots, unresolved trash, or live daemon.
 - Empty-shard removal MUST reject a `daemon.sock` entry unless the active layout uses that path and the entry is a Unix socket.
 - Removing an empty shard MUST remove its empty active database, manifest, and workspace-shard directory.
 - One malformed or failed shard MUST NOT prevent pruning of other selected shards.
@@ -418,7 +427,10 @@ type DaemonSteerControlResult = {
 - A steer instruction MUST contain non-whitespace text.
 - Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
 - The daemon MUST expose `admitRun(prepared, input, agentOverrides?)`, `control(intent)`, `shutdown()`, and `status()` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
+- The daemon protocol version MUST be exactly `2`, exposed through the public `DAEMON_PROTOCOL_VERSION` constant and daemon status/lease metadata.
 - Requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message } }`.
+- Prepared workflow requests MUST accept only the current workspace-or-snapshot union, lock v2, and bundle v1 shapes; Runtime MUST NOT parse protocol-v1 prepared workflow fields.
+- Daemon clients MUST NOT impose a unilateral response deadline on admission because disconnecting cannot prove that a durable mutation did not commit; idempotent controls MAY retain their bounded transport timeout, and status and shutdown probes MAY retain shorter bounded transport timeouts.
 - Daemon client functions MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures while the socket wire remains ordinary JSON.
 - Successful admission and control responses MUST validate the closed required `RunDetails`, `RunStatus`, execution-state, JSON-value, and control-result shapes; a control result type MUST match the requested intent, and malformed success data is a `protocol/result` failure.
 - Public errors MUST use only `INVALID_REQUEST`, `RUN_NOT_FOUND`, `RUN_NOT_CONTROLLABLE`, `CONTROL_CONFLICT`, `EXECUTION_UNAVAILABLE`, `STORE_BUSY`, `STORE_ERROR`, and `INTERNAL_ERROR`, with actionable text but no lease/SQLite/projection internals.
@@ -493,6 +505,7 @@ type DaemonSteerControlResult = {
 ### Read APIs And Daemon Lifecycle
 
 - `listRuns`, `getRun`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
+- Read-only inspection MUST validate persisted frozen IR, lock, and source metadata without resolving or hashing a workflow snapshot; execution and explicit frozen-run source resolution MUST fully verify the snapshot before returning its source root.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
 - When an active database has the Acpus application id and a positive storage version older than the current version, `getRuntimeHealth` MUST return `ok: true`, `state: "unreadable"`, and a `store` warning.
 - That warning MUST use `Runtime storage version <observed> is older than the supported version <expected>. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`
@@ -964,10 +977,10 @@ type RunInspectionEmission =
 - `pnpm test:integration packages/runtime`: proves the production execution seam, nested Parallel/Fanout and Signal admission, active-session Signal wakeup, immediate pause/run-cancel fencing, read/write parity for projected control targets, pause/resume/retry completion and session epochs, atomic steer targeting/idempotency/recovery, exact steering prompts, bound ArtifactRef replacement fencing, exact public verified artifact reads, post-registration Agent/Trace file retention, durable Evidence start-before-dispatch, exact fence/final boundaries, normal versus fenced Trace publication, superseded attempt fencing/sealing/settle gating, Evidence recovery, retry replay behavior, execution-metadata authority, and lease recovery ordering.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the scheduler, store, session, executor, artifact, and progress interfaces agree.
 - Pure unit tests own workspace-key/endpoint derivation, manifest validation, runtime-generation classification, prune selection/cutoff, and maintenance-lock timing/concurrent initialization; integration tests MUST NOT reproduce those rule matrices through fresh databases.
-- Storage integration uses one tracer per cross-layer risk: shard isolation, catalog-source publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.
+- Storage integration uses one tracer per cross-layer risk: shard isolation, workflow-snapshot publication/reuse, preview-to-delete pruning, archive/rebuild, delete rollback/trash reconciliation, and verified artifact reads.
 - Database tests assert current format markers and persisted Runtime semantics; they MUST NOT snapshot table/column inventories or assert the absence of fields from historical schemas.
 - A fresh-process Runtime integration test verifies that SQLite initialization is quiet while an unrelated experimental warning remains observable.
-- Cover workspace-key and manifest validation, private shard creation, database version archive/reset, frozen-file integrity, run-directory entry limits, prepared source consistency, durable global-catalog sources, collision-safe atomic admission, trash reconciliation, pruning, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
+- Cover workspace-key and manifest validation, private shard creation, database version archive/reset, frozen-file integrity, run-directory entry limits, prepared source consistency, durable workflow snapshots, collision-safe atomic admission, trash reconciliation, pruning, selective fork artifact materialization, startup staging cleanup, normalization, and mutation-free rejection.
 - Prove deterministic scheduler recovery and every node/composite strategy, identity, resource, deadline, cancellation, retry, and projection rule.
 - Exercise isolated Tasks, reusable loading, artifacts, Agents, response repair, progress, Private Turn Evidence, bounded semantic projection, conditional canonical turn records, and optional captures.
 - Cover control idempotency/targeting, fork safety, daemon fencing, sessions, socket ownership, heartbeat, idle-stop, and public error sanitization.

@@ -14,12 +14,33 @@ function acceptResult(_result: CliResult): void {}
 
 describe("CLI result type", () => {
   it("closes fields and success states by phase", () => {
-    const imported = { ok: true, phase: "import", message: "Imported.", catalog, checked: true } as const;
+    const imported = { ok: true, phase: "import", message: "Imported.", catalog, checked: false } as const;
     acceptResult(imported);
-    expectTypeOf(imported.checked).toEqualTypeOf<true>();
+    expectTypeOf(imported.checked).toEqualTypeOf<false>();
 
     // @ts-expect-error successful imports require checked
     acceptResult({ ok: true, phase: "import", message: "Imported.", catalog });
+    // @ts-expect-error checked imports require their preparation result
+    acceptResult({ ok: true, phase: "import", message: "Imported.", catalog, checked: true });
+    acceptResult({
+      ok: true,
+      phase: "import",
+      message: "Imported.",
+      catalog,
+      checked: true,
+      diagnostics: [],
+      sourceGraphDigest: "sha256:checked",
+    });
+    // @ts-expect-error unchecked imports cannot expose preparation fields
+    acceptResult({
+      ok: true,
+      phase: "import",
+      message: "Imported.",
+      catalog,
+      checked: false,
+      diagnostics: [],
+      sourceGraphDigest: "sha256:unchecked",
+    });
     // @ts-expect-error checked is only valid for import success
     acceptResult({ ok: true, phase: "check", checked: true });
     // @ts-expect-error import failure cannot expose catalog state
@@ -65,6 +86,25 @@ describe("CLI result type", () => {
         fencedAttemptId: "attempt_1",
         continuation: "queued",
       },
+    });
+    acceptResult({
+      ok: true,
+      phase: "control",
+      message: "Forked.",
+      run: {} as never,
+      control: { type: "fork", state: "applied", sourceRunId: "run_source" },
+      diagnostics: [],
+      sourceGraphDigest: "sha256:replacement",
+      catalog,
+    });
+    // @ts-expect-error preparation fields belong only to replacement fork controls
+    acceptResult({
+      ok: true,
+      phase: "control",
+      message: "Paused.",
+      run: {} as never,
+      control: { type: "pause", state: "applied", runId: "run_1" },
+      diagnostics: [],
     });
   });
 });

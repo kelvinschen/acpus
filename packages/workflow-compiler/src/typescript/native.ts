@@ -1,8 +1,15 @@
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import type { SourceFile } from "typescript/unstable/ast";
+import type { FileSystem } from "typescript/unstable/fs";
 import { API, type Project, type Snapshot } from "typescript/unstable/sync";
 
 export type NativeProjectContext = {
@@ -21,6 +28,7 @@ export async function withNativeProject<T>(
     cwd: string;
     sourcePath: string;
     source: string;
+    dependencyRoot?: string;
     tsserverPath?: string;
   },
   inspect: (context: NativeProjectContext) => T,
@@ -33,11 +41,17 @@ export async function withNativeProject<T>(
     if (options.tsserverPath && !existsSync(options.tsserverPath)) {
       throw new Error(`TypeScript native executable does not exist: ${options.tsserverPath}`);
     }
+    const dependencyFs = options.dependencyRoot
+      ? dependencyFileSystem(options.dependencyRoot, sourcePath)
+      : {};
     api = new API({
       cwd: options.cwd,
       ...(options.tsserverPath ? { tsserverPath: options.tsserverPath } : {}),
       fs: {
-        readFile: fileName => resolve(fileName) === sourcePath ? options.source : undefined,
+        ...dependencyFs,
+        readFile: fileName => resolve(fileName) === sourcePath
+          ? options.source
+          : dependencyFs.readFile?.(fileName),
       },
     });
     snapshot = api.updateSnapshot({ openProjects: [options.configPath] });
@@ -62,6 +76,83 @@ export async function withNativeProject<T>(
   }
   if (result.isOk() && cleanupCause !== undefined) return err(nativeFailure(cleanupCause));
   return result;
+}
+
+function dependencyFileSystem(dependencyRoot: string, sourcePath: string): FileSystem {
+  const authority = resolve(dependencyRoot, "node_modules");
+  const mapped = (path: string): string | undefined => {
+    const absolute = resolve(path);
+    if (isContained(authority, absolute)) return undefined;
+    const marker = `${sep}node_modules`;
+    const index = absolute.lastIndexOf(marker);
+    if (index < 0) return undefined;
+    const searchRoot = absolute.slice(0, index) || sep;
+    if (!isContained(searchRoot, sourcePath)) return undefined;
+    const suffixStart = index + marker.length;
+    const suffix = absolute.slice(suffixStart).replace(/^[/\\]+/, "");
+    return suffix ? join(authority, suffix) : authority;
+  };
+  return {
+    readFile: path => {
+      const target = mapped(path);
+      if (!target) return undefined;
+      try {
+        return readFileSync(target, "utf8");
+      } catch (cause) {
+        return isMissingPathError(cause) ? null : undefined;
+      }
+    },
+    fileExists: path => {
+      const target = mapped(path);
+      if (!target) return undefined;
+      try {
+        return statSync(target).isFile();
+      } catch (cause) {
+        return isMissingPathError(cause) ? false : undefined;
+      }
+    },
+    directoryExists: path => {
+      const target = mapped(path);
+      if (!target) return undefined;
+      try {
+        return statSync(target).isDirectory();
+      } catch (cause) {
+        return isMissingPathError(cause) ? false : undefined;
+      }
+    },
+    getAccessibleEntries: path => {
+      const target = mapped(path);
+      if (!target) return undefined;
+      try {
+        const entries = readdirSync(target, { withFileTypes: true });
+        return {
+          files: entries.filter(entry => entry.isFile()).map(entry => entry.name),
+          directories: entries.filter(entry => entry.isDirectory() || entry.isSymbolicLink()).map(entry => entry.name),
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    realpath: path => {
+      const target = mapped(path);
+      if (!target) return undefined;
+      try {
+        return realpathSync.native(target);
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+function isContained(root: string, path: string): boolean {
+  const child = relative(root, path);
+  return child === "" || (!isAbsolute(child) && !child.split(/[\\/]/).includes(".."));
+}
+
+function isMissingPathError(cause: unknown): boolean {
+  const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 export function nativeFailure(cause: unknown): TypeScriptNativeFailure {

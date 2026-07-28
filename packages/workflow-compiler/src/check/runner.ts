@@ -1,15 +1,24 @@
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { checkTypeScript } from "./typescript.js";
 import type { TypeScriptNativeFailure } from "../typescript/native.js";
-import { sha256Digest } from "../digest.js";
+import { sha256Digest, type Sha256Digest } from "../digest.js";
+import type { CheckedSourceFile } from "./source-capture.js";
 
 export type WorkflowCheckResult = {
   diagnostics: DiagnosticIR[];
-  sourceDigest?: string;
+  sourceDigest?: Sha256Digest;
+  sourceFiles?: CheckedSourceFile[];
+  packageImportReferrers?: string[];
 };
 
-export async function checkWorkflow(entry: string, cwd: string, scratchDir: string): Promise<WorkflowCheckResult> {
+export async function checkWorkflow(
+  entry: string,
+  cwd: string,
+  scratchDir: string,
+  options: { dependencyFallback?: boolean } = {},
+): Promise<WorkflowCheckResult> {
   let source: string;
   try {
     source = await readFile(entry, "utf8");
@@ -17,12 +26,21 @@ export async function checkWorkflow(entry: string, cwd: string, scratchDir: stri
     return { diagnostics: [workflowReadDiagnostic(entry, error)] };
   }
 
-  const result = await checkTypeScript(entry, cwd, scratchDir, source);
+  const result = await checkTypeScript(entry, cwd, scratchDir, source, options);
   const sourceDigest = sha256Digest(source);
-  return result.match(
-    value => ({ ...value, sourceDigest }),
-    failure => ({ diagnostics: [typescriptNativeDiagnostic(entry, failure)], sourceDigest }),
-  );
+  if (result.isErr()) {
+    return { diagnostics: [typescriptNativeDiagnostic(entry, result.error)], sourceDigest };
+  }
+  const entryPath = resolve(entry);
+  const sourceFiles = await Promise.all(result.value.sourceFiles.map(async file => {
+    if (resolve(file.path) === entryPath) return { ...file, content: source };
+    try {
+      return { ...file, content: await readFile(file.path, "utf8") };
+    } catch {
+      return file;
+    }
+  }));
+  return { ...result.value, sourceFiles, sourceDigest };
 }
 
 function workflowReadDiagnostic(entry: string, error: unknown): DiagnosticIR {

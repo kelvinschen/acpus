@@ -4,6 +4,7 @@ import * as runtime from "@acpus/runtime";
 describe("@acpus/runtime public API", () => {
   it("exports durable runtime use cases and testable pure runtime helpers", () => {
     expect(Object.keys(runtime).sort()).toEqual([
+      "DAEMON_PROTOCOL_VERSION",
       "createWorkflowVisualizationOverlay",
       "daemonEndpoint",
       "deleteRun",

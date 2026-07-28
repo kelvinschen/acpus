@@ -210,9 +210,9 @@ describe("task executor loading and process context", () => {
     });
   });
 
-  it("loads frozen catalog reusable tasks with workspace dependency authority", async () => {
+  it("loads frozen snapshot reusable tasks with workspace dependency authority", async () => {
     await withTaskExecutorWorkspace(async ({ workspace, taskOptions }) => {
-      const sourceRoot = join(resolveRuntimeLayout(workspace).sourcesRoot, "catalog", "sample", "digest");
+      const sourceRoot = join(resolveRuntimeLayout(workspace).sourcesRoot, "snapshots", "sample", "files");
       const packageDir = join(workspace, "node_modules", "workspace-only-package");
       await Promise.all([
         mkdir(join(sourceRoot, "tasks"), { recursive: true }),
@@ -228,30 +228,30 @@ describe("task executor loading and process context", () => {
         join(packageDir, "index.mjs"),
         "export const decorate = value => `workspace:${value}`;\n",
       );
-      await writeFile(join(sourceRoot, "tasks", "catalog-task.mjs"), [
+      await writeFile(join(sourceRoot, "tasks", "snapshot-task.mjs"), [
         `import { task, z } from ${JSON.stringify(import.meta.resolve("@acpus/core"))};`,
         "import { decorate } from 'workspace-only-package';",
-        "export const catalogTask = task.define({",
+        "export const snapshotTask = task.define({",
         "  inputSchema: z.object({ value: z.string() }),",
         "  exec: async ({ input }) => ({ value: decorate(input.value) }),",
         "});",
       ].join("\n"));
       const node = {
-        id: "catalog_task",
+        id: "snapshot_task",
         kind: "task",
         run: {
           input: { value: { kind: "literal", value: "frozen" } },
           target: {
             kind: "module",
-            specifier: "./tasks/catalog-task.mjs",
-            exportName: "catalogTask",
+            specifier: "./tasks/snapshot-task.mjs",
+            exportName: "snapshotTask",
             referrer: { path: "workflow.ts" },
           },
         },
       } satisfies TaskNodeIR;
 
       await expect(executeTaskNode(node, {}, {
-        ...taskOptions("run_catalog_task"),
+        ...taskOptions("run_snapshot_task"),
         sourceRoot,
       })).resolves.toEqual({ value: "workspace:frozen" });
     });

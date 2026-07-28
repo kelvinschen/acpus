@@ -7,7 +7,7 @@ import {
 } from "../src/compiler/worker.js";
 
 const compiled = {
-  sourceDigest: `sha256:${"a".repeat(64)}`,
+  sourceDigest: `sha256:${"a".repeat(64)}` as const,
   ir: {
     irVersion: 6 as const,
     name: "worker-result",

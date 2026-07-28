@@ -19,10 +19,10 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 
 ### **READ first**
 
-- **Author or adapt:** Read `references/authoring.md` completely, then edit the target directly. Use only its linked examples; never inspect workflow-library implementations.
-- **Run, observe, or control:** Read `references/cli-operations.md` for status, overrides, and controls; use `acpus <cmd> --help` for exact syntax.
+- **Authoring** Read `references/authoring.md` completely;
+- **Run, observe, or control:** Read `references/cli-operations.md` for status, overrides, and controls;
 - **Recover a run:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, drifting-agent steering, steer/retry/fork decisions, or deep diagnostics.
-- **Workflow reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
+- **Library/catalog reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
 
 | Workflow | Use when | Read first |
 | --- | --- | --- |

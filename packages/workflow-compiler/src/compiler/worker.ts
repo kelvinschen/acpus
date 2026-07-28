@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
+import type { Sha256Digest } from "../digest.js";
 import { runProcess, type ProcessResult } from "./process.js";
 
 type WorkerSystemFailure = {
@@ -31,7 +32,7 @@ type CompletedProcess = Extract<ProcessResult, { ok: true }>;
 
 type CompileWorkflowOptions = {
   dependencyRoot?: string;
-  expectedSourceDigest: string;
+  expectedSourceDigest: Sha256Digest;
 };
 
 export function compileWorkflow(
@@ -108,7 +109,7 @@ export function classifyCompileWorkerResultReadFailure(
 export function interpretCompileWorkerOutput(
   processResult: CompletedProcess,
   raw: string,
-  expectedSourceDigest: string,
+  expectedSourceDigest: Sha256Digest,
 ): Result<CompiledWorkflowModule, CompileWorkerFailure> {
   const envelope = parseCompileWorkerEnvelope(raw, processResult.stdoutTail, processResult.stderrTail);
   if (envelope.isErr()) return err(envelope.error);

@@ -34,7 +34,8 @@ wording.
 | Symptom | Likely phase | Fix |
 | --- | --- | --- |
 | invalid JSON input or invalid CLI option | `usage` | Fix command syntax before preparing. |
-| TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Edit workflow TypeScript, then repeat the command that produced this phase. |
+| invalid, incomplete, or changed authored source | `source` | Fix or regenerate the source, then repeat the command. |
+| TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Revise the workflow source, then repeat the command that produced this phase. |
 | module import failed, default export invalid, build callback throws | `compile` | Fix module exports/imports or build-time code. |
 | unknown IR fields, malformed task target, invalid schema/expression IR | `validate` | Fix authoring shape or Acpus package mismatch. |
 | task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |

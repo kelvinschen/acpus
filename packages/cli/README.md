@@ -2,9 +2,17 @@
 
 Command-line entry point for Acpus TypeScript workflows.
 
-Primary workflow entry points:
+Use a quoted heredoc for a self-contained one-off Workflow, or a path for a file-backed Workflow:
 
 ```sh
+acpus workflow run - <<'WORKFLOW'
+import { defineWorkflow, z } from "acpus/core";
+export default defineWorkflow({
+  name: "one-off",
+  inputSchema: z.object({}),
+}).build(() => ({}));
+WORKFLOW
+
 acpus workflow check workflow.ts
 acpus workflow run workflow.ts --input '{"ready":true}'
 acpus workflow viz workflow.ts
@@ -28,5 +36,5 @@ creates selected skills roots when needed. Interactive terminals prompt for
 missing selections; scripts must pass `--project` or `--global` together with
 `--agent universal`, `--agent claude`, or `--agent universal,claude`.
 `acpus skill uninstall` removes only installed targets that can be identified
-as the Acpus skill. For an Agent that has not loaded the Skill,
-If the Acpus Skill is not loaded, use `acpus skill read` to get its bundled usage guide without installing it.
+as the Acpus skill. Use `acpus skill read` to get its bundled usage guide
+without installing it.

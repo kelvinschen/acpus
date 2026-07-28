@@ -8,6 +8,7 @@ import { writeResult, type CliAppliedControl, type OutputFormat } from "../outpu
 import { followRun, parseFollowInterval } from "../run-follow.js";
 import { formatRunInspectionDocument } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
+import type { WorkflowCatalogScopeOptions } from "../catalog.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
 import { confirmAction, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { canPrompt } from "./prompt-io.js";
@@ -29,7 +30,7 @@ type Target = {
 
 type TargetOptions = Target & JsonOutputOptions;
 
-type ForkMutation = Target & {
+type ForkMutation = Target & WorkflowCatalogScopeOptions & {
   input?: string;
   workflow?: string;
   agents?: string;
@@ -152,7 +153,9 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .exitOverride()
     .description("Fork a run, optionally replacing its workflow or recovery target.")
     .argument("<run-id>", "run id")
-    .option("--workflow <workflow-module>", "use a replacement workflow module for the fork")
+    .option("--workflow <workflow-module>", "use a replacement workflow module path or - for stdin")
+    .option("--project", "resolve replacement workflow name from the project catalog")
+    .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
     .option("--agents <json>", "override inherited agents for the fork")
     .option("--target <run-target>", "target a replacement workflow recovery point")
@@ -163,6 +166,8 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
         ...(options.target === undefined ? {} : { target: options.target }),
         ...(options.input === undefined ? {} : { input: options.input }),
         ...(options.workflow === undefined ? {} : { workflow: options.workflow }),
+        ...(options.project === true ? { project: true } : {}),
+        ...(options.global === true ? { global: true } : {}),
         ...(options.agents === undefined ? {} : { agents: options.agents }),
         ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
       }, outputFormatFor(options));
@@ -510,10 +515,25 @@ async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOp
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation, format: OutputFormat): Promise<void> {
   if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
+  if (request.type === "fork" && request.project && request.global) {
+    throw usageError("--project and --global are mutually exclusive.");
+  }
+  if (request.type === "fork" && (request.project || request.global) && request.workflow === undefined) {
+    throw usageError("Catalog scope flags require --workflow.");
+  }
   const replacementInput = request.type === "fork" && request.input !== undefined
     ? await parseInput(request.input, ctx.cwd)
     : undefined;
-  const prepared = request.type === "fork" && request.workflow ? await prepareWorkflowForCli(request.workflow, ctx.cwd) : undefined;
+  const preparation = request.type === "fork" && request.workflow !== undefined
+    ? await prepareWorkflowForCli({
+        workspaceDir: ctx.cwd,
+        workflow: request.workflow,
+        stdin: ctx.stdin,
+        ...(request.project ? { project: true } : {}),
+        ...(request.global ? { global: true } : {}),
+      })
+    : undefined;
+  const prepared = preparation?.prepared;
   const agentOverrides = request.type === "fork" ? parseAgents(request.agents) : undefined;
   const forkInput = request.type === "fork" ? await maybeNormalizeForkInput(ctx, runId, replacementInput, prepared) : undefined;
   const base = { requestId: daemonControlRequestId(), runId };
@@ -543,13 +563,34 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
   if (controlled.isErr()) throw runControlError(controlled.error);
   const result = controlled.value;
   if (result.type !== request.type) throw new Error(`Daemon returned '${result.type}' for ${request.type} control.`);
+  const control = appliedControl(result);
+  const run = toRunRecord(result.run);
+  const follow = terminalRun(result.run) ? {} : { followRunId: result.run.id };
+  if (control.type === "fork") {
+    ctx.setExitCode(writeResult({
+      ok: true,
+      phase: "control",
+      message: controlSuccessMessage(request.type),
+      control,
+      run,
+      ...follow,
+      ...(preparation === undefined
+        ? {}
+        : {
+            diagnostics: preparation.prepared.ir.diagnostics,
+            sourceGraphDigest: preparation.prepared.sourceGraphDigest,
+            ...(preparation.catalog === undefined ? {} : { catalog: preparation.catalog }),
+          }),
+    }, format, ctx, 0));
+    return;
+  }
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
     message: controlSuccessMessage(request.type),
-    control: appliedControl(result),
-    run: toRunRecord(result.run),
-    ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
+    control,
+    run,
+    ...follow,
   }, format, ctx, 0));
 }
 

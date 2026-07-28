@@ -13,7 +13,7 @@ Contents:
 
 ## Choose Task Form
 
-**Inline Task first.** Upgrade at the second authored call site or when the implementation requires module/third-party imports. Fanout/loop runtime instances do not count as authoring reuse.
+**Inline Task first.** It stays compatible with a self-contained heredoc. Use a file-backed reusable Task at the second authored call site or when the implementation requires module/third-party imports. Fanout/loop runtime instances do not count as authoring reuse.
 
 Inline Tasks may dynamically import Node built-ins inside `exec`:
 
@@ -58,7 +58,7 @@ const normalized = step("normalize").task({
 });
 ```
 
-`inputSchema` is a TypeScript input witness, not runtime parsing/defaulting. `z.infer` keeps schema and input annotations aligned. For reusable Tasks, an explicit `Promise<Result>` return and typed local values prevent output inference from drifting across branches; output remains inferred from `exec`, so never add `outputSchema`. Third-party imports must be installed with the workflow package. Each attempt loads the live module in a fresh Node process.
+`inputSchema` is a TypeScript input witness, not runtime parsing/defaulting. `z.infer` keeps schema and input annotations aligned. For reusable Tasks, an explicit `Promise<Result>` return and typed local values prevent output inference from drifting across branches; output remains inferred from `exec`, so never add `outputSchema`. Bare-package dependencies resolve from the workflow workspace, and each attempt loads the resolved Task module in a fresh Node process.
 
 Use an existing reusable Task when the requirement needs its capability:
 
