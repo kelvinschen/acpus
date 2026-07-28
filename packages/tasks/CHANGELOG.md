@@ -1,5 +1,15 @@
 # @acpus/tasks
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [7e65dee]
+- Updated dependencies [efbb24c]
+- Updated dependencies [f5ee270]
+- Updated dependencies [be0e46a]
+  - @acpus/core@0.10.0
+
 ## 0.1.4
 
 ### Patch Changes
