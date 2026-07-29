@@ -207,6 +207,7 @@ describe("workflow source command plumbing", () => {
 
   it("prints preparation warnings before following a workflow run in text mode", async () => {
     const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
     mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
       output.stdout.write("FOLLOW\n");
       return { kind: "done", run: { status: "completed" } };
@@ -218,11 +219,11 @@ describe("workflow source command plumbing", () => {
       cwd: "/workspace",
       stdin: Readable.from([]),
       stdout,
-      stderr: new CaptureStream(),
+      stderr,
       setExitCode: vi.fn(),
     });
 
-    await command.parseAsync(["run", "workflow.ts", "--follow", "--interval", "250ms"], { from: "user" });
+    await command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
 
     expect(stdout.text).toBe([
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
@@ -234,13 +235,13 @@ describe("workflow source command plumbing", () => {
     expect(mock.followRun).toHaveBeenCalledWith(
       "/workspace",
       { view: { kind: "run", runId: "run_admitted" } },
-      expect.objectContaining({ phase: "run", format: "text", pollIntervalMs: 250 }),
+      { phase: "run", format: "text", stdout, stderr },
     );
-    expect(mock.followRun.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
   });
 
   it("emits followed JSON admission before the Runtime follow stream", async () => {
     const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
     const followRecords = [
       {
         schemaVersion: 2,
@@ -274,7 +275,7 @@ describe("workflow source command plumbing", () => {
       cwd: "/workspace",
       stdin: Readable.from([]),
       stdout,
-      stderr: new CaptureStream(),
+      stderr,
       setExitCode: vi.fn(),
     });
 
@@ -297,9 +298,8 @@ describe("workflow source command plumbing", () => {
     expect(mock.followRun).toHaveBeenCalledWith(
       "/workspace",
       { view: { kind: "run", runId: "run_admitted" } },
-      expect.objectContaining({ phase: "run", format: "ndjson", pollIntervalMs: 3_000 }),
+      { phase: "run", format: "ndjson", stdout, stderr },
     );
-    expect(mock.followRun.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
   });
 
   it("preserves replacement preparation warnings in fork text", async () => {

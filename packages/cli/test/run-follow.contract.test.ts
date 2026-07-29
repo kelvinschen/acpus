@@ -170,8 +170,7 @@ describe("Inspection v2 follow", () => {
     expect(JSON.stringify(records)).not.toContain("private-attempt");
   });
 
-  it("uses workflow-owned polling cadence without adding it to the Runtime query", async () => {
-    vi.useFakeTimers();
+  it("immediately waits for the next Runtime boundary after the initial view", async () => {
     let initialPulled!: () => void;
     let secondPulled!: () => void;
     let resolveBoundary!: (value: IteratorResult<unknown>) => void;
@@ -201,38 +200,26 @@ describe("Inspection v2 follow", () => {
     }) as never);
     const stdout = new CaptureStream();
 
-    try {
-      const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-        phase: "run",
-        format: "text",
-        stdout,
-        stderr: new CaptureStream(),
-        pollIntervalMs: 250,
-      });
-      await initial;
-      await vi.advanceTimersByTimeAsync(0);
-      expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
-      expect(pulls).toBe(0);
-      await vi.advanceTimersByTimeAsync(249);
-      expect(pulls).toBe(0);
-      await vi.advanceTimersByTimeAsync(1);
-      await second;
-      resolveBoundary({
-        done: false,
-        value: ok(view(snapshot({
-          run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
-          counts: { total: 1, completed: 1 },
-          items: [{ ...snapshot().items[0]!, status: "completed" }],
-        }))),
-      });
-      await vi.advanceTimersByTimeAsync(250);
-      await followed;
-      expect(pulls).toBe(1);
-      expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
-      expect(runtime.watchInspection.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
-    } finally {
-      vi.useRealTimers();
-    }
+    const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
+      phase: "run",
+      format: "text",
+      stdout,
+      stderr: new CaptureStream(),
+    });
+    await initial;
+    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
+    await second;
+    expect(pulls).toBe(1);
+    resolveBoundary({
+      done: false,
+      value: ok(view(snapshot({
+        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
+        counts: { total: 1, completed: 1 },
+        items: [{ ...snapshot().items[0]!, status: "completed" }],
+      }))),
+    });
+    await followed;
+    expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
   });
 
   it("detaches on Ctrl-C without inventing an NDJSON record", async () => {

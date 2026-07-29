@@ -25,8 +25,6 @@ type FollowOptions = {
   format: "text" | "ndjson";
   stdout: Writable;
   stderr: Writable;
-  /** Workflow-run's private pull cadence; runs inspect deliberately has none. */
-  pollIntervalMs?: number;
 };
 
 export async function followRun(
@@ -46,14 +44,9 @@ export async function followRun(
   const iterator = source[Symbol.asyncIterator]();
   const presenter = new RunFollowPresenter(options);
   let lastRun: { id: string; status: RunStatus } | undefined;
-  let received = false;
 
   try {
     while (!controller.signal.aborted) {
-      if (received && options.pollIntervalMs !== undefined) {
-        await waitForPoll(options.pollIntervalMs, controller.signal);
-        if (controller.signal.aborted) break;
-      }
       const next = await iterator.next();
       if (next.done) break;
       const result = next.value;
@@ -61,7 +54,6 @@ export async function followRun(
         writeFollowError(result.error, options, query.view);
         return { kind: "error", error: result.error };
       }
-      received = true;
       presenter.emission(result.value);
       if (result.value.kind === "view") {
         lastRun = { id: result.value.document.run.id, status: result.value.document.run.status };
@@ -162,18 +154,4 @@ function followCandidateView(view: WatchInspectionQuery["view"]): {
 function publicInspectionError(error: RunInspectionError): object {
   if (error.type !== "inspection-read-failed") return error;
   return { type: error.type, runId: error.runId, message: error.message };
-}
-
-async function waitForPoll(intervalMs: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
-  await new Promise<void>(resolve => {
-    const timer = setTimeout(done, intervalMs);
-    const onAbort = (): void => done();
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }

@@ -22,11 +22,10 @@ WORKFLOW
 Prefer a file-backed `workflow.ts` only when you need to import task/helper modules or plan to edit or reuse the workflow: 
 
 ```sh
-acpus workflow run <workflow> [--input <json|file.json>] [--follow [--interval <duration>]]
+acpus workflow run <workflow> [--input <json|file.json>] [--follow]
 acpus runs inspect <run-id> [--target <nodeId|@ref>]
 ```
 
-`workflow run` performs workflow check internally, submits the durable run *asynchronously*. Use `--follow` for observe the run synchronously (with `3s` interval), `Ctrl-C` only detaches.
 
 | Need | Use | Get |
 | --- | --- | --- |
@@ -36,7 +35,10 @@ acpus runs inspect <run-id> [--target <nodeId|@ref>]
 | Topology | `--all` | All materialized occurrences |
 | Wait for one change | `--follow` | Next decision boundary |
 
-Add `#attemptNo` only for one Agent attempt. Use `--help` for exact combinations and printed `Next`/`Older` commands for more results.
+- `workflow run` performs workflow check internally and submits the durable run *asynchronously*. 
+- `--follow` waits read-only for the run's next decision boundary; it does not periodically refresh or emit a heartbeat, and silence between boundaries is expected. 
+- `Ctrl-C` only detaches.
+- Add `#attemptNo` only for one Agent attempt. Use `--help` for exact combinations and printed `Next`/`Older` commands for more results.
 
 ### Low-context monitoring
 

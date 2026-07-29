@@ -2,7 +2,6 @@ import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
-import { tryParseDurationMs } from "@acpus/core/ir";
 import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../errors.js";
@@ -37,11 +36,7 @@ type WorkflowInputOptions = {
 
 type RunWorkflowOptions = WorkflowInputOptions & {
   follow?: boolean;
-  interval?: string;
 };
-
-const defaultWorkflowFollowIntervalMs = 3_000;
-const minimumWorkflowFollowIntervalMs = 250;
 
 type VizWorkflowOptions = WorkflowCatalogScopeOptions & {
   out?: string;
@@ -97,8 +92,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
-    .option("--follow", "follow run status until completion or Ctrl-C")
-    .option("--interval <duration>", "refresh followed run status (default: 3s, minimum: 250ms)")
+    .option("--follow", "wait for the run's next decision boundary or Ctrl-C")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
     ).action(async (workflow: string, options: RunWorkflowOptions) => {
@@ -222,8 +216,6 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
-  if (!options.follow && options.interval !== undefined) throw usageError("--interval requires --follow.");
-  const pollIntervalMs = options.follow ? parseWorkflowFollowInterval(options.interval) : undefined;
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const { prepared, catalog } = await prepareWorkflowForCli({
@@ -277,21 +269,12 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     format: structured ? "ndjson" : "text",
     stdout: ctx.stdout,
     stderr: ctx.stderr,
-    ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
   });
   if (outcome.kind !== "done") {
     ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
     return;
   }
   ctx.setExitCode(outcome.run.status === "failed" || outcome.run.status === "canceled" ? 1 : 0);
-}
-
-function parseWorkflowFollowInterval(value: string | undefined): number {
-  if (value === undefined) return defaultWorkflowFollowIntervalMs;
-  const parsed = tryParseDurationMs(value);
-  if (parsed.isErr()) throw usageError("--interval must be a duration such as 250ms, 1s, or 5s.");
-  if (parsed.value < minimumWorkflowFollowIntervalMs) throw usageError("--interval must be at least 250ms.");
-  return parsed.value;
 }
 
 async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {

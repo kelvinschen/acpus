@@ -376,6 +376,7 @@ describe("CLI program usage contracts", () => {
     for (const option of ["--target", "--timeline", "--evidence", "--limit", "--page", "--all", "--controls", "--follow", "--raw", "--json"]) {
       expect(inspectStdout.text).toContain(option);
     }
+    expect(inspectStdout.text).toContain("decision boundary");
     expect(inspectStdout.text).not.toContain("--after");
     expect(inspectStdout.text).not.toContain("--before");
 
@@ -385,7 +386,7 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: runStdout, stderr: runStderr,
     })).toBe(0);
     expect(runStdout.text).toContain("--follow");
-    expect(runStdout.text).toContain("--interval");
+    expect(runStdout.text).toContain("decision boundary");
     expect(runStdout.text).toContain("--input <json|file.json>");
     expect(runStdout.text).toContain("- for stdin");
 
@@ -488,24 +489,6 @@ describe("CLI program usage contracts", () => {
     const stderr = new CaptureStream();
     expect(await runCli(["runs", "inspect", "run_1", "--raw"], { cwd: process.cwd(), stdout, stderr })).toBe(2);
     expect(stderr.text).toContain("--raw requires --json");
-  });
-
-  it("rejects invalid workflow follow intervals before preparation", async () => {
-    for (const testCase of [
-      { argv: ["workflow", "run", "missing.workflow.ts", "--interval", "1s", "--json"], message: "--interval requires --follow" },
-      { argv: ["workflow", "run", "missing.workflow.ts", "--follow", "--interval", "100ms", "--json"], message: "--interval must be at least 250ms" },
-    ]) {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-      const exitCode = await runCli(testCase.argv, {
-        cwd: process.cwd(), stdout, stderr,
-      });
-
-      expect(exitCode).toBe(2);
-      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
-      expect(stdout.text).toContain(testCase.message);
-      expect(stderr.text).toBe("");
-    }
   });
 
   it("queries an empty workflow catalog", async () => {

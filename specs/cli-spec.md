@@ -16,7 +16,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
 | `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
-| `workflow run <workflow>` | Check options plus `--follow`; `--interval <duration>` requires follow, defaults to 3s, and has a 250ms minimum. |
+| `workflow run <workflow>` | Check options plus `--follow`. |
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
@@ -39,7 +39,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
-- `workflow run --help` MUST present follow as an explicit wait for completion or `Ctrl-C`.
+- `workflow run --help` MUST present follow as an explicit wait for the next run decision boundary or `Ctrl-C`.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
 - Fork catalog scope flags MUST be mutually exclusive.
@@ -99,8 +99,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - A compatible live daemon MUST skip writable storage preparation.
 - An absent or refused daemon MUST prepare current storage before ensure/spawn so fresh and older-storage archival behavior remains Runtime-owned.
 - `workflow run` MUST return after daemon acceptance by default.
-- `workflow run --follow` MUST retain its workflow-owned terminal-wait adapter and MUST NOT turn its interval into an inspection-follow option.
-- Workflow run interval MUST require follow, default to 3s, and reject values below 250ms.
+- `workflow run --follow` MUST retain its workflow-owned adapter over Runtime run watch and preserve Runtime ordering and decision boundaries.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
 - Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.

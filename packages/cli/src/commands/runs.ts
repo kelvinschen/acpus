@@ -122,7 +122,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--page <number>", "read a one-based Timeline, Evidence, or candidate page")
     .option("--all", "expand complete run topology or the selected target subtree")
     .option("--controls", "show technically applicable runtime controls")
-    .option("--follow", "follow run status until completion or Ctrl-C")
+    .option("--follow", "wait for the selected view's next decision boundary or Ctrl-C")
     .option("--raw", "emit the raw scheduler inspection bundle (requires --json)")
     ).action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);
