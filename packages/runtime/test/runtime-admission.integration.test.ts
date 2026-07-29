@@ -246,7 +246,7 @@ describe.concurrent("runtime admission use cases", () => {
     });
   });
 
-  it.sequential("executes same-file reusable task references prepared from workflow module exports", async () => {
+  it("executes same-file reusable task references prepared from workflow module exports", async () => {
     await withRuntimeWorkspace("runtime-same-file-reusable", async workspace => {
       const packageLock = "lockfileVersion: '9.0'\n";
       await writeFile(join(workspace, "pnpm-lock.yaml"), packageLock);
@@ -306,14 +306,14 @@ describe.concurrent("runtime admission use cases", () => {
   });
 
   it("fails task attempts for live reusable module load failures", async () => {
-    await withRuntimeWorkspace("runtime-live-module-load-failure", async workspace => {
-      const cases = [
-        { name: "missing_module", specifier: "./missing-task.ts", exportName: "run", moduleSource: undefined, message: "Cannot find module" },
-        { name: "missing_export", specifier: "./missing-export-task.ts", exportName: "run", moduleSource: "export const other = {};\n", message: "is not an Acpus task" },
-        { name: "non_task_export", specifier: "./non-task-export-task.ts", exportName: "run", moduleSource: "export const run = {};\n", message: "is not an Acpus task" },
-      ];
+    const cases = [
+      { name: "missing_module", specifier: "./missing-task.ts", exportName: "run", moduleSource: undefined, message: "Cannot find module" },
+      { name: "missing_export", specifier: "./missing-export-task.ts", exportName: "run", moduleSource: "export const other = {};\n", message: "is not an Acpus task" },
+      { name: "non_task_export", specifier: "./non-task-export-task.ts", exportName: "run", moduleSource: "export const run = {};\n", message: "is not an Acpus task" },
+    ];
 
-      for (const item of cases) {
+    await Promise.all(cases.map(item =>
+      withRuntimeWorkspace(`runtime-live-module-load-failure-${item.name}`, async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow(), `${item.name}.workflow.ts`);
         if (item.moduleSource !== undefined) await writeFile(join(workspace, item.specifier.slice(2)), item.moduleSource);
         setSingleTaskTarget(prepared.ir, {
@@ -328,8 +328,8 @@ describe.concurrent("runtime admission use cases", () => {
         expect(admitted.status).toBe("failed");
         if (admitted.status !== "failed") throw new Error("expected failed reusable module load run");
         expect(admitted.message).toContain(item.message);
-      }
-    });
+      }),
+    ));
   });
 
   it("executes reusable package tasks from @acpus/tasks", async () => {

@@ -60,7 +60,7 @@ acpus runs cancel <run-id> [--target <target>]
 - Inspect the target first; available operations indicate applicability, not a recommendation
 - Signal answers an open wait, and pause/resume controls run admission
 - **Steer is a last resort** for clear task drift or imminent harmful action in a started Agent
-- Agent execution takes from a few minutes to tens of minutes **depending on task complexity**, long duration is NOT an indicator of abnormality
+- Agent execution takes from a few minutes to tens of minutes **depending on task complexity**, long duration is NOT an indicator of abnormality, **BE PATIENT** when tracking workflow execution.
 - Cancel is destructive and requires confirmation unless already requested
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for all control commands, targeting, fencing, reuse, receipts, and structured automation.

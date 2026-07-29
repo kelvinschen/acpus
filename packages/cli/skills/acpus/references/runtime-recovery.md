@@ -51,7 +51,7 @@ wording.
 
 Prefer the smallest action that preserves correct admitted state:
 
-- Steer only as a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Context/usage metrics, observation age, isolated tool failures, degraded visibility, and an available steer operation are not sufficient evidence. Account for external side effects that the old turn may already have performed.
+- **Steer only as a last resort** when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Context/usage metrics, observation age, isolated tool failures, degraded visibility, and an available steer operation are not sufficient evidence. Account for external side effects that the old turn may already have performed.
 - Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
 - Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
 

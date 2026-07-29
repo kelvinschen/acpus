@@ -36,7 +36,7 @@ vi.mock("../src/preflight/temp.js", async importOriginal => {
 });
 
 describe("workflow preparation", () => {
-  it("returns typed check failures without throwing", async () => {
+  it.concurrent("returns typed check failures without throwing", async () => {
     await withCompilerWorkspace("compiler-task-check-result", async workspaceDir => {
       const workflow = await copyFixture(workspaceDir, "workflows/inline-capture.workflow.ts");
       const result = await tryPrepareWorkflow(pathOptions(workspaceDir, workflow));
@@ -53,7 +53,7 @@ describe("workflow preparation", () => {
     });
   });
 
-  it("returns validation diagnostics for compiled invalid IR", async () => {
+  it.concurrent("returns validation diagnostics for compiled invalid IR", async () => {
     await withCompilerWorkspace("compiler-validate", async workspaceDir => {
       const workflow = await copyFixture(workspaceDir, "workflows/basic/malformed.workflow.ts");
       const failure = await expectPreparationFailure(workflow, workspaceDir);
@@ -70,7 +70,7 @@ describe("workflow preparation", () => {
     });
   });
 
-  it("retains the typed compile worker failure", async () => {
+  it.concurrent("retains the typed compile worker failure", async () => {
     await withCompilerWorkspace("compiler-worker-result", async workspaceDir => {
       const workflow = join(workspaceDir, "invalid.workflow.ts");
       await writeFile(workflow, "export default {};\n");
@@ -92,7 +92,7 @@ describe("workflow preparation", () => {
     });
   });
 
-  it("rejects a live workspace entry that changes while it is compiling", async () => {
+  it.concurrent("rejects a live workspace entry that changes while it is compiling", async () => {
     await withCompilerWorkspace("compiler-source-generation", async workspaceDir => {
       const workflow = join(workspaceDir, "workflow.ts");
       const changedSource = `import { defineWorkflow } from "acpus/core";
@@ -121,7 +121,7 @@ export default defineWorkflow({ name: "checked" }).build(() => ({}));
     });
   });
 
-  it("keeps workspace paths live without an inline bundle", async () => {
+  it.concurrent("keeps workspace paths live without an inline bundle", async () => {
     await withCompilerWorkspace("compiler-workspace-source", async workspaceDir => {
       const workflow = join(workspaceDir, "workflow.ts");
       await writeFile(workflow, workflowSource("workspace-source"));
