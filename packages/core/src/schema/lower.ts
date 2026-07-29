@@ -27,7 +27,52 @@ export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
 }
 
 function withSchemaMetadata(schema: Schema<any>, ir: SchemaIR): SchemaIR {
-  return schema.description === undefined ? ir : { ...ir, description: schema.description };
+  const constraints = numericConstraintSummary(schema);
+  if (schema.description !== undefined) {
+    if (constraints === undefined) return { ...ir, description: schema.description };
+    return { ...ir, description: schema.description.trim().length === 0 ? constraints : `${schema.description} Constraints: ${constraints}.` };
+  }
+  return constraints === undefined || ir.description !== undefined ? ir : { ...ir, description: constraints };
+}
+
+function numericConstraintSummary(schema: Schema<any>): string | undefined {
+  let target = schema;
+  while (["optional", "nullable", "default", "readonly", "nonoptional"].includes(typeOf(target))) {
+    const inner = defOf(target).innerType;
+    if (inner === undefined) return undefined;
+    target = inner as Schema<any>;
+  }
+  if (typeOf(target) !== "number") return undefined;
+  const def = defOf(target);
+  const checks = [
+    ...(def.check === undefined ? [] : [def]),
+    ...(Array.isArray(def.checks) ? def.checks.map((check: any) => check._zod?.def ?? check.def ?? check) : []),
+  ];
+  let integer = false;
+  let minimum: { value: number; exclusive: boolean } | undefined;
+  let maximum: { value: number; exclusive: boolean } | undefined;
+  const multiples = new Set<number>();
+
+  for (const check of checks) {
+    if (check.check === "number_format" && check.format === "safeint") integer = true;
+    if (check.check === "greater_than" && Number.isFinite(check.value)) {
+      const candidate = { value: check.value as number, exclusive: !check.inclusive };
+      if (minimum === undefined || candidate.value > minimum.value || candidate.value === minimum.value && candidate.exclusive) minimum = candidate;
+    }
+    if (check.check === "less_than" && Number.isFinite(check.value)) {
+      const candidate = { value: check.value as number, exclusive: !check.inclusive };
+      if (maximum === undefined || candidate.value < maximum.value || candidate.value === maximum.value && candidate.exclusive) maximum = candidate;
+    }
+    if (check.check === "multiple_of" && Number.isFinite(check.value)) multiples.add(check.value as number);
+  }
+
+  const summary = [
+    ...(integer ? ["integer"] : []),
+    ...(minimum === undefined ? [] : [`${minimum.exclusive ? "exclusiveMinimum" : "minimum"}: ${minimum.value}`]),
+    ...(maximum === undefined ? [] : [`${maximum.exclusive ? "exclusiveMaximum" : "maximum"}: ${maximum.value}`]),
+    ...[...multiples].sort((left, right) => left - right).map(value => `multipleOf: ${value}`),
+  ];
+  return summary.length === 0 ? undefined : summary.join("; ");
 }
 
 export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
@@ -60,8 +105,11 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
       return ok({ kind: "enum", values: normalized });
     }
     case "enum": {
+      const entries = def.entries ?? {};
+      const numericValues = Object.values(entries).filter(value => typeof value === "number");
       const values: JsonPrimitive[] = [];
-      for (const value of Object.values(def.entries ?? {})) {
+      for (const [key, value] of Object.entries(entries)) {
+        if (numericValues.indexOf(+key) !== -1) continue;
         const literal = tryNormalizeLiteral(value, path);
         if (literal.isErr()) return err(literal.error);
         values.push(literal.value);
@@ -101,7 +149,12 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
     case "default": {
       const inner = tryToSchemaIR(def.innerType, path);
       if (inner.isErr()) return inner;
-      const raw = typeof def.defaultValue === "function" ? def.defaultValue() : def.defaultValue;
+      let raw: unknown;
+      try {
+        raw = def.defaultValue;
+      } catch {
+        return err({ type: "invalid-default", path, valueType: "function", message: `${path}: default value factory could not be evaluated` });
+      }
       const next: SchemaIR = { ...inner.value, optional: true };
       if (raw === undefined) return ok(next);
       const json = normalizeJsonValue(raw);

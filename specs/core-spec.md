@@ -42,12 +42,18 @@
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
 - A schema default MUST be JSON-compatible and copied with native structured-clone semantics; cyclic or uncloneable defaults MUST return `invalid-default` instead of throwing an untyped exception.
+- Lowering a Zod default factory MUST evaluate it exactly once; a throwing factory MUST return `invalid-default` from `tryToSchemaIR`.
 - The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and non-empty homogeneous tuple schemas without rest items.
+- Enum lowering MUST use Zod 4's effective enum values, excluding TypeScript numeric-enum reverse mappings.
 - A supported tuple schema MUST lower to array `SchemaIR` using its shared lowered item schema without retaining tuple arity.
 - Graph-boundary schema lowering MUST reject empty, heterogeneous, and rest tuple schemas as unsupported.
 - The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
 - Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
 - `SchemaIR` MUST be a core-owned recursive schema union rather than duplicating or overloading the expression value model.
+- Schema lowering MUST summarize selected Zod number checks in the existing `SchemaIR.description` annotation: `.int()` as `integer`; inclusive and exclusive lower and upper bounds as the corresponding JSON Schema keyword; and `.multipleOf(n)` as `multipleOf: n`.
+- Numeric constraint summaries MUST use deterministic keyword order, retain only the strongest lower and upper bound (with exclusivity winning an equal bound), de-duplicate and sort multiples, omit safe-integer-format bounds implied by `.int()`, and ignore every other check.
+- When an authored description and a numeric constraint summary coexist, lowering MUST preserve the authored prose and append `Constraints: <summary>.`; a summary without authored prose MUST be the complete description.
+- Generated numeric constraint summaries MUST remain advisory annotations: they MUST NOT alter the serialized `SchemaIR` shape or add Runtime conformance rules.
 - `schemaToJsonSchema` MUST preserve `SchemaIR.description` as a JSON Schema annotation.
 - `schemaToJsonSchema` MUST preserve `SchemaIR.default` as a JSON Schema annotation.
 - `schemaToJsonSchema` MUST express a nullable schema as accepting `null`.

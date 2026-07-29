@@ -1,5 +1,4 @@
 import type { SchemaIR } from "@acpus/core/ir";
-import { schemaToJsonSchema } from "@acpus/core/schema";
 import { describe, expect, it } from "vitest";
 import {
   buildAgentOutputPrompt,
@@ -15,22 +14,32 @@ const booleanObject: SchemaIR = {
 };
 
 const frame = (payload: string, prefix = "") => `${prefix}<ACPUS_OUTPUT>\n${payload}\n</ACPUS_OUTPUT>`;
+const escapedFrame = (payload: string, prefix = "") => `${prefix}<ACPUS_OUTPUT>\n${payload}\n<\\/ACPUS_OUTPUT>`;
 const accepted = (schema: SchemaIR, text: string) => conformAgentOutput(schema, text, "review")._unsafeUnwrap();
 const rejected = (schema: SchemaIR, text: string) => conformAgentOutput(schema, text, "review")._unsafeUnwrapErr();
 
 describe("agent output prompts", () => {
-  it("adds one minimal mandatory Tagged JSON contract and schema", () => {
+  it("adds one minimal mandatory Result Shape contract", () => {
     const prompt = buildAgentOutputPrompt("Do the work.", booleanObject);
 
-    expect(prompt.startsWith("Do the work.")).toBe(true);
+    expect(prompt).toBe(`Do the work.
+
+# RESULT HANDOFF [MANDATORY]
+Replace the type shape inside the tags with one matching JSON value; comments are guidance. Keep the tags verbatim, do not escape them, and end at the closing tag.
+<ACPUS_OUTPUT>
+{ ok: boolean }
+</ACPUS_OUTPUT>`);
     expect(protocolMarkers(prompt)).toEqual(["<ACPUS_OUTPUT>", "</ACPUS_OUTPUT>"]);
-    expect(embeddedJsonSchema(prompt)).toEqual(schemaToJsonSchema(booleanObject));
+    expect(prompt).not.toContain("JSON Schema");
+    expect(prompt).not.toContain("interface");
+    expect(prompt).not.toContain("```");
+    expect(prompt).not.toContain("<\\/ACPUS_OUTPUT>");
   });
 
   it("uses one bounded phase-specific repair instruction and repeats the contract", () => {
     const prompts = (["framing", "json", "schema"] as const)
       .map(phase => buildAgentOutputRepairPrompt(booleanObject, phase));
-    const contract = buildAgentOutputPrompt("", booleanObject);
+    const contract = resultContract(booleanObject);
     const instructions = prompts.map(prompt => {
       expect(prompt.endsWith(contract)).toBe(true);
       return prompt.slice(0, -contract.length);
@@ -40,7 +49,7 @@ describe("agent output prompts", () => {
     for (const [index, prompt] of prompts.entries()) {
       expect(Buffer.byteLength(instructions[index]!)).toBeLessThanOrEqual(300);
       expect(protocolMarkers(prompt)).toEqual(["<ACPUS_OUTPUT>", "</ACPUS_OUTPUT>"]);
-      expect(embeddedJsonSchema(prompt)).toEqual(schemaToJsonSchema(booleanObject));
+      expect(prompt).not.toContain("JSON Schema");
     }
   });
 });
@@ -49,17 +58,115 @@ function protocolMarkers(prompt: string): string[] {
   return [...prompt.matchAll(/<\/?ACPUS_OUTPUT>/gu)].map(match => match[0]);
 }
 
-function embeddedJsonSchema(prompt: string): unknown {
-  const starts = [...prompt.matchAll(/[\[{]/gu)]
-    .map(match => match.index)
-    .reverse();
-  for (const start of starts) {
-    try {
-      return JSON.parse(prompt.slice(start)) as unknown;
-    } catch {}
-  }
-  throw new Error("Agent output prompt is missing its JSON Schema.");
+function resultContract(schema: SchemaIR): string {
+  return buildAgentOutputPrompt("task", schema).slice("task\n\n".length);
 }
+
+function resultShape(schema: SchemaIR): string {
+  const contract = resultContract(schema);
+  const match = contract.match(/<ACPUS_OUTPUT>\n([\s\S]*)\n<\/ACPUS_OUTPUT>$/u);
+  if (!match) throw new Error("Agent output prompt is missing its Result Shape.");
+  return match[1]!;
+}
+
+describe("Result Shape rendering", () => {
+  it.each([
+    [{ kind: "unknown" } satisfies SchemaIR, "unknown"],
+    [{ kind: "string" } satisfies SchemaIR, "string"],
+    [{ kind: "number" } satisfies SchemaIR, "number"],
+    [{ kind: "boolean" } satisfies SchemaIR, "boolean"],
+    [{ kind: "null" } satisfies SchemaIR, "null"],
+    [{ kind: "literal", value: "done" } satisfies SchemaIR, '"done"'],
+    [{ kind: "literal", value: 42 } satisfies SchemaIR, "42"],
+    [{ kind: "literal", value: true } satisfies SchemaIR, "true"],
+    [{ kind: "literal", value: null } satisfies SchemaIR, "null"],
+    [{ kind: "enum", values: ["fast", "safe"] } satisfies SchemaIR, '"fast" | "safe"'],
+    [{ kind: "enum", values: [true, 2, null, "x"] } satisfies SchemaIR, 'true | 2 | null | "x"'],
+  ])("renders $kind as an anonymous type expression", (schema, expected) => {
+    expect(resultShape(schema)).toBe(expected);
+  });
+
+  it("renders optionality, unions, nullable values, arrays, records, and open objects", () => {
+    const shape: SchemaIR = {
+      kind: "object",
+      fields: {
+        note: { kind: "string", nullable: true, optional: true },
+        retries: { kind: "number", optional: true, default: 3 },
+        scores: { kind: "record", value: { kind: "number" } },
+        choices: { kind: "array", item: { kind: "union", variants: [{ kind: "string" }, { kind: "number" }] } },
+      },
+      required: ["scores", "choices"],
+      additionalProperties: true,
+    };
+
+    expect(resultShape(shape)).toBe(`{
+  note?: string | null,
+  retries?: number,
+  scores: { [key: string]: number },
+  choices: (string | number)[],
+  [key: string]: unknown
+}`);
+  });
+
+  it("keeps nested objects inline and parenthesizes nullable array items", () => {
+    const shape: SchemaIR = {
+      kind: "object",
+      fields: {
+        verdicts: {
+          kind: "array",
+          item: {
+            kind: "object",
+            fields: { claimId: { kind: "string" }, confidence: { kind: "number" } },
+            required: ["claimId", "confidence"],
+            additionalProperties: false,
+          },
+        },
+        labels: { kind: "array", item: { kind: "string", nullable: true } },
+        result: {
+          kind: "union",
+          variants: [
+            { kind: "object", fields: { ok: { kind: "literal", value: true } }, required: ["ok"], additionalProperties: false },
+            { kind: "object", fields: { ok: { kind: "literal", value: false } }, required: ["ok"], additionalProperties: false },
+          ],
+        },
+      },
+      required: ["verdicts", "labels", "result"],
+      additionalProperties: false,
+    };
+
+    expect(resultShape(shape)).toBe(`{
+  verdicts: { claimId: string, confidence: number }[],
+  labels: (string | null)[],
+  result: { ok: true } | { ok: false }
+}`);
+  });
+
+  it("quotes non-identifier keys but preserves valid prototype-named keys", () => {
+    const fields = Object.fromEntries([
+      ["not an identifier", { kind: "string" }],
+      ["__proto__", { kind: "boolean" }],
+      ["class", { kind: "number" }],
+    ]) as Record<string, SchemaIR>;
+    const shape: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
+
+    expect(resultShape(shape)).toBe('{ "not an identifier": string, __proto__: boolean, class: number }');
+  });
+
+  it("renders sanitized descriptions as advisory comments deterministically", () => {
+    const shape: SchemaIR = {
+      kind: "object",
+      fields: {
+        angleIndex: { kind: "number", description: "First line\nsecond */ tail" },
+        empty: { kind: "string", description: "   " },
+      },
+      required: ["angleIndex", "empty"],
+      additionalProperties: false,
+    };
+
+    expect(resultShape(shape)).toBe("{ angleIndex: number /* First line second * / tail */, empty: string }");
+    expect(resultShape(shape)).toBe(resultShape(structuredClone(shape)));
+  });
+});
 
 describe("Tagged JSON framing", () => {
   it.each([
@@ -80,6 +187,17 @@ describe("Tagged JSON framing", () => {
     expect(accepted(booleanObject, "prefix<ACPUS_OUTPUT>\r\n{\"ok\":true}\r\n</ACPUS_OUTPUT> \n\t")).toMatchObject({
       output: { ok: true },
       outputProcessing: { outcome: "accepted", parsing: "direct", projectionChanged: false },
+    });
+  });
+
+  it("canonicalizes only an escaped terminal closing marker", () => {
+    expect(accepted(booleanObject, `${escapedFrame('{"ok":true}')} \n\t`)).toMatchObject({
+      output: { ok: true },
+      outputProcessing: { outcome: "accepted", parsing: "repaired", projectionChanged: false },
+    });
+    expect(rejected(booleanObject, `prefix <\\/ACPUS_OUTPUT> ${frame('{"ok":true}')}`)).toMatchObject({
+      kind: "output_framing",
+      outputProcessing: { outcome: "rejected", phase: "framing" },
     });
   });
 
@@ -123,6 +241,21 @@ describe("Tagged JSON parsing", () => {
     expect(accepted(booleanObject, frame('{"ok":true,}'))).toMatchObject({
       output: { ok: true },
       outputProcessing: { outcome: "accepted", parsing: "repaired", projectionChanged: false },
+    });
+  });
+
+  it("canonicalizes one dangling terminal quote only after strict conformance", () => {
+    expect(accepted(booleanObject, frame('{"ok":true,"extra":"drop"}"'))).toMatchObject({
+      output: { ok: true },
+      outputProcessing: { outcome: "accepted", parsing: "repaired", projectionChanged: true },
+    });
+    expect(rejected(booleanObject, frame('{"ok":"wrong"}"'))).toMatchObject({
+      kind: "output_json",
+      outputProcessing: { outcome: "rejected", phase: "json" },
+    });
+    expect(rejected(booleanObject, frame('{"ok":true} "'))).toMatchObject({
+      kind: "output_json",
+      outputProcessing: { outcome: "rejected", phase: "json" },
     });
   });
 
@@ -188,6 +321,13 @@ describe("Tagged JSON parsing", () => {
 });
 
 describe("schema projection and normalization", () => {
+  it("treats generated constraint descriptions as advisory", () => {
+    expect(accepted({ kind: "number", description: "integer; minimum: 0" }, frame("-1"))).toMatchObject({
+      output: -1,
+      outputProcessing: { outcome: "accepted", parsing: "direct", projectionChanged: false },
+    });
+  });
+
   it("recursively removes undeclared properties", () => {
     const schema: SchemaIR = {
       kind: "object",

@@ -2,9 +2,10 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { walkNodes, type NodeVisit, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type NodeVisit, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
+import { buildAgentOutputPrompt } from "../../runtime/src/execution/agent-output.js";
 import {
   skillFilePath,
   skillLibraryWorkflowPath,
@@ -18,6 +19,7 @@ import {
 const defaultRouteByteCeiling = 14_000;
 const cliPackageRoot = fileURLToPath(new URL("../", import.meta.url));
 let deepResearchPreparation: ReturnType<typeof prepareWorkflow> | undefined;
+let worktreeTournamentPreparation: ReturnType<typeof prepareWorkflow> | undefined;
 
 describe("skill workflow contracts", () => {
   it("keeps the default authoring route within its fixed context budget", async () => {
@@ -162,6 +164,29 @@ describe("skill workflow contracts", () => {
       ["publish_report", "task"],
     ]);
   });
+
+  it("renders Result Shape for bundled Agent output schemas", async () => {
+    const [{ ir: deepResearch }, { ir: worktreeTournament }] = await Promise.all([
+      prepareDeepResearch(),
+      prepareWorktreeTournament(),
+    ]);
+
+    expect(resultShape(agentOutputSchema(worktreeTournament, "judge_candidates"))).toBe(
+      '{ winner: "alpha" | "beta" | "gamma" | "delta" | "epsilon" | "zeta", rationale: string }',
+    );
+    expect(resultShape(agentOutputSchema(deepResearch, "scope_question"))).toContain(
+      "angles: { label: string, query: string, rationale: string }[]",
+    );
+    expect(resultShape(agentOutputSchema(deepResearch, "search_web"))).toContain(
+      "angleIndex: number /* integer; minimum: 0 */",
+    );
+    expect(resultShape(agentOutputSchema(deepResearch, "verify_claim_batch_a"))).toContain(
+      'decision: "supports" | "refutes" | "insufficient"',
+    );
+    expect(resultShape(agentOutputSchema(deepResearch, "draft_editorial_bundle"))).toContain(
+      'kind: "finding" | "correction"',
+    );
+  });
 });
 
 function prepareDeepResearch(): ReturnType<typeof prepareWorkflow> {
@@ -172,6 +197,29 @@ function prepareDeepResearch(): ReturnType<typeof prepareWorkflow> {
       entry: skillLibraryWorkflowPath("deep-research"),
     },
   });
+}
+
+function prepareWorktreeTournament(): ReturnType<typeof prepareWorkflow> {
+  return worktreeTournamentPreparation ??= prepareWorkflow({
+    workspaceDir: cliPackageRoot,
+    source: {
+      kind: "path",
+      entry: join(cliPackageRoot, "skills", "acpus", "workflows", "examples", "worktree-tournament", "workflow.ts"),
+    },
+  });
+}
+
+function agentOutputSchema(ir: WorkflowIR, nodeId: string): SchemaIR {
+  const match = [...walkNodes(ir.root)].find(({ node }) => node.id === nodeId);
+  if (!match || match.node.kind !== "agent" || !match.node.outputSchema) throw new Error(`Expected schema-backed Agent '${nodeId}'.`);
+  return match.node.outputSchema;
+}
+
+function resultShape(schema: SchemaIR): string {
+  const prompt = buildAgentOutputPrompt("task", schema);
+  const match = prompt.match(/<ACPUS_OUTPUT>\n([\s\S]*)\n<\/ACPUS_OUTPUT>$/u);
+  if (!match) throw new Error("Expected a Result Shape handoff.");
+  return match[1]!;
 }
 
 function documentedInputNames(markdown: string): string[] {

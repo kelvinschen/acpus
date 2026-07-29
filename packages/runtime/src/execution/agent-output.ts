@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { schemaToJsonSchema } from "@acpus/core/schema";
 import type { SchemaIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
@@ -8,6 +7,8 @@ import { tryNormalizeValue } from "../evaluation/schema.js";
 
 const OUTPUT_OPEN = "<ACPUS_OUTPUT>";
 const OUTPUT_CLOSE = "</ACPUS_OUTPUT>";
+const OUTPUT_ESCAPED_CLOSE = "<\\/ACPUS_OUTPUT>";
+const TYPE_SCRIPT_IDENTIFIER = /^[$_\p{ID_Start}][$\u200C\u200D_\p{ID_Continue}]*$/u;
 
 type AgentOutputFailurePhase = "framing" | "json" | "schema";
 type AgentOutputParsing = "direct" | "repaired";
@@ -15,6 +16,8 @@ type AgentOutputParsing = "direct" | "repaired";
 type PayloadParsing =
   | { ok: true; value: JsonValue; parsing: AgentOutputParsing }
   | { ok: false; phase: "framing" | "json" };
+
+type FramedPayload = { payload: string; parsing: AgentOutputParsing };
 
 export type AgentOutputProcessing =
   | { outcome: "accepted"; parsing: AgentOutputParsing; projectionChanged: boolean }
@@ -43,15 +46,15 @@ export function buildAgentOutputRepairPrompt(schema: SchemaIR, phase: AgentOutpu
 }
 
 export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: string): Result<AgentOutputAccepted, AgentOutputFailure> {
-  const payload = framedPayload(text);
-  if (payload === undefined) return err({
+  const framed = framedPayload(text);
+  if (framed === undefined) return err({
     kind: "output_framing",
     phase: "framing",
     message: `Agent node '${nodeId}' response did not contain one complete terminal ${OUTPUT_OPEN} frame.`,
     outputProcessing: { outcome: "rejected", phase: "framing" },
   });
 
-  const parsed = parsePayload(payload);
+  const parsed = parsePayload(schema, framed.payload);
   if (!parsed.ok) return err({
     kind: parsed.phase === "framing" ? "output_framing" : "output_json",
     phase: parsed.phase,
@@ -64,43 +67,103 @@ export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: strin
   const projected = projectToSchema(schema, parsed.value);
   const projectionChanged = !isDeepStrictEqual(parsed.value, projected);
   const normalized = tryNormalizeValue(schema, projected, `Node '${nodeId}' output`);
+  const parsing = framed.parsing === "repaired" ? "repaired" : parsed.parsing;
   return normalized.isOk()
     ? ok({
         output: normalized.value,
-        outputProcessing: { outcome: "accepted", parsing: parsed.parsing, projectionChanged },
+        outputProcessing: { outcome: "accepted", parsing, projectionChanged },
       })
     : err({
         kind: "output_conformance",
         phase: "schema",
         message: normalized.error.message,
-        outputProcessing: { outcome: "rejected", phase: "schema", parsing: parsed.parsing, projectionChanged },
+        outputProcessing: { outcome: "rejected", phase: "schema", parsing, projectionChanged },
       });
 }
 
 function outputContract(schema: SchemaIR): string {
-  return `# OUTPUT [MANDATORY]
-End your response with exactly one JSON value matching the JSON Schema below, **wrapped in ${OUTPUT_OPEN}...${OUTPUT_CLOSE}**.
-
-JSON Schema:
-${JSON.stringify(schemaToJsonSchema(schema), null, 2)}`;
+  return `# RESULT HANDOFF [MANDATORY]
+Replace the type shape inside the tags with one matching JSON value; comments are guidance. Keep the tags verbatim, do not escape them, and end at the closing tag.
+${OUTPUT_OPEN}
+${renderResultShape(schema)}
+${OUTPUT_CLOSE}`;
 }
 
-function framedPayload(text: string): string | undefined {
+function renderResultShape(schema: SchemaIR, indentation = ""): string {
+  let shape: string;
+  switch (schema.kind) {
+    case "unknown": shape = "unknown"; break;
+    case "string": shape = "string"; break;
+    case "number": shape = "number"; break;
+    case "boolean": shape = "boolean"; break;
+    case "null": shape = "null"; break;
+    case "literal": shape = renderJsonLiteral(schema.value); break;
+    case "enum": shape = schema.values.map(renderJsonLiteral).join(" | "); break;
+    case "array": {
+      const item = renderResultShape(schema.item, indentation);
+      shape = `${schema.item.kind === "union" || schema.item.nullable ? `(${item})` : item}[]`;
+      break;
+    }
+    case "record": shape = `{ [key: string]: ${renderResultShape(schema.value, indentation)} }`; break;
+    case "union": shape = schema.variants.map(variant => renderResultShape(variant, indentation)).join(" | "); break;
+    case "object": shape = renderObjectShape(schema.fields, schema.required, schema.additionalProperties, indentation); break;
+  }
+  if (schema.nullable && schema.kind !== "null") shape = `${shape} | null`;
+  const description = schema.description?.replace(/\*\//gu, "* /").replace(/\s+/gu, " ").trim();
+  return description ? `${shape} /* ${description} */` : shape;
+}
+
+function renderObjectShape(
+  fields: Record<string, SchemaIR>,
+  required: string[],
+  additionalProperties: boolean,
+  indentation: string,
+): string {
+  const properties = [
+    ...Object.entries(fields).map(([key, value]) => `${renderPropertyName(key)}${required.includes(key) ? "" : "?"}: ${renderResultShape(value, `${indentation}  `)}`),
+    ...(additionalProperties ? ["[key: string]: unknown"] : []),
+  ];
+  if (properties.length === 0) return "{}";
+  const compact = `{ ${properties.join(", ")} }`;
+  if (!properties.some(property => property.includes("\n")) && compact.length <= 100) return compact;
+  const nestedIndentation = `${indentation}  `;
+  return `{\n${nestedIndentation}${properties.join(`,\n${nestedIndentation}`)}\n${indentation}}`;
+}
+
+function renderPropertyName(key: string): string {
+  return TYPE_SCRIPT_IDENTIFIER.test(key) ? key : renderJsonLiteral(key);
+}
+
+function renderJsonLiteral(value: unknown): string {
+  const rendered = JSON.stringify(value);
+  if (rendered === undefined) throw new Error("SchemaIR literal must be JSON-serializable");
+  return rendered;
+}
+
+function framedPayload(text: string): FramedPayload | undefined {
   const terminal = text.trimEnd();
-  if (!terminal.endsWith(OUTPUT_CLOSE)) return undefined;
-  const closeStart = terminal.length - OUTPUT_CLOSE.length;
+  const closing = terminal.endsWith(OUTPUT_CLOSE)
+    ? { marker: OUTPUT_CLOSE, parsing: "direct" as const }
+    : terminal.endsWith(OUTPUT_ESCAPED_CLOSE)
+      ? { marker: OUTPUT_ESCAPED_CLOSE, parsing: "repaired" as const }
+      : undefined;
+  if (closing === undefined) return undefined;
+  const closeStart = terminal.length - closing.marker.length;
   const openStart = terminal.indexOf(OUTPUT_OPEN);
   if (openStart < 0 || openStart + OUTPUT_OPEN.length > closeStart) return undefined;
-  if (terminal.slice(0, openStart).includes(OUTPUT_CLOSE)) return undefined;
-  return terminal.slice(openStart + OUTPUT_OPEN.length, closeStart);
+  const prefix = terminal.slice(0, openStart);
+  if (prefix.includes(OUTPUT_CLOSE) || prefix.includes(OUTPUT_ESCAPED_CLOSE)) return undefined;
+  return { payload: terminal.slice(openStart + OUTPUT_OPEN.length, closeStart), parsing: closing.parsing };
 }
 
-function parsePayload(payload: string): PayloadParsing {
+function parsePayload(schema: SchemaIR, payload: string): PayloadParsing {
   try {
     const value: unknown = JSON.parse(payload);
     return isJsonValue(value) ? { ok: true, value, parsing: "direct" } : { ok: false, phase: "json" };
   } catch {}
-  if (payload.includes(OUTPUT_OPEN) || payload.includes(OUTPUT_CLOSE)) return { ok: false, phase: "framing" };
+  if (payload.includes(OUTPUT_OPEN) || payload.includes(OUTPUT_CLOSE) || payload.includes(OUTPUT_ESCAPED_CLOSE)) return { ok: false, phase: "framing" };
+  const danglingQuote = parseDanglingTerminalQuote(schema, payload);
+  if (danglingQuote !== undefined) return { ok: true, value: danglingQuote, parsing: "repaired" };
   try {
     const fenced = payload.match(/^[\t\n\r ]*```(?:[A-Za-z_$][\w$]*)?[\t ]*(?:\r\n|\r|\n)([\s\S]*?)(?:\r\n|\r|\n)```[\t\n\r ]*$/);
     const repairInput = fenced?.[1] ?? payload;
@@ -111,6 +174,19 @@ function parsePayload(payload: string): PayloadParsing {
     return { ok: true, value: repaired[0], parsing: "repaired" };
   } catch {
     return { ok: false, phase: "json" };
+  }
+}
+
+function parseDanglingTerminalQuote(schema: SchemaIR, payload: string): JsonValue | undefined {
+  const terminal = payload.trimEnd();
+  if (!terminal.endsWith("\"") || terminal.length < 2 || /\s/u.test(terminal.at(-2)!)) return undefined;
+  try {
+    const value: unknown = JSON.parse(terminal.slice(0, -1));
+    if (!isJsonValue(value)) return undefined;
+    const projected = projectToSchema(schema, value);
+    return tryNormalizeValue(schema, projected, "Agent output").isOk() ? value : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -22,7 +22,7 @@ describe("schema boundary lowering", () => {
     });
     if (ir.kind !== "object") throw new Error("expected object schema");
     expect(ir.fields.repoPath).toEqual({ kind: "string" });
-    expect(ir.fields.count).toEqual({ kind: "number" });
+    expect(ir.fields.count).toEqual({ kind: "number", description: "integer" });
     expect(ir.fields.maybeSummary).toEqual({ kind: "string", nullable: true, optional: true });
     expect(ir.fields.tags).toEqual({ kind: "array", item: { kind: "string" } });
     expect(ir.fields.scores).toEqual({ kind: "record", value: { kind: "number" } });
@@ -42,6 +42,109 @@ describe("schema boundary lowering", () => {
         repoPath: { kind: "string", description: "Repository path." },
         title: { kind: "string", description: "Human-readable title." },
         notes: { kind: "string", optional: true, default: "", description: "Optional notes." },
+      },
+    });
+  });
+
+  it("evaluates Zod default factories once while lowering", () => {
+    let calls = 0;
+    const schema = z.string().default(() => {
+      calls += 1;
+      if (calls > 1) throw new Error("default factory was evaluated twice");
+      return "fallback";
+    });
+
+    expect(toSchemaIR(schema)).toEqual({ kind: "string", optional: true, default: "fallback" });
+    expect(calls).toBe(1);
+  });
+
+  it("returns a tagged lowering error when a Zod default factory throws", () => {
+    const schema = z.string().default(() => {
+      throw new Error("default factory failed");
+    });
+
+    expect(tryToSchemaIR(schema)).toEqual(err({
+      type: "invalid-default",
+      path: "$schema",
+      valueType: "function",
+      message: "$schema: default value factory could not be evaluated",
+    }));
+  });
+
+  it("lowers native numeric enums using their Zod values", () => {
+    enum Status { Draft, Published }
+    const schema = z.enum(Status);
+
+    expect(schema.safeParse("Draft").success).toBe(false);
+    expect(schema.safeParse(Status.Draft).success).toBe(true);
+    expect(toSchemaIR(schema)).toEqual({ kind: "enum", values: [Status.Draft, Status.Published] });
+  });
+
+  it("derives advisory numeric constraint summaries without changing SchemaIR shape", () => {
+    expect(toSchemaIR(z.number().max(10).min(0).int().multipleOf(4).multipleOf(2))).toEqual({
+      kind: "number",
+      description: "integer; minimum: 0; maximum: 10; multipleOf: 2; multipleOf: 4",
+    });
+    expect(toSchemaIR(z.number().min(0).gt(0).max(10).lt(10))).toEqual({
+      kind: "number",
+      description: "exclusiveMinimum: 0; exclusiveMaximum: 10",
+    });
+    expect(toSchemaIR(z.number().nonnegative().nonpositive().multipleOf(3))).toEqual({
+      kind: "number",
+      description: "minimum: 0; maximum: 0; multipleOf: 3",
+    });
+    expect(toSchemaIR(z.number().positive().negative())).toEqual({
+      kind: "number",
+      description: "exclusiveMinimum: 0; exclusiveMaximum: 0",
+    });
+    expect(schemaToJsonSchema(toSchemaIR(z.number().int().min(0)))).toEqual({
+      type: "number",
+      description: "integer; minimum: 0",
+    });
+    expect(toSchemaIR(z.number().finite().describe("Finite only."))).toEqual({
+      kind: "number",
+      description: "Finite only.",
+    });
+  });
+
+  it("combines numeric guidance with authored descriptions across wrappers", () => {
+    const schema = z.object({
+      beforeOptional: z.number().int().min(-1).describe("Offset.").optional(),
+      afterOptional: z.number().int().min(0).optional().describe("Angle index."),
+      beforeDefault: z.number().int().min(1).describe("Retry count.").default(1),
+      afterDefault: z.number().int().min(2).default(2).describe("Batch size."),
+      blankDescription: z.number().int().min(3).describe("   "),
+    });
+
+    expect(toSchemaIR(schema)).toMatchObject({
+      kind: "object",
+      fields: {
+        beforeOptional: {
+          kind: "number",
+          optional: true,
+          description: "Offset. Constraints: integer; minimum: -1.",
+        },
+        afterOptional: {
+          kind: "number",
+          optional: true,
+          description: "Angle index. Constraints: integer; minimum: 0.",
+        },
+        beforeDefault: {
+          kind: "number",
+          optional: true,
+          default: 1,
+          description: "Retry count. Constraints: integer; minimum: 1.",
+        },
+        afterDefault: {
+          kind: "number",
+          optional: true,
+          default: 2,
+          description: "Batch size. Constraints: integer; minimum: 2.",
+        },
+        blankDescription: {
+          kind: "number",
+          description: "integer; minimum: 3",
+        },
       },
     });
   });

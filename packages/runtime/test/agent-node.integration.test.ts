@@ -259,7 +259,7 @@ describe("agent node execution", () => {
             expect(turns[1]!.model).toBe("profile-model");
             expect(turns[1]!.config).toBeUndefined();
             expect(turns[1]!.prompt).toContain("# OUTPUT REPAIR");
-            expect(turns[1]!.prompt).toContain("JSON Schema:");
+            expect(turns[1]!.prompt).toContain("# RESULT HANDOFF [MANDATORY]");
             expect(turns[1]!.prompt).not.toContain("{\"attempt\":1,\"extra\":\"drop\"}");
             const metadataEntry = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
             if (!metadataEntry?.attemptId) throw new Error("expected agent attempt metadata");
@@ -357,6 +357,41 @@ describe("agent node execution", () => {
               timing: agentTiming(),
             });
             expect(artifactRows.some(row => row.relative_path.includes("raw-parsed-output"))).toBe(false);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("accepts a canonicalizable first response in one scheduler-visible turn", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-canonical-first-response", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const turns: AgentTurnRequest[] = [];
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+
+            await expect(advanceFrozenRun({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "owner-a",
+              store,
+              executeAgentTurn: async request => {
+                turns.push(request);
+                return completedAgentTurn(taggedAgentOutput('{"ok":true}"'));
+              },
+            })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+
+            expect(turns).toHaveLength(1);
+            expect(turns[0]!.prompt).not.toContain("# OUTPUT REPAIR");
+            expect(store.getRun(run.id)).toMatchObject({ status: "completed", output: {} });
+            const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
+            expect(metadata).toMatchObject({
+              turnCount: 1,
+              turns: [expect.objectContaining({
+                outputProcessing: { outcome: "accepted", parsing: "repaired", projectionChanged: false },
+              })],
+            });
           } finally {
             store.close();
           }
@@ -594,7 +629,7 @@ describe("agent node execution", () => {
             await expect(readJsonFile(turn!.path)).resolves.toMatchObject({
               schemaVersion: 1,
               status: "failed",
-              prompt: expect.stringContaining("JSON Schema:"),
+              prompt: expect.stringContaining("# RESULT HANDOFF [MANDATORY]"),
               response: "partial",
               summary: agentSummary(1),
               timing: agentTiming(2),
@@ -971,7 +1006,7 @@ describe("agent node execution", () => {
               ownerId: "owner-a",
               store,
               executeAgentTurn: async request => {
-                expect(request.prompt).toContain('"type": "string"');
+                expect(request.prompt).toContain("<ACPUS_OUTPUT>\nstring\n</ACPUS_OUTPUT>");
                 return completedAgentTurn(`Finished.${taggedAgentOutput('"done"')}`);
               },
             })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
@@ -1249,12 +1284,11 @@ describe("agent node execution", () => {
           expect(turns).toHaveLength(1);
           expect(turns[0]!.prompt).toContain(`<steering>Return the attempt as a string.</steering>
 
-# OUTPUT [MANDATORY]
-End your response with exactly one JSON value matching the JSON Schema below, **wrapped in <ACPUS_OUTPUT>...</ACPUS_OUTPUT>**.
-
-JSON Schema:`);
-          expect(turns[0]!.prompt).toContain('"attempt"');
-          expect(turns[0]!.prompt).toContain('"type": "string"');
+# RESULT HANDOFF [MANDATORY]
+Replace the type shape inside the tags with one matching JSON value; comments are guidance. Keep the tags verbatim, do not escape them, and end at the closing tag.
+<ACPUS_OUTPUT>
+{ attempt: string }
+</ACPUS_OUTPUT>`);
           expect(turns[0]!.config).toBeUndefined();
         });
       });
@@ -1292,7 +1326,7 @@ JSON Schema:`);
             }))).resolves.toEqual({ status: "completed", output: { attempt: "2" } });
 
             expect(turns).toHaveLength(2);
-            expect(turns[0]!.prompt).toMatch(/^<steering>Return the attempt as a string\.<\/steering>\n\n# OUTPUT \[MANDATORY\]/);
+            expect(turns[0]!.prompt).toMatch(/^<steering>Return the attempt as a string\.<\/steering>\n\n# RESULT HANDOFF \[MANDATORY\]/);
             expect(turns[0]!.config).toBeUndefined();
             expect(turns[1]!.prompt).toContain("# OUTPUT REPAIR");
             expect(turns[1]!.prompt).not.toContain("Return the attempt as a string.");
@@ -2769,7 +2803,7 @@ JSON Schema:`);
             await expect(readJsonFile(turn!.path)).resolves.toMatchObject({
               schemaVersion: 1,
               status: "failed",
-              prompt: expect.stringContaining("JSON Schema:"),
+              prompt: expect.stringContaining("# RESULT HANDOFF [MANDATORY]"),
               response: "",
               summary: agentSummary(0),
               timing: agentTiming(),

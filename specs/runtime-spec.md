@@ -287,7 +287,11 @@ type PruneReport = {
 - A steering turn MUST NOT expose its Runtime steering identity to the Agent.
 - A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible correction.
 - Every schema-backed Agent prompt, including task, continuation, steering, and response-repair turns, MUST state the Tagged JSON output contract.
-- Every schema-backed Agent prompt MUST include the declared output as JSON Schema.
+- Every schema-backed Agent prompt MUST include the declared output as one anonymous Result Shape expression rendered directly from `SchemaIR`, rather than as JSON Schema.
+- The Result Shape contract MUST direct the Agent to replace the expression with one JSON value, preserve the literal `ACPUS_OUTPUT` tags without escaping them, and end at the closing tag.
+- Result Shape MUST render scalar kinds as TypeScript-shaped scalar expressions, JSON literals and enums as JSON literal expressions or unions, arrays as `T[]`, records as `{ [key: string]: T }`, unions as `A | B`, nullable values as `T | null`, and objects inline with `?` derived from the parent required list.
+- Result Shape MUST parenthesize union or nullable array items, quote non-identifier property names with JSON string quoting, preserve valid prototype-named keys, add `[key: string]: unknown` only for open objects, omit defaults, and never introduce `undefined` or an exact-object marker.
+- Result Shape MUST render a non-empty `SchemaIR.description` as a flattened, block-comment-safe advisory comment on its type node; comments MUST NOT affect Runtime conformance.
 - A schema-backed Agent response MUST end with one `<ACPUS_OUTPUT>...</ACPUS_OUTPUT>` frame whose payload is one JSON value.
 - Text before the opening marker MAY contain commentary.
 - Only whitespace MAY follow the terminal closing marker.
@@ -295,8 +299,10 @@ type PruneReport = {
 - Marker text inside the payload MUST be treated as data only when the payload parses directly as one JSON value.
 - Tagged JSON framing MUST use the first opening marker and the terminal closing marker without depending on line boundaries.
 - A response containing more than one protocol frame MUST be rejected as ambiguous framing rather than selecting one frame.
+- After trailing whitespace is trimmed, Runtime MUST accept the exact terminal `<\/ACPUS_OUTPUT>` spelling as repaired framing; it MUST NOT treat that spelling as a general marker alias.
 - Runtime MUST parse the framed payload as strict JSON first.
-- Runtime MAY make at most one local JSON-repair attempt on the payload after strict parsing fails.
+- After strict parsing fails, Runtime MAY remove exactly one terminal `"` only when it immediately follows the candidate JSON text, removal yields one strict JSON value, and that value conforms after normal projection and schema validation.
+- Runtime MAY make at most one bounded generic local JSON-repair attempt on the payload after strict parsing and the terminal-quote canonicalization fail.
 - Local JSON repair MUST NOT recover missing or ambiguous framing.
 - Local JSON repair MUST reject multiple root values rather than combine or select them.
 - A direct or locally repaired payload MUST be a durable JSON value.
@@ -310,7 +316,7 @@ type PruneReport = {
 - Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid generic config-option reapplication, and never process backend failures as output failures.
 - A response-repair prompt MUST request a complete replacement Tagged JSON frame.
 - A response-repair prompt MUST repeat the Tagged JSON output contract.
-- A response-repair prompt MUST repeat the declared output schema.
+- A response-repair prompt MUST repeat the declared Result Shape.
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
 - A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
