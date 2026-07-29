@@ -1,5 +1,21 @@
 # @acpus/web
 
+## 0.2.1
+
+### Patch Changes
+
+- 90eda1f: Simplify durable run inspection with short occurrence references, numbered
+  current-view pages, exact command rendering, privacy-safe ordinary output,
+  explicit Evidence reads, and canonical deep Web inspection targets.
+  Make settled Agent pulse headlines prefer meaningful intent and label response
+  tails whose retained text is missing its prefix.
+- Updated dependencies [ae93e6c]
+- Updated dependencies [117b4f1]
+- Updated dependencies [90eda1f]
+  - @acpus/runtime@0.12.1
+  - @acpus/core@0.10.1
+  - @acpus/workflow-compiler@0.3.1
+
 ## 0.2.0
 
 ### Minor Changes

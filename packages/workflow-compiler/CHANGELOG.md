@@ -1,5 +1,13 @@
 # @acpus/workflow-compiler
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [117b4f1]
+  - @acpus/core@0.10.1
+  - @acpus/loader@0.2.1
+
 ## 0.3.0
 
 ### Minor Changes

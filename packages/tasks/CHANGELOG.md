@@ -1,5 +1,12 @@
 # @acpus/tasks
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [117b4f1]
+  - @acpus/core@0.10.1
+
 ## 0.1.5
 
 ### Patch Changes

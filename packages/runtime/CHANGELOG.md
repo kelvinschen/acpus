@@ -1,5 +1,24 @@
 # @acpus/runtime
 
+## 0.12.1
+
+### Patch Changes
+
+- ae93e6c: Keep compact run inspection operational by retaining up to three active
+  executable leaves and their tree context outside the ordinary overview budget.
+- 117b4f1: Render compact TypeScript-like Agent result shapes instead of JSON Schema,
+  with bounded output recovery. Preserve advisory numeric constraints and Zod 4
+  default-factory and numeric-enum semantics when lowering graph-boundary
+  schemas.
+- 90eda1f: Simplify durable run inspection with short occurrence references, numbered
+  current-view pages, exact command rendering, privacy-safe ordinary output,
+  explicit Evidence reads, and canonical deep Web inspection targets.
+  Make settled Agent pulse headlines prefer meaningful intent and label response
+  tails whose retained text is missing its prefix.
+- Updated dependencies [117b4f1]
+  - @acpus/core@0.10.1
+  - @acpus/loader@0.2.1
+
 ## 0.12.0
 
 ### Minor Changes
