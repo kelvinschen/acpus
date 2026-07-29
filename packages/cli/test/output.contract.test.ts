@@ -149,6 +149,41 @@ describe("CLI result output contracts", () => {
     }
   });
 
+  it("renders cancel as one unambiguous receipt without generic run metadata", () => {
+    const run = {
+      id: "run_1",
+      name: "cancel",
+      status: "canceled" as const,
+      workflowEntry: "cancel.workflow.ts",
+      sourceGraphDigest: "sha256:cancel",
+      createdAt: "2026-07-29T00:00:00.000Z",
+      updatedAt: "2026-07-29T00:00:01.000Z",
+      progressVersion: 2,
+    };
+    for (const [control, expected] of [
+      [{ type: "cancel", state: "applied", runId: "run_1" } as const, "Run run_1 canceled.\n"],
+      [
+        { type: "cancel", state: "applied", runId: "run_1", target: "@1a2b3c4d5e6f" } as const,
+        "Target @1a2b3c4d5e6f canceled in run run_1.\nNext: acpus runs inspect run_1 --follow\n",
+      ],
+    ] as const) {
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      expect(writeResult({
+        ok: true,
+        phase: "control",
+        message: "Run canceled.",
+        control,
+        run: { ...run, status: control.target === undefined ? "canceled" : "running" },
+        ...(control.target === undefined ? {} : { followRunId: run.id }),
+      }, "text", { stdout, stderr }, 0)).toBe(0);
+      expect(stdout.text).toBe(expected);
+      expect(stdout.text).not.toContain("Status:");
+      expect(stdout.text).not.toContain("Workflow entry:");
+      expect(stderr.text).toBe("");
+    }
+  });
+
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
       irVersion: 7,

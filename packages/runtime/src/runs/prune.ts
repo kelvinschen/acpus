@@ -14,6 +14,8 @@ import {
   IncompatibleRuntimeDatabaseError,
   openExistingRuntimeStoreAtLayout,
   readRuntimeStorageVersion,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
   type RuntimeStore,
   type WorkflowSourceRef,
 } from "../store/store.js";
@@ -88,6 +90,7 @@ export async function pruneRuns(
       mergeShardReport(report, await pruneShard(
         target.layout,
         cutoff,
+        options.olderThanMs === undefined,
         options.dryRun,
         target.replaceFilesystemIdentity === true,
         target.replaceMissingManifest === true,
@@ -139,6 +142,7 @@ class ShardPruneError extends Error {
 async function pruneShard(
   layout: RuntimeLayout,
   cutoff: string | undefined,
+  unbounded: boolean,
   dryRun: boolean,
   replaceFilesystemIdentity: boolean,
   replaceMissingManifest = false,
@@ -194,8 +198,23 @@ async function pruneShard(
         immutable: dryRun,
       });
     } catch (error) {
-      if (!(error instanceof IncompatibleRuntimeDatabaseError) || dryRun) throw error;
-      await archiveRuntimeGeneration(layout, error.userVersion, lock);
+      if (!(error instanceof IncompatibleRuntimeDatabaseError)) throw error;
+      const deleteOldGeneration = unbounded
+        && error.applicationId === RUNTIME_APPLICATION_ID
+        && error.userVersion > 0
+        && error.userVersion < RUNTIME_STORAGE_VERSION;
+      if (!deleteOldGeneration && dryRun) throw error;
+      const bytes = deleteOldGeneration ? await treeSize(layout.runtimeRoot) : 0;
+      if (deleteOldGeneration) {
+        candidateSummary.selected.archives += 1;
+        candidateSummary.selected.bytes += bytes;
+      }
+      if (dryRun) return candidateSummary;
+      const archive = await archiveRuntimeGeneration(layout, error.userVersion, lock);
+      if (deleteOldGeneration) {
+        if (!archive) throw new Error(`Runtime generation '${layout.runtimeRoot}' disappeared during pruning.`);
+        archives.push({ name: basename(archive), path: archive, bytes });
+      }
       await recreateRuntimeGeneration(layout);
       store = await openExistingRuntimeStoreAtLayout(layout, false, { lock: false });
     }

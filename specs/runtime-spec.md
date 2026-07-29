@@ -119,7 +119,10 @@
 - `allWorkspaces: true` MUST enumerate workspace shards beneath the same Acpus home.
 - Ordinary read APIs MUST NOT expose runs from another workspace shard.
 - `dryRun: true` MUST perform selection and size accounting without changing databases or files.
-- Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery, include those candidates in a failing dry-run report, and MUST NOT select an archive created by recovery during that same invocation.
+- Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery and include those candidates in a failing dry-run report.
+- An unbounded dry run MUST select a complete active generation with the current `application_id` and a positive `user_version` below the current storage version as one archive candidate without mutating it.
+- Real unbounded pruning MUST archive and delete a selected older active generation during the same invocation.
+- Pruning with `olderThanMs` MUST NOT select an archive created by recovery during that same invocation.
 - Real pruning MUST delete selected runs through the Runtime-owned trash protocol.
 - Real pruning and generation archival MUST fail while another process holds the workspace runtime for writable use.
 - After selected run deletion, Runtime MUST delete only workflow snapshots whose digest no remaining run references.

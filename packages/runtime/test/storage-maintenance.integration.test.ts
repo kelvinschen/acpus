@@ -48,7 +48,7 @@ describe("runtime storage maintenance", () => {
     });
   });
 
-  it("keeps incompatible storage read-only, then prunes only archives present before recovery", async () => {
+  it("keeps incompatible storage read-only, then bounded prune selects only archives present before recovery", async () => {
     await withStorageWorkspace("storage-maintenance-incompatible", async workspace => {
       const store = await openRuntimeStore(workspace);
       store.close();
@@ -76,6 +76,7 @@ describe("runtime storage maintenance", () => {
       const preview = await pruneRuns(workspace, {
         allWorkspaces: false,
         dryRun: true,
+        olderThanMs: 1,
         selectionCutoff,
       });
       expect(preview.selected).toMatchObject({ workspaces: 1, runs: 0, archives: 1 });
@@ -87,6 +88,7 @@ describe("runtime storage maintenance", () => {
       const pruned = await pruneRuns(workspace, {
         allWorkspaces: false,
         dryRun: false,
+        olderThanMs: 1,
         selectionCutoff,
       });
 
@@ -102,6 +104,44 @@ describe("runtime storage maintenance", () => {
       const remaining = await readdir(layout.archivesRoot);
       expect(remaining).toHaveLength(1);
       expect(remaining[0]).toMatch(/-v3$/);
+    });
+  });
+
+  it("previews and removes an incompatible generation in one unbounded prune", async () => {
+    await withStorageWorkspace("storage-maintenance-prune-incompatible", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      store.close();
+      const layout = resolveRuntimeLayout(workspace);
+      setDatabaseVersion(layout.databasePath, 3);
+      const before = await treeFingerprint(layout.workspaceRoot);
+
+      const preview = await pruneRuns(workspace, {
+        allWorkspaces: false,
+        dryRun: true,
+        selectionCutoff: "2026-07-29T00:00:00.000Z",
+      });
+
+      expect(preview).toMatchObject({
+        selected: { workspaces: 1, runs: 0, archives: 1 },
+        failures: [],
+      });
+      expect(preview.selected.bytes).toBeGreaterThan(0);
+      expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
+
+      const pruned = await pruneRuns(workspace, {
+        allWorkspaces: false,
+        dryRun: false,
+        selectionCutoff: "2026-07-29T00:00:00.000Z",
+      });
+
+      expect(pruned).toMatchObject({
+        selected: { workspaces: 1, runs: 0, archives: 1 },
+        deleted: { workspaces: 1, runs: 0, archives: 1 },
+        removedWorkspaces: 1,
+        failures: [],
+      });
+      expect(pruned.selected.bytes).toBe(preview.selected.bytes);
+      await expect(readdir(layout.workspaceRoot)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 

@@ -147,6 +147,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
 - Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; fork results MUST identify source and child separately.
 - A control receipt MUST include a target only when the operator requested one, and that target MUST repeat the requested selector rather than a resolved internal occurrence key.
+- Successful text cancel output MUST collapse the action and identity into `Run <run-id> canceled.` for run-level controls or `Target <requested-selector> canceled in run <run-id>.` for targeted controls.
+- Successful text cancel output MUST omit the generic `Status` and `Workflow entry` lines.
 - A structured steer receipt MUST project the Runtime-owned steer id, requested target, and continuation, but MUST NOT expose the resolved dynamic target or fenced attempt id.
 - Text and structured steer receipts MUST NOT echo the instruction.
 - Successful text steer output MUST point `Next` to follow inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.

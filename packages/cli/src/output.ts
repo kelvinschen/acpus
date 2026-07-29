@@ -216,7 +216,17 @@ export function writeResult(
   if (writeRunSubmissionReceipt(result, stream, streams.cwd)) return exitCode;
   const namedCatalogQuery = result.phase === "inspect" && result.catalog !== undefined;
   const doctorColor = result.phase === "doctor" && supportsColor(stream);
-  if (!result.hooks && result.message !== undefined) {
+  const cancelControl = result.ok
+    && result.phase === "control"
+    && result.control.type === "cancel"
+    && result.control.state === "applied"
+    ? result.control
+    : undefined;
+  if (cancelControl) {
+    stream.write(cancelControl.target === undefined
+      ? `Run ${cancelControl.runId} canceled.\n`
+      : `Target ${cancelControl.target} canceled in run ${cancelControl.runId}.\n`);
+  } else if (!result.hooks && result.message !== undefined) {
     const message = result.phase === "doctor"
       ? ansi(result.message, result.ok ? 32 : 31, doctorColor)
       : result.message;
@@ -243,7 +253,7 @@ export function writeResult(
   if (result.catalogEntries) {
     writeCatalogEntries(stream, result.catalogEntries);
   }
-  if (result.run) writeRun(stream, result.run, result.control);
+  if (result.run && !cancelControl) writeRun(stream, result.run, result.control);
   if (result.errorCode) stream.write(`Error code: ${result.errorCode}\n`);
   if (result.control && result.control.state === undefined) stream.write(`Control: ${result.control.type} ${result.control.runId}\n`);
   if (result.outputPath) stream.write(`Output: ${result.outputPath}\n`);
