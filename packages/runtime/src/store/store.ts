@@ -79,7 +79,7 @@ export type ForkRunFailure = PreparedRunValidationFailure
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "fork-request-conflict"; requestId: string; message: string };
 
-export type ForkSourceVersionMismatch = {
+type ForkSourceVersionMismatch = {
   type: "fork-source-version-mismatch";
   runId: string;
   expectedVersion: number;

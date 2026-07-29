@@ -44,7 +44,6 @@ export type {
   NodeDetail,
   WebGraph,
   WebGraphNode,
-  WebGraphSelection,
 } from "../graph-types.js";
 
 export type ArtifactPreview = {

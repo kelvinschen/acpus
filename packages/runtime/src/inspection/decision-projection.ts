@@ -124,14 +124,6 @@ export function projectTimelineEntries(input: {
   ].sort(compareTimelineEntries);
 }
 
-export function resolvedTargetIdentity(details: ResolvedTargetState): string {
-  if (details.target.kind === "static-node" && !staticAggregate(details)) {
-    if (details.summary.nodeKey) return `dynamic-node:${details.summary.nodeKey}`;
-    if (details.summary.frameKey) return `frame:${details.summary.frameKey}`;
-  }
-  return `${details.target.kind}:${details.target.id}`;
-}
-
 export function timelineAttemptIds(details: ResolvedTargetState): string[] {
   if (details.target.kind === "attempt") return [details.target.id];
   return [...new Set(details.attempts.map(attempt => attempt.attemptId))].sort();
@@ -139,14 +131,6 @@ export function timelineAttemptIds(details: ResolvedTargetState): string[] {
 
 export function targetAttemptId(details: ResolvedTargetState): string | undefined {
   return selectedAttempt(details)?.attemptId;
-}
-
-export function ambiguousTimelineCandidates(details: ResolvedTargetState): string[] {
-  if (details.target.kind !== "static-node" || details.summary.counts?.total === undefined || details.summary.counts.total <= 1) return [];
-  return [...new Set([
-    ...details.instances.map(instance => instance.nodeKey),
-    ...details.frames.flatMap(frame => frame.nodeKey ? [frame.nodeKey] : []),
-  ])].sort();
 }
 
 export function inspectionSubject(details: ResolvedTargetState): RunInspectionSubject {

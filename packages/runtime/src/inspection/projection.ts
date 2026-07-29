@@ -171,7 +171,7 @@ export function semanticChanges(
   });
 }
 
-export function inspectionItems(document: Pick<RunInspectionSnapshot, "items" | "run"> | Pick<ResolvedTargetState, "items" | "run">): RunInspectionItem[] {
+function inspectionItems(document: Pick<RunInspectionSnapshot, "items" | "run"> | Pick<ResolvedTargetState, "items" | "run">): RunInspectionItem[] {
   return document.items;
 }
 

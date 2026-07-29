@@ -3,7 +3,7 @@ import type { InstancePath, SchedulerFrame, SchedulerProjection } from "./types.
 
 export type OccurrenceRef = `@${string}`;
 
-export type ResolvedOccurrenceRef =
+type ResolvedOccurrenceRef =
   | {
       kind: "node";
       ref: OccurrenceRef;
@@ -29,7 +29,7 @@ export type ResolvedOccurrenceRef =
       instancePath: InstancePath;
     };
 
-export type OccurrenceRefResolutionError =
+type OccurrenceRefResolutionError =
   | { type: "invalid-occurrence-ref"; target: string }
   | { type: "occurrence-ref-attempt-not-allowed"; target: string; attemptNo: number }
   | { type: "occurrence-ref-not-found"; target: string }
@@ -146,7 +146,7 @@ export function resolveOccurrenceRefCandidate<T>(
   };
 }
 
-export function parseOccurrenceRef(value: string): { ref: OccurrenceRef; attemptNo?: number } | undefined {
+function parseOccurrenceRef(value: string): { ref: OccurrenceRef; attemptNo?: number } | undefined {
   const match = /^@([0-9a-f]{12})(?:#([1-9]\d*))?$/.exec(value);
   if (!match) return undefined;
   const attemptNo = match[2] === undefined ? undefined : Number(match[2]);
