@@ -1,5 +1,32 @@
 # acpus
 
+## 0.10.0
+
+### Minor Changes
+
+- bdbf436: Remove the ineffective `workflow run --interval` option and define follow as a
+  read-only wait for the selected Runtime decision boundary rather than periodic
+  refresh or heartbeat.
+
+### Patch Changes
+
+- ae93e6c: Keep compact run inspection operational by retaining up to three active
+  executable leaves and their tree context outside the ordinary overview budget.
+- 90eda1f: Simplify durable run inspection with short occurrence references, numbered
+  current-view pages, exact command rendering, privacy-safe ordinary output,
+  explicit Evidence reads, and canonical deep Web inspection targets.
+  Make settled Agent pulse headlines prefer meaningful intent and label response
+  tails whose retained text is missing its prefix.
+- Updated dependencies [ae93e6c]
+- Updated dependencies [117b4f1]
+- Updated dependencies [90eda1f]
+  - @acpus/runtime@0.12.1
+  - @acpus/core@0.10.1
+  - @acpus/web@0.2.1
+  - @acpus/loader@0.2.1
+  - @acpus/tasks@0.1.6
+  - @acpus/workflow-compiler@0.3.1
+
 ## 0.9.0
 
 ### Minor Changes

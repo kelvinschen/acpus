@@ -1,6 +1,6 @@
 {
   "name": "@acpus/core",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "description": "Acpus TypeScript Workflow Core: Schema bridge, Acpus Expr IR, zx/core-backed Task command wrapper, authoring DSL, and validator.",
   "keywords": [

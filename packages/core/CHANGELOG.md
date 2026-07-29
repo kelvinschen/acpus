@@ -1,5 +1,14 @@
 # @acpus/core
 
+## 0.10.1
+
+### Patch Changes
+
+- 117b4f1: Render compact TypeScript-like Agent result shapes instead of JSON Schema,
+  with bounded output recovery. Preserve advisory numeric constraints and Zod 4
+  default-factory and numeric-enum semantics when lowering graph-boundary
+  schemas.
+
 ## 0.10.0
 
 ### Minor Changes
