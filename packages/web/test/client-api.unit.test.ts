@@ -64,6 +64,21 @@ describe("Web API transport", () => {
     expect(failure.failure).toMatchObject({ type: "response-invalid-envelope", status: 200 });
   });
 
+  it("uses the canonical target in node-inspection URLs without a context query", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      inspection: nodeInspection(),
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await getNodeInspection("run 1", "@1a2b3c4d5e6f");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/runs/run%201/nodes/%401a2b3c4d5e6f",
+      undefined,
+    );
+  });
+
   it.each(successCases())("decodes the canonical $name result", async ({ call, body, expected }) => {
     respondJson(body);
 
@@ -333,7 +348,7 @@ function malformedEndpointCases() {
         ok: true,
         execution: {
           ...execution,
-          lastToolCalls: [{ ...execution.lastToolCalls[0], turn: "one" }],
+          recentTools: [{ ...execution.recentTools[0], turn: "one" }],
         },
       },
     },
@@ -369,6 +384,19 @@ function malformedVisualizationCases() {
   const graph = runtimeGraph();
   const ready = readyVisualization();
   return [
+    {
+      name: "a graph node without an inspection target",
+      body: {
+        ok: true,
+        result: {
+          ...ready,
+          graph: {
+            ...graph,
+            nodes: [{ ...graph.nodes[0], target: undefined }, ...graph.nodes.slice(1)],
+          },
+        },
+      },
+    },
     {
       name: "an invalid graph detail discriminant",
       body: {
@@ -564,7 +592,7 @@ function malformedExecutionCases() {
       name: "an unknown tool-call field",
       execution: {
         ...execution,
-        lastToolCalls: [{ ...execution.lastToolCalls[0], runtimeOnly: true }],
+        recentTools: [{ ...execution.recentTools[0], runtimeOnly: true }],
       },
     },
     {
@@ -579,15 +607,11 @@ function malformedExecutionCases() {
       name: "more than three recent tool calls",
       execution: {
         ...execution,
-        lastToolCalls: Array.from({ length: 4 }, (_, index) => ({
+        recentTools: Array.from({ length: 4 }, (_, index) => ({
           turn: index,
           toolName: "Read",
         })),
       },
-    },
-    {
-      name: "a missing retained-tools completeness flag",
-      execution: { ...execution, recentToolsIncomplete: undefined },
     },
     {
       name: "a negative context-window value",
@@ -606,21 +630,17 @@ function malformedExecutionCases() {
       execution: { ...execution, output: { ...execution.output, totalBytes: -1 } },
     },
     {
-      name: "a negative total tool-call count",
-      execution: { ...execution, toolCallCount: -1 },
-    },
-    {
       name: "a fractional tool-call turn",
       execution: {
         ...execution,
-        lastToolCalls: [{ ...execution.lastToolCalls[0], turn: 1.5 }],
+        recentTools: [{ ...execution.recentTools[0], turn: 1.5 }],
       },
     },
     {
       name: "a negative tool-call duration",
       execution: {
         ...execution,
-        lastToolCalls: [{ ...execution.lastToolCalls[0], durationMs: -1 }],
+        recentTools: [{ ...execution.recentTools[0], durationMs: -1 }],
       },
     },
   ];
@@ -765,8 +785,7 @@ function nodeExecution(): NodeExecutionInspection {
     contextWindow: { used: 10, size: 100, percent: 10, updatedAt: "2026-07-27T00:00:00.500Z" },
     tokenUsage: { source: "usage_update", inputTokens: 8, outputTokens: 2, totalTokens: 10 },
     output: { tail: "working", totalBytes: 7, truncated: false },
-    toolCallCount: 1,
-    lastToolCalls: [{
+    recentTools: [{
       turn: 2,
       toolCallId: "tool_1",
       toolName: "Read",
@@ -774,7 +793,6 @@ function nodeExecution(): NodeExecutionInspection {
       durationMs: 5,
       inputPreview: "README.md",
     }],
-    recentToolsIncomplete: false,
   };
 }
 
@@ -796,6 +814,7 @@ function runtimeGraph(): WebGraph {
     nodes: details.map((detail, index) => ({
       id: `node_${index}`,
       nodeId: `node_${index}`,
+      target: `node_${index}`,
       kind: detail.kind,
       label: `Node ${index}`,
       path: ["root", `node_${index}`],
@@ -863,6 +882,7 @@ function runtimeGraph(): WebGraph {
     }],
     runtimeStates: [{
       targetId: "node_1",
+      target: "@1a2b3c4d5e6f",
       status: "running",
       context: [{ nodeId: "node_7", kind: "fanout", itemIndex: 0 }],
     }],

@@ -26,11 +26,11 @@ The upstream acpx built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `
 
 ## Local Named Agents
 
-Some local acpx installs expose additional named agents from `~/.acpx/config.json`, for example `traex`. These are also valid with `use`:
+Some local acpx installs expose additional named agents from `~/.acpx/config.json`, for example `my-agent`. These are also valid with `use`:
 
 ```ts
 agents: {
-  worker: { use: "traex" },
+  worker: { use: "my-agent" },
 }
 ```
 
@@ -44,7 +44,7 @@ If the agent appears in that command list, or is configured under `~/.acpx/confi
 
 ## ACP Agent Config 
 Use top-level `config` for a static string map: `config.model` selects the model, and every other key is applied with `acpx set`.
-Verified keys: Codex `model`, `reasoning_effort`; Claude `model`, `effort`; TraeX `model`, `reasoning_effort`.
+Verified keys: Codex `model`, `reasoning_effort`; Claude `model`, `effort`; Trae `model`, `reasoning_effort`.
 
 ## Claude User Settings
 

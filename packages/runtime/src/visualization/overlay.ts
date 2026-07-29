@@ -7,6 +7,12 @@ import type {
   RunDynamicNodeInstance,
   RunDynamicSignalWait,
 } from "../store/store.js";
+import { deriveOccurrenceRef } from "../scheduler/occurrence-ref.js";
+
+export type WorkflowVisualizationInstance = RunDynamicNodeInstance & { target: string };
+export type WorkflowVisualizationFrame = RunDynamicFrame & { target: string };
+export type WorkflowVisualizationAttempt = RunDynamicAttempt & { target: string };
+export type WorkflowVisualizationSignalWait = RunDynamicSignalWait & { target: string };
 
 export type WorkflowVisualizationOverlay = {
   workflow: {
@@ -33,15 +39,17 @@ export type NodeDetail =
   | { kind: "loop"; state: ExprIR };
 
 export type WorkflowVisualizationNode = {
+  /** Authored selector for static/unmaterialized nodes. */
+  target: string;
   nodeId: string;
   kind: NodeIR["kind"];
   path: string[];
   parentNodeId?: string;
   detail?: NodeDetail;
-  instances: RunDynamicNodeInstance[];
-  frames: RunDynamicFrame[];
-  attempts: RunDynamicAttempt[];
-  signalWaits: RunDynamicSignalWait[];
+  instances: WorkflowVisualizationInstance[];
+  frames: WorkflowVisualizationFrame[];
+  attempts: WorkflowVisualizationAttempt[];
+  signalWaits: WorkflowVisualizationSignalWait[];
   status: "not_started" | "pending" | "ready" | "running" | "awaiting" | "completed" | "failed" | "cancelled" | "mixed";
 };
 
@@ -111,15 +119,30 @@ function visualizationScopeLabel(child: NodeChildScope): string {
 }
 
 function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInput | undefined, agents: WorkflowIR["agents"]): WorkflowVisualizationNode {
-  const instances = dynamic?.nodeInstances.filter(instance => instance.nodeId === node.node.id) ?? [];
-  const frames = dynamic?.frames.filter(frame => frame.nodeId === node.node.id) ?? [];
-  const attempts = dynamic?.attempts.filter(attempt => attempt.nodeId === node.node.id) ?? [];
-  const signalWaits = dynamic?.signalWaits.filter(wait => wait.nodeId === node.node.id) ?? [];
+  const rawInstances = dynamic?.nodeInstances.filter(instance => instance.nodeId === node.node.id) ?? [];
+  const targetsByNodeKey = new Map(rawInstances.map(instance => [instance.nodeKey, occurrenceTarget(instance.instancePath, node.node.id)]));
+  const instances = rawInstances.map(instance => ({
+    ...instance,
+    target: targetsByNodeKey.get(instance.nodeKey)!,
+  }));
+  const frames = (dynamic?.frames.filter(frame => frame.nodeId === node.node.id) ?? []).map(frame => ({
+    ...frame,
+    target: frame.frameKind === "root" ? "root" : occurrenceTarget(frame.instancePath, node.node.id),
+  }));
+  const attempts = (dynamic?.attempts.filter(attempt => attempt.nodeId === node.node.id) ?? []).map(attempt => ({
+    ...attempt,
+    target: targetsByNodeKey.get(attempt.nodeKey) ?? node.node.id,
+  }));
+  const signalWaits = (dynamic?.signalWaits.filter(wait => wait.nodeId === node.node.id) ?? []).map(wait => ({
+    ...wait,
+    target: targetsByNodeKey.get(wait.nodeKey) ?? node.node.id,
+  }));
   const primaryFrames = frames.filter(frame => frame.frameKind === "node" || frame.frameKind === "loop");
   const currentStatuses = [...instances.map(instance => instance.status), ...primaryFrames.map(frame => frame.status), ...signalWaits.map(wait => wait.status)];
   const attemptStatuses = attempts.map(attempt => attempt.status);
   const detail = safeNodeDetail(node.node, agents);
   return {
+    target: node.node.id,
     nodeId: node.node.id,
     kind: node.node.kind,
     path: node.path,
@@ -131,6 +154,13 @@ function nodeOverlay(node: StaticNode, dynamic: WorkflowVisualizationDynamicInpu
     signalWaits,
     status: overlayStatus(currentStatuses.length > 0 ? currentStatuses : attemptStatuses),
   };
+}
+
+function occurrenceTarget(
+  path: RunDynamicNodeInstance["instancePath"] | RunDynamicFrame["instancePath"],
+  fallback: string,
+): string {
+  return path ? deriveOccurrenceRef(path) : fallback;
 }
 
 // Enrichment reads untrusted frozen-run JSON, so any malformed node yields no detail.

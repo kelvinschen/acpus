@@ -50,8 +50,7 @@ describe("CLI result output contracts", () => {
         type: "signal",
         state: "consumed",
         runId: "run_1",
-        requestedTarget: "approve",
-        target: "approve~abc",
+        target: "approve",
         validation: { kind: "schema", schemaSummary: "{ approved: boolean }" },
       },
       run: {
@@ -70,7 +69,7 @@ describe("CLI result output contracts", () => {
     expect(stdout.text).toBe([
       "Signal consumed.",
       "Run: run_1",
-      "Target: approve → approve~abc",
+      "Target: approve",
       "Payload: validated against { approved: boolean }",
       "Status: running",
       "Workflow entry: approval.workflow.ts",
@@ -81,7 +80,7 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("renders a steer receipt and follows the resolved target without echoing its instruction", () => {
+  it("renders a steer receipt and follows the requested short ref without echoing its instruction", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     expect(writeResult({
@@ -93,9 +92,7 @@ describe("CLI result output contracts", () => {
         state: "applied",
         runId: "run_1",
         steerId: "cli:steer-1",
-        requestedTarget: "review",
-        target: "review~abc",
-        fencedAttemptId: "attempt_1",
+        target: "@1a2b3c4d5e6f",
         continuation: "queued",
       },
       run: {
@@ -115,12 +112,11 @@ describe("CLI result output contracts", () => {
       "Attempt fenced; correction queued.",
       "Run: run_1",
       "Steer: cli:steer-1",
-      "Target: review → review~abc",
-      "Fenced attempt: attempt_1",
+      "Target: @1a2b3c4d5e6f",
       "Continuation: queued",
       "Status: running",
       "Workflow entry: review.workflow.ts",
-      "Next: acpus runs inspect run_1 --target review~abc --follow",
+      "Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --follow",
       "",
     ].join("\n"));
     expect(stdout.text).not.toContain("SECRET correction");
@@ -139,7 +135,7 @@ describe("CLI result output contracts", () => {
       progressVersion: 2,
     };
     for (const [control, targetLine] of [
-      [{ type: "retry", state: "applied", runId: "run_1", target: "review~abc" } as const, "Target: review~abc\n"],
+      [{ type: "retry", state: "applied", runId: "run_1", target: "@1a2b3c4d5e6f" } as const, "Target: @1a2b3c4d5e6f\n"],
       [{ type: "retry", state: "applied", runId: "run_1" } as const, ""],
     ] as const) {
       const stdout = new CaptureStream();
@@ -367,7 +363,7 @@ describe("CLI result output contracts", () => {
     expect(exitCode).toBe(0);
     expect(stdout.text).toBe([
       "Run run_1  cli-valid  running",
-      "Inspect: acpus runs inspect run_1 [--follow]",
+      "Inspect: acpus runs inspect run_1",
       "[warning RUN001] Review this run.",
       "",
     ].join("\n"));

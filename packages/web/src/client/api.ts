@@ -150,34 +150,24 @@ export async function getRunRuntimeSnapshot(runId: string): Promise<RunRuntimeSn
   ));
 }
 
-export async function getNodeInspection(runId: string, target: string, context?: WebGraphSelection[]): Promise<NodeInspection> {
+export async function getNodeInspection(runId: string, target: string): Promise<NodeInspection> {
   return queryPromise(requestJson(
-    nodeInspectionUrl(runId, target, context),
+    nodeInspectionUrl(runId, target),
     undefined,
     decodeField("inspection", isNodeInspection),
   ));
 }
 
-export async function getNodeExecutionInspection(runId: string, target: string, context?: WebGraphSelection[]): Promise<NodeExecutionInspection> {
+export async function getNodeExecutionInspection(runId: string, target: string): Promise<NodeExecutionInspection> {
   return queryPromise(requestJson(
-    nodeInspectionUrl(runId, target, context, "/execution"),
+    nodeInspectionUrl(runId, target, "/execution"),
     undefined,
     decodeField("execution", isNodeExecutionInspection),
   ));
 }
 
-function nodeInspectionUrl(runId: string, target: string, context?: WebGraphSelection[], suffix = ""): string {
-  const base = `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(target)}${suffix}`;
-  if (!context || context.length === 0) return base;
-  return `${base}?context=${encodeURIComponent(encodeContext(context))}`;
-}
-
-function encodeContext(context: WebGraphSelection[]): string {
-  const json = JSON.stringify(context);
-  const bytes = new TextEncoder().encode(json);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+function nodeInspectionUrl(runId: string, target: string, suffix = ""): string {
+  return `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(target)}${suffix}`;
 }
 
 export async function getArtifactPreview(runId: string, artifactId: string): Promise<ArtifactPreview> {
@@ -446,9 +436,7 @@ function isNodeExecutionInspection(value: unknown): value is NodeExecutionInspec
       "contextWindow",
       "tokenUsage",
       "output",
-      "toolCallCount",
-      "lastToolCalls",
-      "recentToolsIncomplete",
+      "recentTools",
     ])
     && typeof value.available === "boolean"
     && (value.available ? value.reason === undefined : typeof value.reason === "string")
@@ -457,11 +445,9 @@ function isNodeExecutionInspection(value: unknown): value is NodeExecutionInspec
     && (value.contextWindow === undefined || isExecutionContextWindow(value.contextWindow))
     && (value.tokenUsage === undefined || isExecutionTokenUsage(value.tokenUsage))
     && (value.output === undefined || isExecutionOutput(value.output))
-    && isOptionalNonNegativeInteger(value.toolCallCount)
-    && Array.isArray(value.lastToolCalls)
-    && value.lastToolCalls.length <= 3
-    && value.lastToolCalls.every(isExecutionToolCall)
-    && typeof value.recentToolsIncomplete === "boolean";
+    && Array.isArray(value.recentTools)
+    && value.recentTools.length <= 3
+    && value.recentTools.every(isExecutionToolCall);
 }
 
 function isExecutionSummary(value: unknown): boolean {
@@ -671,6 +657,7 @@ function isWebGraphNode(value: unknown): boolean {
   return isRecord(value)
     && typeof value.id === "string"
     && typeof value.nodeId === "string"
+    && isControlTarget(value.target)
     && typeof value.kind === "string"
     && typeof value.label === "string"
     && isStringArray(value.path)
@@ -779,6 +766,7 @@ function isWebGraphSelector(value: unknown): boolean {
 function isWebGraphRuntimeState(value: unknown): boolean {
   return isRecord(value)
     && typeof value.targetId === "string"
+    && isControlTarget(value.target)
     && typeof value.status === "string"
     && isWebGraphContext(value.context);
 }

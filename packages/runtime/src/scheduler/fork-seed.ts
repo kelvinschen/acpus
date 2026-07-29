@@ -5,6 +5,7 @@ import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { stableJson } from "../stable-json.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
+import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import { applySchedulerEvents, createSchedulerProjection, nextGroupCompletionBatchEvents } from "./transitions.js";
 import type { SchedulerEvent } from "./events.js";
 import type { InstancePath, InstancePathSegment, SchedulerProjection } from "./types.js";
@@ -101,8 +102,31 @@ type ResolvedTarget =
 function resolveForkTarget(input: ForkSeedInput, sourceFacts: Map<string, CompletedFact>, replacementSignatures: Map<string, string>): Result<ResolvedTarget, ForkSeedFailure> {
   const { replacementWorkflow: workflow, sourceProjection, target } = input;
   if (target === undefined) return ok({ kind: "root" });
-  if (target.includes("~")) {
-    const targetPath = sourceProjection.instances[target]?.instancePath ?? replacementMaterializedPath(input, sourceFacts, replacementSignatures, target);
+  const occurrence = resolveOccurrenceRef(sourceProjection, target, { attempt: "reject" });
+  if (occurrence && !occurrence.ok) {
+    const detail = occurrence.error.type === "occurrence-ref-collision"
+      ? ` Candidate keys: ${occurrence.error.candidateKeys.join(", ")}.`
+      : occurrence.error.type === "occurrence-ref-attempt-not-allowed"
+        ? " Targeted fork accepts an occurrence ref without an attempt suffix."
+        : "";
+    return err({
+      type: "target-resolution-failure",
+      target,
+      message: `Fork target '${target}' could not be resolved.${detail}`,
+    });
+  }
+  if (occurrence?.value.kind === "frame") {
+    return err({
+      type: "target-resolution-failure",
+      target,
+      message: `Fork target '${target}' is not a scheduler leaf target.`,
+    });
+  }
+  const dynamicTarget = occurrence?.value.nodeKey
+    ?? (target.includes("~") ? target : undefined);
+  if (dynamicTarget) {
+    const targetPath = sourceProjection.instances[dynamicTarget]?.instancePath
+      ?? replacementMaterializedPath(input, sourceFacts, replacementSignatures, dynamicTarget);
     if (!targetPath) return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' was not materialized in the replacement workflow.` });
     const replacementNode = nodeAtPath(workflow.root, targetPath);
     if (!replacementNode) {
@@ -111,7 +135,7 @@ function resolveForkTarget(input: ForkSeedInput, sourceFacts: Map<string, Comple
     if (!isSchedulerLeaf(replacementNode)) {
       return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' is not a scheduler leaf target.` });
     }
-    return ok({ kind: "dynamic", nodeKey: target, path: targetPath, prerequisitePatterns: prerequisiteLeafPatterns(workflow.root, targetPath) });
+    return ok({ kind: "dynamic", nodeKey: dynamicTarget, path: targetPath, prerequisitePatterns: prerequisiteLeafPatterns(workflow.root, targetPath) });
   }
   const paths = nodePaths(workflow.root).filter(path => path.node.id === target);
   if (paths.length === 0) {

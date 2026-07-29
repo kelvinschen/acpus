@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import type { InstancePath, InstancePathSegment } from "./types.js";
 
 export function deriveInstanceKey(path: InstancePath): string {
-  const canonical = canonicalPath(path);
-  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+  const hash = deriveInstanceDigest(path);
   const readable = path.map(readableSegment).join("/") || "root";
   return `${truncateReadable(readable)}~${hash}`;
+}
+
+/** A stable, path-scoped digest for operator-facing occurrence selectors. */
+export function deriveInstanceDigest(path: InstancePath): string {
+  return createHash("sha256").update(canonicalPath(path)).digest("hex").slice(0, 12);
 }
 
 export function appendNode(path: InstancePath, nodeId: string): InstancePath {

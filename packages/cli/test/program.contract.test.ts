@@ -373,10 +373,11 @@ describe("CLI program usage contracts", () => {
     expect(await runCli(["runs", "inspect", "--help"], {
       cwd: process.cwd(), stdout: inspectStdout, stderr: inspectStderr,
     })).toBe(0);
-    for (const option of ["--target", "--timeline", "--limit", "--before", "--all", "--follow", "--interval", "--raw", "--json"]) {
+    for (const option of ["--target", "--timeline", "--evidence", "--limit", "--page", "--all", "--controls", "--follow", "--raw", "--json"]) {
       expect(inspectStdout.text).toContain(option);
     }
     expect(inspectStdout.text).not.toContain("--after");
+    expect(inspectStdout.text).not.toContain("--before");
 
     const runStdout = new CaptureStream();
     const runStderr = new CaptureStream();
@@ -450,19 +451,27 @@ describe("CLI program usage contracts", () => {
 
   it("rejects incompatible inspection modes before reading runtime state", async () => {
     const cases = [
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--all", "--json"], message: "--target cannot be used with --all" },
       { argv: ["runs", "inspect", "run_1", "--target", "   ", "--json"], message: "--target must be a non-empty string" },
       { argv: ["runs", "inspect", "run_1", "--timeline", "--json"], message: "--timeline requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--all", "--json"], message: "--target cannot be used with --all" },
-      { argv: ["runs", "inspect", "run_1", "--limit", "12", "--json"], message: "--limit requires --timeline" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--limit", "0", "--json"], message: "--limit must be an integer from 1 to 50" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--limit", "51", "--json"], message: "--limit must be an integer from 1 to 50" },
-      { argv: ["runs", "inspect", "run_1", "--before", "page", "--json"], message: "--before requires --timeline" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--before", "page", "--follow", "--json"], message: "--before cannot be used with --follow" },
+      { argv: ["runs", "inspect", "run_1", "--evidence", "--json"], message: "--evidence requires --target" },
+      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--all", "--json"], message: "--timeline cannot be used with --all, --evidence, or --raw" },
+      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--controls", "--json"], message: "--controls cannot be used with --timeline" },
+      { argv: ["runs", "inspect", "run_1", "--evidence", "--target", "node", "--follow", "--json"], message: "--evidence cannot be used with --all, --controls, --follow, or --raw" },
+      { argv: ["runs", "inspect", "run_1", "--evidence", "--target", "node", "--controls", "--json"], message: "--evidence cannot be used with --all, --controls, --follow, or --raw" },
+      { argv: ["runs", "inspect", "run_1", "--limit", "12", "--json"], message: "--limit requires --target" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "12", "--follow", "--json"], message: "--limit can be used with --follow only together with --timeline" },
+      { argv: ["runs", "inspect", "run_1", "--page", "2", "--json"], message: "--page requires --target" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "0", "--json"], message: "--limit must be an integer from 1 to 50" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "51", "--json"], message: "--limit must be an integer from 1 to 50" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "0", "--json"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "1.5", "--json"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "9007199254740992", "--json"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--follow", "--json"], message: "--page cannot be used with --follow" },
+      { argv: ["runs", "inspect", "run_1", "--before", "page", "--json"], message: "unknown option '--before'" },
       { argv: ["runs", "inspect", "run_1", "--after", "revision", "--json"], message: "unknown option '--after'" },
-      { argv: ["runs", "inspect", "run_1", "--interval", "1s", "--json"], message: "--interval requires --follow" },
-      { argv: ["runs", "inspect", "run_1", "--follow", "--interval", "100ms", "--json"], message: "--interval must be at least 250ms" },
+      { argv: ["runs", "inspect", "run_1", "--interval", "1s", "--json"], message: "unknown option '--interval'" },
       { argv: ["runs", "inspect", "run_1", "--raw", "--follow", "--json"], message: "--raw cannot be used" },
+      { argv: ["runs", "inspect", "run_1", "--raw", "--controls", "--json"], message: "--raw cannot be used" },
     ];
 
     for (const testCase of cases) {

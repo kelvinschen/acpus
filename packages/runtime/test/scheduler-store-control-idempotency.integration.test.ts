@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { openRuntimeStore } from "../src/store/store.js";
-import { getRunInspection } from "../src/inspection/use-cases.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { dbRow, dbRun, dbScalar } from "./support/store-port-fixtures.js";
@@ -499,10 +498,6 @@ describe("scheduler store controls, idempotency, and public projection", () => {
 
         dbRun(workspace, "UPDATE node_instances SET status_reason = 'retry' WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1");
         expect(store.getRun(run.id)?.dynamic?.nodeInstances.find(node => node.nodeKey === "require_ready~1")?.statusReason).toBeUndefined();
-        const inspected = await getRunInspection(workspace, { runId: run.id, mode: "details", target: "require_ready~1" });
-        expect(inspected.isOk() && inspected.value.kind === "details"
-          ? inspected.value.instances.find(node => node.nodeKey === "require_ready~1")?.statusReason
-          : "inspection failed").toBeUndefined();
       } finally {
         store.close();
       }

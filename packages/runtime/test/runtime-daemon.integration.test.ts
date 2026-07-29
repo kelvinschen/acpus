@@ -257,6 +257,51 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 
+  it("marks only a repeated authored fork target as an ambiguity at the daemon boundary", async () => {
+    await withRuntimeWorkspace("runtime-daemon-fork-target-ambiguity", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, fanoutSignalWorkflow(), { items: ["a", "b"] });
+      expect(source.status).toBe("awaiting");
+      const loop = await startDaemonLoop(workspace, {
+        heartbeatMs: 60_000,
+        idleStopMs: 60_000,
+        packageVersion: "test",
+      });
+      try {
+        const ambiguous = await requestDaemonControlResult(workspace, {
+          requestId: "fork-repeated-authored-target",
+          type: "fork",
+          runId: source.run.id,
+          target: "approve",
+        });
+        expect(ambiguous.isErr()).toBe(true);
+        if (ambiguous.isErr()) {
+          expect(ambiguous.error).toMatchObject({
+            type: "rejected",
+            code: "RUN_NOT_CONTROLLABLE",
+            ambiguity: true,
+          });
+        }
+
+        const missing = await requestDaemonControlResult(workspace, {
+          requestId: "fork-missing-target",
+          type: "fork",
+          runId: source.run.id,
+          target: "missing",
+        });
+        expect(missing.isErr()).toBe(true);
+        if (missing.isErr()) {
+          expect(missing.error).toMatchObject({
+            type: "rejected",
+            code: "RUN_NOT_CONTROLLABLE",
+          });
+          expect(missing.error).not.toHaveProperty("ambiguity");
+        }
+      } finally {
+        await loop.shutdown();
+      }
+    });
+  });
+
   it("rejects manual shutdown while another client request is active", async () => {
     await withRuntimeWorkspace("runtime-daemon-shutdown-active-connection", async workspace => {
       const loop = await startDaemonLoop(workspace, {

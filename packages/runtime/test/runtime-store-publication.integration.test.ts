@@ -1,20 +1,38 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { access, cp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
 import { DirectoryFence } from "../src/store/path-fence.js";
-import { openRuntimeStore, publishRunDirectory } from "../src/store/store.js";
-import { preparedWorkflow, prepareSyntheticWorkflow, runtimeRunsRoot, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { openRuntimeStore, publishRunDirectory, type RuntimeStore } from "../src/store/store.js";
+import { preparedWorkflow, prepareSyntheticWorkflow, runtimeRunsRoot, taskArtifactWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 const runIdBytes = vi.hoisted(() => ({ values: [] as number[] }));
+const publicationMocks = vi.hoisted(() => ({
+  afterChmod: undefined as ((path: string) => Promise<void>) | undefined,
+}));
 vi.mock("node:crypto", async importOriginal => ({
   ...await importOriginal<typeof import("node:crypto")>(),
   randomBytes: (size: number) => Buffer.alloc(size, runIdBytes.values.shift() ?? 0),
 }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    chmod: async (path: Parameters<typeof original.chmod>[0], mode: number) => {
+      await original.chmod(path, mode);
+      await publicationMocks.afterChmod?.(String(path));
+    },
+  };
+});
 
 describe("runtime run directory publication", () => {
   beforeEach(() => {
     runIdBytes.values = [];
+    publicationMocks.afterChmod = undefined;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 0, 2, 3, 4, 5));
   });
@@ -147,6 +165,82 @@ describe("runtime run directory publication", () => {
         await expect(readFile(join(finalDir, "sentinel.txt"), "utf8")).resolves.toBe("pre-existing fork final");
         await expect(access(join(runsDir, `.staging-${finalForkId}`))).rejects.toThrow();
         expect(store.listRuns().map(run => run.id)).toEqual([source.id]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("re-resolves an occurrence fork target inside the final commit transaction", async () => {
+    await withRuntimeWorkspace("runtime-fork-occurrence-target-transaction", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        runIdBytes.values.push(0xaa);
+        const source = await admitRunForTest(store, { prepared, cwd: workspace, input: null });
+        const target = materializeForkOccurrence(store, source.id).target;
+        runIdBytes.values.push(0xbb);
+
+        const db = (store.scheduler as unknown as { db: DatabaseSync }).db;
+        const transactionStates: boolean[] = [];
+        const resolveOccurrenceRef = occurrenceRefs.resolveOccurrenceRef;
+        const resolveSpy = vi.spyOn(occurrenceRefs, "resolveOccurrenceRef").mockImplementation((...args) => {
+          transactionStates.push(db.isTransaction);
+          return resolveOccurrenceRef(...args);
+        });
+        try {
+          const fork = await store.forkRun(source.id, { target });
+          expect(fork.isOk()).toBe(true);
+          expect(transactionStates).toContain(true);
+        } finally {
+          resolveSpy.mockRestore();
+        }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("abandons a published fork when its source scheduler version changes", async () => {
+    await withRuntimeWorkspace("runtime-fork-source-version-guard", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        runIdBytes.values.push(0xaa);
+        const source = await admitRunForTest(store, { prepared, cwd: workspace, input: null });
+        const occurrence = materializeForkOccurrence(store, source.id);
+        const expectedVersion = throwingSchedulerStore(store.scheduler).loadRunSnapshot(source.id).version;
+        const forkId = deterministicRunId(0xbb);
+        const forkDir = join(runtimeRunsRoot(workspace), forkId);
+        runIdBytes.values.push(0xbb);
+        publicationMocks.afterChmod = async path => {
+          if (path !== forkDir) return;
+          publicationMocks.afterChmod = undefined;
+          throwingSchedulerStore(store.scheduler).startAttempt({
+            runId: source.id,
+            nodeKey: occurrence.nodeKey,
+            nodeId: "local_task",
+            ownerEpoch: occurrence.claim.ownerEpoch,
+            idempotencyKey: "fork-source-version-change",
+          });
+        };
+
+        const fork = await store.forkRun(source.id, { target: occurrence.target });
+
+        expect(fork.isErr()).toBe(true);
+        if (fork.isErr()) {
+          expect(fork.error).toMatchObject({
+            type: "fork-source-version-mismatch",
+            runId: source.id,
+            expectedVersion,
+            actualVersion: expect.any(Number),
+          });
+          if (fork.error.type === "fork-source-version-mismatch") {
+            expect(fork.error.actualVersion).toBeGreaterThan(expectedVersion);
+          }
+        }
+        expect(store.getRun(forkId)).toBeUndefined();
+        await expect(access(forkDir)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         store.close();
       }
@@ -330,4 +424,37 @@ function deferred<T>(): {
     resolvePromise = resolve;
   });
   return { promise, resolve: resolvePromise };
+}
+
+function materializeForkOccurrence(store: RuntimeStore, runId: string): {
+  claim: NonNullable<ReturnType<RuntimeStore["scheduler"]["claimRun"]>>;
+  nodeKey: string;
+  target: string;
+} {
+  const claim = store.scheduler.claimRun(runId, "fork-source", 60_000);
+  if (!claim) throw new Error("expected a source scheduler claim");
+  const path = appendNode([], "local_task");
+  const nodeKey = deriveInstanceKey(path);
+  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+  throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+    runId,
+    expectedVersion: snapshot.version,
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: "fork-source-occurrence",
+    events: [
+      { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
+      {
+        type: "instance.ready",
+        payload: {
+          runId,
+          nodeKey,
+          nodeId: "local_task",
+          parentFrameKey: "root",
+          instancePath: path,
+          readinessSequence: 1,
+        },
+      },
+    ],
+  });
+  return { claim, nodeKey, target: occurrenceRefs.deriveOccurrenceRef(path) };
 }

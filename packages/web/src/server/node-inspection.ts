@@ -1,6 +1,6 @@
 import type {
   RunInspectionAgentExecutionDocument,
-  RunInspectionTargetDetailsDocument,
+  RunInspectionNodeDocument,
 } from "@acpus/runtime";
 import type {
   NodeExecutionInspection,
@@ -11,7 +11,7 @@ import type {
 type LoadJsonArtifact = (artifactRef: unknown) => Promise<unknown | undefined>;
 
 export async function projectNodeInspection(
-  inspection: RunInspectionTargetDetailsDocument,
+  inspection: RunInspectionNodeDocument,
   loadJsonArtifact: LoadJsonArtifact,
 ): Promise<NodeInspection> {
   const summary = inspection.summary;
@@ -96,7 +96,7 @@ export async function projectNodeInspection(
 }
 
 function projectFailure(
-  failure: NonNullable<RunInspectionTargetDetailsDocument["summary"]["failure"]>,
+  failure: NonNullable<RunInspectionNodeDocument["summary"]["failure"]>,
 ): NodeInspectionFailure {
   const upstream = failure.upstream;
   return {
@@ -157,8 +157,7 @@ export function projectNodeExecution(
         truncated: execution.output.truncated,
       },
     }),
-    ...(execution.toolCallCount === undefined ? {} : { toolCallCount: execution.toolCallCount }),
-    lastToolCalls: execution.lastToolCalls.map(tool => ({
+    recentTools: execution.recentTools.map(tool => ({
       turn: tool.turn,
       ...(tool.toolCallId === undefined ? {} : { toolCallId: tool.toolCallId }),
       ...(tool.toolName === undefined ? {} : { toolName: tool.toolName }),
@@ -166,7 +165,6 @@ export function projectNodeExecution(
       ...(tool.durationMs === undefined ? {} : { durationMs: tool.durationMs }),
       ...(tool.inputPreview === undefined ? {} : { inputPreview: tool.inputPreview }),
     })),
-    recentToolsIncomplete: execution.recentToolsIncomplete,
   };
   return execution.available
     ? { available: true, ...projection }

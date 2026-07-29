@@ -4,6 +4,7 @@ import { err, ok, type Result } from "neverthrow";
 import { tryNormalizeSignalPayload } from "../admission/input.js";
 import { compactSchemaSummary } from "../schema-summary.js";
 import type { RuntimeStore } from "../store/store.js";
+import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import { schedulerStoreError, type SchedulerSnapshot, type SchedulerStoreError } from "./store-port.js";
 import { settleFrozenRunTransitions } from "./runtime-runner.js";
 
@@ -219,14 +220,48 @@ export function resolveSignalPayload(
     }
     return ok({ nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: intent.payload });
   }
-  if (isOpenSignalWait(snapshot, target)) return ok({ nodeKey: target, nodeId: snapshot.projection.signalWaits[target]!.nodeId, payload: intent.payload });
+  const occurrence = resolveOccurrenceRef(snapshot.projection, target, { attempt: "reject" });
+  if (occurrence && !occurrence.ok) {
+    if (occurrence.error.type === "occurrence-ref-collision") {
+      return ambiguousSignal(intent, occurrence.error.candidateKeys);
+    }
+    const suffix = occurrence.error.type === "occurrence-ref-attempt-not-allowed"
+      ? ` selects attempt ${occurrence.error.attemptNo}; signal the occurrence without an attempt suffix`
+      : " was not found";
+    return err({
+      type: "signal-target-not-found",
+      runId: intent.runId,
+      target,
+      message: `Scheduler signal control request '${intent.requestId}' target '${target}'${suffix}.`,
+    });
+  }
+  if (occurrence?.value.kind === "frame") {
+    return err({
+      type: "signal-target-not-found",
+      runId: intent.runId,
+      target,
+      message: `Scheduler signal control request '${intent.requestId}' target '${target}' resolves to a frame, not a Signal occurrence.`,
+    });
+  }
+  const resolvedTarget = occurrence?.value.nodeKey ?? target;
+  if (isOpenSignalWait(snapshot, resolvedTarget)) {
+    return ok({
+      nodeKey: resolvedTarget,
+      nodeId: snapshot.projection.signalWaits[resolvedTarget]!.nodeId,
+      payload: intent.payload,
+    });
+  }
   const matches = Object.values(snapshot.projection.signalWaits)
-    .filter(wait => wait.nodeId === target && isOpenSignalWait(snapshot, wait.nodeKey))
+    .filter(wait => occurrence === undefined
+      && wait.nodeId === target
+      && isOpenSignalWait(snapshot, wait.nodeKey))
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
   if (matches.length === 1) return ok({ nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: intent.payload });
   if (matches.length > 1) return ambiguousSignal(intent, matches.map(wait => wait.nodeKey));
   const consumedMatches = Object.values(snapshot.projection.signalWaits)
-    .filter(wait => wait.status === "consumed" && (wait.nodeKey === target || wait.nodeId === target))
+    .filter(wait => wait.status === "consumed"
+      && (wait.nodeKey === resolvedTarget
+        || (occurrence === undefined && wait.nodeId === target)))
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
   if (consumedMatches.length === 1) return ok({ nodeKey: consumedMatches[0]!.nodeKey, nodeId: consumedMatches[0]!.nodeId, payload: intent.payload });
   if (consumedMatches.length > 1) return ambiguousSignal(intent, consumedMatches.map(wait => wait.nodeKey));
@@ -259,7 +294,7 @@ function hasSignalNode(ir: WorkflowIR, nodeId: string): boolean {
 }
 
 function looksLikeInstanceKey(value: string): boolean {
-  return /~[0-9a-f]{12}$/i.test(value);
+  return value.startsWith("@") || /~[0-9a-f]{12}$/i.test(value);
 }
 
 function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean {

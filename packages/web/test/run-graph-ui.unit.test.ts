@@ -14,8 +14,8 @@ const graph: WebGraph = {
   workflow: { name: "fanout", runId: "run-1", status: "running" },
   mode: "runtime",
   nodes: [
-    { id: "jobs", nodeId: "jobs", kind: "fanout", label: "jobs", path: ["root", "jobs"], detail: { kind: "fanout", over: "input.jobs", strategy: "all" }, status: "running" },
-    { id: "work", nodeId: "work", kind: "task", label: "work", path: ["root", "jobs", "do", "work"], parentId: "jobs::do", detail: { kind: "task", input: "input.jobs", target: "inline" }, status: "running" },
+    { id: "jobs", nodeId: "jobs", target: "jobs", kind: "fanout", label: "jobs", path: ["root", "jobs"], detail: { kind: "fanout", over: "input.jobs", strategy: "all" }, status: "running" },
+    { id: "work", nodeId: "work", target: "work", kind: "task", label: "work", path: ["root", "jobs", "do", "work"], parentId: "jobs::do", detail: { kind: "task", input: "input.jobs", target: "inline" }, status: "running" },
   ],
   containers: [
     { id: "jobs::do", nodeId: "jobs", kind: "scope", label: "do", path: ["root", "jobs", "do"], parentId: "jobs", status: "running" },
@@ -31,8 +31,8 @@ const graph: WebGraph = {
   }],
   selectors: [],
   runtimeStates: [
-    { targetId: "jobs", status: "running", context: [] },
-    { targetId: "work", status: "running", context },
+    { targetId: "jobs", target: "jobs", status: "running", context: [] },
+    { targetId: "work", target: "@1a2b3c4d5e6f", status: "running", context },
   ],
 };
 
@@ -111,6 +111,7 @@ describe("RunGraph interaction semantics", () => {
 
     expect(onSelectNode).toHaveBeenLastCalledWith(expect.objectContaining({
       nodeId: "work",
+      target: "@1a2b3c4d5e6f",
       label: "work",
       context,
       displayStatus: "running",
@@ -124,7 +125,7 @@ describe("RunGraph interaction semantics", () => {
       workflow: { name: "loop", runId: "run-loop", status: "running" },
       mode: "runtime",
       nodes: [
-        { id: "repeat", nodeId: "repeat", kind: "loop", label: "repeat", path: ["root", "repeat"], detail: { kind: "loop", state: "state" }, status: "running" },
+        { id: "repeat", nodeId: "repeat", target: "repeat", kind: "loop", label: "repeat", path: ["root", "repeat"], detail: { kind: "loop", state: "state" }, status: "running" },
       ],
       containers: [
         { id: "repeat::do", nodeId: "repeat", kind: "scope", label: "do", path: ["root", "repeat", "do"], parentId: "repeat", status: "running" },
@@ -140,7 +141,7 @@ describe("RunGraph interaction semantics", () => {
         defaultOptionId: "iter-0",
         options: [{ id: "iter-0", iteration: 0, context: [{ nodeId: "repeat", kind: "loop", iteration: 0 }] }],
       }],
-      runtimeStates: [{ targetId: "repeat", status: "running", context: [] }],
+      runtimeStates: [{ targetId: "repeat", target: "repeat", status: "running", context: [] }],
     };
 
     await act(async () => root.render(React.createElement(RunGraph, { graph: loopGraph, onSelectNode: vi.fn() })));
@@ -158,7 +159,7 @@ describe("RunGraph interaction semantics", () => {
       workflow: { name: "static" },
       mode: "static",
       nodes: [
-        { id: "prepare", nodeId: "prepare", kind: "task", label: "prepare", path: ["root", "prepare"], status: "not_started" },
+        { id: "prepare", nodeId: "prepare", target: "prepare", kind: "task", label: "prepare", path: ["root", "prepare"], status: "not_started" },
       ],
       containers: [],
       edges: [],
@@ -202,6 +203,7 @@ describe("RunGraph interaction semantics", () => {
 
     expect(onSelectNode).toHaveBeenLastCalledWith(expect.objectContaining({
       nodeId: "jobs",
+      target: "jobs",
       detail: { kind: "fanout", over: "input.jobs", strategy: "all" },
     }));
     expect(container.querySelector<HTMLElement>(".graph-container")?.getAttribute("role")).toBe("group");
@@ -249,6 +251,7 @@ describe("RunGraph interaction semantics", () => {
 
     expect(onSelectNode).toHaveBeenLastCalledWith(expect.objectContaining({
       nodeId: "work",
+      target: "@1a2b3c4d5e6f",
       context,
     }));
   });
@@ -273,12 +276,12 @@ describe("RunGraph interaction semantics", () => {
       ...graph,
       nodes: [
         ...graph.nodes,
-        { id: "gate", nodeId: "gate", kind: "if", label: "gate", path: ["root", "jobs", "do", "gate"], parentId: "jobs::do", detail: { kind: "if", condition: "item.ready" }, status: "running" },
+        { id: "gate", nodeId: "gate", target: "gate", kind: "if", label: "gate", path: ["root", "jobs", "do", "gate"], parentId: "jobs::do", detail: { kind: "if", condition: "item.ready" }, status: "running" },
       ],
       edges: [{ id: "work->gate", source: "work", target: "gate", kind: "sequence" }],
       runtimeStates: [
         ...graph.runtimeStates,
-        { targetId: "gate", status: "running", context },
+        { targetId: "gate", target: "@gate-in-item-0", status: "running", context },
       ],
     };
 

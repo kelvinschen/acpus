@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type {
-  RunInspectionEmission,
+  RunInspectionCandidatesDocument,
+  RunInspectionEvidenceCandidatesDocument,
+  RunInspectionEvidenceDocument,
+  RunInspectionItem,
   RunInspectionSnapshot,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
+  RunInspectionTimelineEntry,
 } from "@acpus/runtime";
 import {
-  applyRunInspectionUpdate,
-  formatRunInspectionCheckpoint,
-  formatRunInspectionDelta,
+  formatInspectionCandidates,
   formatRunInspectionDocument,
   formatRunInspectionHeader,
+  formatRunInspectionTimelineEntry,
 } from "../src/run-inspection-surface.js";
 
 describe("Inspection v2 text surface", () => {
@@ -19,13 +22,12 @@ describe("Inspection v2 text surface", () => {
 
     expect(text).toBe([
       "Run run_1  running",
-      "Target review  review~abc  agent",
+      "Target review  @1a2b3c4d5e6f  agent",
       "State running  2s",
       "Pulse tool  turn=1  Bash: rg src",
       "Attention awaiting_input  Operator input required",
       "Available operations:",
-      "  Timeline: acpus runs inspect run_1 --target review~abc --timeline",
-      "  Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'",
+      "  Timeline: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline",
       "",
     ].join("\n"));
     expect(text).not.toContain("instances");
@@ -33,14 +35,85 @@ describe("Inspection v2 text surface", () => {
     expect(text).not.toContain("\nOutput:");
   });
 
-  it("keeps overview Agent activity free of resource and age telemetry", () => {
+  it("renders candidate pages with short refs and one shell-safe next command", () => {
+    const document: RunInspectionCandidatesDocument = {
+      schemaVersion: 2,
+      kind: "candidates",
+      run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+      target: "review batch's [界]",
+      candidates: {
+        entries: [
+          {
+            ref: "@1a2b3c4d5e6f",
+            status: "running",
+            breadcrumb: "batch[0] › review",
+            kind: "dynamic-node",
+          },
+          {
+            ref: "@6f5e4d3c2b1a",
+            status: "completed",
+            breadcrumb: "batch[1] › review",
+            kind: "dynamic-node",
+          },
+        ],
+        page: 1,
+        limit: 2,
+        total: 4,
+        hasMore: true,
+        nextPage: 2,
+      },
+    };
+
+    expect(formatRunInspectionDocument(document)).toBe([
+      "Run run_1  running",
+      "Target review batch's [界]  matches=4",
+      "  ⠋ @1a2b3c4d5e6f  batch[0] › review  dynamic-node",
+      "  ✓ @6f5e4d3c2b1a  batch[1] › review  dynamic-node",
+      "Select: acpus runs inspect run_1 --target @ref",
+      "Next: acpus runs inspect run_1 --target 'review batch'\\''s [界]' --limit 2 --page 2",
+      "",
+    ].join("\n"));
+  });
+
+  it("retains the requested inspection view in candidate handoff commands", () => {
+    const document: RunInspectionCandidatesDocument = {
+      schemaVersion: 2,
+      kind: "candidates",
+      run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+      target: "review",
+      candidates: {
+        entries: [],
+        page: 1,
+        limit: 5,
+        total: 6,
+        hasMore: true,
+        nextPage: 2,
+      },
+    };
+
+    const timeline = formatInspectionCandidates(document, { timeline: true });
+    expect(timeline).toContain("Select: acpus runs inspect run_1 --target @ref --timeline");
+    expect(timeline).toContain("Next: acpus runs inspect run_1 --target review --timeline --limit 5 --page 2");
+
+    const evidence = formatInspectionCandidates(document, { evidence: true });
+    expect(evidence).toContain("Select: acpus runs inspect run_1 --target @ref --evidence");
+    expect(evidence).toContain("Next: acpus runs inspect run_1 --target review --evidence --limit 5 --page 2");
+
+    const scoped = formatInspectionCandidates(document, { all: true, controls: true });
+    expect(scoped).toContain("Select: acpus runs inspect run_1 --target @ref --all --controls");
+    expect(scoped).toContain("Next: acpus runs inspect run_1 --target review --all --controls --limit 5 --page 2");
+  });
+
+  it("carries active Agent pulse on its Tree row without resource or age telemetry", () => {
     const text = formatRunInspectionDocument(overview());
     const header = formatRunInspectionHeader({
       ...overview().run,
       agentUsage: { instances: 2, attempts: 3, turns: 7 },
     });
 
-    expect(text).toContain("Active:\n  ⠋ review · agent(observer) · turn 3 · ⠋ Bash: rg src");
+    expect(text).toContain("Tree:\n┌─ ⠋ review · agent(observer) · @1a2b3c4d5e6f · running · turn 3 · ⠋ Bash: rg src");
+    expect(text).toContain("Counts total=1  running=1");
+    expect(text).not.toContain("Active:");
     expect(header).not.toContain("Agent usage");
     expect(text).not.toContain("Agent usage");
     expect(text).not.toContain("Context");
@@ -49,10 +122,10 @@ describe("Inspection v2 text surface", () => {
     expect(text).not.toContain("no update yet");
   });
 
-  it("renders concrete Active rows before summarizing hidden running leaves", () => {
+  it("keeps every distinct active leaf in Tree without an Active summary", () => {
     const document = overview();
-    document.counts = { total: 6, starting: 1, running: 5 };
-    document.items = Array.from({ length: 3 }, (_, index) => ({
+    document.counts = { total: 5, starting: 1, running: 4 };
+    document.items = Array.from({ length: 5 }, (_, index) => ({
       key: `work~${index}`,
       role: "instance",
       path: [`work[${index}]`],
@@ -62,56 +135,161 @@ describe("Inspection v2 text surface", () => {
       nodeId: "work",
       nodeKey: `work~${index}`,
     }));
-    document.omitted = {
-      reason: "context-limit",
-      limit: 20,
-      dynamicContexts: 3,
-      counts: { total: 3, starting: 1, running: 2 },
-    };
-    document.availableActions = [{ kind: "inspect-all", omitted: 3 }];
 
     const text = formatRunInspectionDocument(document);
 
     expect(text).toContain([
-      "Active:",
-      "  ⠋ work0 · task",
-      "  ⠋ work1 · task",
-      "  ⠋ work2 · task",
-      "  … 3 more running",
+      "┌─ ⠋ work0 · task · running",
+      "├─ ⠋ work1 · task · running",
+      "├─ ⠋ work2 · task · running",
+      "├─ ⠋ work3 · task · running",
+      "└─ ⠋ work4 · task · running",
     ].join("\n"));
-    expect(text).not.toContain("Active:\n  …");
+    expect(text).not.toContain("Active:");
   });
 
-  it("reports degraded visibility separately and makes restoration explicit", () => {
+  it("renders a semantic fanout fold with only its owner ref and scoped expansion", () => {
+    const text = formatRunInspectionDocument(fanoutOverview("awaiting"));
+
+    expect(text).toContain("┌─ ⠋ batch · fanout · @batch");
+    expect(text).toContain("└┄ … item[0–3] ×4 · ⏳ · awaiting");
+    expect(text).toContain("Expand: acpus runs inspect run_1 --target @batch --all");
+    expect(text).not.toContain("@context-0");
+    expect(text).not.toContain("@child-0");
+    expect(text).not.toContain("Signal: acpus runs signal run_1 --target @child-0");
+  });
+
+  it("uses an authored static owner selector for folded Tree and Attention expansion", () => {
+    const document = fanoutOverview("awaiting");
+    const { ref: _ref, nodeKey: _nodeKey, ...staticOwner } = document.items[0]!;
+    document.items[0] = {
+      ...staticOwner,
+      role: "static",
+    };
+
+    const text = formatRunInspectionDocument(document);
+
+    expect(text).toContain("batch · fanout · batch");
+    expect(text).toContain("Expand: acpus runs inspect run_1 --target batch --all");
+  });
+
+  it("keeps singleton Signal actionable but shows failed work as diagnosis, not Retry or Fork", () => {
+    const waiting = overview();
+    waiting.items[0] = {
+      ...waiting.items[0]!,
+      kind: "signal",
+      status: "awaiting",
+      signal: { target: "raw-signal", schemaSummary: "{ approved: boolean }" },
+    };
+    waiting.counts = { total: 1, awaiting: 1 };
+    expect(formatRunInspectionDocument(waiting)).toContain(
+      "Signal: acpus runs signal run_1 --target @1a2b3c4d5e6f --payload '<json>'",
+    );
+
+    const failed = overview();
+    failed.items[0] = {
+      ...failed.items[0]!,
+      status: "failed",
+      failure: { origin: "task", message: "review failed" },
+    };
+    failed.counts = { total: 1, failed: 1 };
+    failed.availableActions = [];
+    const failedText = formatRunInspectionDocument(failed);
+    expect(failedText).toContain("Error (task): review failed");
+    expect(failedText).not.toContain("Retry:");
+    expect(failedText).not.toContain("Fork:");
+  });
+
+  it("labels explicit target controls as runtime-approved capability rather than recommendation", () => {
+    const text = formatRunInspectionDocument(targetSummary({
+      availableActions: [
+        { kind: "inspect-timeline", target: "@1a2b3c4d5e6f" },
+        { kind: "retry", target: "@1a2b3c4d5e6f" },
+        { kind: "cancel", target: "@1a2b3c4d5e6f" },
+        { kind: "steer", target: "@1a2b3c4d5e6f#1" },
+      ],
+    }));
+
+    expect(text).toContain([
+      "Available operations:",
+      "  Timeline: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline",
+      "Controls (runtime-approved capability; not a recommendation):",
+      "  Retry: acpus runs retry run_1 --target @1a2b3c4d5e6f",
+      "  Cancel: acpus runs cancel run_1 --target @1a2b3c4d5e6f",
+      "  Steer: acpus runs steer run_1 --target '@1a2b3c4d5e6f#1' --instruction '<correction>'",
+    ].join("\n"));
+  });
+
+  it("renders singleton overview controls only when Runtime projects capability actions", () => {
+    const document = overview();
+    document.availableActions = [
+      { kind: "retry", itemKey: document.items[0]!.key, target: "raw-retry" },
+      { kind: "cancel", itemKey: document.items[0]!.key, target: "raw-cancel" },
+      { kind: "steer", itemKey: document.items[0]!.key, target: "raw-steer" },
+    ];
+
+    const text = formatRunInspectionDocument(document);
+
+    expect(text).toContain([
+      "Controls (runtime-approved capability; not a recommendation):",
+      "  review  @1a2b3c4d5e6f",
+      "     Retry: acpus runs retry run_1 --target @1a2b3c4d5e6f",
+      "     Cancel: acpus runs cancel run_1 --target @1a2b3c4d5e6f",
+      "     Steer: acpus runs steer run_1 --target '@1a2b3c4d5e6f#1' --instruction '<correction>'",
+    ].join("\n"));
+  });
+
+  it("renders folded controls as owner-scoped expansion, never a representative command", () => {
+    const document = fanoutOverview("failed");
+    document.availableActions = Array.from({ length: 4 }, (_, index) => ({
+      kind: "retry" as const,
+      itemKey: `child-${index}`,
+      target: `raw-retry-${index}`,
+    }));
+
+    const text = formatRunInspectionDocument(document);
+
+    expect(text).toContain("Controls (runtime-approved capability; not a recommendation):");
+    expect(text).toContain("  item[0–3] ×4\n     Expand: acpus runs inspect run_1 --target @batch --all");
+    expect(text).not.toContain("Retry: acpus runs retry run_1 --target @child-0");
+  });
+
+  it("renders the Run failure once while preserving an independently visible child problem", () => {
+    const document = fanoutOverview("failed");
+    document.run.failure = { origin: "runtime", message: "run-level failure" };
+    for (const item of document.items) {
+      if (item.kind === "agent") item.failure = { origin: "task", message: "child failure" };
+    }
+    const text = formatRunInspectionDocument(document);
+
+    expect(text.match(/run-level failure/g)).toHaveLength(1);
+    expect(text.match(/child failure/g)).toHaveLength(1);
+  });
+
+  it("reports degraded visibility in its self-contained view", () => {
     const document = targetSummary({
       visibility: { state: "degraded", reason: "observation-gap" },
     });
-    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [{ kind: "visibility", visibility: null }],
-    };
 
     expect(formatRunInspectionDocument(document)).toContain(
       "Visibility degraded/observation-gap  Inspection may be incomplete; Agent execution health is unknown.",
     );
-    expect(formatRunInspectionDelta(delta, document)).toBe("Visibility restored\n");
-    expect(applyRunInspectionUpdate(document, delta)).not.toHaveProperty("visibility");
   });
 
-  it("shows bounded evidence metadata without prompt or instruction bodies", () => {
-    const document = targetSummary({
-      evidence: {
-        directory: "/private/runtime/runs/run_1/evidence/agents/attempt_1",
-        state: "sealed",
-        completeness: "complete",
-        turnCount: 3,
-        omittedTurns: 1,
-        gapCount: 0,
-        providerOutcome: "completed",
-        schedulerDisposition: "discarded",
-        dispositionReason: "operator_steered",
-        records: [
+  it("shows bounded evidence metadata only through the explicit Evidence document", () => {
+    const document = evidence();
+    document.evidence = {
+      ...document.evidence,
+      directory: "/private/runtime/runs/run_1/evidence/agents/attempt_1",
+      state: "sealed",
+      completeness: "complete",
+      turnCount: 3,
+      gapCount: 0,
+      providerOutcome: "completed",
+      schedulerDisposition: "discarded",
+      dispositionReason: "operator_steered",
+      records: {
+        entries: [
           {
             turn: 1,
             file: "turn-001.jsonl",
@@ -134,49 +312,84 @@ describe("Inspection v2 text surface", () => {
             finalObservedResponseBytes: 120,
           },
         ],
+        page: 1,
+        limit: 12,
+        total: 2,
+        hasMore: false,
       },
-    });
+    };
 
     const text = formatRunInspectionDocument(document);
 
     expect(text).toContain("Evidence sealed/complete  turns=3  gaps=0  scheduler=discarded/operator_steered  provider=completed");
     expect(text).toContain("turn-001.jsonl  prompt=task/88B/sha256:first  durable=400B  fence=350B  final=510B");
     expect(text).toContain("trace=partial/turn-001.trace.jsonl.partial/12345B");
-    expect(text).toContain("… 1 turns omitted");
     expect(text).not.toContain("<steering>");
     expect(text).not.toContain("steerId");
   });
 
-  it("keeps exact Agent operations ahead of evidence when the text budget is exhausted", () => {
+  it("keeps exact Evidence operands when distinct state exceeds the soft envelope", () => {
     const long = "e".repeat(480);
-    const text = formatRunInspectionDocument(targetSummary({
-      evidence: {
+    const document = evidence();
+    document.evidence = {
+      ...document.evidence,
         directory: `/${long}`,
         state: "sealed",
         completeness: "complete",
         turnCount: 2,
-        omittedTurns: 0,
         gapCount: 0,
         providerOutcome: "completed",
         schedulerDisposition: "pending",
-        records: [1, 2].map(turn => ({
-          turn,
-          file: `${long}-${turn}.jsonl`,
-          prompt: { kind: "task", bytes: 480, digest: long },
-          lastDurableResponseBytes: 480,
-        })),
-      },
-    }));
+        records: {
+          entries: [1, 2].map(turn => ({
+            turn,
+            file: `${long}-${turn}.jsonl`,
+            prompt: { kind: "task", bytes: 480, digest: long },
+            lastDurableResponseBytes: 480,
+          })),
+          page: 1,
+          limit: 12,
+          total: 2,
+          hasMore: false,
+        },
+    };
+    const text = formatRunInspectionDocument(document);
 
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1_536);
-    expect(text).toContain("Timeline: acpus runs inspect run_1 --target review~abc --timeline");
-    expect(text).toContain("Steer: acpus runs steer run_1 --target attempt_1 --instruction '<correction>'");
+    expect(Buffer.byteLength(text)).toBeGreaterThan(1_536);
+    expect(text).toContain(`  Directory: /${long}`);
+    expect(text).toContain(`${long}-2.jsonl  prompt=task/480B/${long}`);
+    expect(text).toContain("Evidence review  @1a2b3c4d5e6f#1");
+    expect(text).not.toContain("Controls (runtime-approved capability; not a recommendation):");
+  });
+
+  it("renders exact-attempt Evidence candidates and preserves evidence paging", () => {
+    const document: RunInspectionEvidenceCandidatesDocument = {
+      schemaVersion: 2,
+      kind: "evidence-candidates",
+      run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+      target: "review batch",
+      candidates: {
+        entries: [{ target: "@1a2b3c4d5e6f#2", attemptNo: 2, status: "running", breadcrumb: "batch[0] › review" }],
+        page: 1,
+        limit: 5,
+        total: 6,
+        hasMore: true,
+        nextPage: 2,
+      },
+    };
+
+    const text = formatRunInspectionDocument(document);
+
+    expect(text).toContain("Evidence review batch  matches=6");
+    expect(text).toContain("@1a2b3c4d5e6f#2  attempt=2");
+    expect(text).toContain("Select: acpus runs inspect run_1 --target '@ref#N' --evidence");
+    expect(text).toContain("Next: acpus runs inspect run_1 --target 'review batch' --evidence --limit 5 --page 2");
   });
 
   it("renders one unified Timeline with current activity and closed semantic history", () => {
     const text = formatRunInspectionDocument(timeline());
 
-    expect(text).toContain("Timeline review  review~abc  running");
+    expect(text).toContain("Timeline review  @1a2b3c4d5e6f  running");
     expect(text).toContain("Current:\n  tool  attempt=2  turn=2/steer");
     expect(text).toContain("Response: checking the requested sources");
     expect(text).toContain("Plan: verify citations then revise");
@@ -184,7 +397,9 @@ describe("Inspection v2 text surface", () => {
     expect(text).toContain("Recent:\n  2026-07-25T00:00:01.000Z  response  attempt=1  turn=1  draft response");
     expect(text).toContain("steered  attempt=1  response-at-fence=240B");
     expect(text).toContain("response  attempt=1  turn=1  post-fence/discarded  late discarded output");
-    expect(text).toContain("… 8 older  before=page:older");
+    expect(text).toContain(
+      "Older: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline --limit 5 --page 2",
+    );
     expect(text).toContain("… 7 earlier entries expired from bounded history");
     expect(text.match(/checking the requested sources/g)).toHaveLength(1);
   });
@@ -207,210 +422,45 @@ describe("Inspection v2 text surface", () => {
     expect(text).toContain("Reported thought: checking the required shape");
   });
 
-  it("applies semantic deltas by upserting bounded Timeline entries", () => {
-    const initial = timeline();
-    const current = initial.current;
-    if (current?.kind !== "agent") throw new Error("expected Agent current activity");
-    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [
-        {
-          kind: "current",
-          current: {
-            ...current,
-            phase: "settling",
-            response: { text: "final response", originalBytes: 14, truncated: false },
-          },
-        },
-        {
-          kind: "recent",
-          upsert: [{
-            id: "activity:1",
-            kind: "activity",
-            at: "2026-07-25T00:00:02.000Z",
-            attemptId: "attempt_1",
-            turn: 1,
-            channel: "response",
-            summary: { text: "revised closed response", originalBytes: 23, truncated: false },
-          }],
-          order: initial.recent.entries.map(entry => entry.id),
-          page: { ...initial.recent, retentionOmittedBefore: 8 },
-        },
-      ],
-    };
+  it("formats standalone semantic Timeline entries without a replayed document", () => {
+    const phase = {
+      id: "private-timeline-entry",
+      kind: "phase",
+      at: "2026-07-25T00:00:03.000Z",
+      attemptNo: 2,
+      turn: 3,
+      phase: "tool",
+    } as unknown as RunInspectionTimelineEntry;
+    const restored = {
+      id: "private-timeline-entry-2",
+      kind: "visibility",
+      at: "2026-07-25T00:00:04.000Z",
+      state: "restored",
+    } as unknown as RunInspectionTimelineEntry;
 
-    const updated = applyRunInspectionUpdate(initial, delta);
-
-    expect(updated).not.toHaveProperty("revision");
-    expect(updated.kind).toBe("timeline");
-    if (updated.kind !== "timeline") throw new Error("expected Timeline");
-    expect(updated.current?.phase).toBe("settling");
-    expect(updated.recent.entries).toHaveLength(3);
-    expect(updated.recent.entries[0]).toMatchObject({
-      id: "activity:1",
-      summary: { text: "revised closed response" },
-    });
-    expect(formatRunInspectionDelta(delta, updated)).toContain("Current settling · attempt=2 · Read running");
-    expect(formatRunInspectionDelta(delta, initial))
-      .toContain("History 8 earlier entries expired from bounded history");
-    expect(formatRunInspectionDelta(delta, updated))
-      .not.toContain("expired from bounded history");
+    expect(formatRunInspectionTimelineEntry(phase)).toBe(
+      "Timeline: 2026-07-25T00:00:03.000Z  phase tool  attempt=2  turn=3\n",
+    );
+    expect(formatRunInspectionTimelineEntry(restored)).toBe(
+      "Timeline: 2026-07-25T00:00:04.000Z  Visibility restored\n",
+    );
   });
 
-  it("keeps the followed Timeline at the requested page limit", () => {
-    const initial = timeline();
-    const upsert = Array.from({ length: 4 }, (_, index) => ({
-      id: `activity:${index + 3}`,
-      kind: "activity" as const,
-      at: `2026-07-25T00:00:0${index + 3}.000Z`,
-      attemptId: "attempt_1",
-      turn: 1,
-      channel: "response" as const,
-      summary: {
-        text: `response ${index + 3}`,
-        originalBytes: 10,
-        truncated: false,
-      },
+  it("renders Timeline and Follow as separate copyable commands", () => {
+    const text = formatRunInspectionDocument(targetSummary({
+      availableActions: [
+        { kind: "inspect-timeline", target: "@1a2b3c4d5e6f" },
+        { kind: "follow-target", target: "@1a2b3c4d5e6f" },
+      ],
     }));
 
-    const updated = applyRunInspectionUpdate(initial, {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [{
-        kind: "recent",
-        upsert,
-        order: ["activity:4", "activity:5", "activity:6"],
-        page: {
-          returned: 3,
-          omittedBefore: initial.recent.omittedBefore + 3,
-          hasOlder: true,
-          olderCursor: "page:newer",
-        },
-      }],
-    }, 3);
-
-    if (updated.kind !== "timeline") throw new Error("expected Timeline");
-    expect(updated.recent).toMatchObject({
-      returned: 3,
-      omittedBefore: initial.recent.omittedBefore + 3,
-      hasOlder: true,
-    });
-    expect(updated.recent.entries.map(entry => entry.id)).toEqual([
-      "activity:4",
-      "activity:5",
-      "activity:6",
-    ]);
-  });
-
-  it("applies sparse current patches and null-clears without replacing Agent identity", () => {
-    const initial = timeline();
-    if (initial.current?.kind !== "agent") throw new Error("expected Agent current activity");
-    const tools = initial.current.tools;
-
-    const updated = applyRunInspectionUpdate(initial, {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [{
-        kind: "current-patch",
-        patch: {
-          kind: "agent",
-          attemptId: "attempt_2",
-          attemptNo: 2,
-          changes: {
-            phase: "settling",
-            response: null,
-          },
-        },
-      }],
-    });
-
-    if (updated.kind !== "timeline" || updated.current?.kind !== "agent") {
-      throw new Error("expected Agent Timeline");
-    }
-    expect(updated.current).toMatchObject({
-      attemptId: initial.current.attemptId,
-      turn: initial.current.turn,
-      phase: "settling",
-      tools,
-    });
-    expect(updated.current).not.toHaveProperty("response");
-  });
-
-  it("formats only the fields carried by a sparse current patch", () => {
-    const initial = timeline();
-    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [{
-        kind: "current-patch",
-        patch: {
-          kind: "agent",
-          attemptId: "attempt_2",
-          attemptNo: 2,
-          changes: {
-            response: {
-              text: "new response bytes",
-              originalBytes: 18,
-              truncated: false,
-            },
-          },
-        },
-      }],
-    };
-    const updated = applyRunInspectionUpdate(initial, delta);
-
-    const text = formatRunInspectionDelta(delta, updated);
-
-    expect(text).toContain("Current updated · attempt=2 · Response: new response bytes");
-    expect(text).not.toContain("Read running");
-    expect(text).not.toContain("updated · agent");
-  });
-
-  it("renders available-operation deltas as copyable commands", () => {
-    const document = targetSummary({ availableActions: [] });
-    const delta: Extract<RunInspectionEmission, { kind: "delta" }> = {
-      schemaVersion: 2,
-      kind: "delta",
-      changes: [{
-        kind: "available-actions",
-        availableActions: [
-          { kind: "retry", target: "review~abc" },
-          { kind: "fork", target: "review~abc" },
-        ],
-      }],
-    };
-
-    expect(formatRunInspectionDelta(delta, document)).toBe([
+    expect(text).toContain([
       "Available operations:",
-      "  Retry: acpus runs retry run_1 --target review~abc",
-      "  Fork: acpus runs fork run_1 --target review~abc",
-      "",
+      "  Timeline: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline",
+      "  Follow: acpus runs inspect run_1 --target @1a2b3c4d5e6f --follow",
     ].join("\n"));
   });
 
-  it("combines Timeline and follow variants for the same target", () => {
-    const text = formatRunInspectionDocument(targetSummary({
-      availableActions: [
-        { kind: "inspect-timeline", target: "review~abc" },
-        { kind: "follow-target", target: "review~abc" },
-      ],
-    }));
-
-    expect(text).toContain(
-      "Available operations:\n  Inspect: acpus runs inspect run_1 --target review~abc [--timeline] [--follow]",
-    );
-    expect(text).not.toContain("Timeline:");
-    expect(text).not.toContain("Follow:");
-  });
-
-  it("keeps checkpoints compact instead of replaying activity bodies", () => {
-    const text = formatRunInspectionCheckpoint(timeline());
-
-    expect(text).toBe("· checkpoint  running  review\n");
-    expect(text).not.toContain("Recent:");
-    expect(text).not.toContain("report.md");
-  });
 });
 
 function targetSummary(
@@ -426,12 +476,11 @@ function targetSummary(
     },
     subject: {
       targetKind: "dynamic-node",
-      id: "review~abc",
+      id: "@1a2b3c4d5e6f",
+      ref: "@1a2b3c4d5e6f",
       label: "review",
       kind: "agent",
       nodeId: "review",
-      nodeKey: "review~abc",
-      attemptId: "attempt_1",
       attemptNo: 1,
     },
     state: {
@@ -450,10 +499,41 @@ function targetSummary(
       summary: "Operator input required",
     },
     availableActions: [
-      { kind: "inspect-timeline", target: "review~abc" },
-      { kind: "steer", target: "attempt_1" },
+      { kind: "inspect-timeline", target: "@1a2b3c4d5e6f" },
     ],
     ...overrides,
+  };
+}
+
+function evidence(): RunInspectionEvidenceDocument {
+  return {
+    schemaVersion: 2,
+    kind: "evidence",
+    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+    subject: {
+      targetKind: "attempt",
+      id: "@1a2b3c4d5e6f#1",
+      ref: "@1a2b3c4d5e6f#1",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+      attemptNo: 1,
+    },
+    evidence: {
+      directory: "/private/runtime/runs/run_1/evidence/agents/attempt_1",
+      state: "recording",
+      completeness: "complete",
+      turnCount: 1,
+      gapCount: 0,
+      schedulerDisposition: "pending",
+      records: {
+        entries: [],
+        page: 1,
+        limit: 12,
+        total: 0,
+        hasMore: false,
+      },
+    },
   };
 }
 
@@ -479,6 +559,7 @@ function overview(): RunInspectionSnapshot {
       kind: "agent",
       status: "running",
       nodeId: "review",
+      ref: "@1a2b3c4d5e6f",
       nodeKey: "review~abc",
       attemptId: "attempt_1",
       attemptNo: 1,
@@ -492,6 +573,53 @@ function overview(): RunInspectionSnapshot {
   };
 }
 
+function fanoutOverview(status: RunInspectionItem["status"]): RunInspectionSnapshot {
+  const document = overview();
+  document.counts = { total: 4, [status === "awaiting" ? "awaiting" : "failed"]: 4 };
+  document.items = [{
+    key: "batch-raw",
+    role: "instance",
+    path: ["batch"],
+    label: "batch",
+    kind: "fanout",
+    status: status === "awaiting" ? "running" : "failed",
+    nodeId: "batch",
+    nodeKey: "batch-raw",
+    ref: "@batch",
+  }];
+  for (let index = 0; index < 4; index += 1) {
+    const contextKey = `context-${index}`;
+    document.items.push({
+      key: contextKey,
+      parentKey: "batch-raw",
+      role: "context",
+      path: [`batch[${index}]`],
+      label: `item[${index}]`,
+      kind: "fanout_item",
+      status,
+      nodeId: "batch",
+      nodeKey: `context-raw-${index}`,
+      frameKey: `frame-raw-${index}`,
+      ref: `@context-${index}`,
+      scope: { kind: "fanout_item", itemIndex: index, empty: false },
+    });
+    document.items.push({
+      key: `child-${index}`,
+      parentKey: contextKey,
+      role: "instance",
+      path: [`batch[${index}]`, "review"],
+      label: "review",
+      kind: status === "awaiting" ? "signal" : "agent",
+      status,
+      nodeId: "review",
+      nodeKey: `child-raw-${index}`,
+      ref: `@child-${index}`,
+      ...(status === "awaiting" ? { signal: { target: `raw-signal-${index}`, schemaSummary: "{ approved: boolean }" } } : {}),
+    });
+  }
+  return document;
+}
+
 function timeline(): RunInspectionTimelineDocument {
   return {
     schemaVersion: 2,
@@ -503,12 +631,11 @@ function timeline(): RunInspectionTimelineDocument {
     },
     subject: {
       targetKind: "dynamic-node",
-      id: "review~abc",
+      id: "@1a2b3c4d5e6f",
+      ref: "@1a2b3c4d5e6f",
       label: "review",
       kind: "agent",
       nodeId: "review",
-      nodeKey: "review~abc",
-      attemptId: "attempt_2",
       attemptNo: 2,
     },
     state: {
@@ -580,10 +707,12 @@ function timeline(): RunInspectionTimelineDocument {
           summary: { text: "late discarded output", originalBytes: 21, truncated: false },
         },
       ],
+      page: 1,
+      limit: 5,
       returned: 3,
       omittedBefore: 8,
       hasOlder: true,
-      olderCursor: "page:older",
+      olderPage: 2,
       retentionOmittedBefore: 7,
     },
   };

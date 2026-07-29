@@ -13,18 +13,15 @@ import {
   normalizeInspectionStatus,
   semanticChanges,
 } from "./projection.js";
-import { timelinePageCursor } from "./timeline-cursor.js";
+import { occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
 import type {
-  AgentAttemptEvidenceCapsule,
   AgentCurrentActivity,
-  RunInspectionAction,
   RunInspectionAttention,
   RunInspectionCurrentActivity,
+  RunInspectionEvidenceDocument,
   RunInspectionExcerpt,
   RunInspectionPulse,
-  RunInspectionQuery,
   RunInspectionSubject,
-  RunInspectionTargetDetailsDocument,
   RunInspectionTargetState,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
@@ -32,14 +29,12 @@ import type {
   RunInspectionToolActivity,
   RunInspectionVisibility,
 } from "./types.js";
+import type { ResolvedTargetState } from "./resolved-target.js";
 
 const summaryHeadlineCharacters = 240;
 const attentionCharacters = 160;
-const targetSummaryBytes = 4 * 1024;
-const targetEvidenceSummaryBytes = 6 * 1024;
 const timelineDefaultLimit = 12;
 const timelineMaximumLimit = 50;
-const timelinePageBodyBytes = 8 * 1024;
 const timelineEntryBytes = 512;
 const currentResponseBytes = 1536;
 const currentIntentBytes = 768;
@@ -51,9 +46,9 @@ const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "cance
 
 export function projectTargetSummary(input: {
   run: RunDetails;
-  details: RunInspectionTargetDetailsDocument;
+  details: ResolvedTargetState;
+  includeControls?: true;
   observations?: AgentObservationInspectionProjection;
-  runDir?: string;
 }): RunInspectionTargetSummaryDocument {
   const aggregate = staticAggregate(input.details);
   const subject = inspectionSubject(input.details);
@@ -64,9 +59,6 @@ export function projectTargetSummary(input: {
   const visibility = input.observations
     ? inspectionVisibility(input.details, input.observations)
     : undefined;
-  const evidence = input.details.target.kind === "attempt" && input.observations && input.runDir
-    ? evidenceCapsule(input.details, input.observations, input.runDir)
-    : undefined;
   const document: RunInspectionTargetSummaryDocument = {
     schemaVersion: 2,
     kind: "target",
@@ -76,148 +68,33 @@ export function projectTargetSummary(input: {
     ...(pulse ? { pulse } : {}),
     ...(attention ? { attention } : {}),
     ...(visibility ? { visibility } : {}),
-    availableActions: aggregate ? [] : targetActions(input.details, state),
+    availableActions: aggregate ? [] : targetActions(input.details, state, input.includeControls === true),
     ...(input.details.summary.counts
       ? { occurrence: { total: input.details.summary.counts.total, counts: input.details.summary.counts } }
       : {}),
-    ...(evidence ? { evidence } : {}),
   };
-  return boundedTargetSummary(document);
-}
-
-function boundedTargetSummary(
-  document: RunInspectionTargetSummaryDocument,
-): RunInspectionTargetSummaryDocument {
-  const budget = document.evidence ? targetEvidenceSummaryBytes : targetSummaryBytes;
-  if (Buffer.byteLength(JSON.stringify(document)) <= budget) return document;
-  for (const bytes of [512, 128]) {
-    const bounded = boundTargetSummaryStrings(document, bytes);
-    if (Buffer.byteLength(JSON.stringify(bounded)) <= budget) return bounded;
-  }
-  const bounded = boundTargetSummaryStrings(document, 64);
-  const { occurrence: _occurrence, ...withoutOccurrence } = bounded;
-  const pulse = bounded.pulse
-    ? (({ headline: _headline, ...value }) => value)(bounded.pulse)
-    : undefined;
-  return {
-    ...withoutOccurrence,
-    ...(pulse ? { pulse } : {}),
-    ...(bounded.evidence
-      ? {
-          evidence: {
-            ...bounded.evidence,
-            omittedTurns: bounded.evidence.turnCount,
-            records: [],
-          },
-        }
-      : {}),
-  };
-}
-
-function boundTargetSummaryStrings(
-  document: RunInspectionTargetSummaryDocument,
-  bytes: number,
-): RunInspectionTargetSummaryDocument {
-  return {
-    ...document,
-    subject: {
-      ...document.subject,
-      id: boundedString(document.subject.id, bytes),
-      label: boundedString(document.subject.label, bytes),
-      kind: boundedString(document.subject.kind, bytes),
-      ...(document.subject.nodeId ? { nodeId: boundedString(document.subject.nodeId, bytes) } : {}),
-      ...(document.subject.nodeKey ? { nodeKey: boundedString(document.subject.nodeKey, bytes) } : {}),
-      ...(document.subject.attemptId ? { attemptId: boundedString(document.subject.attemptId, bytes) } : {}),
-    },
-    state: {
-      ...document.state,
-      ...(document.state.reason ? { reason: boundedString(document.state.reason, bytes) } : {}),
-    },
-    ...(document.pulse?.headline
-      ? { pulse: { ...document.pulse, headline: boundedString(document.pulse.headline, bytes) } }
-      : {}),
-    ...(document.attention
-      ? { attention: { ...document.attention, summary: boundedString(document.attention.summary, bytes) } }
-      : {}),
-    availableActions: document.availableActions.map(action => boundSummaryAction(action, bytes)),
-    ...(document.evidence
-      ? {
-          evidence: {
-            ...document.evidence,
-            directory: boundedString(document.evidence.directory, bytes),
-            ...(document.evidence.dispositionReason
-              ? { dispositionReason: boundedString(document.evidence.dispositionReason, bytes) }
-              : {}),
-            records: document.evidence.records.map(record => ({
-              ...record,
-              file: boundedString(record.file, bytes),
-              prompt: {
-                ...record.prompt,
-                digest: boundedString(record.prompt.digest, bytes),
-              },
-              ...(record.trace
-                ? {
-                    trace: {
-                      ...record.trace,
-                      ...(record.trace.file ? { file: boundedString(record.trace.file, bytes) } : {}),
-                      ...(record.trace.digest ? { digest: boundedString(record.trace.digest, bytes) } : {}),
-                    },
-                  }
-                : {}),
-            })),
-          },
-        }
-      : {}),
-  };
-}
-
-function boundSummaryAction(action: RunInspectionAction, bytes: number): RunInspectionAction {
-  if (action.kind === "signal") {
-    return {
-      ...action,
-      target: boundedString(action.target, bytes),
-      ...(action.schemaSummary ? { schemaSummary: boundedString(action.schemaSummary, bytes) } : {}),
-    };
-  }
-  return action.target === undefined
-    ? action
-    : { ...action, target: boundedString(action.target, bytes) };
-}
-
-function boundedString(value: string, bytes: number): string {
-  return excerpt(value, bytes, "head").text;
+  return document;
 }
 
 export function projectTimeline(input: {
   run: RunDetails;
-  details: RunInspectionTargetDetailsDocument;
-  query: Extract<RunInspectionQuery, { mode: "timeline" }>;
+  details: ResolvedTargetState;
+  page?: number;
+  limit?: number;
   events: readonly CommittedRuntimeEventRow[];
   observations: AgentObservationInspectionProjection;
-  before?: { at: string; id: string; ordinal: number };
 }): RunInspectionTimelineDocument {
   const subject = inspectionSubject(input.details);
   const state = inspectionTargetState(input.details);
   const attempt = selectedAttempt(input.details);
   const current = currentActivity(input.details, input.run, input.observations, attempt);
-  const allowedAttemptIds = new Set(timelineAttemptIds(input.details));
-  const observationEntries = observationTimelineEntries(input.observations, input.details, allowedAttemptIds);
-  const eventEntries = schedulerTimelineEntries(input.events, input.details, input.run, input.observations);
-  const entries = [...observationEntries, ...eventEntries].sort(compareTimelineEntries);
+  const entries = projectTimelineEntries(input);
   const recent = timelinePage({
     entries,
-    limit: input.query.page?.limit ?? timelineDefaultLimit,
-    ...(input.before ? { before: input.before } : {}),
-    runId: input.run.id,
-    target: resolvedTargetIdentity(input.details),
+    limit: input.limit ?? timelineDefaultLimit,
+    page: input.page ?? 1,
     hasOlderSemanticEntries: input.observations.hasOlderEntries,
     olderSemanticEntryCount: input.observations.olderEntryCount,
-    semanticBoundaryById: new Map(input.observations.entries.map(entry =>
-      [entry.id, {
-        observationVersion: entry.observationVersion,
-        sourceSequence: entry.sourceSequence,
-        id: entry.id,
-      }] as const)),
     retentionOmittedBefore: input.observations.retentionOmittedBefore,
   });
   const visibility = inspectionVisibility(input.details, input.observations);
@@ -233,7 +110,21 @@ export function projectTimeline(input: {
   };
 }
 
-export function resolvedTargetIdentity(details: RunInspectionTargetDetailsDocument): string {
+/** The complete retained semantic stream used by follow; ordinary reads page it. */
+export function projectTimelineEntries(input: {
+  run: RunDetails;
+  details: ResolvedTargetState;
+  events: readonly CommittedRuntimeEventRow[];
+  observations: AgentObservationInspectionProjection;
+}): RunInspectionTimelineEntry[] {
+  const allowedAttemptIds = new Set(timelineAttemptIds(input.details));
+  return [
+    ...observationTimelineEntries(input.observations, input.details, allowedAttemptIds),
+    ...schedulerTimelineEntries(input.events, input.details, input.run, input.observations),
+  ].sort(compareTimelineEntries);
+}
+
+export function resolvedTargetIdentity(details: ResolvedTargetState): string {
   if (details.target.kind === "static-node" && !staticAggregate(details)) {
     if (details.summary.nodeKey) return `dynamic-node:${details.summary.nodeKey}`;
     if (details.summary.frameKey) return `frame:${details.summary.frameKey}`;
@@ -241,16 +132,16 @@ export function resolvedTargetIdentity(details: RunInspectionTargetDetailsDocume
   return `${details.target.kind}:${details.target.id}`;
 }
 
-export function timelineAttemptIds(details: RunInspectionTargetDetailsDocument): string[] {
+export function timelineAttemptIds(details: ResolvedTargetState): string[] {
   if (details.target.kind === "attempt") return [details.target.id];
   return [...new Set(details.attempts.map(attempt => attempt.attemptId))].sort();
 }
 
-export function targetAttemptId(details: RunInspectionTargetDetailsDocument): string | undefined {
+export function targetAttemptId(details: ResolvedTargetState): string | undefined {
   return selectedAttempt(details)?.attemptId;
 }
 
-export function ambiguousTimelineCandidates(details: RunInspectionTargetDetailsDocument): string[] {
+export function ambiguousTimelineCandidates(details: ResolvedTargetState): string[] {
   if (details.target.kind !== "static-node" || details.summary.counts?.total === undefined || details.summary.counts.total <= 1) return [];
   return [...new Set([
     ...details.instances.map(instance => instance.nodeKey),
@@ -258,7 +149,7 @@ export function ambiguousTimelineCandidates(details: RunInspectionTargetDetailsD
   ])].sort();
 }
 
-export function inspectionSubject(details: RunInspectionTargetDetailsDocument): RunInspectionSubject {
+export function inspectionSubject(details: ResolvedTargetState): RunInspectionSubject {
   const aggregate = staticAggregate(details);
   const attempt = aggregate ? undefined : selectedAttempt(details);
   const item = attempt
@@ -266,19 +157,20 @@ export function inspectionSubject(details: RunInspectionTargetDetailsDocument): 
     : details.items.find(candidate => candidate.nodeKey === details.summary.nodeKey || candidate.frameKey === details.summary.frameKey)
       ?? details.items[0];
   const nodeId = details.staticNode?.nodeId ?? attempt?.nodeId ?? item?.nodeId;
-  const nodeKey = aggregate ? undefined : attempt?.nodeKey ?? details.summary.nodeKey;
+  const selector = details.target.ref
+    ? occurrenceRefSelector(details.target.ref as `@${string}`, details.target.kind === "attempt" ? attempt?.attemptNo : undefined)
+    : undefined;
   return {
     targetKind: details.target.kind,
-    id: details.target.id,
-    label: excerpt(item?.label ?? nodeId ?? details.target.id, 512, "head").text,
-    kind: excerpt(details.staticNode?.kind ?? item?.kind ?? "node", 128, "head").text,
+    id: selector ?? details.target.id,
+    ...(selector ? { ref: selector } : {}),
+    label: item?.label ?? nodeId ?? details.target.id,
+    kind: details.staticNode?.kind ?? item?.kind ?? "node",
     ...(nodeId && nodeId !== details.target.id ? { nodeId } : {}),
-    ...(nodeKey && nodeKey !== details.target.id ? { nodeKey } : {}),
-    ...(attempt ? { attemptId: attempt.attemptId, attemptNo: attempt.attemptNo } : {}),
   };
 }
 
-export function inspectionTargetState(details: RunInspectionTargetDetailsDocument): RunInspectionTargetState {
+export function inspectionTargetState(details: ResolvedTargetState): RunInspectionTargetState {
   const aggregate = staticAggregate(details);
   const attempt = aggregate ? undefined : selectedAttempt(details);
   const instance = attempt
@@ -299,7 +191,7 @@ export function inspectionTargetState(details: RunInspectionTargetDetailsDocumen
   };
 }
 
-function selectedAttempt(details: RunInspectionTargetDetailsDocument): RunDynamicAttempt | undefined {
+function selectedAttempt(details: ResolvedTargetState): RunDynamicAttempt | undefined {
   const selectedAttemptId = details.summary.latestAttempt?.attemptId
     ?? (details.target.kind === "attempt" ? details.target.id : undefined);
   if (selectedAttemptId) {
@@ -311,11 +203,11 @@ function selectedAttempt(details: RunInspectionTargetDetailsDocument): RunDynami
       || right.attemptId.localeCompare(left.attemptId))[0];
 }
 
-function staticAggregate(details: RunInspectionTargetDetailsDocument): boolean {
+function staticAggregate(details: ResolvedTargetState): boolean {
   return details.target.kind === "static-node" && (details.summary.counts?.total ?? 0) > 1;
 }
 
-function selectedProgress(run: RunDetails, details: RunInspectionTargetDetailsDocument): RunNodeProgress | undefined {
+function selectedProgress(run: RunDetails, details: ResolvedTargetState): RunNodeProgress | undefined {
   const attempt = selectedAttempt(details);
   return [...(run.dynamic?.progress ?? [])]
     .filter(progress => attempt
@@ -326,7 +218,7 @@ function selectedProgress(run: RunDetails, details: RunInspectionTargetDetailsDo
 }
 
 function targetPulse(
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   progress: RunNodeProgress | undefined,
   observations: AgentObservationInspectionProjection | undefined,
 ): RunInspectionPulse | undefined {
@@ -349,14 +241,23 @@ function targetPulse(
     : tools.calls.filter(call => !terminalToolStatuses.has(string(call.status) ?? "")).at(-1);
   const intent = terminal ? undefined : progressIntent(progress);
   const response = terminal ? undefined : progress?.output?.tail;
-  const settledActivity = terminal
+  const settledActivities = terminal
     ? observations?.entries
-      .filter(entry => entry.kind === "activity"
+      .flatMap(entry => entry.kind === "activity"
         && entry.attemptId === attemptId
-        && (entry.channel === "response" || entry.channel === "reported-thought" || entry.channel === "plan"))
-      .sort((left, right) => left.at.localeCompare(right.at))
-      .at(-1)
+        && visibleSummary(entry.summary.text, summaryHeadlineCharacters).length > 0
+        ? [entry]
+        : [])
     : undefined;
+  const settledIntent = settledActivities
+    ?.filter(entry => entry.channel === "reported-thought" || entry.channel === "plan")
+      .sort((left, right) => left.at.localeCompare(right.at) || left.sourceSequence - right.sourceSequence)
+      .at(-1);
+  const settledResponse = settledActivities
+    ?.filter(entry => entry.channel === "response")
+      .sort((left, right) => left.at.localeCompare(right.at) || left.sourceSequence - right.sourceSequence)
+      .at(-1);
+  const settledActivity = settledIntent ?? settledResponse;
   let phase: RunInspectionPulse["phase"] = "starting";
   if (terminal) phase = "settled";
   else if (projectedCurrent) phase = publicAgentPhase(projectedCurrent.phase);
@@ -368,7 +269,14 @@ function targetPulse(
 
   let headline: string | undefined;
   if (settledActivity?.kind === "activity") {
-    headline = visibleSummary(settledActivity.summary.text, summaryHeadlineCharacters);
+    const label = settledActivity.channel === "plan"
+      ? "Plan"
+      : settledActivity.channel === "reported-thought" ? "Reported thought" : "Response tail";
+    const missingPrefix = settledActivity.channel === "response" && settledActivity.summary.truncated ? "…" : "";
+    headline = visibleSummary(
+      `${label}: ${missingPrefix}${settledActivity.summary.text}`,
+      summaryHeadlineCharacters,
+    );
   } else if (projectedTool) {
     headline = visibleSummary(
       `${projectedTool.name}${projectedTool.status ? ` ${projectedTool.status}` : ""}`,
@@ -389,7 +297,7 @@ function targetPulse(
   }
   const updatedAt = settledActivity?.at ?? projectedCurrent?.updatedAt ?? string(activeTool?.updatedAt) ?? intent?.updatedAt ?? progress?.updatedAt ?? latestTurn?.finishedAt ?? latestTurn?.startedAt
     ?? state.finishedAt ?? details.run.updatedAt;
-  const turn = projectedCurrent?.turn ?? number(record(progress?.tools)?.turn) ?? latestTurn?.turn;
+  const turn = settledActivity?.turn ?? projectedCurrent?.turn ?? number(record(progress?.tools)?.turn) ?? latestTurn?.turn;
   return state.status === "not_started" && !headline
     ? undefined
     : {
@@ -417,7 +325,7 @@ function progressIntent(progress: RunNodeProgress | undefined): {
 
 function targetAttention(
   state: RunInspectionTargetState,
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
 ): RunInspectionAttention | undefined {
   if (state.status === "failed") {
     return {
@@ -441,105 +349,145 @@ function targetAttention(
 }
 
 function targetActions(
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   state: RunInspectionTargetState,
+  includeControls: boolean,
 ): RunInspectionTargetSummaryDocument["availableActions"] {
+  const selector = details.target.ref;
+  const attempt = selectedAttempt(details);
+  const exactAttemptSelector = selector && attempt
+    ? occurrenceRefSelector(selector as `@${string}`, attempt.attemptNo)
+    : undefined;
+  const navigationTarget = selector ?? details.target.id;
+  const controls = includeControls
+    ? targetControlActions(details, selector, exactAttemptSelector)
+    : [];
   if (state.status === "failed" || state.status === "timed_out") {
-    const retry = details.availableControls.find(control => control.type === "retry");
-    return [
-      ...(retry ? [{ kind: "retry" as const, target: retry.target }] : []),
-      { kind: "fork", ...(details.summary.nodeKey ? { target: details.summary.nodeKey } : {}) },
-    ];
+    return [{ kind: "inspect-timeline", target: navigationTarget }, ...controls];
   }
   if (state.status === "awaiting" && details.summary.signal) {
     return [
       {
         kind: "signal",
-        target: details.summary.signal.target,
+        target: selector ?? details.summary.signal.target,
         ...(details.summary.signal.schemaSummary ? { schemaSummary: details.summary.signal.schemaSummary } : {}),
       },
-      { kind: "inspect-timeline", target: details.target.id },
+      { kind: "inspect-timeline", target: navigationTarget },
+      ...controls,
     ];
   }
-  const attempt = selectedAttempt(details);
   if (details.staticNode?.kind === "agent" && attempt?.status === "started") {
-    return [{ kind: "inspect-timeline", target: attempt.attemptId }, { kind: "steer", target: attempt.attemptId }];
+    const target = exactAttemptSelector ?? attempt.attemptId;
+    return [{ kind: "inspect-timeline", target }, ...controls];
   }
   if ((state.status === "running" || state.status === "starting")
     && (details.staticNode?.kind === "task" || compositeKind(details.staticNode?.kind))) {
-    const target = attempt?.attemptId ?? details.target.id;
-    return [{ kind: "inspect-timeline", target }, { kind: "follow-target", target }];
+    return [{ kind: "inspect-timeline", target: navigationTarget }, { kind: "follow-target", target: navigationTarget }, ...controls];
   }
-  return [];
+  return controls;
+}
+
+function targetControlActions(
+  details: ResolvedTargetState,
+  selector: string | undefined,
+  exactAttemptSelector: string | undefined,
+): RunInspectionTargetSummaryDocument["availableActions"] {
+  const actions: RunInspectionTargetSummaryDocument["availableActions"] = [];
+  if (selector && details.availableControls.some(control => control.type === "retry")) {
+    actions.push({ kind: "retry", target: selector });
+  }
+  if (details.availableControls.some(control => control.type === "cancel")) {
+    actions.push({ kind: "cancel", ...(selector ? { target: selector } : {}) });
+  }
+  if (exactAttemptSelector && details.availableControls.some(control => control.type === "steer")) {
+    actions.push({ kind: "steer", target: exactAttemptSelector });
+  }
+  return actions;
 }
 
 function evidenceCapsule(
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   observations: AgentObservationInspectionProjection,
   runDir: string,
-): AgentAttemptEvidenceCapsule | undefined {
+  page: number,
+  limit: number,
+): RunInspectionEvidenceDocument["evidence"] | undefined {
   const attempt = selectedAttempt(details);
   if (!attempt) return undefined;
   const turns = observations.turns
     .filter(turn => turn.attemptId === attempt.attemptId)
     .sort((left, right) => left.turn - right.turn);
-  if (turns.length === 0) {
-    const unavailableFence = steeredAttempt(attempt);
-    if (attempt.status !== "started" && !unavailableFence) return undefined;
-    return {
-      directory: join(runDir, "evidence", "agents", attempt.attemptId),
-      state: unavailableFence ? "partial" : "recording",
-      completeness: unavailableFence ? "degraded" : "complete",
-      turnCount: 0,
-      omittedTurns: 0,
-      gapCount: unavailableFence ? 1 : 0,
-      schedulerDisposition: attempt.status === "started" ? "pending" : "discarded",
-      ...(attempt.cancelReason ?? attempt.terminalReason
-        ? { dispositionReason: attempt.cancelReason ?? attempt.terminalReason }
-        : {}),
-      records: [],
-    };
-  }
-  const selected = turns.length === 1 ? turns : [turns[0]!, turns.at(-1)!];
   const state = turns.some(turn => turn.state === "recording")
     ? "recording"
-    : turns.some(turn => turn.state === "partial") ? "partial" : "sealed";
-  const schedulerDisposition: AgentAttemptEvidenceCapsule["schedulerDisposition"] = attempt.status === "started"
+    : turns.some(turn => turn.state === "partial") || turns.length === 0 ? "partial" : "sealed";
+  const schedulerDisposition: RunInspectionEvidenceDocument["evidence"]["schedulerDisposition"] = attempt.status === "started"
     ? "pending"
     : attempt.status === "superseded" ? "discarded" : "committed";
+  const entries = turns.map(turn => ({
+    turn: turn.turn,
+    file: basename(turn.relativePath),
+    prompt: { kind: turn.promptKind, bytes: turn.promptBytes, digest: turn.promptDigest },
+    lastDurableResponseBytes: turn.lastResponseBytes,
+    ...(turn.responseAtFenceBytes === undefined ? {} : { responseAtFenceBytes: turn.responseAtFenceBytes }),
+    ...(turn.finalResponseBytes === undefined ? {} : { finalObservedResponseBytes: turn.finalResponseBytes }),
+    ...(turn.trace === undefined
+      ? {}
+      : {
+          trace: {
+            state: turn.trace.state,
+            ...(turn.trace.relativePath ? { file: basename(turn.trace.relativePath) } : {}),
+            ...(turn.trace.bytes === undefined ? {} : { bytes: turn.trace.bytes }),
+            ...(turn.trace.digest === undefined ? {} : { digest: turn.trace.digest }),
+          },
+        }),
+  }));
+  const start = (page - 1) * limit;
+  const selected = entries.slice(start, start + limit);
   return {
     directory: join(runDir, "evidence", "agents", attempt.attemptId),
     state,
-    completeness: turns.some(turn => turn.completeness === "degraded") ? "degraded" : "complete",
+    completeness: turns.length === 0 || turns.some(turn => turn.completeness === "degraded") ? "degraded" : "complete",
     turnCount: turns.length,
-    omittedTurns: Math.max(0, turns.length - selected.length),
     gapCount: turns.reduce((total, turn) => total + turn.gapCount, 0),
     ...(turns.at(-1)?.providerStatus ? { providerOutcome: turns.at(-1)!.providerStatus } : {}),
     schedulerDisposition,
     ...(attempt.cancelReason ?? attempt.terminalReason ? { dispositionReason: attempt.cancelReason ?? attempt.terminalReason } : {}),
-    records: selected.map(turn => ({
-      turn: turn.turn,
-      file: basename(turn.relativePath),
-      prompt: { kind: turn.promptKind, bytes: turn.promptBytes, digest: turn.promptDigest },
-      lastDurableResponseBytes: turn.lastResponseBytes,
-      ...(turn.responseAtFenceBytes === undefined ? {} : { responseAtFenceBytes: turn.responseAtFenceBytes }),
-      ...(turn.finalResponseBytes === undefined ? {} : { finalObservedResponseBytes: turn.finalResponseBytes }),
-      ...(turn.trace === undefined
-        ? {}
-        : {
-            trace: {
-              state: turn.trace.state,
-              ...(turn.trace.relativePath ? { file: basename(turn.trace.relativePath) } : {}),
-              ...(turn.trace.bytes === undefined ? {} : { bytes: turn.trace.bytes }),
-              ...(turn.trace.digest === undefined ? {} : { digest: turn.trace.digest }),
-            },
-          }),
-    })),
+    records: {
+      entries: selected,
+      page,
+      limit,
+      total: entries.length,
+      hasMore: start + selected.length < entries.length,
+      ...(start + selected.length < entries.length ? { nextPage: page + 1 } : {}),
+    },
+  };
+}
+
+export function projectEvidence(input: {
+  details: ResolvedTargetState,
+  observations: AgentObservationInspectionProjection,
+  runDir: string,
+  page: number,
+  limit: number,
+}): RunInspectionEvidenceDocument | undefined {
+  const evidence = evidenceCapsule(input.details, input.observations, input.runDir, input.page, input.limit);
+  if (!evidence) return undefined;
+  return {
+    schemaVersion: 2,
+    kind: "evidence",
+    run: {
+      id: input.details.run.id,
+      status: input.details.run.status,
+      updatedAt: input.details.run.updatedAt,
+    },
+    subject: inspectionSubject(input.details),
+    ...(inspectionVisibility(input.details, input.observations) ? { visibility: inspectionVisibility(input.details, input.observations)! } : {}),
+    evidence,
   };
 }
 
 function missingSteerEvidence(
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   observations: AgentObservationInspectionProjection | undefined,
 ): boolean {
   const attempt = selectedAttempt(details);
@@ -548,8 +496,8 @@ function missingSteerEvidence(
     && !observations?.turns.some(turn => turn.attemptId === attempt.attemptId));
 }
 
-function inspectionVisibility(
-  details: RunInspectionTargetDetailsDocument,
+export function inspectionVisibility(
+  details: ResolvedTargetState,
   observations: AgentObservationInspectionProjection,
 ): RunInspectionVisibility | undefined {
   if (missingSteerEvidence(details, observations)) {
@@ -573,7 +521,7 @@ function steeredAttempt(attempt: RunDynamicAttempt): boolean {
 }
 
 function currentActivity(
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   run: RunDetails,
   observations: AgentObservationInspectionProjection,
   attempt: RunDynamicAttempt | undefined,
@@ -708,7 +656,7 @@ function publicAgentPhase(phase: string): RunInspectionPulse["phase"] {
 
 function observationTimelineEntries(
   observations: AgentObservationInspectionProjection,
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   allowedAttemptIds: ReadonlySet<string>,
 ): RunInspectionTimelineEntry[] {
   const attemptNoById = new Map(details.attempts.map(attempt => [attempt.attemptId, attempt.attemptNo]));
@@ -740,7 +688,7 @@ function observationTimelineEntries(
 
 function schedulerTimelineEntries(
   events: readonly CommittedRuntimeEventRow[],
-  details: RunInspectionTargetDetailsDocument,
+  details: ResolvedTargetState,
   run: RunDetails,
   observations?: AgentObservationInspectionProjection,
 ): RunInspectionTimelineEntry[] {
@@ -819,79 +767,31 @@ function responseAtFence(
 function timelinePage(input: {
   entries: RunInspectionTimelineEntry[];
   limit: number;
-  before?: { at: string; id: string; ordinal: number };
-  runId: string;
-  target: string;
+  page: number;
   hasOlderSemanticEntries: boolean;
   olderSemanticEntryCount: number;
-  semanticBoundaryById: ReadonlyMap<string, {
-    observationVersion: number;
-    sourceSequence: number;
-    id: string;
-  }>;
   retentionOmittedBefore: number;
 }): RunInspectionTimelineDocument["recent"] {
   const limit = Math.min(timelineMaximumLimit, Math.max(1, input.limit));
-  const ordinals = timelineEntryOrdinals(input.entries);
-  const eligible = input.before
-    ? input.entries.filter(entry =>
-        entry.at.localeCompare(input.before!.at) < 0
-        || entry.at === input.before!.at
-          && (ordinals.get(entry.id) ?? 0) < (ordinals.get(input.before!.id) ?? input.before!.ordinal))
-    : input.entries;
-  const selected: RunInspectionTimelineEntry[] = [];
-  let bytes = 0;
-  for (let index = eligible.length - 1; index >= 0 && selected.length < limit; index -= 1) {
-    const entry = eligible[index]!;
-    const entryBytes = timelineEntryBodyBytes(entry);
-    if (selected.length > 0 && bytes + entryBytes > timelinePageBodyBytes) break;
-    selected.push(entry);
-    bytes += entryBytes;
-  }
-  selected.reverse();
-  const omittedBefore = eligible.length - selected.length + input.olderSemanticEntryCount;
-  const first = selected[0];
-  const hasOlder = omittedBefore > 0 || input.hasOlderSemanticEntries;
-  const beforeEntry = selected.reduce<{
-    observationVersion: number;
-    sourceSequence: number;
-    id: string;
-  } | undefined>((oldest, entry) => {
-    const boundary = input.semanticBoundaryById.get(entry.id);
-    return boundary === undefined
-      ? oldest
-      : oldest === undefined || compareSemanticBoundary(boundary, oldest) < 0 ? boundary : oldest;
-  }, undefined);
+  const page = Math.max(1, input.page);
+  const offset = (page - 1) * limit;
+  const end = Math.max(0, input.entries.length - offset);
+  const selected = input.entries.slice(Math.max(0, end - limit), end);
+  const omittedBefore = Math.max(0, input.entries.length - offset - selected.length) + input.olderSemanticEntryCount;
+  const retainedOlder = omittedBefore > 0 || input.hasOlderSemanticEntries;
+  const hasOlder = retainedOlder;
   return {
     entries: selected,
+    page,
+    limit,
     returned: selected.length,
     omittedBefore,
     hasOlder,
     ...(input.retentionOmittedBefore > 0
       ? { retentionOmittedBefore: input.retentionOmittedBefore }
       : {}),
-    ...(hasOlder && first
-      ? {
-          olderCursor: timelinePageCursor({
-            runId: input.runId,
-            target: input.target,
-            at: first.at,
-            id: first.id,
-            ordinal: ordinals.get(first.id) ?? 0,
-            ...(beforeEntry === undefined ? {} : { beforeEntry }),
-          }),
-        }
-      : {}),
+    ...(retainedOlder ? { olderPage: page + 1 } : {}),
   };
-}
-
-function compareSemanticBoundary(
-  left: { observationVersion: number; sourceSequence: number; id: string },
-  right: { observationVersion: number; sourceSequence: number; id: string },
-): number {
-  return left.observationVersion - right.observationVersion
-    || left.sourceSequence - right.sourceSequence
-    || left.id.localeCompare(right.id);
 }
 
 function progressTools(progress: RunNodeProgress | undefined): {
@@ -1015,34 +915,6 @@ function compareTimelineEntries(left: RunInspectionTimelineEntry, right: RunInsp
 function timelineFenceOrder(entry: RunInspectionTimelineEntry): number {
   if (entry.kind === "activity" && entry.postFence) return 2;
   if (entry.kind === "control" && entry.action === "steered") return 1;
-  return 0;
-}
-
-function timelineEntryOrdinals(entries: readonly RunInspectionTimelineEntry[]): Map<string, number> {
-  const ordinals = new Map<string, number>();
-  let at: string | undefined;
-  let ordinal = 0;
-  for (const entry of entries) {
-    if (entry.at === at) ordinal += 1;
-    else {
-      at = entry.at;
-      ordinal = 0;
-    }
-    ordinals.set(entry.id, ordinal);
-  }
-  return ordinals;
-}
-
-function timelineEntryBodyBytes(entry: RunInspectionTimelineEntry): number {
-  if (entry.kind === "transition") return Buffer.byteLength(entry.summary?.text ?? "");
-  if (entry.kind === "activity") {
-    return Buffer.byteLength(entry.summary.text)
-      + Buffer.byteLength(entry.tool?.toolCallId ?? "")
-      + Buffer.byteLength(entry.tool?.name ?? "")
-      + Buffer.byteLength(entry.tool?.status ?? "")
-      + Buffer.byteLength(entry.tool?.input?.text ?? "")
-      + Buffer.byteLength(entry.tool?.output?.text ?? "");
-  }
   return 0;
 }
 

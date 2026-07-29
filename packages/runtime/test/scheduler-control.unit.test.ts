@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveSignalPayload, type RunControlIntent } from "../src/scheduler/control.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { SchedulerSnapshot } from "../src/scheduler/store-port.js";
 
@@ -33,5 +34,40 @@ describe("scheduler signal target resolution", () => {
       value: { nodeKey: consumedKey, nodeId: "approve", payload: { ok: true } },
     }));
     expect(snapshot.projection.signalWaits[awaitingKey]).toMatchObject({ status: "awaiting" });
+  });
+
+  it("resolves an awaiting Signal by occurrence ref and rejects attempt suffixes", () => {
+    const runId = "run_signal_ref";
+    const nodeKey = "approve~exact";
+    const path = [{ kind: "node" as const, nodeId: "approve" }];
+    const ref = deriveOccurrenceRef(path);
+    const projection = applySchedulerEvents(createSchedulerProjection(runId), [
+      { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
+      {
+        type: "instance.ready",
+        payload: { runId, nodeKey, nodeId: "approve", parentFrameKey: "root", instancePath: path },
+      },
+      { type: "instance.awaiting", payload: { nodeKey, statusReason: "signal" } },
+      { type: "signal.awaiting", payload: { runId, nodeKey, nodeId: "approve" } },
+    ]);
+    const snapshot: SchedulerSnapshot = { runId, version: 4, projection };
+    const intent = {
+      requestId: "request-ref",
+      runId,
+      type: "signal" as const,
+      node: ref,
+      payload: { ok: true },
+    };
+
+    expect(resolveSignalPayload(intent, snapshot)._unsafeUnwrap()).toEqual({
+      nodeKey,
+      nodeId: "approve",
+      payload: { ok: true },
+    });
+    expect(resolveSignalPayload({ ...intent, node: `${ref}#1` }, snapshot)._unsafeUnwrapErr())
+      .toMatchObject({
+        type: "signal-target-not-found",
+        target: `${ref}#1`,
+      });
   });
 });

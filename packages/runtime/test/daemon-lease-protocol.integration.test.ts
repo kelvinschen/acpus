@@ -25,7 +25,7 @@ describe.concurrent("daemon lease socket protocol", () => {
           status: "ok",
           pid: process.pid,
           generation: expect.any(Number),
-          protocolVersion: 2,
+          protocolVersion: 3,
           packageVersion: "0.0.0-test",
         });
       } finally {

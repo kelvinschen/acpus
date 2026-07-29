@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentDefinitionIR, NodeIR, WorkflowIR } from "@acpus/core/ir";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { planTargetedForkSeed, type ForkSeedPlan } from "../src/scheduler/fork-seed.js";
 import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
 
@@ -191,6 +192,36 @@ describe("targeted fork seed planning", () => {
     expect(plan.isErr()).toBe(true);
     if (plan.isOk()) throw new Error("expected missing dynamic target");
     expect(plan.error).toMatchObject({ type: "target-resolution-failure", target: "missing~abc" });
+  });
+
+  it("resolves a source occurrence ref and rejects attempt selectors", () => {
+    const path = appendNode([], "first");
+    const target = deriveInstanceKey(path);
+    const ref = deriveOccurrenceRef(path);
+    const sourceWorkflow = workflow([taskNode("first")]);
+    const source = sourceProjection(sourceWorkflow, []);
+    const input = {
+      forkRunId: "fork",
+      sourceWorkflow,
+      replacementWorkflow: sourceWorkflow,
+      replacementScope: rootScope(),
+      sourceProjection: source,
+      inputChanged: false,
+    };
+
+    const plan = planTargetedForkSeed({ ...input, target: ref });
+    expect(plan.isOk()).toBe(true);
+    if (plan.isErr()) throw new Error(plan.error.message);
+    expect(seedProjection(plan.value).instances[target]).toBeDefined();
+
+    const attempt = planTargetedForkSeed({ ...input, target: `${ref}#1` });
+    expect(attempt.isErr()).toBe(true);
+    if (attempt.isOk()) throw new Error("expected attempt selector rejection");
+    expect(attempt.error).toMatchObject({
+      type: "target-resolution-failure",
+      target: `${ref}#1`,
+    });
+    expect(attempt.error.message).toContain("without an attempt suffix");
   });
 
   it("resolves dynamic targets that materialize only in the replacement workflow", () => {

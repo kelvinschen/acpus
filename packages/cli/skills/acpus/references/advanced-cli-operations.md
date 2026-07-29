@@ -19,54 +19,38 @@ Use the same selected path, catalog, or `-` stdin source as `workflow run`. `wor
 
 ## Inspection details
 
-```sh
-acpus runs inspect <run-id> --target <target> [--timeline [--limit <1-50>] [--before <cursor>]]
-acpus runs inspect <run-id> --target <target> --timeline --follow [--limit <1-50>]
-```
-
-Start with Summary. Runtime resolves `attemptId`, `nodeKey`, `frameKey`, then
-static `nodeId`; use a candidate dynamic key when a repeated static target is
-ambiguous. Exact Agent attempts add metadata-only Private Turn Evidence and
-Trace state.
-
-Use Timeline for current/recent activity. It defaults to 12 entries;
-`--limit` accepts 1–50 and `--before` pages older entries. `--timeline` requires
-`--target`, conflicts with `--all`/`--raw`, and `--before` conflicts with
-`--follow`.
-
-Follow emits a bounded snapshot followed by semantic deltas for that connection.
-Timeline page cursors are opaque and bound to their run and resolved target.
-
-Read a Private Turn Evidence path only for an exact prompt, fence, or terminal
-diagnosis. Full provider-frame history exists only when `trace: true`.
-`--raw --json` exposes neither private body. See
-[Agent Tracing](agent-tracing.md) for Evidence, Trace, and raw ACP roles.
+Start with the Summary path in [CLI Operations](cli-operations.md).
+- For a repeated authored target, choose one candidate `@ref` before paging or following.
+- Use the printed `Next` or `Older` command to continue a candidate, Timeline, or Evidence view.
+- `--follow` waits for the next decision boundary; use it for one decision-controlling transition, not polling.
+- Use `--evidence` only for an exact prompt, fence, or terminal diagnosis.
+- Use `--raw --json` only for diagnosis; it does not expose private bodies. Full provider-frame history needs `trace: true`; see [Agent Tracing](agent-tracing.md).
 
 ## Runtime control details
 
 This section describes command mechanics. Use [Runtime Recovery](runtime-recovery.md#steer-vs-retry-vs-fork) to choose between steer, retry, and fork.
 
-Inspect before controlling a run. Target inspection resolves dynamic identities, exposes persisted Signal details, and prints available signal, steer, retry, and fork operations.
+Inspect before controlling a run and copy its printed operation command rather than writing an occurrence target.
 
 Mutating controls start or wake the workspace daemon and wait up to 30 seconds for a durable effect. Success confirms that effect, not downstream completion. A control timeout reports unconfirmed application; inspect again before repeating it.
 
 ### Signal
 
 ```sh
-acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json>'
+acpus runs signal <run-id> --target <signal-target> --payload '<json>'
 ```
 
-Schema-backed Signals validate the supplied JSON. Schema-less Signals require a JSON string such as `--payload '"approved"'`; Runtime passes its decoded string value through unchanged. A static alias must resolve to one open wait, so use the dynamic `nodeKey` when multiple waits exist.
+Schema-backed Signals validate the supplied JSON. Schema-less Signals require a JSON string such as `--payload '"approved"'`; Runtime passes its decoded string value through unchanged.
 
-An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABLE` with a schema path. Success identifies the requested and resolved targets and confirms validation, not downstream completion. A timed-out wait is closed; inspect it, then use retry or fork instead of signaling it again.
+An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABLE` with a schema path. Success confirms validation, not downstream completion. A timed-out wait is closed; inspect it, then use retry or fork instead of signaling it again.
 
 ### Steer
 
 ```sh
-acpus runs steer <run-id> --target <attemptId-or-nodeKey-or-static-agent> --instruction '<correction>'
+acpus runs steer <run-id> --target <exact-agent-target> --instruction '<correction>'
 ```
 
-Steer is a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Prefer the exact attempt id; a dynamic node key or unique static Agent id also resolves atomically.
+Steer is a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct.
 
 Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings; do not include secrets.
 
@@ -84,10 +68,10 @@ Pause and resume are idempotent. Pause fences active attempts from late commits 
 ### Retry
 
 ```sh
-acpus runs retry <run-id> [--target <nodeKey-or-frameKey-or-static-alias>]
+acpus runs retry <run-id> [--target <target>]
 ```
 
-Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame; Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
+Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame. Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
 
 Resume a paused run before retrying it. Retry rejects completed/canceled blockers, incompatible composite state, and targets that cannot make work admissible; rejection leaves durable state unchanged. Dynamic targets come from the source run's frozen workflow. Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
 
@@ -106,12 +90,12 @@ Replacement workflows have the same resolution as check/run/viz: use a path,
 a catalog name with optional scope, or `--workflow -` for raw UTF-8 TypeScript
 on stdin. Scope flags require `--workflow` and cannot be used with `-`.
 
-Omit `--target` unless recovery should begin at one point in the replacement workflow. Fork targets belong to that replacement workflow, so source-run dynamic keys may not resolve. Safe reuse carries only compatible completed prerequisites and registered artifacts. `--unsafe-reuse` relaxes workflow/input/signature compatibility checks; use it only when reusing earlier results and side effects is intentional.
+Omit `--target` unless recovery should begin at one point in the replacement workflow. For an inherited workflow, copy the target from source inspection; for a replacement, use one of its authored targets. Safe reuse carries only compatible completed prerequisites and registered artifacts. `--unsafe-reuse` relaxes workflow/input/signature compatibility checks; use it only when reusing earlier results and side effects is intentional.
 
 ### Cancel
 
 ```sh
-acpus runs cancel <run-id> [--target <nodeKey-or-frameKey-or-static-alias>]
+acpus runs cancel <run-id> [--target <target>]
 ```
 
 Run-level cancel is idempotent. A targeted cancel must resolve unambiguously to one non-terminal node or frame; it terminalizes that scheduler subtree as `operator_cancelled`. Both forms durably fence late result, artifact, and progress commits.
@@ -172,14 +156,7 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-Put `--json` after the executable leaf. Root/group help, version,
-visualization, and skill install/uninstall do not support it.
-
-| Command shape | Output |
-| --- | --- |
-| One-shot leaf with `--json` | One JSON object |
-| `workflow run --follow --json` | NDJSON: `admitted → snapshot → (delta \| resync)* → done` |
-| `runs inspect --follow --json` | NDJSON: `snapshot → (delta \| resync)* → done` |
-
-Every record includes `ok` and `phase`; stream records also include `kind`.
-Read NDJSON one line at a time, preserve order, and use focused `jq` filters.
+Put `--json` after the executable leaf. One-shot commands return one JSON
+object; follow commands return NDJSON observations until their decision
+boundary. Parse one line at a time, preserve order, and use focused `jq`
+filters.

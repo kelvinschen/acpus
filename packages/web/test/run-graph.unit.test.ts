@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { activeEdgeIds, activeFocus, canStartPan, compositeBadge, compositeStrategy, graphItemZIndex, graphNodeTarget, isPanPastThreshold, normalizeSelections, planGraphNavigation, safeParents, selectionsForActiveRuntime, selectorOptionLabel, toRenderModel } from "../src/graph-renderer.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
+import type { WebGraphRuntimeState } from "../src/graph-types.js";
+
+type GraphInput = Omit<Partial<WebGraph>, "runtimeStates"> & {
+  nodes: WebGraphNode[];
+  runtimeStates?: Array<Omit<WebGraphRuntimeState, "target"> & { target?: string }>;
+};
 
 function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
   const { id, ...rest } = partial;
@@ -8,6 +14,7 @@ function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
     ...rest,
     id,
     nodeId: partial.nodeId ?? id,
+    target: partial.target ?? partial.nodeId ?? id,
     kind: partial.kind ?? "task",
     label: partial.label ?? id,
     path: partial.path ?? ["root", id],
@@ -15,7 +22,7 @@ function node(partial: Partial<WebGraphNode> & { id: string }): WebGraphNode {
   };
 }
 
-function graphOf(partial: Partial<WebGraph> & { nodes: WebGraphNode[] }): WebGraph {
+function graphOf(partial: GraphInput): WebGraph {
   const { nodes, ...rest } = partial;
   return {
     ...rest,
@@ -26,7 +33,10 @@ function graphOf(partial: Partial<WebGraph> & { nodes: WebGraphNode[] }): WebGra
     edges: partial.edges ?? [],
     fanoutOccurrences: partial.fanoutOccurrences ?? [],
     selectors: partial.selectors ?? [],
-    runtimeStates: partial.runtimeStates ?? [],
+    runtimeStates: (partial.runtimeStates ?? []).map(state => ({
+      ...state,
+      target: state.target ?? state.targetId,
+    })),
   };
 }
 
@@ -149,9 +159,15 @@ describe("toRenderModel server graph consumption", () => {
     const model = toRenderModel(graph);
     const loops = [...model.items.values()].filter(item => item.type === "node" && item.nodeId === "repair_loop");
     expect(loops.map(item => item.selector?.id)).toEqual(["repair.alpha", "repair.beta"]);
-    expect(loops.map(item => graphNodeTarget(item)?.context)).toEqual([
-      [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }],
-      [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
+    expect(loops.map(item => graphNodeTarget(item))).toEqual([
+      expect.objectContaining({
+        target: "@repair-alpha",
+        context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }],
+      }),
+      expect.objectContaining({
+        target: "@repair-beta",
+        context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
+      }),
     ]);
   });
 
@@ -360,6 +376,7 @@ describe("graph viewport interaction helpers", () => {
   const rect = { width: 600, height: 400 };
   const taskTarget = {
     renderId: "task",
+    target: "task",
     nodeId: "task",
     label: "task",
     context: [],
@@ -481,15 +498,15 @@ function fanoutGraph(): WebGraph {
       },
     ],
     runtimeStates: [
-      { targetId: "lanes", status: "completed", context: [] },
-      { targetId: "route", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "route", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "route::case%3A0", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "route::default", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "auto_route", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "manual_route", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
-      { targetId: "repair_loop", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
-      { targetId: "repair_loop", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "lanes", target: "lanes", status: "completed", context: [] },
+      { targetId: "route", target: "@route-alpha", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route", target: "@route-beta", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "route::case%3A0", target: "@route-alpha", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "route::default", target: "@route-beta", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "auto_route", target: "@auto-route-alpha", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "manual_route", target: "@manual-route-beta", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
+      { targetId: "repair_loop", target: "@repair-alpha", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }] },
+      { targetId: "repair_loop", target: "@repair-beta", status: "completed", context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }] },
     ],
   });
 }

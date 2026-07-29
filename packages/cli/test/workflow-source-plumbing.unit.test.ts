@@ -103,7 +103,7 @@ describe("workflow source command plumbing", () => {
 
     expect(stdout.text).toBe([
       "Run run_admitted  dynamic-source  pending",
-      "Inspect: acpus runs inspect run_admitted [--follow]",
+      "Inspect: acpus runs inspect run_admitted",
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       "",
     ].join("\n"));
@@ -222,7 +222,7 @@ describe("workflow source command plumbing", () => {
       setExitCode: vi.fn(),
     });
 
-    await command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
+    await command.parseAsync(["run", "workflow.ts", "--follow", "--interval", "250ms"], { from: "user" });
 
     expect(stdout.text).toBe([
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
@@ -231,6 +231,12 @@ describe("workflow source command plumbing", () => {
     ].join("\n"));
     expect(stdout.text.match(/\[warning SC001\]/gu)).toHaveLength(1);
     expect(mock.followRun).toHaveBeenCalledOnce();
+    expect(mock.followRun).toHaveBeenCalledWith(
+      "/workspace",
+      { view: { kind: "run", runId: "run_admitted" } },
+      expect.objectContaining({ phase: "run", format: "text", pollIntervalMs: 250 }),
+    );
+    expect(mock.followRun.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
   });
 
   it("emits followed JSON admission before the Runtime follow stream", async () => {
@@ -240,15 +246,20 @@ describe("workflow source command plumbing", () => {
         schemaVersion: 2,
         ok: true,
         phase: "run",
-        kind: "snapshot",
+        kind: "view",
         document: { schemaVersion: 2, kind: "snapshot" },
       },
       {
         schemaVersion: 2,
         ok: true,
         phase: "run",
-        kind: "done",
-        run: { id: "run_admitted", status: "completed" },
+        kind: "view",
+        document: {
+          schemaVersion: 2,
+          kind: "snapshot",
+          run: { id: "run_admitted", status: "completed" },
+          output: { accepted: true },
+        },
       },
     ];
     mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
@@ -283,6 +294,12 @@ describe("workflow source command plumbing", () => {
     });
     expect(records.slice(1)).toEqual(followRecords);
     expect(mock.followRun).toHaveBeenCalledOnce();
+    expect(mock.followRun).toHaveBeenCalledWith(
+      "/workspace",
+      { view: { kind: "run", runId: "run_admitted" } },
+      expect.objectContaining({ phase: "run", format: "ndjson", pollIntervalMs: 3_000 }),
+    );
+    expect(mock.followRun.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
   });
 
   it("preserves replacement preparation warnings in fork text", async () => {

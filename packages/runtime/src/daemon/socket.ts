@@ -13,7 +13,7 @@ import {
   type RunDetails,
 } from "../store/store.js";
 
-export const DAEMON_PROTOCOL_VERSION = 2;
+export const DAEMON_PROTOCOL_VERSION = 3;
 
 export type DaemonStatus = {
   status: "ok";
@@ -74,7 +74,7 @@ export type DaemonControlIntent =
 
 type DaemonResponse =
   | { ok: true; result: DaemonStatus | DaemonShutdownResult | RunDetails | DaemonControlResult }
-  | { ok: false; error: { code: DaemonErrorCode; message: string } };
+  | { ok: false; error: { code: DaemonErrorCode; message: string; ambiguity?: true } };
 
 const DAEMON_ERROR_CODES = ["INVALID_REQUEST", "RUN_NOT_FOUND", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_BUSY", "STORE_ERROR", "INTERNAL_ERROR"] as const;
 
@@ -84,10 +84,10 @@ export type DaemonShutdownResult = {
   status: "shutdown";
 };
 
-export type DaemonHandlerFailure = { code: DaemonErrorCode; message: string };
+export type DaemonHandlerFailure = { code: DaemonErrorCode; message: string; ambiguity?: true };
 
 export type DaemonClientFailure =
-  | { type: "rejected"; code: DaemonErrorCode; message: string }
+  | { type: "rejected"; code: DaemonErrorCode; message: string; ambiguity?: true }
   | { type: "transport"; reason: "not-found" | "refused" | "timeout" | "io"; method: DaemonRequest["method"]; errno?: string; message: string }
   | { type: "protocol"; stage: "envelope" | "result"; method: DaemonRequest["method"]; message: string };
 
@@ -350,7 +350,7 @@ async function dispatchRequest(request: DaemonRequest, handlers: DaemonHandlers)
         : request.method === "shutdown"
           ? await handlers.shutdown()
           : await handlers.status();
-    return result.match(appliedResponse, failure => failedResponse(failure.code, failure.message));
+    return result.match(appliedResponse, failure => failedResponse(failure.code, failure.message, failure.ambiguity));
   } catch {
     return failedResponse("INTERNAL_ERROR", daemonFailureMessage(request, "INTERNAL_ERROR"));
   }
@@ -360,8 +360,8 @@ function appliedResponse(result: Exclude<DaemonResponse, { ok: false }>["result"
   return { ok: true, result };
 }
 
-function failedResponse(code: DaemonErrorCode, message: string): DaemonResponse {
-  return { ok: false, error: { code, message } };
+function failedResponse(code: DaemonErrorCode, message: string, ambiguity?: true): DaemonResponse {
+  return { ok: false, error: { code, message, ...(ambiguity ? { ambiguity } : {}) } };
 }
 
 function describeRequest(request: DaemonRequest): string {
@@ -379,7 +379,12 @@ function daemonFailureMessage(request: DaemonRequest, code: DaemonErrorCode): st
 }
 
 function daemonResult<T>(request: DaemonRequest, response: DaemonResponse, validate: (value: unknown) => value is T): Result<T, DaemonClientFailure> {
-  if (!response.ok) return err({ type: "rejected", code: response.error.code, message: response.error.message });
+  if (!response.ok) return err({
+    type: "rejected",
+    code: response.error.code,
+    message: response.error.message,
+    ...(response.error.ambiguity ? { ambiguity: true } : {}),
+  });
   return validate(response.result)
     ? ok(response.result)
     : err({ type: "protocol", stage: "result", method: request.method, message: `Daemon returned an invalid ${describeRequest(request)} result.` });
@@ -550,9 +555,10 @@ function isDaemonResponse(value: unknown): value is DaemonResponse {
   if (!isPlainRecord(value)) return false;
   if (value.ok === true) return hasExactKeys(value, ["ok", "result"]);
   if (value.ok !== false || !hasExactKeys(value, ["ok", "error"]) || !isPlainRecord(value.error)) return false;
-  return hasExactKeys(value.error, ["code", "message"])
+  return hasExactKeys(value.error, ["code", "message"], ["ambiguity"])
     && DAEMON_ERROR_CODES.includes(value.error.code as DaemonErrorCode)
-    && typeof value.error.message === "string";
+    && typeof value.error.message === "string"
+    && (value.error.ambiguity === undefined || value.error.ambiguity === true);
 }
 
 function isControlIntent(value: unknown): value is DaemonControlIntent {

@@ -15,29 +15,40 @@ import type {
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
   RunNodeProgress,
-  RunInspectionEmission,
   RunInspectionAgentExecutionDocument,
   RunInspectionAgentExecutionToolCall,
   RunInspectionAction,
-  RunInspectionContext,
+  RunInspectionCandidatesDocument,
   RunInspectionControl,
-  RunInspectionDelta,
   RunInspectionDecisionRunSummary,
   RunInspectionDetailedFailure,
   RunInspectionError,
   RunInspectionItem,
-  RunInspectionPatch,
-  RunInspectionQuery,
   RunInspectionRaw,
   RunInspectionRunSummary,
   RunInspectionSnapshot,
   RunInspectionScopeState,
   RunInspectionStatus,
-  RunInspectionTargetDetailsDocument,
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
+  RunInspectionTimelineEntry,
   RunInspectionVisibility,
-  FollowRunInspectionQuery,
+  InspectAgentExecutionQuery,
+  InspectEvidenceQuery,
+  InspectNodeQuery,
+  InspectRawQuery,
+  InspectRunQuery,
+  InspectTargetArtifactsQuery,
+  InspectTargetQuery,
+  InspectTargetResult,
+  InspectTimelineQuery,
+  RunInspectionEvidenceCandidatesDocument,
+  RunInspectionEvidenceDocument,
+  RunInspectionNodeDocument,
+  RunInspectionTargetArtifactsDocument,
+  WatchInspectionEmission,
+  WatchInspectionQuery,
+  WatchInspectionView,
   RunDynamicSignalWait,
   RunDetails,
   RunForkInfo,
@@ -75,7 +86,7 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { DAEMON_PROTOCOL_VERSION, createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides } from "@acpus/runtime";
+import { DAEMON_PROTOCOL_VERSION, createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, inspectAgentExecution, inspectEvidence, inspectNode, inspectRaw, inspectRun, inspectTarget, inspectTargetArtifacts, inspectTimeline, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides, watchInspection } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
@@ -123,9 +134,18 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>>();
   expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
+  expectTypeOf(inspectRun).toEqualTypeOf<(cwd: string, query: InspectRunQuery) => ResultAsync<RunInspectionSnapshot, RunInspectionError>>();
+  expectTypeOf(inspectTarget).toEqualTypeOf<(cwd: string, query: InspectTargetQuery) => ResultAsync<InspectTargetResult, RunInspectionError>>();
+  expectTypeOf(inspectTimeline).toEqualTypeOf<(cwd: string, query: InspectTimelineQuery) => ResultAsync<RunInspectionTimelineDocument, RunInspectionError>>();
+  expectTypeOf(inspectEvidence).toEqualTypeOf<(cwd: string, query: InspectEvidenceQuery) => ResultAsync<RunInspectionEvidenceDocument | RunInspectionEvidenceCandidatesDocument, RunInspectionError>>();
+  expectTypeOf(inspectRaw).toEqualTypeOf<(cwd: string, query: InspectRawQuery) => ResultAsync<RunInspectionRaw, RunInspectionError>>();
+  expectTypeOf(inspectNode).toEqualTypeOf<(cwd: string, query: InspectNodeQuery) => ResultAsync<RunInspectionNodeDocument, RunInspectionError>>();
+  expectTypeOf(inspectAgentExecution).toEqualTypeOf<(cwd: string, query: InspectAgentExecutionQuery) => ResultAsync<RunInspectionAgentExecutionDocument, RunInspectionError>>();
+  expectTypeOf(inspectTargetArtifacts).toEqualTypeOf<(cwd: string, query: InspectTargetArtifactsQuery) => ResultAsync<RunInspectionTargetArtifactsDocument, RunInspectionError>>();
+  expectTypeOf(watchInspection).toEqualTypeOf<(cwd: string, query: WatchInspectionQuery) => AsyncIterable<Result<WatchInspectionEmission, RunInspectionError>>>();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<2>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<3>();
   expectTypeOf<WorkflowSourceFile>().toEqualTypeOf<{ path: string; content: string }>();
   expectTypeOf<WorkflowSourceBundle>().toEqualTypeOf<{
     kind: "acpus_workflow_source_bundle";
@@ -216,8 +236,8 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     availability: { context: "available" | "unavailable"; tokenUsage: "available" | "partial" | "unavailable" };
     backend?: { kind: "use"; name: string } | { kind: "command" };
     lastObservedAt?: string;
-    tools?: { totalCallCount: number; recent: Array<{ command: string; status?: string }> };
   }>();
+  expectTypeOf<"tools">().not.toMatchTypeOf<keyof AgentInspectionState>();
   expectTypeOf<AgentDecisionState>().toEqualTypeOf<{
     key: string;
     turn?: number;
@@ -226,17 +246,12 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<RunInspectionItem["agent"]>().toEqualTypeOf<AgentDecisionState | undefined>();
   expectTypeOf<RunInspectionRunSummary["agentUsage"]>().toEqualTypeOf<{ instances: number; attempts: number; turns: number } | undefined>();
   expectTypeOf<RunInspectionSnapshot["run"]>().toEqualTypeOf<RunInspectionDecisionRunSummary>();
+  expectTypeOf<RunInspectionSnapshot["scope"]>().toEqualTypeOf<{ ref: string } | undefined>();
   expectTypeOf<RunInspectionRunSummary["failure"]>().toEqualTypeOf<RunInspectionItem["failure"]>();
   expectTypeOf<RunInspectionRunSummary["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
   expectTypeOf<NonNullable<RunInspectionItem["scope"]>>().toEqualTypeOf<RunInspectionScopeState>();
   expectTypeOf<Extract<RunInspectionAction, { kind: "steer" }>>().toEqualTypeOf<{ kind: "steer"; target: string }>();
   expectTypeOf<Extract<RunInspectionAction, { kind: "inspect-timeline" }>>().toEqualTypeOf<{ kind: "inspect-timeline"; target: string }>();
-  expectTypeOf<RunInspectionPatch>().toMatchTypeOf<{
-    upsertItems: RunInspectionItem[];
-    removeItemKeys: string[];
-    itemOrder?: string[];
-    availableActions?: unknown[];
-  }>();
   expectTypeOf<RunInspectionTargetSummaryDocument["availableActions"]>().toEqualTypeOf<RunInspectionAction[]>();
   expectTypeOf<RunInspectionTargetSummaryDocument["visibility"]>().toEqualTypeOf<RunInspectionVisibility | undefined>();
   expectTypeOf<RunInspectionVisibility>().toEqualTypeOf<{
@@ -249,50 +264,71 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     postFence?: true;
     phase: "starting" | "responding" | "reported-thought" | "planning" | "tool" | "output-repair" | "settling" | "settled";
   }>();
-  expectTypeOf<Extract<RunInspectionDelta, { kind: "available-actions" }>>().toEqualTypeOf<{
-    kind: "available-actions";
-    availableActions: RunInspectionAction[];
+  expectTypeOf<Extract<WatchInspectionEmission, { kind: "view" }>["document"]>()
+    .toEqualTypeOf<RunInspectionSnapshot | RunInspectionTargetSummaryDocument | RunInspectionTimelineDocument>();
+  expectTypeOf<Extract<WatchInspectionEmission, { kind: "timeline-entry" }>["entry"]>()
+    .toEqualTypeOf<RunInspectionTimelineEntry>();
+  expectTypeOf<Extract<WatchInspectionEmission, { kind: "view" }>["schemaVersion"]>().toEqualTypeOf<2>();
+  expectTypeOf<Extract<RunInspectionTimelineEntry, { kind: "phase" }>>().toMatchTypeOf<{
+    at: string;
+    phase: string;
   }>();
-  expectTypeOf<Extract<RunInspectionDelta, { kind: "visibility" }>>().toEqualTypeOf<{
+  expectTypeOf<Extract<RunInspectionTimelineEntry, { kind: "visibility" }>>().toEqualTypeOf<{
+    id: string;
     kind: "visibility";
-    visibility: RunInspectionVisibility | null;
+    at: string;
+    state: "degraded" | "restored";
+    reason?: "boundary-evidence-unavailable" | "observation-gap" | "unrecognized-provider-activity";
   }>();
-  expectTypeOf<Extract<RunInspectionEmission, { kind: "delta" }>["changes"][number]>().toEqualTypeOf<RunInspectionDelta>();
-  expectTypeOf<Extract<RunInspectionEmission, { kind: "snapshot" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionEmission>();
+  expectTypeOf<"revision">().not.toMatchTypeOf<keyof WatchInspectionEmission>();
   expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionSnapshot>();
   expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTargetSummaryDocument>();
   expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTimelineDocument>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTargetDetailsDocument>();
   expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
   expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionRaw>();
-  expectTypeOf<Extract<RunInspectionQuery, { mode: "timeline" }>["page"]>().toEqualTypeOf<{ limit?: number; before?: string } | undefined>();
-  expectTypeOf<Extract<RunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<{
+  expectTypeOf<InspectRunQuery>().toEqualTypeOf<{ runId: string; includeAllTopology?: boolean; includeControls?: boolean }>();
+  expectTypeOf<InspectTargetQuery>().toEqualTypeOf<{
     runId: string;
-    mode: "execution";
     target: string;
-    context?: RunInspectionContext;
+    includeAllTopology?: boolean;
+    includeControls?: boolean;
+    page?: number;
+    limit?: number;
   }>();
-  expectTypeOf<"after">().not.toMatchTypeOf<keyof FollowRunInspectionQuery>();
-  expectTypeOf<Extract<FollowRunInspectionQuery, { mode: "execution" }>>().toEqualTypeOf<never>();
+  expectTypeOf<InspectTimelineQuery>().toEqualTypeOf<{ runId: string; target: string; page?: number; limit?: number }>();
+  expectTypeOf<InspectEvidenceQuery>().toEqualTypeOf<{ runId: string; target: string; page?: number; limit?: number }>();
+  expectTypeOf<InspectRawQuery>().toEqualTypeOf<{ runId: string }>();
+  expectTypeOf<InspectNodeQuery>().toEqualTypeOf<{ runId: string; target: string }>();
+  expectTypeOf<InspectAgentExecutionQuery>().toEqualTypeOf<{ runId: string; target: string }>();
+  expectTypeOf<InspectTargetArtifactsQuery>().toEqualTypeOf<{ runId: string; target: string }>();
+  expectTypeOf<WatchInspectionView>().toEqualTypeOf<
+    | { kind: "run"; runId: string; includeAllTopology?: boolean; includeControls?: boolean }
+    | { kind: "target"; runId: string; target: string; includeAllTopology?: boolean; includeControls?: boolean }
+    | { kind: "timeline"; runId: string; target: string; limit?: number }
+  >();
+  expectTypeOf<"before">().not.toMatchTypeOf<keyof InspectTimelineQuery>();
+  expectTypeOf<RunInspectionTimelineDocument["recent"]["page"]>().toEqualTypeOf<number>();
+  expectTypeOf<RunInspectionTimelineDocument["recent"]["limit"]>().toEqualTypeOf<number>();
+  expectTypeOf<RunInspectionTimelineDocument["recent"]["olderPage"]>().toEqualTypeOf<number | undefined>();
+  expectTypeOf<"olderCursor">().not.toMatchTypeOf<keyof RunInspectionTimelineDocument["recent"]>();
   expectTypeOf<Extract<RunInspectionTargetSummaryDocument, { kind: "target" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionTimelineDocument, { kind: "timeline" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<Extract<RunInspectionTargetDetailsDocument, { kind: "details" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { kind: "execution" }>["schemaVersion"]>().toEqualTypeOf<2>();
   expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { available: false }>["reason"]>()
     .toEqualTypeOf<"not-agent" | "not-started">();
   expectTypeOf<RunInspectionAgentExecutionDocument["summary"]["status"]>().toEqualTypeOf<RunInspectionStatus>();
-  expectTypeOf<RunInspectionAgentExecutionDocument["lastToolCalls"][number]>().toEqualTypeOf<RunInspectionAgentExecutionToolCall>();
-  expectTypeOf<RunInspectionAgentExecutionDocument["recentToolsIncomplete"]>().toEqualTypeOf<boolean>();
-  expectTypeOf<RunInspectionTargetDetailsDocument["availableControls"]>().toEqualTypeOf<RunInspectionControl[]>();
+  expectTypeOf<RunInspectionAgentExecutionDocument["recentTools"][number]>().toEqualTypeOf<RunInspectionAgentExecutionToolCall>();
+  expectTypeOf<"toolCallCount">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
+  expectTypeOf<"lastToolCalls">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
+  expectTypeOf<"recentToolsIncomplete">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
+  expectTypeOf<"evidence">().not.toMatchTypeOf<keyof RunInspectionTargetSummaryDocument>();
+  expectTypeOf<RunInspectionNodeDocument["availableControls"]>().toEqualTypeOf<RunInspectionControl[]>();
+  expectTypeOf<RunInspectionEvidenceDocument["evidence"]["records"]["entries"][number]["turn"]>().toEqualTypeOf<number>();
+  expectTypeOf<RunInspectionEvidenceCandidatesDocument["candidates"]["entries"][number]["target"]>().toEqualTypeOf<string>();
   expectTypeOf<Extract<RunInspectionError, { type: "target-ambiguous" }>>().toMatchTypeOf<{
     runId: string;
     target: string;
-    candidateKeys: string[];
-  }>();
-  expectTypeOf<Extract<RunInspectionError, { type: "invalid-cursor" }>>().toMatchTypeOf<{
-    runId: string;
-    target?: string;
+    candidates: RunInspectionCandidatesDocument;
   }>();
   expectTypeOf<RunInspectionRaw["workflow"]>().toEqualTypeOf<WorkflowIR>();
   expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{

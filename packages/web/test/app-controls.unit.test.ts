@@ -7,8 +7,6 @@ import {
   nodeInspectionRefetchInterval,
   retryCommandTarget,
   retryTargetsForControls,
-  toolCallEmptyState,
-  toolCallHistorySummary,
 } from "../src/client/ui/App.js";
 
 describe("runtime run controls", () => {
@@ -69,16 +67,6 @@ describe("runtime run controls", () => {
       expect(agentExecutionRefetchInterval(true, status)).toBe(false);
     }
     expect(agentExecutionRefetchInterval(false, "running")).toBe(false);
-  });
-
-  it("does not claim there were no tool calls when retained details are incomplete", () => {
-    expect(toolCallEmptyState(true)).toEqual({
-      title: "Recent tool details incomplete",
-      detail: "No recent tool-call details were retained; earlier tool calls may be unavailable.",
-    });
-    expect(toolCallHistorySummary(2, 5, true)).toBe("Last 2 of 5 · retained details incomplete");
-    expect(toolCallHistorySummary(2, undefined, true)).toBe("2 recent · retained details incomplete");
-    expect(toolCallEmptyState(false).title).toBe("No tool calls");
   });
 
   it("adds Web labels without reordering Runtime-approved retry targets", () => {

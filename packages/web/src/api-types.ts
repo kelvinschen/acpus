@@ -150,8 +150,7 @@ export type NodeExecutionInspection = ({
     totalBytes: number;
     truncated: boolean;
   };
-  toolCallCount?: number;
-  lastToolCalls: Array<{
+  recentTools: Array<{
     turn: number;
     toolCallId?: string;
     toolName?: string;
@@ -159,7 +158,6 @@ export type NodeExecutionInspection = ({
     durationMs?: number;
     inputPreview?: string;
   }>;
-  recentToolsIncomplete: boolean;
 };
 
 export type RunRecord = {

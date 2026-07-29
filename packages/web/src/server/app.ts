@@ -2,17 +2,17 @@ import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import { extname } from "node:path";
 import {
-  getRunInspection,
   getRunVisualizationSnapshot,
   getRuntimeHealth,
+  inspectAgentExecution,
+  inspectNode,
   listRuns,
   readArtifact,
   requestDaemonControl,
   type DaemonControlIntent,
-  type RunInspectionAgentExecutionDocument,
-  type RunInspectionContext,
   type RunInspectionError,
-  type RunInspectionTargetDetailsDocument,
+  type RunInspectionAgentExecutionDocument,
+  type RunInspectionNodeDocument,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import type {
@@ -100,7 +100,6 @@ export function createWebApp(options: WebAppOptions): Hono {
       options.cwd,
       runId,
       context.req.param("target"),
-      inspectionContext(context.req.query("context")),
     );
     return context.json({
       ok: true,
@@ -113,7 +112,6 @@ export function createWebApp(options: WebAppOptions): Hono {
       options.cwd,
       context.req.param("id"),
       context.req.param("target"),
-      inspectionContext(context.req.query("context")),
     );
     return context.json({
       ok: true,
@@ -276,7 +274,7 @@ function mediaType(path: string): string {
   }
 }
 
-async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionTargetDetailsDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
+async function readRunJsonArtifact(cwd: string, artifacts: RunInspectionNodeDocument["artifacts"], artifactRef: unknown): Promise<unknown | undefined> {
   if (!artifactRef || typeof artifactRef !== "object" || Array.isArray(artifactRef)) return undefined;
   const artifactId = (artifactRef as Record<string, unknown>).artifactId;
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
@@ -295,16 +293,9 @@ async function readNodeInspection(
   cwd: string,
   runId: string,
   target: string,
-  context: RunInspectionContext,
-): Promise<RunInspectionTargetDetailsDocument> {
-  const result = await getRunInspection(cwd, {
-    runId,
-    mode: "details",
-    target,
-    ...(context.length === 0 ? {} : { context }),
-  });
+): Promise<RunInspectionNodeDocument> {
+  const result = await inspectNode(cwd, { runId, target });
   if (result.isErr()) inspectionError(result.error);
-  if (result.value.kind !== "details") throw new Error("Runtime returned a non-details inspection document.");
   return result.value;
 }
 
@@ -312,18 +303,9 @@ async function readNodeExecution(
   cwd: string,
   runId: string,
   target: string,
-  context: RunInspectionContext,
 ): Promise<RunInspectionAgentExecutionDocument> {
-  const result = await getRunInspection(cwd, {
-    runId,
-    mode: "execution",
-    target,
-    ...(context.length === 0 ? {} : { context }),
-  });
+  const result = await inspectAgentExecution(cwd, { runId, target });
   if (result.isErr()) inspectionError(result.error);
-  if (result.value.kind !== "execution") {
-    throw new Error("Runtime returned a non-execution inspection document.");
-  }
   return result.value;
 }
 
@@ -333,42 +315,11 @@ function inspectionError(error: RunInspectionError): never {
   }
   if (error.type === "target-not-found") apiError(404, "target_not_found", error.message);
   if (error.type === "target-ambiguous") apiError(409, "target_ambiguous", error.message);
+  if (error.type === "target-ref-collision") apiError(409, "target_ref_collision", error.message);
   if (error.type === "invalid-query") apiError(400, "invalid_inspection_query", error.message);
   throw error.type === "inspection-read-failed" && error.cause !== undefined
     ? error.cause
     : new Error(error.message);
-}
-
-function inspectionContext(value: string | undefined): RunInspectionContext {
-  if (!value) return [];
-  let parsed: unknown;
-  try {
-    const json = Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    parsed = JSON.parse(json) as unknown;
-  } catch {
-    apiError(400, "invalid_context", "Inspection context must be base64url JSON.");
-  }
-  if (!Array.isArray(parsed)) apiError(400, "invalid_context", "Inspection context must be an array.");
-  return parsed.map((item, index): RunInspectionContext[number] => {
-    if (!item || typeof item !== "object") {
-      apiError(400, "invalid_context", `Inspection context entry ${index} must be an object.`);
-    }
-    const record = item as Record<string, unknown>;
-    if (typeof record.nodeId !== "string" || record.nodeId.length === 0) {
-      apiError(400, "invalid_context", `Inspection context entry ${index} requires nodeId.`);
-    }
-    if (record.kind === "fanout" && isOccurrenceIndex(record.itemIndex)) {
-      return { nodeId: record.nodeId, kind: "fanout", itemIndex: record.itemIndex };
-    }
-    if (record.kind === "loop" && isOccurrenceIndex(record.iteration)) {
-      return { nodeId: record.nodeId, kind: "loop", iteration: record.iteration };
-    }
-    apiError(400, "invalid_context", `Inspection context entry ${index} must identify a fanout item or loop iteration.`);
-  });
-}
-
-function isOccurrenceIndex(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function parseWorkflowVisualizationSource(body: unknown): WorkflowVisualizationSource {

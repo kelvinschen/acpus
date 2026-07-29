@@ -6,6 +6,7 @@ import {
   retryControlTargets,
 } from "../src/scheduler/control-plan.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import type { SchedulerSnapshot } from "../src/scheduler/store-port.js";
 import {
   applySchedulerEvents,
@@ -89,12 +90,68 @@ describe("scheduler control plans", () => {
       candidateKeys: ["a_occurrence", "z_occurrence"],
       message: "Scheduler retry target 'task' is ambiguous. Candidate target keys: a_occurrence, z_occurrence.",
     });
+    expect(planRetryControl(snapshot, deriveOccurrenceRef([]))._unsafeUnwrapErr()).toMatchObject({
+      type: "ambiguous-retry-target",
+      candidateKeys: ["a_occurrence", "z_occurrence"],
+    });
     expect(planRetryControl(snapshot, "z_occurrence")._unsafeUnwrap()).toEqual({
       resolvedTarget: "z_occurrence",
       events: [{
         type: "instance.retry_requested",
         payload: { nodeKey: "z_occurrence" },
       }],
+    });
+  });
+
+  it("resolves occurrence refs for retry and cancel but rejects attempt selectors", () => {
+    const path = [{ kind: "node" as const, nodeId: "task" }];
+    const ref = deriveOccurrenceRef(path);
+    const retry = schedulerSnapshot([
+      rootStarted(),
+      {
+        type: "instance.ready",
+        payload: {
+          runId: "run_1",
+          nodeKey: "task~exact",
+          nodeId: "task",
+          parentFrameKey: "root",
+          instancePath: path,
+        },
+      },
+      {
+        type: "instance.failed",
+        payload: { nodeKey: "task~exact", error: { reason: "failed" } },
+      },
+    ]);
+    const cancel = schedulerSnapshot([
+      rootStarted(),
+      {
+        type: "instance.ready",
+        payload: {
+          runId: "run_1",
+          nodeKey: "task~exact",
+          nodeId: "task",
+          parentFrameKey: "root",
+          instancePath: path,
+        },
+      },
+    ]);
+
+    expect(planRetryControl(retry, ref)._unsafeUnwrap()).toMatchObject({
+      resolvedTarget: "task~exact",
+    });
+    expect(planCancelControl(cancel, ref)._unsafeUnwrap()).toMatchObject({
+      resolvedTarget: "task~exact",
+    });
+    expect(planRetryControl(retry, `${ref}#1`)._unsafeUnwrapErr()).toMatchObject({
+      type: "invalid-retry-target",
+      targetKey: `${ref}#1`,
+      status: "attempt-selector",
+    });
+    expect(planCancelControl(cancel, `${ref}#1`)._unsafeUnwrapErr()).toMatchObject({
+      type: "invalid-cancel-target",
+      targetKey: `${ref}#1`,
+      status: "attempt-selector",
     });
   });
 
@@ -217,6 +274,10 @@ describe("scheduler control plans", () => {
     expect(planCancelControl(active, "task")._unsafeUnwrapErr()).toMatchObject({
       type: "ambiguous-cancel-target",
       candidateKeys: ["a_occurrence", "z_occurrence"],
+    });
+    expect(planCancelControl(active, deriveOccurrenceRef([]))._unsafeUnwrapErr()).toMatchObject({
+      type: "ambiguous-cancel-target",
+      candidateKeys: ["a_occurrence", "finished", "z_occurrence"],
     });
   });
 

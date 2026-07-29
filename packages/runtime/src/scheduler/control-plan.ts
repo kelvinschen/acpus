@@ -1,5 +1,6 @@
 import { err, ok, type Result } from "neverthrow";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "./membership.js";
+import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import {
   applySchedulerEvents,
   cancellationEventsForFrame,
@@ -758,6 +759,8 @@ function retryTargetKey(
   target: string,
   snapshot: SchedulerSnapshot,
 ): Result<string, SchedulerStoreError> {
+  const occurrence = occurrenceControlTargetKey(target, snapshot, "retry");
+  if (occurrence) return occurrence;
   if (target !== "root"
     && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) {
     return ok(target);
@@ -790,6 +793,8 @@ function cancelTargetKey(
   target: string,
   snapshot: SchedulerSnapshot,
 ): Result<string, SchedulerStoreError> {
+  const occurrence = occurrenceControlTargetKey(target, snapshot, "cancel");
+  if (occurrence) return occurrence;
   if (target !== "root"
     && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) {
     return ok(target);
@@ -816,6 +821,54 @@ function cancelTargetKey(
   }
   if (target === "root" && snapshot.projection.frames.root) return ok("root");
   return ok(target);
+}
+
+function occurrenceControlTargetKey(
+  target: string,
+  snapshot: SchedulerSnapshot,
+  control: "retry" | "cancel",
+): Result<string, SchedulerStoreError> | undefined {
+  const occurrence = resolveOccurrenceRef(snapshot.projection, target, { attempt: "reject" });
+  if (!occurrence) return undefined;
+  if (occurrence.ok) {
+    if (occurrence.value.kind === "node") return ok(occurrence.value.nodeKey);
+    if (occurrence.value.kind === "frame") return ok(occurrence.value.frameKey);
+  } else if (occurrence.error.type === "occurrence-ref-collision") {
+    const message = `Scheduler ${control} target '${target}' is ambiguous. Candidate target keys: ${occurrence.error.candidateKeys.join(", ")}.`;
+    return control === "retry"
+      ? err({
+          type: "ambiguous-retry-target",
+          runId: snapshot.runId,
+          targetKey: target,
+          candidateKeys: occurrence.error.candidateKeys,
+          message,
+        })
+      : err({
+          type: "ambiguous-cancel-target",
+          runId: snapshot.runId,
+          targetKey: target,
+          candidateKeys: occurrence.error.candidateKeys,
+          message,
+        });
+  } else if (occurrence.error.type !== "occurrence-ref-attempt-not-allowed") {
+    return undefined;
+  }
+  const message = `${control === "retry" ? "Retry" : "Cancel"} target '${target}' selects an attempt; ${control} the occurrence without an attempt suffix.`;
+  return control === "retry"
+    ? err({
+        type: "invalid-retry-target",
+        runId: snapshot.runId,
+        targetKey: target,
+        status: "attempt-selector",
+        message,
+      })
+    : err({
+        type: "invalid-cancel-target",
+        runId: snapshot.runId,
+        targetKey: target,
+        status: "attempt-selector",
+        message,
+      });
 }
 
 function terminalStatus(status: string): boolean {

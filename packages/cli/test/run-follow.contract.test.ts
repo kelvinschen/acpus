@@ -1,63 +1,40 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  RunInspectionChange,
-  RunInspectionEmission,
-  FollowRunInspectionQuery,
-  RunInspectionItem,
+  WatchInspectionEmission,
+  RunInspectionCandidatesDocument,
+  RunInspectionError,
   RunInspectionSnapshot,
   RunInspectionTimelineDocument,
+  WatchInspectionQuery,
 } from "@acpus/runtime";
-import { followRun, parseFollowInterval } from "../src/run-follow.js";
+import { followRun } from "../src/run-follow.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
-const runtime = vi.hoisted(() => ({ followRunInspection: vi.fn() }));
+const runtime = vi.hoisted(() => ({ watchInspection: vi.fn() }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
-  followRunInspection: runtime.followRunInspection,
+  watchInspection: runtime.watchInspection,
 }));
-
-class TtyCaptureStream extends CaptureStream {
-  isTTY = true;
-}
 
 describe("Inspection v2 follow", () => {
   beforeEach(() => {
-    runtime.followRunInspection.mockReset();
+    runtime.watchInspection.mockReset();
   });
 
-  it("prints one bounded snapshot then only semantic deltas for a pipe", async () => {
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission(snapshot()),
-      {
-        schemaVersion: 2,
-        kind: "delta",
-        changes: [{
-          kind: "overview",
-          run: { ...snapshot().run, updatedAt: "2026-07-25T00:00:01.000Z" },
-          changes: [{
-            sequence: 2,
-            at: "2026-07-25T00:00:01.000Z",
-            entity: { kind: "node", id: "work", nodeId: "work" },
-            subject: "work",
-            action: "started",
-            status: "running",
-            itemKey: "work",
-          }],
-          patch: {
-            upsertItems: [{ ...snapshot().items[0]!, status: "running" }],
-            removeItemKeys: [],
-          },
-        }],
-      },
-      done("completed", { ok: true }),
+  it("prints one self-contained initial view and one boundary view without a lifecycle transcript", async () => {
+    runtime.watchInspection.mockImplementation(() => emissions([
+      view(snapshot()),
+      view(snapshot({
+        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
+        counts: { total: 1, completed: 1 },
+        items: [{ ...snapshot().items[0]!, status: "completed" }],
+        output: { accepted: true },
+      })),
     ]));
     const stdout = new CaptureStream();
 
-    const outcome = await followRun("/workspace", {
-      runId: "run_1",
-      mode: "overview",
-    }, {
+    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
       phase: "inspect",
       format: "text",
       stdout,
@@ -65,57 +42,77 @@ describe("Inspection v2 follow", () => {
     });
 
     expect(outcome).toEqual({ kind: "done", run: { id: "run_1", status: "completed" } });
-    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
-    expect(stdout.text).toContain("+1s  work  running");
-    expect(stdout.text).toContain("Run run_1  review  completed");
-    expect(stdout.text.match(/\"ok\": true/g)).toHaveLength(1);
+    expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
+    expect(stdout.text.match(/"accepted": true/g)).toHaveLength(1);
+    expect(stdout.text).not.toContain("checkpoint");
+    expect(stdout.text).not.toContain("Resynced");
+    expect(stdout.text).not.toMatch(/^\+/m);
   });
 
-  it("appends Timeline current updates and semantic entry upserts", async () => {
-    const current = timeline().current;
-    if (current?.kind !== "agent") throw new Error("expected Agent current activity");
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission(timeline()),
+  it("returns one boundary view when attachment is already actionable", async () => {
+    const actionable = snapshot({
+      run: { ...snapshot().run, status: "awaiting" },
+      counts: { total: 1, awaiting: 1 },
+      items: [{
+        ...snapshot().items[0]!,
+        kind: "signal",
+        status: "awaiting",
+        ref: "@1a2b3c4d5e6f",
+        signal: { target: "private-signal", schemaSummary: "{ approved: boolean }" },
+      }],
+    });
+    runtime.watchInspection.mockImplementation(() => emissions([view(actionable)]));
+    const stdout = new CaptureStream();
+
+    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
+      phase: "inspect",
+      format: "text",
+      stdout,
+      stderr: new CaptureStream(),
+    });
+
+    expect(outcome).toEqual({ kind: "done", run: { id: "run_1", status: "awaiting" } });
+    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
+    expect(stdout.text).toContain("Signal: acpus runs signal run_1 --target @1a2b3c4d5e6f --payload '<json>'");
+  });
+
+  it("writes standalone ordered Timeline semantic entries between bounded views", async () => {
+    runtime.watchInspection.mockImplementation(() => emissions([
+      view(timeline()),
       {
         schemaVersion: 2,
-        kind: "delta",
-        changes: [
-          {
-            kind: "current",
-            current: {
-              ...current,
-              phase: "settling",
-              response: { text: "finalizing", originalBytes: 10, truncated: false },
-            },
-          },
-          {
-            kind: "recent",
-            upsert: [{
-              id: "activity:1",
-              kind: "activity",
-              at: "2026-07-25T00:00:02.000Z",
-              attemptId: "attempt_1",
-              turn: 1,
-              channel: "response",
-              summary: { text: "closed answer", originalBytes: 13, truncated: false },
-            }],
-            order: ["activity:1"],
-            page: {
-              returned: 1,
-              omittedBefore: 0,
-              hasOlder: false,
-            },
-          },
-        ],
+        kind: "timeline-entry",
+        entry: {
+          id: "private-entry-phase",
+          kind: "phase",
+          at: "2026-07-25T00:00:02.000Z",
+          attemptId: "private-attempt",
+          attemptNo: 1,
+          turn: 2,
+          phase: "tool",
+        },
       },
-      done("completed"),
+      {
+        schemaVersion: 2,
+        kind: "timeline-entry",
+        entry: {
+          id: "private-entry-visibility",
+          kind: "visibility",
+          at: "2026-07-25T00:00:03.000Z",
+          state: "degraded",
+          reason: "observation-gap",
+        },
+      },
+      view({
+        ...timeline(),
+        run: { ...timeline().run, status: "completed" },
+        state: { status: "completed" },
+      }),
     ]));
     const stdout = new CaptureStream();
 
     await followRun("/workspace", {
-      runId: "run_1",
-      mode: "timeline",
-      target: "attempt_1",
+      view: { kind: "timeline", runId: "run_1", target: "@1a2b3c4d5e6f#1" },
     }, {
       phase: "inspect",
       format: "text",
@@ -123,19 +120,39 @@ describe("Inspection v2 follow", () => {
       stderr: new CaptureStream(),
     });
 
-    expect(stdout.text).toContain("Current settling · Read running");
-    expect(stdout.text).toContain("response  turn=1  closed answer");
-    expect(stdout.text.match(/Recent:/g)).toHaveLength(1);
+    expect(stdout.text.match(/Recent:/g)).toHaveLength(2);
+    expect(stdout.text).toContain("Timeline: 2026-07-25T00:00:02.000Z  phase tool  attempt=1  turn=2");
+    expect(stdout.text).toContain("Timeline: 2026-07-25T00:00:03.000Z  Visibility degraded/observation-gap");
+    expect(stdout.text).not.toContain("private-entry");
+    expect(stdout.text).not.toContain("private-attempt");
   });
 
-  it("emits the Runtime protocol as schema-v2 NDJSON and does not repeat output", async () => {
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission({ ...snapshot(), output: { hiddenUntilDone: true } }),
-      done("completed", { final: true }),
-    ]));
+  it("keeps text and NDJSON on the same view and semantic-entry protocol", async () => {
+    const values: WatchInspectionEmission[] = [
+      view(snapshot()),
+      {
+        schemaVersion: 2,
+        kind: "timeline-entry",
+        entry: {
+          id: "private-entry",
+          kind: "control",
+          at: "2026-07-25T00:00:02.000Z",
+          attemptId: "private-attempt",
+          attemptNo: 1,
+          action: "steered",
+        },
+      },
+      view(snapshot({
+        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
+        counts: { total: 1, completed: 1 },
+        items: [{ ...snapshot().items[0]!, status: "completed" }],
+        output: null,
+      })),
+    ];
+    runtime.watchInspection.mockImplementation(() => emissions(values));
     const stdout = new CaptureStream();
 
-    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
+    await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
       phase: "run",
       format: "ndjson",
       stdout,
@@ -143,298 +160,115 @@ describe("Inspection v2 follow", () => {
     });
 
     const records = stdout.text.trim().split("\n").map(line => JSON.parse(line));
-    expect(records).toHaveLength(2);
-    expect(records[0]).toMatchObject({
-      schemaVersion: 2,
-      kind: "snapshot",
-      document: { schemaVersion: 2, kind: "snapshot" },
-    });
-    expect(records[0].document).not.toHaveProperty("output");
-    expect(records[1]).toMatchObject({
-      schemaVersion: 2,
-      kind: "done",
-      output: { final: true },
-    });
+    expect(records.map(record => record.kind)).toEqual(["view", "timeline-entry", "view"]);
+    expect(records[0]).toMatchObject({ schemaVersion: 2, document: { kind: "snapshot" } });
+    expect(records[1]).toMatchObject({ entry: { kind: "control", action: "steered", attemptNo: 1 } });
+    expect(records[1].entry).not.toHaveProperty("id");
+    expect(records[1].entry).not.toHaveProperty("attemptId");
+    expect(records[2].document.output).toBeNull();
+    expect(JSON.stringify(records)).not.toContain("private-entry");
+    expect(JSON.stringify(records)).not.toContain("private-attempt");
   });
 
-  it("redraws a bounded Timeline document for TTY consumers", async () => {
-    const current = timeline().current;
-    if (current?.kind !== "agent") throw new Error("expected Agent current activity");
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission(timeline()),
-      {
-        schemaVersion: 2,
-        kind: "delta",
-        changes: [{ kind: "current", current: { ...current, phase: "settling" } }],
-      },
-      done("completed"),
-    ]));
-    const stdout = new TtyCaptureStream();
-
-    await followRun("/workspace", {
-      runId: "run_1",
-      mode: "timeline",
-      target: "attempt_1",
-    }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-
-    expect(stdout.text).toContain("\u001b[J");
-    expect(stdout.text).toContain("settling");
-    expect(stdout.text).not.toContain("observation journal record");
-  });
-
-  it("coalesces overview omissions by context and flushes them after thirty seconds", async () => {
+  it("uses workflow-owned polling cadence without adding it to the Runtime query", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime("2026-07-25T00:00:00.000Z");
-    let release!: () => void;
-    const released = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    const initial = fanoutSnapshot(20);
-    runtime.followRunInspection.mockImplementation(async function* () {
-      yield ok(snapshotEmission(initial));
-      yield ok(overviewDelta(2, fanoutChanges("completed"), fanoutItems("completed")));
-      vi.setSystemTime("2026-07-25T00:00:01.000Z");
-      yield ok(overviewDelta(3, fanoutChanges("ready"), fanoutItems("ready")));
-      await released;
-      yield ok(done("completed"));
-    });
+    let initialPulled!: () => void;
+    let secondPulled!: () => void;
+    let resolveBoundary!: (value: IteratorResult<unknown>) => void;
+    const initial = new Promise<void>(resolve => { initialPulled = resolve; });
+    const second = new Promise<void>(resolve => { secondPulled = resolve; });
+    let pulls = 0;
+    runtime.watchInspection.mockImplementation(() => ({
+      [Symbol.asyncIterator]() {
+        let call = 0;
+        return {
+          next: () => {
+            call += 1;
+            if (call === 1) {
+              initialPulled();
+              return Promise.resolve({ done: false, value: ok(view(snapshot())) });
+            }
+            if (call === 2) {
+              pulls += 1;
+              secondPulled();
+              return new Promise<IteratorResult<unknown>>(resolve => { resolveBoundary = resolve; });
+            }
+            return Promise.resolve({ done: true, value: undefined });
+          },
+          return: () => Promise.resolve({ done: true, value: undefined }),
+        };
+      },
+    }) as never);
     const stdout = new CaptureStream();
 
     try {
-      const followed = followRun("/workspace", {
-        runId: "run_1",
-        mode: "overview",
-      }, {
-        phase: "inspect",
+      const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
+        phase: "run",
         format: "text",
         stdout,
         stderr: new CaptureStream(),
+        pollIntervalMs: 250,
       });
-
-      await vi.advanceTimersByTimeAsync(29_000);
-      expect(stdout.text.match(/contexts omitted/g)).toHaveLength(1);
-      expect(stdout.text).toContain("… 5 contexts omitted (completed=5)");
-
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(stdout.text.match(/contexts omitted/g)).toHaveLength(2);
-      expect(stdout.text).toContain("… 5 contexts omitted (ready=5)");
-
-      release();
+      await initial;
       await vi.advanceTimersByTimeAsync(0);
+      expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
+      expect(pulls).toBe(0);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(pulls).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await second;
+      resolveBoundary({
+        done: false,
+        value: ok(view(snapshot({
+          run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
+          counts: { total: 1, completed: 1 },
+          items: [{ ...snapshot().items[0]!, status: "completed" }],
+        }))),
+      });
+      await vi.advanceTimersByTimeAsync(250);
       await followed;
+      expect(pulls).toBe(1);
+      expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
+      expect(runtime.watchInspection.mock.calls[0]?.[1]).not.toHaveProperty("intervalMs");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("flushes a pending overview omission before terminal output", async () => {
-    const initial = fanoutSnapshot(20);
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission(initial),
-      overviewDelta(2, fanoutChanges("completed"), fanoutItems("completed")),
-      overviewDelta(3, fanoutChanges("started"), fanoutItems("running")),
-      done("completed", { final: true }),
-    ]));
-    const stdout = new CaptureStream();
-
-    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-
-    expect(stdout.text.match(/contexts omitted/g)).toHaveLength(2);
-    expect(stdout.text).toContain("… 5 contexts omitted (running=5)");
-    expect(stdout.text.indexOf("running=5")).toBeLessThan(stdout.text.indexOf("Output:"));
-  });
-
-  it("coalesces matching terminal Agent transition and progress without losing details", async () => {
-    const initial = agentSnapshot();
-    const completed = { ...initial.items[0]!, status: "completed" as const };
-    runtime.followRunInspection.mockImplementation(() => emissions([
-      snapshotEmission(initial),
-      overviewDelta(2, [{
-        sequence: 7,
-        at: "2026-07-25T00:00:02.000Z",
-        entity: { kind: "attempt", id: "attempt_1", nodeId: "review" },
-        subject: "review",
-        action: "completed",
-        status: "completed",
-        attemptNo: 1,
-        itemKey: completed.key,
-        message: "lifecycle complete",
-      }, {
-        progressVersion: 6,
-        at: "2026-07-25T00:00:02.000Z",
-        entity: { kind: "progress", id: "review~1", nodeId: "review" },
-        subject: "review",
-        action: "progress",
-        status: "completed",
-        attemptNo: 1,
-        itemKey: completed.key,
-        message: "final progress",
-      }], [completed]),
-      done("completed"),
-    ]));
-    const stdout = new CaptureStream();
-
-    await followRun("/workspace", { runId: "run_1", mode: "overview" }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-
-    expect(stdout.text.match(/^\+\S+\s+review\s+completed/gm)).toHaveLength(1);
-    expect(stdout.text).toContain("lifecycle complete · final progress");
-  });
-
-  it("periodically redraws a TTY document and writes terminal output once", async () => {
-    vi.useFakeTimers();
+  it("detaches on Ctrl-C without inventing an NDJSON record", async () => {
     let release!: () => void;
-    runtime.followRunInspection.mockImplementation(async function* () {
-      yield ok(snapshotEmission({ ...snapshot(), output: { hidden: true } }));
+    runtime.watchInspection.mockImplementation(async function* (
+      _cwd: string,
+      query: WatchInspectionQuery,
+    ) {
+      yield ok(view(snapshot()));
       await new Promise<void>(resolve => {
         release = resolve;
+        query.signal?.addEventListener("abort", () => resolve(), { once: true });
       });
-      yield ok(done("completed", { final: true }));
-    });
-    const stdout = new TtyCaptureStream();
-
-    try {
-      const followed = followRun("/workspace", {
-        runId: "run_1",
-        mode: "overview",
-      }, {
-        phase: "inspect",
-        format: "text",
-        stdout,
-        stderr: new CaptureStream(),
-      });
-
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(stdout.text).toContain("\u001b[J");
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      await followed;
-      expect(stdout.text.match(/"final": true/g)).toHaveLength(1);
-      expect(stdout.text).not.toContain('"hidden": true');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("emits a compact checkpoint without repeating Timeline activity", async () => {
-    vi.useFakeTimers();
-    let release!: () => void;
-    runtime.followRunInspection.mockImplementation(async function* () {
-      yield { isErr: () => false as const, value: snapshotEmission(timeline()) };
-      await new Promise<void>(resolve => { release = resolve; });
-      yield { isErr: () => false as const, value: done("completed") };
-    });
-    const stdout = new CaptureStream();
-    try {
-      const followed = followRun("/workspace", {
-        runId: "run_1",
-        mode: "timeline",
-        target: "attempt_1",
-      }, {
-        phase: "inspect",
-        format: "text",
-        stdout,
-        stderr: new CaptureStream(),
-      });
-
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(stdout.text).toContain("· checkpoint  running  review");
-      expect(stdout.text.match(/Tool: Read running/g)).toHaveLength(1);
-      release();
-      await followed;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("detaches on Ctrl-C without inventing an NDJSON emission", async () => {
-    let release!: () => void;
-    const released = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    runtime.followRunInspection.mockImplementation(async function* () {
-      yield ok(snapshotEmission(snapshot()));
-      await released;
     });
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const followed = followRun("/workspace", {
-      runId: "run_1",
-      mode: "overview",
-    }, {
-      phase: "run",
+    const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
+      phase: "inspect",
       format: "ndjson",
       stdout,
       stderr,
     });
-    await vi.waitFor(() => expect(stdout.text).toContain('"kind":"snapshot"'));
+    await vi.waitFor(() => expect(stdout.text).toContain('"kind":"view"'));
 
     process.emit("SIGINT");
     release();
     const outcome = await followed;
 
     expect(outcome).toEqual({ kind: "detached" });
-    expect(stdout.text.trim().split("\n").map(line => JSON.parse(line).kind)).toEqual(["snapshot"]);
+    expect(stdout.text.trim().split("\n").map(line => JSON.parse(line).kind)).toEqual(["view"]);
     expect(stderr.text).toContain("Detached from run run_1");
-    expect(stderr.text).toContain("acpus runs cancel run_1");
-    expect(stderr.text).not.toContain("Resume:");
-    expect(stderr.text).not.toContain("--after");
+    expect(stderr.text).toContain("acpus runs inspect run_1");
   });
 
-  it("detaches before the first emission without printing a resume hint", async () => {
-    let started!: () => void;
-    const providerStarted = new Promise<void>(resolve => {
-      started = resolve;
-    });
-    runtime.followRunInspection.mockImplementation(async function* (
-      _cwd: string,
-      query: FollowRunInspectionQuery,
-    ) {
-      started();
-      await new Promise<void>(resolve => {
-        if (query.signal?.aborted) resolve();
-        else query.signal?.addEventListener("abort", () => resolve(), { once: true });
-      });
-    });
-    const stdout = new CaptureStream();
-    const followed = followRun("/workspace", {
-      runId: "run_1",
-      mode: "timeline",
-      target: "attempt_1",
-    }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-    await providerStarted;
-
-    process.emit("SIGINT");
-    const outcome = await followed;
-
-    expect(outcome).toEqual({ kind: "detached" });
-    expect(stdout.text).toContain("Detached from run run_1");
-    expect(stdout.text).toContain("acpus runs cancel run_1");
-    expect(stdout.text).not.toContain("Resume:");
-    expect(stdout.text).not.toContain("--after");
-  });
-
-  it("emits a public schema-v2 error without internal cause", async () => {
-    runtime.followRunInspection.mockImplementation(() => errorEmissions({
+  it("emits a public schema-v2 error without an internal cause", async () => {
+    runtime.watchInspection.mockImplementation(() => errorEmissions({
       type: "inspection-read-failed",
       runId: "run_1",
       message: "read failed",
@@ -442,10 +276,7 @@ describe("Inspection v2 follow", () => {
     }));
     const stdout = new CaptureStream();
 
-    const outcome = await followRun("/workspace", {
-      runId: "run_1",
-      mode: "overview",
-    }, {
+    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
       phase: "inspect",
       format: "ndjson",
       stdout,
@@ -466,14 +297,40 @@ describe("Inspection v2 follow", () => {
     });
   });
 
-  it("parses the bounded follow polling interval", () => {
-    expect(parseFollowInterval(undefined)).toBe(3_000);
-    expect(parseFollowInterval("250ms")).toBe(250);
-    expect(() => parseFollowInterval("100ms")).toThrow("--interval must be at least 250ms");
+  it("renders an ambiguous target's candidate handoff before a text follow error", async () => {
+    runtime.watchInspection.mockImplementation(() => errorEmissions({
+      type: "target-ambiguous",
+      runId: "run_1",
+      target: "review",
+      candidates: candidates(),
+      message: "Target review matches multiple occurrences.",
+    } satisfies RunInspectionError));
+    const stderr = new CaptureStream();
+
+    const outcome = await followRun("/workspace", {
+      view: {
+        kind: "target",
+        runId: "run_1",
+        target: "review",
+        includeAllTopology: true,
+        includeControls: true,
+      },
+    }, {
+      phase: "inspect",
+      format: "text",
+      stdout: new CaptureStream(),
+      stderr,
+    });
+
+    expect(outcome).toMatchObject({ kind: "error", error: { type: "target-ambiguous" } });
+    expect(stderr.text).toContain("@1a2b3c4d5e6f");
+    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @ref --all --controls");
+    expect(stderr.text).not.toContain("--follow");
+    expect(stderr.text).toContain("Inspection failed: Target review matches multiple occurrences.");
   });
 });
 
-function snapshot(): RunInspectionSnapshot {
+function snapshot(overrides: Partial<RunInspectionSnapshot> = {}): RunInspectionSnapshot {
   return {
     schemaVersion: 2,
     kind: "snapshot",
@@ -497,91 +354,7 @@ function snapshot(): RunInspectionSnapshot {
       nodeId: "work",
     }],
     availableActions: [],
-  };
-}
-
-function agentSnapshot(): RunInspectionSnapshot {
-  return {
-    ...snapshot(),
-    counts: { total: 1, running: 1 },
-    items: [{
-      key: "review~1",
-      role: "instance",
-      path: ["review"],
-      label: "review",
-      kind: "agent",
-      status: "running",
-      nodeId: "review",
-      nodeKey: "review~1",
-      attemptId: "attempt_1",
-      attemptNo: 1,
-      agent: {
-        key: "reviewer",
-      },
-    }],
-  };
-}
-
-function fanoutSnapshot(contexts: number): RunInspectionSnapshot {
-  return {
-    ...snapshot(),
-    counts: { total: contexts, completed: contexts },
-    items: Array.from({ length: contexts }, (_, index) => fanoutItem(index, "completed")),
-  };
-}
-
-function fanoutItems(status: RunInspectionItem["status"]): RunInspectionItem[] {
-  return Array.from({ length: 5 }, (_, offset) => fanoutItem(20 + offset, status));
-}
-
-function fanoutItem(index: number, status: RunInspectionItem["status"]): RunInspectionItem {
-  return {
-    key: `work~${index}`,
-    role: "instance",
-    path: [`batch[${index}]`, "work"],
-    label: `batch[${index}] › work`,
-    kind: "task",
-    status,
-    nodeId: "work",
-    nodeKey: `work~${index}`,
-  };
-}
-
-function fanoutChanges(
-  action: "ready" | "started" | "completed",
-): RunInspectionChange[] {
-  const status = action === "started" ? "running" : action;
-  return Array.from({ length: 5 }, (_, offset) => {
-    const index = 20 + offset;
-    return {
-      sequence: 10 + offset,
-      at: "2026-07-25T00:00:01.000Z",
-      entity: { kind: "node", id: `work~${index}`, nodeId: "work" },
-      subject: `batch[${index}] › work`,
-      action,
-      status,
-      itemKey: `work~${index}`,
-    };
-  });
-}
-
-function overviewDelta(
-  sequence: number,
-  changes: RunInspectionChange[],
-  items: RunInspectionItem[],
-): RunInspectionEmission {
-  return {
-    schemaVersion: 2,
-    kind: "delta",
-    changes: [{
-      kind: "overview",
-      run: {
-        ...snapshot().run,
-        updatedAt: `2026-07-25T00:00:0${sequence}.000Z`,
-      },
-      changes,
-      patch: { upsertItems: items, removeItemKeys: [] },
-    }],
+    ...overrides,
   };
 }
 
@@ -596,18 +369,17 @@ function timeline(): RunInspectionTimelineDocument {
     },
     subject: {
       targetKind: "attempt",
-      id: "attempt_1",
+      id: "@1a2b3c4d5e6f#1",
+      ref: "@1a2b3c4d5e6f#1",
       label: "review",
       kind: "agent",
       nodeId: "review",
-      nodeKey: "review~abc",
-      attemptId: "attempt_1",
       attemptNo: 1,
     },
     state: { status: "running", startedAt: "2026-07-25T00:00:00.000Z" },
     current: {
       kind: "agent",
-      attemptId: "attempt_1",
+      attemptId: "private-current-attempt",
       turn: 1,
       turnKind: "task",
       phase: "tool",
@@ -623,6 +395,8 @@ function timeline(): RunInspectionTimelineDocument {
     },
     recent: {
       entries: [],
+      page: 1,
+      limit: 12,
       returned: 0,
       omittedBefore: 0,
       hasOlder: false,
@@ -630,29 +404,33 @@ function timeline(): RunInspectionTimelineDocument {
   };
 }
 
-function snapshotEmission(
-  document: RunInspectionSnapshot | RunInspectionTimelineDocument,
-): RunInspectionEmission {
+function candidates(): RunInspectionCandidatesDocument {
   return {
     schemaVersion: 2,
-    kind: "snapshot",
-    document,
+    kind: "candidates",
+    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:01.000Z" },
+    target: "review",
+    candidates: {
+      entries: [{
+        ref: "@1a2b3c4d5e6f",
+        status: "running",
+        breadcrumb: "batch[0] › review",
+        kind: "dynamic-node",
+      }],
+      page: 1,
+      limit: 12,
+      total: 2,
+      hasMore: false,
+    },
   };
 }
 
-function done(status: "completed", output?: unknown): RunInspectionEmission {
-  return {
-    schemaVersion: 2,
-    kind: "done",
-    run: { id: "run_1", status },
-    ...(output === undefined ? {} : { output: output as never }),
-  };
+function view(document: RunInspectionSnapshot | RunInspectionTimelineDocument): WatchInspectionEmission {
+  return { schemaVersion: 2, kind: "view", document };
 }
 
-async function* emissions(values: RunInspectionEmission[]) {
-  for (const value of values) {
-    yield ok(value);
-  }
+async function* emissions(values: readonly WatchInspectionEmission[]) {
+  for (const value of values) yield ok(value);
 }
 
 function ok<T>(value: T) {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   RunInspectionAgentExecutionDocument,
-  RunInspectionTargetDetailsDocument,
+  RunInspectionNodeDocument,
 } from "@acpus/runtime";
 import {
   projectNodeExecution,
@@ -23,18 +23,8 @@ describe("node inspection projection", () => {
       path: "review~abc/attempt-1/agent/turn-001.json",
       createdAt: "2026-07-01T00:00:01.000Z",
     };
-    const inspection = targetInspection({
-      agent: {
-        key: "observer",
-        backend: { kind: "command" },
-        availability: { context: "available", tokenUsage: "available" },
-        model: "opus",
-        turnCount: 2,
-        lastObservedAt: "2026-07-01T00:00:04.000Z",
-        context: { used: 3_000, size: 12_000 },
-        tokenUsage: { inputTokens: 90, outputTokens: 10, totalTokens: 100 },
-        tools: { totalCallCount: 1, recent: [{ command: "Read", status: "completed" }] },
-      },
+    const inspection = nodeInspection({
+      artifacts: [artifact],
       summary: {
         runDurationMs: 4_000,
         latestAttempt: {
@@ -43,6 +33,16 @@ describe("node inspection projection", () => {
           status: "started",
           startedAt: "2026-07-01T00:00:00.000Z",
           error: { private: true },
+        },
+        agent: {
+          key: "observer",
+          backend: { kind: "command" },
+          availability: { context: "available", tokenUsage: "available" },
+          model: "opus",
+          turnCount: 2,
+          lastObservedAt: "2026-07-01T00:00:04.000Z",
+          context: { used: 3_000, size: 12_000 },
+          tokenUsage: { inputTokens: 90, outputTokens: 10, totalTokens: 100 },
         },
         input: { kind: "runtime", value: { release: true } },
         prompt: {
@@ -82,50 +82,7 @@ describe("node inspection projection", () => {
           target: "approval~exact",
           promptPreview: "Approve release?",
         },
-        artifacts: [artifact],
       },
-      artifacts: [artifact],
-      items: [{
-        key: "private:item",
-        role: "static",
-        path: ["review"],
-        label: "review",
-        kind: "agent",
-        status: "running",
-      }],
-      frames: [{
-        frameKey: "private:frame",
-        nodeId: "review",
-        frameKind: "node",
-        status: "running",
-        createdAt: "2026-07-01T00:00:00.000Z",
-        updatedAt: "2026-07-01T00:00:01.000Z",
-      }],
-      executionMetadata: [{
-        id: 1,
-        attemptId: "attempt_1",
-        kind: "agent_attempt",
-        metadata: { private: true },
-        createdAt: "2026-07-01T00:00:01.000Z",
-      }],
-      progress: [{
-        nodeKey: "review~abc",
-        nodeId: "review",
-        attemptId: "attempt_1",
-        attemptNo: 1,
-        kind: "agent",
-        status: "running",
-        message: "private",
-        updatedAt: "2026-07-01T00:00:01.000Z",
-      }],
-      signalWaits: [{
-        nodeKey: "approval~other",
-        nodeId: "approval",
-        status: "awaiting",
-        renderedPrompt: "Wrong occurrence",
-        createdAt: "2026-07-01T00:00:00.000Z",
-        updatedAt: "2026-07-01T00:00:01.000Z",
-      }],
     });
     const loadPromptArtifact = vi.fn(async () => ({
       prompt: "Review the exact release.",
@@ -194,25 +151,15 @@ describe("node inspection projection", () => {
     });
   });
 
-  it("does not invent one signal action for an aggregate target", async () => {
-    const wait = (nodeKey: string): RunInspectionTargetDetailsDocument["signalWaits"][number] => ({
-      nodeKey,
-      nodeId: "approval",
-      status: "awaiting",
-      createdAt: "2026-07-01T00:00:00.000Z",
-      updatedAt: "2026-07-01T00:00:01.000Z",
-    });
-    const inspection = targetInspection({
-      summary: { nodeStatus: "awaiting", counts: { total: 2, awaiting: 2 } },
-      signalWaits: [wait("approval~0"), wait("approval~1")],
+  it("does not expose absent optional fields", async () => {
+    const result = await projectNodeInspection(nodeInspection({
+      summary: { nodeStatus: "completed" },
       availableControls: [],
-    });
-    delete inspection.summary.nodeKey;
-
-    const result = await projectNodeInspection(inspection, noTurnArtifact);
+    }), noTurnArtifact);
 
     expect(result).toEqual({
       nodeId: "review",
+      nodeKey: "review~abc",
       staticKind: "agent",
       runStartedAt: "2026-07-01T00:00:00.000Z",
       artifacts: [],
@@ -220,7 +167,7 @@ describe("node inspection projection", () => {
   });
 
   it("omits a normalized Signal when the selected target is not awaiting", async () => {
-    const result = await projectNodeInspection(targetInspection({
+    const result = await projectNodeInspection(nodeInspection({
       summary: {
         nodeStatus: "completed",
         signal: { target: "approval~abc", promptPreview: "Already consumed" },
@@ -235,7 +182,7 @@ describe("node inspection projection", () => {
     { name: "non-object", artifact: [] },
     { name: "non-string prompt", artifact: { prompt: 42 } },
   ])("rejects a $name registered prompt artifact", async ({ artifact }) => {
-    const inspection = targetInspection({
+    const inspection = nodeInspection({
       summary: {
         prompt: {
           kind: "artifact",
@@ -262,8 +209,8 @@ describe("node execution inspection", () => {
       contextWindow: { ...executionInspection().contextWindow, runtimeOnly: "private" },
       tokenUsage: { ...executionInspection().tokenUsage, runtimeOnly: "private" },
       output: { ...executionInspection().output, runtimeOnly: "private" },
-      lastToolCalls: [{
-        ...executionInspection().lastToolCalls[0]!,
+      recentTools: [{
+        ...executionInspection().recentTools[0]!,
         runtimeOnly: "private",
       }],
     } as unknown as RunInspectionAgentExecutionDocument;
@@ -284,8 +231,7 @@ describe("node execution inspection", () => {
         outputTokens: 25,
         totalTokens: 125,
       },
-      toolCallCount: 4,
-      lastToolCalls: [{
+      recentTools: [{
         turn: 2,
         toolCallId: "tool_1",
         toolName: "read_file",
@@ -294,7 +240,6 @@ describe("node execution inspection", () => {
         inputPreview: "README.md",
       }],
       output: { tail: "partial response", totalBytes: 16, truncated: false },
-      recentToolsIncomplete: true,
     });
   });
 
@@ -312,8 +257,7 @@ describe("node execution inspection", () => {
       ...executionInspection(),
       available: false,
       reason,
-      lastToolCalls: [],
-      recentToolsIncomplete: false,
+      recentTools: [],
     });
 
     expect(result.available).toBe(false);
@@ -332,12 +276,11 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
     },
     subject: {
       targetKind: "dynamic-node",
-      id: "review~abc",
+      id: "@1a2b3c4d5e6f#1",
+      ref: "@1a2b3c4d5e6f#1",
       label: "review",
       kind: "agent",
       nodeId: "review",
-      nodeKey: "review~abc",
-      attemptId: "attempt_1",
       attemptNo: 1,
     },
     available: true,
@@ -356,8 +299,7 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
       totalTokens: 125,
     },
     output: { tail: "partial response", totalBytes: 16, truncated: false },
-    toolCallCount: 4,
-    lastToolCalls: [{
+    recentTools: [{
       turn: 2,
       toolCallId: "tool_1",
       toolName: "read_file",
@@ -365,21 +307,18 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
       durationMs: 20,
       inputPreview: "README.md",
     }],
-    recentToolsIncomplete: true,
   };
 }
 
-function targetInspection(overrides: Partial<Pick<
-  RunInspectionTargetDetailsDocument,
-  "items" | "instances" | "frames" | "attempts" | "progress" | "executionMetadata" | "signalWaits" | "artifacts" | "availableControls"
->> & {
-  agent?: NonNullable<RunInspectionTargetDetailsDocument["summary"]["agent"]>;
-  summary?: Partial<RunInspectionTargetDetailsDocument["summary"]>;
-} = {}): RunInspectionTargetDetailsDocument {
+function nodeInspection(overrides: {
+  summary?: Partial<RunInspectionNodeDocument["summary"]>;
+  artifacts?: RunInspectionNodeDocument["artifacts"];
+  availableControls?: RunInspectionNodeDocument["availableControls"];
+} = {}): RunInspectionNodeDocument {
   const artifacts = overrides.artifacts ?? [];
   return {
     schemaVersion: 2,
-    kind: "details",
+    kind: "node",
     run: {
       id: "run_1",
       name: "review-workflow",
@@ -389,8 +328,14 @@ function targetInspection(overrides: Partial<Pick<
       updatedAt: "2026-07-01T00:00:02.000Z",
       execution: { state: "active", lastStatus: "running" },
     },
-    target: { kind: "dynamic-node", id: "review~abc" },
-    staticNode: { nodeId: "review", kind: "agent", order: 0, path: ["review"], agent: "reviewer" },
+    subject: {
+      targetKind: "dynamic-node",
+      id: "review~abc",
+      ref: "@1a2b3c4d5e6f",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+    },
     summary: {
       targetKind: "dynamic-node",
       targetId: "review~abc",
@@ -402,29 +347,8 @@ function targetInspection(overrides: Partial<Pick<
       staticKind: "agent",
       staticOrder: 0,
       ...overrides.summary,
-      ...(overrides.agent ? { agent: overrides.agent } : {}),
       artifacts: overrides.summary?.artifacts ?? artifacts,
     },
-    items: overrides.items ?? [],
-    instances: overrides.instances ?? [{
-      nodeKey: "review~abc",
-      nodeId: "review",
-      status: "running",
-      createdAt: "2026-07-01T00:00:00.000Z",
-      updatedAt: "2026-07-01T00:00:02.000Z",
-    }],
-    frames: overrides.frames ?? [],
-    attempts: overrides.attempts ?? [{
-      attemptId: "attempt_1",
-      nodeKey: "review~abc",
-      nodeId: "review",
-      attemptNo: 1,
-      status: "started",
-      startedAt: "2026-07-01T00:00:00.000Z",
-    }],
-    signalWaits: overrides.signalWaits ?? [],
-    executionMetadata: overrides.executionMetadata ?? [],
-    progress: overrides.progress ?? [],
     artifacts,
     availableControls: overrides.availableControls ?? [{ type: "cancel", target: "review~abc" }],
   };

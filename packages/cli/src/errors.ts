@@ -32,7 +32,7 @@ export function runError(message: string, details: Pick<CliResult, "errorCode" |
   return new CliError(1, { ok: false, phase: "run", message, ...details });
 }
 
-export function controlError(message: string, details: Pick<CliResult, "errorCode" | "run"> & { control?: CliUnappliedControl } = {}): CliError {
+export function controlError(message: string, details: Pick<CliResult, "errorCode" | "run" | "inspectionError"> & { control?: CliUnappliedControl } = {}): CliError {
   return new CliError(1, { ok: false, phase: "control", message, ...details });
 }
 

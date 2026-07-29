@@ -257,6 +257,7 @@ function node(partial: Partial<WebGraphNode> & { id: string; kind?: string; path
     ...rest,
     id,
     nodeId: partial.nodeId ?? id,
+    target: partial.target ?? partial.nodeId ?? id,
     kind: partial.kind ?? "task",
     label: partial.label ?? id,
     path: partial.path ?? ["root", id],

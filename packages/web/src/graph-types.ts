@@ -28,6 +28,8 @@ export type NodeDetail =
 export type WebGraphNode = {
   id: string;
   nodeId: string;
+  /** Runtime supplies @ref for materialized states; static nodes retain nodeId. */
+  target: string;
   kind: string;
   label: string;
   path: string[];
@@ -92,6 +94,7 @@ export type WebGraphSelectorOption = {
 
 export type WebGraphRuntimeState = {
   targetId: string;
+  target: string;
   status: string;
   context: WebGraphSelection[];
 };

@@ -141,18 +141,21 @@ describe("graphFromOverlay", () => {
     ]);
   });
 
-  it("emits runtime states scoped to selected fanout items and branches", () => {
+  it("emits runtime states scoped to selected fanout items with their canonical targets", () => {
     const graph = graphFromOverlay(compositeRunOverlay(), "runtime");
     const autoRoute = stateFor(graph, "auto_route");
     const manualRoute = stateFor(graph, "manual_route");
     const defaultContainer = graph.containers.find(container => container.nodeId === "route" && container.label === "default");
 
     expect(autoRoute?.status).toBe("completed");
+    expect(autoRoute?.target).toBe("@auto_route.alpha");
     expect(autoRoute?.context).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 0 }]);
+    expect(manualRoute?.target).toBe("@manual_route.beta");
     expect(manualRoute?.context).toEqual([{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }]);
     expect(defaultContainer).toBeDefined();
     expect(graph.runtimeStates).toContainEqual(expect.objectContaining({
       targetId: defaultContainer!.id,
+      target: "@route.beta.default",
       status: "completed",
       context: [{ nodeId: "lanes", kind: "fanout", itemIndex: 1 }],
     }));
@@ -196,13 +199,14 @@ describe("graphFromOverlay", () => {
         { kind: "fanout", nodeId: "items", itemIndex: 0 },
         { kind: "node", nodeId: "approval" },
       ])],
-      signalWaits: [{ nodeKey: "approval.1.0", nodeId: "approval", status: "awaiting", ...timing }],
+      signalWaits: [{ nodeKey: "approval.1.0", nodeId: "approval", target: "@approval.1.0", status: "awaiting", ...timing }],
     }));
 
     const waits = graphFromOverlay(overlay, "runtime").runtimeStates
       .filter(state => state.targetId === "approval" && state.status === "awaiting");
     expect(waits).toContainEqual({
       targetId: "approval",
+      target: "@approval.1.0",
       status: "awaiting",
       context: [
         { nodeId: "groups", kind: "fanout", itemIndex: 1 },
@@ -416,6 +420,7 @@ function node(
 ): OverlayNode {
   return {
     nodeId,
+    target: partial.target ?? nodeId,
     kind,
     path,
     instances: [],
@@ -434,7 +439,7 @@ function frame(
   status: string,
   instancePath: InstancePath,
 ): OverlayFrame {
-  return { frameKey, nodeId, frameKind, status, instancePath, ...timing } as OverlayFrame;
+  return { frameKey, nodeId, target: `@${frameKey}`, frameKind, status, instancePath, ...timing } as OverlayFrame;
 }
 
 function instance(
@@ -443,7 +448,7 @@ function instance(
   status: string,
   instancePath: OverlayInstance["instancePath"],
 ): OverlayInstance {
-  return { nodeKey, nodeId, status, instancePath, ...timing } as OverlayInstance;
+  return { nodeKey, nodeId, target: `@${nodeKey}`, status, instancePath, ...timing } as OverlayInstance;
 }
 
 function branchFanoutPath(itemIndex?: number): InstancePath {

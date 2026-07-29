@@ -23,28 +23,35 @@ Prefer a file-backed `workflow.ts` only when you need to import task/helper modu
 
 ```sh
 acpus workflow run <workflow> [--input <json|file.json>] [--follow [--interval <duration>]]
-acpus runs inspect <run-id> [--target <target> [--timeline]]
+acpus runs inspect <run-id> [--target <nodeId|@ref>]
 ```
 
 `workflow run` performs workflow check internally, submits the durable run *asynchronously*. Use `--follow` for observe the run synchronously (with `3s` interval), `Ctrl-C` only detaches.
 
-Inspecting a target returns a bounded decision Summary, an exact Agent attempt adds metadata-only Private Turn Evidence and Trace state. Add `--timeline` for current and recent activity.
+| Need | Use | Get |
+| --- | --- | --- |
+| State / next action | Summary (default) | Decision state and available next operations |
+| Proof of work | `--timeline` | Current and recent activity |
+| Diagnose one Agent turn | `--evidence` | Exact turn-boundary metadata |
+| Topology | `--all` | All materialized occurrences |
+| Wait for one change | `--follow` | Next decision boundary |
+
+Add `#attemptNo` only for one Agent attempt. Use `--help` for exact combinations and printed `Next`/`Older` commands for more results.
 
 ### Low-context monitoring
 
-1. Start with the target Summary; use a dynamic key for repeated occurrences.
-2. Add Timeline only when process activity is needed; use `--all` only for topology.
-3. Inspect adaptively: begin with sparse, minute-scale inspections.
-4. Refresh Summary after that transition. At terminal state, verify output and artifacts against the goal.
-5. Use focused `jq` for structured output with `--json` to avoid large json output.
+1. Start with Summary; for a repeated occurrence, copy its candidate `@ref`.
+2. Inspect adaptively: **begin with sparse, minute-scale inspections**.
+3. Refresh Summary after that transition. At terminal state, verify output and artifacts against the goal.
+4. Use focused `jq` for structured output with `--json` to avoid large json output.
 
-Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) if you need pagination, follow mechanics, or private Evidence details.
+Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for pagination, private Evidence, raw output, or follow mechanics.
 
 ## Runtime controls
 
 ```sh
-acpus runs signal <run-id> --target <signal-nodeKey-or-static-alias> --payload '<json>'
-acpus runs steer <run-id> --target <attemptId-or-nodeKey-or-static-agent> --instruction '<correction>'
+acpus runs signal <run-id> --target <target> --payload '<json>'
+acpus runs steer <run-id> --target <target> --instruction '<correction>'
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs cancel <run-id> [--target <target>]

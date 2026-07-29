@@ -23,11 +23,6 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 - **Run, observe, or control:** Read `references/cli-operations.md` for status, overrides, and controls;
 - **Recover a run:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, drifting-agent steering, steer/retry/fork decisions, or deep diagnostics.
 - **Library/catalog reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
-
-| Workflow | Use when | Read first |
-| --- | --- | --- |
-| `deep-research` | Research public-web with verified sources | `workflows/library/deep-research/README.md` |
-
 - **Choose an agent:** Read `references/acpx-agents.md` when Agent availability matters.
 
 ### **DO NOT read by default**
@@ -44,8 +39,8 @@ Search all available documentation under `references/` to explain concepts. Choo
 ## Inspection budget [Mandatory]
 
 - Inspect adaptively: start with sparse, minute-scale inspections, tighten cadence only near a decision boundary, and never poll.
-- Inspect the target controlling the next decision. Add `--timeline` only when process activity matters; use an exact attempt for Evidence metadata.
-- Use dynamic keys for repeats and `--all` only for topology. One live follow for a decision-controlling transition replaces scheduled inspection; do not do both. Refresh Summary, filter with `jq`, and use raw last.
+- Inspect the target controlling the next decision. Start with Summary and deepen only enough to decide.
+- For repeats, copy the candidate view's `@ref`. Use one live follow for a decision-controlling transition, not scheduled inspection.
 
 ## Safety
 

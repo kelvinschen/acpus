@@ -1,17 +1,17 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ArtifactRecord } from "@acpus/runtime";
+import type { ArtifactRecord, RunInspectionTargetArtifactsDocument } from "@acpus/runtime";
 import { createRunsCommand } from "../src/commands/runs.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({
-  getRunInspection: vi.fn(),
+  inspectTargetArtifacts: vi.fn(),
   listArtifacts: vi.fn(),
 }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
-  getRunInspection: runtime.getRunInspection,
+  inspectTargetArtifacts: runtime.inspectTargetArtifacts,
   listArtifacts: runtime.listArtifacts,
 }));
 
@@ -29,7 +29,7 @@ const artifacts: ArtifactRecord[] = [{
 describe("runs artifacts", () => {
   beforeEach(() => {
     runtime.listArtifacts.mockReset().mockResolvedValue(artifacts);
-    runtime.getRunInspection.mockReset().mockResolvedValue(okTarget(artifacts));
+    runtime.inspectTargetArtifacts.mockReset().mockResolvedValue(okTarget(artifacts));
   });
 
   it("lists all artifact metadata as id, media type, and absolute path", async () => {
@@ -41,7 +41,7 @@ describe("runs artifacts", () => {
       stdout: `artifact_1 application/x-ndjson ${artifacts[0]!.path}\n`,
     });
     expect(runtime.listArtifacts).toHaveBeenCalledWith("/workspace", "run_1");
-    expect(runtime.getRunInspection).not.toHaveBeenCalled();
+    expect(runtime.inspectTargetArtifacts).not.toHaveBeenCalled();
   });
 
   it("emits the stable JSON envelope without reading artifact bodies", async () => {
@@ -60,9 +60,8 @@ describe("runs artifacts", () => {
   it("reuses target inspection for static, dynamic, frame, and attempt targets", async () => {
     const result = await runCommand(["artifacts", "run_1", "--target", "attempt_1"], true);
 
-    expect(runtime.getRunInspection).toHaveBeenCalledWith("/workspace", {
+    expect(runtime.inspectTargetArtifacts).toHaveBeenCalledWith("/workspace", {
       runId: "run_1",
-      mode: "details",
       target: "attempt_1",
     });
     expect(JSON.parse(result.stdout)).toEqual({
@@ -93,7 +92,7 @@ describe("runs artifacts", () => {
       result: { phase: "inspect", errorCode: "RUN_NOT_FOUND" },
     });
 
-    runtime.getRunInspection.mockResolvedValue({
+    runtime.inspectTargetArtifacts.mockResolvedValue({
       isErr: () => true,
       error: { type: "target-not-found", runId: "run_1", target: "missing", message: "Run target 'missing' was not found." },
     });
@@ -120,8 +119,23 @@ async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: nu
 }
 
 function okTarget(value: ArtifactRecord[]) {
+  const document: RunInspectionTargetArtifactsDocument = {
+    schemaVersion: 2,
+    kind: "artifacts",
+    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:00.000Z" },
+    subject: {
+      targetKind: "attempt",
+      id: "@1a2b3c4d5e6f#1",
+      ref: "@1a2b3c4d5e6f#1",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+      attemptNo: 1,
+    },
+    artifacts: value,
+  };
   return {
     isErr: () => false as const,
-    value: { kind: "details" as const, artifacts: value },
+    value: document,
   };
 }

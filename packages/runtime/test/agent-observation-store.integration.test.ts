@@ -233,7 +233,7 @@ describe("Agent observation store projection", () => {
     });
   });
 
-  it("keeps usage telemetry out of semantic checkpoints while preserving diagnostic capture", async () => {
+  it("keeps usage telemetry in the bounded Observation projection without Timeline entries", async () => {
     await withRuntimeWorkspace("agent-observation-usage-telemetry", async workspace => {
       const store = await openRuntimeStore(workspace);
       const runId = "20260726000000AAAAAAAAAAAAAAAAAAAA";
@@ -340,16 +340,25 @@ describe("Agent observation store projection", () => {
         });
         await ready;
 
-        expect(afterUsage).toEqual(beforeUsage);
-        expect(afterResponse?.observationVersion).toBe((beforeUsage?.observationVersion ?? 0) + 1);
-        expect(afterResponse?.currentObservationVersion)
+        expect(afterUsage?.observationVersion).toBe((beforeUsage?.observationVersion ?? 0) + 1);
+        expect(afterUsage?.currentObservationVersion)
           .toBe((beforeUsage?.currentObservationVersion ?? 0) + 1);
+        const usageCurrent = JSON.parse(afterUsage?.currentJson ?? "{}");
+        expect(usageCurrent).toMatchObject({
+          context: { used: 95, size: 100 },
+          tokenUsage: { source: "usage_update", totalTokens: 95 },
+        });
+        expect(usageCurrent).not.toHaveProperty("response");
+        expect(afterResponse?.observationVersion).toBe((afterUsage?.observationVersion ?? 0) + 1);
+        expect(afterResponse?.currentObservationVersion)
+          .toBe((afterUsage?.currentObservationVersion ?? 0) + 1);
         const current = JSON.parse(afterResponse?.currentJson ?? "{}");
         expect(current).toMatchObject({
           phase: "responding",
           response: { originalBytes: 512 },
+          context: { used: 95, size: 100 },
+          tokenUsage: { source: "usage_update", totalTokens: 95 },
         });
-        expect(current).not.toHaveProperty("context");
         expect(current).not.toHaveProperty("totalToolCalls");
         expect(forwarded[0]?.progress.summary).toMatchObject({
           context: { used: 95, size: 100 },
@@ -371,6 +380,26 @@ describe("Agent observation store projection", () => {
           tokenUsage: { totalTokens: 95 },
           tools: { totalToolCallCount: 12 },
         });
+        const settled = await store.observationLog.readInspectionProjection({
+          runId,
+          attemptIds: [attemptId],
+          latestTurnOnly: true,
+          entryLimit: 50,
+        });
+        expect(settled.isOk()).toBe(true);
+        if (settled.isErr()) throw settled.error;
+        expect(settled.value.currents).toEqual([
+          expect.objectContaining({
+            state: "sealed",
+            phase: "settled",
+            response: expect.objectContaining({ originalBytes: 512 }),
+            context: expect.objectContaining({ used: 95, size: 100 }),
+            tokenUsage: expect.objectContaining({ source: "usage_update", totalTokens: 95 }),
+          }),
+        ]);
+        expect(settled.value.entries).toEqual([
+          expect.objectContaining({ kind: "activity", channel: "response" }),
+        ]);
         const tracePath = captured.evidence.trace?.relativePath;
         if (!tracePath) throw new Error("expected private trace");
         const trace = (await readFile(join(runDir, tracePath), "utf8"))

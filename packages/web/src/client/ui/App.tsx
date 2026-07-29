@@ -47,7 +47,6 @@ import {
   type RunRecord,
   type ServerConfig,
   type WebControlCommand,
-  type WebGraphSelection,
   type WorkflowFileEntry,
   type WorkflowVisualizationResult,
   type WorkflowVisualizationSource,
@@ -190,8 +189,7 @@ function RuntimePage({
   const queryClient = useQueryClient();
   const { toasts, push, dismiss } = useToasts();
   const selectedNode = selectedTarget?.kind === "node" ? selectedTarget.node : undefined;
-  const selectedNodeId = selectedNode?.nodeId;
-  const selectedNodeContext = selectedNode?.context ?? [];
+  const selectedNodeTarget = selectedNode?.target;
   const snapshot = useQuery({
     queryKey: ["run-runtime-snapshot", runId],
     queryFn: () => getRunRuntimeSnapshot(runId!),
@@ -199,9 +197,9 @@ function RuntimePage({
     refetchInterval: query => isTerminalRunStatus((query.state.data as RunRuntimeSnapshot | undefined)?.run.status) ? false : 1_000,
   });
   const inspection = useQuery({
-    queryKey: ["node-inspection", runId, selectedNodeId, selectedNodeContext],
-    queryFn: () => getNodeInspection(runId!, selectedNodeId!, selectedNodeContext),
-    enabled: Boolean(runId && selectedNodeId),
+    queryKey: ["node-inspection", runId, selectedNodeTarget],
+    queryFn: () => getNodeInspection(runId!, selectedNodeTarget!),
+    enabled: Boolean(runId && selectedNodeTarget),
     refetchInterval: nodeInspectionRefetchInterval(snapshot.data?.run.status),
   });
   const selectedCancelTarget = selectedNode
@@ -294,7 +292,7 @@ function RuntimePage({
           <RuntimeWorkflowInspector run={runDetails} />
         ) : (
           <>
-            <Inspector runId={runId} target={selectedNodeId} context={selectedNodeContext} definition={selectedNode?.detail} inspection={inspection.data} loading={inspection.isLoading} />
+            <Inspector runId={runId} target={selectedNodeTarget} definition={selectedNode?.detail} inspection={inspection.data} loading={inspection.isLoading} />
             {signalWait && (
               <SignalBox
                 wait={signalWait}
@@ -883,15 +881,15 @@ export function retryCommandTarget(
 export function commandForControl(
   controlId: RunControlId,
   retryTarget: string | undefined,
-  selectedNodeId: string | null | undefined,
+  selectedCancelTarget: string | null | undefined,
 ): Exclude<WebControlCommand, { type: "signal" }> | undefined {
   if (controlId === "retry") {
     return retryTarget?.trim() ? { type: "retry", target: retryTarget } : undefined;
   }
-  if (controlId === "cancel" && selectedNodeId === null) return undefined;
-  if (controlId === "cancel" && selectedNodeId === undefined) return { type: "cancel" };
+  if (controlId === "cancel" && selectedCancelTarget === null) return undefined;
+  if (controlId === "cancel" && selectedCancelTarget === undefined) return { type: "cancel" };
   if (controlId === "cancel") {
-    return selectedNodeId?.trim() ? { type: "cancel", target: selectedNodeId } : undefined;
+    return selectedCancelTarget?.trim() ? { type: "cancel", target: selectedCancelTarget } : undefined;
   }
   return { type: controlId };
 }
@@ -984,14 +982,12 @@ function ConfirmDialog({
 function Inspector({
   runId,
   target,
-  context,
   definition,
   inspection,
   loading,
 }: {
   runId: string | undefined;
   target: string | undefined;
-  context: WebGraphSelection[];
   definition: NodeDetail | undefined;
   inspection: NodeInspection | undefined;
   loading: boolean;
@@ -1092,7 +1088,7 @@ function Inspector({
 
         {hasExecution && (
         <InspectorTabPanel id="execution">
-          {runId && target && <AgentExecutionTab runId={runId} target={target} context={context} active={activeTab === "execution"} />}
+          {runId && target && <AgentExecutionTab runId={runId} target={target} active={activeTab === "execution"} />}
         </InspectorTabPanel>
         )}
       </Tabs>
@@ -1190,10 +1186,10 @@ function ArtifactPreviewBlock({ runId, artifactId, mediaType }: { runId: string;
   return <StateBlock tone="empty" title="Preview unavailable" detail={`Preview is not available for ${effectiveMediaType}.`} />;
 }
 
-function AgentExecutionTab({ runId, target, context, active }: { runId: string; target: string; context: WebGraphSelection[]; active: boolean }) {
+export function AgentExecutionTab({ runId, target, active }: { runId: string; target: string; active: boolean }) {
   const execution = useQuery({
-    queryKey: ["node-execution", runId, target, context],
-    queryFn: () => getNodeExecutionInspection(runId, target, context),
+    queryKey: ["node-execution", runId, target],
+    queryFn: () => getNodeExecutionInspection(runId, target),
     enabled: active,
     refetchInterval: query => agentExecutionRefetchInterval(
       active,
@@ -1214,19 +1210,25 @@ function AgentExecutionTab({ runId, target, context, active }: { runId: string; 
         {data.summary.turnCount !== undefined && <KeyValue label="Turns" value={String(data.summary.turnCount)} />}
         {data.summary.message && <KeyValue label="Message" value={data.summary.message} />}
       </InspectorSection>
-      <InspectorSection title="Context Window">
-        {data.contextWindow ? <ContextWindowMeter context={data.contextWindow} /> : <StateBlock tone="empty" title="No context window data" detail="The selected agent attempt did not report context usage." />}
-      </InspectorSection>
-      <InspectorSection title="Token Usage">
-        {data.tokenUsage ? <TokenUsageMetrics usage={data.tokenUsage} /> : <StateBlock tone="empty" title="No token usage" detail="The selected agent attempt did not report token usage." />}
-      </InspectorSection>
-      <InspectorSection title="Output Stream">
-        {data.output ? <TextArtifactPreview value={data.output.tail} label={progressOutputLabel(data.output)} /> : <StateBlock tone="empty" title="No streamed output" detail="The selected agent attempt did not report streamed output." />}
-      </InspectorSection>
-      <InspectorSection title="Last Tool Calls">
-        {data.lastToolCalls.length > 0
-          ? <ToolCallList calls={data.lastToolCalls} total={data.toolCallCount} incomplete={data.recentToolsIncomplete} />
-          : <StateBlock tone="empty" {...toolCallEmptyState(data.recentToolsIncomplete)} />}
+      {data.contextWindow && (
+        <InspectorSection title="Context Window">
+          <ContextWindowMeter context={data.contextWindow} />
+        </InspectorSection>
+      )}
+      {data.tokenUsage && (
+        <InspectorSection title="Token Usage">
+          <TokenUsageMetrics usage={data.tokenUsage} />
+        </InspectorSection>
+      )}
+      {data.output && (
+        <InspectorSection title="Output Stream">
+          <TextArtifactPreview value={data.output.tail} label={progressOutputLabel(data.output)} />
+        </InspectorSection>
+      )}
+      <InspectorSection title="Recent observed tools">
+        {data.recentTools.length > 0
+          ? <ToolCallList calls={data.recentTools} />
+          : <StateBlock tone="empty" title="No retained tool observations" detail="No retained tool observations are available for this agent." />}
       </InspectorSection>
     </div>
   );
@@ -1273,19 +1275,9 @@ function Metric({ label, value }: { label: string; value: number | string | unde
   );
 }
 
-function ToolCallList({
-  calls,
-  total,
-  incomplete,
-}: {
-  calls: NodeExecutionInspection["lastToolCalls"];
-  total: number | undefined;
-  incomplete: boolean;
-}) {
-  const summary = toolCallHistorySummary(calls.length, total, incomplete);
+function ToolCallList({ calls }: { calls: NodeExecutionInspection["recentTools"] }) {
   return (
     <div className="tool-call-stack">
-      {summary && <span className="tool-call-summary">{summary}</span>}
       {calls.map((call, index) => (
         <div key={`${call.turn}-${call.toolCallId ?? index}`} className="tool-call-row">
           <div className="tool-call-head">
@@ -1535,27 +1527,6 @@ export function agentExecutionRefetchInterval(
     || status === "running"
     || status === "awaiting"
   ) ? 2_500 : false;
-}
-
-export function toolCallEmptyState(incomplete: boolean): { title: string; detail: string } {
-  return incomplete
-    ? {
-      title: "Recent tool details incomplete",
-      detail: "No recent tool-call details were retained; earlier tool calls may be unavailable.",
-    }
-    : {
-      title: "No tool calls",
-      detail: "No tool calls were recorded for the selected agent attempt.",
-    };
-}
-
-export function toolCallHistorySummary(
-  count: number,
-  total: number | undefined,
-  incomplete: boolean,
-): string | undefined {
-  const retained = total === undefined ? `${count} recent` : `Last ${count} of ${total}`;
-  return incomplete ? `${retained} · retained details incomplete` : total === undefined ? undefined : retained;
 }
 
 function runStatusIcon(status: string) {

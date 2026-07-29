@@ -70,6 +70,7 @@ function staticGraphNode(node: OverlayNode): WebGraphNode {
   return {
     id: node.nodeId,
     nodeId: node.nodeId,
+    target: node.target,
     kind: node.kind,
     label: node.nodeId,
     path: node.path,
@@ -375,6 +376,7 @@ function graphRuntimeStates(
 function stateForFrame(targetId: string, frame: OverlayFrame): WebGraphRuntimeState {
   return {
     targetId,
+    target: frame.target,
     status: frame.status,
     context: runtimeSelections(frame.instancePath),
   };
@@ -383,6 +385,7 @@ function stateForFrame(targetId: string, frame: OverlayFrame): WebGraphRuntimeSt
 function stateForInstance(targetId: string, instance: OverlayInstance): WebGraphRuntimeState {
   return {
     targetId,
+    target: instance.target,
     status: instance.status,
     context: runtimeSelections(instance.instancePath),
   };
@@ -395,6 +398,7 @@ function stateForSignalWait(
 ): WebGraphRuntimeState {
   return {
     targetId,
+    target: wait.target,
     status: wait.status,
     context: runtimeSelections(instancePath),
   };
@@ -498,6 +502,7 @@ function staticOverlay(overlay: WorkflowVisualizationOverlay): WorkflowVisualiza
     },
     nodes: overlay.nodes.map(node => ({
       nodeId: node.nodeId,
+      target: node.target,
       kind: node.kind,
       path: node.path,
       ...(node.parentNodeId === undefined ? {} : { parentNodeId: node.parentNodeId }),

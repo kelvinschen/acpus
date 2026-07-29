@@ -2,12 +2,20 @@
 
 import * as React from "react";
 import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentOverview } from "../src/client/ui/App.js";
+import { AgentExecutionTab, AgentOverview } from "../src/client/ui/App.js";
 import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/client/ui/Inspector.js";
 import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
 import { installReactActEnvironment } from "./support/react-act-environment.js";
+
+const api = vi.hoisted(() => ({ getNodeExecutionInspection: vi.fn() }));
+
+vi.mock("../src/client/api.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/client/api.js")>(),
+  getNodeExecutionInspection: api.getNodeExecutionInspection,
+}));
 
 type Target = { id: string };
 type Presence = ReturnType<typeof useInspectorPresence<Target>>;
@@ -18,6 +26,7 @@ const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard"
 let container: HTMLDivElement;
 let root: Root | undefined;
 let presence: Presence | undefined;
+let queryClient: QueryClient | undefined;
 let restoreReactActEnvironment = () => {};
 
 function PresenceHarness({ target, onExited }: { target: Target | undefined; onExited(): void }) {
@@ -69,10 +78,14 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   presence = undefined;
+  queryClient = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
+  api.getNodeExecutionInspection.mockReset();
 });
 
 afterEach(async () => {
   await unmount();
+  queryClient?.clear();
+  queryClient = undefined;
   container.remove();
   vi.clearAllTimers();
   vi.useRealTimers();
@@ -156,6 +169,28 @@ describe("Inspector primitives", () => {
       "Last observed2s ago",
     ]);
     expect(container.textContent).not.toContain("command");
+  });
+
+  it("omits unavailable Observation-only execution sections", async () => {
+    api.getNodeExecutionInspection.mockResolvedValue({
+      available: true,
+      summary: { status: "completed" },
+      recentTools: [],
+    });
+    await render(React.createElement(
+      QueryClientProvider,
+      { client: queryClient! },
+      React.createElement(AgentExecutionTab, { runId: "run_1", target: "@1a2b3c4d5e6f", active: true }),
+    ));
+    await vi.waitFor(() => expect(container.querySelectorAll("h3")).toHaveLength(2));
+
+    expect([...container.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual([
+      "Summary",
+      "Recent observed tools",
+    ]);
+    expect(container.textContent).not.toContain("No context window data");
+    expect(container.textContent).not.toContain("No token usage");
+    expect(container.textContent).not.toContain("No streamed output");
   });
 
   it("keeps dialog, heading, key-value, Escape, and cleanup behavior", async () => {

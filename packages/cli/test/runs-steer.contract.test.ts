@@ -1,18 +1,25 @@
 import { Readable } from "node:stream";
-import { okAsync } from "neverthrow";
+import { errAsync, ok, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RunInspectionCandidatesDocument } from "@acpus/runtime";
 import { createRunsCommand } from "../src/commands/runs.js";
+import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const daemon = vi.hoisted(() => ({
   sendDaemonControl: vi.fn(),
   daemonControlRequestId: vi.fn(),
 }));
+const runtime = vi.hoisted(() => ({ inspectTarget: vi.fn() }));
 
 vi.mock("../src/commands/daemon.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/commands/daemon.js")>(),
   sendDaemonControl: daemon.sendDaemonControl,
   daemonControlRequestId: daemon.daemonControlRequestId,
+}));
+vi.mock("@acpus/runtime", async importOriginal => ({
+  ...await importOriginal<typeof import("@acpus/runtime")>(),
+  inspectTarget: runtime.inspectTarget,
 }));
 
 const run = {
@@ -39,21 +46,22 @@ describe("runs steer", () => {
       state: "applied",
       run,
       steerId: "cli:steer-1",
-      requestedTarget: "review",
+      requestedTarget: "@1a2b3c4d5e6f",
       target: "review~abc",
       fencedAttemptId: "attempt_1",
       continuation: "queued",
     }));
+    runtime.inspectTarget.mockReset();
   });
 
   it("sends the exact correction and emits a redacted JSON receipt", async () => {
-    const result = await runCommand(["steer", "run_1", "--target", "review", "--instruction", "SECRET correction", "--json"]);
+    const result = await runCommand(["steer", "run_1", "--target", "@1a2b3c4d5e6f", "--instruction", "SECRET correction", "--json"]);
 
     expect(daemon.sendDaemonControl).toHaveBeenCalledWith("/workspace", {
       requestId: "cli:steer-1",
       type: "steer",
       runId: "run_1",
-      target: "review",
+      target: "@1a2b3c4d5e6f",
       instruction: "SECRET correction",
     });
     expect(result.exitCode).toBe(0);
@@ -67,25 +75,26 @@ describe("runs steer", () => {
         state: "applied",
         runId: "run_1",
         steerId: "cli:steer-1",
-        requestedTarget: "review",
-        target: "review~abc",
-        fencedAttemptId: "attempt_1",
+        target: "@1a2b3c4d5e6f",
         continuation: "queued",
       },
     });
     expect(result.stdout).not.toContain("SECRET correction");
+    expect(result.stdout).not.toContain("review~abc");
+    expect(result.stdout).not.toContain("attempt_1");
     expect(result.stderr).toBe("");
   });
 
-  it("renders the resolved target in the follow command without echoing the instruction", async () => {
-    const result = await runCommand(["steer", "run_1", "--target", "review", "--instruction", "SECRET correction"]);
+  it("renders the requested short ref in the follow command without echoing the instruction", async () => {
+    const result = await runCommand(["steer", "run_1", "--target", "@1a2b3c4d5e6f", "--instruction", "SECRET correction"]);
 
     expect(result.stdout).toContain("Steer: cli:steer-1");
-    expect(result.stdout).toContain("Target: review → review~abc");
-    expect(result.stdout).toContain("Fenced attempt: attempt_1");
+    expect(result.stdout).toContain("Target: @1a2b3c4d5e6f");
     expect(result.stdout).toContain("Continuation: queued");
-    expect(result.stdout).toContain("Next: acpus runs inspect run_1 --target review~abc --follow");
+    expect(result.stdout).toContain("Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --follow");
     expect(result.stdout).not.toContain("SECRET correction");
+    expect(result.stdout).not.toContain("review~abc");
+    expect(result.stdout).not.toContain("attempt_1");
   });
 
   it("rejects blank targets and instructions before contacting the daemon", async () => {
@@ -98,6 +107,77 @@ describe("runs steer", () => {
       result: { ok: false, phase: "usage" },
     });
     expect(daemon.sendDaemonControl).not.toHaveBeenCalled();
+  });
+
+  it("renders a short-ref candidate view instead of daemon candidate keys for an ambiguous control", async () => {
+    daemon.sendDaemonControl.mockReturnValue(errAsync({
+      type: "control-failed",
+      code: "RUN_NOT_CONTROLLABLE",
+      controlType: "retry",
+      runId: "run_1",
+      run: undefined,
+      cause: {
+        type: "rejected",
+        code: "RUN_NOT_CONTROLLABLE",
+        ambiguity: true,
+        message: "Scheduler retry target 'review' is ambiguous. Candidate target keys: review~one, review~two.",
+      },
+      message: "Control 'retry' for run 'run_1' failed with RUN_NOT_CONTROLLABLE: Scheduler retry target 'review' is ambiguous. Candidate target keys: review~one, review~two.",
+    }));
+    runtime.inspectTarget.mockResolvedValue(ok(candidates()));
+
+    const text = await runCliCommand(["runs", "retry", "run_1", "--target", "review"]);
+    expect(text.exitCode).toBe(1);
+    expect(text.stderr).toContain("@1a2b3c4d5e6f");
+    expect(text.stderr).toContain("Select: acpus runs inspect run_1 --target @ref");
+    expect(text.stderr).toContain("Select one @ref from the candidate view.");
+    expect(text.stderr).not.toContain("review~one");
+    expect(text.stderr).not.toContain("review~two");
+
+    const json = await runCliCommand(["runs", "retry", "run_1", "--target", "review", "--json"]);
+    expect(json.exitCode).toBe(1);
+    expect(json.stderr).toBe("");
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      phase: "control",
+      inspectionError: {
+        type: "target-ambiguous",
+        target: "review",
+        candidates: {
+          kind: "candidates",
+          candidates: {
+            entries: [
+              { ref: "@1a2b3c4d5e6f" },
+              { ref: "@6f5e4d3c2b1a" },
+            ],
+          },
+        },
+      },
+    });
+    expect(json.stdout).not.toContain("review~one");
+    expect(json.stdout).not.toContain("review~two");
+  });
+
+  it("preserves a non-ambiguous daemon failure without querying candidates", async () => {
+    daemon.sendDaemonControl.mockReturnValue(errAsync({
+      type: "control-failed",
+      code: "EXECUTION_UNAVAILABLE",
+      controlType: "retry",
+      runId: "run_1",
+      run: undefined,
+      cause: {
+        type: "rejected",
+        code: "EXECUTION_UNAVAILABLE",
+        message: "Daemon is restarting.",
+      },
+      message: "Control 'retry' for run 'run_1' failed with EXECUTION_UNAVAILABLE: Daemon is restarting.",
+    }));
+
+    const result = await runCliCommand(["runs", "retry", "run_1", "--target", "review"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Daemon is restarting.");
+    expect(result.stderr).not.toContain("Select: acpus runs inspect");
+    expect(runtime.inspectTarget).not.toHaveBeenCalled();
   });
 });
 
@@ -114,4 +194,42 @@ async function runCommand(argv: string[]): Promise<{ exitCode: number; stdout: s
   });
   await command.parseAsync(argv, { from: "user" });
   return { exitCode, stdout: stdout.text, stderr: stderr.text };
+}
+
+async function runCliCommand(argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runCli(argv, {
+    cwd: "/workspace",
+    stdin: Readable.from([]),
+    stdout,
+    stderr,
+  });
+  return { exitCode, stdout: stdout.text, stderr: stderr.text };
+}
+
+function candidates(): RunInspectionCandidatesDocument {
+  return {
+    schemaVersion: 2,
+    kind: "candidates",
+    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+    target: "review",
+    candidates: {
+      entries: [{
+        ref: "@1a2b3c4d5e6f",
+        status: "running",
+        breadcrumb: "batch[0] › review",
+        kind: "dynamic-node",
+      }, {
+        ref: "@6f5e4d3c2b1a",
+        status: "completed",
+        breadcrumb: "batch[1] › review",
+        kind: "dynamic-node",
+      }],
+      page: 1,
+      limit: 12,
+      total: 2,
+      hasMore: false,
+    },
+  };
 }

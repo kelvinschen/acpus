@@ -1,6 +1,7 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -293,6 +294,83 @@ describe("scheduler store attempts, retry, and result commits", () => {
       }
     });
   });
+
+  it.each(["retry", "cancel"] as const)(
+    "revalidates a %s occurrence ref inside the SQLite mutation transaction",
+    async control => {
+      await withRuntimeWorkspace(`scheduler-store-${control}-occurrence-ref-transaction`, async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+        const store = await openRuntimeStore(workspace);
+        try {
+          const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+          const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+          const path = [{ kind: "node" as const, nodeId: "require_ready" }];
+          const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+          throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
+            runId: run.id,
+            expectedVersion: snapshot.version,
+            ownerEpoch: claim.ownerEpoch,
+            idempotencyKey: `${control}:occurrence-ref-state`,
+            events: [
+              { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
+              {
+                type: "instance.ready",
+                payload: {
+                  runId: run.id,
+                  nodeKey: "require_ready~1",
+                  nodeId: "require_ready",
+                  parentFrameKey: "root",
+                  instancePath: path,
+                  readinessSequence: 1,
+                },
+              },
+              ...(control === "retry"
+                ? [
+                    {
+                      type: "instance.failed" as const,
+                      payload: {
+                        nodeKey: "require_ready~1",
+                        error: { reason: "boom" },
+                        statusReason: "terminal",
+                      },
+                    },
+                    {
+                      type: "frame.failed" as const,
+                      payload: { frameKey: "root", error: { reason: "boom" } },
+                    },
+                  ]
+                : []),
+            ],
+          });
+
+          const db = (store.scheduler as unknown as { db: DatabaseSync }).db;
+          const transactionStates: boolean[] = [];
+          const resolveOccurrenceRef = occurrenceRefs.resolveOccurrenceRef;
+          const resolveSpy = vi.spyOn(occurrenceRefs, "resolveOccurrenceRef").mockImplementation((...args) => {
+            transactionStates.push(db.isTransaction);
+            return resolveOccurrenceRef(...args);
+          });
+          try {
+            const input = {
+              runId: run.id,
+              target: occurrenceRefs.deriveOccurrenceRef(path),
+              ownerEpoch: claim.ownerEpoch,
+              idempotencyKey: `${control}:occurrence-ref-control`,
+            };
+            const result = control === "retry"
+              ? store.scheduler.tryRetry(input)
+              : store.scheduler.tryCancel(input);
+            expect(result.isOk()).toBe(true);
+            expect(transactionStates).toContain(true);
+          } finally {
+            resolveSpy.mockRestore();
+          }
+        } finally {
+          store.close();
+        }
+      });
+    },
+  );
 
   it("retries failed composite frames through scheduler events", async () => {
     await withRuntimeWorkspace("scheduler-store-frame-retry", async workspace => {

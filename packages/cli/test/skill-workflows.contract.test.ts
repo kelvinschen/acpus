@@ -10,7 +10,6 @@ import {
   skillLibraryWorkflowPath,
   skillReferencePath,
   skillWorkflowExamples,
-  skillWorkflowLibrary,
 } from "./support/skill-workflow-examples.js";
 
 // Bloat ceiling with headroom: keep the default authoring route small enough to
@@ -69,10 +68,6 @@ describe("skill workflow contracts", () => {
     expect(skill).toContain("/wf:");
     expect(skill).toContain("/workflow:");
     expect(authoringReferences.every(reference => !reference.includes("../workflows/library/"))).toBe(true);
-    for (const workflow of skillWorkflowLibrary) {
-      expect(libraryReadmeCell(skill, workflow.directory), workflow.directory)
-        .toBe(`\`workflows/library/${workflow.directory}/README.md\``);
-    }
   });
 
   it("prepares deep-research and keeps its documented inputs aligned", async () => {
@@ -187,12 +182,6 @@ function documentedInputNames(markdown: string): string[] {
   const nextHeading = markdown.indexOf("\n## ", bodyStart);
   const section = markdown.slice(bodyStart, nextHeading < 0 ? undefined : nextHeading);
   return [...section.matchAll(/^- `([^`]+)`/gmu)].map(match => match[1]!);
-}
-
-function libraryReadmeCell(skill: string, directory: string): string | undefined {
-  const row = skill.split("\n").find(line => line.trimStart().startsWith(`| \`${directory}\``));
-  if (row === undefined) return undefined;
-  return row.split("|").map(cell => cell.trim())[3];
 }
 
 function uniqueNode(ir: WorkflowIR, id: string): NodeVisit {

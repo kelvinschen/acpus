@@ -4,42 +4,53 @@ import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type {
   ArtifactRecord,
   RunDetails,
-  RunDynamicAttempt,
-  RunDynamicFrame,
-  RunDynamicNodeInstance,
-  RunDynamicSignalWait,
-  RunExecutionMetadata,
   RunForkInfo,
-  RunNodeProgress,
   RunStatus,
 } from "../store/store.js";
 
-export type RunInspectionContext = Array<
-  | { kind: "fanout"; nodeId: string; itemIndex: number }
-  | { kind: "loop"; nodeId: string; iteration: number }
->;
+/** Agent-facing inspection jobs. Each job owns only the inputs it needs. */
+export type InspectRunQuery = {
+  runId: string;
+  includeAllTopology?: boolean;
+  includeControls?: boolean;
+};
 
-export type RunInspectionQuery =
-  | { runId: string; mode: "overview" }
-  | { runId: string; mode: "all" }
-  | { runId: string; mode: "target"; target: string; context?: RunInspectionContext; view?: "summary" }
-  | {
-      runId: string;
-      mode: "timeline";
-      target: string;
-      context?: RunInspectionContext;
-      page?: { limit?: number; before?: string };
-    }
-  | { runId: string; mode: "details"; target: string; context?: RunInspectionContext }
-  | { runId: string; mode: "execution"; target: string; context?: RunInspectionContext }
-  | { runId: string; mode: "raw" };
+export type InspectTargetQuery = {
+  runId: string;
+  target: string;
+  includeAllTopology?: boolean;
+  includeControls?: boolean;
+  page?: number;
+  limit?: number;
+};
 
-export type FollowRunInspectionQuery = (
-  | Extract<RunInspectionQuery, { mode: "overview" | "all" }>
-  | Extract<RunInspectionQuery, { mode: "target" }>
-  | Extract<RunInspectionQuery, { mode: "timeline" }>
-) & {
-  intervalMs?: number;
+export type InspectTimelineQuery = {
+  runId: string;
+  target: string;
+  page?: number;
+  limit?: number;
+};
+
+export type InspectEvidenceQuery = {
+  runId: string;
+  target: string;
+  page?: number;
+  limit?: number;
+};
+
+export type InspectRawQuery = { runId: string };
+
+export type InspectNodeQuery = { runId: string; target: string };
+export type InspectAgentExecutionQuery = { runId: string; target: string };
+export type InspectTargetArtifactsQuery = { runId: string; target: string };
+
+export type WatchInspectionView =
+  | { kind: "run"; runId: string; includeAllTopology?: boolean; includeControls?: boolean }
+  | { kind: "target"; runId: string; target: string; includeAllTopology?: boolean; includeControls?: boolean }
+  | { kind: "timeline"; runId: string; target: string; limit?: number };
+
+export type WatchInspectionQuery = {
+  view: WatchInspectionView;
   signal?: AbortSignal;
 };
 
@@ -134,13 +145,6 @@ export type AgentInspectionState = {
     thoughtTokens?: number;
     totalTokens?: number;
   };
-  tools?: {
-    totalCallCount: number;
-    recent: Array<{
-      command: string;
-      status?: string;
-    }>;
-  };
   stopReason?: string;
 };
 
@@ -179,6 +183,7 @@ export type RunInspectionItem<AgentState extends { key: string } = AgentDecision
   kind: string;
   status: RunInspectionStatus;
   nodeId?: string;
+  ref?: string;
   nodeKey?: string;
   frameKey?: string;
   attemptId?: string;
@@ -216,11 +221,10 @@ export type RunInspectionItem<AgentState extends { key: string } = AgentDecision
 };
 
 export type RunInspectionOverviewAction =
-  | { kind: "inspect-all"; omitted: number }
-  | { kind: "inspect-target"; target: string; itemKey: string }
   | { kind: "signal"; target: string; itemKey: string; schemaSummary?: string }
   | { kind: "retry"; target: string; itemKey: string }
-  | { kind: "fork"; itemKey?: string };
+  | { kind: "cancel"; target?: string; itemKey?: string }
+  | { kind: "steer"; target: string; itemKey: string };
 
 export type RunInspectionAction =
   | { kind: "inspect-timeline"; target: string }
@@ -228,17 +232,7 @@ export type RunInspectionAction =
   | { kind: "steer"; target: string }
   | { kind: "signal"; target: string; schemaSummary?: string }
   | { kind: "retry"; target?: string }
-  | { kind: "fork"; target?: string };
-
-export type RunInspectionOmitted = {
-  reason: "context-limit";
-  limit: number;
-  dynamicContexts: number;
-  counts: RunInspectionStatusCounts;
-  agentProgress?: {
-    tracked: number;
-  };
-};
+  | { kind: "cancel"; target?: string };
 
 export type RunInspectionStaticNode = {
   nodeId: string;
@@ -259,14 +253,50 @@ export type RunInspectionSnapshot = {
   counts: RunInspectionStatusCounts;
   items: RunInspectionItem[];
   availableActions: RunInspectionOverviewAction[];
-  omitted?: RunInspectionOmitted;
   hooks?: RunDetails["hooks"];
   output?: JsonValue;
+  all?: true;
+  scope?: {
+    ref: string;
+  };
 };
 
 export type RunInspectionTarget = {
   kind: "static-node" | "dynamic-node" | "frame" | "attempt";
   id: string;
+  ref?: string;
+};
+
+export type RunInspectionCandidate = {
+  ref: string;
+  status: RunInspectionStatus;
+  breadcrumb: string;
+  kind: "dynamic-node" | "frame";
+  nodeId?: string;
+};
+
+export type InspectTargetResult =
+  | RunInspectionTargetSummaryDocument
+  | RunInspectionCandidatesDocument
+  | RunInspectionSnapshot;
+
+export type RunInspectionCandidatesDocument = {
+  schemaVersion: 2;
+  kind: "candidates";
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  target: string;
+  candidates: {
+    entries: RunInspectionCandidate[];
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+    nextPage?: number;
+  };
 };
 
 export type RunInspectionTargetSummary = {
@@ -319,37 +349,41 @@ export type RunInspectionTargetSummary = {
   artifacts: ArtifactRecord[];
 };
 
-export type RunInspectionControl = {
-  type: "retry" | "cancel";
-  target: string;
+export type RunInspectionControl =
+  | { type: "retry" | "steer"; target: string }
+  | { type: "cancel"; target?: string };
+
+/** Web's one-target read. The resolved dossier remains private to Runtime. */
+export type RunInspectionNodeDocument = {
+  schemaVersion: 2;
+  kind: "node";
+  run: RunInspectionRunSummary;
+  subject: RunInspectionSubject;
+  summary: RunInspectionTargetSummary;
+  availableControls: RunInspectionControl[];
+  artifacts: ArtifactRecord[];
 };
 
-export type RunInspectionTargetDetailsDocument = {
+/** CLI's one-target artifact read. */
+export type RunInspectionTargetArtifactsDocument = {
   schemaVersion: 2;
-  kind: "details";
-  run: RunInspectionRunSummary;
-  target: RunInspectionTarget;
-  staticNode?: RunInspectionStaticNode;
-  summary: RunInspectionTargetSummary;
-  items: RunInspectionItem<AgentInspectionState>[];
-  instances: RunDynamicNodeInstance[];
-  frames: RunDynamicFrame[];
-  attempts: RunDynamicAttempt[];
-  signalWaits: RunDynamicSignalWait[];
-  executionMetadata: RunExecutionMetadata[];
-  progress: RunNodeProgress[];
+  kind: "artifacts";
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  subject: RunInspectionSubject;
   artifacts: ArtifactRecord[];
-  availableControls: RunInspectionControl[];
 };
 
 export type RunInspectionSubject = {
   targetKind: "static-node" | "dynamic-node" | "frame" | "attempt";
   id: string;
+  ref?: string;
   label: string;
   kind: string;
   nodeId?: string;
-  nodeKey?: string;
-  attemptId?: string;
   attemptNo?: number;
 };
 
@@ -410,9 +444,8 @@ export type RunInspectionAgentExecutionDocument = ({
     totalBytes: number;
     truncated: boolean;
   };
-  toolCallCount?: number;
-  lastToolCalls: RunInspectionAgentExecutionToolCall[];
-  recentToolsIncomplete: boolean;
+  visibility?: RunInspectionVisibility;
+  recentTools: RunInspectionAgentExecutionToolCall[];
 };
 
 export type RunInspectionPulse = {
@@ -435,7 +468,7 @@ export type RunInspectionVisibility = {
     | "unrecognized-provider-activity";
 };
 
-export type AgentAttemptEvidenceCapsule = {
+type EvidenceMetadata = {
   directory: string;
   state: "recording" | "sealed" | "partial";
   completeness: "complete" | "degraded";
@@ -465,6 +498,56 @@ export type AgentAttemptEvidenceCapsule = {
   }>;
 };
 
+export type RunInspectionEvidenceRecord = EvidenceMetadata["records"][number];
+
+export type RunInspectionEvidenceDocument = {
+  schemaVersion: 2;
+  kind: "evidence";
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  subject: RunInspectionSubject;
+  visibility?: RunInspectionVisibility;
+  evidence: Omit<EvidenceMetadata, "records" | "omittedTurns"> & {
+    records: {
+      entries: RunInspectionEvidenceRecord[];
+      page: number;
+      limit: number;
+      total: number;
+      hasMore: boolean;
+      nextPage?: number;
+    };
+  };
+};
+
+export type RunInspectionEvidenceCandidate = {
+  target: string;
+  attemptNo: number;
+  status: RunInspectionStatus;
+  breadcrumb: string;
+};
+
+export type RunInspectionEvidenceCandidatesDocument = {
+  schemaVersion: 2;
+  kind: "evidence-candidates";
+  run: {
+    id: string;
+    status: RunStatus;
+    updatedAt: string;
+  };
+  target: string;
+  candidates: {
+    entries: RunInspectionEvidenceCandidate[];
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+    nextPage?: number;
+  };
+};
+
 export type RunInspectionTargetSummaryDocument = {
   schemaVersion: 2;
   kind: "target";
@@ -483,7 +566,6 @@ export type RunInspectionTargetSummaryDocument = {
     total: number;
     counts: RunInspectionStatusCounts;
   };
-  evidence?: AgentAttemptEvidenceCapsule;
 };
 
 export type RunInspectionExcerpt = {
@@ -540,31 +622,6 @@ export type RunInspectionCurrentActivity =
       schemaSummary?: string;
     };
 
-type CurrentActivityChanges<T, Stable extends keyof T> = Partial<{
-  [Key in Exclude<keyof T, Stable>]: T[Key] | null;
-}>;
-
-export type RunInspectionCurrentActivityPatch =
-  | {
-      kind: "agent";
-      attemptId: string;
-      attemptNo?: number;
-      turn?: number;
-      turnKind?: AgentCurrentActivity["turnKind"];
-      changes: CurrentActivityChanges<AgentCurrentActivity, "kind" | "attemptId" | "attemptNo" | "turn" | "turnKind">;
-    }
-  | {
-      kind: "task" | "composite";
-      changes: CurrentActivityChanges<
-        Extract<RunInspectionCurrentActivity, { kind: "task" | "composite" }>,
-        "kind"
-      >;
-    }
-  | {
-      kind: "signal";
-      changes: CurrentActivityChanges<Extract<RunInspectionCurrentActivity, { kind: "signal" }>, "kind">;
-    };
-
 export type RunInspectionTimelineEntry =
   | {
       id: string;
@@ -599,6 +656,22 @@ export type RunInspectionTimelineEntry =
     }
   | {
       id: string;
+      kind: "phase";
+      at: string;
+      attemptId?: string;
+      attemptNo?: number;
+      turn?: number;
+      phase: Exclude<RunInspectionCurrentActivity["phase"], "awaiting">;
+    }
+  | {
+      id: string;
+      kind: "visibility";
+      at: string;
+      state: "degraded" | "restored";
+      reason?: RunInspectionVisibility["reason"];
+    }
+  | {
+      id: string;
       kind: "gap";
       at: string;
       dropped: number;
@@ -619,10 +692,12 @@ export type RunInspectionTimelineDocument = {
   current?: RunInspectionCurrentActivity;
   recent: {
     entries: RunInspectionTimelineEntry[];
+    page: number;
+    limit: number;
     returned: number;
     omittedBefore: number;
     hasOlder: boolean;
-    olderCursor?: string;
+    olderPage?: number;
     retentionOmittedBefore?: number;
   };
 };
@@ -634,14 +709,6 @@ export type RunInspectionRaw = {
   workflow: WorkflowIR;
   artifacts: ArtifactRecord[];
 };
-
-export type RunInspectionDocument =
-  | RunInspectionSnapshot
-  | RunInspectionTargetSummaryDocument
-  | RunInspectionTimelineDocument
-  | RunInspectionTargetDetailsDocument
-  | RunInspectionAgentExecutionDocument
-  | RunInspectionRaw;
 
 export type RunInspectionChange = {
   sequence?: number;
@@ -682,100 +749,41 @@ export type RunInspectionChange = {
   };
 };
 
-export type RunInspectionPatch = {
-  upsertItems: RunInspectionItem[];
-  removeItemKeys: string[];
-  itemOrder?: string[];
-  counts?: RunInspectionStatusCounts;
-  availableActions?: RunInspectionOverviewAction[];
-  omitted?: RunInspectionOmitted | null;
-  hooks?: RunDetails["hooks"];
-};
-
-export type RunInspectionDelta =
-  | {
-      kind: "overview";
-      run: RunInspectionDecisionRunSummary;
-      changes: RunInspectionChange[];
-      patch: RunInspectionPatch;
-    }
-  | {
-      kind: "run";
-      run: { id: string; status: RunStatus; updatedAt: string };
-    }
-  | {
-      kind: "state";
-      state: RunInspectionTargetState;
-    }
-  | {
-      kind: "pulse";
-      pulse: RunInspectionPulse | null;
-    }
-  | {
-      kind: "attention";
-      attention: RunInspectionAttention | null;
-    }
-  | {
-      kind: "visibility";
-      visibility: RunInspectionVisibility | null;
-    }
-  | {
-      kind: "available-actions";
-      availableActions: RunInspectionAction[];
-    }
-  | {
-      kind: "current";
-      current: RunInspectionCurrentActivity | null;
-    }
-  | {
-      kind: "current-patch";
-      patch: RunInspectionCurrentActivityPatch;
-    }
-  | {
-      kind: "recent";
-      upsert: RunInspectionTimelineEntry[];
-      order: string[];
-      page: Omit<RunInspectionTimelineDocument["recent"], "entries">;
-    }
-  | {
-      kind: "evidence";
-      evidence: AgentAttemptEvidenceCapsule | null;
-    };
-
-export type FollowableInspectionDocument =
+type WatchInspectionDocument =
   | RunInspectionSnapshot
   | RunInspectionTargetSummaryDocument
   | RunInspectionTimelineDocument;
 
-export type RunInspectionEmission =
+export type WatchInspectionEmission =
   | {
       schemaVersion: 2;
-      kind: "snapshot";
-      document: FollowableInspectionDocument;
+      kind: "view";
+      document: WatchInspectionDocument;
     }
   | {
       schemaVersion: 2;
-      kind: "delta";
-      changes: RunInspectionDelta[];
-    }
-  | {
-      schemaVersion: 2;
-      kind: "resync";
-      reason: "cursor-gap" | "projection-drift";
-      document: FollowableInspectionDocument;
-    }
-  | {
-      schemaVersion: 2;
-      kind: "done";
-      run: { id: string; status: RunStatus };
-      output?: JsonValue;
+      kind: "timeline-entry";
+      entry: RunInspectionTimelineEntry;
     };
 
 export type RunInspectionError =
   | { type: "runtime-store-not-found"; message: string }
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "target-not-found"; runId: string; target: string; message: string }
-  | { type: "target-ambiguous"; runId: string; target: string; candidateKeys: string[]; message: string }
-  | { type: "invalid-cursor"; runId: string; target?: string; message: string }
+  | {
+      type: "target-ambiguous";
+      runId: string;
+      target: string;
+      candidates: RunInspectionCandidatesDocument;
+      message: string;
+    }
+  | { type: "target-ref-collision"; runId: string; target: string; candidateKeys: string[]; message: string }
   | { type: "invalid-query"; message: string }
+  | {
+      type: "inspection-sequence-discontinuity";
+      runId: string;
+      expected: number;
+      actual: number;
+      message: string;
+    }
   | { type: "inspection-read-failed"; runId: string; message: string; cause?: unknown };

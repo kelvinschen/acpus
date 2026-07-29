@@ -4,8 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { getRunInspection, getRunVisualizationSnapshot } from "@acpus/runtime";
+import { getRunVisualizationSnapshot, inspectNode, inspectTarget } from "@acpus/runtime";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
@@ -77,22 +78,20 @@ describe("scheduler targeted retry eligibility", () => {
       await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
         controls: { canCancelRun: false, retryTargets: [] },
       });
-      const details = await getRunInspection(workspace, {
+      const details = await inspectNode(workspace, {
         runId,
-        mode: "details",
         target: "target",
       });
-      expect(details.isOk() && details.value.kind === "details"
+      expect(details.isOk()
         ? details.value.availableControls
         : undefined).toEqual([]);
-      const summary = await getRunInspection(workspace, {
+      const summary = await inspectTarget(workspace, {
         runId,
-        mode: "target",
         target: "target",
       });
       expect(summary.isOk() && summary.value.kind === "target"
         ? summary.value.availableActions
-        : undefined).toEqual([{ kind: "fork", target: "target" }]);
+        : undefined).toEqual([{ kind: "inspect-timeline", target: deriveOccurrenceRef([]) }]);
     });
   });
 
@@ -106,6 +105,24 @@ describe("scheduler targeted retry eligibility", () => {
           retryTargets: [{ target: "target", kind: "node", nodeId: "target" }],
         },
       });
+      const summary = await inspectTarget(workspace, {
+        runId,
+        target: "target",
+      });
+      expect(summary.isOk() && summary.value.kind === "target"
+        ? summary.value.availableActions
+        : undefined).toEqual([{ kind: "inspect-timeline", target: deriveOccurrenceRef([]) }]);
+      const controls = await inspectTarget(workspace, {
+        runId,
+        target: "target",
+        includeControls: true,
+      });
+      expect(controls.isOk() && controls.value.kind === "target"
+        ? controls.value.availableActions
+        : undefined).toEqual([
+        { kind: "inspect-timeline", target: deriveOccurrenceRef([]) },
+        { kind: "retry", target: deriveOccurrenceRef([]) },
+      ]);
       const retry = store.scheduler.tryRetry({
         runId,
         ownerEpoch: claim.ownerEpoch,
@@ -174,12 +191,11 @@ describe("scheduler targeted retry eligibility", () => {
           ]),
         },
       });
-      const details = await getRunInspection(workspace, {
+      const details = await inspectNode(workspace, {
         runId,
-        mode: "details",
         target: targetKey,
       });
-      expect(details.isOk() && details.value.kind === "details"
+      expect(details.isOk()
         ? details.value.availableControls
         : undefined).toContainEqual({ type: "retry", target: targetKey });
 
@@ -213,21 +229,19 @@ describe("scheduler targeted retry eligibility", () => {
         { type: "attempt.started", payload: { runId, attemptId: "attempt_current", nodeKey: "require_ready", nodeId: "require_ready", attemptNo: 2, ownerEpoch: claim.ownerEpoch } },
       ]);
 
-      const historical = await getRunInspection(workspace, {
+      const historical = await inspectNode(workspace, {
         runId,
-        mode: "details",
         target: "attempt_old",
       });
-      expect(historical.isOk() && historical.value.kind === "details"
+      expect(historical.isOk()
         ? historical.value.availableControls
         : undefined).toEqual([]);
 
-      const current = await getRunInspection(workspace, {
+      const current = await inspectNode(workspace, {
         runId,
-        mode: "details",
         target: "attempt_current",
       });
-      expect(current.isOk() && current.value.kind === "details"
+      expect(current.isOk()
         ? current.value.availableControls
         : undefined).toEqual([{ type: "cancel", target: "require_ready" }]);
     });
@@ -255,14 +269,13 @@ describe("scheduler targeted retry eligibility", () => {
           },
         ]);
 
-        const details = await getRunInspection(workspace, {
+        const details = await inspectNode(workspace, {
           runId: run.id,
-          mode: "details",
           target: "root",
         });
-        expect(details.isOk() && details.value.kind === "details"
+        expect(details.isOk()
           ? {
-              target: details.value.target,
+              target: { kind: details.value.subject.targetKind, id: details.value.subject.id },
               availableControls: details.value.availableControls,
             }
           : undefined).toEqual({

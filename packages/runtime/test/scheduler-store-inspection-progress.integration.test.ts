@@ -1,7 +1,8 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
@@ -572,6 +573,61 @@ describe("scheduler store inspection, progress, and validation", () => {
         expect(terminal.isErr()).toBe(true);
         if (terminal.isOk()) throw new Error("expected terminal attempt failure");
         expect(terminal.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "cancelled" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("revalidates a Signal occurrence ref inside the store mutation", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-occurrence-ref", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        awaitingSignal(store, run.id, claim, "signal-ref:awaiting");
+        const ref = occurrenceRefs.deriveOccurrenceRef([{ kind: "node", nodeId: "approve" }]);
+        const input = {
+          runId: run.id,
+          nodeKey: "approve~1",
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "signal-ref:command",
+        };
+
+        const db = (store.scheduler as unknown as { db: DatabaseSync }).db;
+        const transactionStates: boolean[] = [];
+        const resolveOccurrenceRef = occurrenceRefs.resolveOccurrenceRef;
+        const resolveSpy = vi.spyOn(occurrenceRefs, "resolveOccurrenceRef").mockImplementation((...args) => {
+          transactionStates.push(db.isTransaction);
+          return resolveOccurrenceRef(...args);
+        });
+        try {
+          expect(store.scheduler.tryConsumeSignal({
+            ...input,
+            requestedTarget: `${ref}#1`,
+            idempotencyKey: "signal-ref:attempt",
+          })._unsafeUnwrapErr()).toMatchObject({
+            type: "signal-wait-not-found",
+            nodeKey: "approve~1",
+          });
+          expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id)
+            .projection.signalWaits["approve~1"]).toMatchObject({ status: "awaiting" });
+
+          const consumed = store.scheduler.tryConsumeSignal({
+            ...input,
+            requestedTarget: ref,
+            idempotencyKey: "signal-ref:consume",
+          })._unsafeUnwrap();
+          expect(consumed.projection.signalWaits["approve~1"]).toMatchObject({
+            status: "consumed",
+            payload: { ok: true },
+          });
+          expect(transactionStates).toContain(true);
+        } finally {
+          resolveSpy.mockRestore();
+        }
       } finally {
         store.close();
       }

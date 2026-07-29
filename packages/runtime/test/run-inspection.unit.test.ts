@@ -1,9 +1,61 @@
 import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExprIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
-import { progressChanges, projectRunInspection, semanticChanges } from "../src/inspection/projection.js";
+import {
+  projectRawInspection,
+  projectRunSnapshot,
+  projectTargetTopology,
+  resolveTargetState,
+  semanticChanges,
+} from "../src/inspection/projection.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
+import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
+import type { RunInspectionControl } from "../src/inspection/types.js";
 import type { ArtifactRecord, RunDetails, RunDynamicNodeInstance } from "../src/store/store.js";
+
+function snapshot(
+  ir: WorkflowIR,
+  run: RunDetails,
+  options: { all?: boolean; controls?: readonly RunInspectionControl[] } = {},
+) {
+  return projectRunSnapshot({
+    ir,
+    run,
+    ...(options.all ? { includeAllTopology: true } : {}),
+    ...(options.controls === undefined ? {} : { availableControls: options.controls }),
+  });
+}
+
+function targetState(
+  ir: WorkflowIR,
+  run: RunDetails,
+  target: string,
+  artifacts: ArtifactRecord[] = [],
+  controls: readonly RunInspectionControl[] = [],
+): ResolvedTargetState {
+  const state = resolveTargetState({ ir, run, target, artifacts, availableControls: controls });
+  if (!state) throw new Error(`Expected target '${target}' to resolve.`);
+  return state;
+}
+
+function rawInspection(ir: WorkflowIR, run: RunDetails, artifacts: ArtifactRecord[] = []) {
+  return projectRawInspection({ ir, run, artifacts });
+}
+
+function scopedTopology(
+  ir: WorkflowIR,
+  run: RunDetails,
+  target: string,
+  controls: readonly RunInspectionControl[] = [],
+) {
+  return projectTargetTopology({
+    ir,
+    run,
+    target,
+    ...(controls.length === 0 ? {} : { includeControls: true, availableControls: controls }),
+  });
+}
 
 describe("run inspection projection", () => {
   it("shows one complete authored Task input without duplicating it in static topology", () => {
@@ -14,20 +66,13 @@ describe("run inspection projection", () => {
     const run = repeatedAgentRun(0);
     run.name = ir.name;
 
-    const details = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "details", target: "work" },
-    });
+    const details = targetState(ir, run, "work");
 
     expect(details).toMatchObject({
-      kind: "details",
       summary: {
         input: { kind: "authored", value: "[\"raw\", 2]" },
       },
     });
-    if (details?.kind !== "details") throw new Error("expected details");
     expect(details.staticNode).not.toHaveProperty("input");
   });
 
@@ -54,29 +99,13 @@ describe("run inspection projection", () => {
       createdAt: "2026-07-01T00:00:02.000Z",
     }];
 
-    const details = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "details", target: "work~0" },
-    });
+    const details = targetState(ir, run, "work~0");
 
     expect(details).toMatchObject({
-      kind: "details",
       summary: {
         input: { kind: "runtime", value: ["runtime", 2] },
       },
     });
-  });
-
-  it("leaves execution queries to the dedicated exact-attempt projection", () => {
-    const run = repeatedAgentRun(1);
-    expect(projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "execution", target: "review~0" },
-    })).toBeUndefined();
   });
 
   it("selects the latest dynamic-node attempt by attempt number before timestamps", () => {
@@ -90,15 +119,9 @@ describe("run inspection projection", () => {
       startedAt: "2026-06-30T23:59:59.000Z",
     });
 
-    const details = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "details", target: "review~0" },
-    });
+    const details = targetState(compositeWorkflow(), run, "review~0");
 
     expect(details).toMatchObject({
-      kind: "details",
       summary: {
         latestAttempt: {
           attemptId: "attempt-retry",
@@ -108,32 +131,20 @@ describe("run inspection projection", () => {
     });
   });
 
-  it("bounds repeated composite contexts while preserving structure, counts, and agent status", () => {
+  it("keeps every repeated composite context in the default tree", () => {
     const run = repeatedAgentRun(25);
-    const overview = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "overview" },
-    });
-    const all = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "all" },
-    });
+    const overview = snapshot(compositeWorkflow(), run);
+    const all = snapshot(compositeWorkflow(), run, { all: true });
 
-    expect(overview).toMatchObject({
-      kind: "snapshot",
-      omitted: { limit: 20, dynamicContexts: 5, counts: { ready: 5 } },
-      availableActions: [{ kind: "inspect-all", omitted: 5 }],
-    });
     if (overview?.kind !== "snapshot" || all?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(overview.counts).toEqual({ total: 25, ready: 25 });
     expect(all.counts).toEqual({ total: 25, ready: 25 });
     expect(overview.run).not.toHaveProperty("agentUsage");
-    expect(overview.items.filter(item => item.role === "instance")).toHaveLength(20);
+    expect(overview).not.toHaveProperty("omitted");
+    expect(overview.items.filter(item => item.role === "instance")).toHaveLength(25);
     expect(all.items.filter(item => item.role === "instance")).toHaveLength(25);
+    expect(overview.items.filter(item => item.role === "fold")).toEqual([]);
+    expect(all.items.filter(item => item.role === "fold")).toEqual([]);
     for (const document of [overview, all]) {
       const keys = new Set(document.items.map(item => item.key));
       expect(document.items.filter(item => item.parentKey && !keys.has(item.parentKey))).toEqual([]);
@@ -147,7 +158,7 @@ describe("run inspection projection", () => {
         agent: {
           key: "reviewer",
           turn: 4,
-          activeTool: { command: "Bash: rg", status: "running" },
+          activeTool: { command: "Bash", status: "running" },
         },
       }),
     ]));
@@ -162,34 +173,28 @@ describe("run inspection projection", () => {
     }
   });
 
-  it("retains three active leaves outside the ordinary overview context budget", () => {
+  it("keeps every active leaf in the default tree", () => {
     const run = repeatedAgentRun(26);
     for (const [index, instance] of run.dynamic!.nodeInstances.entries()) {
       if (index >= 20) instance.status = index % 2 === 0 ? "running" : "starting";
     }
-    const overview = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "overview" },
-    });
-    const all = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "all" },
-    });
+    const overview = snapshot(compositeWorkflow(), run);
+    const all = snapshot(compositeWorkflow(), run, { all: true });
 
     if (overview?.kind !== "snapshot" || all?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(overview.items.filter(item => item.role === "instance" && item.status === "ready")).toHaveLength(20);
     expect(overview.items
       .filter(item => item.role === "instance" && (item.status === "starting" || item.status === "running"))
-      .map(item => item.nodeKey)).toEqual(["review~20", "review~21", "review~22"]);
-    expect(overview.omitted).toMatchObject({
-      dynamicContexts: 3,
-      counts: { total: 3, starting: 2, running: 1 },
-    });
-    expect(overview.availableActions).toContainEqual({ kind: "inspect-all", omitted: 3 });
+      .map(item => item.nodeKey)).toEqual([
+        "review~20",
+        "review~21",
+        "review~22",
+        "review~23",
+        "review~24",
+        "review~25",
+      ]);
+    expect(overview.counts).toEqual({ total: 26, ready: 20, starting: 3, running: 3 });
+    expect(overview).not.toHaveProperty("omitted");
     const keys = new Set(overview.items.map(item => item.key));
     expect(overview.items.filter(item => item.parentKey && !keys.has(item.parentKey))).toEqual([]);
     expect(all.items
@@ -202,25 +207,128 @@ describe("run inspection projection", () => {
         "review~24",
         "review~25",
       ]);
-    expect(all.omitted).toBeUndefined();
+    expect(all).not.toHaveProperty("omitted");
   });
 
-  it("counts leaf execution contexts independently from compact folding", () => {
+  it("counts complete repeated leaf contexts without folding", () => {
     const unmaterialized = repeatedAgentRun(0);
     const repeated = repeatedAgentRun(25);
     for (const instance of repeated.dynamic!.nodeInstances) instance.status = "completed";
-    const initial = projectRunInspection({ ir: compositeWorkflow(), run: unmaterialized, artifacts: [], query: { runId: unmaterialized.id, mode: "overview" } });
-    const folded = projectRunInspection({ ir: compositeWorkflow(), run: repeated, artifacts: [], query: { runId: repeated.id, mode: "overview" } });
+    const initial = snapshot(compositeWorkflow(), unmaterialized);
+    const complete = snapshot(compositeWorkflow(), repeated);
 
-    if (initial?.kind !== "snapshot" || folded?.kind !== "snapshot") throw new Error("expected snapshots");
+    if (initial?.kind !== "snapshot" || complete?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(initial.counts).toEqual({ total: 1, notStarted: 1 });
     expect(initial.run).not.toHaveProperty("agentUsage");
-    expect(folded.counts).toEqual({ total: 25, completed: 25 });
-    expect(folded.items.filter(item => item.role === "instance")).toHaveLength(0);
-    expect(folded.items.find(item => item.role === "fold")?.fold).toEqual({ count: 25, counts: { total: 25, completed: 25 } });
+    expect(complete.counts).toEqual({ total: 25, completed: 25 });
+    expect(complete.items.filter(item => item.role === "instance")).toHaveLength(25);
+    expect(complete.items.filter(item => item.role === "fold")).toEqual([]);
+    expect(complete).not.toHaveProperty("omitted");
   });
 
-  it("keeps a partial outer occurrence while folding over-budget inner items", () => {
+  it("filters one composite occurrence tree without retaining sibling actions", () => {
+    const base = compositeWorkflow();
+    const ir: WorkflowIR = {
+      ...base,
+      root: {
+        ...base.root,
+        nodes: [{
+          id: "outside",
+          kind: "agent",
+          run: { agent: "reviewer", prompt: { kind: "literal", value: "Outside" } },
+        }, ...base.root.nodes],
+      },
+    };
+    const outsidePath = appendNode([], "outside");
+    const batchPath = appendNode([], "batch");
+    const firstItemPath = appendFanoutItem([], "batch", 0);
+    const secondItemPath = appendFanoutItem([], "batch", 1);
+    const firstReviewPath = appendNode(firstItemPath, "review");
+    const secondReviewPath = appendNode(secondItemPath, "review");
+    const outsideKey = deriveInstanceKey(outsidePath);
+    const batchKey = deriveInstanceKey(batchPath);
+    const firstReviewKey = deriveInstanceKey(firstReviewPath);
+    const secondReviewKey = deriveInstanceKey(secondReviewPath);
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+    run.dynamic = {
+      version: 4,
+      progressVersion: 0,
+      frames: [{
+        frameKey: batchKey,
+        nodeKey: batchKey,
+        nodeId: "batch",
+        frameKind: "node",
+        status: "running",
+        instancePath: batchPath,
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      }],
+      nodeInstances: [{
+        nodeKey: outsideKey,
+        nodeId: "outside",
+        instancePath: outsidePath,
+        status: "failed",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      }, {
+        nodeKey: firstReviewKey,
+        nodeId: "review",
+        instancePath: firstReviewPath,
+        status: "running",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      }, {
+        nodeKey: secondReviewKey,
+        nodeId: "review",
+        instancePath: secondReviewPath,
+        status: "running",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        updatedAt: "2026-07-01T00:00:02.000Z",
+      }],
+      attempts: [{
+        attemptId: "outside-attempt",
+        nodeKey: outsideKey,
+        nodeId: "outside",
+        attemptNo: 1,
+        status: "failed",
+        startedAt: "2026-07-01T00:00:01.000Z",
+        finishedAt: "2026-07-01T00:00:02.000Z",
+      }, {
+        attemptId: "first-review-attempt",
+        nodeKey: firstReviewKey,
+        nodeId: "review",
+        attemptNo: 1,
+        status: "started",
+        startedAt: "2026-07-01T00:00:01.000Z",
+      }, {
+        attemptId: "second-review-attempt",
+        nodeKey: secondReviewKey,
+        nodeId: "review",
+        attemptNo: 1,
+        status: "started",
+        startedAt: "2026-07-01T00:00:01.000Z",
+      }],
+      groups: [],
+      groupMembers: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+    };
+
+    const whole = snapshot(ir, run, { all: true });
+    const scoped = scopedTopology(ir, run, batchKey);
+    if (whole?.kind !== "snapshot" || !scoped) throw new Error("expected full and scoped snapshots");
+
+    expect(whole.items).toContainEqual(expect.objectContaining({ nodeKey: outsideKey }));
+    expect(whole.availableActions).toEqual([]);
+    expect(scoped).toMatchObject({ all: true, scope: { ref: deriveOccurrenceRef(batchPath) } });
+    expect(scoped.items[0]).not.toHaveProperty("parentKey");
+    expect(scoped.items).not.toContainEqual(expect.objectContaining({ nodeKey: outsideKey }));
+    expect(scoped.availableActions).toEqual([]);
+  });
+
+  it("keeps every nested Fanout occurrence in the default tree", () => {
     const ir: WorkflowIR = {
       irVersion: 7,
       name: "nested-context-budget",
@@ -261,20 +369,17 @@ describe("run inspection projection", () => {
     run.dynamic!.attempts = [];
     run.dynamic!.executionMetadata = [];
     run.dynamic!.progress = [];
-    const overview = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const overview = snapshot(ir, run);
     if (overview?.kind !== "snapshot") throw new Error("expected snapshot");
 
     const outerKey = `scope:${deriveInstanceKey(outerItemPath)}`;
-    const innerKey = `node:${deriveInstanceKey(appendNode(outerItemPath, "inner"))}`;
     expect(overview.items.filter(item => item.nodeId === "outer" && item.scope?.kind === "fanout_item")).toEqual([
       expect.objectContaining({ key: outerKey, scope: { kind: "fanout_item", itemIndex: 0, empty: false } }),
     ]);
-    expect(overview.items.filter(item => item.nodeId === "inner" && item.scope?.kind === "fanout_item")).toHaveLength(20);
-    expect(overview.items.filter(item => item.role === "instance")).toHaveLength(20);
-    expect(overview.items.filter(item => item.role === "fold")).toEqual([
-      expect.objectContaining({ parentKey: innerKey, fold: { count: 5, counts: { total: 5, ready: 5 } } }),
-    ]);
-    expect(overview.omitted).toMatchObject({ dynamicContexts: 5, counts: { total: 5, ready: 5 } });
+    expect(overview.items.filter(item => item.nodeId === "inner" && item.scope?.kind === "fanout_item")).toHaveLength(25);
+    expect(overview.items.filter(item => item.role === "instance")).toHaveLength(25);
+    expect(overview.items.filter(item => item.role === "fold")).toEqual([]);
+    expect(overview).not.toHaveProperty("omitted");
   });
 
   it("projects only the current Agent turn identity into overview", () => {
@@ -301,12 +406,12 @@ describe("run inspection projection", () => {
       tools: { ...run.dynamic!.progress[0]!.tools as Record<string, unknown>, turn: 3 },
     };
 
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(document.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({
       key: "reviewer",
       turn: 3,
-      activeTool: { command: "Bash: rg", status: "running" },
+      activeTool: { command: "Bash", status: "running" },
     });
     expect(document.run).not.toHaveProperty("agentUsage");
   });
@@ -314,7 +419,7 @@ describe("run inspection projection", () => {
   it("does not project unavailable telemetry into overview", () => {
     const run = repeatedAgentRun(1);
     run.dynamic!.progress = [];
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(document.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({ key: "reviewer" });
   });
@@ -322,7 +427,7 @@ describe("run inspection projection", () => {
   it("projects only direct fork lineage into inspection summaries", () => {
     const run = repeatedAgentRun(0);
     run.fork = { sourceRunId: "run_source", target: "review~failed", unsafeReuse: true };
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
 
     expect(document.run.fork).toEqual({ sourceRunId: "run_source", target: "review~failed", unsafeReuse: true });
@@ -369,43 +474,22 @@ describe("run inspection projection", () => {
       executionMetadata: [],
       progress: [],
     };
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(ir, run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
 
     expect(document.counts).toEqual({ total: 20, completed: 20 });
   });
 
-  it("never folds failed or timed-out repeated executions", () => {
+  it("keeps failed and timed-out repeated executions as distinct rows", () => {
     for (const status of ["failed", "timed_out"] as const) {
       const run = repeatedAgentRun(25);
       for (const instance of run.dynamic!.nodeInstances) instance.status = status;
-      const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+      const document = snapshot(compositeWorkflow(), run);
       if (document?.kind !== "snapshot") throw new Error("expected snapshot");
-      expect(document.items.filter(item => item.role === "fold" && item.status === status)).toHaveLength(0);
       expect(document.items.filter(item => item.role === "instance" && item.status === status)).toHaveLength(25);
-      expect(document.omitted).toBeUndefined();
+      expect(document.items.filter(item => item.role === "fold")).toEqual([]);
+      expect(document).not.toHaveProperty("omitted");
     }
-  });
-
-  it("reports how many budget-omitted Agents already carry progress", () => {
-    const run = repeatedAgentRun(25);
-    const baseline = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
-    if (baseline?.kind !== "snapshot") throw new Error("expected snapshot");
-    const visible = new Set(baseline.items.flatMap(item => item.nodeKey ? [item.nodeKey] : []));
-    const hidden = run.dynamic!.nodeInstances.find(instance => !visible.has(instance.nodeKey))!;
-    const { attemptId: _attemptId, ...progress } = run.dynamic!.progress[0]!;
-    run.dynamic!.progress.push({
-      ...progress,
-      nodeKey: hidden.nodeKey,
-      updatedAt: "2026-07-01T00:00:03.000Z",
-    });
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
-
-    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
-    expect(document.omitted).toMatchObject({
-      dynamicContexts: 5,
-      agentProgress: { tracked: 1 },
-    });
   });
 
   it("keeps default JSON compact and exposes complete target and raw projections", () => {
@@ -420,12 +504,12 @@ describe("run inspection projection", () => {
       size: 42,
       path: `/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~0/attempt-1/${run.dynamic!.attempts[0]!.attemptId}/agent/turn-001.json`,
     };
-    const overview = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], query: { runId: run.id, mode: "overview" } });
-    const target = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], query: { runId: run.id, mode: "details", target: "review" } });
-    const raw = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [artifact], query: { runId: run.id, mode: "raw" } });
+    const overview = snapshot(compositeWorkflow(), run);
+    const target = targetState(compositeWorkflow(), run, "review", [artifact]);
+    const raw = rawInspection(compositeWorkflow(), run, [artifact]);
 
-    expect(target).toMatchObject({ kind: "details", target: { kind: "static-node", id: "review" } });
-    if (target?.kind !== "details" || raw?.kind !== "raw") throw new Error("expected target and raw");
+    expect(target).toMatchObject({ target: { kind: "static-node", id: "review" } });
+    if (raw.kind !== "raw") throw new Error("expected raw");
     expect(target.instances).toHaveLength(25);
     expect(target.attempts).toHaveLength(25);
     expect(target.summary).toMatchObject({ nodeStatus: "ready", counts: { total: 25, ready: 25 } });
@@ -484,20 +568,9 @@ describe("run inspection projection", () => {
       path: `/runtime/runs/${run.id}/artifacts/${first.nodeKey}/attempt-2/attempt-steered/agent/turn-001.json`,
     }];
 
-    const current = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts,
-      query: { runId: run.id, mode: "details", target: first.nodeKey },
-    });
-    const original = projectRunInspection({
-      ir: compositeWorkflow(),
-      run,
-      artifacts,
-      query: { runId: run.id, mode: "details", target: first.attemptId },
-    });
+    const current = targetState(compositeWorkflow(), run, first.nodeKey, artifacts);
+    const original = targetState(compositeWorkflow(), run, first.attemptId, artifacts);
 
-    if (current?.kind !== "details" || original?.kind !== "details") throw new Error("expected target documents");
     expect(current.summary).toMatchObject({
       latestAttempt: { attemptId: "attempt-steered", attemptNo: 2 },
       prompt: { kind: "artifact", artifactId: "turn-steered" },
@@ -520,8 +593,7 @@ describe("run inspection projection", () => {
     repeated.dynamic!.nodeInstances[1]!.status = "running";
     delete repeated.dynamic!.nodeInstances[1]!.output;
     repeated.dynamic!.nodeInstances[1]!.updatedAt = "2026-07-01T00:00:03.000Z";
-    const aggregate = projectRunInspection({ ir: compositeWorkflow(), run: repeated, artifacts: [], query: { runId: repeated.id, mode: "details", target: "review" } });
-    if (aggregate?.kind !== "details") throw new Error("expected aggregate target");
+    const aggregate = targetState(compositeWorkflow(), repeated, "review");
 
     expect(aggregate.summary).toMatchObject({ nodeStatus: "running", counts: { total: 2, running: 1, completed: 1 } });
     expect(aggregate.summary.nodeKey).toBeUndefined();
@@ -529,15 +601,14 @@ describe("run inspection projection", () => {
     expect(aggregate.summary.agent).toBeUndefined();
 
     const single = repeatedAgentRun(1);
-    const detailed = projectRunInspection({ ir: compositeWorkflow(), run: single, artifacts: [], query: { runId: single.id, mode: "details", target: "review" } });
-    if (detailed?.kind !== "details") throw new Error("expected detailed target");
+    const detailed = targetState(compositeWorkflow(), single, "review");
     expect(detailed.summary).toMatchObject({ nodeStatus: "ready", nodeKey: "review~0", latestAttempt: { attemptId: "attempt-0" }, agent: { key: "reviewer" } });
     expect(detailed.summary.counts).toBeUndefined();
   });
 
   it("preserves every durable transition between polls in event order", () => {
     const run = repeatedAgentRun(1);
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (!document) throw new Error("expected document");
     const changes = semanticChanges([
       event(3, "instance.ready"),
@@ -551,6 +622,28 @@ describe("run inspection projection", () => {
       [5, "completed", "completed", "review", reviewItemKey],
     ]);
     expect(changes).not.toEqual(expect.arrayContaining([expect.objectContaining({ item: expect.anything() })]));
+  });
+
+  it("uses a repeated occurrence breadcrumb instead of its internal node key as an event subject", () => {
+    const internalNodeKey = "private-node-key-that-must-not-reach-follow-output";
+    const run = repeatedAgentRun(2);
+    run.dynamic!.nodeInstances[0] = { ...run.dynamic!.nodeInstances[0]!, nodeKey: internalNodeKey };
+    run.dynamic!.attempts[0] = { ...run.dynamic!.attempts[0]!, nodeKey: internalNodeKey };
+    run.dynamic!.progress[0] = { ...run.dynamic!.progress[0]!, nodeKey: internalNodeKey };
+    const document = snapshot(compositeWorkflow(), run);
+    if (document?.kind !== "snapshot") throw new Error("expected snapshot");
+
+    const changes = semanticChanges([{
+      ...event(3, "instance.started"),
+      nodeKey: internalNodeKey,
+      payload: { nodeKey: internalNodeKey, nodeId: "review" },
+    }], document, run);
+
+    expect(changes).toEqual([expect.objectContaining({
+      subject: "batch[0] › review",
+      entity: { kind: "node", id: internalNodeKey, nodeId: "review" },
+    })]);
+    expect(changes[0]!.subject).not.toContain(internalNodeKey);
   });
 
   it("emits failed scope-frame changes with exact occurrence identity while suppressing terminal bookkeeping", () => {
@@ -633,7 +726,7 @@ describe("run inspection projection", () => {
         frame(chain.iteration, "loop_iteration", "repeat", status, deriveInstanceKey(chain.repeat)),
       ];
     });
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "all" } });
+    const document = snapshot(ir, run, { all: true });
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     const failed = [chains[0]!.branch, chains[0]!.fanoutItem, chains[0]!.iteration].map((path, index) => ({
       runId: run.id,
@@ -675,7 +768,7 @@ describe("run inspection projection", () => {
       createdAt: "2026-07-01T00:00:01.000Z",
       updatedAt: "2026-07-01T00:00:02.000Z",
     });
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (!document) throw new Error("expected document");
     const changes = semanticChanges([
       { ...event(6, "frame.loop_advanced"), nodeKey: "batch~loop", payload: { frameKey: "batch~loop", iter: 0, state: {} } },
@@ -687,7 +780,7 @@ describe("run inspection projection", () => {
 
   it("absorbs duplicate signal and scheduler bookkeeping while retaining the operator transition", () => {
     const run = repeatedAgentRun(1);
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (!document) throw new Error("expected document");
     const { nodeKey: _nodeKey, ...rootFrameCompleted } = event(9, "frame.completed");
     const changes = semanticChanges([
@@ -704,7 +797,7 @@ describe("run inspection projection", () => {
 
   it("projects one redacted steer transition and suppresses its scheduler bookkeeping", () => {
     const run = repeatedAgentRun(1);
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(compositeWorkflow(), run);
     if (!document) throw new Error("expected document");
     const changes = semanticChanges([
       {
@@ -774,7 +867,7 @@ describe("run inspection projection", () => {
       executionMetadata: [],
       progress: [],
     };
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(ir, run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
 
     expect(document.items).toContainEqual(expect.objectContaining({
@@ -790,15 +883,15 @@ describe("run inspection projection", () => {
   it("keeps the authored agent key compact while exposing effective command definitions only to target and raw", () => {
     const ir = compositeWorkflow({ kind: "agent_command", command: "some-provider --unsafe-secret", model: "custom" });
     const run = repeatedAgentRun(1);
-    const overview = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
-    const target = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "review" } });
-    const raw = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "raw" } });
+    const overview = snapshot(ir, run);
+    const target = targetState(ir, run, "review");
+    const raw = rawInspection(ir, run);
 
-    if (overview?.kind !== "snapshot" || target?.kind !== "details" || raw?.kind !== "raw") throw new Error("expected inspection documents");
+    if (overview.kind !== "snapshot" || raw.kind !== "raw") throw new Error("expected inspection documents");
     expect(overview.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({
       key: "reviewer",
       turn: 4,
-      activeTool: { command: "Bash: rg", status: "running" },
+      activeTool: { command: "Bash", status: "running" },
     });
     expect(JSON.stringify(overview)).not.toContain("some-provider");
     expect(target.summary.agent).toMatchObject({
@@ -814,8 +907,7 @@ describe("run inspection projection", () => {
     const effectiveIr = compositeWorkflow({ kind: "agent_definition", use: "codex", model: "gpt-5" });
     const run = repeatedAgentRun(1);
     run.agentOverrides = { reviewer: { use: "codex", model: "gpt-5" } };
-    const document = projectRunInspection({ ir: effectiveIr, run, artifacts: [], query: { runId: run.id, mode: "details", target: "review" } });
-    if (document?.kind !== "details") throw new Error("expected details");
+    const document = targetState(effectiveIr, run, "review");
 
     expect(document.summary.agent).toMatchObject({
       key: "reviewer",
@@ -832,8 +924,7 @@ describe("run inspection projection", () => {
       config: { model: "opus", mode: "plan" },
     });
     const run = repeatedAgentRun(1);
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "review" } });
-    if (document?.kind !== "details") throw new Error("expected details");
+    const document = targetState(ir, run, "review");
 
     expect(document.summary.agent).toMatchObject({
       backend: { kind: "use", name: "claude" },
@@ -858,8 +949,7 @@ describe("run inspection projection", () => {
       }],
     };
     delete run.dynamic!.progress[0]!.tools;
-    const document = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "details", target: "review" } });
-    if (document?.kind !== "details") throw new Error("expected details");
+    const document = targetState(compositeWorkflow(), run, "review");
 
     expect(document.summary.agent).toMatchObject({
       key: "reviewer",
@@ -867,38 +957,8 @@ describe("run inspection projection", () => {
       lastObservedAt: "2026-07-01T00:00:03.000Z",
       context: { used: 4_000, size: 20_000 },
       tokenUsage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 },
-      tools: { totalCallCount: 7, recent: [] },
       stopReason: "end_turn",
     });
-  });
-
-  it("ignores metric-only Agent progress and emits active-tool changes", () => {
-    const beforeRun = repeatedAgentRun(2);
-    const activityOnlyRun = repeatedAgentRun(2);
-    activityOnlyRun.dynamic!.progress[0]!.updatedAt = "2026-07-01T00:00:03.000Z";
-    const changedRun = repeatedAgentRun(2);
-    changedRun.dynamic!.progress[0]!.updatedAt = "2026-07-01T00:00:04.000Z";
-    changedRun.dynamic!.progress[0]!.tokenUsage = { inputTokens: 150, outputTokens: 25, totalTokens: 175 };
-    const toolChangedRun = repeatedAgentRun(2);
-    toolChangedRun.dynamic!.progress[0]!.updatedAt = "2026-07-01T00:00:05.000Z";
-    const calls = (toolChangedRun.dynamic!.progress[0]!.tools as { lastCalls: Array<Record<string, unknown>> }).lastCalls;
-    const active = calls.findIndex(call => call.status === "running");
-    calls[active] = { ...calls[active], status: "completed", updatedAt: "2026-07-01T00:00:05.000Z" };
-    const before = projectRunInspection({ ir: compositeWorkflow(), run: beforeRun, artifacts: [], query: { runId: beforeRun.id, mode: "overview" } });
-    const activityOnly = projectRunInspection({ ir: compositeWorkflow(), run: activityOnlyRun, artifacts: [], query: { runId: activityOnlyRun.id, mode: "overview" } });
-    const changed = projectRunInspection({ ir: compositeWorkflow(), run: changedRun, artifacts: [], query: { runId: changedRun.id, mode: "overview" } });
-    const toolChanged = projectRunInspection({ ir: compositeWorkflow(), run: toolChangedRun, artifacts: [], query: { runId: toolChangedRun.id, mode: "overview" } });
-    if (!before || !activityOnly || !changed || !toolChanged) throw new Error("expected inspection documents");
-
-    expect(progressChanges(before, activityOnly, 2)).toEqual([]);
-    expect(progressChanges(before, changed, 3)).toEqual([]);
-    expect(progressChanges(before, toolChanged, 4)).toEqual([expect.objectContaining({
-      action: "progress",
-      subject: "batch[0] › review",
-      progressVersion: 4,
-      itemKey: `node:${deriveInstanceKey(appendNode(appendFanoutItem([], "batch", 0), "review"))}`,
-      status: "ready",
-    })]);
   });
 
   it("bounds Signal prompt/schema summaries while target and raw retain full frozen detail", () => {
@@ -950,10 +1010,10 @@ describe("run inspection projection", () => {
       progress: [],
     };
 
-    const overview = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
-    const target = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "approve" } });
-    const raw = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "raw" } });
-    if (overview?.kind !== "snapshot" || target?.kind !== "details" || raw?.kind !== "raw") throw new Error("expected inspection documents");
+    const overview = snapshot(ir, run);
+    const target = targetState(ir, run, "approve");
+    const raw = rawInspection(ir, run);
+    if (overview.kind !== "snapshot" || raw.kind !== "raw") throw new Error("expected inspection documents");
 
     const compactSignal = overview.items.find(item => item.nodeKey === "approve~1")?.signal;
     expect(overview.items.find(item => item.nodeKey === "approve~1")?.parentKey).toBeUndefined();
@@ -1007,23 +1067,11 @@ describe("run inspection projection", () => {
       progress: [],
     };
 
-    const awaiting = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "approve" } });
-    if (awaiting?.kind !== "details") throw new Error("expected target");
+    const awaiting = targetState(ir, run, "approve");
     expect(awaiting.summary).toMatchObject({ nodeStatus: "awaiting", counts: { total: 2, awaiting: 2 } });
     expect(awaiting.items.filter(item => item.role === "instance").map(item => item.status)).toEqual(["awaiting", "awaiting"]);
 
-    const scoped = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: {
-        runId: run.id,
-        mode: "details",
-        target: "approve",
-        context: [{ kind: "fanout", nodeId: "batch", itemIndex: 1 }],
-      },
-    });
-    if (scoped?.kind !== "details") throw new Error("expected scoped target");
+    const scoped = targetState(ir, run, "approve~b");
     expect(scoped.summary).toMatchObject({
       nodeKey: "approve~b",
       nodeStatus: "awaiting",
@@ -1033,13 +1081,12 @@ describe("run inspection projection", () => {
 
     for (const instance of run.dynamic.nodeInstances) instance.status = "failed";
     for (const wait of run.dynamic.signalWaits) wait.status = "timed_out";
-    const timedOut = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "approve" } });
-    if (timedOut?.kind !== "details") throw new Error("expected target");
+    const timedOut = targetState(ir, run, "approve");
     expect(timedOut.summary).toMatchObject({ nodeStatus: "timed_out", counts: { total: 2, timedOut: 2 } });
     expect(timedOut.items.filter(item => item.role === "instance").map(item => item.status)).toEqual(["timed_out", "timed_out"]);
   });
 
-  it("keeps terminal Signal timeout evidence and exposes only retry/fork recovery actions", () => {
+  it("keeps terminal Signal timeout evidence and exposes retry only with explicit controls", () => {
     const ir: WorkflowIR = {
       irVersion: 7,
       name: "signal-timeout",
@@ -1090,15 +1137,13 @@ describe("run inspection projection", () => {
       progress: [],
     };
 
-    const document = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "overview" },
-      availableControls: [{ type: "retry", target: "approve~abc" }],
-    });
-    const target = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "details", target: "approve~abc" } });
-    if (document?.kind !== "snapshot" || target?.kind !== "details") throw new Error("expected inspection documents");
+    const controls = [{ type: "retry" as const, target: "approve~abc" }];
+    const document = snapshot(ir, run);
+    const controlsDocument = snapshot(ir, run, { controls });
+    const target = targetState(ir, run, "approve~abc");
+    if (document.kind !== "snapshot" || controlsDocument.kind !== "snapshot") {
+      throw new Error("expected inspection documents");
+    }
 
     expect(document.items.find(item => item.nodeKey === "approve~abc")).toMatchObject({
       status: "timed_out",
@@ -1106,10 +1151,10 @@ describe("run inspection projection", () => {
       signal: { target: "approve~abc", deadlineAt: "2026-07-01T00:01:00.000Z" },
     });
     const approvalItemKey = `node:${deriveInstanceKey(appendNode([], "approve"))}`;
-    expect(document.availableActions).toEqual([
-      { kind: "inspect-target", target: "approve~abc", itemKey: approvalItemKey },
-      { kind: "retry", target: "approve~abc", itemKey: approvalItemKey },
-      { kind: "fork" },
+    const approvalRef = deriveOccurrenceRef(appendNode([], "approve"));
+    expect(document.availableActions).toEqual([]);
+    expect(controlsDocument.availableActions).toEqual([
+      { kind: "retry", target: approvalRef, itemKey: approvalItemKey },
     ]);
     expect(target.summary).toMatchObject({
       nodeStatus: "timed_out",
@@ -1119,9 +1164,9 @@ describe("run inspection projection", () => {
 
     run.dynamic.signalWaits[0] = { ...run.dynamic.signalWaits[0]!, status: "cancelled", terminalReason: "manual_cancel" };
     run.dynamic.nodeInstances[0] = { ...run.dynamic.nodeInstances[0]!, statusReason: "manual_cancel", error: { reason: "manual_cancel", message: "Cancelled." } };
-    const ordinaryFailure = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const ordinaryFailure = snapshot(ir, run);
     if (ordinaryFailure?.kind !== "snapshot") throw new Error("expected snapshot");
-    expect(ordinaryFailure.availableActions).toEqual([{ kind: "inspect-target", target: "approve~abc", itemKey: approvalItemKey }]);
+    expect(ordinaryFailure.availableActions).toEqual([]);
   });
 
   it("distinguishes scheduler, provider, and task failure origins with stable codes", () => {
@@ -1129,7 +1174,7 @@ describe("run inspection projection", () => {
     schedulerRun.dynamic!.nodeInstances[0]!.status = "failed";
     schedulerRun.dynamic!.nodeInstances[0]!.statusReason = "expression_resolution_failed";
     schedulerRun.dynamic!.nodeInstances[0]!.error = { reason: "expression_resolution_failed", message: "Prompt resolution failed." };
-    const scheduler = projectRunInspection({ ir: compositeWorkflow(), run: schedulerRun, artifacts: [], query: { runId: schedulerRun.id, mode: "overview" } });
+    const scheduler = snapshot(compositeWorkflow(), schedulerRun);
     if (scheduler?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(scheduler.items.find(item => item.nodeKey === "review~0")?.failure).toEqual({
       origin: "scheduler",
@@ -1140,7 +1185,7 @@ describe("run inspection projection", () => {
     const providerRun = repeatedAgentRun(1);
     providerRun.dynamic!.nodeInstances[0]!.status = "failed";
     providerRun.dynamic!.nodeInstances[0]!.error = { code: "invalid_api_key", message: "Provider rejected the API key." };
-    const provider = projectRunInspection({ ir: compositeWorkflow(), run: providerRun, artifacts: [], query: { runId: providerRun.id, mode: "overview" } });
+    const provider = snapshot(compositeWorkflow(), providerRun);
     if (provider?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(provider.items.find(item => item.nodeKey === "review~0")?.failure).toEqual({
       origin: "provider",
@@ -1151,7 +1196,7 @@ describe("run inspection projection", () => {
     const runtimeRun = repeatedAgentRun(1);
     runtimeRun.dynamic!.nodeInstances[0]!.status = "failed";
     runtimeRun.dynamic!.nodeInstances[0]!.error = { origin: "runtime", code: "invalid_agent_response_repair_max", message: "Invalid runtime configuration." };
-    const runtime = projectRunInspection({ ir: compositeWorkflow(), run: runtimeRun, artifacts: [], query: { runId: runtimeRun.id, mode: "overview" } });
+    const runtime = snapshot(compositeWorkflow(), runtimeRun);
     if (runtime?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(runtime.items.find(item => item.nodeKey === "review~0")?.failure).toEqual({
       origin: "runtime",
@@ -1170,7 +1215,7 @@ describe("run inspection projection", () => {
     const taskRun = repeatedAgentRun(1);
     taskRun.dynamic!.nodeInstances[0] = { ...taskRun.dynamic!.nodeInstances[0]!, nodeKey: "work~0", nodeId: "work", instancePath: [{ kind: "node", nodeId: "work" }], status: "failed", error: { code: "invalid_output", message: "Task returned invalid output." } };
     taskRun.dynamic!.attempts[0] = { ...taskRun.dynamic!.attempts[0]!, nodeKey: "work~0", nodeId: "work", status: "failed" };
-    const task = projectRunInspection({ ir: taskIr, run: taskRun, artifacts: [], query: { runId: taskRun.id, mode: "overview" } });
+    const task = snapshot(taskIr, taskRun);
     if (task?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(task.items.find(item => item.nodeKey === "work~0")?.failure).toEqual({ origin: "task", code: "invalid_output", message: "Task returned invalid output." });
   });
@@ -1193,9 +1238,9 @@ describe("run inspection projection", () => {
         data: { acpxCode: "RUNTIME", origin: "cli", details: "failed to reload config", arbitrary: { preserved: true } },
       },
     };
-    const overview = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "overview" } });
-    const target = projectRunInspection({ ir: compositeWorkflow(), run, artifacts: [], query: { runId: run.id, mode: "details", target: "review" } });
-    if (overview?.kind !== "snapshot" || target?.kind !== "details") throw new Error("expected inspection documents");
+    const overview = snapshot(compositeWorkflow(), run);
+    const target = targetState(compositeWorkflow(), run, "review");
+    if (overview.kind !== "snapshot") throw new Error("expected inspection documents");
 
     expect(overview.items.find(item => item.nodeKey === "review~0")?.failure).toEqual({
       origin: "provider",
@@ -1296,9 +1341,9 @@ describe("run inspection projection", () => {
       progress: [],
     };
 
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "all" } });
+    const document = snapshot(ir, run, { all: true });
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
-    expect(document.omitted).toBeUndefined();
+    expect(document).not.toHaveProperty("omitted");
     expect(document.items.some(item => item.role === "fold")).toBe(false);
     const key = (path: Parameters<typeof deriveInstanceKey>[0], role: "node" | "scope") => `${role}:${deriveInstanceKey(path)}`;
     expect(document.items.map(item => item.key)).toEqual([
@@ -1358,20 +1403,10 @@ describe("run inspection projection", () => {
       updatedAt: "2026-07-01T00:00:02.000Z",
     }];
 
-    const overview = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "overview" },
-    });
-    const target = projectRunInspection({
-      ir,
-      run,
-      artifacts: [],
-      query: { runId: run.id, mode: "details", target: "root" },
-    });
+    const overview = snapshot(ir, run);
+    const target = targetState(ir, run, "root");
 
-    if (overview?.kind !== "snapshot" || target?.kind !== "details") throw new Error("expected inspection documents");
+    if (overview.kind !== "snapshot") throw new Error("expected inspection documents");
     expect(overview.run.failure).toEqual({
       origin: "scheduler",
       code: "expression_failed",
@@ -1442,10 +1477,10 @@ describe("run inspection projection", () => {
         },
       ];
 
-      const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "all" } });
+      const document = snapshot(ir, run, { all: true });
       if (document?.kind !== "snapshot") throw new Error("expected snapshot");
       expect(document.items.find(item => item.key === `scope:${branchKey}`)).toMatchObject({ status, frameKey: branchKey });
-      expect(document.availableActions).toEqual([{ kind: "inspect-target", target: branchKey, itemKey: `scope:${branchKey}` }]);
+      expect(document.availableActions).toEqual([]);
     }
   });
 
@@ -1487,7 +1522,7 @@ describe("run inspection projection", () => {
       updatedAt: "2026-07-01T00:00:02.000Z",
     }];
 
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "all" } });
+    const document = snapshot(ir, run, { all: true });
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(document.items.slice(1).map(item => ({ label: item.label, scope: item.scope, status: item.status }))).toEqual([
       { label: "case 1", scope: { kind: "branch", ownerKind: "switch", branchId: "case:0", selection: "undecided", empty: false }, status: "not_started" },
@@ -1513,8 +1548,8 @@ describe("run inspection projection", () => {
     afterRun.name = ir.name;
     afterRun.dynamic!.nodeInstances = [{ nodeKey, nodeId: "work", instancePath: path, status: "running", createdAt: "2026-07-01T00:00:01.000Z", updatedAt: "2026-07-01T00:00:03.000Z" }];
     afterRun.dynamic!.attempts = [{ attemptId: "attempt-2", nodeKey, nodeId: "work", attemptNo: 2, status: "started", startedAt: "2026-07-01T00:00:03.000Z" }];
-    const before = projectRunInspection({ ir, run: beforeRun, artifacts: [], query: { runId: beforeRun.id, mode: "overview" } });
-    const after = projectRunInspection({ ir, run: afterRun, artifacts: [], query: { runId: afterRun.id, mode: "overview" } });
+    const before = snapshot(ir, beforeRun);
+    const after = snapshot(ir, afterRun);
     if (before?.kind !== "snapshot" || after?.kind !== "snapshot") throw new Error("expected snapshots");
     expect(before.items[0]).toMatchObject({ key: `node:${nodeKey}`, role: "static", status: "not_started" });
     expect(after.items[0]).toMatchObject({ key: `node:${nodeKey}`, role: "instance", status: "running", attemptNo: 2 });
@@ -1538,7 +1573,7 @@ describe("run inspection projection", () => {
       { frameKey: deriveInstanceKey(loopPath), nodeKey: deriveInstanceKey(loopPath), nodeId: "repeat", frameKind: "loop", status: "completed", instancePath: loopPath, createdAt: "2026-07-01T00:00:01.000Z", updatedAt: "2026-07-01T00:00:03.000Z" },
       { frameKey: deriveInstanceKey(round0), nodeId: "repeat", frameKind: "loop_iteration", status: "completed", instancePath: round0, createdAt: "2026-07-01T00:00:01.000Z", updatedAt: "2026-07-01T00:00:02.000Z" },
     ];
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "all" } });
+    const document = snapshot(ir, run, { all: true });
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
     expect(document.items.filter(item => item.scope?.kind === "loop_iteration").map(item => ({ label: item.label, scope: item.scope }))).toEqual([
       { label: "round 1", scope: { kind: "loop_iteration", iteration: 0, round: 1, empty: true } },
@@ -1602,7 +1637,7 @@ describe("run inspection projection", () => {
       executionMetadata: [],
       progress: [],
     };
-    const document = projectRunInspection({ ir, run, artifacts: [], query: { runId: run.id, mode: "overview" } });
+    const document = snapshot(ir, run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
 
     expect(document.items.find(item => item.nodeKey === firstWorkKey)?.composite).toMatchObject({

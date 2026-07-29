@@ -59,6 +59,7 @@ export type GraphNavigationIntent =
 
 export type GraphNodeTarget = {
   renderId: string;
+  target: string;
   nodeId: string;
   label: string;
   context: WebGraphSelection[];
@@ -80,6 +81,7 @@ export type RenderItem = {
   path: string[];
   context: WebGraphSelection[];
   nodeId: string;
+  target?: string;
   parentId?: string;
   node?: WebGraphNode;
   container?: WebGraphContainer;
@@ -180,8 +182,13 @@ export function toRenderModel(graph: WebGraph | undefined, selections: GraphSele
     if (!canonical) return;
     const id = renderItemId(canonical.id, context);
     if (items.has(id)) return;
-    const type = isWebGraphNode(canonical) ? "node" : "container";
-    const rawStatus = targetStatus(graph, canonical.id, canonical.status, context);
+    const node = isWebGraphNode(canonical) ? canonical : undefined;
+    const type = node ? "node" : "container";
+    const runtimeState = runtimeStateFor(graph, canonical.id, context);
+    const rawStatus = runtimeState?.status
+      ?? (graph.mode === "runtime" && graph.runtimeStates.some(state => state.targetId === canonical.id)
+        ? "not_started"
+        : canonical.status);
     const status = displayNodeStatus(rawStatus);
     const selector = type === "node" ? selectorFor(graph, canonical.nodeId, context) : undefined;
     const selectedOptionId = selector ? normalizedSelections[selector.id] : undefined;
@@ -199,6 +206,7 @@ export function toRenderModel(graph: WebGraph | undefined, selections: GraphSele
       path: canonical.path,
       context,
       nodeId: canonical.nodeId,
+      ...(node ? { target: runtimeState?.target ?? node.target } : {}),
       ...(type === "node" ? { node: { ...canonical, status } as WebGraphNode } : { container: { ...canonical, status } as WebGraphContainer }),
       ...(parentId ? { parentId } : {}),
       ...(selector ? { selector } : {}),
@@ -314,9 +322,10 @@ export function selectionsForActiveRuntime(graph: WebGraph, current: GraphSelect
 }
 
 export function graphNodeTarget(item: RenderItem | undefined): GraphNodeTarget | undefined {
-  if (!item || item.type !== "node") return undefined;
+  if (!item || item.type !== "node" || item.target === undefined) return undefined;
   return {
     renderId: item.id,
+    target: item.target,
     nodeId: item.nodeId,
     label: item.label,
     context: item.context,
@@ -739,20 +748,19 @@ function parentRef(id: string, parentId: string | undefined): { id: string; pare
   return parentId === undefined ? { id } : { id, parentId };
 }
 
-function targetStatus(
+function runtimeStateFor(
   graph: WebGraph,
   targetId: string,
-  fallback: string,
   context: readonly WebGraphSelection[],
-): string {
-  if (graph.mode === "static") return fallback;
+): WebGraph["runtimeStates"][number] | undefined {
+  if (graph.mode === "static") return undefined;
   const states = graph.runtimeStates.filter(state => state.targetId === targetId);
-  if (states.length === 0) return fallback;
+  if (states.length === 0) return undefined;
   for (let index = states.length - 1; index >= 0; index -= 1) {
     const state = states[index]!;
-    if (sameContext(state.context, context)) return state.status;
+    if (sameContext(state.context, context)) return state;
   }
-  return "not_started";
+  return undefined;
 }
 
 function selectorFor(graph: WebGraph, nodeId: string, context: readonly WebGraphSelection[]): WebGraphSelector | undefined {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunInspection, listRuns, tryNormalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, inspectRaw, listRuns, tryNormalizeWorkflowInput } from "@acpus/runtime";
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -399,13 +399,13 @@ describe.concurrent("runtime admission use cases", () => {
 });
 
 async function rawInspection(workspace: string, runId: string) {
-  const result = await getRunInspection(workspace, { runId, mode: "raw" });
+  const result = await inspectRaw(workspace, { runId });
   if (result.isErr()) throw new Error(result.error.message);
   return result.value;
 }
 
 async function inspectionErrorMessage(workspace: string, runId: string): Promise<string> {
-  const result = await getRunInspection(workspace, { runId, mode: "raw" });
+  const result = await inspectRaw(workspace, { runId });
   if (result.isOk()) throw new Error("Expected inspection to fail.");
   return result.error.message;
 }

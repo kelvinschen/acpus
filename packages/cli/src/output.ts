@@ -14,6 +14,7 @@ import type {
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
 import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
 import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "./skill-installation.js";
+import { renderShellCommand } from "./shell-command.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
 export type ResultPhase = "usage" | "source" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
@@ -41,16 +42,13 @@ export type CliAppliedControl =
       state: "applied";
       runId: string;
       steerId: string;
-      requestedTarget: string;
       target: string;
-      fencedAttemptId: string;
       continuation: "queued";
     }
   | {
       type: "signal";
       state: "consumed";
       runId: string;
-      requestedTarget: string;
       target: string;
       validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
     };
@@ -124,7 +122,7 @@ type CheckedImportSuccessCliResult = Omit<
 
 type ImportSuccessCliResult = UncheckedImportSuccessCliResult | CheckedImportSuccessCliResult;
 
-type ControlFailureCliResult = Omit<ResultRecord<"control", false, "message" | "run" | "control" | "errorCode", "message">, "control"> & {
+type ControlFailureCliResult = Omit<ResultRecord<"control", false, "message" | "run" | "control" | "errorCode" | "inspectionError", "message">, "control"> & {
   control?: CliUnappliedControl;
 };
 
@@ -258,9 +256,13 @@ export function writeResult(
   if (result.prune) writePruneReport(stream, result.prune);
   if (result.followRunId) {
     const target = result.control?.type === "steer" && result.control.state === "applied"
-      ? ` --target ${result.control.target}`
-      : "";
-    stream.write(`Next: acpus runs inspect ${result.followRunId}${target} --follow\n`);
+      ? result.control.target
+      : undefined;
+    stream.write(`Next: ${renderShellCommand([
+      "acpus", "runs", "inspect", result.followRunId,
+      ...(target === undefined ? [] : ["--target", target]),
+      "--follow",
+    ])}\n`);
   }
   if (result.checks) {
     const statusWidth = result.checks.reduce((width, check) => Math.max(width, check.status.length), 0);
@@ -290,7 +292,7 @@ export function writeResult(
 function writeRunSubmissionReceipt(result: CliResult, stream: Writable, cwd: string | undefined): boolean {
   if (!result.ok || result.phase !== "run" || result.run === undefined || result.followRunId === undefined) return false;
   stream.write(`Run ${result.run.id}  ${result.run.name}  ${result.run.status}\n`);
-  stream.write(`Inspect: acpus runs inspect ${result.run.id} [--follow]\n`);
+  stream.write(`Inspect: ${renderShellCommand(["acpus", "runs", "inspect", result.run.id])}\n`);
   writeDiagnostics(stream, result.diagnostics, cwd);
   return true;
 }
@@ -399,14 +401,13 @@ function writeRun(stream: Writable, run: RunRecord, control: CliControl | undefi
   }
   stream.write(`Run: ${run.id}\n`);
   if (control?.type === "signal" && control.state === "consumed") {
-    stream.write(`Target: ${control.requestedTarget} → ${control.target}\n`);
+    stream.write(`Target: ${control.target}\n`);
     stream.write(control.validation.kind === "schema"
       ? `Payload: validated against ${control.validation.schemaSummary}\n`
       : "Payload: validated as raw string\n");
   } else if (control?.type === "steer" && control.state === "applied") {
     stream.write(`Steer: ${control.steerId}\n`);
-    stream.write(`Target: ${control.requestedTarget} → ${control.target}\n`);
-    stream.write(`Fenced attempt: ${control.fencedAttemptId}\n`);
+    stream.write(`Target: ${control.target}\n`);
     stream.write(`Continuation: ${control.continuation}\n`);
   } else if (control?.type === "retry" && control.state === "applied" && control.target !== undefined) {
     stream.write(`Target: ${control.target}\n`);

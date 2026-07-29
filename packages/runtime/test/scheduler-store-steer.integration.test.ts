@@ -1,5 +1,6 @@
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { prepareSyntheticWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -8,12 +9,21 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("scheduler store Agent steer", () => {
-  it.each(["attemptId", "nodeKey", "nodeId"] as const)("atomically resolves an active Agent by %s", async targetKind => {
+  it.each(["attemptId", "nodeKey", "nodeId", "occurrenceRef", "attemptRef"] as const)("atomically resolves an active Agent by %s", async targetKind => {
     await withRuntimeWorkspace(`scheduler-store-steer-${targetKind}`, async workspace => {
       const store = await openRuntimeStore(workspace);
       try {
         const { runId, claim, attemptId } = await startedAgent(store, workspace);
-        const target = targetKind === "attemptId" ? attemptId : targetKind === "nodeKey" ? "review~1" : "review";
+        const ref = deriveOccurrenceRef([{ kind: "node", nodeId: "review" }]);
+        const target = targetKind === "attemptId"
+          ? attemptId
+          : targetKind === "nodeKey"
+            ? "review~1"
+            : targetKind === "nodeId"
+              ? "review"
+              : targetKind === "occurrenceRef"
+                ? ref
+                : `${ref}#1`;
         const before = durablePosition(store, runId);
         const result = store.scheduler.trySteerAgent({
           runId,

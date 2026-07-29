@@ -8,22 +8,13 @@ ACP. Start with [CLI Operations](cli-operations.md); tracing configuration is in
 
 | Record or view | Use |
 | --- | --- |
-| Summary | Default decision view; an exact attempt adds metadata-only Evidence/Trace state. |
-| Timeline | Bounded current activity and recent closed semantic entries. |
+| Summary | Default decision view. |
+| Timeline | Current and recent activity. |
 | Private Turn Evidence | Exact prompt, fence, gap, and terminal boundaries for every dispatched turn. |
 | `turn-<NNN>.json` | Canonical settled-turn artifact for a still-writable attempt. |
 | `turn-<NNN>.trace.jsonl` | Full normalized provider stream when `trace: true`; published for a writable attempt. |
 | `turn-<NNN>.raw-acp.jsonl` | Exact prompt-command stdout when raw-debug capture is enabled and the attempt remains writable. |
 | `turn-<NNN>.stderr.log` | Non-empty provider stderr for a writable attempt. |
-
-The canonical ordinary turn summary contains context/token usage availability
-and complete folded tool-call summaries, but no thought/message content or tool
-output. `availability.context` is `available` only when ACP supplied usable
-context. `availability.tokenUsage` is `available` with `totalTokens`, `partial`
-with component counters only, and `unavailable` with no counters; missing
-values are not zero and Acpus does not estimate them. Tool input uses a bounded
-preview. `timing.elapsedMs` uses a monotonic clock and excludes artifact
-writing, output conformance, and work between response-repair turns.
 
 Each response-repair turn gets its own Private Turn Evidence and, when enabled
 and still writable, its own turn/Trace artifacts. Repair stays inside one
@@ -52,34 +43,26 @@ prompt and response content; read only the exact turn needed for diagnosis.
 
 ## Bounded Semantic Projection
 
-Summary and Timeline read SQLite semantic projection, not Evidence or Trace
-files. Current activity is capped at 16 KiB. Each attempt retains at most 128
-closed entries and 128 KiB of entry JSON; oldest entries expire when either
-limit is reached. Timeline reports expired history separately from a real
-observation gap.
-
-Use `trace: true` before the run when complete provider-frame history is
-required. Enabling it after history expires cannot reconstruct that history.
+Summary and Timeline are bounded semantic views, not Evidence or Trace reads.
+Enable `trace: true` before the run when full provider-frame history is needed;
+expired history cannot be reconstructed.
 
 ## Locate One Execution
 
 ```sh
-acpus runs inspect <run-id> --target <agent-node-or-attempt> [--timeline]
+acpus runs inspect <run-id> --target <agent-node-or-attempt> [--timeline|--evidence]
 acpus runs artifacts <run-id> --target <agent-node-or-attempt>
 ```
 
-Use Summary first, Timeline for process activity, and an exact attempt for
-Evidence/Trace metadata. List ordinary artifacts separately. A superseded
-attempt may have Private Turn Evidence and a private Trace spool but no new
-ordinary artifact.
+Use Summary first, Timeline for process activity, and Evidence for exact
+Agent-turn boundaries. For several attempts, use the returned `@ref#attemptNo`.
+List ordinary artifacts separately.
 
 ## Normalized Trace
 
-With `trace: true`, Runtime writes a private
-`turn-<NNN>.trace.jsonl.partial` and seals a complete stream as
-`turn-<NNN>.trace.jsonl`. A still-writable attempt publishes the sealed stream
-as a registered artifact and retires its private spool. A fenced attempt keeps
-the private sealed or partial spool instead of publishing it.
+With `trace: true`, Runtime seals one private `turn-<NNN>.trace.jsonl` stream
+per turn. A writable attempt publishes it as an artifact; a fenced attempt
+keeps its private spool.
 
 Trace is newline-delimited JSON with one `AgentTraceRecord` per non-empty line.
 `JsonValue` below means any valid JSON value.
@@ -147,16 +130,13 @@ type AgentTraceRecord = {
 );
 ```
 
-Trace schema v1 starts with `turn_start` at sequence 0 and ends with `turn_end`. Between them, records preserve provider arrival order without inferring content the provider did not emit.
+Trace v1 starts with `turn_start` at sequence 0 and ends with `turn_end`;
+records preserve provider arrival order. `sequence` is continuous,
+`observedAt` is UTC arrival time, and `elapsedMs` is monotonic.
 
-`sequence` is continuous, `observedAt` is the event-arrival UTC time, and `elapsedMs` is monotonic. The terminal trace timestamp and elapsed time exactly match the canonical turn timing.
-
-Normalized trace does not copy the prompt and excludes echoed client-to-Agent
-initialization, session setup, prompt, cancellation,
-`available_commands_update`, `session_info_update`, and other control metadata.
-Raw ACP debug, enabled independently by `ACPUS_AGENT_RAW_ACP_DEBUG=1` at daemon
-startup, preserves only exact stdout from the acpx prompt invocation; setup,
-mode, and cancel command streams are not captured.
+Normalized Trace omits prompts and client/control metadata. Raw ACP debug
+(`ACPUS_AGENT_RAW_ACP_DEBUG=1` at daemon startup) preserves prompt-command
+stdout only.
 
 ## Build A Consumer
 

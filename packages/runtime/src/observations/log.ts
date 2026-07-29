@@ -18,8 +18,10 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   executeAgentTurn,
+  type AgentContextSummary,
   type AgentJsonValue,
   type AgentTraceEvent,
+  type AgentTokenUsageSummary,
   type AgentTurnObservation,
   type AgentTurnRequest,
   type AgentTurnResult,
@@ -131,6 +133,8 @@ export type AgentObservationCurrent = {
   updatedAt: string;
   postFence?: true;
   response?: AgentObservationExcerpt;
+  context?: AgentContextSummary;
+  tokenUsage?: AgentTokenUsageSummary;
   intent?: {
     kind: "plan" | "reported-thought";
     excerpt: AgentObservationExcerpt;
@@ -832,7 +836,7 @@ export class AgentObservationLog {
     try {
       const version = this.advanceObservationVersion(writer.context.runId, result.timing.finishedAt);
       this.insertSemanticEntries(writer.context, mutation.entries, version);
-      this.updateCurrent(writer, undefined, version);
+      this.updateCurrent(writer, mutation.current, version);
       this.db.prepare(`
         UPDATE agent_observation_turns
         SET relative_path = ?,
@@ -2280,12 +2284,12 @@ export class AgentTurnWriter {
       if (this.boundaryPending) await waitFor(() => !this.boundaryPending);
       if (this.failure !== undefined) throw this.failure;
       this.flushDeferred();
-      const remainder = this.reducer.terminal(result.timing.finishedAt);
+      const remainder = this.reducer.terminal(result, this.gapCount, this.degraded);
       const mutation = this.terminalMutation
         ? {
             entries: [...this.terminalMutation.entries, ...remainder.entries],
             checkpoint: true,
-            current: undefined,
+            current: remainder.current,
             observedAt: result.timing.finishedAt,
           }
         : remainder;
@@ -2466,6 +2470,8 @@ class AgentObservationSemanticReducer {
   private lastCheckpointTextBytes = 0;
   private unknownSeen = false;
   private fenced = false;
+  private context?: AgentContextSummary;
+  private tokenUsage?: AgentTokenUsageSummary;
 
   constructor(private readonly contextIdentity: AgentObservationTurnContext) {
     this.updatedAt = new Date().toISOString();
@@ -2483,11 +2489,13 @@ class AgentObservationSemanticReducer {
     degraded: boolean,
   ): SemanticMutation {
     const { event } = observation;
+    const telemetryChanged = this.updateTelemetry(observation.progress.summary);
     if (event.type === "usage") {
+      this.updatedAt = event.observedAt;
       return {
         entries: [],
-        checkpoint: false,
-        current: undefined,
+        checkpoint: telemetryChanged,
+        current: telemetryChanged ? this.current(gaps, degraded) : undefined,
         observedAt: event.observedAt,
       };
     }
@@ -2550,6 +2558,7 @@ class AgentObservationSemanticReducer {
       || toolBoundary
       || firstUnknown
       || event.type === "turn_end"
+      || telemetryChanged
       || textBytes - this.lastCheckpointTextBytes >= responseCheckpointBytes
       || Number.isFinite(now) && now - this.lastCheckpointAt >= checkpointIntervalMs;
     if (checkpoint) {
@@ -2571,10 +2580,27 @@ class AgentObservationSemanticReducer {
     return { entries, checkpoint: true, current: undefined, observedAt: at };
   }
 
-  terminal(at: string): SemanticMutation {
+  terminal(
+    result: AgentTurnResult,
+    gaps: number,
+    degraded: boolean,
+  ): SemanticMutation {
+    const at = result.timing.finishedAt;
     this.updatedAt = at;
+    this.updateTelemetry(result.summary);
     const entries = this.closeAll();
-    return { entries, checkpoint: true, current: undefined, observedAt: at };
+    return {
+      entries,
+      checkpoint: true,
+      current: this.current(gaps, degraded, {
+        phase: "settled",
+        state: "sealed",
+        ...(result.responseText.length === 0
+          ? {}
+          : { response: excerpt(result.responseText, currentResponseBytes, "tail") }),
+      }),
+      observedAt: at,
+    };
   }
 
   gap(
@@ -2611,7 +2637,11 @@ class AgentObservationSemanticReducer {
     };
   }
 
-  private current(gaps: number, degraded: boolean): AgentObservationCurrent {
+  private current(
+    gaps: number,
+    degraded: boolean,
+    terminal: Partial<Pick<AgentObservationCurrent, "phase" | "response" | "state">> = {},
+  ): AgentObservationCurrent {
     const active = [...this.tools.values()]
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
     const selected = active.slice(-2).map(({ sourceSequence: _sourceSequence, ...tool }) => tool);
@@ -2621,12 +2651,16 @@ class AgentObservationSemanticReducer {
       attemptId: this.contextIdentity.attemptId,
       turn: this.contextIdentity.turn,
       promptKind: this.contextIdentity.promptKind,
-      phase,
+      phase: terminal.phase ?? phase,
       updatedAt: this.updatedAt,
       ...(this.fenced ? { postFence: true } : {}),
-      ...(segment?.channel === "response" && segment.text
+      ...(terminal.response
+        ? { response: terminal.response }
+        : segment?.channel === "response" && segment.text
         ? { response: semanticExcerpt(segment, currentResponseBytes) }
         : {}),
+      ...(this.context === undefined ? {} : { context: this.context }),
+      ...(this.tokenUsage === undefined ? {} : { tokenUsage: this.tokenUsage }),
       ...(segment && segment.channel !== "response" && segment.text
         ? {
             intent: {
@@ -2644,10 +2678,20 @@ class AgentObservationSemanticReducer {
             },
           }
         : {}),
-      state: "recording",
+      state: terminal.state ?? "recording",
       completeness: degraded ? "degraded" : "complete",
       gaps,
     };
+  }
+
+  private updateTelemetry(summary: AgentTurnObservation["progress"]["summary"]): boolean {
+    const changed = !equalTelemetry(this.context, summary.context)
+      || !equalTelemetry(this.tokenUsage, summary.tokenUsage);
+    if (summary.context === undefined) delete this.context;
+    else this.context = summary.context;
+    if (summary.tokenUsage === undefined) delete this.tokenUsage;
+    else this.tokenUsage = summary.tokenUsage;
+    return changed;
   }
 
   private phase(): AgentObservationPhase {
@@ -2683,6 +2727,10 @@ class AgentObservationSemanticReducer {
       ...(this.fenced ? { postFence: true } : {}),
     }];
   }
+}
+
+function equalTelemetry(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 class AgentTraceSpoolWriter {

@@ -265,9 +265,19 @@ function daemonControlFailure(intent: DaemonControlIntent, failure: RunSessionCo
       || failure.type === "attempt-not-found"
       ? `Control '${intent.type}' could not be applied to run '${intent.runId}'.`
       : failure.message;
-  return handlerFailure(code, message);
+  return handlerFailure(code, message, controlTargetAmbiguity(failure));
 }
 
-function handlerFailure(code: DaemonErrorCode, message: string): DaemonHandlerFailure {
-  return { code, message };
+function controlTargetAmbiguity(failure: RunSessionControlFailure): true | undefined {
+  return failure.type === "ambiguous-retry-target"
+    || failure.type === "ambiguous-cancel-target"
+    || failure.type === "ambiguous-steer-target"
+    || failure.type === "signal-target-ambiguous"
+    || failure.type === "dynamic-target-ambiguity"
+    ? true
+    : undefined;
+}
+
+function handlerFailure(code: DaemonErrorCode, message: string, ambiguity?: true): DaemonHandlerFailure {
+  return { code, message, ...(ambiguity ? { ambiguity } : {}) };
 }

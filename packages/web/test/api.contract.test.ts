@@ -7,7 +7,8 @@ import { join } from "node:path";
 const mockGetRuntimeHealth = vi.fn();
 const mockListRuns = vi.fn();
 const mockGetRunVisualizationSnapshot = vi.fn();
-const mockGetRunInspection = vi.fn();
+const mockInspectNode = vi.fn();
+const mockInspectAgentExecution = vi.fn();
 const mockReadArtifact = vi.fn();
 const mockRequestDaemonControl = vi.fn();
 const mockEnsureDaemonRunning = vi.fn();
@@ -18,7 +19,8 @@ vi.mock("@acpus/runtime", () => ({
   listRuns: (...args: unknown[]) => mockListRuns(...args),
   createWorkflowVisualizationOverlay: (ir: any) => ({ workflow: { name: ir.name }, nodes: [], groups: [] }),
   getRunVisualizationSnapshot: (...args: unknown[]) => mockGetRunVisualizationSnapshot(...args),
-  getRunInspection: (...args: unknown[]) => mockGetRunInspection(...args),
+  inspectNode: (...args: unknown[]) => mockInspectNode(...args),
+  inspectAgentExecution: (...args: unknown[]) => mockInspectAgentExecution(...args),
   readArtifact: (...args: unknown[]) => mockReadArtifact(...args),
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
 }));
@@ -145,7 +147,7 @@ describe("web API contract", () => {
         },
         overlay: {
           workflow: { name: "test", runId: "run_1", status: "running", dynamicVersion: 7 },
-          nodes: [{ nodeId: "step_1", kind: "task", path: ["step_1"], instances: [], frames: [], attempts: [], signalWaits: [], status: "completed" }],
+          nodes: [{ nodeId: "step_1", target: "step_1", kind: "task", path: ["step_1"], instances: [], frames: [], attempts: [], signalWaits: [], status: "completed" }],
           groups: [],
         },
         controls: {
@@ -191,12 +193,10 @@ describe("web API contract", () => {
   });
 
   describe("GET /api/runs/:id/nodes/:target", () => {
-    it("requests the Runtime execution projection with context and performs no artifact reads", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionOk(executionInspection()));
-      const selectorContext = [{ nodeId: "items", kind: "fanout", itemIndex: 1 }];
-      const context = Buffer.from(JSON.stringify(selectorContext)).toString("base64url");
+    it("requests the Runtime execution projection by canonical target and performs no artifact reads", async () => {
+      mockInspectAgentExecution.mockResolvedValue(inspectionOk(executionInspection()));
 
-      const res = await app.request(`/api/runs/run_1/nodes/review~abc/execution?context=${context}`);
+      const res = await app.request("/api/runs/run_1/nodes/%401a2b3c4d5e6f/execution");
 
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
@@ -219,8 +219,7 @@ describe("web API contract", () => {
             totalTokens: 125,
           },
           output: { tail: "partial response", totalBytes: 16, truncated: false },
-          toolCallCount: 4,
-          lastToolCalls: [{
+          recentTools: [{
             turn: 2,
             toolCallId: "tool_1",
             toolName: "read_file",
@@ -228,26 +227,22 @@ describe("web API contract", () => {
             durationMs: 20,
             inputPreview: "README.md",
           }],
-          recentToolsIncomplete: true,
         },
       });
-      expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
+      expect(mockInspectAgentExecution).toHaveBeenCalledWith("/tmp/acpus-web-test", {
         runId: "run_1",
-        mode: "execution",
-        target: "review~abc",
-        context: selectorContext,
+        target: "@1a2b3c4d5e6f",
       });
       expect(mockReadArtifact).not.toHaveBeenCalled();
     });
 
     it("maps Runtime execution unavailability to Web-owned copy", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionOk({
+      mockInspectAgentExecution.mockResolvedValue(inspectionOk({
         ...executionInspection(),
         available: false,
         reason: "not-started",
         summary: { status: "not_started" },
-        lastToolCalls: [],
-        recentToolsIncomplete: false,
+        recentTools: [],
       }));
 
       const res = await app.request("/api/runs/run_1/nodes/review~abc/execution");
@@ -262,7 +257,7 @@ describe("web API contract", () => {
     });
 
     it("returns a conflict for an ambiguous execution target", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionErr({
+      mockInspectAgentExecution.mockResolvedValue(inspectionErr({
         type: "target-ambiguous",
         runId: "run_1",
         target: "review",
@@ -282,11 +277,9 @@ describe("web API contract", () => {
       });
     });
 
-    it("delegates target and selector context to runtime inspection", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection()));
-      const selectorContext = [{ nodeId: "items", kind: "fanout", itemIndex: 1 }];
-      const context = Buffer.from(JSON.stringify(selectorContext)).toString("base64url");
-      const res = await app.request(`/api/runs/run_1/nodes/review~abc?context=${context}`);
+    it("delegates a deep canonical target to narrow runtime inspection", async () => {
+      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection()));
+      const res = await app.request("/api/runs/run_1/nodes/%401a2b3c4d5e6f");
 
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
@@ -302,11 +295,9 @@ describe("web API contract", () => {
           artifacts: [],
         },
       });
-      expect(mockGetRunInspection).toHaveBeenCalledWith("/tmp/acpus-web-test", {
+      expect(mockInspectNode).toHaveBeenCalledWith("/tmp/acpus-web-test", {
         runId: "run_1",
-        mode: "details",
-        target: "review~abc",
-        context: selectorContext,
+        target: "@1a2b3c4d5e6f",
       });
     });
 
@@ -325,7 +316,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path,
       };
-      mockGetRunInspection.mockResolvedValue(inspectionOk(targetInspection({
+      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection({
         prompt: { kind: "artifact", artifactId: artifact.id, path, mediaType: artifact.mediaType, field: "prompt" },
         artifacts: [artifact],
       })));
@@ -347,17 +338,8 @@ describe("web API contract", () => {
       expect(mockReadArtifact).toHaveBeenCalledWith(cwd, "run_1", artifact.id);
     });
 
-    it("rejects fanout inspection context without an item index", async () => {
-      const context = Buffer.from(JSON.stringify([{ nodeId: "items", kind: "fanout" }])).toString("base64url");
-      const res = await app.request(`/api/runs/run_1/nodes/step_1?context=${context}`);
-
-      expect(res.status).toBe(400);
-      const body = await res.json() as JsonBody;
-      expect(body.error.code).toBe("invalid_context");
-    });
-
     it("returns 404 for unknown run", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockResolvedValue(inspectionErr({
         type: "run-not-found",
         runId: "nonexistent",
         message: "Run 'nonexistent' was not found.",
@@ -370,7 +352,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for an unknown inspection target", async () => {
-      mockGetRunInspection.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockResolvedValue(inspectionErr({
         type: "target-not-found",
         runId: "run_1",
         target: "missing",
@@ -385,7 +367,7 @@ describe("web API contract", () => {
 
     it("does not expose inspection storage failures", async () => {
       const cause = new Error("/secret/runtime.db EIO");
-      mockGetRunInspection.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockResolvedValue(inspectionErr({
         type: "inspection-read-failed",
         runId: "run_1",
         message: cause.message,
@@ -890,8 +872,7 @@ function executionInspection(): JsonBody {
       truncated: false,
       runtimeOnly: "private",
     },
-    toolCallCount: 4,
-    lastToolCalls: [{
+    recentTools: [{
       turn: 2,
       toolCallId: "tool_1",
       toolName: "read_file",
@@ -900,22 +881,19 @@ function executionInspection(): JsonBody {
       inputPreview: "README.md",
       runtimeOnly: "private",
     }],
-    recentToolsIncomplete: true,
     runtimeOnly: "private",
   };
 }
 
 function targetInspection(overrides: {
-  progress?: JsonBody[];
   prompt?: JsonBody;
   artifacts?: JsonBody[];
   summary?: JsonBody;
-  signalWaits?: JsonBody[];
   availableControls?: JsonBody[];
 } = {}): JsonBody {
   return {
     schemaVersion: 2,
-    kind: "details",
+    kind: "node",
     run: {
       id: "run_1",
       name: "review-workflow",
@@ -925,8 +903,14 @@ function targetInspection(overrides: {
       updatedAt: "2026-07-01T00:00:02.000Z",
       execution: { state: "active", lastStatus: "running" },
     },
-    target: { kind: "dynamic-node", id: "review~abc" },
-    staticNode: { nodeId: "review", kind: "agent", order: 0, path: ["review"], agent: "reviewer" },
+    subject: {
+      targetKind: "dynamic-node",
+      id: "review~abc",
+      ref: "@1a2b3c4d5e6f",
+      label: "review",
+      kind: "agent",
+      nodeId: "review",
+    },
     summary: {
       targetKind: "dynamic-node",
       targetId: "review~abc",
@@ -947,26 +931,6 @@ function targetInspection(overrides: {
       ...(overrides.prompt ? { prompt: overrides.prompt } : {}),
       artifacts: overrides.artifacts ?? [],
     },
-    items: [],
-    instances: [{
-      nodeKey: "review~abc",
-      nodeId: "review",
-      status: "running",
-      createdAt: "2026-07-01T00:00:00.000Z",
-      updatedAt: "2026-07-01T00:00:02.000Z",
-    }],
-    frames: [],
-    attempts: [{
-      attemptId: "attempt_1",
-      nodeKey: "review~abc",
-      nodeId: "review",
-      attemptNo: 1,
-      status: "started",
-      startedAt: "2026-07-01T00:00:00.000Z",
-    }],
-    signalWaits: overrides.signalWaits ?? [],
-    executionMetadata: [],
-    progress: overrides.progress ?? [],
     artifacts: overrides.artifacts ?? [],
     availableControls: overrides.availableControls ?? [{ type: "cancel", target: "review~abc" }],
   };

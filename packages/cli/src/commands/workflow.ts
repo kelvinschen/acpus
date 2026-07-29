@@ -2,10 +2,11 @@ import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
+import { tryParseDurationMs } from "@acpus/core/ir";
 import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../errors.js";
-import { followRun, parseFollowInterval } from "../run-follow.js";
+import { followRun } from "../run-follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
 import { summarizeWorkflow, writeDiagnostics, writeJsonLine, writeResult } from "../output.js";
 import { prepareWorkflowForCli, workflowPreparationCliError } from "../workflow-preparation.js";
@@ -38,6 +39,9 @@ type RunWorkflowOptions = WorkflowInputOptions & {
   follow?: boolean;
   interval?: string;
 };
+
+const defaultWorkflowFollowIntervalMs = 3_000;
+const minimumWorkflowFollowIntervalMs = 250;
 
 type VizWorkflowOptions = WorkflowCatalogScopeOptions & {
   out?: string;
@@ -219,7 +223,7 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
   if (!options.follow && options.interval !== undefined) throw usageError("--interval requires --follow.");
-  const intervalMs = options.follow ? parseFollowInterval(options.interval) : undefined;
+  const pollIntervalMs = options.follow ? parseWorkflowFollowInterval(options.interval) : undefined;
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const { prepared, catalog } = await prepareWorkflowForCli({
@@ -267,20 +271,27 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
   }
   const outcome = await followRun(ctx.cwd, {
-    runId: admitted.id,
-    mode: "overview",
-    ...(intervalMs === undefined ? {} : { intervalMs }),
+    view: { kind: "run", runId: admitted.id },
   }, {
     phase: "run",
     format: structured ? "ndjson" : "text",
     stdout: ctx.stdout,
     stderr: ctx.stderr,
+    ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
   });
   if (outcome.kind !== "done") {
     ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
     return;
   }
   ctx.setExitCode(outcome.run.status === "failed" || outcome.run.status === "canceled" ? 1 : 0);
+}
+
+function parseWorkflowFollowInterval(value: string | undefined): number {
+  if (value === undefined) return defaultWorkflowFollowIntervalMs;
+  const parsed = tryParseDurationMs(value);
+  if (parsed.isErr()) throw usageError("--interval must be a duration such as 250ms, 1s, or 5s.");
+  if (parsed.value < minimumWorkflowFollowIntervalMs) throw usageError("--interval must be at least 250ms.");
+  return parsed.value;
 }
 
 async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {

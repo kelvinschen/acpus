@@ -81,9 +81,7 @@ describe("CLI result type", () => {
         state: "applied",
         runId: "run_1",
         steerId: "cli:1",
-        requestedTarget: "review",
-        target: "review~abc",
-        fencedAttemptId: "attempt_1",
+        target: "review",
         continuation: "queued",
       },
     });

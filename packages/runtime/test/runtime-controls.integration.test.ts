@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, getRunInspection, getRunVisualizationSnapshot, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
+import { getRun, getRunVisualizationSnapshot, inspectNode, inspectRun, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
@@ -128,8 +128,8 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
-      const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
-      expect(inspection.isOk() && inspection.value.kind === "snapshot" ? inspection.value.run.fork : undefined).toEqual({
+      const inspection = await inspectRun(workspace, { runId: fork!.run.id });
+      expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({
         sourceRunId: source.run.id,
       });
 
@@ -423,7 +423,7 @@ describe.concurrent("runtime controls and recovery", () => {
         store?.close();
       }
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true, extra: true } });
-      const inspection = await getRunInspection(workspace, { runId: fork!.run.id, mode: "overview" });
+      const inspection = await inspectRun(workspace, { runId: fork!.run.id });
       expect(inspection.isOk() ? inspection.value : undefined).toMatchObject({
         run: { id: fork!.run.id, name: "cli-task-replacement" },
       });
@@ -522,32 +522,30 @@ describe.concurrent("runtime controls and recovery", () => {
   it("projects selected cancel only while the exact dynamic target is controllable", async () => {
     await withRuntimeWorkspace("runtime-selected-cancel-projection", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
-      const before = await getRunInspection(workspace, {
+      const before = await inspectNode(workspace, {
         runId: awaiting.run.id,
-        mode: "details",
         target: "approve",
       });
-      expect(before.isOk() && before.value.kind === "details"
+      expect(before.isOk()
         ? before.value.availableControls
         : undefined).toEqual([
         { type: "cancel", target: expect.any(String) },
       ]);
-      const cancelTarget = before.isOk() && before.value.kind === "details"
+      const cancelTarget = before.isOk()
         ? before.value.availableControls[0]?.target
         : undefined;
       expect(cancelTarget).toEqual(
-        before.isOk() && before.value.kind === "details"
+        before.isOk()
           ? before.value.summary.nodeKey
           : undefined,
       );
 
       await signalRun(workspace, awaiting.run.id, "approve", { ok: true });
-      const after = await getRunInspection(workspace, {
+      const after = await inspectNode(workspace, {
         runId: awaiting.run.id,
-        mode: "details",
         target: "approve",
       });
-      expect(after.isOk() && after.value.kind === "details"
+      expect(after.isOk()
         ? after.value.availableControls
         : undefined).toEqual([]);
     });

@@ -1,6 +1,6 @@
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getRunInspection } from "@acpus/runtime";
+import { inspectTarget } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
@@ -22,33 +22,24 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       const records = result.stdout.trim().split("\n").map(line => JSON.parse(line));
       expect(records[0]).toMatchObject({ schemaVersion: 1, ok: true, phase: "run", kind: "admitted" });
       expect(records[0].run.id).toMatch(runIdPattern);
-      expect(records[1]).toMatchObject({
-        schemaVersion: 2,
-        ok: true,
-        phase: "run",
-        kind: "snapshot",
-        document: {
-          schemaVersion: 2,
-          kind: "snapshot",
-          run: { id: records[0].run.id },
-        },
-      });
-      expect(records.slice(2, -1).every(record =>
-        record.schemaVersion === 2
+      const views = records.slice(1);
+      expect(views.every(record => record.schemaVersion === 2
+        && record.ok === true
         && record.phase === "run"
-        && (record.kind === "delta" || record.kind === "resync")
-      )).toBe(true);
-      expect(records.at(-1)).toMatchObject({
+        && record.kind === "view"
+        && record.document?.kind === "snapshot"
+        && record.document.run?.id === records[0].run.id)).toBe(true);
+      expect(views.at(-1)).toMatchObject({
         schemaVersion: 2,
         ok: true,
         phase: "run",
-        kind: "done",
-        run: {
-          status: "completed",
+        kind: "view",
+        document: {
+          run: { status: "completed" },
+          output: { ready: true },
         },
-        output: { ready: true },
       });
-      expect(records.filter(record => record.output !== undefined)).toHaveLength(1);
+      expect(views.filter(record => record.document?.output !== undefined)).toHaveLength(1);
       await expect(access(join(home, ".acpus", "workspaces"))).resolves.toBeUndefined();
       await expect(access(join(workspace, ".acpus", ".local"))).rejects.toMatchObject({ code: "ENOENT" });
     });
@@ -77,7 +68,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       });
       const runId = admission.run.id as string;
       await waitForAwaitingSignal(workspace, runId, "approval");
-      const followedPromise = runSourceCli(workspace, ["runs", "inspect", runId, "--follow", "--interval", "250ms"]);
+      const followedPromise = runSourceCli(workspace, ["runs", "inspect", runId, "--follow"]);
       const [overview, summary, timeline] = await Promise.all([
         runSourceCli(workspace, ["runs", "inspect", runId]),
         runSourceCli(workspace, ["runs", "inspect", runId, "--target", "approval", "--json"]),
@@ -85,6 +76,12 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       ]);
       expect(overview.exitCode, overview.stdout || overview.stderr).toBe(0);
       expect(overview.stderr).toBe("");
+      expect(summary.exitCode, summary.stdout || summary.stderr).toBe(0);
+      expect(summary.stderr).toBe("");
+      const summaryJson = JSON.parse(summary.stdout);
+      const signalRef = summaryJson.subject.ref as string;
+      expect(signalRef).toMatch(/^@[0-9a-f]{12}$/);
+
       expect(overview.stdout).toContain("inspect-composite-smoke  awaiting");
       expect(overview.stdout).toContain("Tree:");
       expect(overview.stdout).toContain("route · if");
@@ -96,18 +93,17 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(overview.stdout).toContain("├┄ ✓ item[0]");
       expect(overview.stdout).toContain("refine_item · loop · 1 round");
       expect(overview.stdout).toContain("└┄ ✓ round 1");
-      expect(overview.stdout).toContain("approval · signal · awaiting");
+      expect(overview.stdout).toContain(`approval · signal · ${signalRef} · awaiting`);
       expect(overview.stdout).toContain("Attention:");
-      expect(overview.stdout).toContain(`Signal: acpus runs signal ${runId} --target approval`);
+      expect(overview.stdout).toContain(
+        `Signal: acpus runs signal ${runId} --target ${signalRef} --payload '<json>'`,
+      );
 
-      expect(summary.exitCode, summary.stdout || summary.stderr).toBe(0);
-      expect(summary.stderr).toBe("");
-      expect(JSON.parse(summary.stdout)).toMatchObject({
+      expect(summaryJson).toMatchObject({
         ok: true,
         phase: "inspect",
-        schemaVersion: 2,
         kind: "target",
-        subject: { targetKind: "static-node", id: "approval", kind: "signal" },
+        subject: { ref: signalRef, kind: "signal" },
         state: { status: "awaiting" },
         availableActions: [
           { kind: "signal" },
@@ -120,12 +116,11 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(JSON.parse(timeline.stdout)).toMatchObject({
         ok: true,
         phase: "inspect",
-        schemaVersion: 2,
         kind: "timeline",
-        subject: { targetKind: "static-node", id: "approval", kind: "signal" },
+        subject: { ref: signalRef, kind: "signal" },
         state: { status: "awaiting" },
         current: { kind: "signal" },
-        recent: { entries: expect.any(Array) },
+        recent: { entries: expect.any(Array), page: 1, limit: 12 },
       });
 
       const signaled = await runSourceCli(workspace, [
@@ -133,7 +128,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         "signal",
         runId,
         "--target",
-        "approval",
+        signalRef,
         "--payload",
         '{"approved":true,"note":"smoke-ok"}',
         "--json",
@@ -149,21 +144,26 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
           type: "signal",
           state: "consumed",
           runId,
-          requestedTarget: "approval",
+          target: signalRef,
           validation: { kind: "schema" },
         },
         run: { id: runId },
       });
-      expect(signaledJson.control.target).toMatch(/^approval~/);
+      expect(signaledJson.control.target).toBe(signalRef);
       expect(signaledJson).not.toHaveProperty("payload");
 
       const followed = await followedPromise;
       expect(followed.exitCode, followed.stdout || followed.stderr).toBe(0);
       expect(followed.stderr).toBe("");
-      expect(followed.stdout).toContain("inspect-composite-smoke  completed");
-      expect(followed.stdout).toContain("Output:");
-      expect(followed.stdout).toContain('"audit": "audited:primary"');
-      expect(followed.stdout).toContain('"note": "smoke-ok"');
+      expect(followed.stdout).toContain("inspect-composite-smoke  awaiting");
+
+      const completed = await runSourceCli(workspace, ["runs", "inspect", runId, "--follow"]);
+      expect(completed.exitCode, completed.stdout || completed.stderr).toBe(0);
+      expect(completed.stderr).toBe("");
+      expect(completed.stdout).toContain("inspect-composite-smoke  completed");
+      expect(completed.stdout).toContain("Output:");
+      expect(completed.stdout).toContain('"audit": "audited:primary"');
+      expect(completed.stdout).toContain('"note": "smoke-ok"');
     });
   });
 
@@ -171,7 +171,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     const deadline = Date.now() + 10_000;
     let lastStatus: string | undefined;
     while (Date.now() <= deadline) {
-      const inspected = await getRunInspection(workspace, { runId, mode: "target", target });
+      const inspected = await inspectTarget(workspace, { runId, target });
       if (inspected.isOk() && inspected.value.kind === "target") {
         lastStatus = inspected.value.state.status;
         if (lastStatus === "awaiting") return;
@@ -200,11 +200,11 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
         expect(records.at(-1), `terminal for process ${index}`).toMatchObject({
           ok: true,
           phase: "run",
-          kind: "done",
-          run: {
-            status: "completed",
+          kind: "view",
+          document: {
+            run: { status: "completed" },
+            output: { ok: true },
           },
-          output: { ok: true },
         });
       }
       expect(runIds.size).toBe(results.length);
