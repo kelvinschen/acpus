@@ -68,7 +68,8 @@ try {
   assert.deepEqual(pickRunResult(records.at(-1)), {
     ok: true,
     phase: "inspect",
-    kind: "done",
+    kind: "view",
+    name: "cli-concurrency-short-task",
     status: "completed",
     output: { ok: true },
   });
@@ -78,13 +79,15 @@ try {
 }
 
 function pickRunResult(record) {
+  const run = record?.document?.run ?? record?.run;
+  const output = record?.document?.output ?? record?.output;
   return {
     ok: record?.ok,
     phase: record?.phase,
     kind: record?.kind,
-    status: record?.run?.status,
-    ...(record?.run?.name === undefined ? {} : { name: record.run.name }),
-    ...(record?.output === undefined ? {} : { output: record.output }),
+    status: run?.status,
+    ...(run?.name === undefined ? {} : { name: run.name }),
+    ...(output === undefined ? {} : { output }),
   };
 }
 
