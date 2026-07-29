@@ -28,8 +28,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`; optional `--json`. |
 | `doctor` | Read-only runtime and authoring health. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
-| `skill install` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
-| `skill uninstall` | One of `--project` or `--global`; `--agent <universal[,claude]>`; optional `--dry-run`. Missing selections are interactive only in a TTY. |
+| `skill install` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
+| `skill uninstall` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
@@ -169,11 +169,14 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Skill resource resolution MUST remain inside the canonical bundled root and reject symbolic links, special files, and path traversal.
 - Skill read MUST NOT prompt.
 - Skill resource failures MUST use phase `skill` and exit 1.
-- In an interactive stdin/stdout/stderr TTY, skill install/uninstall MUST prompt on stderr only for a missing scope or Agent selection; project and both Agents are initially selected, and cancellation fails as usage before mutation.
-- Outside such a TTY, skill install/uninstall MUST require exactly one explicit scope and an explicit `--agent` value before mutation.
+- Without `--dir`, skill install/uninstall in an interactive stdin/stdout/stderr TTY MUST prompt on stderr only for a missing scope or Agent selection; project and both Agents are initially selected, and cancellation fails as usage before mutation.
+- Outside such a TTY, skill install/uninstall MUST require either `--dir` or exactly one explicit scope with an explicit `--agent` value before mutation.
+- `--dir` MUST reject an empty value and any combination with `--project`, `--global`, or `--agent` as usage before mutation.
 - `--agent` MUST parse a comma-separated list by trimming and deduplicating values, reject empty or unknown values, and process selected values in `universal`, `claude` order.
 - Project skill targets MUST be `<cwd>/.agents/skills/acpus` for `universal` and `<cwd>/.claude/skills/acpus` for `claude`.
 - Global skill targets MUST be `<home>/.agents/skills/acpus` for `universal` and `<home>/.claude/skills/acpus` for `claude`.
+- A custom skill target MUST resolve a relative `--dir` from CLI cwd, retain an absolute `--dir`, and append `acpus`.
+- Custom skill text output MUST identify both its scope and target label as `custom`.
 - Skill install MUST recursively create each selected missing skills root immediately before installation; dry-run reports `would-install` without creating it.
 - A selected install root that is a file, an invalid symlink, or cannot be created MUST fail that target without preventing other selected targets from being processed.
 - Skill install/uninstall MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.

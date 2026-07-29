@@ -135,12 +135,14 @@ The command ensures the workspace daemon is running, binds to localhost and a ra
 ## Bundled skill and version
 
 ```sh
-acpus skill install [--project | --global] [--agent <universal|claude|universal,claude>] [--dry-run]
-acpus skill uninstall [--project | --global] [--agent <universal|claude|universal,claude>] [--dry-run]
+acpus skill install [--project | --global | --dir <skills-root>] [--agent <universal|claude|universal,claude>] [--dry-run]
+acpus skill uninstall [--project | --global | --dir <skills-root>] [--agent <universal|claude|universal,claude>] [--dry-run]
 acpus --version
 ```
 
-Skill commands manage the Acpus skill bundled with this CLI and refuse targets not identifiable as Acpus skills. In a terminal they prompt only for missing scope or Agent selections. Automation must provide `--project` or `--global` and `--agent`; selected roots are `.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for Claude under the project or home directory. Install creates missing selected roots. They do not install or remove the npm package.
+Skill commands manage the Acpus skill bundled with this CLI and refuse targets not identifiable as Acpus skills. In a terminal they prompt only for missing scope or Agent selections. Scoped automation must provide `--project` or `--global` and `--agent`; selected roots are `.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for Claude under the project or home directory. Install creates missing selected roots. They do not install or remove the npm package.
+
+Alternatively, `--dir <skills-root>` selects one custom skills root without an Agent selection and installs or uninstalls `<skills-root>/acpus`. 
 
 ## Artifact registry
 

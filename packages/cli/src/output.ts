@@ -177,7 +177,7 @@ export type SkillCommandResult = {
   skillName: string;
   targetName: string;
   version: string;
-  scope: SkillScope;
+  scope: SkillScope | "custom";
   dryRun: boolean;
   targets: SkillTarget[];
   installations?: SkillInstallation[];

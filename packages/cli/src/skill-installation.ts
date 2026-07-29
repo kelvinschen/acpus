@@ -15,24 +15,33 @@ export type SkillSelection = {
   agents: SkillAgent[];
 };
 
-export type SkillTarget = {
+export type ScopedSkillTarget = {
   scope: SkillScope;
   agent: SkillAgent;
   rootPath: string;
   targetPath: string;
 };
 
+export type CustomSkillTarget = {
+  scope: "custom";
+  agent: "custom";
+  rootPath: string;
+  targetPath: string;
+};
+
+export type SkillTarget = ScopedSkillTarget | CustomSkillTarget;
+
 export type SkillInstallation = {
-  scope: SkillScope;
-  agent: SkillAgent;
+  scope: SkillTarget["scope"];
+  agent: SkillTarget["agent"];
   targetPath: string;
   status: "installed" | "updated" | "would-install" | "would-update" | "failed";
   error?: string;
 };
 
 export type SkillRemoval = {
-  scope: SkillScope;
-  agent: SkillAgent;
+  scope: SkillTarget["scope"];
+  agent: SkillTarget["agent"];
   targetPath: string;
   status: "removed" | "would-remove" | "missing" | "skipped" | "failed";
   error?: string;
@@ -46,7 +55,7 @@ export type SkillReplaceFailure = {
   published: boolean;
 };
 
-export function skillTargets(cwd: string, home: string, selection: SkillSelection): SkillTarget[] {
+export function skillTargets(cwd: string, home: string, selection: SkillSelection): ScopedSkillTarget[] {
   const basePath = selection.scope === "project" ? cwd : home;
   const selected = new Set(selection.agents);
   return skillAgents
@@ -54,13 +63,18 @@ export function skillTargets(cwd: string, home: string, selection: SkillSelectio
     .map(agent => target(selection.scope, agent, join(basePath, agent === "universal" ? ".agents" : ".claude", "skills")));
 }
 
+export function customSkillTarget(cwd: string, directory: string): CustomSkillTarget {
+  const rootPath = resolve(cwd, directory);
+  return { scope: "custom", agent: "custom", rootPath, targetPath: join(rootPath, ACPUS_SKILL) };
+}
+
 export async function existingSkillRootTargets(
   cwd: string,
   home: string,
   scopes: readonly SkillScope[],
-): Promise<SkillTarget[]> {
+): Promise<ScopedSkillTarget[]> {
   const candidates = scopes.flatMap(scope => skillTargets(cwd, home, { scope, agents: [...skillAgents] }));
-  const existing: SkillTarget[] = [];
+  const existing: ScopedSkillTarget[] = [];
   for (const candidate of candidates) {
     if (await isDirectory(candidate.rootPath)) existing.push(candidate);
   }
@@ -287,7 +301,7 @@ function failedInstallation(target: SkillTarget, error: string): SkillInstallati
   return { scope: target.scope, agent: target.agent, targetPath: target.targetPath, status: "failed", error };
 }
 
-function target(scope: SkillScope, agent: SkillAgent, rootPath: string): SkillTarget {
+function target(scope: SkillScope, agent: SkillAgent, rootPath: string): ScopedSkillTarget {
   const absoluteRoot = resolve(rootPath);
   return { scope, agent, rootPath: absoluteRoot, targetPath: join(absoluteRoot, ACPUS_SKILL) };
 }

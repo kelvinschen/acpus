@@ -13,6 +13,7 @@ import {
   type SkillResourceTreeNode,
 } from "../skill-content.js";
 import {
+  customSkillTarget,
   installAcpusSkill,
   skillAgents,
   skillTargets,
@@ -41,7 +42,13 @@ type SkillOptions = {
   project?: boolean;
   global?: boolean;
   agent?: string;
+  dir?: string;
   dryRun?: boolean;
+};
+
+type ResolvedSkillSelection = SkillSelection | {
+  scope: "custom";
+  directory: string;
 };
 
 export function createSkillCommand(ctx: SkillCommandContext): Command {
@@ -71,7 +78,7 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     .action(async (options: SkillOptions) => {
       const selection = await resolveSelection(options, "install", ctx);
       const source = await resolveBundledSkillRoot();
-      const targets = skillTargets(ctx.cwd, homedir(), selection);
+      const targets = resolveTargets(selection, ctx.cwd);
       const installations = await installAcpusSkill(source, targets, options.dryRun === true);
       const ok = installations.every(result => result.status !== "failed");
       ctx.setExitCode(writeResult({
@@ -86,7 +93,7 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     .description("Remove installed copies of the bundled Acpus skill.")
     .action(async (options: SkillOptions) => {
       const selection = await resolveSelection(options, "uninstall", ctx);
-      const targets = skillTargets(ctx.cwd, homedir(), selection);
+      const targets = resolveTargets(selection, ctx.cwd);
       const removals = await uninstallAcpusSkill(targets, options.dryRun === true);
       const ok = removals.every(result => result.status !== "failed" && result.status !== "skipped");
       ctx.setExitCode(writeResult({
@@ -138,14 +145,23 @@ function skillLeaf(name: "install" | "uninstall"): Command {
     .option("--project", `${name} in project skills directories`)
     .option("--global", `${name} in global skills directories`)
     .option("--agent <agents>", "target universal and/or claude agents (comma-separated)")
+    .option("--dir <skills-root>", `${name} under a custom skills root directory`)
     .option("--dry-run", `show what would be ${name === "install" ? "installed" : "removed"} without changing files`);
 }
 
 async function resolveSelection(
-  options: Pick<SkillOptions, "project" | "global" | "agent">,
+  options: Pick<SkillOptions, "project" | "global" | "agent" | "dir">,
   action: "install" | "uninstall",
   ctx: SkillCommandContext,
-): Promise<SkillSelection> {
+): Promise<ResolvedSkillSelection> {
+  if (options.dir !== undefined) {
+    if (options.project === true || options.global === true || options.agent !== undefined) {
+      throw usageError("--dir cannot be combined with --project, --global, or --agent.");
+    }
+    if (options.dir.trim().length === 0) throw usageError("--dir must not be empty.");
+    return { scope: "custom", directory: options.dir };
+  }
+
   let scope = explicitScope(options);
   let agents = options.agent === undefined ? undefined : parseAgents(options.agent);
   if (scope !== undefined && agents !== undefined) return { scope, agents };
@@ -186,6 +202,12 @@ async function resolveSelection(
   return { scope, agents };
 }
 
+function resolveTargets(selection: ResolvedSkillSelection, cwd: string): SkillTarget[] {
+  return selection.scope === "custom"
+    ? [customSkillTarget(cwd, selection.directory)]
+    : skillTargets(cwd, homedir(), selection);
+}
+
 function explicitScope(options: Pick<SkillOptions, "project" | "global">): SkillScope | undefined {
   if (options.project === true && options.global === true) throw usageError("Pass only one of --project or --global.");
   if (options.project === true) return "project";
@@ -211,7 +233,7 @@ function canonicalAgents(agents: readonly SkillAgent[]): SkillAgent[] {
 
 function skillResult(
   action: "install" | "uninstall",
-  selection: SkillSelection,
+  selection: ResolvedSkillSelection,
   dryRun: boolean,
   targets: SkillTarget[],
   details: { installations: SkillInstallation[] } | { removals: SkillRemoval[] },

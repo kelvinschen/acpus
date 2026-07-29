@@ -110,6 +110,21 @@ describe("skill CLI contracts", () => {
     });
   });
 
+  it("installs into an explicit custom skills root without prompting", async () => {
+    await withPlainTestWorkspace("skill-custom-target", async workspace => {
+      const result = await runSkill(workspace, ["--dir", join(".custom", "skills")], true);
+      const target = join(workspace, ".custom", "skills", "acpus");
+
+      expect(result.exitCode).toBe(0);
+      expect(promptMocks.select).not.toHaveBeenCalled();
+      expect(promptMocks.multiselect).not.toHaveBeenCalled();
+      expect(osMocks.homedir).not.toHaveBeenCalled();
+      expect(result.stdout.text).toContain("Scope: custom\n");
+      expect(result.stdout.text).toContain(`installed\tcustom\t${target}`);
+      expect((await lstat(target)).isDirectory()).toBe(true);
+    });
+  });
+
   it("maps TTY cancellation to usage without creating files", async () => {
     await withPlainTestWorkspace("skill-tty-cancel", async workspace => {
       promptMocks.select.mockResolvedValueOnce(promptMocks.cancel);
@@ -135,12 +150,16 @@ describe("skill CLI contracts", () => {
     });
   });
 
-  it("rejects conflicting scopes, invalid agents, and removed options as usage", async () => {
+  it("rejects conflicting targets, invalid agents, empty custom roots, and unsupported options as usage", async () => {
     await withPlainTestWorkspace("skill-invalid-options", async workspace => {
       const invalid = [
         { args: ["--project", "--global", "--agent", "universal"], message: "Pass only one of --project or --global." },
         { args: ["--project", "--agent", "universal,,claude"], message: "without empty values" },
         { args: ["--project", "--agent", "codex"], message: "only universal and/or claude" },
+        { args: ["--dir", "skills", "--project"], message: "--dir cannot be combined" },
+        { args: ["--dir", "skills", "--global"], message: "--dir cannot be combined" },
+        { args: ["--dir", "skills", "--agent", "universal"], message: "--dir cannot be combined" },
+        { args: ["--dir", "   "], message: "--dir must not be empty" },
       ];
       for (const testCase of invalid) {
         const result = await runSkill(workspace, testCase.args);
@@ -149,7 +168,6 @@ describe("skill CLI contracts", () => {
       }
 
       for (const args of [
-        ["install", "--project", "--agent", "universal", "--dir", "skills"],
         ["install", "--project", "--agent", "universal", "--json"],
         ["uninstall", "--project", "--agent", "universal", "--json"],
       ]) {
@@ -159,6 +177,16 @@ describe("skill CLI contracts", () => {
         expect(result.stderr.text).toContain("unknown option");
       }
     });
+  });
+
+  it("documents the custom skills root option for install and uninstall", async () => {
+    for (const action of ["install", "uninstall"]) {
+      const result = await runCommand(process.cwd(), ["skill", action, "--help"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.text).toContain("--dir <skills-root>");
+      expect(result.stdout.text).toContain("custom skills root directory");
+      expect(result.stderr.text).toBe("");
+    }
   });
 
   it("trims, deduplicates, and canonically orders comma-separated agents", async () => {
@@ -203,6 +231,26 @@ describe("skill CLI contracts", () => {
       expect(result.stdout.text).toContain("would-install\tclaude");
       await expect(lstat(join(workspace, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(lstat(join(workspace, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("supports custom-root update and dry-run without creating a missing root", async () => {
+    await withPlainTestWorkspace("skill-custom-update", async workspace => {
+      const root = join(workspace, "custom-skills");
+      const target = join(root, "acpus");
+      await writeSkill(target, "0.0.0");
+
+      const updated = await runSkill(workspace, ["--dir", root]);
+      expect(updated.exitCode).toBe(0);
+      expect(updated.stdout.text).toContain(`updated\tcustom\t${target}`);
+      expect(parseAcpusSkillMetadata(await readFile(join(target, "SKILL.md"), "utf8")).version)
+        .toBe(getCliPackageInfo().version);
+
+      const missingRoot = join(workspace, "missing-skills");
+      const dryRun = await runSkill(workspace, ["--dir", missingRoot, "--dry-run"]);
+      expect(dryRun.exitCode).toBe(0);
+      expect(dryRun.stdout.text).toContain(`would-install\tcustom\t${join(missingRoot, "acpus")}`);
+      await expect(lstat(missingRoot)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 
@@ -304,6 +352,30 @@ describe("skill CLI contracts", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout.text).toContain(`would-remove\tuniversal\t${target}`);
       expect((await lstat(target)).isDirectory()).toBe(true);
+    });
+  });
+
+  it("removes an owned custom target and preserves unrelated custom content", async () => {
+    await withPlainTestWorkspace("skill-custom-uninstall", async workspace => {
+      const ownedRoot = join(workspace, "owned-skills");
+      const ownedTarget = join(ownedRoot, "acpus");
+      expect((await runSkill(workspace, ["--dir", ownedRoot])).exitCode).toBe(0);
+
+      const removed = await runSkill(workspace, ["--dir", ownedRoot], false, "uninstall");
+      expect(removed.exitCode).toBe(0);
+      expect(removed.stdout.text).toContain(`removed\tcustom\t${ownedTarget}`);
+      await expect(lstat(ownedTarget)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const foreignRoot = join(workspace, "foreign-skills");
+      const foreignTarget = join(foreignRoot, "acpus");
+      await mkdir(foreignTarget, { recursive: true });
+      const foreignSkill = "---\nname: another-skill\n---\n";
+      await writeFile(join(foreignTarget, "SKILL.md"), foreignSkill);
+
+      const skipped = await runSkill(workspace, ["--dir", foreignRoot], false, "uninstall");
+      expect(skipped.exitCode).toBe(1);
+      expect(skipped.stderr.text).toContain(`skipped\tcustom\t${foreignTarget}`);
+      await expect(readFile(join(foreignTarget, "SKILL.md"), "utf8")).resolves.toBe(foreignSkill);
     });
   });
 });
