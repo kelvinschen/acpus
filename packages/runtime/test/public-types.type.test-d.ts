@@ -1,92 +1,96 @@
 import { expectTypeOf, test } from "vitest";
+import {
+  DAEMON_PROTOCOL_VERSION,
+  createWorkflowVisualizationOverlay,
+  daemonEndpoint,
+  deleteRun,
+  getRun,
+  getRuntimeHealth,
+  getRunVisualizationSnapshot,
+  inspectAgentExecution,
+  inspectNode,
+  inspectTargetArtifacts,
+  listArtifacts,
+  listRuns,
+  observeInspection,
+  readInspection,
+  requestDaemonAdmitRun,
+  requestDaemonControl,
+  requestDaemonShutdown,
+  requestDaemonStatus,
+  startDaemonLoop,
+  tryLoadRuntimeConfiguration,
+  tryNormalizeForkInput,
+  tryNormalizeWorkflowInput,
+  tryValidateAgentOverrides,
+} from "@acpus/runtime";
 import type {
-  AgentCurrentActivity,
-  AgentDecisionState,
-  AgentInspectionState,
-  AgentOutputProcessing,
-  AgentTraceRecord,
-  AgentTurnArtifact,
-  AgentOverrideMap,
-  ArtifactRecord,
-  PreparedRunWorkflow,
-  RunDynamicAttempt,
-  RunDynamicDetails,
-  RunDynamicFrame,
-  RunDynamicGroupMember,
-  RunDynamicNodeInstance,
-  RunNodeProgress,
-  RunInspectionAgentExecutionDocument,
-  RunInspectionAgentExecutionToolCall,
-  RunInspectionAction,
-  RunInspectionCandidatesDocument,
-  RunInspectionControl,
-  RunInspectionDecisionRunSummary,
-  RunInspectionDetailedFailure,
-  RunInspectionError,
-  RunInspectionItem,
-  RunInspectionRaw,
-  RunInspectionRunSummary,
-  RunInspectionSnapshot,
-  RunInspectionScopeState,
-  RunInspectionStatus,
-  RunInspectionTargetSummaryDocument,
-  RunInspectionTimelineDocument,
-  RunInspectionTimelineEntry,
-  RunInspectionVisibility,
-  InspectAgentExecutionQuery,
-  InspectEvidenceQuery,
-  InspectNodeQuery,
-  InspectRawQuery,
-  InspectRunQuery,
-  InspectTargetArtifactsQuery,
-  InspectTargetQuery,
-  InspectTargetResult,
-  InspectTimelineQuery,
-  RunInspectionEvidenceCandidatesDocument,
-  RunInspectionEvidenceDocument,
-  RunInspectionNodeDocument,
-  RunInspectionTargetArtifactsDocument,
-  WatchInspectionEmission,
-  WatchInspectionQuery,
-  WatchInspectionView,
-  RunDynamicSignalWait,
-  RunDetails,
-  RunForkInfo,
-  RunRecord,
-  RunStatus,
-  RunWorkflowLockArtifact,
-  Sha256Digest,
-  WorkflowSourceBundle,
-  WorkflowSourceFile,
-  WorkflowSourceRef,
-  RuntimeHealthCheck,
-  RuntimeHealthReport,
-  RuntimePersistence,
-  RunVisualizationSnapshot,
-  RuntimeConfiguration,
-  RuntimeConfigurationFailure,
+  AdmitRunFailure,
   AgentHostPolicy,
   AgentHostPolicyFailure,
+  AgentOutputProcessing,
+  AgentOverrideMap,
+  AgentOverrideValidationFailure,
+  AgentTraceRecord,
+  AgentTurnArtifact,
+  ArtifactRecord,
+  DaemonAdmitRunInput,
+  DaemonClientFailure,
   DaemonControlIntent,
   DaemonControlResult,
   DaemonLoopHandle,
   DaemonLoopOptions,
   DaemonShutdownResult,
-  DaemonAdmitRunInput,
   DaemonStatus,
-  DaemonClientFailure,
-  RunDeleteFailure,
-  AdmitRunFailure,
   ForkInputNormalizationFailure,
-  SchemaNormalizationFailure,
-  AgentOverrideValidationFailure,
+  InspectAgentExecutionQuery,
+  InspectionCandidates,
+  InspectionError,
+  InspectionObservation,
+  InspectionRead,
+  InspectionView,
+  InspectionViewQuery,
+  InspectNodeQuery,
+  InspectTargetArtifactsQuery,
+  ObserveInspectionQuery,
   PreparedRunValidationFailure,
+  PreparedRunWorkflow,
+  ReadInspectionQuery,
+  RunDeleteFailure,
+  RunDetails,
+  RunDynamicAttempt,
+  RunDynamicDetails,
+  RunDynamicFrame,
+  RunDynamicGroupMember,
+  RunDynamicNodeInstance,
+  RunDynamicSignalWait,
+  RunForkInfo,
+  RunInspectionAgentExecutionDocument,
+  RunInspectionDetailedFailure,
+  RunInspectionError,
+  RunInspectionNodeDocument,
+  RunInspectionStatus,
+  RunInspectionTargetArtifactsDocument,
   RunIncident,
+  RunNodeProgress,
+  RunRecord,
+  RunStatus,
+  RunVisualizationSnapshot,
+  RunWorkflowLockArtifact,
+  RuntimeConfiguration,
+  RuntimeConfigurationFailure,
+  RuntimeHealthCheck,
+  RuntimeHealthReport,
+  RuntimePersistence,
+  SchemaNormalizationFailure,
+  Sha256Digest,
+  WorkflowSourceBundle,
+  WorkflowSourceFile,
+  WorkflowSourceRef,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
 } from "@acpus/runtime";
-import { DAEMON_PROTOCOL_VERSION, createWorkflowVisualizationOverlay, daemonEndpoint, deleteRun, getRun, getRuntimeHealth, getRunVisualizationSnapshot, inspectAgentExecution, inspectEvidence, inspectNode, inspectRaw, inspectRun, inspectTarget, inspectTargetArtifacts, inspectTimeline, listArtifacts, listRuns, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonLoop, tryLoadRuntimeConfiguration, tryNormalizeForkInput, tryNormalizeWorkflowInput, tryValidateAgentOverrides, watchInspection } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
@@ -100,17 +104,99 @@ import type {
 } from "@acpus/workflow-compiler";
 import type { Result, ResultAsync } from "neverthrow";
 
-test("@acpus/runtime public types describe runtime read and daemon APIs", () => {
+test("@acpus/runtime exposes one coherent inspection surface and narrow web reads", () => {
+  expectTypeOf(readInspection).toEqualTypeOf<
+    (cwd: string, query: ReadInspectionQuery) => ResultAsync<InspectionRead, InspectionError>
+  >();
+  expectTypeOf(observeInspection).toEqualTypeOf<
+    (cwd: string, query: ObserveInspectionQuery) => AsyncIterable<Result<InspectionObservation, InspectionError>>
+  >();
+  expectTypeOf(inspectNode).toEqualTypeOf<
+    (cwd: string, query: InspectNodeQuery) => ResultAsync<RunInspectionNodeDocument, RunInspectionError>
+  >();
+  expectTypeOf(inspectAgentExecution).toEqualTypeOf<
+    (cwd: string, query: InspectAgentExecutionQuery) => ResultAsync<RunInspectionAgentExecutionDocument, RunInspectionError>
+  >();
+  expectTypeOf(inspectTargetArtifacts).toEqualTypeOf<
+    (cwd: string, query: InspectTargetArtifactsQuery) => ResultAsync<RunInspectionTargetArtifactsDocument, RunInspectionError>
+  >();
+
+  expectTypeOf<InspectionViewQuery>().toEqualTypeOf<
+    | { kind: "run"; runId: string }
+    | { kind: "target"; runId: string; target: string; detail: "summary" | "timeline" }
+  >();
+  expectTypeOf<ReadInspectionQuery>().toEqualTypeOf<{
+    view: InspectionViewQuery;
+    candidatePage?: number;
+  }>();
+  expectTypeOf<ObserveInspectionQuery>().toEqualTypeOf<{
+    view: InspectionViewQuery;
+    until: "subject-terminal" | "decision-boundary";
+    signal?: AbortSignal;
+  }>();
+  expectTypeOf<InspectionRead>().toEqualTypeOf<InspectionView | InspectionCandidates>();
+  expectTypeOf<InspectionCandidates>().toMatchTypeOf<{
+    kind: "candidates";
+    target: string;
+    entries: Array<{ selector: string; status: RunInspectionStatus; breadcrumb: string }>;
+    page: number;
+    total: number;
+    nextPage?: number;
+  }>();
+  expectTypeOf<"limit">().not.toMatchTypeOf<keyof InspectionCandidates>();
+  expectTypeOf<Extract<InspectionView, { kind: "run" }>>().toMatchTypeOf<{
+    run: { id: string; status: string };
+    counts: { total: number };
+    tree: unknown[];
+  }>();
+  expectTypeOf<NonNullable<Extract<InspectionView, { kind: "run" }>["run"]["fork"]>>().toEqualTypeOf<{
+    sourceRunId: string;
+    unsafeReuse?: boolean;
+  }>();
+  expectTypeOf<Extract<InspectionView, { kind: "target"; detail: "timeline" }>>().toMatchTypeOf<{
+    subject: { label: string; kind: string; selector?: string };
+    recent: unknown[];
+  }>();
+  expectTypeOf<Extract<InspectionObservation, { kind: "update" }>["changes"][number]>().toMatchTypeOf<{
+    subject: { label: string; selector?: string };
+    state: { status: RunInspectionStatus };
+    reason?: "retry" | "steer" | "resume" | "operator-cancelled" | "parent-cancelled" | "branch-selected" | "race-selected" | "quorum-selected" | "superseded";
+  }>();
+  expectTypeOf<Extract<InspectionObservation, { kind: "closed" }>>().toEqualTypeOf<{
+    kind: "closed";
+    reason: "subject-terminal" | "awaiting-input" | "paused";
+    view: InspectionView;
+  }>();
+  expectTypeOf<InspectionError>().toEqualTypeOf<
+    | { type: "runtime-store-not-found"; message: string }
+    | { type: "run-not-found"; runId: string; message: string }
+    | { type: "target-not-found"; runId: string; target: string; message: string }
+    | { type: "target-ambiguous"; runId: string; target: string; candidates: InspectionCandidates; message: string }
+    | { type: "invalid-query"; message: string }
+    | { type: "read-failed"; runId: string; message: string }
+  >();
+});
+
+test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunVisualizationSnapshot | undefined>>();
-  expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure>>();
-  expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<(ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>>();
-  expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<(ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>>();
-  expectTypeOf<AdmitRunFailure>().toEqualTypeOf<PreparedRunValidationFailure | SchemaNormalizationFailure | AgentOverrideValidationFailure>();
+  expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<
+    (cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure>
+  >();
+  expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<
+    (ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>
+  >();
+  expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<
+    (ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>
+  >();
+  expectTypeOf<AdmitRunFailure>().toEqualTypeOf<
+    PreparedRunValidationFailure | SchemaNormalizationFailure | AgentOverrideValidationFailure
+  >();
   expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => ResultAsync<RunRecord | undefined, RunDeleteFailure>>();
+
   expectTypeOf<DaemonLoopOptions>().toEqualTypeOf<{
     heartbeatMs?: number;
     packageVersion: string;
@@ -119,7 +205,9 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     onRunIncident?: (incident: RunIncident) => void;
   }>();
   expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
-  expectTypeOf(tryLoadRuntimeConfiguration).toEqualTypeOf<(env: NodeJS.ProcessEnv) => Result<RuntimeConfiguration, RuntimeConfigurationFailure>>();
+  expectTypeOf(tryLoadRuntimeConfiguration).toEqualTypeOf<
+    (env: NodeJS.ProcessEnv) => Result<RuntimeConfiguration, RuntimeConfigurationFailure>
+  >();
   expectTypeOf<RuntimeConfiguration>().toEqualTypeOf<{
     runMaxLeafConcurrency: number;
     agentHostPolicy: AgentHostPolicy;
@@ -128,24 +216,25 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     | { type: "valid"; max: number }
     | { type: "invalid"; failure: AgentHostPolicyFailure }
   >();
+  expectTypeOf<AgentHostPolicy["captureRawAcpDebug"]>().toEqualTypeOf<boolean>();
+
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<3>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
-  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<(cwd: string, input: DaemonAdmitRunInput) => ResultAsync<RunDetails, DaemonClientFailure>>();
-  expectTypeOf(requestDaemonControl).toEqualTypeOf<(cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>>();
-  expectTypeOf(requestDaemonShutdown).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>>();
-  expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<(ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay>();
-  expectTypeOf(inspectRun).toEqualTypeOf<(cwd: string, query: InspectRunQuery) => ResultAsync<RunInspectionSnapshot, RunInspectionError>>();
-  expectTypeOf(inspectTarget).toEqualTypeOf<(cwd: string, query: InspectTargetQuery) => ResultAsync<InspectTargetResult, RunInspectionError>>();
-  expectTypeOf(inspectTimeline).toEqualTypeOf<(cwd: string, query: InspectTimelineQuery) => ResultAsync<RunInspectionTimelineDocument, RunInspectionError>>();
-  expectTypeOf(inspectEvidence).toEqualTypeOf<(cwd: string, query: InspectEvidenceQuery) => ResultAsync<RunInspectionEvidenceDocument | RunInspectionEvidenceCandidatesDocument, RunInspectionError>>();
-  expectTypeOf(inspectRaw).toEqualTypeOf<(cwd: string, query: InspectRawQuery) => ResultAsync<RunInspectionRaw, RunInspectionError>>();
-  expectTypeOf(inspectNode).toEqualTypeOf<(cwd: string, query: InspectNodeQuery) => ResultAsync<RunInspectionNodeDocument, RunInspectionError>>();
-  expectTypeOf(inspectAgentExecution).toEqualTypeOf<(cwd: string, query: InspectAgentExecutionQuery) => ResultAsync<RunInspectionAgentExecutionDocument, RunInspectionError>>();
-  expectTypeOf(inspectTargetArtifacts).toEqualTypeOf<(cwd: string, query: InspectTargetArtifactsQuery) => ResultAsync<RunInspectionTargetArtifactsDocument, RunInspectionError>>();
-  expectTypeOf(watchInspection).toEqualTypeOf<(cwd: string, query: WatchInspectionQuery) => AsyncIterable<Result<WatchInspectionEmission, RunInspectionError>>>();
+  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<
+    (cwd: string, input: DaemonAdmitRunInput) => ResultAsync<RunDetails, DaemonClientFailure>
+  >();
+  expectTypeOf(requestDaemonControl).toEqualTypeOf<
+    (cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>
+  >();
+  expectTypeOf(requestDaemonShutdown).toEqualTypeOf<
+    (cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>
+  >();
+  expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<
+    (ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay
+  >();
 
   expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<3>();
   expectTypeOf<WorkflowSourceFile>().toEqualTypeOf<{ path: string; content: string }>();
   expectTypeOf<WorkflowSourceBundle>().toEqualTypeOf<{
     kind: "acpus_workflow_source_bundle";
@@ -156,10 +245,8 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     | { kind: "workspace"; entry: string }
     | { kind: "snapshot"; entry: string; digest: Sha256Digest }
   >();
-  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "workspace" } }>["sourceBundle"]>()
-    .toEqualTypeOf<undefined>();
-  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>["sourceBundle"]>()
-    .toEqualTypeOf<WorkflowSourceBundle>();
+  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "workspace" } }>["sourceBundle"]>().toEqualTypeOf<undefined>();
+  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>["sourceBundle"]>().toEqualTypeOf<WorkflowSourceBundle>();
   expectTypeOf<CompilerPreparedWorkflow>().toMatchTypeOf<PreparedRunWorkflow>();
   expectTypeOf<PreparedRunWorkflow>().toMatchTypeOf<CompilerPreparedWorkflow>();
   expectTypeOf<CompilerWorkflowPreparationLock>().toMatchTypeOf<RunWorkflowLockArtifact>();
@@ -172,40 +259,10 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
   expectTypeOf<WorkflowSourceFile>().toMatchTypeOf<CompilerWorkflowSourceFile>();
   expectTypeOf<CompilerSha256Digest>().toMatchTypeOf<Sha256Digest>();
   expectTypeOf<Sha256Digest>().toMatchTypeOf<CompilerSha256Digest>();
+
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
   expectTypeOf<RunDetails["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
   expectTypeOf<RunForkInfo>().toEqualTypeOf<{ sourceRunId: string; target?: string; unsafeReuse?: true }>();
-  expectTypeOf<DaemonStatus>().toMatchTypeOf<{ status: "ok"; pid: number; generation: number; protocolVersion: number; packageVersion: string }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{ requestId: string; type: "pause" | "resume"; runId: string }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{ requestId: string; type: "retry" | "cancel"; runId: string; target?: string }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "steer" }>>().toEqualTypeOf<{ requestId: string; type: "steer"; runId: string; target: string; instruction: string }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "fork" }>>().toMatchTypeOf<{ requestId: string; type: "fork"; runId: string; target?: string; input?: JsonValue; unsafeReuse?: boolean }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{ requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue }>();
-  expectTypeOf<DaemonControlResult>().toEqualTypeOf<
-    | { type: "pause"; state: "applied"; run: RunDetails }
-    | { type: "resume"; state: "applied"; run: RunDetails }
-    | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
-    | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
-    | {
-      type: "steer";
-      state: "applied";
-      run: RunDetails;
-      steerId: string;
-      requestedTarget: string;
-      target: string;
-      fencedAttemptId: string;
-      continuation: "queued";
-    }
-    | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
-    | {
-      type: "signal";
-      state: "consumed";
-      requestedTarget: string;
-      target: string;
-      validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
-      run: RunDetails;
-    }
-  >();
   expectTypeOf<NonNullable<RunDetails["dynamic"]>>().toEqualTypeOf<RunDynamicDetails>();
   expectTypeOf<RunDynamicDetails["frames"][number]>().toEqualTypeOf<RunDynamicFrame>();
   expectTypeOf<RunDynamicDetails["nodeInstances"][number]>().toEqualTypeOf<RunDynamicNodeInstance>();
@@ -231,119 +288,81 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     intent?: unknown;
     updatedAt: string;
   }>();
-  expectTypeOf<AgentInspectionState>().toMatchTypeOf<{
-    key: string;
-    availability: { context: "available" | "unavailable"; tokenUsage: "available" | "partial" | "unavailable" };
-    backend?: { kind: "use"; name: string } | { kind: "command" };
-    lastObservedAt?: string;
-  }>();
-  expectTypeOf<"tools">().not.toMatchTypeOf<keyof AgentInspectionState>();
-  expectTypeOf<AgentDecisionState>().toEqualTypeOf<{
-    key: string;
-    turn?: number;
-    activeTool?: { command: string; status?: string };
-  }>();
-  expectTypeOf<RunInspectionItem["agent"]>().toEqualTypeOf<AgentDecisionState | undefined>();
-  expectTypeOf<RunInspectionRunSummary["agentUsage"]>().toEqualTypeOf<{ instances: number; attempts: number; turns: number } | undefined>();
-  expectTypeOf<RunInspectionSnapshot["run"]>().toEqualTypeOf<RunInspectionDecisionRunSummary>();
-  expectTypeOf<RunInspectionSnapshot["scope"]>().toEqualTypeOf<{ ref: string } | undefined>();
-  expectTypeOf<RunInspectionRunSummary["failure"]>().toEqualTypeOf<RunInspectionItem["failure"]>();
-  expectTypeOf<RunInspectionRunSummary["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
-  expectTypeOf<NonNullable<RunInspectionItem["scope"]>>().toEqualTypeOf<RunInspectionScopeState>();
-  expectTypeOf<Extract<RunInspectionAction, { kind: "steer" }>>().toEqualTypeOf<{ kind: "steer"; target: string }>();
-  expectTypeOf<Extract<RunInspectionAction, { kind: "inspect-timeline" }>>().toEqualTypeOf<{ kind: "inspect-timeline"; target: string }>();
-  expectTypeOf<RunInspectionTargetSummaryDocument["availableActions"]>().toEqualTypeOf<RunInspectionAction[]>();
-  expectTypeOf<RunInspectionTargetSummaryDocument["visibility"]>().toEqualTypeOf<RunInspectionVisibility | undefined>();
-  expectTypeOf<RunInspectionVisibility>().toEqualTypeOf<{
-    state: "degraded";
-    reason: "boundary-evidence-unavailable" | "observation-gap" | "unrecognized-provider-activity";
-  }>();
-  expectTypeOf<AgentCurrentActivity>().toMatchTypeOf<{
-    attemptId: string;
-    attemptNo?: number;
-    postFence?: true;
-    phase: "starting" | "responding" | "reported-thought" | "planning" | "tool" | "output-repair" | "settling" | "settled";
-  }>();
-  expectTypeOf<Extract<WatchInspectionEmission, { kind: "view" }>["document"]>()
-    .toEqualTypeOf<RunInspectionSnapshot | RunInspectionTargetSummaryDocument | RunInspectionTimelineDocument>();
-  expectTypeOf<Extract<WatchInspectionEmission, { kind: "timeline-entry" }>["entry"]>()
-    .toEqualTypeOf<RunInspectionTimelineEntry>();
-  expectTypeOf<Extract<WatchInspectionEmission, { kind: "view" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<Extract<RunInspectionTimelineEntry, { kind: "phase" }>>().toMatchTypeOf<{
-    at: string;
-    phase: string;
-  }>();
-  expectTypeOf<Extract<RunInspectionTimelineEntry, { kind: "visibility" }>>().toEqualTypeOf<{
-    id: string;
-    kind: "visibility";
-    at: string;
-    state: "degraded" | "restored";
-    reason?: "boundary-evidence-unavailable" | "observation-gap" | "unrecognized-provider-activity";
-  }>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof WatchInspectionEmission>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionSnapshot>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTargetSummaryDocument>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionTimelineDocument>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
-  expectTypeOf<"revision">().not.toMatchTypeOf<keyof RunInspectionRaw>();
-  expectTypeOf<InspectRunQuery>().toEqualTypeOf<{ runId: string; includeAllTopology?: boolean; includeControls?: boolean }>();
-  expectTypeOf<InspectTargetQuery>().toEqualTypeOf<{
-    runId: string;
-    target: string;
-    includeAllTopology?: boolean;
-    includeControls?: boolean;
-    page?: number;
-    limit?: number;
-  }>();
-  expectTypeOf<InspectTimelineQuery>().toEqualTypeOf<{ runId: string; target: string; page?: number; limit?: number }>();
-  expectTypeOf<InspectEvidenceQuery>().toEqualTypeOf<{ runId: string; target: string; page?: number; limit?: number }>();
-  expectTypeOf<InspectRawQuery>().toEqualTypeOf<{ runId: string }>();
-  expectTypeOf<InspectNodeQuery>().toEqualTypeOf<{ runId: string; target: string }>();
-  expectTypeOf<InspectAgentExecutionQuery>().toEqualTypeOf<{ runId: string; target: string }>();
-  expectTypeOf<InspectTargetArtifactsQuery>().toEqualTypeOf<{ runId: string; target: string }>();
-  expectTypeOf<WatchInspectionView>().toEqualTypeOf<
-    | { kind: "run"; runId: string; includeAllTopology?: boolean; includeControls?: boolean }
-    | { kind: "target"; runId: string; target: string; includeAllTopology?: boolean; includeControls?: boolean }
-    | { kind: "timeline"; runId: string; target: string; limit?: number }
-  >();
-  expectTypeOf<"before">().not.toMatchTypeOf<keyof InspectTimelineQuery>();
-  expectTypeOf<RunInspectionTimelineDocument["recent"]["page"]>().toEqualTypeOf<number>();
-  expectTypeOf<RunInspectionTimelineDocument["recent"]["limit"]>().toEqualTypeOf<number>();
-  expectTypeOf<RunInspectionTimelineDocument["recent"]["olderPage"]>().toEqualTypeOf<number | undefined>();
-  expectTypeOf<"olderCursor">().not.toMatchTypeOf<keyof RunInspectionTimelineDocument["recent"]>();
-  expectTypeOf<Extract<RunInspectionTargetSummaryDocument, { kind: "target" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<Extract<RunInspectionTimelineDocument, { kind: "timeline" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { kind: "execution" }>["schemaVersion"]>().toEqualTypeOf<2>();
-  expectTypeOf<Extract<RunInspectionAgentExecutionDocument, { available: false }>["reason"]>()
-    .toEqualTypeOf<"not-agent" | "not-started">();
-  expectTypeOf<RunInspectionAgentExecutionDocument["summary"]["status"]>().toEqualTypeOf<RunInspectionStatus>();
-  expectTypeOf<RunInspectionAgentExecutionDocument["recentTools"][number]>().toEqualTypeOf<RunInspectionAgentExecutionToolCall>();
-  expectTypeOf<"toolCallCount">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
-  expectTypeOf<"lastToolCalls">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
-  expectTypeOf<"recentToolsIncomplete">().not.toMatchTypeOf<keyof RunInspectionAgentExecutionDocument>();
-  expectTypeOf<"evidence">().not.toMatchTypeOf<keyof RunInspectionTargetSummaryDocument>();
-  expectTypeOf<RunInspectionNodeDocument["availableControls"]>().toEqualTypeOf<RunInspectionControl[]>();
-  expectTypeOf<RunInspectionEvidenceDocument["evidence"]["records"]["entries"][number]["turn"]>().toEqualTypeOf<number>();
-  expectTypeOf<RunInspectionEvidenceCandidatesDocument["candidates"]["entries"][number]["target"]>().toEqualTypeOf<string>();
-  expectTypeOf<Extract<RunInspectionError, { type: "target-ambiguous" }>>().toMatchTypeOf<{
-    runId: string;
-    target: string;
-    candidates: RunInspectionCandidatesDocument;
-  }>();
-  expectTypeOf<RunInspectionRaw["workflow"]>().toEqualTypeOf<WorkflowIR>();
-  expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
-    origin: string;
-    message: string;
-    upstream?: { source: "acpx"; data?: JsonValue };
-  }>();
   expectTypeOf<NonNullable<RunDynamicFrame["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<NonNullable<RunDynamicNodeInstance["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<undefined>().toMatchTypeOf<RunDynamicFrame["instancePath"]>();
   expectTypeOf<undefined>().toMatchTypeOf<RunDynamicNodeInstance["instancePath"]>();
   expectTypeOf<RunDynamicGroupMember["completionSequence"]>().toEqualTypeOf<number | undefined>();
+  expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
+
+  expectTypeOf<DaemonStatus>().toMatchTypeOf<{
+    status: "ok";
+    pid: number;
+    generation: number;
+    protocolVersion: number;
+    packageVersion: string;
+  }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{
+    requestId: string;
+    type: "pause" | "resume";
+    runId: string;
+  }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{
+    requestId: string;
+    type: "retry" | "cancel";
+    runId: string;
+    target?: string;
+  }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "steer" }>>().toEqualTypeOf<{
+    requestId: string;
+    type: "steer";
+    runId: string;
+    target: string;
+    instruction: string;
+  }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "fork" }>>().toMatchTypeOf<{
+    requestId: string;
+    type: "fork";
+    runId: string;
+    target?: string;
+    input?: JsonValue;
+    unsafeReuse?: boolean;
+  }>();
+  expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{
+    requestId: string;
+    type: "signal";
+    runId: string;
+    nodeId: string;
+    payload: JsonValue;
+  }>();
+  expectTypeOf<DaemonControlResult>().toEqualTypeOf<
+    | { type: "pause"; state: "applied"; run: RunDetails }
+    | { type: "resume"; state: "applied"; run: RunDetails }
+    | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
+    | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
+    | {
+      type: "steer";
+      state: "applied";
+      run: RunDetails;
+      steerId: string;
+      requestedTarget: string;
+      target: string;
+      fencedAttemptId: string;
+      continuation: "queued";
+    }
+    | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
+    | {
+      type: "signal";
+      state: "consumed";
+      requestedTarget: string;
+      target: string;
+      validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
+      run: RunDetails;
+    }
+  >();
+
   expectTypeOf<WorkflowVisualizationOverlay["nodes"][number]>().toEqualTypeOf<WorkflowVisualizationNode>();
   expectTypeOf<WorkflowVisualizationOverlay["groups"][number]>().toEqualTypeOf<WorkflowVisualizationGroup>();
-  expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
   expectTypeOf<RuntimeHealthReport["checks"][number]>().toEqualTypeOf<RuntimeHealthCheck>();
   expectTypeOf<RuntimeHealthReport["persistence"]>().toEqualTypeOf<RuntimePersistence | undefined>();
   expectTypeOf<Extract<RuntimeHealthReport, { state: "not-initialized" }>["persistence"]>().toEqualTypeOf<RuntimePersistence>();
@@ -354,7 +373,12 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     | { outcome: "rejected"; phase: "framing" | "json" }
     | { outcome: "rejected"; phase: "schema"; parsing: "direct" | "repaired"; projectionChanged: boolean }
   >();
-  expectTypeOf<Extract<AgentTraceRecord, { type: "turn_start" }>>().toMatchTypeOf<{ schemaVersion: 1; sequence: number; runId: string; nodeId: string }>();
+  expectTypeOf<Extract<AgentTraceRecord, { type: "turn_start" }>>().toMatchTypeOf<{
+    schemaVersion: 1;
+    sequence: number;
+    runId: string;
+    nodeId: string;
+  }>();
   expectTypeOf<AgentTurnArtifact>().toEqualTypeOf<{
     schemaVersion: 1;
     runId: string;
@@ -371,5 +395,10 @@ test("@acpus/runtime public types describe runtime read and daemon APIs", () => 
     summary: AgentTurnSummary;
     failure?: import("@acpus/agent-executor").AgentBackendFailure;
     message?: string;
+  }>();
+  expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
+    origin: string;
+    message: string;
+    upstream?: { source: "acpx"; data?: JsonValue };
   }>();
 });

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `acpus` package owns command parsing and human/JSON/NDJSON presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
+The `acpus` package owns command parsing and human/structured presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection semantics to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
 
 ## Requirements
 
@@ -16,11 +16,11 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
 | `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
-| `workflow run <workflow>` | Check options plus `--follow`. |
+| `workflow run <workflow>` | Check workflow/input/catalog options plus mutually exclusive `--follow` or `--await-decision`; text-only. |
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
-| `runs inspect [run-id]` | `--target`, `--timeline`, `--evidence`, `--limit`, `--page`, `--follow`, `--all`, `--controls`, and `--raw` as constrained below. |
+| `runs inspect [run-id]` | `--target`, `--timeline`, `--page`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
 | `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
@@ -34,12 +34,13 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check/run; every runs and hooks leaf; doctor; and web.
+- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check; every runs leaf except inspect; hooks; doctor; and web.
+- `workflow run` and `runs inspect` MUST be text-only, reject `--json`, and omit it from help.
 - Root, group, version, workflow visualization, and every skill surface MUST reject `--json` and MUST omit it from help.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
-- `workflow run --help` MUST present follow as an explicit wait for the next run decision boundary or `Ctrl-C`.
+- `workflow run --help` MUST distinguish terminal `--follow` from decision-boundary `--await-decision` and state that `Ctrl-C` detaches.
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
 - Fork catalog scope flags MUST be mutually exclusive.
@@ -99,7 +100,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - A compatible live daemon MUST skip writable storage preparation.
 - An absent or refused daemon MUST prepare current storage before ensure/spawn so fresh and older-storage archival behavior remains Runtime-owned.
 - `workflow run` MUST return after daemon acceptance by default.
-- `workflow run --follow` MUST retain its workflow-owned adapter over Runtime run watch and preserve Runtime ordering and decision boundaries.
+- Blocking `workflow run` MUST delegate observation semantics to [Runtime inspection](runtime-spec.md#inspection).
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
 - Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.
@@ -115,14 +116,12 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
 #### Inspection
 
-- `runs inspect` delegates target resolution and view semantics to the [Runtime inspection contract](runtime-spec.md#inspection). It accepts an authored id, occurrence reference, exact-attempt selector, or diagnostic key; the CLI MUST not pre-resolve it.
-- `--all` exposes complete topology. With a target, it scopes that topology to the selected occurrence and its descendants.
-- `--controls` exposes only Runtime-approved technical capabilities and MUST label them as capabilities, not recommendations.
-- `--timeline` and `--evidence` require a target and are mutually exclusive. Timeline is the pageable/followable activity view and cannot combine with topology, controls, or raw. Evidence is a one-shot, pageable Agent-boundary view and cannot combine with topology, controls, raw, or follow.
-- `--limit` and `--page` require a target and apply only to its candidate, Timeline, or Evidence view. Pages are one-based, default to 1 with a limit of 12, and accept limits from 1 through 50; `--page` cannot follow, while `--limit` can follow only Timeline.
-- `--raw` requires JSON and is exclusive with every other inspection view. It MUST NOT expose private Evidence, Trace, or provider payloads.
-- Follow observes a run, target, or Timeline until Runtime reaches its decision boundary. It MUST not accept an interval or heartbeat option; Evidence and raw reads remain one-shot.
-- Empty targets and invalid page/limit values MUST fail as usage before reading Runtime state.
+- `runs inspect` MUST be text-only, delegate target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--page`, `--follow`, and `--await-decision`.
+- `--timeline` requires `--target`; `--page` requires `--target`, is one-shot candidate paging only, and conflicts with blocking inspection. `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
+- A one-shot ambiguous target MUST render candidates successfully. A blocking ambiguous target MUST render its candidate handoff and fail without attaching.
+- Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, Select, and next candidate page. It MUST preserve Timeline detail for candidate selection and never recommend retry, fork, cancel, or steer.
+- Empty targets and invalid pages MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
+- Ctrl-C MUST detach without canceling the run and print a one-shot recovery command that retains selected target and Timeline detail.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
 - `runs prune` MUST delegate eligible-run, archive, source, trash, and empty-shard semantics to the [Runtime](runtime-spec.md#pruning) without starting the daemon.
@@ -150,9 +149,8 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful text cancel output MUST omit the generic `Status` and `Workflow entry` lines.
 - A structured steer receipt MUST project the Runtime-owned steer id, requested target, and continuation, but MUST NOT expose the resolved dynamic target or fenced attempt id.
 - Text and structured steer receipts MUST NOT echo the instruction.
-- Successful text steer output MUST point `Next` to follow inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.
+- Successful text steer output MUST point `Next` to `--await-decision` inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
-- Workflow run follow and inspection follow `Ctrl-C` MUST detach without canceling the run and print `Inspect: acpus runs inspect <run-id>`; neither MUST print a Cancel command. No hidden double-`Ctrl-C` control exists.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
 - Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
 - On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
@@ -211,8 +209,7 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
 - Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
-- Non-inspection result records and CLI-local inspection errors MUST retain `schemaVersion: 1`.
-- Successful inspection documents and follow records MUST retain the Runtime-owned `schemaVersion: 2`.
+- Structured CLI result records MUST retain `schemaVersion: 1`.
 - Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
 - JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
@@ -223,22 +220,16 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful checked-import text output MUST print the source-graph digest followed by diagnostics in compiler order.
 - An unchecked import MUST expose neither preparation diagnostics nor a source-graph digest.
 - Successful workflow run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
-- Followed workflow admission JSON and replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
-- Workflow run follow text MUST write preparation diagnostics once before follow; replacement-fork text MUST use the ordinary diagnostic presentation.
+- Replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
+- Blocking workflow run text MUST write preparation diagnostics once before observation; replacement-fork text MUST use the ordinary diagnostic presentation.
 - Default workflow run text MUST render `Run <run-id>  <workflow-name>  <status>`, then the executable `Inspect: acpus runs inspect <run-id>` command on the next line.
 - Default workflow run text MUST append preparation diagnostics after the compact receipt.
 - Default workflow run text MUST omit the generic workflow metadata summary and catalog paths.
-- Default workflow run JSON MUST emit one schema-version-1 result containing the workflow summary, preparation diagnostics, source-graph digest, public run record, follow run id, and applicable catalog provenance.
-- A followed workflow admission record MUST project the public `RunRecord` and MUST NOT expose normalized input, Agent overrides, hook history, execution state, dynamic details, or internal event/node counts.
-- Successful `runs inspect --follow --json` MUST emit only Runtime-owned schema-version-2 `view` and `timeline-entry` records. Text and structured follow MUST preserve Runtime ordering and decision boundaries.
-- A non-usage inspection failure MUST retain the Runtime error's public target/candidate context without exposing an internal failure cause.
-- Default inspection presents the Runtime decision tree. It MAY fold equivalent repeated siblings, but MUST preserve every distinct visible state; `--all` expands every materialized occurrence.
-- Candidate and paged views MUST identify occurrences with status, breadcrumb, and public selector, then provide an executable next command when another page or selection is required. The CLI MUST never choose an ambiguous occurrence implicitly.
-- Summary presents decision state, current activity, attention, visibility, and navigation. Timeline presents current and recent semantic activity. Evidence presents only its explicit turn-boundary metadata. `--controls` adds only Runtime-approved capabilities and MUST not present them as a recommendation.
-- Ordinary inspection uses public selectors rather than internal occurrence identities. It MUST preserve complete selectors, paths, digests, artifact references, and generated command arguments while omitting private Evidence, Trace, provider payloads, steering instructions, and resource telemetry.
-- `--raw --json` is the explicit diagnostic exception: it may retain internal occurrence identities, but MUST still omit private Evidence, Trace, and provider payloads.
-- Copyable commands MUST execute the displayed public selector and options in a POSIX shell.
-- A terminal overview/all follow view MUST include present workflow output once; target and Timeline follows MUST omit unrelated workflow output.
+- Blocking workflow run MUST begin with observation rather than a separate admission receipt. If it cannot attach after admission, its error MUST include the run id and a one-shot inspection command.
+- Inspection MUST render Runtime-owned views and candidates append-only in both TTY and non-TTY output. It MUST retain only public selectors and public Runtime error context; copyable commands MUST execute in a POSIX shell.
+- Blocking inspection MUST label its attached view and omit an Await command that would attach the same observation again.
+- A run-level semantic update MUST show current run elapsed time in its heading; target and Timeline update headings MUST remain unqualified.
+- A run's terminal output MUST appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
 - Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
 - Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY and JSON output MUST remain free of ANSI styling.
@@ -246,10 +237,14 @@ The `acpus` package owns command parsing and human/JSON/NDJSON presentation, inc
 - Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
 - Successful web JSON MUST use the ordinary result envelope and place its URL and optional token under `web`.
 - A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
-- Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls; default workflow run returns 0 after daemon acceptance, while workflow run follow maps completed to 0 and failed/canceled to 1 and successful Ctrl-C detach exits 0.
-- Reaching an inspection follow decision boundary, including failed, timed-out, awaiting-Signal, or terminal state, MUST exit 0; validation, query, read, and sequence-discontinuity failures MUST remain nonzero.
+- Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls.
+- Default workflow run MUST exit 0 after daemon acceptance.
+- Blocking workflow run MUST exit 0 on completion, 1 on failed/canceled closure, and 0 on an awaiting-input or paused `--await-decision` closure.
+- `runs inspect` MUST exit 0 for every normal close reason and one-shot candidate result.
+- Blocking target ambiguity and observation/query/storage failure MUST exit 1.
+- A normal Ctrl-C detach MUST exit 0.
 
 ## Verification
 
-- `pnpm test:contract packages/cli`: covers command grammar, public selector/candidate presentation, paging, private-data boundaries, controls, and decision-boundary follow.
-- `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover result/command integration, read-only behavior, and one representative end-to-end workflow.
+- `pnpm test:contract packages/cli`: covers text-only run/inspection grammar, candidate navigation, append-only transcript ordering, detach, and exits.
+- `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover Runtime adapter integration, read-only behavior, and one representative end-to-end workflow.

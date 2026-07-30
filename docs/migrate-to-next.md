@@ -279,7 +279,9 @@ TypeScript type when necessary.
 
 `wf` remains an alias for the singular `workflow` command. `workflow run`
 submits and returns by default; use `--follow` to wait for terminal status.
-`Ctrl-C` during follow detaches without canceling the run.
+Use `--await-decision` when the caller instead needs control back at an input,
+pause, or terminal boundary. `Ctrl-C` during either blocking mode detaches
+without canceling the run.
 
 ### Hooks
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, getRunVisualizationSnapshot, inspectNode, inspectRun, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
+import { getRun, getRunVisualizationSnapshot, inspectNode, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
@@ -128,10 +128,9 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
       expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
-      const inspection = await inspectRun(workspace, { runId: fork!.run.id });
-      expect(inspection.isOk() ? inspection.value.run.fork : undefined).toEqual({
+      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ fork: {
         sourceRunId: source.run.id,
-      });
+      } });
 
       const forkOfFork = await forkRun(workspace, fork!.run.id);
       expect(forkOfFork?.run).toMatchObject({ status: "completed", fork: { sourceRunId: fork!.run.id } });
@@ -423,9 +422,9 @@ describe.concurrent("runtime controls and recovery", () => {
         store?.close();
       }
       await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true, extra: true } });
-      const inspection = await inspectRun(workspace, { runId: fork!.run.id });
-      expect(inspection.isOk() ? inspection.value : undefined).toMatchObject({
-        run: { id: fork!.run.id, name: "cli-task-replacement" },
+      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({
+        id: fork!.run.id,
+        name: "cli-task-replacement",
       });
       expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id)).toHaveLength(1);
 

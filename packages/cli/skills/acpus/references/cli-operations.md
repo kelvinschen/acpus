@@ -24,13 +24,13 @@ WORKFLOW
 Prefer a file-backed `workflow.ts` only when you need to import task/helper modules or plan to edit or reuse the workflow: 
 
 ```sh
-acpus workflow run <workflow> [--input <json|file.json>] [--follow]
+acpus workflow run <workflow> [--input <json|file.json>] [--follow|--await-decision]
 ```
 
 ### Observe
 
 ```sh
-acpus runs inspect <run-id> [--target <nodeId|@ref>]
+acpus runs inspect <run-id> [--target <nodeId|@ref|@ref#attemptNo>] [--timeline] [--follow|--await-decision]
 ```
 
 Options: 
@@ -39,21 +39,21 @@ Options:
 | --- | --- | --- |
 | State / next action | Summary (default) | Decision state and navigation |
 | Proof of work | `--timeline` | Current and recent activity |
-| Diagnose one Agent turn | `--evidence` | Exact turn-boundary metadata |
-| Topology | `--all` | All materialized occurrences |
-| Wait for one change | `--follow` | Next decision boundary |
+| Wait for a terminal result | `--follow` | Semantic updates until the fixed subject is terminal |
+| Wait for the next decision | `--await-decision` | Semantic updates until input, pause, or terminal state requires action |
 
-- `--follow` waits read-only for the run's next decision boundary; it does not periodically refresh or emit a heartbeat, and silence between boundaries is expected. 
+- `--follow` keeps its fixed run or target attached until that subject is terminal. `--await-decision` returns only at a real decision boundary; use it for ordinary long-running orchestration.
+- Both modes append durable semantic changes rather than emitting a heartbeat or a timer refresh. Silence neither proves a problem nor authorizes intervention.
 - Add `#attemptNo` only for one Agent attempt. 
 - `Ctrl-C` only detaches.
 
 #### Low-context monitoring
 
 1. Read Summary once; for a repeated occurrence, select its candidate `@ref`.
-2. If work remains non-terminal without attention, `--follow` the decision-controlling target, re-inspect only after *a boundary, hard attention, or new operator or external input*. **Silence means wait, be patient**.
+2. If work remains non-terminal without attention, `--await-decision` the decision-controlling target. Re-inspect only after it returns, hard attention, or new operator or external input. Use `--follow` only when terminal completion itself is the goal. **Silence means wait, be patient**.
 3. At terminal state, verify output and artifacts. Use focused `jq` for structured output.
 
-Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for pagination, private Evidence, raw output, or follow mechanics.
+Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for candidate pagination or follow mechanics.
 
 ## Runtime controls
 
@@ -64,7 +64,7 @@ acpus runs resume <run-id>
 acpus runs cancel <run-id> [--target <target>]
 ```
 
-- Inspect the target first; an available control indicates applicability, not a recommendation.
+- Inspect the target first; a displayed selector identifies the subject but does not recommend a control.
 - Signal answers an open wait; pause/resume control run admission.
 - Cancel is destructive and requires confirmation unless already requested.
 

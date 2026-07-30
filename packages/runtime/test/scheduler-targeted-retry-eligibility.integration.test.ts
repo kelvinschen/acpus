@@ -4,9 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { getRunVisualizationSnapshot, inspectNode, inspectTarget } from "@acpus/runtime";
+import { getRunVisualizationSnapshot, inspectNode } from "@acpus/runtime";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
-import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
@@ -85,13 +84,6 @@ describe("scheduler targeted retry eligibility", () => {
       expect(details.isOk()
         ? details.value.availableControls
         : undefined).toEqual([]);
-      const summary = await inspectTarget(workspace, {
-        runId,
-        target: "target",
-      });
-      expect(summary.isOk() && summary.value.kind === "target"
-        ? summary.value.availableActions
-        : undefined).toEqual([{ kind: "inspect-timeline", target: deriveOccurrenceRef([]) }]);
     });
   });
 
@@ -105,24 +97,12 @@ describe("scheduler targeted retry eligibility", () => {
           retryTargets: [{ target: "target", kind: "node", nodeId: "target" }],
         },
       });
-      const summary = await inspectTarget(workspace, {
+      const controls = await inspectNode(workspace, {
         runId,
         target: "target",
       });
-      expect(summary.isOk() && summary.value.kind === "target"
-        ? summary.value.availableActions
-        : undefined).toEqual([{ kind: "inspect-timeline", target: deriveOccurrenceRef([]) }]);
-      const controls = await inspectTarget(workspace, {
-        runId,
-        target: "target",
-        includeControls: true,
-      });
-      expect(controls.isOk() && controls.value.kind === "target"
-        ? controls.value.availableActions
-        : undefined).toEqual([
-        { kind: "inspect-timeline", target: deriveOccurrenceRef([]) },
-        { kind: "retry", target: deriveOccurrenceRef([]) },
-      ]);
+      expect(controls.isOk() ? controls.value.availableControls.map(control => control.type) : undefined)
+        .toEqual(["retry"]);
       const retry = store.scheduler.tryRetry({
         runId,
         ownerEpoch: claim.ownerEpoch,

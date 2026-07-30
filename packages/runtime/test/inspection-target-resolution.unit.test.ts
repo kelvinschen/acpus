@@ -41,13 +41,12 @@ describe("inspection occurrence targets", () => {
     });
   });
 
-  it("returns a page of deep candidates, then resolves its ref and exact attempt", () => {
+  it("returns fixed-size deep candidates in occurrence-path order, then resolves a ref and exact attempt", () => {
     const run = repeatedRun();
     const candidates = resolveInspectionTarget({
       run,
       staticNodes,
       target: "verify",
-      page: { limit: 1 },
     });
     expect(candidates).toMatchObject({
       kind: "candidates",
@@ -56,10 +55,13 @@ describe("inspection occurrence targets", () => {
         candidates: {
           total: 2,
           page: 1,
-          limit: 1,
-          hasMore: true,
-          nextPage: 2,
+          limit: 12,
+          hasMore: false,
           entries: [{
+            ref: "@6119a20210df",
+            status: "completed",
+            breadcrumb: "batch › batch[0] › verify",
+          }, {
             ref: "@9d4669a0288d",
             status: "running",
             breadcrumb: "batch › batch[1] › loop › loop#2 › verify",

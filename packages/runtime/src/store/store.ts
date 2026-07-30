@@ -167,6 +167,8 @@ export type RuntimeStore = {
   getRunEventVersion(runId: string): number | undefined;
   readHookDispatchEvents(runId: string, afterSequence: number): HookDispatchEventRead;
   getCommittedRuntimeEventsAfter(runId: string, sequence: number): CommittedRuntimeEventRow[];
+  getInspectionTimelineEvents(runId: string, nodeKeys: readonly string[], limit: number): CommittedRuntimeEventRow[];
+  readRunInspectionToken(runId: string): RunInspectionToken | undefined;
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
   getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
@@ -192,6 +194,17 @@ export type RunInspectionStoreRead = {
     observationVersion: number;
   };
   events: CommittedRuntimeEventRow[];
+};
+
+/**
+ * The observer's cheap wake token.  It intentionally excludes wall-clock
+ * context and any frozen/artifact data so an unchanged poll has no projection
+ * work to do.
+ */
+export type RunInspectionToken = {
+  eventSequence: number;
+  progressVersion: number;
+  observationVersion: number;
 };
 
 type HookDispatchEventRead = {
@@ -1956,6 +1969,55 @@ class SqliteRuntimeStore implements RuntimeStore {
     return rows.map(decodeCommittedRuntimeEventRow);
   }
 
+  getInspectionTimelineEvents(runId: string, nodeKeys: readonly string[], limit: number): CommittedRuntimeEventRow[] {
+    const keys = [...new Set(nodeKeys)].sort();
+    const nodeFilter = keys.length > 0 ? `node_key IN (${keys.map(() => "?").join(", ")})` : "0";
+    const rows = this.db.prepare(`
+      SELECT run_id, sequence, type, node_key, payload_json, created_at, idempotency_key
+      FROM run_events
+      WHERE run_id = ?
+        AND (${nodeFilter}
+          OR type IN ('run.completed', 'run.failed', 'run.canceled', 'control.paused', 'control.resumed'))
+      ORDER BY sequence DESC
+      LIMIT ?
+    `).all(runId, ...keys, Math.max(1, Math.min(64, limit))) as Array<{
+      run_id: string;
+      sequence: number;
+      type: string;
+      node_key: string | null;
+      payload_json: string;
+      created_at: string;
+      idempotency_key: string;
+    }>;
+    return rows.reverse().map(decodeCommittedRuntimeEventRow);
+  }
+
+  readRunInspectionToken(runId: string): RunInspectionToken | undefined {
+    const row = this.db.prepare(`
+      SELECT
+        runs.progress_version,
+        runs.observation_version,
+        COALESCE((
+          SELECT MAX(sequence)
+          FROM run_events
+          WHERE run_id = runs.id
+        ), 0) AS event_sequence
+      FROM runs
+      WHERE runs.id = ?
+    `).get(runId) as {
+      progress_version: number;
+      observation_version: number;
+      event_sequence: number;
+    } | undefined;
+    return row === undefined
+      ? undefined
+      : {
+          eventSequence: row.event_sequence,
+          progressVersion: row.progress_version,
+          observationVersion: row.observation_version,
+        };
+  }
+
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead {
     const ownsTransaction = !this.db.isTransaction;
     try {
@@ -3300,7 +3362,15 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [index, event] of input.events.entries()) {
-      insert.run(input.runId, sequence, event.type, input.nodeKeys?.[index] ?? eventNodeKey(event), encodeSchedulerPayload(event.payload), input.now, input.idempotencyKeys[index]!);
+      insert.run(
+        input.runId,
+        sequence,
+        event.type,
+        input.nodeKeys?.[index] ?? eventNodeKey(event) ?? projectionEventNodeKey(projection, event),
+        encodeSchedulerPayload(event.payload),
+        input.now,
+        input.idempotencyKeys[index]!,
+      );
       sequence += 1;
     }
     if (input.events.length > 0) {
@@ -4209,6 +4279,16 @@ function eventNodeKey(event: SchedulerEvent): string | null {
   return typeof payload.nodeKey === "string" ? payload.nodeKey : null;
 }
 
+function projectionEventNodeKey(projection: SchedulerProjection, event: SchedulerEvent): string | null {
+  const payload = event.payload as Record<string, unknown>;
+  if (typeof payload.attemptId === "string") return projection.attempts[payload.attemptId]?.nodeKey ?? null;
+  if (typeof payload.frameKey === "string") return projection.frames[payload.frameKey]?.nodeKey ?? null;
+  if (typeof payload.groupKey === "string") return projection.groups[payload.groupKey]?.nodeKey ?? null;
+  if (typeof payload.memberKey !== "string") return null;
+  const member = projection.groupMembers[payload.memberKey];
+  return member ? projection.groups[member.groupKey]?.nodeKey ?? null : null;
+}
+
 function attemptResultEvent(input: AttemptCommitInput, nodeKey: string): Extract<SchedulerEvent, { type: "attempt.completed" | "attempt.failed" | "attempt.timed_out" | "attempt.cancelled" }> {
   if (input.result.status === "completed") {
     return {
@@ -4725,6 +4805,7 @@ function initializeSchema(db: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_run_leases_expires ON run_leases(lease_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_run_events_node_sequence ON run_events(run_id, node_key, sequence DESC);
     CREATE INDEX IF NOT EXISTS idx_scheduler_frames_parent_status ON scheduler_frames(run_id, parent_frame_key, status);
     CREATE INDEX IF NOT EXISTS idx_node_instances_node_status ON node_instances(run_id, node_id, status);
     CREATE INDEX IF NOT EXISTS idx_node_instances_frame_status ON node_instances(run_id, parent_frame_key, status);

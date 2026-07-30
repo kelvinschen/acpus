@@ -2,16 +2,15 @@ import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExprIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import {
-  projectRawInspection,
   projectRunSnapshot,
-  projectTargetTopology,
   resolveTargetState,
   semanticChanges,
 } from "../src/inspection/projection.js";
+import { projectInspectionRunView } from "../src/inspection/coherent-projection.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
-import type { RunInspectionControl } from "../src/inspection/types.js";
+import type { InspectionTreeEntry, RunInspectionControl } from "../src/inspection/types.js";
 import type { ArtifactRecord, RunDetails, RunDynamicNodeInstance } from "../src/store/store.js";
 
 function snapshot(
@@ -37,24 +36,6 @@ function targetState(
   const state = resolveTargetState({ ir, run, target, artifacts, availableControls: controls });
   if (!state) throw new Error(`Expected target '${target}' to resolve.`);
   return state;
-}
-
-function rawInspection(ir: WorkflowIR, run: RunDetails, artifacts: ArtifactRecord[] = []) {
-  return projectRawInspection({ ir, run, artifacts });
-}
-
-function scopedTopology(
-  ir: WorkflowIR,
-  run: RunDetails,
-  target: string,
-  controls: readonly RunInspectionControl[] = [],
-) {
-  return projectTargetTopology({
-    ir,
-    run,
-    target,
-    ...(controls.length === 0 ? {} : { includeControls: true, availableControls: controls }),
-  });
 }
 
 describe("run inspection projection", () => {
@@ -171,6 +152,59 @@ describe("run inspection projection", () => {
       expect(agent).not.toHaveProperty("context");
       expect(agent).not.toHaveProperty("turnCount");
     }
+  });
+
+  it("folds homogeneous fanout contexts without exposing an invalid candidate selector", () => {
+    const run = repeatedAgentRun(4);
+    run.dynamic!.progress = [];
+    run.dynamic!.executionMetadata = [];
+
+    const view = projectInspectionRunView({ ir: compositeWorkflow(), run });
+    const folds = inspectionFolds(view.tree);
+
+    expect(folds).toEqual([
+      expect.objectContaining({ scope: "fanout-items", count: 4 }),
+    ]);
+    for (const fold of folds) expect(fold).not.toHaveProperty("candidateTarget");
+  });
+
+  it("folds terminal fanout contexts with different elapsed durations", () => {
+    const run = repeatedAgentRun(4);
+    run.dynamic!.progress = [];
+    run.dynamic!.executionMetadata = [];
+    for (const instance of run.dynamic!.nodeInstances) instance.status = "completed";
+    for (const [index, attempt] of run.dynamic!.attempts.entries()) {
+      attempt.status = "completed";
+      attempt.finishedAt = `2026-07-01T00:00:0${index + 2}.000Z`;
+    }
+
+    expect(inspectionFolds(projectInspectionRunView({ ir: compositeWorkflow(), run }).tree)).toEqual([
+      expect.objectContaining({ scope: "fanout-items", count: 4 }),
+    ]);
+  });
+
+  it("omits a targeted fork's raw target from the generic run view", () => {
+    const run = repeatedAgentRun(0);
+    run.fork = { sourceRunId: "source-run", target: "review~private-key", unsafeReuse: true };
+
+    expect(projectInspectionRunView({ ir: compositeWorkflow(), run }).run.fork).toEqual({
+      sourceRunId: "source-run",
+      unsafeReuse: true,
+    });
+  });
+
+  it("keeps opaque failure payloads out of the generic run view", () => {
+    const run = repeatedAgentRun(1);
+    run.dynamic!.nodeInstances[0]!.status = "failed";
+    run.dynamic!.nodeInstances[0]!.error = {
+      upstream: { source: "acpx", data: { secret: "never-expose" } },
+    };
+
+    const view = projectInspectionRunView({ ir: compositeWorkflow(), run });
+
+    const rendered = JSON.stringify(view);
+    expect(rendered).toContain("Target failed.");
+    expect(rendered).not.toContain("never-expose");
   });
 
   it("keeps every active leaf in the default tree", () => {
@@ -317,15 +351,13 @@ describe("run inspection projection", () => {
     };
 
     const whole = snapshot(ir, run, { all: true });
-    const scoped = scopedTopology(ir, run, batchKey);
-    if (whole?.kind !== "snapshot" || !scoped) throw new Error("expected full and scoped snapshots");
+    const scoped = targetState(ir, run, batchKey);
+    if (whole?.kind !== "snapshot") throw new Error("expected full snapshot");
 
     expect(whole.items).toContainEqual(expect.objectContaining({ nodeKey: outsideKey }));
     expect(whole.availableActions).toEqual([]);
-    expect(scoped).toMatchObject({ all: true, scope: { ref: deriveOccurrenceRef(batchPath) } });
-    expect(scoped.items[0]).not.toHaveProperty("parentKey");
+    expect(scoped.target).toMatchObject({ id: batchKey });
     expect(scoped.items).not.toContainEqual(expect.objectContaining({ nodeKey: outsideKey }));
-    expect(scoped.availableActions).toEqual([]);
   });
 
   it("keeps every nested Fanout occurrence in the default tree", () => {
@@ -492,7 +524,7 @@ describe("run inspection projection", () => {
     }
   });
 
-  it("keeps default JSON compact and exposes complete target and raw projections", () => {
+  it("keeps default JSON compact and exposes complete target projection", () => {
     const run = repeatedAgentRun(25);
     const artifact: ArtifactRecord = {
       id: "turn-1",
@@ -506,10 +538,8 @@ describe("run inspection projection", () => {
     };
     const overview = snapshot(compositeWorkflow(), run);
     const target = targetState(compositeWorkflow(), run, "review", [artifact]);
-    const raw = rawInspection(compositeWorkflow(), run, [artifact]);
 
     expect(target).toMatchObject({ target: { kind: "static-node", id: "review" } });
-    if (raw.kind !== "raw") throw new Error("expected raw");
     expect(target.instances).toHaveLength(25);
     expect(target.attempts).toHaveLength(25);
     expect(target.summary).toMatchObject({ nodeStatus: "ready", counts: { total: 25, ready: 25 } });
@@ -519,9 +549,7 @@ describe("run inspection projection", () => {
     expect(target.artifacts).toEqual([artifact]);
     expect(isAbsolute(target.artifacts[0]!.path)).toBe(true);
     expect(JSON.stringify(target.artifacts)).not.toContain("relativePath");
-    expect(raw.run.dynamic?.nodeInstances).toHaveLength(25);
     expect(JSON.stringify(overview)).not.toContain('"dynamic"');
-    expect(JSON.stringify(overview).length).toBeLessThan(JSON.stringify(raw).length * 0.35);
   });
 
   it("selects Agent prompt and metadata from the targeted attempt", () => {
@@ -880,14 +908,13 @@ describe("run inspection projection", () => {
     expect(document.counts).toEqual({ total: 1, completed: 1 });
   });
 
-  it("keeps the authored agent key compact while exposing effective command definitions only to target and raw", () => {
+  it("keeps the authored agent key compact while exposing effective command definitions to target detail", () => {
     const ir = compositeWorkflow({ kind: "agent_command", command: "some-provider --unsafe-secret", model: "custom" });
     const run = repeatedAgentRun(1);
     const overview = snapshot(ir, run);
     const target = targetState(ir, run, "review");
-    const raw = rawInspection(ir, run);
 
-    if (overview.kind !== "snapshot" || raw.kind !== "raw") throw new Error("expected inspection documents");
+    if (overview.kind !== "snapshot") throw new Error("expected inspection document");
     expect(overview.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({
       key: "reviewer",
       turn: 4,
@@ -900,7 +927,6 @@ describe("run inspection projection", () => {
       model: "custom",
     });
     expect(target.summary.agentDefinition).toEqual({ kind: "agent_command", command: "some-provider --unsafe-secret", model: "custom" });
-    expect(raw.workflow.agents.reviewer).toEqual(target.summary.agentDefinition);
   });
 
   it("keeps the authored Agent key when the effective backend is overridden", () => {
@@ -961,7 +987,7 @@ describe("run inspection projection", () => {
     });
   });
 
-  it("bounds Signal prompt/schema summaries while target and raw retain full frozen detail", () => {
+  it("bounds Signal prompt/schema summaries while target retains frozen detail", () => {
     const fields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`field_${index}`, { kind: "string" as const }]));
     const outputSchema: SchemaIR = { kind: "object", fields, required: Object.keys(fields), additionalProperties: false };
     const ir: WorkflowIR = {
@@ -1012,8 +1038,7 @@ describe("run inspection projection", () => {
 
     const overview = snapshot(ir, run);
     const target = targetState(ir, run, "approve");
-    const raw = rawInspection(ir, run);
-    if (overview.kind !== "snapshot" || raw.kind !== "raw") throw new Error("expected inspection documents");
+    if (overview.kind !== "snapshot") throw new Error("expected inspection document");
 
     const compactSignal = overview.items.find(item => item.nodeKey === "approve~1")?.signal;
     expect(overview.items.find(item => item.nodeKey === "approve~1")?.parentKey).toBeUndefined();
@@ -1025,7 +1050,6 @@ describe("run inspection projection", () => {
     expect(target.summary.signal?.promptPreview).toBe(prompt);
     expect(target.summary.signal?.schemaSummary?.length).toBeLessThanOrEqual(160);
     expect(target.summary.signal?.outputSchema).toEqual(outputSchema);
-    expect(raw.workflow).toEqual(ir);
   });
 
   it("keeps repeated Signal aggregate and scoped details occurrence-exact", () => {
@@ -1783,4 +1807,10 @@ function event(sequence: number, type: string) {
     createdAt: `2026-07-01T00:00:0${sequence}.000Z`,
     idempotencyKey: `event-${sequence}`,
   };
+}
+
+function inspectionFolds(entries: readonly InspectionTreeEntry[]): Array<Extract<InspectionTreeEntry, { type: "fold" }>> {
+  return entries.flatMap(entry => entry.type === "fold"
+    ? [entry, ...inspectionFolds(entry.children)]
+    : inspectionFolds(entry.children));
 }

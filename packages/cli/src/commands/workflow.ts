@@ -5,9 +5,9 @@ import { Command } from "commander";
 import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../errors.js";
-import { followRun } from "../run-follow.js";
+import { followExitCode, followRun } from "../run-follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "../catalog.js";
-import { summarizeWorkflow, writeDiagnostics, writeJsonLine, writeResult } from "../output.js";
+import { summarizeWorkflow, writeDiagnostics, writeResult } from "../output.js";
 import { prepareWorkflowForCli, workflowPreparationCliError } from "../workflow-preparation.js";
 import { parseAgents, parseInput } from "./json.js";
 import { sendDaemonAdmitRun, type CliDaemonFailure } from "./daemon.js";
@@ -32,10 +32,13 @@ type CatalogOutputOptions = WorkflowCatalogScopeOptions & JsonOutputOptions;
 type WorkflowInputOptions = {
   input?: string;
   agents?: string;
-} & CatalogOutputOptions;
+} & WorkflowCatalogScopeOptions;
+
+type CheckWorkflowOptions = WorkflowInputOptions & JsonOutputOptions;
 
 type RunWorkflowOptions = WorkflowInputOptions & {
   follow?: boolean;
+  awaitDecision?: boolean;
 };
 
 type VizWorkflowOptions = WorkflowCatalogScopeOptions & {
@@ -82,20 +85,21 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .option("--agents <json>", "validate submit-time agent overrides")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
-    ).action(async (workflow: string, options: WorkflowInputOptions) => {
+    ).action(async (workflow: string, options: CheckWorkflowOptions) => {
       await checkWorkflow(ctx, workflow, options);
     }));
 
-  command.addCommand(withJsonOutput(new Command("run")
+  command.addCommand(new Command("run")
     .exitOverride()
     .description("Typecheck, compile, validate, and submit a workflow run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
     .option("--agents <json>", "override declared agents for this run")
-    .option("--follow", "wait for the run's next decision boundary or Ctrl-C")
+    .option("--follow", "wait until the admitted run becomes terminal; Ctrl-C detaches")
+    .option("--await-decision", "wait until the admitted run reaches an external decision boundary; Ctrl-C detaches")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
-    ).action(async (workflow: string, options: RunWorkflowOptions) => {
+    .action(async (workflow: string, options: RunWorkflowOptions) => {
       await runWorkflow(ctx, workflow, options);
     }));
 
@@ -188,7 +192,7 @@ function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope
   return options.global ? "global" : "project";
 }
 
-async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: WorkflowInputOptions): Promise<void> {
+async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: CheckWorkflowOptions): Promise<void> {
   const input = options.input === undefined ? undefined : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
   const { prepared, catalog } = await prepareWorkflowForCli({
@@ -216,9 +220,10 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
+  if (options.follow && options.awaitDecision) throw usageError("--follow and --await-decision are mutually exclusive.");
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
   const agentOverrides = parseAgents(options.agents);
-  const { prepared, catalog } = await prepareWorkflowForCli({
+  const { prepared } = await prepareWorkflowForCli({
     workspaceDir: ctx.cwd,
     workflow,
     stdin: ctx.stdin,
@@ -232,46 +237,27 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
   const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, normalizedInput.value, admittedOverrides);
 
-  if (!options.follow) {
+  if (!options.follow && !options.awaitDecision) {
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
-      message: "Run submitted.",
-      workflow: summarizeWorkflow(prepared.ir),
       diagnostics: prepared.ir.diagnostics,
-      sourceGraphDigest: prepared.sourceGraphDigest,
       run: toRunRecord(admitted),
-      followRunId: admitted.id,
-      ...(catalog ? { catalog } : {}),
-    }, outputFormatFor(options), ctx, 0));
+    }, "text", ctx, 0));
     return;
   }
 
-  const structured = outputFormatFor(options) === "json";
-  if (structured) {
-    writeJsonLine(ctx.stdout, {
-      schemaVersion: 1,
-      ok: true,
-      phase: "run",
-      kind: "admitted",
-      diagnostics: prepared.ir.diagnostics,
-      sourceGraphDigest: prepared.sourceGraphDigest,
-      run: toRunRecord(admitted),
-      ...(catalog ? { catalog } : {}),
-    });
-  } else {
-    writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
-  }
+  writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
   const outcome = await followRun(ctx.cwd, {
-    view: { kind: "run", runId: admitted.id },
+    kind: "run",
+    runId: admitted.id,
   }, {
-    phase: "run",
-    format: structured ? "ndjson" : "text",
+    until: options.follow ? "subject-terminal" : "decision-boundary",
     stdout: ctx.stdout,
     stderr: ctx.stderr,
   });
-  if (outcome.kind !== "done") {
-    ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
+  if (outcome.kind !== "closed") {
+    ctx.setExitCode(followExitCode(outcome));
     return;
   }
   ctx.setExitCode(outcome.run.status === "failed" || outcome.run.status === "canceled" ? 1 : 0);

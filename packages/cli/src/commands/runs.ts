@@ -5,35 +5,30 @@ import type { JsonValue } from "@acpus/expression/ir";
 import {
   deleteRun as deleteRuntimeRun,
   getRun,
-  inspectEvidence,
-  inspectRaw,
-  inspectRun as inspectRuntimeRun,
-  inspectTarget,
   inspectTargetArtifacts,
-  inspectTimeline,
   listArtifacts,
   listRuns,
   pruneRuns as pruneRuntimeRuns,
+  readInspection,
   tryNormalizeForkInput,
   type ArtifactRecord,
   type DaemonControlIntent,
   type DaemonControlResult,
+  type InspectionCandidates,
+  type InspectionError,
+  type InspectionRead,
+  type InspectionViewQuery,
   type PreparedRunWorkflow,
   type PruneReport,
   type RunDetails,
-  type RunInspectionError,
   type RunRecord,
-  type WatchInspectionQuery,
 } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
-import { writeJsonLine, writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
-import { followRun } from "../run-follow.js";
-import { presentInspectionJson } from "../run-inspection-json.js";
+import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
+import { followExitCode, followRun } from "../run-follow.js";
 import {
   formatInspectionCandidates,
-  formatRunInspectionDocument,
-  type InspectionCandidateView,
-  type CliInspectionResult,
+  formatInspectionView,
 } from "../run-inspection-surface.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import type { WorkflowCatalogScopeOptions } from "../catalog.js";
@@ -77,16 +72,12 @@ type SteerOptions = JsonOutputOptions & {
   instruction: string;
 };
 
-type InspectRunOptions = JsonOutputOptions & {
+type InspectRunOptions = {
   target?: string;
-  all?: boolean;
   timeline?: boolean;
-  evidence?: boolean;
-  limit?: string;
   page?: string;
-  controls?: boolean;
   follow?: boolean;
-  raw?: boolean;
+  awaitDecision?: boolean;
 };
 
 type ArtifactsRunOptions = JsonOutputOptions & {
@@ -111,20 +102,16 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .exitOverride()
     .description("Inspect and control durable runs.");
 
-  command.addCommand(withJsonOutput(new Command("inspect")
+  command.addCommand(new Command("inspect")
     .exitOverride()
     .description("Inspect durable run structure and status.")
     .argument("[run-id]", "run id")
     .option("--target <run-target>", "inspect one authored target or @occurrence reference")
     .option("--timeline", "show current activity and recent semantic history for the target")
-    .option("--evidence", "show pageable exact-attempt Evidence metadata for the target")
-    .option("--limit <count>", "limit Timeline, Evidence, or candidate entries (default: 12, maximum: 50)")
-    .option("--page <number>", "read a one-based Timeline, Evidence, or candidate page")
-    .option("--all", "expand complete run topology or the selected target subtree")
-    .option("--controls", "show technically applicable runtime controls")
-    .option("--follow", "wait for the selected view's next decision boundary or Ctrl-C")
-    .option("--raw", "emit the raw scheduler inspection bundle (requires --json)")
-    ).action(async (runId: string | undefined, options: InspectRunOptions) => {
+    .option("--page <number>", "read a one-based ambiguous-target candidate page")
+    .option("--follow", "wait until the selected run or target becomes terminal; Ctrl-C detaches")
+    .option("--await-decision", "wait until the next external decision boundary; Ctrl-C detaches")
+    .action(async (runId: string | undefined, options: InspectRunOptions) => {
       await inspectRunCommand(ctx, runId, options);
     }));
 
@@ -208,10 +195,10 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
 
   command.addCommand(withJsonOutput(new Command("steer")
     .exitOverride()
-    .description("Correct one running Agent attempt.")
+    .description("Apply an admitted in-scope information update to one running Agent attempt.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "running Agent attempt, dynamic node, or static node")
-    .requiredOption("--instruction <text>", "correction for the replacement Agent turn")
+    .requiredOption("--instruction <text>", "admitted in-scope information update or constraint")
     ).action(async (runId: string, options: SteerOptions) => {
       await steerRun(ctx, runId, options, outputFormatFor(options));
     }));
@@ -220,25 +207,20 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
 }
 
 async function inspectRun(ctx: RunsCommandContext, runId: string, options: InspectRunOptions): Promise<void> {
-  if (options.follow) {
-    const outcome = await followRun(ctx.cwd, inspectionWatchQuery(runId, options), {
-      phase: "inspect",
-      format: outputFormatFor(options) === "json" ? "ndjson" : "text",
+  if (options.follow || options.awaitDecision) {
+    const outcome = await followRun(ctx.cwd, inspectionViewQuery(runId, options), {
+      until: options.follow ? "subject-terminal" : "decision-boundary",
       stdout: ctx.stdout,
       stderr: ctx.stderr,
     });
-    ctx.setExitCode(outcome.kind === "error" ? 1 : 0);
+    ctx.setExitCode(followExitCode(outcome));
     return;
   }
 
-  const document = await inspectionDocument(ctx.cwd, runId, options, outputFormatFor(options) === "text");
-  if (outputFormatFor(options) === "json") {
-    writeJsonLine(ctx.stdout, { ok: true, phase: "inspect", ...presentInspectionJson(document) });
-  } else {
-    ctx.stdout.write(document.kind === "candidates"
-      ? formatInspectionCandidates(document, inspectionCandidateView(options))
-      : formatRunInspectionDocument(document));
-  }
+  const document = await inspectionDocument(ctx.cwd, runId, options);
+  ctx.stdout.write(document.kind === "candidates"
+    ? formatInspectionCandidates(document, { timeline: options.timeline === true })
+    : formatInspectionView(document));
   ctx.setExitCode(0);
 }
 
@@ -248,7 +230,6 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
     await inspectRun(ctx, runId, options);
     return;
   }
-  if (outputFormatFor(options) === "json") throw usageError("Run id is required when --json is used.");
   if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const runs = await listRuns(ctx.cwd);
@@ -263,104 +244,35 @@ async function inspectionDocument(
   cwd: string,
   runId: string,
   options: InspectRunOptions,
-  renderCandidates: boolean,
-): Promise<CliInspectionResult> {
-  const page = {
-    ...(options.page === undefined ? {} : { page: Number(options.page) }),
-    ...(options.limit === undefined ? {} : { limit: Number(options.limit) }),
-  };
-  if (options.raw) {
-    const inspected = await inspectRaw(cwd, { runId });
-    if (inspected.isErr()) throw inspectionError(inspected.error, renderCandidates, inspectionCandidateView(options));
-    return inspected.value;
-  }
-  if (options.evidence) {
-    const inspected = await inspectEvidence(cwd, { runId, target: options.target!, ...page });
-    if (inspected.isErr()) throw inspectionError(inspected.error, renderCandidates, inspectionCandidateView(options));
-    return inspected.value;
-  }
-  if (options.timeline) {
-    const inspected = await inspectTimeline(cwd, { runId, target: options.target!, ...page });
-    if (inspected.isErr()) throw inspectionError(inspected.error, renderCandidates, inspectionCandidateView(options));
-    return inspected.value;
-  }
-  if (options.target !== undefined) {
-    const inspected = await inspectTarget(cwd, {
-      runId,
-      target: options.target,
-      ...(options.all ? { includeAllTopology: true } : {}),
-      ...(options.controls ? { includeControls: true } : {}),
-      ...page,
-    });
-    if (inspected.isErr()) throw inspectionError(inspected.error, renderCandidates, inspectionCandidateView(options));
-    return inspected.value;
-  }
-  const inspected = await inspectRuntimeRun(cwd, {
-    runId,
-    ...(options.all ? { includeAllTopology: true } : {}),
-    ...(options.controls ? { includeControls: true } : {}),
+): Promise<InspectionRead> {
+  const inspected = await readInspection(cwd, {
+    view: inspectionViewQuery(runId, options),
+    ...(options.page === undefined ? {} : { candidatePage: Number(options.page) }),
   });
-  if (inspected.isErr()) throw inspectionError(inspected.error, renderCandidates, inspectionCandidateView(options));
+  if (inspected.isErr()) throw inspectionError(inspected.error);
   return inspected.value;
 }
 
-function inspectionWatchQuery(runId: string, options: InspectRunOptions): WatchInspectionQuery {
-  if (options.timeline) {
-    return {
-      view: {
-        kind: "timeline",
-        runId,
-        target: options.target!,
-        ...(options.limit === undefined ? {} : { limit: Number(options.limit) }),
-      },
-    };
-  }
+function inspectionViewQuery(runId: string, options: InspectRunOptions): InspectionViewQuery {
   if (options.target !== undefined) {
     return {
-      view: {
-        kind: "target",
-        runId,
-        target: options.target,
-        ...(options.all ? { includeAllTopology: true } : {}),
-        ...(options.controls ? { includeControls: true } : {}),
-      },
+      kind: "target",
+      runId,
+      target: options.target,
+      detail: options.timeline ? "timeline" : "summary",
     };
   }
-  return {
-    view: {
-      kind: "run",
-      runId,
-      ...(options.all ? { includeAllTopology: true } : {}),
-      ...(options.controls ? { includeControls: true } : {}),
-    },
-  };
+  return { kind: "run", runId };
 }
 
 function inspectionError(
-  error: RunInspectionError,
-  renderCandidates = false,
-  candidateView: InspectionCandidateView = {},
+  error: InspectionError,
 ): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
   if (error.type === "invalid-query") return usageError(error.message);
-  const inspectionError = error.type === "inspection-read-failed"
-    ? { type: error.type, runId: error.runId, message: error.message }
-    : error;
-  const message = renderCandidates && error.type === "target-ambiguous"
-    ? `${formatInspectionCandidates(error.candidates, candidateView).trimEnd()}\n${error.message}`
-    : error.message;
-  return notFoundError(message, {
+  return notFoundError(error.message, {
     errorCode: error.type.replaceAll("-", "_").toUpperCase(),
-    inspectionError,
+    inspectionError: error,
   });
-}
-
-function inspectionCandidateView(options: InspectRunOptions): InspectionCandidateView {
-  return {
-    ...(options.timeline ? { timeline: true } : {}),
-    ...(options.evidence ? { evidence: true } : {}),
-    ...(options.all ? { all: true } : {}),
-    ...(options.controls ? { controls: true } : {}),
-  };
 }
 
 async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, options: ArtifactsRunOptions): Promise<void> {
@@ -372,7 +284,7 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
     artifacts = listed;
   } else {
     const inspected = await inspectTargetArtifacts(ctx.cwd, { runId, target: options.target });
-    if (inspected.isErr()) throw inspectionError(inspected.error);
+    if (inspected.isErr()) throw artifactInspectionError(inspected.error);
     artifacts = inspected.value.artifacts;
   }
 
@@ -393,34 +305,23 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
   ctx.setExitCode(0);
 }
 
+function artifactInspectionError(error: { type: string; message: string }): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
+  if (error.type === "invalid-query") return usageError(error.message);
+  return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
+}
+
 function validateInspectOptions(options: InspectRunOptions): void {
   if (options.target !== undefined && options.target.trim().length === 0) {
     throw usageError("--target must be a non-empty string.");
   }
-  if (options.evidence && options.target === undefined) throw usageError("--evidence requires --target.");
   if (options.timeline && options.target === undefined) throw usageError("--timeline requires --target.");
-  if (options.timeline && (options.all || options.raw || options.evidence)) throw usageError("--timeline cannot be used with --all, --evidence, or --raw.");
-  if (options.evidence && (options.all || options.raw || options.controls || options.follow)) {
-    throw usageError("--evidence cannot be used with --all, --controls, --follow, or --raw.");
-  }
-  if (options.controls && options.timeline) throw usageError("--controls cannot be used with --timeline.");
-  if (options.limit !== undefined && options.target === undefined) throw usageError("--limit requires --target.");
-  if (options.limit !== undefined && options.follow && !options.timeline) {
-    throw usageError("--limit can be used with --follow only together with --timeline.");
-  }
   if (options.page !== undefined && options.target === undefined) throw usageError("--page requires --target.");
-  if (options.limit !== undefined && (!/^\d+$/.test(options.limit) || Number(options.limit) < 1 || Number(options.limit) > 50)) {
-    throw usageError("--limit must be an integer from 1 to 50.");
-  }
   if (options.page !== undefined && (!/^[1-9]\d*$/.test(options.page) || !Number.isSafeInteger(Number(options.page)))) {
     throw usageError("--page must be a positive integer.");
   }
-  if (options.page !== undefined && options.follow) {
-    throw usageError("--page cannot be used with --follow.");
-  }
-  if (options.raw && outputFormatFor(options) !== "json") throw usageError("--raw requires --json.");
-  if (options.raw && (options.follow || options.all || options.target !== undefined || options.controls || options.evidence)) {
-    throw usageError("--raw cannot be used with --follow, --all, --target, --controls, or --evidence.");
+  if (options.follow && options.awaitDecision) throw usageError("--follow and --await-decision are mutually exclusive.");
+  if (options.page !== undefined && (options.follow || options.awaitDecision)) {
+    throw usageError("--page cannot be used with --follow or --await-decision.");
   }
 }
 
@@ -597,7 +498,7 @@ async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOp
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "control",
-    message: "Attempt fenced; correction queued.",
+    message: "Attempt fenced; information update queued.",
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
@@ -774,7 +675,7 @@ async function runControlError(
       };
   const message = inspectionError?.message ?? error.message;
   return controlError(candidates && format === "text"
-    ? `${formatRunInspectionDocument(candidates).trimEnd()}\n${message}`
+    ? `${formatInspectionCandidates(candidates).trimEnd()}\n${message}`
     : message, {
     errorCode: error.code,
     control: { type: error.controlType, runId: error.runId },
@@ -787,8 +688,10 @@ async function controlCandidates(
   cwd: string,
   runId: string,
   target: string,
-) {
-  const inspected = await inspectTarget(cwd, { runId, target });
+): Promise<InspectionCandidates | undefined> {
+  const inspected = await readInspection(cwd, {
+    view: { kind: "target", runId, target, detail: "summary" },
+  });
   return inspected.isOk() && inspected.value.kind === "candidates"
     ? inspected.value
     : undefined;

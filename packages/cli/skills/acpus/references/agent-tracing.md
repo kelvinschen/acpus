@@ -38,8 +38,8 @@ boundaries:
   bounded failure/summary.
 
 Provider streaming frames are not stored here. Evidence is private Runtime
-state, not an Artifact, and fork does not copy it. It may contain sensitive
-prompt and response content; read only the exact turn needed for diagnosis.
+state, not an Artifact or ordinary CLI inspection interface, and fork does not
+copy it. It may contain sensitive prompt and response content.
 
 ## Bounded Semantic Projection
 
@@ -50,13 +50,13 @@ expired history cannot be reconstructed.
 ## Locate One Execution
 
 ```sh
-acpus runs inspect <run-id> --target <agent-node-or-attempt> [--timeline|--evidence]
+acpus runs inspect <run-id> --target <agent-node-or-@ref#attemptNo> [--timeline]
 acpus runs artifacts <run-id> --target <agent-node-or-attempt>
 ```
 
-Use Summary first, Timeline for process activity, and Evidence for exact
-Agent-turn boundaries. For several attempts, use the returned `@ref#attemptNo`.
-List ordinary artifacts separately.
+Use Summary first and Timeline for process activity. For several attempts, use
+the returned `@ref#attemptNo`; Trace artifacts provide the opt-in full provider
+history. List ordinary artifacts separately.
 
 ## Normalized Trace
 

@@ -39,7 +39,7 @@ Search all available documentation under `references/` to explain concepts. Choo
 ## Inspection discipline [Mandatory]
 
 - Inspect Summary once, then narrow only to the target controlling the next decision.
-- Use one `--follow` for that decision boundary. Re-inspect only after a boundary, hard attention, or new operator or external input; never poll.
+- Use one `--await-decision` for that decision boundary; Re-inspect only after a returned boundary, hard attention, or new operator or external input; never poll.
 - Elapsed time, silence, observation age, usage/context metrics, and available controls MUST NOT trigger intervention.
 - For repeats, copy the candidate view's `@ref`; deepen only enough to decide.
 

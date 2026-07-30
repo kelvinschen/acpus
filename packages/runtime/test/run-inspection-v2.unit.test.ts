@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { projectAgentExecution } from "../src/inspection/agent-execution-projection.js";
+import { projectInspectionTargetTimelineView } from "../src/inspection/coherent-projection.js";
 import {
   inspectionExcerpt,
-  projectEvidence,
   projectTargetSummary,
-  projectTimeline,
 } from "../src/inspection/decision-projection.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
 import type {
@@ -83,69 +82,6 @@ describe("inspection job projections", () => {
     expect(empty.pulse).not.toHaveProperty("headline");
   });
 
-  it("returns Evidence only from the explicit projection, with exact metadata and paging", () => {
-    const document = projectEvidence({
-      details: agentDetails(),
-      observations: observations([
-        turn(1, { state: "sealed", lastResponseBytes: 10 }),
-        turn(2, {
-          state: "sealed",
-          lastResponseBytes: 20,
-          responseAtFenceBytes: 17,
-          finalResponseBytes: 20,
-          trace: {
-            state: "partial",
-            relativePath: "evidence/agents/attempt-1/turn-002.trace.jsonl.partial",
-            bytes: 4_096,
-            digest: "trace-2",
-          },
-        }),
-        turn(3, { state: "sealed", lastResponseBytes: 30, providerStatus: "completed" }),
-      ]),
-      runDir: "/private/runtime/runs/run-1",
-      page: 2,
-      limit: 1,
-    });
-
-    expect(document).toMatchObject({
-      schemaVersion: 2,
-      kind: "evidence",
-      subject: { ref: "@1a2b3c4d5e6f#1" },
-      evidence: {
-        directory: "/private/runtime/runs/run-1/evidence/agents/attempt-1",
-        state: "sealed",
-        completeness: "complete",
-        turnCount: 3,
-        gapCount: 0,
-        providerOutcome: "completed",
-        schedulerDisposition: "pending",
-        records: {
-          page: 2,
-          limit: 1,
-          total: 3,
-          hasMore: true,
-          nextPage: 3,
-          entries: [{
-            turn: 2,
-            file: "turn-002.evidence.jsonl",
-            prompt: { kind: "task", bytes: 12, digest: "prompt-2" },
-            lastDurableResponseBytes: 20,
-            responseAtFenceBytes: 17,
-            finalObservedResponseBytes: 20,
-            trace: {
-              state: "partial",
-              file: "turn-002.trace.jsonl.partial",
-              bytes: 4_096,
-              digest: "trace-2",
-            },
-          }],
-        },
-      },
-    });
-    expect(document?.evidence).not.toHaveProperty("omittedTurns");
-    expect(JSON.stringify(document)).not.toContain("private evidence body");
-  });
-
   it("labels a missing steered-attempt observation boundary without hiding it", () => {
     const details = agentDetails();
     details.attempts[0] = {
@@ -158,29 +94,10 @@ describe("inspection job projections", () => {
     const projection = observations([]);
 
     const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
-    const evidence = projectEvidence({
-      details,
-      observations: projection,
-      runDir: "/private/runtime/runs/run-1",
-      page: 1,
-      limit: 12,
-    });
-
     expect(summary.visibility).toEqual({ state: "degraded", reason: "boundary-evidence-unavailable" });
-    expect(evidence).toMatchObject({
-      visibility: { state: "degraded", reason: "boundary-evidence-unavailable" },
-      evidence: {
-        state: "partial",
-        completeness: "degraded",
-        turnCount: 0,
-        schedulerDisposition: "discarded",
-        dispositionReason: "operator_steered",
-        records: { entries: [], total: 0 },
-      },
-    });
   });
 
-  it("pages Timeline directly and never attaches Evidence", () => {
+  it("projects one bounded timeline view without Evidence paging metadata", () => {
     const details = agentDetails();
     const projection = observations([], [
       activity(1, "first"),
@@ -188,27 +105,24 @@ describe("inspection job projections", () => {
       activity(3, "third"),
     ]);
 
-    const newest = projectTimeline({
+    const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
       details,
       events: [],
       observations: projection,
-      page: 1,
-      limit: 1,
-    });
-    const previous = projectTimeline({
-      run: agentRun(),
-      details,
-      events: [],
-      observations: projection,
-      page: 2,
-      limit: 1,
     });
 
-    expect(newest.recent).toMatchObject({ page: 1, limit: 1, returned: 1, entries: [{ summary: { text: "third" } }] });
-    expect(previous.recent).toMatchObject({ page: 2, limit: 1, returned: 1, entries: [{ summary: { text: "second" } }] });
-    expect(newest).not.toHaveProperty("evidence");
-    expect(previous).not.toHaveProperty("evidence");
+    expect(timeline).toMatchObject({
+      kind: "target",
+      detail: "timeline",
+      recent: [
+        expect.objectContaining({ kind: "activity", summary: "first" }),
+        expect.objectContaining({ kind: "activity", summary: "second" }),
+        expect.objectContaining({ kind: "activity", summary: "third" }),
+      ],
+    });
+    expect(timeline).not.toHaveProperty("evidence");
+    expect(timeline).not.toHaveProperty("page");
   });
 
   it("projects Agent execution from retained Observations, not progress or execution metadata", () => {

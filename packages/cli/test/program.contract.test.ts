@@ -317,7 +317,7 @@ describe("CLI program usage contracts", () => {
   });
 
   it("documents JSON only on structured-output leaf commands", async () => {
-    for (const argv of [["--help"], ["runs", "--help"], ["workflow", "viz", "--help"]]) {
+    for (const argv of [["--help"], ["runs", "--help"], ["workflow", "run", "--help"], ["workflow", "viz", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
 
@@ -332,7 +332,7 @@ describe("CLI program usage contracts", () => {
       expect(stderr.text).toBe("");
     }
 
-    for (const argv of [["runs", "inspect", "--help"], ["web", "--help"]]) {
+    for (const argv of [["web", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);
@@ -367,16 +367,21 @@ describe("CLI program usage contracts", () => {
     }
   });
 
-  it("documents run submission, explicit follow, and inspection options", async () => {
+  it("documents compact text-only inspection and explicit blocking intents", async () => {
     const inspectStdout = new CaptureStream();
     const inspectStderr = new CaptureStream();
     expect(await runCli(["runs", "inspect", "--help"], {
       cwd: process.cwd(), stdout: inspectStdout, stderr: inspectStderr,
     })).toBe(0);
-    for (const option of ["--target", "--timeline", "--evidence", "--limit", "--page", "--all", "--controls", "--follow", "--raw", "--json"]) {
+    for (const option of ["--target", "--timeline", "--page", "--follow", "--await-decision"]) {
       expect(inspectStdout.text).toContain(option);
     }
-    expect(inspectStdout.text).toContain("decision boundary");
+    for (const removed of ["--evidence", "--limit", "--all", "--controls", "--raw", "--json"]) {
+      expect(inspectStdout.text).not.toContain(removed);
+    }
+    expect(inspectStdout.text).toContain("terminal");
+    expect(inspectStdout.text).toContain("external decision boundary");
+    expect(inspectStdout.text).toMatch(/Ctrl-C\s+detaches/u);
     expect(inspectStdout.text).not.toContain("--after");
     expect(inspectStdout.text).not.toContain("--before");
 
@@ -386,9 +391,12 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: runStdout, stderr: runStderr,
     })).toBe(0);
     expect(runStdout.text).toContain("--follow");
-    expect(runStdout.text).toContain("decision boundary");
+    expect(runStdout.text).toContain("--await-decision");
+    expect(runStdout.text).toMatch(/external\s+decision boundary/u);
+    expect(runStdout.text).toMatch(/Ctrl-C\s+detaches/u);
     expect(runStdout.text).toContain("--input <json|file.json>");
     expect(runStdout.text).toContain("- for stdin");
+    expect(runStdout.text).not.toContain("--json");
 
     const checkStdout = new CaptureStream();
     const checkStderr = new CaptureStream();
@@ -397,6 +405,7 @@ describe("CLI program usage contracts", () => {
     })).toBe(0);
     expect(checkStdout.text).toContain("--input <json|file.json>");
     expect(checkStdout.text).toContain("- for stdin");
+    expect(checkStdout.text).toContain("--json");
 
     const forkStdout = new CaptureStream();
     const forkStderr = new CaptureStream();
@@ -408,10 +417,18 @@ describe("CLI program usage contracts", () => {
     expect(forkStdout.text).toContain("stdin");
     expect(forkStdout.text).toContain("--project");
     expect(forkStdout.text).toContain("--global");
+    const steerStdout = new CaptureStream();
+    const steerStderr = new CaptureStream();
+    expect(await runCli(["runs", "steer", "--help"], {
+      cwd: process.cwd(), stdout: steerStdout, stderr: steerStderr,
+    })).toBe(0);
+    expect(steerStdout.text).toMatch(/admitted\s+in-scope\s+information\s+update/u);
+    expect(steerStdout.text).not.toMatch(/correction/u);
     expect(inspectStderr.text).toBe("");
     expect(runStderr.text).toBe("");
     expect(checkStderr.text).toBe("");
     expect(forkStderr.text).toBe("");
+    expect(steerStderr.text).toBe("");
   });
 
   it("resolves .json input files before workflow preparation or runtime mutation", async () => {
@@ -422,7 +439,6 @@ describe("CLI program usage contracts", () => {
 
       const cases = [
         { argv: ["workflow", "check", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
-        { argv: ["workflow", "run", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
         { argv: ["runs", "fork", "run_1", "--workflow", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
         { argv: ["workflow", "check", "missing.workflow.ts", "--input", "empty.json", "--json"], message: `--input file '${join(workspace, "empty.json")}' is empty` },
         { argv: ["workflow", "check", "missing.workflow.ts", "--input", "invalid.json", "--json"], message: `--input file '${join(workspace, "invalid.json")}' must be valid JSON` },
@@ -439,6 +455,14 @@ describe("CLI program usage contracts", () => {
         expect(stderr.text).toBe("");
       }
 
+      const runStdout = new CaptureStream();
+      const runStderr = new CaptureStream();
+      expect(await runCli(["workflow", "run", "missing.workflow.ts", "--input", "missing.json"], {
+        cwd: workspace, stdout: runStdout, stderr: runStderr,
+      })).toBe(2);
+      expect(runStdout.text).toBe("");
+      expect(runStderr.text).toContain(`--input file '${join(workspace, "missing.json")}' could not be read`);
+
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       const exitCode = await runCli([
@@ -450,29 +474,28 @@ describe("CLI program usage contracts", () => {
     });
   });
 
-  it("rejects incompatible inspection modes before reading runtime state", async () => {
+  it("rejects invalid text-only run and inspection queries before reading runtime state", async () => {
     const cases = [
-      { argv: ["runs", "inspect", "run_1", "--target", "   ", "--json"], message: "--target must be a non-empty string" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--json"], message: "--timeline requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--evidence", "--json"], message: "--evidence requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--all", "--json"], message: "--timeline cannot be used with --all, --evidence, or --raw" },
-      { argv: ["runs", "inspect", "run_1", "--timeline", "--target", "node", "--controls", "--json"], message: "--controls cannot be used with --timeline" },
-      { argv: ["runs", "inspect", "run_1", "--evidence", "--target", "node", "--follow", "--json"], message: "--evidence cannot be used with --all, --controls, --follow, or --raw" },
-      { argv: ["runs", "inspect", "run_1", "--evidence", "--target", "node", "--controls", "--json"], message: "--evidence cannot be used with --all, --controls, --follow, or --raw" },
-      { argv: ["runs", "inspect", "run_1", "--limit", "12", "--json"], message: "--limit requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "12", "--follow", "--json"], message: "--limit can be used with --follow only together with --timeline" },
-      { argv: ["runs", "inspect", "run_1", "--page", "2", "--json"], message: "--page requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "0", "--json"], message: "--limit must be an integer from 1 to 50" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--limit", "51", "--json"], message: "--limit must be an integer from 1 to 50" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "0", "--json"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "1.5", "--json"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "9007199254740992", "--json"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--follow", "--json"], message: "--page cannot be used with --follow" },
-      { argv: ["runs", "inspect", "run_1", "--before", "page", "--json"], message: "unknown option '--before'" },
-      { argv: ["runs", "inspect", "run_1", "--after", "revision", "--json"], message: "unknown option '--after'" },
-      { argv: ["runs", "inspect", "run_1", "--interval", "1s", "--json"], message: "unknown option '--interval'" },
-      { argv: ["runs", "inspect", "run_1", "--raw", "--follow", "--json"], message: "--raw cannot be used" },
-      { argv: ["runs", "inspect", "run_1", "--raw", "--controls", "--json"], message: "--raw cannot be used" },
+      { argv: ["workflow", "run", "missing.workflow.ts", "--json"], message: "unknown option '--json'" },
+      { argv: ["workflow", "run", "missing.workflow.ts", "--follow", "--json"], message: "unknown option '--json'" },
+      { argv: ["workflow", "run", "missing.workflow.ts", "--await-decision", "--json"], message: "unknown option '--json'" },
+      { argv: ["runs", "inspect", "run_1", "--target", "   "], message: "--target must be a non-empty string" },
+      { argv: ["runs", "inspect", "run_1", "--timeline"], message: "--timeline requires --target" },
+      { argv: ["runs", "inspect", "run_1", "--page", "2"], message: "--page requires --target" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "0"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "1.5"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "9007199254740992"], message: "--page must be a positive integer" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--follow"], message: "--page cannot be used with --follow or --await-decision" },
+      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--await-decision"], message: "--page cannot be used with --follow or --await-decision" },
+      { argv: ["runs", "inspect", "run_1", "--follow", "--await-decision"], message: "--follow and --await-decision are mutually exclusive" },
+      { argv: ["runs", "inspect", "run_1", "--before", "page"], message: "unknown option '--before'" },
+      { argv: ["runs", "inspect", "run_1", "--interval", "1s"], message: "unknown option '--interval'" },
+      { argv: ["runs", "inspect", "run_1", "--all"], message: "unknown option '--all'" },
+      { argv: ["runs", "inspect", "run_1", "--controls"], message: "unknown option '--controls'" },
+      { argv: ["runs", "inspect", "run_1", "--evidence"], message: "unknown option '--evidence'" },
+      { argv: ["runs", "inspect", "run_1", "--limit", "12"], message: "unknown option '--limit'" },
+      { argv: ["runs", "inspect", "run_1", "--raw"], message: "unknown option '--raw'" },
+      { argv: ["runs", "inspect", "run_1", "--json"], message: "unknown option '--json'" },
     ];
 
     for (const testCase of cases) {
@@ -480,15 +503,9 @@ describe("CLI program usage contracts", () => {
       const stderr = new CaptureStream();
       const exitCode = await runCli(testCase.argv, { cwd: process.cwd(), stdout, stderr });
       expect(exitCode).toBe(2);
-      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
-      expect(stdout.text).toContain(testCase.message);
-      expect(stderr.text).toBe("");
+      expect(stdout.text).toBe("");
+      expect(stderr.text).toContain(testCase.message);
     }
-
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    expect(await runCli(["runs", "inspect", "run_1", "--raw"], { cwd: process.cwd(), stdout, stderr })).toBe(2);
-    expect(stderr.text).toContain("--raw requires --json");
   });
 
   it("queries an empty workflow catalog", async () => {

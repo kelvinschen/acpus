@@ -166,26 +166,26 @@ acpus runs inspect <run-id> --target <node-or-attempt>
 # Current activity plus recent semantic history
 acpus runs inspect <run-id> --target <node-or-attempt> --timeline
 
-# An exact Agent attempt also shows its Private Turn Evidence metadata
-acpus runs inspect <run-id> --target <attempt-id>
+# An exact Agent attempt uses its public occurrence reference
+acpus runs inspect <run-id> --target @<ref>#<attemptNo> --timeline
 ```
 
-The attempt capsule reports boundary byte/digest metadata, provider outcome,
-scheduler disposition, and private Evidence/Trace state without printing their
-bodies. Timeline is bounded operational history; full normalized provider
-streaming is retained only when the Agent enables `trace: true`.
+Use `--await-decision` to remain attached until an input, pause, or terminal boundary needs a decision; use `--follow` only to wait for terminal status.
+Inspection is a compact text interface. Timeline is bounded operational history; full normalized provider streaming is retained only when the Agent enables `trace: true`.
 
-### Common Run Controls
+### Ordinary Run Controls
 
 ```sh
+acpus runs inspect <run-id> --await-decision
 acpus runs inspect <run-id> --follow
 acpus runs pause <run-id>
 acpus runs resume <run-id>
-acpus runs steer <run-id> --target <agent-attempt-or-node> --instruction "Correct course"
-acpus runs retry <run-id> --target <node-key-or-frame-key>
-acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
+acpus runs retry <run-id> --target <node-or-@ref>
+acpus runs signal <run-id> --target <signal-or-@ref> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
+
+Steer is exceptional recovery: use it only when a started Agent needs new, in-scope information. It is not a way to hurry a quiet or long-running Agent; see [Runtime Recovery](packages/cli/skills/acpus/references/runtime-recovery.md#recovery-decision).
 
 
 ## Configuring Agents

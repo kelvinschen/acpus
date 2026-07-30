@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { getRun, inspectRaw, listRuns, tryNormalizeWorkflowInput } from "@acpus/runtime";
+import { getRun, listRuns, readInspection, tryNormalizeWorkflowInput } from "@acpus/runtime";
+import { openExistingRuntimeStore } from "../src/store/store.js";
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -76,24 +77,14 @@ describe.concurrent("runtime admission use cases", () => {
       const admitted = await admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, {})._unsafeUnwrap());
       await writeFile(join(workspace, prepared.source.entry), "throw new Error('live source should not be read');\n");
 
-      await expect(rawInspection(workspace, admitted.run.id)).resolves.toMatchObject({
-        run: { id: admitted.run.id, name: "cli-signal" },
-        workflow: {
-          name: "cli-signal",
-          root: {
-            nodes: expect.arrayContaining([
-              expect.objectContaining({
-                id: "approve",
-                kind: "signal",
-                outputSchema: expect.objectContaining({
-                  kind: "object",
-                  fields: { ok: { kind: "boolean" } },
-                  required: ["ok"],
-                }),
-              }),
-            ]),
-          },
-        },
+      const inspected = await readInspection(workspace, {
+        view: { kind: "target", runId: admitted.run.id, target: "approve", detail: "summary" },
+      });
+      expect(inspected.isOk() ? inspected.value : undefined).toMatchObject({
+        kind: "target",
+        detail: "summary",
+        run: { id: admitted.run.id },
+        subject: { label: "approve", kind: "signal" },
       });
     });
   });
@@ -102,7 +93,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-frozen-digest-mismatch", async workspace => {
       const corrupted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       await writeFile(join(runtimeRunDir(workspace, corrupted.run.id), "workflow.ir.json"), "{}\n");
-      await expect(inspectionErrorMessage(workspace, corrupted.run.id)).resolves.toContain("Frozen workflow IR digest mismatch.");
+      await expect(frozenReadErrorMessage(workspace, corrupted.run.id)).resolves.toContain("Frozen workflow IR digest mismatch.");
     });
   });
 
@@ -110,7 +101,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-frozen-file-invariants", async workspace => {
       const missing = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       await rm(join(runtimeRunDir(workspace, missing.run.id), "workflow.ir.json"));
-      await expect(inspectionErrorMessage(workspace, missing.run.id)).resolves.toContain("ENOENT");
+      await expect(frozenReadErrorMessage(workspace, missing.run.id)).resolves.toContain("ENOENT");
 
       const escapedFile = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const db = new DatabaseSync(runtimeDatabasePath(workspace));
@@ -119,14 +110,14 @@ describe.concurrent("runtime admission use cases", () => {
       } finally {
         db.close();
       }
-      await expect(inspectionErrorMessage(workspace, escapedFile.run.id)).resolves.toContain("Path '../outside.json' escapes run directory.");
+      await expect(frozenReadErrorMessage(workspace, escapedFile.run.id)).resolves.toContain("Path '../outside.json' escapes run directory.");
 
       const symlinkedRunDir = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const symlinkedRunPath = runtimeRunDir(workspace, symlinkedRunDir.run.id);
       const outsideRunPath = join(workspace, "outside-run");
       await rename(symlinkedRunPath, outsideRunPath);
       await symlink(outsideRunPath, symlinkedRunPath, "dir");
-      await expect(inspectionErrorMessage(workspace, symlinkedRunDir.run.id)).resolves.toContain(
+      await expect(frozenReadErrorMessage(workspace, symlinkedRunDir.run.id)).resolves.toContain(
         `Run directory '${symlinkedRunDir.run.id}' is outside runtime runs root '${runtimeRunsRoot(workspace)}'.`,
       );
 
@@ -136,14 +127,14 @@ describe.concurrent("runtime admission use cases", () => {
       await writeFile(outsideWorkflowPath, await readFile(workflowPath));
       await rm(workflowPath);
       await symlink(outsideWorkflowPath, workflowPath);
-      await expect(inspectionErrorMessage(workspace, symlinkedFile.run.id)).resolves.toContain("is a symbolic link");
+      await expect(frozenReadErrorMessage(workspace, symlinkedFile.run.id)).resolves.toContain("is a symbolic link");
 
       const symlinkedRunsRoot = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
       const runsRoot = runtimeRunsRoot(workspace);
       const outsideRunsRoot = join(workspace, "outside-runs-root");
       await rename(runsRoot, outsideRunsRoot);
       await symlink(outsideRunsRoot, runsRoot, "dir");
-      await expect(inspectionErrorMessage(workspace, symlinkedRunsRoot.run.id)).resolves.toContain(
+      await expect(frozenReadErrorMessage(workspace, symlinkedRunsRoot.run.id)).resolves.toContain(
         `Runtime runs root '${runsRoot}' is not a regular directory.`,
       );
     });
@@ -398,16 +389,18 @@ describe.concurrent("runtime admission use cases", () => {
   });
 });
 
-async function rawInspection(workspace: string, runId: string) {
-  const result = await inspectRaw(workspace, { runId });
-  if (result.isErr()) throw new Error(result.error.message);
-  return result.value;
-}
-
-async function inspectionErrorMessage(workspace: string, runId: string): Promise<string> {
-  const result = await inspectRaw(workspace, { runId });
-  if (result.isOk()) throw new Error("Expected inspection to fail.");
-  return result.error.message;
+async function frozenReadErrorMessage(workspace: string, runId: string): Promise<string> {
+  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>> | undefined;
+  try {
+    store = await openExistingRuntimeStore(workspace);
+    if (!store) throw new Error("Expected runtime store.");
+    store.readRunInspection(runId);
+    throw new Error("Expected frozen workflow read to fail.");
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    store?.close();
+  }
 }
 
 function sourcePackageResolverImport(aliases: Record<string, string>): string {

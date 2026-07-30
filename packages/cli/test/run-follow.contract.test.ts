@@ -1,429 +1,365 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  WatchInspectionEmission,
-  RunInspectionCandidatesDocument,
-  RunInspectionError,
-  RunInspectionSnapshot,
-  RunInspectionTimelineDocument,
-  WatchInspectionQuery,
-} from "@acpus/runtime";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { InspectionError, InspectionObservation, InspectionView } from "@acpus/runtime";
 import { followRun } from "../src/run-follow.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
-const runtime = vi.hoisted(() => ({ watchInspection: vi.fn() }));
+const runtime = vi.hoisted(() => ({ observeInspection: vi.fn() }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
-  watchInspection: runtime.watchInspection,
+  observeInspection: runtime.observeInspection,
 }));
 
-describe("Inspection v2 follow", () => {
+describe("inspection observation transcript", () => {
   beforeEach(() => {
-    runtime.watchInspection.mockReset();
+    runtime.observeInspection.mockReset();
   });
 
-  it("prints one self-contained initial view and one boundary view without a lifecycle transcript", async () => {
-    runtime.watchInspection.mockImplementation(() => emissions([
-      view(snapshot()),
-      view(snapshot({
-        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
-        counts: { total: 1, completed: 1 },
-        items: [{ ...snapshot().items[0]!, status: "completed" }],
-        output: { accepted: true },
-      })),
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders attachment, compact semantic changes, and closure as an append-only transcript", async () => {
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(423_000);
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: runningView() }),
+      ok({
+        kind: "update",
+        changes: [{ subject: { label: "design_board", selector: "@1a2b3c4d5e6f" }, state: { status: "completed" } }],
+        timeline: [{ kind: "phase", at: "2026-07-30T00:00:02.000Z", phase: "tool", turn: 1 }],
+      }),
+      ok({ kind: "closed", reason: "subject-terminal", view: completedView() }),
     ]));
     const stdout = new CaptureStream();
 
-    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "inspect",
-      format: "text",
+    const outcome = await followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "subject-terminal",
       stdout,
       stderr: new CaptureStream(),
     });
 
-    expect(outcome).toEqual({ kind: "done", run: { id: "run_1", status: "completed" } });
+    expect(outcome).toEqual({ kind: "closed", reason: "subject-terminal", run: { id: "run_1", status: "completed" } });
+    expect(runtime.observeInspection).toHaveBeenCalledWith("/workspace", expect.objectContaining({
+      view: { kind: "run", runId: "run_1" },
+      until: "subject-terminal",
+      signal: expect.any(AbortSignal),
+    }));
+    expect(stdout.text.match(/Attached:/g)).toHaveLength(1);
+    expect(stdout.text).toContain("Attached:\nRun run_1  design  running  1m16s");
     expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
-    expect(stdout.text.match(/"accepted": true/g)).toHaveLength(1);
-    expect(stdout.text).not.toContain("checkpoint");
-    expect(stdout.text).not.toContain("Resynced");
-    expect(stdout.text).not.toMatch(/^\+/m);
+    expect(stdout.text.slice(0, stdout.text.indexOf("Updates"))).not.toContain("Await:");
+    expect(stdout.text).toContain("Updates · run 8m19s:\n  ✓ design_board  @1a2b3c4d5e6f · completed");
+    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  phase tool  turn=1");
+    expect(stdout.text).toContain("Output:\n  {\n    \"accepted\": true\n  }");
+    expect(stdout.text).not.toContain("spinner");
+    expect(stdout.text).not.toContain("heartbeat");
   });
 
-  it("returns one boundary view when attachment is already actionable", async () => {
-    const actionable = snapshot({
-      run: { ...snapshot().run, status: "awaiting" },
-      counts: { total: 1, awaiting: 1 },
-      items: [{
-        ...snapshot().items[0]!,
-        kind: "signal",
-        status: "awaiting",
-        ref: "@1a2b3c4d5e6f",
-        signal: { target: "private-signal", schemaSummary: "{ approved: boolean }" },
-      }],
-    });
-    runtime.watchInspection.mockImplementation(() => emissions([view(actionable)]));
-    const stdout = new CaptureStream();
-
-    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "inspect",
-      format: "text",
-      stdout,
-      stderr: new CaptureStream(),
-    });
-
-    expect(outcome).toEqual({ kind: "done", run: { id: "run_1", status: "awaiting" } });
-    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
-    expect(stdout.text).toContain("Signal: acpus runs signal run_1 --target @1a2b3c4d5e6f --payload '<json>'");
-  });
-
-  it("writes standalone ordered Timeline semantic entries between bounded views", async () => {
-    runtime.watchInspection.mockImplementation(() => emissions([
-      view(timeline()),
-      {
-        schemaVersion: 2,
-        kind: "timeline-entry",
-        entry: {
-          id: "private-entry-phase",
-          kind: "phase",
-          at: "2026-07-25T00:00:02.000Z",
-          attemptId: "private-attempt",
-          attemptNo: 1,
-          turn: 2,
-          phase: "tool",
-        },
-      },
-      {
-        schemaVersion: 2,
-        kind: "timeline-entry",
-        entry: {
-          id: "private-entry-visibility",
-          kind: "visibility",
-          at: "2026-07-25T00:00:03.000Z",
-          state: "degraded",
-          reason: "observation-gap",
-        },
-      },
-      view({
-        ...timeline(),
-        run: { ...timeline().run, status: "completed" },
-        state: { status: "completed" },
+  it("keeps target updates unqualified", async () => {
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: targetTimeline() }),
+      ok({
+        kind: "update",
+        changes: [{ subject: { label: "review", selector: "@1a2b3c4d5e6f#2" }, state: { status: "running" } }],
+      }),
+      ok({
+        kind: "closed",
+        reason: "subject-terminal",
+        view: { ...targetTimeline(), state: { status: "completed" } },
       }),
     ]));
     const stdout = new CaptureStream();
 
     await followRun("/workspace", {
-      view: { kind: "timeline", runId: "run_1", target: "@1a2b3c4d5e6f#1" },
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f#2",
+      detail: "timeline",
     }, {
-      phase: "inspect",
-      format: "text",
+      until: "subject-terminal",
       stdout,
       stderr: new CaptureStream(),
     });
 
-    expect(stdout.text.match(/Recent:/g)).toHaveLength(2);
-    expect(stdout.text).toContain("Timeline: 2026-07-25T00:00:02.000Z  phase tool  attempt=1  turn=2");
-    expect(stdout.text).toContain("Timeline: 2026-07-25T00:00:03.000Z  Visibility degraded/observation-gap");
-    expect(stdout.text).not.toContain("private-entry");
-    expect(stdout.text).not.toContain("private-attempt");
+    expect(stdout.text).toContain("Updates:\n  ⠋ review  @1a2b3c4d5e6f#2 · running");
+    expect(stdout.text).not.toContain("Updates · run");
   });
 
-  it("keeps text and NDJSON on the same view and semantic-entry protocol", async () => {
-    const values: WatchInspectionEmission[] = [
-      view(snapshot()),
-      {
-        schemaVersion: 2,
-        kind: "timeline-entry",
-        entry: {
-          id: "private-entry",
-          kind: "control",
-          at: "2026-07-25T00:00:02.000Z",
-          attemptId: "private-attempt",
-          attemptNo: 1,
-          action: "steered",
-        },
-      },
-      view(snapshot({
-        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
-        counts: { total: 1, completed: 1 },
-        items: [{ ...snapshot().items[0]!, status: "completed" }],
-        output: null,
-      })),
-    ];
-    runtime.watchInspection.mockImplementation(() => emissions(values));
+  it("falls back to an unqualified run update when attachment has no duration", async () => {
+    const attached = runningView();
+    delete attached.run.durationMs;
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: attached }),
+      ok({
+        kind: "update",
+        changes: [{ subject: { label: "design_board" }, state: { status: "running" } }],
+      }),
+      ok({ kind: "closed", reason: "subject-terminal", view: completedView() }),
+    ]));
     const stdout = new CaptureStream();
 
-    await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "run",
-      format: "ndjson",
+    await followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "subject-terminal",
       stdout,
       stderr: new CaptureStream(),
     });
 
-    const records = stdout.text.trim().split("\n").map(line => JSON.parse(line));
-    expect(records.map(record => record.kind)).toEqual(["view", "timeline-entry", "view"]);
-    expect(records[0]).toMatchObject({ schemaVersion: 2, document: { kind: "snapshot" } });
-    expect(records[1]).toMatchObject({ entry: { kind: "control", action: "steered", attemptNo: 1 } });
-    expect(records[1].entry).not.toHaveProperty("id");
-    expect(records[1].entry).not.toHaveProperty("attemptId");
-    expect(records[2].document.output).toBeNull();
-    expect(JSON.stringify(records)).not.toContain("private-entry");
-    expect(JSON.stringify(records)).not.toContain("private-attempt");
+    expect(stdout.text).toContain("Updates:\n  ⠋ design_board · running");
+    expect(stdout.text).not.toContain("Updates · run");
   });
 
-  it("immediately waits for the next Runtime boundary after the initial view", async () => {
-    let initialPulled!: () => void;
-    let secondPulled!: () => void;
-    let resolveBoundary!: (value: IteratorResult<unknown>) => void;
-    const initial = new Promise<void>(resolve => { initialPulled = resolve; });
-    const second = new Promise<void>(resolve => { secondPulled = resolve; });
-    let pulls = 0;
-    runtime.watchInspection.mockImplementation(() => ({
-      [Symbol.asyncIterator]() {
-        let call = 0;
-        return {
-          next: () => {
-            call += 1;
-            if (call === 1) {
-              initialPulled();
-              return Promise.resolve({ done: false, value: ok(view(snapshot())) });
-            }
-            if (call === 2) {
-              pulls += 1;
-              secondPulled();
-              return new Promise<IteratorResult<unknown>>(resolve => { resolveBoundary = resolve; });
-            }
-            return Promise.resolve({ done: true, value: undefined });
-          },
-          return: () => Promise.resolve({ done: true, value: undefined }),
-        };
-      },
-    }) as never);
+  it("does not emit elapsed time without a Runtime observation", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => (async function* () {
+      yield ok({ kind: "attached", view: runningView() });
+      await new Promise<void>(resolve => query.signal.addEventListener("abort", () => resolve(), { once: true }));
+    })());
     const stdout = new CaptureStream();
-
-    const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "run",
-      format: "text",
+    const followed = followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "decision-boundary",
       stdout,
       stderr: new CaptureStream(),
     });
-    await initial;
-    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
-    await second;
-    expect(pulls).toBe(1);
-    resolveBoundary({
-      done: false,
-      value: ok(view(snapshot({
-        run: { ...snapshot().run, status: "completed", execution: { state: "terminal", lastStatus: "completed" } },
-        counts: { total: 1, completed: 1 },
-        items: [{ ...snapshot().items[0]!, status: "completed" }],
-      }))),
-    });
+    await vi.waitFor(() => expect(stdout.text).toContain("Attached:"));
+    const attachment = stdout.text;
+
+    now = 600_000;
+    await Promise.resolve();
+
+    expect(stdout.text).toBe(attachment);
+    process.emit("SIGINT");
     await followed;
-    expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
   });
 
-  it("detaches on Ctrl-C without inventing an NDJSON record", async () => {
-    let release!: () => void;
-    runtime.watchInspection.mockImplementation(async function* (
-      _cwd: string,
-      query: WatchInspectionQuery,
-    ) {
-      yield ok(view(snapshot()));
-      await new Promise<void>(resolve => {
-        release = resolve;
-        query.signal?.addEventListener("abort", () => resolve(), { once: true });
-      });
+  it("prints only the closed coherent view when the subject already meets its stop policy", async () => {
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "closed", reason: "awaiting-input", view: awaitingView() }),
+    ]));
+    const stdout = new CaptureStream();
+
+    const outcome = await followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "decision-boundary",
+      stdout,
+      stderr: new CaptureStream(),
     });
+
+    expect(outcome).toEqual({ kind: "closed", reason: "awaiting-input", run: { id: "run_1", status: "running" } });
+    expect(stdout.text.match(/Tree:/g)).toHaveLength(1);
+    expect(stdout.text).not.toContain("Updates:");
+  });
+
+  it("stops consuming as soon as Runtime closes the observation", async () => {
+    runtime.observeInspection.mockImplementation(() => (async function* () {
+      yield ok({ kind: "closed", reason: "subject-terminal", view: completedView() });
+      throw new Error("must not read after a closed observation");
+    })());
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const followed = followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "inspect",
-      format: "ndjson",
+
+    const outcome = await followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "subject-terminal",
       stdout,
       stderr,
     });
-    await vi.waitFor(() => expect(stdout.text).toContain('"kind":"view"'));
 
-    process.emit("SIGINT");
-    release();
-    const outcome = await followed;
-
-    expect(outcome).toEqual({ kind: "detached" });
-    expect(stdout.text.trim().split("\n").map(line => JSON.parse(line).kind)).toEqual(["view"]);
-    expect(stderr.text).toContain("Detached from run run_1");
-    expect(stderr.text).toContain("acpus runs inspect run_1");
+    expect(outcome).toEqual({ kind: "closed", reason: "subject-terminal", run: { id: "run_1", status: "completed" } });
+    expect(stderr.text).toBe("");
   });
 
-  it("emits a public schema-v2 error without an internal cause", async () => {
-    runtime.watchInspection.mockImplementation(() => errorEmissions({
-      type: "inspection-read-failed",
-      runId: "run_1",
-      message: "read failed",
-      cause: new Error("/private/runtime.db"),
-    }));
+  it("detaches read-only and preserves a selected Timeline recovery command", async () => {
+    let release!: () => void;
+    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => (async function* () {
+      yield ok({ kind: "attached", view: targetTimeline() });
+      await new Promise<void>(resolve => {
+        release = resolve;
+        query.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    })());
     const stdout = new CaptureStream();
-
-    const outcome = await followRun("/workspace", { view: { kind: "run", runId: "run_1" } }, {
-      phase: "inspect",
-      format: "ndjson",
+    const followed = followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f#2",
+      detail: "timeline",
+    }, {
+      until: "decision-boundary",
       stdout,
       stderr: new CaptureStream(),
     });
+    await vi.waitFor(() => expect(stdout.text).toContain("Timeline review"));
 
-    expect(outcome).toMatchObject({ kind: "error" });
-    expect(JSON.parse(stdout.text)).toEqual({
-      schemaVersion: 2,
-      ok: false,
-      phase: "inspect",
-      kind: "error",
-      error: {
-        type: "inspection-read-failed",
-        runId: "run_1",
-        message: "read failed",
-      },
-    });
+    process.emit("SIGINT");
+    release();
+
+    expect(await followed).toEqual({ kind: "detached" });
+    expect(stdout.text).toContain("Detached from run run_1.");
+    expect(stdout.text).toContain("Inspect: acpus runs inspect run_1 --target '@1a2b3c4d5e6f#2' --timeline");
+    expect(stdout.text.slice(stdout.text.indexOf("Detached from run run_1."))).not.toContain("--await-decision");
   });
 
-  it("renders an ambiguous target's candidate handoff before a text follow error", async () => {
-    runtime.watchInspection.mockImplementation(() => errorEmissions({
-      type: "target-ambiguous",
-      runId: "run_1",
-      target: "review",
-      candidates: candidates(),
-      message: "Target review matches multiple occurrences.",
-    } satisfies RunInspectionError));
+  it("detaches when Ctrl-C races an in-flight inspection error", async () => {
+    let resolveNext!: (value: IteratorResult<unknown>) => void;
+    runtime.observeInspection.mockImplementation(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<unknown>>(resolve => { resolveNext = resolve; }),
+        return: async () => ({ done: true, value: undefined }),
+      }),
+    }));
     const stderr = new CaptureStream();
-
-    const outcome = await followRun("/workspace", {
-      view: {
-        kind: "target",
-        runId: "run_1",
-        target: "review",
-        includeAllTopology: true,
-        includeControls: true,
-      },
-    }, {
-      phase: "inspect",
-      format: "text",
+    const followed = followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "decision-boundary",
       stdout: new CaptureStream(),
       stderr,
     });
 
-    expect(outcome).toMatchObject({ kind: "error", error: { type: "target-ambiguous" } });
-    expect(stderr.text).toContain("@1a2b3c4d5e6f");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @ref --all --controls");
-    expect(stderr.text).not.toContain("--follow");
-    expect(stderr.text).toContain("Inspection failed: Target review matches multiple occurrences.");
+    await vi.waitFor(() => expect(resolveNext).toBeTypeOf("function"));
+    process.emit("SIGINT");
+    resolveNext({ done: false, value: err({ type: "read-failed", runId: "run_1", message: "late read failure" }) });
+
+    expect(await followed).toEqual({ kind: "detached" });
+    expect(stderr.text).toBe("");
+  });
+
+  it("prints an ambiguous candidate handoff without attaching", async () => {
+    const error: InspectionError = {
+      type: "target-ambiguous",
+      runId: "run_1",
+      target: "review",
+      candidates: {
+        kind: "candidates",
+        run: { id: "run_1", status: "running" },
+        target: "review",
+        entries: [{ selector: "@1a2b3c4d5e6f", status: "running", breadcrumb: "batch[0] › review" }],
+        page: 1,
+        total: 1,
+      },
+      message: "Target is ambiguous.",
+    };
+    runtime.observeInspection.mockImplementation(() => emissions([err(error)]));
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    const outcome = await followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "review",
+      detail: "summary",
+    }, {
+      until: "decision-boundary",
+      stdout,
+      stderr,
+    });
+
+    expect(outcome).toEqual({ kind: "error", error });
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f");
+    expect(stderr.text).toContain("Cannot attach: Target is ambiguous.");
+  });
+
+  it("prints the exact recovery command after a read failure", async () => {
+    const error: InspectionError = { type: "read-failed", runId: "run_1", message: "store read failed" };
+    runtime.observeInspection.mockImplementation(() => emissions([err(error)]));
+    const stderr = new CaptureStream();
+
+    const outcome = await followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f",
+      detail: "timeline",
+    }, {
+      until: "subject-terminal",
+      stdout: new CaptureStream(),
+      stderr,
+    });
+
+    expect(outcome).toEqual({ kind: "error", error });
+    expect(stderr.text).toBe([
+      "Inspection failed: store read failed",
+      "Inspect: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline",
+      "",
+    ].join("\n"));
+  });
+
+  it("prints an invalid query as usage text without a recovery command", async () => {
+    const error: InspectionError = { type: "invalid-query", message: "Target selector is malformed." };
+    runtime.observeInspection.mockImplementation(() => emissions([err(error)]));
+    const stderr = new CaptureStream();
+
+    const outcome = await followRun("/workspace", { kind: "run", runId: "run_1" }, {
+      until: "subject-terminal",
+      stdout: new CaptureStream(),
+      stderr,
+    });
+
+    expect(outcome).toEqual({ kind: "error", error });
+    expect(stderr.text).toBe("Target selector is malformed.\n");
   });
 });
 
-function snapshot(overrides: Partial<RunInspectionSnapshot> = {}): RunInspectionSnapshot {
+function runningView(): Extract<InspectionView, { kind: "run" }> {
   return {
-    schemaVersion: 2,
-    kind: "snapshot",
-    run: {
-      id: "run_1",
-      name: "review",
-      status: "running",
-      workflowEntry: "review.workflow.ts",
-      createdAt: "2026-07-25T00:00:00.000Z",
-      updatedAt: "2026-07-25T00:00:00.000Z",
-      execution: { state: "active", lastStatus: "running" },
-    },
-    counts: { total: 1, ready: 1 },
-    items: [{
-      key: "work",
-      role: "static",
-      path: ["work"],
-      label: "work",
-      kind: "task",
-      status: "ready",
-      nodeId: "work",
+    kind: "run",
+    run: { id: "run_1", name: "design", status: "running", durationMs: 76_000 },
+    counts: { total: 1, running: 1 },
+    tree: [{
+      type: "item",
+      subject: { label: "design_board", kind: "agent", selector: "@1a2b3c4d5e6f" },
+      state: { status: "running" },
+      children: [],
     }],
-    availableActions: [],
-    ...overrides,
   };
 }
 
-function timeline(): RunInspectionTimelineDocument {
+function completedView(): Extract<InspectionView, { kind: "run" }> {
   return {
-    schemaVersion: 2,
-    kind: "timeline",
-    run: {
-      id: "run_1",
-      status: "running",
-      updatedAt: "2026-07-25T00:00:01.000Z",
-    },
-    subject: {
-      targetKind: "attempt",
-      id: "@1a2b3c4d5e6f#1",
-      ref: "@1a2b3c4d5e6f#1",
-      label: "review",
-      kind: "agent",
-      nodeId: "review",
-      attemptNo: 1,
-    },
-    state: { status: "running", startedAt: "2026-07-25T00:00:00.000Z" },
-    current: {
-      kind: "agent",
-      attemptId: "private-current-attempt",
-      turn: 1,
-      turnKind: "task",
-      phase: "tool",
-      updatedAt: "2026-07-25T00:00:01.000Z",
-      tools: {
-        active: [{
-          name: "Read",
-          status: "running",
-          updatedAt: "2026-07-25T00:00:01.000Z",
-        }],
-        omittedActive: 0,
-      },
-    },
-    recent: {
-      entries: [],
-      page: 1,
-      limit: 12,
-      returned: 0,
-      omittedBefore: 0,
-      hasOlder: false,
-    },
+    ...runningView(),
+    run: { id: "run_1", name: "design", status: "completed", durationMs: 500_000 },
+    counts: { total: 1, completed: 1 },
+    tree: [{
+      type: "item",
+      subject: { label: "design_board", kind: "agent", selector: "@1a2b3c4d5e6f" },
+      state: { status: "completed" },
+      children: [],
+    }],
+    output: { accepted: true },
   };
 }
 
-function candidates(): RunInspectionCandidatesDocument {
+function awaitingView(): Extract<InspectionView, { kind: "run" }> {
   return {
-    schemaVersion: 2,
-    kind: "candidates",
-    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:01.000Z" },
-    target: "review",
-    candidates: {
-      entries: [{
-        ref: "@1a2b3c4d5e6f",
-        status: "running",
-        breadcrumb: "batch[0] › review",
-        kind: "dynamic-node",
-      }],
-      page: 1,
-      limit: 12,
-      total: 2,
-      hasMore: false,
-    },
+    kind: "run",
+    run: { id: "run_1", name: "design", status: "running" },
+    counts: { total: 1, awaiting: 1 },
+    tree: [{
+      type: "item",
+      subject: { label: "approve", kind: "signal", selector: "@1a2b3c4d5e6f" },
+      state: { status: "awaiting" },
+      attention: { kind: "awaiting-input", summary: "approval needed", signal: "@signal1" },
+      children: [],
+    }],
   };
 }
 
-function view(document: RunInspectionSnapshot | RunInspectionTimelineDocument): WatchInspectionEmission {
-  return { schemaVersion: 2, kind: "view", document };
+function targetTimeline(): Extract<InspectionView, { kind: "target"; detail: "timeline" }> {
+  return {
+    kind: "target",
+    detail: "timeline",
+    run: { id: "run_1", status: "running" },
+    subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+    state: { status: "running" },
+    recent: [],
+  };
 }
 
-async function* emissions(values: readonly WatchInspectionEmission[]) {
-  for (const value of values) yield ok(value);
+async function* emissions(values: unknown[]): AsyncGenerator<unknown> {
+  yield* values;
 }
 
-function ok<T>(value: T) {
-  return { isErr: () => false as const, value };
+function ok(value: InspectionObservation): { isErr(): false; value: InspectionObservation } {
+  return { isErr: () => false, value };
 }
 
-async function* errorEmissions(error: unknown) {
-  yield { isErr: () => true as const, error };
+function err(error: InspectionError): { isErr(): true; error: InspectionError } {
+  return { isErr: () => true, error };
 }

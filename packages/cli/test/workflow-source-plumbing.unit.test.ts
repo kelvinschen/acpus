@@ -50,14 +50,15 @@ describe("workflow source command plumbing", () => {
     }));
     mock.tryNormalizeForkInput.mockReturnValue(okAsync({}));
     mock.followRun.mockResolvedValue({
-      kind: "done",
-      run: { status: "completed" },
+      kind: "closed",
+      reason: "subject-terminal",
+      run: { id: "run_admitted", status: "completed" },
     });
   });
 
   it.each([
     { action: "check", flags: ["--json"] },
-    { action: "run", flags: ["--json"] },
+    { action: "run", flags: [] },
     { action: "viz", flags: [] },
   ] as const)("passes stdin through the shared source preparer for workflow $action -", async ({ action, flags }) => {
     const stdin = Readable.from(["export default {};\n"]);
@@ -107,40 +108,6 @@ describe("workflow source command plumbing", () => {
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       "",
     ].join("\n"));
-    expect(mock.followRun).not.toHaveBeenCalled();
-  });
-
-  it("preserves preparation fields in the default JSON submission receipt", async () => {
-    const stdout = new CaptureStream();
-    mock.prepareWorkflowForCli.mockResolvedValue({
-      prepared: preparedWorkflow([sourceCaptureWarning()]),
-      catalog: catalogEntry(),
-    });
-    const command = createWorkflowCommand({
-      cwd: "/workspace",
-      stdin: Readable.from([]),
-      stdout,
-      stderr: new CaptureStream(),
-      setExitCode: vi.fn(),
-    });
-
-    await command.parseAsync(["run", "dynamic-source", "--global", "--json"], { from: "user" });
-
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      schemaVersion: 1,
-      ok: true,
-      phase: "run",
-      message: "Run submitted.",
-      workflow: {
-        name: "dynamic-source",
-        diagnostics: { total: 1, errors: 0, warnings: 1, infos: 0 },
-      },
-      diagnostics: [sourceCaptureWarning()],
-      sourceGraphDigest: preparedSourceGraphDigest,
-      run: publicRunRecord(),
-      followRunId: "run_admitted",
-      catalog: catalogEntry(),
-    });
     expect(mock.followRun).not.toHaveBeenCalled();
   });
 
@@ -210,7 +177,7 @@ describe("workflow source command plumbing", () => {
     const stderr = new CaptureStream();
     mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
       output.stdout.write("FOLLOW\n");
-      return { kind: "done", run: { status: "completed" } };
+      return { kind: "closed", reason: "subject-terminal", run: { id: "run_admitted", status: "completed" } };
     });
     mock.prepareWorkflowForCli.mockResolvedValue({
       prepared: preparedWorkflow([sourceCaptureWarning()]),
@@ -234,72 +201,37 @@ describe("workflow source command plumbing", () => {
     expect(mock.followRun).toHaveBeenCalledOnce();
     expect(mock.followRun).toHaveBeenCalledWith(
       "/workspace",
-      { view: { kind: "run", runId: "run_admitted" } },
-      { phase: "run", format: "text", stdout, stderr },
+      { kind: "run", runId: "run_admitted" },
+      { until: "subject-terminal", stdout, stderr },
     );
   });
 
-  it("emits followed JSON admission before the Runtime follow stream", async () => {
+  it("uses the decision-boundary policy for a blocking workflow run", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const followRecords = [
-      {
-        schemaVersion: 2,
-        ok: true,
-        phase: "run",
-        kind: "view",
-        document: { schemaVersion: 2, kind: "snapshot" },
-      },
-      {
-        schemaVersion: 2,
-        ok: true,
-        phase: "run",
-        kind: "view",
-        document: {
-          schemaVersion: 2,
-          kind: "snapshot",
-          run: { id: "run_admitted", status: "completed" },
-          output: { accepted: true },
-        },
-      },
-    ];
-    mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
-      for (const record of followRecords) output.stdout.write(`${JSON.stringify(record)}\n`);
-      return { kind: "done", run: { status: "completed" } };
-    });
-    mock.prepareWorkflowForCli.mockResolvedValue({
-      prepared: preparedWorkflow([sourceCaptureWarning()]),
-      catalog: catalogEntry(),
+    const setExitCode = vi.fn();
+    mock.followRun.mockImplementationOnce(async (_cwd, _view, options) => {
+      options.stdout.write("ATTACHED\n");
+      return { kind: "closed", reason: "awaiting-input", run: { id: "run_admitted", status: "running" } };
     });
     const command = createWorkflowCommand({
       cwd: "/workspace",
       stdin: Readable.from([]),
       stdout,
       stderr,
-      setExitCode: vi.fn(),
+      setExitCode,
     });
 
-    await command.parseAsync(["run", "dynamic-source", "--global", "--follow", "--json"], { from: "user" });
+    await command.parseAsync(["run", "workflow.ts", "--await-decision"], { from: "user" });
 
-    const records = stdout.text.trim().split("\n").map(line => JSON.parse(line));
-    expect(records).toHaveLength(3);
-    expect(records[0]).toEqual({
-      schemaVersion: 1,
-      ok: true,
-      phase: "run",
-      kind: "admitted",
-      diagnostics: [sourceCaptureWarning()],
-      sourceGraphDigest: preparedSourceGraphDigest,
-      run: publicRunRecord(),
-      catalog: catalogEntry(),
-    });
-    expect(records.slice(1)).toEqual(followRecords);
-    expect(mock.followRun).toHaveBeenCalledOnce();
     expect(mock.followRun).toHaveBeenCalledWith(
       "/workspace",
-      { view: { kind: "run", runId: "run_admitted" } },
-      { phase: "run", format: "ndjson", stdout, stderr },
+      { kind: "run", runId: "run_admitted" },
+      { until: "decision-boundary", stdout, stderr },
     );
+    expect(stdout.text).toBe("ATTACHED\n");
+    expect(stdout.text).not.toContain("Run run_admitted");
+    expect(setExitCode).toHaveBeenLastCalledWith(0);
   });
 
   it("preserves replacement preparation warnings in fork text", async () => {
@@ -334,7 +266,7 @@ describe("workflow source command plumbing", () => {
       "Fork run: run_child",
       "Fork status: pending",
       "Workflow entry: workflow.ts",
-      "Next: acpus runs inspect run_child --follow",
+      "Next: acpus runs inspect run_child --await-decision",
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       "",
     ].join("\n"));

@@ -4,9 +4,9 @@ import { walkNodes, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type StaticExprShape } from "@acpus/expression/ir";
 import type {
   HookConfigScope,
+  InspectionError,
   LoadedHookConfig,
   PruneReport,
-  RunInspectionError,
   RunRecord,
   RuntimeHealthCheck,
   RuntimePersistence,
@@ -83,9 +83,7 @@ type CliResultFields = {
   checked?: boolean;
 };
 
-type PublicRunInspectionError =
-  | Exclude<RunInspectionError, { type: "inspection-read-failed" }>
-  | Omit<Extract<RunInspectionError, { type: "inspection-read-failed" }>, "cause">;
+type PublicRunInspectionError = InspectionError;
 
 type ResultRecord<
   Phase extends ResultPhase,
@@ -150,7 +148,7 @@ export type CliResult =
   | ResultRecord<"validate", false, "message" | "workflow" | "diagnostics", "message">
   | ImportSuccessCliResult
   | ResultRecord<"import", false, "message" | "errorCode", "message">
-  | ResultRecord<"run", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "run" | "followRunId" | "catalog", "message" | "workflow" | "run">
+  | ResultRecord<"run", true, "diagnostics" | "run", "run">
   | ResultRecord<"run", true, "message" | "web", "message" | "web">
   | ResultRecord<"run", false, "message" | "run" | "errorCode", "message">
   | ResultRecord<"inspect", true, "catalog", "catalog">
@@ -271,7 +269,7 @@ export function writeResult(
     stream.write(`Next: ${renderShellCommand([
       "acpus", "runs", "inspect", result.followRunId,
       ...(target === undefined ? [] : ["--target", target]),
-      "--follow",
+      "--await-decision",
     ])}\n`);
   }
   if (result.checks) {
@@ -300,7 +298,7 @@ export function writeResult(
 }
 
 function writeRunSubmissionReceipt(result: CliResult, stream: Writable, cwd: string | undefined): boolean {
-  if (!result.ok || result.phase !== "run" || result.run === undefined || result.followRunId === undefined) return false;
+  if (!result.ok || result.phase !== "run" || result.run === undefined) return false;
   stream.write(`Run ${result.run.id}  ${result.run.name}  ${result.run.status}\n`);
   stream.write(`Inspect: ${renderShellCommand(["acpus", "runs", "inspect", result.run.id])}\n`);
   writeDiagnostics(stream, result.diagnostics, cwd);

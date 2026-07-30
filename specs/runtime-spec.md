@@ -286,9 +286,9 @@ type PruneReport = {
 - Steering replacement settlement gating MUST include draining and sealing the superseded turn's Private Turn Evidence.
 - Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
 - Schema-less Agents MUST return raw text with zero response repairs.
-- A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible correction before any schema-backed output contract.
+- A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible information update before any schema-backed output contract.
 - A steering turn MUST NOT expose its Runtime steering identity to the Agent.
-- A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible correction.
+- A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible information update.
 - Every schema-backed Agent prompt, including task, continuation, steering, and response-repair turns, MUST state the Tagged JSON output contract.
 - Every schema-backed Agent prompt MUST include the declared output as one anonymous Result Shape expression rendered directly from `SchemaIR`, rather than as JSON Schema.
 - The Result Shape contract MUST direct the Agent to replace the expression with one JSON value, preserve the literal `ACPUS_OUTPUT` tags without escaping them, and end at the closing tag.
@@ -509,7 +509,7 @@ type DaemonSteerControlResult = {
 - Fork MUST create an idempotently identified child from verified frozen source data, optionally replacing prepared workflow, input, Agent overrides, or target without reading live source.
 - Fork MUST materialize only the child's frozen files and reachable registered artifacts selected for inheritance.
 - Fork MUST NOT copy unregistered or otherwise unknown source-run filesystem entries into the child.
-- Run reads and inspection MUST project the child's direct fork source, requested target, and unsafe-reuse flag from the durable `run.forked` event without deriving recursive ancestry.
+- Run reads MUST project the child's direct fork source, requested target, and unsafe-reuse flag from the durable `run.forked` event without deriving recursive ancestry. Generic inspection MUST omit a raw requested target and expose only public-safe fork provenance.
 - Safe targeted fork MUST accept an exact source key, occurrence reference, or authored replacement target, reuse only compatible completed prerequisite facts/artifacts, preserve target closure, avoid inherited attempt events/active state, and reject missing, ambiguous, or impossible replacement targets before admission.
 - Changed input MUST disable completed-output reuse; explicit `unsafeReuse` permits it across input/signature changes while retaining target, materialization, artifact, and completed-only safety boundaries.
 - Race/quorum fork reuse MUST preserve only scheduler-accepted winners/members when replacement order/identity is compatible; otherwise eligible prerequisite work executes normally.
@@ -529,31 +529,20 @@ type DaemonSteerControlResult = {
 - Visualization control targets MUST contain only exact target, node/frame kind, and optional authored node id; they MUST NOT contain display labels, scheduler Result values, or group-member identities.
 #### Inspection
 
-Runtime owns inspection semantics. The exported [inspection types](../packages/runtime/src/inspection/types.ts) are the canonical field shapes.
+Runtime owns generic inspection semantics and public shape.
 
-- An occurrence reference has the form `@<12-lowercase-hex>`, is scoped to one run, and identifies the full materialized occurrence, including nested Fanout and Loop contexts. `@ref#attemptNo` selects one attempt.
-- Targeted reads and controls accept an authored id, occurrence reference, exact-attempt selector where applicable, `root`, or an exact internal key only as a diagnostic escape hatch. A reference collision MUST fail visibly rather than select an occurrence.
-- Runtime exposes separate run, target, Timeline, Evidence, raw, node, Agent-execution, and target-artifact reads. Each accepts only the inputs in its exported type; no public generic inspection mode or public context side channel exists.
-
-| Read | Contract |
-| --- | --- |
-| Run / topology | Current occurrence tree, status counts, applicable actions, and terminal output. A targeted topology is rooted at the selected occurrence and contains its descendants. |
-| Target | One decision summary, or a candidate page when an authored id matches repeated occurrences. |
-| Timeline | Current and recent semantic activity for one resolved target. |
-| Evidence | Exact Agent-turn boundary metadata and exact-attempt candidates; never private bodies. |
-| Raw | Diagnostic run, frozen IR, and artifact-registry data; never private Evidence, Trace, or provider payloads. |
-| Node / execution / artifacts | Narrow consumer reads for Inspector, Agent telemetry, and selected registered artifacts. |
-
-- A repeated authored target MUST return candidates rather than select an occurrence implicitly. Candidate rows retain public occurrence selectors and enough status/breadcrumb information to choose one. A one-occurrence read that needs disambiguation MUST return the same candidate context as a typed ambiguity failure.
-- Candidate, Timeline, and Evidence pages are one-based, default to page 1 with limit 12, and accept limits from 1 through 50.
-- Runtime snapshots retain every materialized occurrence. A complete-topology read exposes every materialized branch, Fanout item, and Loop iteration; it never invents future iterations or items. A default topology consumer MAY fold equivalent repetitions, but MUST preserve distinct visible states and a public path to expand them; no count, byte, or token limit may hide a non-terminal or different state.
-- Actions in snapshots and summaries MUST come only from Runtime control planning. Public action targets use occurrence selectors when available; their presence indicates technical applicability, not an operator recommendation.
-- A target summary provides decision state, one concise current/last semantic pulse, explicit attention, degraded visibility, and navigation. A settled pulse MUST identify whether it represents a plan, provider-reported thought, or response tail; Runtime MUST not invent thoughts, classify health/drift, or prescribe steering from observation data.
-- Visibility describes inspection completeness only. Summary, topology, Timeline, and raw reads omit private Evidence/Trace bodies and aggregate resource telemetry. Agent execution exposes optional Observation-backed telemetry without inferring unavailable data.
-- Evidence is the only public metadata read for Private Turn Evidence. It preserves exact attempt selectors and file/digest references, but MUST omit prompt, response, thought, tool, and steering content.
-- Artifact listings expose public registry metadata without reading bodies. A selected artifact read MUST verify the registered regular file remains within its run and matches its recorded identity; missing registry data returns no artifact, while a replacement or integrity mismatch is durable corruption.
-- `watchInspection` is read-only, follows one run, logical occurrence, exact attempt, or Timeline subject to its decision boundary, and exposes no caller-selected cadence or heartbeat. Run follow ends at terminal or actionable hard attention; logical-occurrence and Timeline follow continue through automatic replacement but end at terminal or actionable Signal, while exact-attempt follow ends at terminal or fence without migrating to a successor. Evidence and raw reads remain one-shot.
-- Run and target follow emit self-contained views at attachment and boundary; Timeline follow additionally emits ordered semantic entries. A terminal run-level view includes workflow output once, while selected target and Timeline views omit unrelated output. Follow failures remain explicit and MUST not silently change the selected subject.
+- Generic inspection MUST provide one coherent run, target Summary, target Timeline, or candidate view, and read-only observation of that selected view.
+- It exposes only views, candidates, observations, and public errors. It omits internal metadata and private Evidence/Trace, provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, and artifact reads remain separate.
+- A target is `root`, an authored id, `@<12-lowercase-hex>`, or that reference with `#<positive-attempt-number>`. Malformed, absent, and colliding references MUST respectively return `invalid-query`, `target-not-found`, and a non-leaking `read-failed` result.
+- A one-shot ambiguous authored target MUST return public candidates, never select an occurrence; observation MUST reject it before attachment. Candidate pagination is one-based, bounded, only for one-shot ambiguous reads; each row contains selector, status, and breadcrumb.
+- Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
+- A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
+- The tree MUST retain meaningful distinct state in deterministic semantic order and may fold contiguous equivalent Fanout items or Loop rounds. A fold shows their shared visible state without choosing a representative selector.
+- Observation emits attachment, zero or more state updates, then closure; a subject already at its stop boundary emits closure only. Abort is silent, and an observation error ends without closure.
+- Each update MUST provide the smallest coherent change that affects the next valid action. Time, liveness aging, usage, hooks, and silence MUST NOT emit alone.
+- Reasons MAY clarify a transition only when state is insufficient. Event-history discontinuity MUST NOT prevent observing a readable current view.
+- `subject-terminal` closes only when the fixed subject is terminal. `decision-boundary` closes for a terminal or paused run, actionable run Signal, or an actionable Signal required by the target. Evaluate boundaries after settlement; absorbed Race/Quorum failures and unrelated siblings do not close a target.
+- Timeline is a bounded activity view of the selected subject. It shares the observation stop policy, preserves visible gaps, and never independently closes observation.
 
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
@@ -570,6 +559,6 @@ Runtime owns inspection semantics. The exported [inspection types](../packages/r
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers deterministic scheduler/projection rules, occurrence resolution and pages, lossless topology, planner-approved controls, private-data boundaries, and decision-boundary follow.
-- `pnpm test:integration packages/runtime`: covers durable execution, controls/fencing, verified artifacts, Private Turn Evidence/Trace boundaries, recovery, and read-only inspection.
+- `pnpm test:unit packages/runtime`: covers selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers durable observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, recovery, and read-only inspection.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

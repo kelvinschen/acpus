@@ -60,6 +60,11 @@ describe("CLI result type", () => {
 
     // @ts-expect-error successful run results cannot carry failure error codes
     acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" }, errorCode: "LISTEN_FAILED" });
+    acceptResult({ ok: true, phase: "run", run: {} as never });
+    // @ts-expect-error a workflow submission has no structured follow-up receipt
+    acceptResult({ ok: true, phase: "run", run: {} as never, followRunId: "run_1" });
+    // @ts-expect-error a workflow submission has no structured preparation payload
+    acceptResult({ ok: true, phase: "run", run: {} as never, sourceGraphDigest: "sha256:run" });
     // @ts-expect-error doctor results require the checks they summarize
     acceptResult({ ok: true, phase: "doctor", message: "OK" });
     // @ts-expect-error failed controls cannot advertise a follow-up run

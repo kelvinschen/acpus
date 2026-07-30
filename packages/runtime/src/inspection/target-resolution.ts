@@ -39,6 +39,7 @@ export function resolveInspectionTarget(input: {
   target: string;
   page?: { number?: number; limit?: number };
 }): InspectionTargetResolution {
+  if (input.target === "root") return { kind: "resolved", target: "root" };
   const allOccurrences = targetableOccurrences(input.run);
   const ref = resolveOccurrenceRefCandidate(input.target, allOccurrences.map(value => ({
     ref: value.ref as `@${string}`,
@@ -147,7 +148,7 @@ function candidateDocument(
   page: { number?: number; limit?: number } | undefined,
 ): RunInspectionCandidatesDocument {
   const number = page?.number ?? 1;
-  const limit = page?.limit ?? 12;
+  const limit = 12;
   const ordered = [...candidates].sort(compareOccurrence);
   const start = (number - 1) * limit;
   const entries = ordered.slice(start, start + limit).map(toCandidate);
@@ -178,16 +179,30 @@ function toCandidate(value: TargetableOccurrence): RunInspectionCandidate {
 }
 
 function compareOccurrence(left: TargetableOccurrence, right: TargetableOccurrence): number {
-  return occurrencePriority(left.status) - occurrencePriority(right.status)
-    || breadcrumb(left.path).localeCompare(breadcrumb(right.path))
+  return comparePath(left.path, right.path)
     || left.ref.localeCompare(right.ref)
     || left.kind.localeCompare(right.kind);
 }
 
-function occurrencePriority(status: RunInspectionStatus): number {
-  if (status === "awaiting" || status === "failed" || status === "timed_out") return 0;
-  if (status === "starting" || status === "running") return 1;
-  return 2;
+function comparePath(
+  left: TargetableOccurrence["path"],
+  right: TargetableOccurrence["path"],
+): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    const kind = a.kind.localeCompare(b.kind);
+    if (kind) return kind;
+    const node = a.nodeId.localeCompare(b.nodeId);
+    if (node) return node;
+    if (a.kind === "branch" && b.kind === "branch") {
+      const branch = a.branchId.localeCompare(b.branchId);
+      if (branch) return branch;
+    }
+    if (a.kind === "fanout" && b.kind === "fanout" && a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+    if (a.kind === "loop" && b.kind === "loop" && a.iter !== b.iter) return a.iter - b.iter;
+  }
+  return left.length - right.length;
 }
 
 function breadcrumb(path: TargetableOccurrence["path"]): string {

@@ -6,10 +6,10 @@
 
 ```sh
 acpus runs inspect <run-id>
-acpus runs inspect <run-id> --target <nodeId|nodeKey|frameKey|attemptId>
+acpus runs inspect <run-id> --target <nodeId|@ref|@ref#attemptNo>
 ```
 
-2. Identify status, the dynamic recovery target, and whether admitted source or inputs must change. For Agent interruption, also identify the exact `attemptId`, provider outcome, scheduler disposition, and completeness.
+2. Identify status, the public recovery target, and whether admitted source or inputs must change. For Agent interruption, use the exact `@ref#attemptNo` when one attempt matters.
 
 3. Add Timeline only when activity is needed, then choose the smallest safe action:
 
@@ -17,8 +17,7 @@ acpus runs inspect <run-id> --target <nodeId|nodeKey|frameKey|attemptId>
 acpus runs inspect <run-id> --target <resolved-target> --timeline
 ```
 
-If Summary and Timeline are insufficient, read only the exact attempt's Private Turn Evidence for prompt/fence/terminal boundaries. Use an opt-in Trace or raw ACP artifact for provider-frame detail; see
-[Agent Tracing](agent-tracing.md).
+Private Turn Evidence is Runtime-private rather than an ordinary CLI read. Use an opt-in Trace artifact for provider-frame detail; see [Agent Tracing](agent-tracing.md).
 
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
 
@@ -32,20 +31,20 @@ Agent failures preserve Acpus origin/code separately from their upstream acpx ca
 | module import failed, default export invalid, build callback throws | `compile` | Fix module exports/imports or build-time code. |
 | unknown IR fields, malformed task target, invalid schema/expression IR | `validate` | Fix authoring shape or Acpus package mismatch. |
 | task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |
-| control target not found, run terminal, conflict | `control` | Re-inspect and target the dynamic nodeKey/frameKey or static alias that currently exists. |
+| control target not found, run terminal, conflict | `control` | Re-inspect and use the public authored id or exact `@ref` that currently exists. |
 
 ## Recovery decision
 
 | Choose | Use when | Effect |
 | --- | --- | --- |
 | Wait | No recovery condition or new information exists. | Leaves correct active work uninterrupted. |
-| Steer | The admitted task remains correct, but a started Agent needs an in-scope update. | Fences that attempt and queues a correction in the same run and Agent session. |
+| Steer | The admitted task remains correct, but a started Agent needs an admitted in-scope information update. | Fences that attempt and queues the update in the same run and Agent session. |
 | Retry | Failed or timed-out work can repeat under unchanged admitted state. | Continues the same run and preserves completed work. |
 | Fork | The workflow, input, Agent mapping, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
 
 Prefer the smallest action that preserves correct admitted state:
 
-- Steer one exact started Agent only to add context or a compatible constraint, or correct a Timeline-proven violation or imminent harm. **NEVER steer for elapsed time, silence, or convergence pressure**; fork if admitted state or task scope must change.
+- Steer one exact started Agent only when new context or a compatible constraint belongs to the same task. **NEVER steer for elapsed time, silence, or convergence pressure**; fork if admitted state or task scope must change.
 - Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
 - Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
 
@@ -55,7 +54,7 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 
 - `runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. DO NOT mutate state just because a run is stale.
 
-- An attached `--follow` view remains read-only and continues waiting through a stale state. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
+- An attached `--follow` or `--await-decision` view remains read-only through a stale state; stale alone is not a decision boundary. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
 
 - Runtime automatically settles derivable work after cancellation or owner loss, even when another branch awaits an untimed Signal.  DO NOT intervene solely because a run is temporarily non-terminal; re-inspect after settlement, then retry or fork if needed.
 

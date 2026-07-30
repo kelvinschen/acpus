@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { errAsync, ok, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunInspectionCandidatesDocument } from "@acpus/runtime";
+import type { InspectionCandidates } from "@acpus/runtime";
 import { createRunsCommand } from "../src/commands/runs.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -10,7 +10,7 @@ const daemon = vi.hoisted(() => ({
   sendDaemonControl: vi.fn(),
   daemonControlRequestId: vi.fn(),
 }));
-const runtime = vi.hoisted(() => ({ inspectTarget: vi.fn() }));
+const runtime = vi.hoisted(() => ({ readInspection: vi.fn() }));
 
 vi.mock("../src/commands/daemon.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/commands/daemon.js")>(),
@@ -19,7 +19,7 @@ vi.mock("../src/commands/daemon.js", async importOriginal => ({
 }));
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
-  inspectTarget: runtime.inspectTarget,
+  readInspection: runtime.readInspection,
 }));
 
 const run = {
@@ -51,7 +51,7 @@ describe("runs steer", () => {
       fencedAttemptId: "attempt_1",
       continuation: "queued",
     }));
-    runtime.inspectTarget.mockReset();
+    runtime.readInspection.mockReset();
   });
 
   it("sends the exact correction and emits a redacted JSON receipt", async () => {
@@ -69,7 +69,7 @@ describe("runs steer", () => {
       schemaVersion: 1,
       ok: true,
       phase: "control",
-      message: "Attempt fenced; correction queued.",
+      message: "Attempt fenced; information update queued.",
       control: {
         type: "steer",
         state: "applied",
@@ -91,7 +91,7 @@ describe("runs steer", () => {
     expect(result.stdout).toContain("Steer: cli:steer-1");
     expect(result.stdout).toContain("Target: @1a2b3c4d5e6f");
     expect(result.stdout).toContain("Continuation: queued");
-    expect(result.stdout).toContain("Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --follow");
+    expect(result.stdout).toContain("Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --await-decision");
     expect(result.stdout).not.toContain("SECRET correction");
     expect(result.stdout).not.toContain("review~abc");
     expect(result.stdout).not.toContain("attempt_1");
@@ -124,12 +124,12 @@ describe("runs steer", () => {
       },
       message: "Control 'retry' for run 'run_1' failed with RUN_NOT_CONTROLLABLE: Scheduler retry target 'review' is ambiguous. Candidate target keys: review~one, review~two.",
     }));
-    runtime.inspectTarget.mockResolvedValue(ok(candidates()));
+    runtime.readInspection.mockResolvedValue(ok(candidates()));
 
     const text = await runCliCommand(["runs", "retry", "run_1", "--target", "review"]);
     expect(text.exitCode).toBe(1);
     expect(text.stderr).toContain("@1a2b3c4d5e6f");
-    expect(text.stderr).toContain("Select: acpus runs inspect run_1 --target @ref");
+    expect(text.stderr).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f");
     expect(text.stderr).toContain("Select one @ref from the candidate view.");
     expect(text.stderr).not.toContain("review~one");
     expect(text.stderr).not.toContain("review~two");
@@ -144,12 +144,10 @@ describe("runs steer", () => {
         target: "review",
         candidates: {
           kind: "candidates",
-          candidates: {
-            entries: [
-              { ref: "@1a2b3c4d5e6f" },
-              { ref: "@6f5e4d3c2b1a" },
-            ],
-          },
+          entries: [
+            { selector: "@1a2b3c4d5e6f" },
+            { selector: "@6f5e4d3c2b1a" },
+          ],
         },
       },
     });
@@ -177,7 +175,7 @@ describe("runs steer", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Daemon is restarting.");
     expect(result.stderr).not.toContain("Select: acpus runs inspect");
-    expect(runtime.inspectTarget).not.toHaveBeenCalled();
+    expect(runtime.readInspection).not.toHaveBeenCalled();
   });
 });
 
@@ -208,28 +206,21 @@ async function runCliCommand(argv: string[]): Promise<{ exitCode: number; stdout
   return { exitCode, stdout: stdout.text, stderr: stderr.text };
 }
 
-function candidates(): RunInspectionCandidatesDocument {
+function candidates(): InspectionCandidates {
   return {
-    schemaVersion: 2,
     kind: "candidates",
-    run: { id: "run_1", status: "running", updatedAt: "2026-07-25T00:00:02.000Z" },
+    run: { id: "run_1", status: "running" },
     target: "review",
-    candidates: {
-      entries: [{
-        ref: "@1a2b3c4d5e6f",
-        status: "running",
-        breadcrumb: "batch[0] › review",
-        kind: "dynamic-node",
-      }, {
-        ref: "@6f5e4d3c2b1a",
-        status: "completed",
-        breadcrumb: "batch[1] › review",
-        kind: "dynamic-node",
-      }],
-      page: 1,
-      limit: 12,
-      total: 2,
-      hasMore: false,
-    },
+    entries: [{
+      selector: "@1a2b3c4d5e6f",
+      status: "running",
+      breadcrumb: "batch[0] › review",
+    }, {
+      selector: "@6f5e4d3c2b1a",
+      status: "completed",
+      breadcrumb: "batch[1] › review",
+    }],
+    page: 1,
+    total: 2,
   };
 }

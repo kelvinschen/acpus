@@ -40,55 +40,28 @@ try {
   await writeFile(join(workspace, "input.json"), "{}\n");
 
   const submitted = await execFileAsync(process.execPath, [
-    join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--input", "input.json", "--json",
+    join(root, "packages/cli/dist/cli.js"), "workflow", "run", workflow, "--input", "input.json",
   ], {
     cwd: workspace,
     env: cliEnvironment(),
   });
   assert.equal(submitted.stderr, "");
 
-  const submission = JSON.parse(submitted.stdout);
-  assert.deepEqual(pickRunResult(submission), {
-    ok: true,
-    phase: "run",
-    kind: undefined,
-    name: "cli-concurrency-short-task",
-    status: "pending",
-  });
-  assert.equal(submission.message, "Run submitted.");
+  const receipt = /^Run (\d{14}[A-F0-9]{20})  cli-concurrency-short-task  pending\nInspect: acpus runs inspect \1$/mu.exec(submitted.stdout);
+  assert.ok(receipt, "workflow run must print a self-consistent inspection receipt");
 
   const followed = await execFileAsync(process.execPath, [
-    join(root, "packages/cli/dist/cli.js"), "runs", "inspect", submission.run.id, "--follow", "--json",
+    join(root, "packages/cli/dist/cli.js"), "runs", "inspect", receipt[1], "--follow",
   ], {
     cwd: workspace,
     env: cliEnvironment(),
   });
   assert.equal(followed.stderr, "");
-  const records = followed.stdout.trim().split("\n").map(line => JSON.parse(line));
-  assert.deepEqual(pickRunResult(records.at(-1)), {
-    ok: true,
-    phase: "inspect",
-    kind: "view",
-    name: "cli-concurrency-short-task",
-    status: "completed",
-    output: { ok: true },
-  });
+  assert.match(followed.stdout, new RegExp(`Run ${receipt[1]}  cli-concurrency-short-task  completed`));
+  assert.match(followed.stdout, /Output:\n  \{\n    "ok": true\n  \}/u);
 } finally {
   await requestDaemonShutdown(workspace);
   await rm(workspace, { recursive: true, force: true });
-}
-
-function pickRunResult(record) {
-  const run = record?.document?.run ?? record?.run;
-  const output = record?.document?.output ?? record?.output;
-  return {
-    ok: record?.ok,
-    phase: record?.phase,
-    kind: record?.kind,
-    status: run?.status,
-    ...(run?.name === undefined ? {} : { name: run.name }),
-    ...(output === undefined ? {} : { output }),
-  };
 }
 
 async function packPublishedPackages(destination) {

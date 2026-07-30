@@ -33,7 +33,7 @@ describe("CLI result output contracts", () => {
       "Fork run: run_child",
       "Fork status: pending",
       "Workflow entry: fixed.workflow.ts",
-      "Next: acpus runs inspect run_child --follow",
+      "Next: acpus runs inspect run_child --await-decision",
       "",
     ].join("\n"));
     expect(stderr.text).toBe("");
@@ -73,7 +73,7 @@ describe("CLI result output contracts", () => {
       "Payload: validated against { approved: boolean }",
       "Status: running",
       "Workflow entry: approval.workflow.ts",
-      "Next: acpus runs inspect run_1 --follow",
+      "Next: acpus runs inspect run_1 --await-decision",
       "",
     ].join("\n"));
     expect(stdout.text).not.toContain("secret-payload");
@@ -86,7 +86,7 @@ describe("CLI result output contracts", () => {
     expect(writeResult({
       ok: true,
       phase: "control",
-      message: "Attempt fenced; correction queued.",
+      message: "Attempt fenced; information update queued.",
       control: {
         type: "steer",
         state: "applied",
@@ -109,14 +109,14 @@ describe("CLI result output contracts", () => {
     }, "text", { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
-      "Attempt fenced; correction queued.",
+      "Attempt fenced; information update queued.",
       "Run: run_1",
       "Steer: cli:steer-1",
       "Target: @1a2b3c4d5e6f",
       "Continuation: queued",
       "Status: running",
       "Workflow entry: review.workflow.ts",
-      "Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --follow",
+      "Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --await-decision",
       "",
     ].join("\n"));
     expect(stdout.text).not.toContain("SECRET correction");
@@ -141,7 +141,7 @@ describe("CLI result output contracts", () => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(writeResult({ ok: true, phase: "control", message: "Retry applied.", control, run, followRunId: run.id }, "text", { stdout, stderr }, 0)).toBe(0);
-      expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --follow\n`);
+      expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --await-decision\n`);
       expect(stdout.text).not.toContain("retryd");
       expect(stdout.text).not.toContain("retried");
       if (targetLine === "") expect(stdout.text).not.toContain("Target:");
@@ -164,7 +164,7 @@ describe("CLI result output contracts", () => {
       [{ type: "cancel", state: "applied", runId: "run_1" } as const, "Run run_1 canceled.\n"],
       [
         { type: "cancel", state: "applied", runId: "run_1", target: "@1a2b3c4d5e6f" } as const,
-        "Target @1a2b3c4d5e6f canceled in run run_1.\nNext: acpus runs inspect run_1 --follow\n",
+        "Target @1a2b3c4d5e6f canceled in run run_1.\nNext: acpus runs inspect run_1 --await-decision\n",
       ],
     ] as const) {
       const stdout = new CaptureStream();
@@ -379,8 +379,6 @@ describe("CLI result output contracts", () => {
     const exitCode = writeResult({
       ok: true,
       phase: "run",
-      message: "Run submitted.",
-      workflow: checkResult().workflow!,
       diagnostics: [{ code: "RUN001", severity: "warning", message: "Review this run." }],
       run: {
         id: "run_1",
@@ -392,7 +390,6 @@ describe("CLI result output contracts", () => {
         updatedAt: "2026-06-29T00:00:01.000Z",
         progressVersion: 0,
       },
-      followRunId: "run_1",
     }, "text", { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);

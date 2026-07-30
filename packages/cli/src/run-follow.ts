@@ -1,35 +1,43 @@
 import {
-  watchInspection,
-  type RunInspectionError,
-  type RunStatus,
-  type WatchInspectionEmission,
-  type WatchInspectionQuery,
+  observeInspection,
+  type InspectionError,
+  type InspectionObservation,
+  type InspectionView,
+  type InspectionViewQuery,
 } from "@acpus/runtime";
 import type { Writable } from "node:stream";
-import { writeJsonLine } from "./output.js";
-import { presentInspectionEmissionJson } from "./run-inspection-json.js";
-import { renderShellCommand } from "./shell-command.js";
 import {
-  formatInspectionCandidates,
-  formatRunInspectionDocument,
-  formatRunInspectionTimelineEntry,
+  formatDurationMs,
+  formatInspectionChanges,
+  formatInspectionError,
+  formatInspectionView,
+  formatTimelineEntries,
+  inspectionRecoveryCommand,
 } from "./run-inspection-surface.js";
 
 export type RunFollowOutcome =
-  | { kind: "done"; run: { id: string; status: RunStatus } }
+  | {
+      kind: "closed";
+      reason: "subject-terminal" | "awaiting-input" | "paused";
+      run: { id: string; status: InspectionView["run"]["status"] };
+    }
   | { kind: "detached" }
-  | { kind: "error"; error: RunInspectionError };
+  | { kind: "error"; error: InspectionError };
+
+export function followExitCode(outcome: RunFollowOutcome): 0 | 1 | 2 {
+  if (outcome.kind !== "error") return 0;
+  return outcome.error.type === "invalid-query" ? 2 : 1;
+}
 
 type FollowOptions = {
-  phase: "inspect" | "run";
-  format: "text" | "ndjson";
+  until: "subject-terminal" | "decision-boundary";
   stdout: Writable;
   stderr: Writable;
 };
 
 export async function followRun(
   cwd: string,
-  query: WatchInspectionQuery,
+  view: InspectionViewQuery,
   options: FollowOptions,
 ): Promise<RunFollowOutcome> {
   const controller = new AbortController();
@@ -40,36 +48,38 @@ export async function followRun(
   };
   process.once("SIGINT", onAbort);
 
-  const source = watchInspection(cwd, { ...query, signal: controller.signal });
-  const iterator = source[Symbol.asyncIterator]();
-  const presenter = new RunFollowPresenter(options);
-  let lastRun: { id: string; status: RunStatus } | undefined;
+  const iterator = observeInspection(cwd, {
+    view,
+    until: options.until,
+    signal: controller.signal,
+  })[Symbol.asyncIterator]();
+  const presenter = new InspectionTranscriptPresenter(options.stdout);
+  let closed: Extract<InspectionObservation, { kind: "closed" }> | undefined;
 
   try {
     while (!controller.signal.aborted) {
       const next = await iterator.next();
+      if (controller.signal.aborted) break;
       if (next.done) break;
-      const result = next.value;
-      if (result.isErr()) {
-        writeFollowError(result.error, options, query.view);
-        return { kind: "error", error: result.error };
+      if (next.value.isErr()) {
+        writeFollowError(next.value.error, view, options.stderr);
+        return { kind: "error", error: next.value.error };
       }
-      presenter.emission(result.value);
-      if (result.value.kind === "view") {
-        lastRun = { id: result.value.document.run.id, status: result.value.document.run.status };
+      const observation = next.value.value;
+      presenter.observation(observation);
+      if (observation.kind === "closed") {
+        closed = observation;
+        break;
       }
     }
   } catch (error) {
-    if (detached) {
-      // SIGINT is a read-only detach, even when an adapter rejects its pending pull.
-    } else {
-      const failure: RunInspectionError = {
-        type: "inspection-read-failed",
-        runId: query.view.runId,
+    if (!detached) {
+      const failure: InspectionError = {
+        type: "read-failed",
+        runId: view.runId,
         message: error instanceof Error ? error.message : String(error),
-        cause: error,
       };
-      writeFollowError(failure, options, query.view);
+      writeFollowError(failure, view, options.stderr);
       return { kind: "error", error: failure };
     }
   } finally {
@@ -78,80 +88,74 @@ export async function followRun(
     try {
       await iterator.return?.();
     } catch {
-      // The iterator has already reported any readable failure above.
+      // Runtime already emits any readable inspection failure.
     }
   }
 
   if (detached) {
-    const stream = options.format === "ndjson" ? options.stderr : options.stdout;
-    stream.write(`Detached from run ${query.view.runId}. Background daemon continues running.\n`);
-    stream.write(`Inspect: ${renderShellCommand(["acpus", "runs", "inspect", query.view.runId])}\n`);
+    presenter.block(`Detached from run ${view.runId}. Background daemon continues running.\nInspect: ${inspectionRecoveryCommand(view)}\n`);
     return { kind: "detached" };
   }
-  if (lastRun) return { kind: "done", run: lastRun };
+  if (closed) {
+    return {
+      kind: "closed",
+      reason: closed.reason,
+      run: { id: closed.view.run.id, status: closed.view.run.status },
+    };
+  }
 
-  const failure: RunInspectionError = {
-    type: "inspection-read-failed",
-    runId: query.view.runId,
-    message: "Run inspection follow ended without a view.",
+  const failure: InspectionError = {
+    type: "read-failed",
+    runId: view.runId,
+    message: "Inspection observation ended without a closed view.",
   };
-  writeFollowError(failure, options, query.view);
+  writeFollowError(failure, view, options.stderr);
   return { kind: "error", error: failure };
 }
 
-class RunFollowPresenter {
-  constructor(private readonly options: FollowOptions) {}
+class InspectionTranscriptPresenter {
+  private emitted = false;
+  private attachedRun?: { durationMs: number; observedAt: number };
 
-  emission(emission: WatchInspectionEmission): void {
-    if (this.options.format === "ndjson") {
-      writeJsonLine(this.options.stdout, {
-        ok: true,
-        phase: this.options.phase,
-        ...presentInspectionEmissionJson(emission),
-      });
+  constructor(private readonly stdout: Writable) {}
+
+  observation(observation: InspectionObservation): void {
+    if (observation.kind === "attached") {
+      if (observation.view.kind === "run" && observation.view.run.durationMs !== undefined) {
+        this.attachedRun = {
+          durationMs: observation.view.run.durationMs,
+          observedAt: Date.now(),
+        };
+      }
+      this.block(`Attached:\n${formatInspectionView(observation.view, { showAwait: false })}`);
       return;
     }
-    this.options.stdout.write(emission.kind === "view"
-      ? formatRunInspectionDocument(emission.document)
-      : formatRunInspectionTimelineEntry(emission.entry));
+    if (observation.kind === "closed") {
+      this.block(formatInspectionView(observation.view));
+      return;
+    }
+    const elapsedMs = this.attachedRun === undefined
+      ? undefined
+      : Math.max(
+          this.attachedRun.durationMs,
+          this.attachedRun.durationMs + Date.now() - this.attachedRun.observedAt,
+        );
+    const blocks = [
+      ...(observation.changes.length === 0
+        ? []
+        : [`Updates${elapsedMs === undefined ? "" : ` · run ${formatDurationMs(elapsedMs)}`}:\n${formatInspectionChanges(observation.changes)}`]),
+      ...(observation.timeline?.length ? [`Timeline:\n${formatTimelineEntries(observation.timeline)}`] : []),
+    ];
+    if (blocks.length > 0) this.block(`${blocks.join("\n\n")}\n`);
+  }
+
+  block(text: string): void {
+    if (this.emitted) this.stdout.write("\n");
+    this.stdout.write(text);
+    this.emitted = true;
   }
 }
 
-function writeFollowError(
-  error: RunInspectionError,
-  options: FollowOptions,
-  view: WatchInspectionQuery["view"],
-): void {
-  if (options.format === "ndjson") {
-    writeJsonLine(options.stdout, {
-      schemaVersion: 2,
-      ok: false,
-      phase: options.phase,
-      kind: "error",
-      error: publicInspectionError(error),
-    });
-  } else {
-    const candidates = error.type === "target-ambiguous"
-      ? `${formatInspectionCandidates(error.candidates, followCandidateView(view)).trimEnd()}\n`
-      : "";
-    options.stderr.write(`${candidates}Inspection failed: ${error.message}\n`);
-  }
-}
-
-function followCandidateView(view: WatchInspectionQuery["view"]): {
-  timeline?: true;
-  all?: true;
-  controls?: true;
-} {
-  if (view.kind === "timeline") return { timeline: true };
-  if (view.kind !== "target") return {};
-  return {
-    ...(view.includeAllTopology ? { all: true } : {}),
-    ...(view.includeControls ? { controls: true } : {}),
-  };
-}
-
-function publicInspectionError(error: RunInspectionError): object {
-  if (error.type !== "inspection-read-failed") return error;
-  return { type: error.type, runId: error.runId, message: error.message };
+function writeFollowError(error: InspectionError, view: InspectionViewQuery, stderr: Writable): void {
+  stderr.write(formatInspectionError(error, view));
 }

@@ -26,7 +26,6 @@ import type {
   RunInspectionControl,
   RunInspectionDetailedFailure,
   RunInspectionItem,
-  RunInspectionRaw,
   RunInspectionRunSummary,
   RunInspectionSnapshot,
   RunInspectionStaticNode,
@@ -70,20 +69,6 @@ export function projectRunSnapshot(input: {
   )!;
 }
 
-export function projectRawInspection(input: {
-  ir: WorkflowIR;
-  run: RunDetails;
-  artifacts: ArtifactRecord[];
-}): RunInspectionRaw {
-  return {
-    schemaVersion: 2,
-    kind: "raw",
-    run: input.run,
-    workflow: input.ir,
-    artifacts: input.artifacts,
-  };
-}
-
 export function resolveTargetState(input: {
   ir: WorkflowIR;
   run: RunDetails;
@@ -98,23 +83,6 @@ export function resolveTargetState(input: {
     inspectionStaticNodes(input.ir),
     input.target,
     input.availableControls ?? [],
-  );
-}
-
-export function projectTargetTopology(input: {
-  ir: WorkflowIR;
-  run: RunDetails;
-  target: string;
-  includeControls?: true;
-  availableControls?: readonly RunInspectionControl[];
-}): RunInspectionSnapshot | undefined {
-  return projectSnapshot(
-    input.ir,
-    input.run,
-    inspectionStaticNodes(input.ir),
-    true,
-    input.includeControls === true ? input.availableControls ?? [] : [],
-    input.target,
   );
 }
 
@@ -810,19 +778,23 @@ function projectTarget(
   const dynamic = run.dynamic;
   const staticById = new Map(staticNodes.map(item => [item.nodeId, item]));
   const indexes = snapshotIndexes(run, staticNodes);
+  const rootFrame = targetId === "root"
+    ? dynamic?.frames.find(item => item.frameKind === "root")
+    : undefined;
   const staticNode = staticNodes.find(item => item.nodeId === targetId);
   const exactInstance = dynamic?.nodeInstances.find(item => item.nodeKey === targetId);
-  const exactFrame = dynamic?.frames.find(item => item.frameKey === targetId);
+  const exactFrame = rootFrame ?? dynamic?.frames.find(item => item.frameKey === targetId);
   const exactAttempt = dynamic?.attempts.find(item => item.attemptId === targetId);
   const targetPath = exactInstance?.instancePath
     ?? exactFrame?.instancePath
     ?? (exactAttempt
       ? dynamic?.nodeInstances.find(instance => instance.nodeKey === exactAttempt.nodeKey)?.instancePath
       : undefined);
-  const targetRef = targetPath ? deriveOccurrenceRef(targetPath) : undefined;
+  const targetRef = targetId === "root" || !targetPath ? undefined : deriveOccurrenceRef(targetPath);
   const target: RunInspectionTarget | undefined = exactAttempt ? { kind: "attempt", id: targetId, ...(targetRef ? { ref: targetRef } : {}) }
     : exactInstance ? { kind: "dynamic-node", id: targetId, ...(targetRef ? { ref: targetRef } : {}) }
-      : exactFrame ? { kind: "frame", id: targetId, ...(targetRef ? { ref: targetRef } : {}) }
+      : targetId === "root" ? { kind: "frame", id: targetId, ...(targetRef ? { ref: targetRef } : {}) }
+        : exactFrame ? { kind: "frame", id: targetId, ...(targetRef ? { ref: targetRef } : {}) }
         : staticNode ? { kind: "static-node", id: targetId }
           : undefined;
   if (!target) return undefined;
@@ -830,7 +802,11 @@ function projectTarget(
     item.nodeKey === targetId || item.nodeId === targetId || item.nodeKey === exactAttempt?.nodeKey) ?? [];
   const instanceKeys = new Set(instances.map(item => item.nodeKey));
   const frames = dynamic?.frames.filter(item =>
-    item.frameKey === targetId || item.nodeKey === targetId || item.nodeId === targetId || item.frameKey === exactFrame?.frameKey) ?? [];
+    item.frameKey === targetId
+      || item.nodeKey === targetId
+      || item.nodeId === targetId
+      || item.frameKey === exactFrame?.frameKey
+      || targetId === "root" && item.frameKind === "root") ?? [];
   const attempts = dynamic?.attempts.filter(item =>
     item.attemptId === targetId || item.nodeKey === targetId || item.nodeId === targetId || instanceKeys.has(item.nodeKey)) ?? [];
   const attemptIds = new Set(attempts.map(item => item.attemptId));
@@ -1229,7 +1205,7 @@ function detailedFailure(node: NodeIR | undefined, error: unknown, statusReason?
   const failure: RunInspectionDetailedFailure = {
     origin,
     ...(code ? { code } : {}),
-    message: string(value?.message) ?? string(value?.reason) ?? (typeof error === "string" ? error : JSON.stringify(error)),
+    message: string(value?.message) ?? string(value?.reason) ?? (typeof error === "string" ? error : "Target failed."),
     ...(upstream?.source === "acpx" ? {
       upstream: {
         source: "acpx",

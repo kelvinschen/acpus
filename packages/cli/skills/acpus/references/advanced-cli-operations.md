@@ -21,16 +21,15 @@ Use the same selected path, catalog, or `-` stdin source as `workflow run`. `wor
 
 Start with the Summary path in [CLI Operations](cli-operations.md).
 - For a repeated authored target, choose one candidate `@ref` before paging or following.
-- Use the printed `Next` or `Older` command to continue a candidate, Timeline, or Evidence view.
-- `--follow` waits for the next decision boundary; use it for one decision-controlling transition, not polling.
-- Use `--evidence` only for an exact prompt, fence, or terminal diagnosis.
-- Use `--raw --json` only for diagnosis; it does not expose private bodies. Full provider-frame history needs `trace: true`; see [Agent Tracing](agent-tracing.md).
+- `--page` continues only a candidate view; Timeline always shows its fixed recent window.
+- `--follow` waits until the fixed subject is terminal. `--await-decision` waits until that subject needs external input, is paused, or is terminal.
+- Inspection is text-only. It has no JSON/NDJSON, raw, Evidence, topology, controls, or custom-limit surface. Full provider-frame history needs `trace: true`; see [Agent Tracing](agent-tracing.md).
 
 ## Runtime control details
 
 This section describes command mechanics. [Runtime Recovery](runtime-recovery.md#recovery-decision) owns recovery and intervention decisions.
 
-Inspect before controlling a run and copy its printed operation command rather than writing an occurrence target.
+Inspect before controlling a run and use its displayed public selector rather than reconstructing an internal occurrence identity.
 
 Mutating controls start or wake the workspace daemon and wait up to 30 seconds for a durable effect. Success confirms that effect, not downstream completion. A control timeout reports unconfirmed application; inspect again before repeating it.
 
@@ -47,12 +46,12 @@ An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABL
 ### Steer
 
 ```sh
-acpus runs steer <run-id> --target <exact-agent-target> --instruction '<correction>'
+acpus runs steer <run-id> --target <exact-agent-target> --instruction '<update>'
 ```
 
 Apply the [Recovery decision](runtime-recovery.md#recovery-decision) rules before use.
 
-Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings;
+Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the updated work has completed. Receipts and inspection output do not echo the instruction, but inline instructions remain visible in shell history and process listings.
 
 ### Pause and resume
 
@@ -158,7 +157,4 @@ This lists registered artifact metadata and absolute paths without reading file 
 
 ## Structured automation
 
-Put `--json` after the executable leaf. One-shot commands return one JSON
-object; follow commands return NDJSON observations until their decision
-boundary. Parse one line at a time, preserve order, and use focused `jq`
-filters.
+Put `--json` after an executable leaf that supports structured output.

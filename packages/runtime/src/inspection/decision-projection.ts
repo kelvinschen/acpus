@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { basename, join } from "node:path";
 import type {
   AgentObservationInspectionProjection,
 } from "../observations/log.js";
@@ -18,7 +17,6 @@ import type {
   AgentCurrentActivity,
   RunInspectionAttention,
   RunInspectionCurrentActivity,
-  RunInspectionEvidenceDocument,
   RunInspectionExcerpt,
   RunInspectionPulse,
   RunInspectionSubject,
@@ -387,87 +385,6 @@ function targetControlActions(
     actions.push({ kind: "steer", target: exactAttemptSelector });
   }
   return actions;
-}
-
-function evidenceCapsule(
-  details: ResolvedTargetState,
-  observations: AgentObservationInspectionProjection,
-  runDir: string,
-  page: number,
-  limit: number,
-): RunInspectionEvidenceDocument["evidence"] | undefined {
-  const attempt = selectedAttempt(details);
-  if (!attempt) return undefined;
-  const turns = observations.turns
-    .filter(turn => turn.attemptId === attempt.attemptId)
-    .sort((left, right) => left.turn - right.turn);
-  const state = turns.some(turn => turn.state === "recording")
-    ? "recording"
-    : turns.some(turn => turn.state === "partial") || turns.length === 0 ? "partial" : "sealed";
-  const schedulerDisposition: RunInspectionEvidenceDocument["evidence"]["schedulerDisposition"] = attempt.status === "started"
-    ? "pending"
-    : attempt.status === "superseded" ? "discarded" : "committed";
-  const entries = turns.map(turn => ({
-    turn: turn.turn,
-    file: basename(turn.relativePath),
-    prompt: { kind: turn.promptKind, bytes: turn.promptBytes, digest: turn.promptDigest },
-    lastDurableResponseBytes: turn.lastResponseBytes,
-    ...(turn.responseAtFenceBytes === undefined ? {} : { responseAtFenceBytes: turn.responseAtFenceBytes }),
-    ...(turn.finalResponseBytes === undefined ? {} : { finalObservedResponseBytes: turn.finalResponseBytes }),
-    ...(turn.trace === undefined
-      ? {}
-      : {
-          trace: {
-            state: turn.trace.state,
-            ...(turn.trace.relativePath ? { file: basename(turn.trace.relativePath) } : {}),
-            ...(turn.trace.bytes === undefined ? {} : { bytes: turn.trace.bytes }),
-            ...(turn.trace.digest === undefined ? {} : { digest: turn.trace.digest }),
-          },
-        }),
-  }));
-  const start = (page - 1) * limit;
-  const selected = entries.slice(start, start + limit);
-  return {
-    directory: join(runDir, "evidence", "agents", attempt.attemptId),
-    state,
-    completeness: turns.length === 0 || turns.some(turn => turn.completeness === "degraded") ? "degraded" : "complete",
-    turnCount: turns.length,
-    gapCount: turns.reduce((total, turn) => total + turn.gapCount, 0),
-    ...(turns.at(-1)?.providerStatus ? { providerOutcome: turns.at(-1)!.providerStatus } : {}),
-    schedulerDisposition,
-    ...(attempt.cancelReason ?? attempt.terminalReason ? { dispositionReason: attempt.cancelReason ?? attempt.terminalReason } : {}),
-    records: {
-      entries: selected,
-      page,
-      limit,
-      total: entries.length,
-      hasMore: start + selected.length < entries.length,
-      ...(start + selected.length < entries.length ? { nextPage: page + 1 } : {}),
-    },
-  };
-}
-
-export function projectEvidence(input: {
-  details: ResolvedTargetState,
-  observations: AgentObservationInspectionProjection,
-  runDir: string,
-  page: number,
-  limit: number,
-}): RunInspectionEvidenceDocument | undefined {
-  const evidence = evidenceCapsule(input.details, input.observations, input.runDir, input.page, input.limit);
-  if (!evidence) return undefined;
-  return {
-    schemaVersion: 2,
-    kind: "evidence",
-    run: {
-      id: input.details.run.id,
-      status: input.details.run.status,
-      updatedAt: input.details.run.updatedAt,
-    },
-    subject: inspectionSubject(input.details),
-    ...(inspectionVisibility(input.details, input.observations) ? { visibility: inspectionVisibility(input.details, input.observations)! } : {}),
-    evidence,
-  };
 }
 
 function missingSteerEvidence(

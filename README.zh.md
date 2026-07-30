@@ -154,14 +154,17 @@ acpus runs inspect <run-id>
 
 `workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 提交持久化 run，并给出 sparse inspect/follow 指南；`runs inspect` 从紧凑的持久化状态视图开始。
 
+需要在下一次输入、暂停或终态边界拿回决策权时使用 `--await-decision`；只有需要等待固定对象终态时才使用 `--follow`。
+
 ### 常用运行控制
 
 ```sh
+acpus runs inspect <run-id> --await-decision
 acpus runs inspect <run-id> --follow
 acpus runs pause <run-id>
 acpus runs resume <run-id>
-acpus runs retry <run-id> --target <node-key-or-frame-key>
-acpus runs signal <run-id> --target <node-key> --payload '{"approved":true}'
+acpus runs retry <run-id> --target <node-or-@ref>
+acpus runs signal <run-id> --target <signal-or-@ref> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 

@@ -533,6 +533,7 @@ export class AgentObservationLog {
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
     latestTurnOnly?: true;
+    includeOlderCount?: boolean;
   }): ResultAsync<AgentObservationInspectionProjection, AgentObservationReadError> {
     return ResultAsync.fromPromise(
       Promise.resolve().then(() => this.readProjection(input)),
@@ -1109,6 +1110,7 @@ export class AgentObservationLog {
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
     latestTurnOnly?: true;
+    includeOlderCount?: boolean;
   }): AgentObservationInspectionProjection {
     if (input.latestTurnOnly && input.attemptIds?.length !== 1) {
       throw new Error("Latest-turn inspection requires exactly one attempt.");
@@ -1148,8 +1150,9 @@ export class AgentObservationLog {
       row.retention_floor_version === null ? [] : [row.retention_floor_version]);
     const retentionFloorVersion = floors.length === 0 ? undefined : Math.max(...floors);
     const oldestObservationVersion = entries[0]?.observationVersion;
-    const olderEntryCount = input.latestTurnOnly
-      ? Number(entryRows.length > chosenRows.length)
+    const hasOlderEntries = entryRows.length > chosenRows.length;
+    const olderEntryCount = input.latestTurnOnly || input.includeOlderCount === false
+      ? Number(hasOlderEntries)
       : Math.max(
           0,
           (input.entryLimit === undefined || input.attemptIds?.length === 0

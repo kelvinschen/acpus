@@ -24,8 +24,8 @@ export default defineWorkflow({
       Inspect this repository without changing it. Use read-only tools to:
 
       1. list the top-level workspace entries;
-      2. find the implementation of watchInspection;
-      3. read the relevant source and report, in at most five sentences, how non-TTY follow receives Agent progress.
+      2. find the implementation of observeInspection;
+      3. read the relevant source and report, in at most five sentences, how append-only follow receives Agent progress.
 
       Make at least two tool calls so run ${meta.runId} exposes useful live tool progress.
     `,
