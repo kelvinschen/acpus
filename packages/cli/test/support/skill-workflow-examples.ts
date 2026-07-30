@@ -17,6 +17,11 @@ export const skillWorkflowExamples = [
     reference: "authoring",
   },
   {
+    name: "design forge",
+    directory: "design-forge",
+    reference: "authoring",
+  },
+  {
     name: "issue triage",
     directory: "issue-triage",
     reference: "authoring",
@@ -43,9 +48,12 @@ export const skillWorkflowExamples = [
   },
 ] as const;
 
-
 export function skillLibraryWorkflowPath(directory: string, relativePath = "workflow.ts"): string {
   return fileURLToPath(new URL(`../../skills/acpus/workflows/library/${directory}/${relativePath}`, import.meta.url));
+}
+
+export function skillExampleWorkflowPath(directory: string): string {
+  return fileURLToPath(new URL(`../../skills/acpus/workflows/examples/${directory}/workflow.ts`, import.meta.url));
 }
 
 export function skillReferencePath(reference: string): string {

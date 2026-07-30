@@ -8,7 +8,9 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ## Run and observe
 
-Run from the intended workspace. 
+### Run
+
+Run from the intended workspace. `workflow run` performs workflow check internally and submits the durable run *asynchronously*. 
 
 Prefer HEREDOC for one-off workflow executions, as it avoids polluting the user workspace:
 
@@ -23,29 +25,33 @@ Prefer a file-backed `workflow.ts` only when you need to import task/helper modu
 
 ```sh
 acpus workflow run <workflow> [--input <json|file.json>] [--follow]
+```
+
+### Observe
+
+```sh
 acpus runs inspect <run-id> [--target <nodeId|@ref>]
 ```
 
+Options: 
 
 | Need | Use | Get |
 | --- | --- | --- |
-| State / next action | Summary (default) | Decision state and available next operations |
+| State / next action | Summary (default) | Decision state and navigation |
 | Proof of work | `--timeline` | Current and recent activity |
 | Diagnose one Agent turn | `--evidence` | Exact turn-boundary metadata |
 | Topology | `--all` | All materialized occurrences |
 | Wait for one change | `--follow` | Next decision boundary |
 
-- `workflow run` performs workflow check internally and submits the durable run *asynchronously*. 
 - `--follow` waits read-only for the run's next decision boundary; it does not periodically refresh or emit a heartbeat, and silence between boundaries is expected. 
+- Add `#attemptNo` only for one Agent attempt. 
 - `Ctrl-C` only detaches.
-- Add `#attemptNo` only for one Agent attempt. Use `--help` for exact combinations and printed `Next`/`Older` commands for more results.
 
-### Low-context monitoring
+#### Low-context monitoring
 
-1. Start with Summary; for a repeated occurrence, copy its candidate `@ref`.
-2. Inspect adaptively: **begin with sparse, minute-scale inspections**.
-3. Refresh Summary after that transition. At terminal state, verify output and artifacts against the goal.
-4. Use focused `jq` for structured output with `--json` to avoid large json output.
+1. Read Summary once; for a repeated occurrence, select its candidate `@ref`.
+2. If work remains non-terminal without attention, `--follow` the decision-controlling target, re-inspect only after *a boundary, hard attention, or new operator or external input*. **Silence means wait, be patient**.
+3. At terminal state, verify output and artifacts. Use focused `jq` for structured output.
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for pagination, private Evidence, raw output, or follow mechanics.
 
@@ -53,17 +59,14 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) on
 
 ```sh
 acpus runs signal <run-id> --target <target> --payload '<json>'
-acpus runs steer <run-id> --target <target> --instruction '<correction>'
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs cancel <run-id> [--target <target>]
 ```
 
-- Inspect the target first; available operations indicate applicability, not a recommendation
-- Signal answers an open wait, and pause/resume controls run admission
-- **Steer is a last resort** for clear task drift or imminent harmful action in a started Agent
-- Agent execution takes from a few minutes to tens of minutes **depending on task complexity**, long duration is NOT an indicator of abnormality, **BE PATIENT** when tracking workflow execution.
-- Cancel is destructive and requires confirmation unless already requested
+- Inspect the target first; an available control indicates applicability, not a recommendation.
+- Signal answers an open wait; pause/resume control run admission.
+- Cancel is destructive and requires confirmation unless already requested.
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for all control commands, targeting, fencing, reuse, receipts, and structured automation.
 

@@ -20,8 +20,8 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 ### **READ first**
 
 - **Authoring** Read `references/authoring.md` completely;
-- **Run, observe, or control:** Read `references/cli-operations.md` for status, overrides, and controls;
-- **Recover a run:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, drifting-agent steering, steer/retry/fork decisions, or deep diagnostics.
+- **Run or observe:** Read `references/cli-operations.md` for admission, inspection, ordinary interaction, and stop controls;
+- **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, exceptional mid-run update, retry/fork decisions, or deep diagnostics.
 - **Library/catalog reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
 - **Choose an agent:** Read `references/acpx-agents.md` when Agent availability matters.
 
@@ -36,11 +36,12 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 ### **Explain concepts:**
 Search all available documentation under `references/` to explain concepts. Choose the most relevant reference(s) for each topic.
 
-## Inspection budget [Mandatory]
+## Inspection discipline [Mandatory]
 
-- Inspect adaptively: start with sparse, minute-scale inspections, tighten cadence only near a decision boundary, and never poll.
-- Inspect the target controlling the next decision. Start with Summary and deepen only enough to decide.
-- For repeats, copy the candidate view's `@ref`. Use one live follow for a decision-controlling transition, not scheduled inspection.
+- Inspect Summary once, then narrow only to the target controlling the next decision.
+- Use one `--follow` for that decision boundary. Re-inspect only after a boundary, hard attention, or new operator or external input; never poll.
+- Elapsed time, silence, observation age, usage/context metrics, and available controls MUST NOT trigger intervention.
+- For repeats, copy the candidate view's `@ref`; deepen only enough to decide.
 
 ## Safety
 

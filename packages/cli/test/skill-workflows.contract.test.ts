@@ -7,6 +7,7 @@ import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
 import { buildAgentOutputPrompt } from "../../runtime/src/execution/agent-output.js";
 import {
+  skillExampleWorkflowPath,
   skillFilePath,
   skillLibraryWorkflowPath,
   skillReferencePath,
@@ -19,6 +20,7 @@ import {
 const defaultRouteByteCeiling = 14_000;
 const cliPackageRoot = fileURLToPath(new URL("../", import.meta.url));
 let deepResearchPreparation: ReturnType<typeof prepareWorkflow> | undefined;
+let designForgePreparation: ReturnType<typeof prepareWorkflow> | undefined;
 let worktreeTournamentPreparation: ReturnType<typeof prepareWorkflow> | undefined;
 
 describe("skill workflow contracts", () => {
@@ -70,6 +72,158 @@ describe("skill workflow contracts", () => {
     expect(skill).toContain("/wf:");
     expect(skill).toContain("/workflow:");
     expect(authoringReferences.every(reference => !reference.includes("../workflows/library/"))).toBe(true);
+  });
+
+  it("keeps design-forge semantics in a /tmp text blackboard with resident challenge sessions", async () => {
+    const { ir } = await prepareDesignForge();
+    expect(ir.diagnostics).toEqual([]);
+    expect(ir.name).toBe("design-forge");
+
+    const seed = uniqueNode(ir, "seed_blackboard").node;
+    const cycle = uniqueNode(ir, "design_cycle").node;
+    const design = uniqueNode(ir, "design_board").node;
+    const panel = uniqueNode(ir, "challenge_panel").node;
+    const publish = uniqueNode(ir, "publish_blackboard").node;
+    const reviewers = [
+      {
+        name: "fitness",
+        gate: uniqueNode(ir, "fitness_gate").node,
+        challenge: uniqueNode(ir, "challenge_fitness").node,
+      },
+      {
+        name: "failure",
+        gate: uniqueNode(ir, "failure_gate").node,
+        challenge: uniqueNode(ir, "challenge_failure").node,
+      },
+      {
+        name: "simplicity",
+        gate: uniqueNode(ir, "simplicity_gate").node,
+        challenge: uniqueNode(ir, "challenge_simplicity").node,
+      },
+    ];
+    if (
+      seed.kind !== "task"
+      || cycle.kind !== "loop"
+      || design.kind !== "agent"
+      || panel.kind !== "parallel"
+      || publish.kind !== "task"
+    ) {
+      throw new Error("design-forge must remain one text-blackboard design loop");
+    }
+
+    expect(ir.root.nodes.map(node => [node.id, node.kind])).toEqual([
+      ["seed_blackboard", "task"],
+      ["design_cycle", "loop"],
+      ["publish_blackboard", "task"],
+    ]);
+    expect(cycle.do.nodes.map(node => [node.id, node.kind])).toEqual([
+      ["design_board", "agent"],
+      ["challenge_panel", "parallel"],
+    ]);
+    expect(Object.fromEntries(
+      Object.entries(panel.branches).map(([name, branch]) => [
+        name,
+        branch.nodes.map(node => [node.id, node.kind]),
+      ]),
+    )).toEqual({
+      fitness: [["fitness_gate", "if"]],
+      failure: [["failure_gate", "if"]],
+      simplicity: [["simplicity_gate", "if"]],
+    });
+    expect(panel.maxConcurrency).toEqual({ kind: "literal", value: 3 });
+    expect(cycle.state).toEqual({
+      kind: "object",
+      fields: {
+        fitnessDone: { kind: "literal", value: false },
+        failureDone: { kind: "literal", value: false },
+        simplicityDone: { kind: "literal", value: false },
+        rounds: { kind: "literal", value: 0 },
+      },
+    });
+    expect(seed.run.input).toEqual({
+      kind: "object",
+      fields: {
+        brief: { kind: "ref", path: ["input", "brief"] },
+        runId: { kind: "ref", path: ["meta", "runId"] },
+      },
+    });
+    for (const task of [seed, publish]) {
+      if (task.run.target.kind !== "inline") {
+        throw new Error("design-forge file operations must remain inline Tasks");
+      }
+      expect(task.run.target.source).toContain("$`");
+      expect(task.run.target.source).not.toContain("node:");
+    }
+    if (seed.run.target.kind !== "inline" || publish.run.target.kind !== "inline") {
+      throw new Error("design-forge file operations must remain inline Tasks");
+    }
+    expect(seed.run.target.source).toContain("/tmp/acpus-design-forge/");
+    expect(seed.run.target.source).toContain("design.txt");
+    expect(publish.run.target.source).toContain("artifact.write");
+    expect(publish.run.target.source).toContain('"text/plain"');
+    expect(design.outputSchema).toBeUndefined();
+    expect(design.run.cwd).toEqual({
+      kind: "ref",
+      path: ["nodes", "seed_blackboard", "output", "root"],
+    });
+    expect(design.run.sessionKey).toBeUndefined();
+
+    for (const { name, gate, challenge } of reviewers) {
+      if (gate.kind !== "if" || challenge.kind !== "agent") {
+        throw new Error(`design-forge ${name} branch must gate one Agent`);
+      }
+      expect(gate.condition).toEqual({
+        kind: "ref",
+        path: ["loop", "design_cycle", "state", `${name}Done`],
+      });
+      expect(gate.then.nodes).toEqual([]);
+      expect(gate.else.nodes.map(node => [node.id, node.kind])).toEqual([
+        [`challenge_${name}`, "agent"],
+      ]);
+      expect(challenge.outputSchema).toEqual({
+        kind: "object",
+        additionalProperties: false,
+        required: ["done"],
+        fields: {
+          done: { kind: "boolean" },
+        },
+      });
+      expect(challenge.run.sessionKey).toEqual({
+        kind: "literal",
+        value: `design-forge:challenger:${name}`,
+      });
+      expect(challenge.run.cwd).toEqual({
+        kind: "ref",
+        path: ["nodes", "seed_blackboard", "output", "root"],
+      });
+      expect(challenge.run.prompt).toMatchObject({
+        kind: "template",
+        parts: expect.arrayContaining([
+          {
+            kind: "expr",
+            expr: { kind: "ref", path: ["nodes", "design_board", "output"] },
+          },
+          {
+            kind: "expr",
+            expr: { kind: "ref", path: ["nodes", "seed_blackboard", "output", "root"] },
+          },
+        ]),
+      });
+    }
+
+    expect(publish.run.cwd).toEqual({
+      kind: "ref",
+      path: ["nodes", "seed_blackboard", "output", "root"],
+    });
+    expect(ir.root.output).toMatchObject({
+      kind: "object",
+      fields: {
+        rounds: { kind: "ref", path: ["nodes", "design_cycle", "output", "rounds"] },
+        blackboard: { kind: "ref", path: ["nodes", "publish_blackboard", "output", "blackboard"] },
+      },
+    });
+    if (ir.root.output.kind !== "object") throw new Error("design-forge must return one object");
+    expect(Object.keys(ir.root.output.fields)).toEqual(["settled", "rounds", "blackboard"]);
   });
 
   it("prepares deep-research and keeps its documented inputs aligned", async () => {
@@ -199,12 +353,22 @@ function prepareDeepResearch(): ReturnType<typeof prepareWorkflow> {
   });
 }
 
+function prepareDesignForge(): ReturnType<typeof prepareWorkflow> {
+  return designForgePreparation ??= prepareWorkflow({
+    workspaceDir: cliPackageRoot,
+    source: {
+      kind: "path",
+      entry: skillExampleWorkflowPath("design-forge"),
+    },
+  });
+}
+
 function prepareWorktreeTournament(): ReturnType<typeof prepareWorkflow> {
   return worktreeTournamentPreparation ??= prepareWorkflow({
     workspaceDir: cliPackageRoot,
     source: {
       kind: "path",
-      entry: join(cliPackageRoot, "skills", "acpus", "workflows", "examples", "worktree-tournament", "workflow.ts"),
+      entry: skillExampleWorkflowPath("worktree-tournament"),
     },
   });
 }

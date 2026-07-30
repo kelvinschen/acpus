@@ -4,30 +4,23 @@
 
 1. Inspect the run, then the item controlling the next decision:
 
-   ```sh
-   acpus runs inspect <run-id>
-   acpus runs inspect <run-id> --target <nodeId|nodeKey|frameKey|attemptId>
-   ```
+```sh
+acpus runs inspect <run-id>
+acpus runs inspect <run-id> --target <nodeId|nodeKey|frameKey|attemptId>
+```
 
-2. Identify status, the dynamic recovery target, and whether admitted source
-   or inputs must change. For Agent interruption, also identify the exact
-   `attemptId`, provider outcome, scheduler disposition, and completeness.
+2. Identify status, the dynamic recovery target, and whether admitted source or inputs must change. For Agent interruption, also identify the exact `attemptId`, provider outcome, scheduler disposition, and completeness.
 
-3. Add Timeline only when activity is needed, then choose the smallest safe
-   action:
+3. Add Timeline only when activity is needed, then choose the smallest safe action:
 
-   ```sh
-   acpus runs inspect <run-id> --target <resolved-target> --timeline
-   ```
+```sh
+acpus runs inspect <run-id> --target <resolved-target> --timeline
+```
 
-If Summary and Timeline are insufficient, read only the exact attempt's
-Private Turn Evidence for prompt/fence/terminal boundaries. Use an opt-in Trace
-or raw ACP artifact for provider-frame detail; see
+If Summary and Timeline are insufficient, read only the exact attempt's Private Turn Evidence for prompt/fence/terminal boundaries. Use an opt-in Trace or raw ACP artifact for provider-frame detail; see
 [Agent Tracing](agent-tracing.md).
 
-Agent failures preserve Acpus origin/code separately from their upstream acpx
-cause. Do not infer an authentication, model, or quota category from error
-wording.
+Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
 
 ## Phase-based fixes
 
@@ -41,17 +34,18 @@ wording.
 | task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |
 | control target not found, run terminal, conflict | `control` | Re-inspect and target the dynamic nodeKey/frameKey or static alias that currently exists. |
 
-## Steer vs Retry vs Fork
+## Recovery decision
 
 | Choose | Use when | Effect |
 | --- | --- | --- |
-| Steer | An Agent is running on the correct admitted task but its current turn is drifting. | Fences that attempt and queues a correction in the same run and Agent session. |
-| Retry | The admitted workflow, input, and agent mapping are still correct. | Continues the same run and preserves completed work. |
+| Wait | No recovery condition or new information exists. | Leaves correct active work uninterrupted. |
+| Steer | The admitted task remains correct, but a started Agent needs an in-scope update. | Fences that attempt and queues a correction in the same run and Agent session. |
+| Retry | Failed or timed-out work can repeat under unchanged admitted state. | Continues the same run and preserves completed work. |
 | Fork | The workflow, input, Agent mapping, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
 
 Prefer the smallest action that preserves correct admitted state:
 
-- **Steer only as a last resort** when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct. Context/usage metrics, observation age, isolated tool failures, degraded visibility, and an available steer operation are not sufficient evidence. Account for external side effects that the old turn may already have performed.
+- Steer one exact started Agent only to add context or a compatible constraint, or correct a Timeline-proven violation or imminent harm. **NEVER steer for elapsed time, silence, or convergence pressure**; fork if admitted state or task scope must change.
 - Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
 - Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
 
@@ -59,11 +53,10 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 
 ## Stale non-terminal execution
 
-`runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. Do not mutate state just because a run is stale.
-An attached `--follow` view remains read-only and continues waiting through a stale state. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
+- `runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. DO NOT mutate state just because a run is stale.
 
-A running `all` composite with a canceled required member fails on the next scheduler drive and cancels its remaining active members as `parent_failed`; it does not remain indefinitely non-terminal. Startup recovery also resumes admissible ready work, supersedes an expired owner's started attempts, settles due attempts and immediately derivable `all`, `race`, or `quorum` completions, and propagates pending leaf/frame/ancestor state even when another branch is waiting on an untimed Signal. Re-inspect the terminal result and choose retry or fork normally.
+- An attached `--follow` view remains read-only and continues waiting through a stale state. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
 
-For standalone artifact registry lookup, read `advanced-cli-operations.md`; use target inspection when paths need surrounding recovery state. Do not guess at run-local paths.
+- Runtime automatically settles derivable work after cancellation or owner loss, even when another branch awaits an untimed Signal.  DO NOT intervene solely because a run is temporarily non-terminal; re-inspect after settlement, then retry or fork if needed.
 
-Do not edit SQLite state or run-local frozen files by hand. Use CLI controls.
+- For standalone artifact registry lookup, read `advanced-cli-operations.md`; use target inspection when paths need surrounding recovery state. DO NOT guess at run-local paths.

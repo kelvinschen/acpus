@@ -28,7 +28,7 @@ Start with the Summary path in [CLI Operations](cli-operations.md).
 
 ## Runtime control details
 
-This section describes command mechanics. Use [Runtime Recovery](runtime-recovery.md#steer-vs-retry-vs-fork) to choose between steer, retry, and fork.
+This section describes command mechanics. [Runtime Recovery](runtime-recovery.md#recovery-decision) owns recovery and intervention decisions.
 
 Inspect before controlling a run and copy its printed operation command rather than writing an occurrence target.
 
@@ -50,9 +50,9 @@ An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABL
 acpus runs steer <run-id> --target <exact-agent-target> --instruction '<correction>'
 ```
 
-Steer is a last resort when an exact-attempt Timeline shows material task drift or imminent harmful action while the admitted task remains correct.
+Apply the [Recovery decision](runtime-recovery.md#recovery-decision) rules before use.
 
-Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings; do not include secrets.
+Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the corrected work has completed. Receipts and follow output do not echo the instruction, but inline instructions remain visible in shell history and process listings;
 
 ### Pause and resume
 

@@ -75,18 +75,23 @@ For a checked reusable Task with a stable result type and artifact output, use [
 
 ## Artifacts
 
-Task context exposes only `artifact.write` and `artifact.path`:
+The Task artifact API exposes only `artifact.write` and `artifact.path`:
 
 ```ts
 const report = step("write_report").task({
   input: { data: input.data },
-  exec: async ({ input, artifact }) => ({
-    report: await artifact.write(
-      "report.json",
-      JSON.stringify(input.data),
-      { mediaType: "application/json" },
-    ),
-  }),
+  exec: async ({ input, $, artifact }) => {
+    const content = JSON.stringify(input.data);
+    await $`printf '%s' ${content} > report.json`; // Ordinary cwd file; not an artifact.
+    return {
+      // Run-local artifact; returns an ArtifactRef.
+      report: await artifact.write(
+        "report.json",
+        content,
+        { mediaType: "application/json" },
+      ),
+    };
+  },
 });
 ```
 

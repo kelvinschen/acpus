@@ -29,6 +29,10 @@
 - Do not restore previous-product code from older tags unless the task
   explicitly asks for historical maintenance.
 
+## LLM-Oriented Product Design
+
+For every design decision, ask first: Does this enable the consumer's next valid action with the minimum authoritative delta?
+
 ## The Way of Clean Code
 
 Bias toward subtraction. The best code is the shortest that works. Every line must earn its place.
