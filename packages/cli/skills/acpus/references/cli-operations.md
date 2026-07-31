@@ -49,7 +49,7 @@ Options:
 
 #### Low-context monitoring
 
-1. Read Summary once; for a repeated occurrence, select its candidate `@ref`.
+1. Read Summary once. select a candidate `@ref` only when one occurrence matters.
 2. If work remains non-terminal without attention, `--await-decision` the decision-controlling target. Re-inspect only after it returns, hard attention, or new operator or external input. Use `--follow` only when terminal completion itself is the goal. **Silence means wait, be patient**.
 3. At terminal state, verify output and artifacts. Use `jq` for focused JSON reads.
 

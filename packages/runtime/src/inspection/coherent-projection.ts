@@ -141,7 +141,7 @@ function projectTree(items: readonly RunInspectionItem[], run: RunDetails): Insp
     if (parent) parent.children.push(node);
     else roots.push(node);
   }
-  return foldTree(roots);
+  return foldTree(pruneTree(roots));
 }
 
 type InternalTree = {
@@ -149,6 +149,35 @@ type InternalTree = {
   entry: Extract<InspectionTreeEntry, { type: "item" }>;
   children: InternalTree[];
 };
+
+function pruneTree(nodes: readonly InternalTree[]): InternalTree[] {
+  return nodes.flatMap(node => {
+    if (node.item.scope?.kind === "branch"
+      && node.item.scope.ownerKind !== "parallel"
+      && node.item.scope.selection === "not_selected") return [];
+    const visible = { ...node, children: pruneTree(node.children) };
+    if (completedEmptyBranch(visible.item)) return [];
+    return collapsibleStructure(visible) ? visible.children : [visible];
+  });
+}
+
+function completedEmptyBranch(item: RunInspectionItem): boolean {
+  return item.status === "completed"
+    && item.scope?.kind === "branch"
+    && item.scope.empty;
+}
+
+function collapsibleStructure(node: InternalTree): boolean {
+  const child = node.children[0];
+  return node.children.length === 1
+    && child !== undefined
+    && (node.item.scope?.kind === "branch" || node.item.kind === "if" || node.item.kind === "switch")
+    && node.item.status === child.item.status
+    && node.entry.attention === undefined
+    && node.entry.state.failure === undefined
+    && node.entry.progress === undefined
+    && node.entry.pulse === undefined;
+}
 
 function treeItem(item: RunInspectionItem, run: RunDetails): Extract<InspectionTreeEntry, { type: "item" }> {
   const selector = item.ref
@@ -183,7 +212,7 @@ function foldTree(nodes: readonly InternalTree[]): InspectionTreeEntry[] {
   for (let index = 0; index < visible.length;) {
     const first = visible[index]!;
     const scope = repeatScope(first.item);
-    if (!scope) {
+    if (!scope || treeAttention(first.entry)) {
       result.push(first.entry);
       index += 1;
       continue;
@@ -192,7 +221,7 @@ function foldTree(nodes: readonly InternalTree[]): InspectionTreeEntry[] {
     while (end < visible.length
       && sameRepeatedScope(repeatScope(visible[end - 1]!.item)!, repeatScope(visible[end]!.item))
       && equivalentRepeated(first.entry, visible[end]!.entry)) end += 1;
-    if (end - index < 4) {
+    if (end - index < 2) {
       result.push(first.entry);
       index += 1;
       continue;
@@ -203,8 +232,8 @@ function foldTree(nodes: readonly InternalTree[]): InspectionTreeEntry[] {
       scope: scope.kind,
       range: { start: scope.value, end: repeatScope(last.item)!.value },
       count: end - index,
-      state: first.entry.state,
-      children: removeSelectors(first.entry.children),
+      state: foldState(first.entry.state),
+      children: removeRepeatIdentity(first.entry.children),
     });
     index = end;
   }
@@ -232,6 +261,11 @@ function equivalentRepeated(left: InspectionTreeEntry, right: InspectionTreeEntr
   return JSON.stringify(stripRepeatIdentity(left, true)) === JSON.stringify(stripRepeatIdentity(right, true));
 }
 
+function treeAttention(entry: InspectionTreeEntry): boolean {
+  return (entry.type === "item" && entry.attention !== undefined)
+    || entry.children.some(treeAttention);
+}
+
 function stripRepeatIdentity(entry: InspectionTreeEntry, root = false): unknown {
   if (entry.type === "fold") return {
     type: "fold",
@@ -257,10 +291,15 @@ function foldState(state: InspectionVisibleState): Omit<InspectionVisibleState, 
   return visible;
 }
 
-function removeSelectors(entries: readonly InspectionTreeEntry[]): InspectionTreeEntry[] {
+function removeRepeatIdentity(entries: readonly InspectionTreeEntry[]): InspectionTreeEntry[] {
   return entries.map(entry => entry.type === "fold"
-    ? { ...entry, children: removeSelectors(entry.children) }
-    : { ...entry, subject: { label: entry.subject.label, kind: entry.subject.kind }, children: removeSelectors(entry.children) });
+    ? { ...entry, state: foldState(entry.state), children: removeRepeatIdentity(entry.children) }
+    : {
+        ...entry,
+        subject: { label: entry.subject.label, kind: entry.subject.kind },
+        state: foldState(entry.state),
+        children: removeRepeatIdentity(entry.children),
+      });
 }
 
 function itemPulse(item: RunInspectionItem): InspectionPulse | undefined {

@@ -155,21 +155,22 @@ describe("run inspection projection", () => {
   });
 
   it("folds homogeneous fanout contexts without exposing an invalid candidate selector", () => {
-    const run = repeatedAgentRun(4);
+    const run = repeatedAgentRun(2);
     run.dynamic!.progress = [];
     run.dynamic!.executionMetadata = [];
+    for (const instance of run.dynamic!.nodeInstances) instance.status = "running";
 
     const view = projectInspectionRunView({ ir: compositeWorkflow(), run });
     const folds = inspectionFolds(view.tree);
 
     expect(folds).toEqual([
-      expect.objectContaining({ scope: "fanout-items", count: 4 }),
+      expect.objectContaining({ scope: "fanout-items", count: 2, state: { status: "running" } }),
     ]);
     for (const fold of folds) expect(fold).not.toHaveProperty("candidateTarget");
   });
 
   it("folds terminal fanout contexts with different elapsed durations", () => {
-    const run = repeatedAgentRun(4);
+    const run = repeatedAgentRun(3);
     run.dynamic!.progress = [];
     run.dynamic!.executionMetadata = [];
     for (const instance of run.dynamic!.nodeInstances) instance.status = "completed";
@@ -178,9 +179,27 @@ describe("run inspection projection", () => {
       attempt.finishedAt = `2026-07-01T00:00:0${index + 2}.000Z`;
     }
 
-    expect(inspectionFolds(projectInspectionRunView({ ir: compositeWorkflow(), run }).tree)).toEqual([
-      expect.objectContaining({ scope: "fanout-items", count: 4 }),
-    ]);
+    const [fold] = inspectionFolds(projectInspectionRunView({ ir: compositeWorkflow(), run }).tree);
+
+    expect(fold).toMatchObject({ scope: "fanout-items", count: 3, state: { status: "completed" } });
+    expect(JSON.stringify(fold)).not.toContain("durationMs");
+    expect(JSON.stringify(fold)).not.toContain("selector");
+  });
+
+  it("keeps repeated attention occurrences individually targetable", () => {
+    const run = repeatedAgentRun(2);
+    run.dynamic!.progress = [];
+    run.dynamic!.executionMetadata = [];
+    for (const instance of run.dynamic!.nodeInstances) {
+      instance.status = "failed";
+      instance.error = { message: "Review failed." };
+    }
+
+    const view = projectInspectionRunView({ ir: compositeWorkflow(), run });
+
+    expect(inspectionFolds(view.tree)).toEqual([]);
+    expect(inspectionItems(view.tree).filter(entry => entry.subject.kind === "agent"
+      && entry.attention?.kind === "failure")).toHaveLength(2);
   });
 
   it("omits a targeted fork's raw target from the generic run view", () => {
@@ -1395,6 +1414,18 @@ describe("run inspection projection", () => {
       kind: "branch", ownerKind: "if", branchId: "else", selection: "selected", empty: false,
     });
     expect(document.items.filter(item => item.nodeId === "fallback")).toHaveLength(1);
+
+    const view = projectInspectionRunView({ ir, run });
+    expect(view.counts).toEqual(document.counts);
+    expect(inspectionItems(view.tree).map(entry => `${entry.subject.kind}:${entry.subject.label}`)).toEqual([
+      "fanout:batch",
+      "fanout_item:item[0]",
+      "if:route",
+      "fanout_item:item[1]",
+      "task:fallback",
+    ]);
+    expect(JSON.stringify(view.tree)).not.toContain("not_selected");
+    expect(inspectionItems(view.tree).some(entry => entry.subject.kind === "branch")).toBe(false);
   });
 
   it("projects a failed root frame as run-level failure without inventing an overview item", () => {
@@ -1813,4 +1844,10 @@ function inspectionFolds(entries: readonly InspectionTreeEntry[]): Array<Extract
   return entries.flatMap(entry => entry.type === "fold"
     ? [entry, ...inspectionFolds(entry.children)]
     : inspectionFolds(entry.children));
+}
+
+function inspectionItems(entries: readonly InspectionTreeEntry[]): Array<Extract<InspectionTreeEntry, { type: "item" }>> {
+  return entries.flatMap(entry => entry.type === "item"
+    ? [entry, ...inspectionItems(entry.children)]
+    : inspectionItems(entry.children));
 }

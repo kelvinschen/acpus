@@ -547,7 +547,10 @@ Runtime owns generic inspection semantics and public shape.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
 - A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
 - A Summary for a running Agent target with a durable ACP activity timestamp MUST include the elapsed duration since that activity; it MUST not include an inactivity threshold or predicted failure time.
-- The tree MUST retain meaningful distinct state in deterministic semantic order and may fold contiguous equivalent Fanout items or Loop rounds. A fold shows their shared visible state without choosing a representative selector.
+- The tree MUST omit unselected conditional subtrees and completed empty branches while retaining their materialized occurrences in Counts.
+- The tree MUST collapse a sole-child branch, `if`, or `switch` wrapper only when it has the same state as its child and carries no attention, failure, progress, or pulse.
+- The tree MUST fold two or more contiguous equivalent Fanout items or Loop rounds. Equivalence ignores occurrence identity and duration but preserves visible state, progress, pulse, failure, attention, and shared subtree shape.
+- A fold MUST show one shared subtree without representative selectors or durations and MUST NOT contain actionable attention.
 - Observation emits attachment, zero or more state updates, then closure; a subject already at its stop boundary emits closure only. Abort is silent, and an observation error ends without closure.
 - Each update MUST provide the smallest coherent change that affects the next valid action. Time, liveness aging, usage, hooks, and silence MUST NOT emit alone.
 - Reasons MAY clarify a transition only when state is insufficient. Event-history discontinuity MUST NOT prevent observing a readable current view.

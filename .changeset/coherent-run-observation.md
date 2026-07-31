@@ -7,7 +7,9 @@ Replace the public Runtime inspection APIs with `readInspection` and
 `observeInspection`: one coherent, privacy-safe model for run, target Summary,
 target Timeline, candidate, and append-only semantic observation views.
 Observation now pins its selected subject across automatic replacement and
-separates terminal waits from actionable decision boundaries.
+separates terminal waits from actionable decision boundaries. Run summaries
+omit unselected and empty structural paths, collapse sole-child control paths,
+and share one selector-free shape across equivalent repeated occurrences.
 
 Simplify CLI inspection to a text-only interface using public occurrence
 selectors and candidate-only pagination. `--follow` now waits for the fixed
