@@ -255,8 +255,8 @@ export function setRuntimeHomeForTest(workspace: string, home: string): () => vo
   };
 }
 
-export function runAcpSessionsRoot(layout: RuntimeLayout, runId: string): string {
-  return join(layout.runsRoot, runId, "acp", "sessions");
+export function runAcpStateRoot(layout: RuntimeLayout, runId: string): string {
+  return join(layout.runsRoot, runId, "acp");
 }
 
 async function ensureRuntimeLayoutValue(

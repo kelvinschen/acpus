@@ -10,7 +10,6 @@ coverage/
 legacy/
 .DS_Store
 *.tsbuildinfo
-mock-trace.jsonl
 .pnpm-store
 .vscode
 benchmarks

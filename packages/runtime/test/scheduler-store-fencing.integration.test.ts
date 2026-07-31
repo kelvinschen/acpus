@@ -8,7 +8,7 @@ import { readArtifact } from "../src/runs/use-cases.js";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RegisterArtifactInput, type RuntimeStore } from "../src/store/store.js";
-import { captureRunFile } from "../src/store/run-file.js";
+import { tryCaptureRunFile } from "../src/store/run-file.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler store attempt fences", () => {
@@ -535,11 +535,11 @@ async function materializeArtifact(store: RuntimeStore, artifact: RegisterArtifa
   const path = join(runDir, artifact.relativePath);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, "x");
-  artifact.file = captureRunFile(
+  artifact.file = tryCaptureRunFile(
     store.getRunDirectoryToken(artifact.runId)!,
     path,
     `Artifact '${artifact.id}'`,
-  );
+  )._unsafeUnwrap();
   return path;
 }
 

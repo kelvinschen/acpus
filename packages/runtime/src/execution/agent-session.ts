@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentNodeIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
@@ -19,8 +20,13 @@ export function resolveAgentSessionIdentity(
   const identity = explicitSessionKey.value === undefined
     ? { runId: runId ?? "local", nodeKey }
     : { runId: runId ?? "local", key: explicitSessionKey.value };
+  const digest = createHash("sha256")
+    .update(JSON.stringify(identity))
+    .digest()
+    .subarray(0, 16)
+    .toString("base64url");
   return ok({
-    sessionName: `acpus-${Buffer.from(JSON.stringify(identity)).toString("base64url")}`,
+    sessionName: `acpus-${digest}`,
     ...(explicitSessionKey.value === undefined ? {} : { explicitSessionKey: explicitSessionKey.value }),
   });
 }

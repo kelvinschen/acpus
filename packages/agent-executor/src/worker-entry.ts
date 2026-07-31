@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   createAcpRuntime,
   createAgentRegistry,
-  createFileSessionStore,
   type AcpRuntime,
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
@@ -11,13 +10,15 @@ import {
 import type {
   AgentBackendFailure,
   AgentJsonValue,
+  AgentObservationEvent,
   AgentToolCallSummary,
-  AgentTraceEvent,
   AgentTurnProgress,
   AgentTurnRequest,
   AgentTurnResult,
   AgentTurnSummary,
 } from "./types.js";
+import { observationEventFromRuntime, toAgentJsonValue } from "./runtime-event.js";
+import { createAcpusSessionStore } from "./session-store.js";
 import { failureFromAcpRuntime, type AcpRuntimeOperation } from "./worker-failure.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
@@ -52,7 +53,6 @@ type TurnAccumulator = {
   tokenUsage?: AgentTurnSummary["tokenUsage"];
   tools: Map<string, AgentToolCallSummary>;
   eventCount: number;
-  trace?: AgentTraceEvent[];
   acpxRecordId?: string;
 };
 
@@ -86,7 +86,7 @@ async function receive(message: AcpWorkerParentMessage): Promise<void> {
       ...(message.model === undefined ? {} : { model: message.model }),
       runtime: createAcpRuntime({
         cwd: message.cwd,
-        sessionStore: createFileSessionStore({ stateDir: message.sessionDirectory }),
+        sessionStore: createAcpusSessionStore(message.sessionStateDirectory),
         agentRegistry: createAgentRegistry(message.agent.kind === "command"
           ? { overrides: { [agentName]: message.agent.command } }
           : undefined),
@@ -118,7 +118,7 @@ async function runTurn(
   turnId: string,
   request: Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">,
 ): Promise<void> {
-  const accumulator = createAccumulator(request);
+  const accumulator = createAccumulator();
   let operation: AcpRuntimeOperation = "sessions.ensure";
   try {
     handle ??= await state.runtime.ensureSession({
@@ -169,11 +169,10 @@ function emitRuntimeEvent(state: InitializedWorker, turnId: string, accumulator:
   const elapsedMs = elapsed(accumulator);
   accumulator.eventCount += 1;
   updateAccumulator(accumulator, event, observedAt);
-  const trace = runtimeTraceEvent(event, accumulator.sequence++, observedAt, elapsedMs);
-  if (trace) {
-    accumulator.trace?.push(trace);
+  const projected = observationEventFromRuntime(event, accumulator.sequence++, observedAt, elapsedMs);
+  if (projected) {
     const observation = {
-      event: trace,
+      event: projected,
       progress: progress(accumulator, observedAt),
     };
     send({ type: "turn-observation", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, observation });
@@ -183,7 +182,7 @@ function emitRuntimeEvent(state: InitializedWorker, turnId: string, accumulator:
 
 function emitTurnEnd(state: InitializedWorker, turnId: string, accumulator: TurnAccumulator, result: AgentTurnResult): void {
   const observedAt = new Date().toISOString();
-  const event: AgentTraceEvent = {
+  const event: AgentObservationEvent = {
     schemaVersion: 1,
     sequence: accumulator.sequence++,
     observedAt,
@@ -194,7 +193,6 @@ function emitTurnEnd(state: InitializedWorker, turnId: string, accumulator: Turn
     ...(result.status === "failed" ? { failure: result.failure as unknown as AgentJsonValue, message: result.failure.message } : {}),
     ...(result.status === "cancelled" ? { message: result.message } : {}),
   };
-  accumulator.trace?.push(event);
   send({
     type: "turn-observation",
     protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
@@ -238,42 +236,6 @@ function updateAccumulator(accumulator: TurnAccumulator, event: AcpRuntimeEvent,
   });
 }
 
-function runtimeTraceEvent(event: AcpRuntimeEvent, sequence: number, observedAt: string, elapsedMs: number): AgentTraceEvent | undefined {
-  const base = { schemaVersion: 1 as const, sequence, observedAt, elapsedMs };
-  if (event.type === "text_delta") {
-    return {
-      ...base,
-      type: "message",
-      channel: event.stream === "thought" ? "thought" : "assistant",
-      content: event.text,
-      ...(event.tag === undefined ? {} : { tag: event.tag }),
-    };
-  }
-  if (event.type === "status") {
-    const context = event.used === undefined || event.size === undefined ? undefined : { used: event.used, size: event.size };
-    const tokenUsage = event.breakdown;
-    return context === undefined && tokenUsage === undefined
-      ? { ...base, type: "unknown", ...(event.tag === undefined ? {} : { tag: event.tag }), value: event.text }
-      : { ...base, type: "usage", ...(context === undefined ? {} : { context: jsonValue(context) }), ...(tokenUsage === undefined ? {} : { tokenUsage: jsonValue(tokenUsage) }) };
-  }
-  if (event.type === "tool_call") {
-    return {
-      ...base,
-      type: "tool",
-      action: event.status === undefined ? "call" : "update",
-      ...(event.toolCallId === undefined ? {} : { toolCallId: event.toolCallId }),
-      ...(event.title === undefined ? {} : { title: event.title }),
-      ...(event.kind === undefined ? {} : { kind: event.kind }),
-      ...(event.status === undefined ? {} : { status: event.status }),
-      ...(event.rawInput === undefined ? {} : { rawInput: jsonValue(event.rawInput) }),
-      ...(event.rawOutput === undefined ? {} : { rawOutput: jsonValue(event.rawOutput) }),
-      ...(event.content === undefined ? {} : { content: jsonValue(event.content) }),
-      ...(event.locations === undefined ? {} : { locations: jsonValue(event.locations) }),
-    };
-  }
-  return undefined;
-}
-
 function terminalResult(
   accumulator: TurnAccumulator,
   terminal: AcpRuntimeTurnResult,
@@ -304,7 +266,7 @@ function terminalResultFromRuntime(
   return completedResult(accumulator, terminal.stopReason);
 }
 
-function createAccumulator(request: WorkerTurnRequest): TurnAccumulator {
+function createAccumulator(): TurnAccumulator {
   return {
     startedAt: new Date().toISOString(),
     startedAtMonotonic: performance.now(),
@@ -312,7 +274,6 @@ function createAccumulator(request: WorkerTurnRequest): TurnAccumulator {
     responseText: "",
     tools: new Map(),
     eventCount: 0,
-    ...(request.captureTrace ? { trace: [] } : {}),
     ...(handle?.acpxRecordId === undefined ? {} : { acpxRecordId: handle.acpxRecordId }),
   };
 }
@@ -324,7 +285,6 @@ function completedResult(accumulator: TurnAccumulator, stopReason?: string): Age
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
-    ...(accumulator.trace === undefined ? {} : { trace: trace(accumulator) }),
   };
 }
 
@@ -336,7 +296,6 @@ function cancelledResult(accumulator: TurnAccumulator, message: string, stopReas
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
-    ...(accumulator.trace === undefined ? {} : { trace: trace(accumulator) }),
   };
 }
 
@@ -348,7 +307,6 @@ function failedResult(accumulator: TurnAccumulator, failure: AgentBackendFailure
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
-    ...(accumulator.trace === undefined ? {} : { trace: trace(accumulator) }),
   };
 }
 
@@ -385,10 +343,6 @@ function summary(accumulator: TurnAccumulator, stopReason?: string): AgentTurnSu
     ...(initialized?.cwd === undefined ? {} : { cwd: initialized.cwd }),
     ...(accumulator.acpxRecordId === undefined ? {} : { acpxRecordId: accumulator.acpxRecordId }),
   };
-}
-
-function trace(accumulator: TurnAccumulator) {
-  return { startedAt: accumulator.startedAt, elapsedMs: elapsed(accumulator), events: accumulator.trace ?? [] };
 }
 
 function timing(accumulator: TurnAccumulator) {
@@ -463,19 +417,10 @@ function terminalToolStatus(status: string | undefined): boolean {
 }
 
 function preview(value: unknown) {
-  const rendered = JSON.stringify(jsonValue(value));
+  const rendered = JSON.stringify(toAgentJsonValue(value));
   const originalBytes = Buffer.byteLength(rendered, "utf8");
   const limit = 4 * 1024;
   if (originalBytes <= limit) return { preview: rendered, truncated: false, originalBytes, headBytes: originalBytes };
   const preview = Buffer.from(rendered, "utf8").subarray(0, limit).toString("utf8");
   return { preview, truncated: true, originalBytes, headBytes: Buffer.byteLength(preview, "utf8") };
-}
-
-function jsonValue(value: unknown): AgentJsonValue {
-  try {
-    const rendered = JSON.stringify(value);
-    return rendered === undefined ? String(value) : JSON.parse(rendered) as AgentJsonValue;
-  } catch {
-    return String(value);
-  }
 }

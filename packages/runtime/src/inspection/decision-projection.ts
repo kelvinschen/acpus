@@ -109,7 +109,7 @@ export function projectTimeline(input: {
 }
 
 /** The complete retained semantic stream used by follow; ordinary reads page it. */
-export function projectTimelineEntries(input: {
+function projectTimelineEntries(input: {
   run: RunDetails;
   details: ResolvedTargetState;
   events: readonly CommittedRuntimeEventRow[];
@@ -118,11 +118,11 @@ export function projectTimelineEntries(input: {
   const allowedAttemptIds = new Set(timelineAttemptIds(input.details));
   return [
     ...observationTimelineEntries(input.observations, input.details, allowedAttemptIds),
-    ...schedulerTimelineEntries(input.events, input.details, input.run, input.observations),
+    ...schedulerTimelineEntries(input.events, input.details, input.run),
   ].sort(compareTimelineEntries);
 }
 
-export function timelineAttemptIds(details: ResolvedTargetState): string[] {
+function timelineAttemptIds(details: ResolvedTargetState): string[] {
   if (details.target.kind === "attempt") return [details.target.id];
   return [...new Set(details.attempts.map(attempt => attempt.attemptId))].sort();
 }
@@ -387,7 +387,7 @@ function targetControlActions(
   return actions;
 }
 
-function missingSteerEvidence(
+function missingSteerObservation(
   details: ResolvedTargetState,
   observations: AgentObservationInspectionProjection | undefined,
 ): boolean {
@@ -401,8 +401,8 @@ export function inspectionVisibility(
   details: ResolvedTargetState,
   observations: AgentObservationInspectionProjection,
 ): RunInspectionVisibility | undefined {
-  if (missingSteerEvidence(details, observations)) {
-    return { state: "degraded", reason: "boundary-evidence-unavailable" };
+  if (missingSteerObservation(details, observations)) {
+    return { state: "degraded", reason: "observation-gap" };
   }
   if (observations.turns.some(turn => turn.gapCount > 0)
     || observations.entries.some(entry => entry.kind === "gap")) {
@@ -502,7 +502,7 @@ function currentAgentActivity(
       : intent ? "reported-thought"
         : response ? "responding"
           : turn?.promptKind === "repair" ? "output-repair"
-            : turn?.state === "sealed" ? "settling" : "starting";
+            : turn?.state === "settled" ? "settling" : "starting";
   return {
     kind: "agent",
     attemptId: attempt.attemptId,
@@ -591,7 +591,6 @@ function schedulerTimelineEntries(
   events: readonly CommittedRuntimeEventRow[],
   details: ResolvedTargetState,
   run: RunDetails,
-  observations?: AgentObservationInspectionProjection,
 ): RunInspectionTimelineEntry[] {
   const identities = new Set([
     details.target.id,
@@ -630,9 +629,6 @@ function schedulerTimelineEntries(
         ...(attemptId && attemptNoById.get(attemptId) !== undefined
           ? { attemptNo: attemptNoById.get(attemptId)! }
           : {}),
-        ...(control === "steered"
-          ? responseAtFence(observations, attemptId, change.sequence)
-          : {}),
       });
       continue;
     }
@@ -648,21 +644,6 @@ function schedulerTimelineEntries(
     });
   }
   return entries;
-}
-
-function responseAtFence(
-  observations: AgentObservationInspectionProjection | undefined,
-  attemptId: string | undefined,
-  eventSequence: number | undefined,
-): Pick<Extract<RunInspectionTimelineEntry, { kind: "control" }>, "responseAtFenceBytes"> {
-  if (!observations || !attemptId) return {};
-  const turn = observations.turns
-    .filter(candidate => candidate.attemptId === attemptId
-      && (eventSequence === undefined || candidate.fenceEventSequence === eventSequence))
-    .sort((left, right) => right.turn - left.turn)[0];
-  return turn?.responseAtFenceBytes === undefined
-    ? {}
-    : { responseAtFenceBytes: turn.responseAtFenceBytes };
 }
 
 function timelinePage(input: {

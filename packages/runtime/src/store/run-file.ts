@@ -1,5 +1,5 @@
-import { constants as fsConstants, fstatSync, lstatSync, realpathSync, type BigIntStats } from "node:fs";
-import { chmod, copyFile, link, mkdir, open, rm, type FileHandle } from "node:fs/promises";
+import { lstatSync, realpathSync, type BigIntStats } from "node:fs";
+import { mkdir, open, rm } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import {
@@ -26,7 +26,7 @@ export type RunFileUnavailable =
       readonly reason: "symbolic-link" | "not-regular";
     };
 
-export type PreparedRunFilePath = {
+type PreparedRunFilePath = {
   readonly path: string;
   readonly parent: DirectoryIdentity;
   readonly run: RunDirectoryToken;
@@ -90,7 +90,7 @@ export async function writeRunFile(input: {
   return file;
 }
 
-export async function prepareRunFilePath(
+async function prepareRunFilePath(
   run: RunDirectoryToken,
   relativePath: string,
   label: string,
@@ -102,7 +102,7 @@ export async function prepareRunFilePath(
   return prepared;
 }
 
-export function verifyPreparedRunFilePath(prepared: PreparedRunFilePath): string {
+function verifyPreparedRunFilePath(prepared: PreparedRunFilePath): string {
   const path = ownedRunPath(prepared.run, prepared.path, prepared.label);
   verifyDirectoryIdentity(prepared.parent, `${prepared.label} parent directory`);
   verifyRunDirectoryToken(prepared.run);
@@ -111,17 +111,6 @@ export function verifyPreparedRunFilePath(prepared: PreparedRunFilePath): string
     throw new Error(`${prepared.label} parent directory '${prepared.parent.path}' is outside its run directory.`);
   }
   return path;
-}
-
-export function captureRunFile(
-  run: RunDirectoryToken,
-  path: string,
-  label: string,
-): RunFileToken {
-  const captured = tryCaptureRunFile(run, path, label);
-  if (captured.isOk()) return captured.value;
-  if (captured.error.reason === "missing") throw captured.error.cause;
-  throw new Error(`${label} is not a regular file.`);
 }
 
 export function tryCaptureRunFile(
@@ -150,36 +139,6 @@ export function tryCaptureRunFile(
   return ok(token);
 }
 
-export async function captureOpenedRunFile(
-  run: RunDirectoryToken,
-  handle: FileHandle,
-  path: string,
-  label: string,
-): Promise<RunFileToken> {
-  verifyRunDirectoryToken(run);
-  const absolute = ownedRunPath(run, path, label);
-  const info = await handle.stat({ bigint: true });
-  assertRegularFile(info, label);
-  const token = tokenForFile(absolute, info, label);
-  verifyRunFile(run, token, label);
-  return token;
-}
-
-export function captureOpenedRunFileSync(
-  run: RunDirectoryToken,
-  fd: number,
-  path: string,
-  label: string,
-): RunFileToken {
-  verifyRunDirectoryToken(run);
-  const absolute = ownedRunPath(run, path, label);
-  const info = fstatSync(fd, { bigint: true });
-  assertRegularFile(info, label);
-  const token = tokenForFile(absolute, info, label);
-  verifyRunFile(run, token, label);
-  return token;
-}
-
 export function verifyRunFile(
   run: RunDirectoryToken,
   file: RunFileToken,
@@ -192,64 +151,6 @@ export function verifyRunFile(
   assertRunFileIdentity(file, info, label);
   assertRealContained(run.runDirectory.realpath, realpathSync(absolute), label);
   return absolute;
-}
-
-export async function copyRunFile(
-  sourceRun: RunDirectoryToken,
-  source: RunFileToken,
-  destination: PreparedRunFilePath,
-  sourceLabel = destination.label,
-): Promise<RunFileToken> {
-  const sourcePath = verifyRunFile(sourceRun, source, sourceLabel);
-  const destinationPath = verifyPreparedRunFilePath(destination);
-  await copyFile(sourcePath, destinationPath, fsConstants.COPYFILE_EXCL);
-  verifyPreparedRunFilePath(destination);
-  verifyRunFile(sourceRun, source, sourceLabel);
-  const file = captureRunFile(destination.run, destinationPath, destination.label);
-  verifyPreparedRunFilePath(destination);
-  return file;
-}
-
-export async function publishRunFile(
-  run: RunDirectoryToken,
-  file: RunFileToken,
-  destination: string,
-  label: string,
-): Promise<RunFileToken> {
-  let source = verifyRunFile(run, file, label);
-  const target = ownedRunPath(run, destination, label);
-  if (target === source) return file;
-  const parent = await materializeRunFileParent(run, target, label);
-  const prepared = { path: target, parent, run, label };
-  source = verifyRunFile(run, file, label);
-  verifyPreparedRunFilePath(prepared);
-  try {
-    await link(source, target);
-  } catch (error) {
-    if (!isAlreadyExists(error)) throw error;
-    verifyRunFile(run, { ...file, path: target }, label);
-  }
-  verifyPreparedRunFilePath(prepared);
-  const published = { ...file, path: target };
-  verifyRunFile(run, published, label);
-  await removeRunFile(run, file, label);
-  verifyPreparedRunFilePath(prepared);
-  verifyRunFile(run, published, label);
-  return published;
-}
-
-export async function chmodRunFile(
-  run: RunDirectoryToken,
-  file: RunFileToken,
-  mode: number,
-  label: string,
-): Promise<void> {
-  const parent = captureRunFileParent(run, file.path, label);
-  const path = verifyRunFile(run, file, label);
-  verifyDirectoryIdentity(parent, `${label} parent directory`);
-  await chmod(path, mode);
-  verifyDirectoryIdentity(parent, `${label} parent directory`);
-  verifyRunFile(run, file, label);
 }
 
 export async function removeRunFile(

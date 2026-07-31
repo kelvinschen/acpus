@@ -51,7 +51,6 @@ export {
   type RunVisualizationSnapshot,
 } from "./runs/use-cases.js";
 export type {
-  AgentTraceRecord,
   AgentTurnArtifact,
 } from "./execution/agent-node.js";
 export type { AgentOutputProcessing } from "./execution/agent-output.js";

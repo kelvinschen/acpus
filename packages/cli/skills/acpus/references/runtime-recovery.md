@@ -17,7 +17,7 @@ acpus runs inspect <run-id> --target <nodeId|@ref|@ref#attemptNo>
 acpus runs inspect <run-id> --target <resolved-target> --timeline
 ```
 
-Private Turn Evidence is Runtime-private rather than an ordinary CLI read. Use an opt-in Trace artifact for provider-frame detail; see [Agent Tracing](agent-tracing.md).
+For exact settled-turn prompt/response data and the run-local acpx session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
 
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
 

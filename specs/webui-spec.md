@@ -146,7 +146,7 @@
 - The Web server MUST delegate target resolution, node data, Agent execution data, and control applicability to the [Runtime inspection contract](runtime-spec.md#inspection); it MUST NOT independently resolve dynamic contexts or infer a control from graph state.
 - Node and execution response field shapes are owned by the exported [Web API types](../packages/web/src/api-types.ts). Node inspection returns only the projection required by the Inspector and never raw Runtime inspection documents or telemetry.
 - Node Overview presents identity, status, input/output, prompt, and relevant failure; artifacts are lazy leaf-node content. An actionable Signal is shown only for the selected awaiting target.
-- Agent Execution is available only for Agent nodes. It shows optional Observation-backed Context Window, Token Usage, output, and Recent observed tools without reading private Evidence, Trace, or artifact bodies.
+- Agent Execution is available only for Agent nodes. It shows optional Observation-backed Context Window, Token Usage, output, and Recent observed tools without reading artifact bodies.
 - Optional execution telemetry MUST be omitted when unavailable; the UI MUST not infer zero, provider health, complete tool history, or a definitive absence of tools from missing data.
 - An ambiguous execution target MUST map to HTTP 409 `target_ambiguous`. Artifact-backed prompts MUST use the Runtime verified reader.
 - Task input inspection MUST prefer selected-scope evaluated runtime input from `task_attempt` metadata.

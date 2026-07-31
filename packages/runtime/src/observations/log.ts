@@ -1,74 +1,30 @@
-import { createHash } from "node:crypto";
-import {
-  closeSync,
-  fsyncSync,
-  openSync,
-  writeSync,
-} from "node:fs";
-import {
-  chmod,
-  lstat,
-  open,
-  readFile,
-  readdir,
-  realpath,
-} from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   type AgentContextSummary,
-  type AgentJsonValue,
-  type AgentTraceEvent,
+  type AgentObservationEvent,
   type AgentTokenUsageSummary,
   type AgentTurnObservation,
   type AgentTurnRequest,
   type AgentTurnResult,
 } from "@acpus/agent-executor";
 import { ResultAsync } from "neverthrow";
-import type { RuntimeLayout } from "../runtime-layout.js";
 import { utf8Head, utf8Tail } from "../utf8.js";
-import {
-  captureDirectoryIdentity,
-  verifyDirectoryIdentity,
-  type DirectoryIdentity,
-  type RunDirectoryFence,
-} from "../store/path-fence.js";
-import {
-  assertRunFileIdentity,
-  captureOpenedRunFile,
-  captureOpenedRunFileSync,
-  captureRunFile,
-  chmodRunFile,
-  copyRunFile,
-  prepareRunFilePath,
-  removeRunFile,
-  publishRunFile,
-  verifyPreparedRunFilePath,
-  verifyRunFile,
-  type PreparedRunFilePath,
-  type RunFileToken,
-} from "../store/run-file.js";
 
-const evidenceSchemaVersion = 1;
 const semanticEntryLimit = 128;
 const semanticPayloadLimit = 128 * 1024;
 const semanticReadPayloadLimit = 8 * 1024;
 const currentPayloadLimit = 16 * 1024;
 const responseCheckpointBytes = 512;
 const checkpointIntervalMs = 10_000;
-const traceBufferBytes = 64 * 1024;
 const currentResponseBytes = 1536;
 const currentIntentBytes = 768;
 const currentToolBytes = 768;
 const timelineEntryBytes = 512;
-const boundedFailureEdgeBytes = 4 * 1024;
 const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
 
 type AgentPromptKind = "task" | "continuation" | "steer" | "repair";
-type AgentObservationState = "recording" | "sealed" | "partial";
+type AgentObservationState = "recording" | "settled" | "incomplete";
 type AgentObservationCompleteness = "complete" | "degraded";
-type AgentTraceState = "none" | "recording" | "sealed" | "partial" | "published";
 type AgentObservationPhase =
   | "starting"
   | "responding"
@@ -87,10 +43,6 @@ export type AgentObservationTurnContext = {
   attemptNo: number;
   turn: number;
   promptKind: AgentPromptKind;
-  agentKey: string;
-  sessionName: string;
-  cwd: string;
-  trace: boolean;
   signal?: AbortSignal;
 };
 
@@ -104,7 +56,6 @@ export type AgentObservationFenceInput = {
 
 type AgentObservationUnavailableFenceInput = Omit<AgentObservationFenceInput, "eventSequence"> & {
   eventSequence?: number;
-  responseAtFence?: string;
 };
 
 type AgentObservationExcerpt = {
@@ -145,7 +96,6 @@ export type AgentObservationCurrent = {
   };
   state: AgentObservationState;
   completeness: AgentObservationCompleteness;
-  gaps: number;
 };
 
 type AgentObservationEntryBase = {
@@ -171,7 +121,7 @@ type AgentObservationSemanticEntry =
       reason: string;
     };
 
-export type AgentObservationTurnEvidence = {
+export type AgentObservationTurn = {
   runId: string;
   attemptId: string;
   nodeKey: string;
@@ -179,98 +129,24 @@ export type AgentObservationTurnEvidence = {
   attemptNo: number;
   turn: number;
   promptKind: AgentPromptKind;
-  relativePath: string;
   state: AgentObservationState;
   completeness: AgentObservationCompleteness;
   gapCount: number;
   eventCount: number;
   unknownEventCount: number;
-  promptBytes: number;
-  promptDigest: string;
-  lastResponseBytes: number;
-  lastResponseDigest: string;
-  responseAtFenceBytes?: number;
-  responseAtFenceDigest?: string;
   fenceEventSequence?: number;
   fencedAt?: string;
   fenceReason?: string;
-  finalResponseBytes?: number;
-  finalResponseDigest?: string;
   providerStatus?: "completed" | "failed" | "cancelled" | "timed_out";
-  trace?: {
-    state: Exclude<AgentTraceState, "none">;
-    relativePath?: string;
-    bytes?: number;
-    digest?: string;
-  };
   startedAt: string;
   finishedAt?: string;
-  sealedBytes?: number;
-  sealedDigest?: string;
 };
-
-type AgentTurnEvidenceSummary = Omit<AgentTurnResult["summary"], "tools"> & {
-  tools: { totalToolCallCount: number };
-};
-
-export type AgentTurnEvidenceRecord =
-  | {
-      schemaVersion: 1;
-      type: "turn_start";
-      sequence: 0;
-      observedAt: string;
-      runId: string;
-      nodeId: string;
-      nodeKey: string;
-      attemptId: string;
-      attemptNo: number;
-      turn: number;
-      agentKey: string;
-      sessionName: string;
-      cwd: string;
-      promptKind: AgentPromptKind;
-      prompt: string;
-      traceEnabled: boolean;
-    }
-  | {
-      schemaVersion: 1;
-      type: "fence";
-      sequence: number;
-      observedAt: string;
-      reason: string;
-      schedulerEventSequence?: number;
-      schedulerCommittedAt?: string;
-      responseAtFence?: string;
-      responseUnavailable?: true;
-    }
-  | {
-      schemaVersion: 1;
-      type: "gap";
-      sequence: number;
-      observedAt: string;
-      scope: "evidence" | "trace" | "semantic";
-      dropped: number;
-      droppedBytes: number;
-      reason: string;
-    }
-  | {
-      schemaVersion: 1;
-      type: "turn_end";
-      sequence: number;
-      observedAt: string;
-      providerStatus: "completed" | "failed" | "cancelled" | "timed_out";
-      finalObservedResponse: string;
-      summary: AgentTurnEvidenceSummary;
-      timing: AgentTurnResult["timing"];
-      failure?: AgentJsonValue;
-      message?: string;
-    };
 
 export type AgentObservationInspectionProjection = {
   version: number;
   latestRelevantVersion?: number;
-  turns: AgentObservationTurnEvidence[];
-  omittedTurnEvidence?: true;
+  turns: AgentObservationTurn[];
+  omittedTurns?: true;
   currents: AgentObservationCurrent[];
   entries: AgentObservationSemanticEntry[];
   retentionOmittedBefore: number;
@@ -294,30 +170,11 @@ export type AgentObservationReadError = {
   cause?: unknown;
 };
 
-export type AgentObservationRecoveryError = {
-  type: "observation-recovery-failed";
+export type AgentObservationReconciliationError = {
+  type: "observation-reconciliation-failed";
   runId: string;
   message: string;
   cause?: unknown;
-};
-
-export type AgentTracePublicationInput = {
-  runId: string;
-  attemptId: string;
-  turn: number;
-  destinationRelativePath: string;
-  register: (trace: {
-    size: number;
-    digest: string;
-    relativePath: string;
-    file: RunFileToken;
-  }) => Promise<void>;
-};
-
-export type AgentTracePublication = {
-  size: number;
-  digest: string;
-  relativePath: string;
 };
 
 type TurnRow = {
@@ -328,40 +185,25 @@ type TurnRow = {
   attempt_no: number;
   turn_no: number;
   prompt_kind: AgentPromptKind;
-  relative_path: string;
   state: AgentObservationState;
   degraded: number;
   gap_count: number;
   provider_event_count: number;
   unknown_event_count: number;
-  last_record_sequence: number;
-  indexed_bytes: number;
-  prompt_bytes: number;
-  prompt_digest: string;
-  last_response_bytes: number;
-  last_response_digest: string;
-  response_at_fence_bytes: number | null;
-  response_at_fence_digest: string | null;
   fence_event_sequence: number | null;
   fenced_at: string | null;
   fence_reason: string | null;
-  final_response_bytes: number | null;
-  final_response_digest: string | null;
-  provider_status: NonNullable<AgentObservationTurnEvidence["providerStatus"]> | null;
+  provider_status: NonNullable<AgentObservationTurn["providerStatus"]> | null;
   current_json: string | null;
   current_bytes: number;
   current_updated_at: string | null;
   current_observation_version: number | null;
-  trace_enabled: number;
-  trace_state: AgentTraceState;
-  trace_relative_path: string | null;
-  trace_artifact_relative_path: string | null;
-  trace_bytes: number | null;
-  trace_digest: string | null;
   started_at: string;
   finished_at: string | null;
-  sealed_bytes: number | null;
-  sealed_digest: string | null;
+};
+
+type ReconciliationRow = TurnRow & {
+  attempt_finished_at: string | null;
 };
 
 type AttemptObservationRow = {
@@ -394,26 +236,10 @@ type SemanticMutation = {
 };
 
 type FenceOperation = {
-  record: Extract<AgentTurnEvidenceRecord, { type: "fence" }>;
+  eventSequence?: number;
+  committedAt: string;
+  reason: string;
   mutation: SemanticMutation;
-  fileWritten: boolean;
-  offset?: number;
-  pending?: Promise<void>;
-};
-
-type PreparedTurnPaths = {
-  run: RunDirectoryFence;
-  directory: DirectoryIdentity;
-  evidence: { absolutePath: string; relativePath: string };
-  trace?: { absolutePath: string; relativePath: string };
-};
-
-type TraceSeal = {
-  state: "none" | "sealed" | "partial";
-  relativePath?: string;
-  bytes?: number;
-  digest?: string;
-  error?: unknown;
 };
 
 type DurableSteerFence = {
@@ -426,23 +252,21 @@ export class AgentObservationLog {
   private readonly active = new Map<string, AgentTurnWriter>();
   private readonly unavailableFences = new Map<string, Promise<void>>();
 
-  constructor(
-    private readonly db: DatabaseSync,
-    private readonly layout: RuntimeLayout,
-    private readonly resolveRunDirectoryFence: (runId: string) => RunDirectoryFence,
-  ) {}
+  constructor(private readonly db: DatabaseSync) {}
 
   async captureTurn(
     context: AgentObservationTurnContext,
     request: AgentTurnRequest,
     runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<{ result: AgentTurnResult; evidence: AgentObservationTurnEvidence }> {
-    const writer = new AgentTurnWriter(this, context, request.prompt);
-    const key = activeKey(context.attemptId, context.turn);
-    if (this.active.has(key)) throw new Error(`Agent evidence turn '${context.attemptId}:${context.turn}' is already active.`);
+  ): Promise<AgentTurnResult> {
+    const writer = new AgentTurnWriter(this, context);
+    const key = activeKey(context.runId, context.attemptId, context.turn);
+    if (this.active.has(key)) {
+      throw new Error(`Agent observation turn '${context.attemptId}:${context.turn}' is already active.`);
+    }
     this.active.set(key, writer);
     try {
-      await writer.start();
+      writer.start();
       return await this.captureStartedTurn(writer, context, request, runTurn);
     } finally {
       this.active.delete(key);
@@ -454,26 +278,9 @@ export class AgentObservationLog {
     context: AgentObservationTurnContext,
     request: AgentTurnRequest,
     runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<{ result: AgentTurnResult; evidence: AgentObservationTurnEvidence }> {
+  ): Promise<AgentTurnResult> {
     const onAbort = (): void => {
-      const committedAt = new Date().toISOString();
-      const fence = writer.acceptsBoundaries
-        ? writer.markFallbackFenced("runtime_abort", committedAt)
-        : (() => {
-            const responseAtFence = writer.lastResponse;
-            const input = {
-              runId: context.runId,
-              attemptId: context.attemptId,
-              committedAt,
-              reason: "runtime_abort",
-              responseAtFence,
-            };
-            return writer.waitForSeal().then(
-              () => this.markUnavailableFence(input),
-              () => this.markUnavailableFence(input),
-            );
-          })();
-      void fence.catch(() => {});
+      void writer.markFallbackFenced("runtime_abort", new Date().toISOString()).catch(() => {});
     };
     context.signal?.addEventListener("abort", onAbort, { once: true });
     if (context.signal?.aborted) onAbort();
@@ -481,32 +288,26 @@ export class AgentObservationLog {
       if (!writer.fenced && !this.startedAttemptMatches(context)) {
         await writer.markFallbackFenced("runtime_abort");
       }
-      const { captureTrace: _captureTrace, ...runtimeRequest } = request;
       const result = writer.fenced
         ? cancelledBeforeProviderDispatch()
-        : await (async () => {
-            writer.markProviderDispatched();
-            return runTurn({
-              ...runtimeRequest,
-              onObservation: observation => {
-                writer.observe(observation);
-                notifyObserver(request.onObservation, observation);
-              },
-            });
-          })();
-      try {
-        const evidence = await writer.seal(result);
-        return { result, evidence };
-      } catch (error) {
-        if (!writer.fenced) throw error;
-        await writer.markPartial(error).catch(() => {});
-        return {
-          result,
-          evidence: this.findTurn(context.runId, context.attemptId, context.turn) ?? writer.partialEvidence(),
-        };
-      }
+        : await runTurn({
+            ...request,
+            onObservation: observation => {
+              writer.observe(observation);
+              notifyObserver(request.onObservation, observation);
+            },
+          });
+      writer.finish(result);
+      return result;
     } catch (error) {
-      await writer.markPartial(error);
+      try {
+        writer.markIncomplete("provider_settlement_missing");
+      } catch (observationError) {
+        throw new AggregateError(
+          [error, observationError],
+          "Agent execution failed and its semantic observation could not be closed.",
+        );
+      }
       throw error;
     } finally {
       context.signal?.removeEventListener("abort", onAbort);
@@ -515,16 +316,10 @@ export class AgentObservationLog {
 
   markFenced(input: AgentObservationFenceInput): Promise<void> {
     const writer = [...this.active.values()]
-      .filter(candidate => candidate.context.runId === input.runId && candidate.context.attemptId === input.attemptId)
+      .filter(candidate =>
+        candidate.context.runId === input.runId && candidate.context.attemptId === input.attemptId)
       .sort((left, right) => right.context.turn - left.context.turn)[0];
-    if (writer?.acceptsBoundaries) return writer.markFenced(input);
-    if (writer) {
-      const responseAtFence = writer.lastResponse;
-      return writer.waitForSeal().then(
-        () => this.markUnavailableFence({ ...input, responseAtFence }),
-        () => this.markUnavailableFence({ ...input, responseAtFence }),
-      );
-    }
+    if (writer) return writer.markFenced(input);
     return this.markUnavailableFence(input);
   }
 
@@ -541,166 +336,52 @@ export class AgentObservationLog {
       cause => ({
         type: "observation-read-failed",
         runId: input.runId,
-        message: `Private Agent evidence for run '${input.runId}' could not be read: ${causeMessage(cause)}.`,
+        message: `Agent observations for run '${input.runId}' could not be read: ${causeMessage(cause)}.`,
         cause,
       }),
     );
   }
 
-  recoverPartialTurns(runId: string): ResultAsync<void, AgentObservationRecoveryError> {
+  reconcileInterruptedTurns(
+    runId: string,
+  ): ResultAsync<void, AgentObservationReconciliationError> {
     return ResultAsync.fromPromise(
-      this.recoverRun(runId),
+      Promise.resolve().then(() => this.reconcileRun(runId)),
       cause => ({
-        type: "observation-recovery-failed",
+        type: "observation-reconciliation-failed",
         runId,
-        message: `Private Agent evidence for run '${runId}' could not be recovered: ${causeMessage(cause)}.`,
+        message: `Agent observations for run '${runId}' could not be reconciled: ${causeMessage(cause)}.`,
         cause,
       }),
     );
   }
 
-  async recoverTerminalPartialTurns(): Promise<void> {
+  async reconcileTerminalTurns(): Promise<void> {
     const rows = this.db.prepare(`
       SELECT id AS run_id
       FROM runs
       WHERE status IN ('completed', 'failed', 'canceled')
       ORDER BY id
     `).all() as Array<{ run_id: string }>;
-    for (const row of rows) await this.recoverRun(row.run_id);
+    for (const row of rows) this.reconcileRun(row.run_id);
   }
 
-  async publishTrace(input: AgentTracePublicationInput): Promise<AgentTracePublication | undefined> {
-    const row = this.turnRow(input.runId, input.attemptId, input.turn);
-    if (!row || row.trace_enabled === 0 || row.trace_state === "none") return undefined;
-    if (row.trace_state === "published") {
-      if (row.trace_bytes === null || row.trace_digest === null || row.trace_artifact_relative_path === null) {
-        throw new Error(`Published Agent trace '${input.attemptId}:${input.turn}' has incomplete metadata.`);
-      }
-      return {
-        size: row.trace_bytes,
-        digest: row.trace_digest,
-        relativePath: row.trace_artifact_relative_path,
-      };
-    }
-    if (row.trace_state !== "sealed" || row.trace_relative_path === null) {
-      throw new Error(`Agent trace '${input.attemptId}:${input.turn}' is not sealed for publication.`);
-    }
-    const run = this.runDirectoryFence(input.runId);
-    const sourceFile = await this.verifiedEvidencePath(run, row.trace_relative_path);
-    const source = sourceFile.path;
-    const destination = await this.verifiedArtifactDestination(
-      run,
-      input.destinationRelativePath,
-    );
-    const metadata = await fileMetadata(source, run, sourceFile);
-    const existingArtifact = this.traceArtifact(input.runId, input.destinationRelativePath);
-    if (existingArtifact
-      && (existingArtifact.size !== metadata.size || existingArtifact.digest !== metadata.digest)) {
-      throw new Error(`Registered trace artifact '${input.destinationRelativePath}' does not match its private spool.`);
-    }
-    if (existingArtifact) {
-      run.verify();
-      this.finalizeTracePublication(row, input.destinationRelativePath, metadata);
-      await removeRunFile(run.token(), sourceFile, "Agent trace spool").catch(() => {});
-      return {
-        size: metadata.size,
-        digest: metadata.digest,
-        relativePath: input.destinationRelativePath,
-      };
-    }
-    this.db.prepare(`
-      UPDATE agent_observation_turns
-      SET trace_artifact_relative_path = ?
-      WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
-    `).run(input.destinationRelativePath, input.runId, input.attemptId, input.turn);
-    let destinationFile: RunFileToken | undefined;
-    try {
-      destinationFile = await copyRunFile(
-        run.token(),
-        sourceFile,
-        destination,
-        "Agent trace spool",
-      );
-      if (this.layout.platform !== "win32") {
-        await chmodTraceArtifact(destination, destinationFile, 0o600);
-      }
-      await input.register({
-        size: metadata.size,
-        digest: metadata.digest,
-        relativePath: input.destinationRelativePath,
-        file: destinationFile,
-      });
-    } catch (error) {
-      let cleanupFailure: unknown;
-      try {
-        await removePreparedArtifact(destination, destinationFile);
-      } catch (cleanupError) {
-        cleanupFailure = cleanupError;
-      }
-      this.db.prepare(`
-        UPDATE agent_observation_turns
-        SET trace_artifact_relative_path = NULL
-        WHERE run_id = ? AND attempt_id = ? AND turn_no = ? AND trace_state != 'published'
-      `).run(input.runId, input.attemptId, input.turn);
-      if (cleanupFailure !== undefined) {
-        throw new AggregateError([error, cleanupFailure], "Trace publication and unregistered-copy cleanup both failed.");
-      }
-      throw error;
-    }
-    if (!destinationFile) throw new Error("Published Agent trace artifact identity is missing.");
-    verifyPreparedRunFilePath(destination);
-    verifyRunFile(destination.run, destinationFile, destination.label);
-    run.verify();
-    this.finalizeTracePublication(row, input.destinationRelativePath, metadata);
-    await removeRunFile(run.token(), sourceFile, "Agent trace spool").catch(() => {});
-    return {
-      size: metadata.size,
-      digest: metadata.digest,
-      relativePath: input.destinationRelativePath,
-    };
-  }
-
-  async beginTurn(
-    writer: AgentTurnWriter,
-    record: Extract<AgentTurnEvidenceRecord, { type: "turn_start" }>,
-  ): Promise<void> {
-    const paths = await this.prepareTurnPaths(writer.context);
-    writer.attachPaths(paths);
-    const evidenceLine = recordLine(record);
-    try {
-      await writer.openFiles(evidenceLine, traceStartLine(writer.context, record.observedAt));
-    } catch (error) {
-      await writer.discardStartingFiles();
-      throw error;
-    }
-    const promptBytes = Buffer.byteLength(record.prompt);
-    const promptDigest = digest(Buffer.from(record.prompt));
-    const initialCurrent = writer.initialCurrent(record.observedAt);
+  beginTurn(writer: AgentTurnWriter, observedAt: string): void {
+    const initialCurrent = writer.initialCurrent(observedAt);
     const currentJson = boundedCurrentJson(initialCurrent);
-    writer.verifyRunDirectory();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireStartedAttempt(writer.context);
-      const version = this.advanceObservationVersion(writer.context.runId, record.observedAt);
-      this.db.prepare(`
-        INSERT INTO agent_observation_attempts (
-          run_id, attempt_id, latest_observation_version
-        )
-        VALUES (?, ?, ?)
-        ON CONFLICT (run_id, attempt_id)
-        DO UPDATE SET latest_observation_version = excluded.latest_observation_version
-      `).run(writer.context.runId, writer.context.attemptId, version);
+      const version = this.advanceObservationVersion(writer.context.runId, observedAt);
+      this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.db.prepare(`
         INSERT INTO agent_observation_turns (
           run_id, attempt_id, node_key, node_id, attempt_no, turn_no, prompt_kind,
-          relative_path, state, degraded, gap_count, provider_event_count,
-          unknown_event_count, last_record_sequence, indexed_bytes,
-          prompt_bytes, prompt_digest, last_response_bytes, last_response_digest,
+          state, degraded, gap_count, provider_event_count, unknown_event_count,
           current_json, current_bytes, current_updated_at, current_observation_version,
-          trace_enabled, trace_state, trace_relative_path, started_at
+          started_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'recording', 0, 0, 0, 0, 0, ?,
-                ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'recording', 0, 0, 0, 0, ?, ?, ?, ?, ?)
       `).run(
         writer.context.runId,
         writer.context.attemptId,
@@ -709,25 +390,15 @@ export class AgentObservationLog {
         writer.context.attemptNo,
         writer.context.turn,
         writer.context.promptKind,
-        paths.evidence.relativePath,
-        evidenceLine.byteLength,
-        promptBytes,
-        promptDigest,
-        digest(Buffer.alloc(0)),
         currentJson,
         Buffer.byteLength(currentJson),
-        record.observedAt,
+        observedAt,
         version,
-        writer.context.trace ? 1 : 0,
-        writer.context.trace ? "recording" : "none",
-        paths.trace?.relativePath ?? null,
-        record.observedAt,
+        observedAt,
       );
-      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
-      await writer.discardStartingFiles();
       throw error;
     }
   }
@@ -748,43 +419,37 @@ export class AgentObservationLog {
     }
   }
 
-  async appendFence(
-    writer: AgentTurnWriter,
-    operation: FenceOperation,
-  ): Promise<void> {
-    const { record, mutation } = operation;
-    const line = recordLine(record);
-    const offset = operation.offset ?? writer.indexedBytes;
-    if (!operation.fileWritten) {
-      await writer.writeEvidence(line, true);
-      operation.offset = offset;
-      operation.fileWritten = true;
+  persistFence(writer: AgentTurnWriter, operation: FenceOperation): void {
+    const row = this.turnRow(
+      writer.context.runId,
+      writer.context.attemptId,
+      writer.context.turn,
+    );
+    if (!row) throw new Error("Agent observation turn was not found while fencing.");
+    if (operation.eventSequence !== undefined
+      && row.fence_event_sequence !== null
+      && row.fence_event_sequence !== operation.eventSequence) {
+      throw new Error(
+        `Agent observation turn '${writer.context.attemptId}:${writer.context.turn}' already has a different durable fence.`,
+      );
     }
-    await writer.flushTrace(true);
-    writer.verifyRunDirectory();
+    if (operation.eventSequence !== undefined
+      && row.fence_event_sequence === operation.eventSequence) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const version = this.advanceObservationVersion(writer.context.runId, record.observedAt);
-      this.insertSemanticEntries(writer.context, mutation.entries, version);
-      this.updateCurrent(writer, undefined, version);
+      const version = this.advanceObservationVersion(writer.context.runId, operation.committedAt);
+      this.insertSemanticEntries(writer.context, operation.mutation.entries, version);
+      this.updateCurrent(writer, operation.mutation.current, version);
       this.db.prepare(`
         UPDATE agent_observation_turns
-        SET last_record_sequence = ?,
-            indexed_bytes = ?,
-            response_at_fence_bytes = ?,
-            response_at_fence_digest = ?,
-            fence_event_sequence = COALESCE(fence_event_sequence, ?),
+        SET fence_event_sequence = COALESCE(fence_event_sequence, ?),
             fenced_at = COALESCE(fenced_at, ?),
             fence_reason = COALESCE(fence_reason, ?)
         WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
       `).run(
-        record.sequence,
-        offset + line.byteLength,
-        record.responseAtFence === undefined ? null : Buffer.byteLength(record.responseAtFence),
-        record.responseAtFence === undefined ? null : digest(Buffer.from(record.responseAtFence)),
-        record.schedulerEventSequence ?? null,
-        record.schedulerCommittedAt ?? record.observedAt,
-        record.reason,
+        operation.eventSequence ?? null,
+        operation.committedAt,
+        operation.reason,
         writer.context.runId,
         writer.context.attemptId,
         writer.context.turn,
@@ -792,48 +457,18 @@ export class AgentObservationLog {
       this.updateObservationCounts(writer);
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
-      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
-      writer.indexedBytes = offset + line.byteLength;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
   }
 
-  async finishTurn(
+  finishTurn(
     writer: AgentTurnWriter,
     result: AgentTurnResult,
     mutation: SemanticMutation,
-  ): Promise<AgentObservationTurnEvidence> {
-    const trace = await writer.sealTrace(result);
-    const records: AgentTurnEvidenceRecord[] = [];
-    if (trace.error !== undefined) {
-      records.push({
-        schemaVersion: evidenceSchemaVersion,
-        type: "gap",
-        sequence: writer.nextBoundarySequence(),
-        observedAt: result.timing.finishedAt,
-        scope: "trace",
-        dropped: 1,
-        droppedBytes: 0,
-        reason: "trace_capture_failed",
-      });
-      writer.noteGap();
-    }
-    records.push(writer.turnEnd(result));
-    const bytes = Buffer.concat(records.map(recordLine));
-    const offset = writer.indexedBytes;
-    await writer.writeEvidence(bytes, true);
-    const sealedPath = writer.evidencePath.absolutePath.replace(/\.partial$/, "");
-    const sealedFile = await writer.sealEvidence(sealedPath);
-    if (this.layout.platform !== "win32") {
-      await chmodRunFile(writer.runFence.token(), sealedFile, 0o600, "Private evidence file");
-    }
-    const sealed = await fileMetadata(sealedPath, writer.runFence, sealedFile);
-    const relativePath = writer.evidencePath.relativePath.replace(/\.partial$/, "");
-    const outcome = providerOutcome(result);
-    writer.verifyRunDirectory();
+  ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const version = this.advanceObservationVersion(writer.context.runId, result.timing.finishedAt);
@@ -841,146 +476,65 @@ export class AgentObservationLog {
       this.updateCurrent(writer, mutation.current, version);
       this.db.prepare(`
         UPDATE agent_observation_turns
-        SET relative_path = ?,
-            state = 'sealed',
+        SET state = 'settled',
             degraded = ?,
-            gap_count = ?,
             provider_event_count = ?,
             unknown_event_count = ?,
-            last_record_sequence = ?,
-            indexed_bytes = ?,
-            last_response_bytes = ?,
-            last_response_digest = ?,
-            final_response_bytes = ?,
-            final_response_digest = ?,
             provider_status = ?,
-            trace_state = ?,
-            trace_relative_path = ?,
-            trace_bytes = ?,
-            trace_digest = ?,
-            finished_at = ?,
-            sealed_bytes = ?,
-            sealed_digest = ?
+            finished_at = ?
         WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
       `).run(
-        relativePath,
-        writer.degraded || trace.error !== undefined ? 1 : 0,
-        writer.gapCount,
+        writer.degraded ? 1 : 0,
         writer.providerEventCount,
         writer.unknownEventCount,
-        records.at(-1)!.sequence,
-        offset + bytes.byteLength,
-        Buffer.byteLength(writer.lastResponse),
-        digest(Buffer.from(writer.lastResponse)),
-        Buffer.byteLength(result.responseText),
-        digest(Buffer.from(result.responseText)),
-        outcome,
-        trace.state,
-        trace.relativePath ?? null,
-        trace.bytes ?? null,
-        trace.digest ?? null,
+        providerOutcome(result),
         result.timing.finishedAt,
-        sealed.size,
-        sealed.digest,
         writer.context.runId,
         writer.context.attemptId,
         writer.context.turn,
       );
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
-      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
-      writer.indexedBytes = offset + bytes.byteLength;
-      writer.markEvidenceFinished();
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    const evidence = this.requireTurn(writer.context.runId, writer.context.attemptId, writer.context.turn);
-    if (trace.error !== undefined && !writer.fenced) throw trace.error;
-    return evidence;
   }
 
-  async markWriterPartial(writer: AgentTurnWriter, cause: unknown): Promise<void> {
-    if (writer.evidenceFinished) return;
-    try {
-      writer.verifyEvidenceDirectory();
-    } catch (error) {
-      try {
-        await writer.closeOpenHandles();
-      } catch (closeError) {
-        throw new AggregateError([error, closeError], "Agent evidence identity failed and its open handles could not be closed.");
-      }
-      throw error;
-    }
-    const at = new Date().toISOString();
-    const record: Extract<AgentTurnEvidenceRecord, { type: "gap" }> = {
-      schemaVersion: evidenceSchemaVersion,
-      type: "gap",
-      sequence: writer.nextBoundarySequence(),
-      observedAt: at,
-      scope: "evidence",
-      dropped: 1,
-      droppedBytes: 0,
-      reason: "evidence_capture_failed",
-    };
-    writer.noteGap();
-    const mutation = writer.closeForFailure(record);
-    let line: Buffer;
-    try {
-      line = recordLine(record);
-      await writer.writeEvidence(line, true);
-      await writer.closeEvidence();
-      await writer.markTracePartial();
-      writer.verifyRunDirectory();
-    } catch (error) {
-      throw new AggregateError([cause, error], "Agent execution and private-evidence persistence both failed.");
-    }
-    const trace = writer.traceMetadata();
+  markWriterIncomplete(
+    writer: AgentTurnWriter,
+    mutation: SemanticMutation,
+  ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const version = this.advanceObservationVersion(writer.context.runId, at);
+      const version = this.advanceObservationVersion(writer.context.runId, mutation.observedAt);
       this.insertSemanticEntries(writer.context, mutation.entries, version);
       this.updateCurrent(writer, undefined, version);
       this.db.prepare(`
         UPDATE agent_observation_turns
-        SET state = 'partial',
+        SET state = 'incomplete',
             degraded = 1,
-            gap_count = ?,
+            gap_count = gap_count + 1,
             provider_event_count = ?,
             unknown_event_count = ?,
-            last_record_sequence = ?,
-            indexed_bytes = ?,
-            last_response_bytes = ?,
-            last_response_digest = ?,
-            trace_state = ?,
-            trace_bytes = ?,
-            trace_digest = ?,
             finished_at = COALESCE(finished_at, ?)
         WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
+          AND state = 'recording'
       `).run(
-        writer.gapCount,
         writer.providerEventCount,
         writer.unknownEventCount,
-        record.sequence,
-        writer.indexedBytes,
-        Buffer.byteLength(writer.lastResponse),
-        digest(Buffer.from(writer.lastResponse)),
-        trace.state,
-        trace.bytes ?? null,
-        trace.digest ?? null,
-        at,
+        mutation.observedAt,
         writer.context.runId,
         writer.context.attemptId,
         writer.context.turn,
       );
       this.touchAttempt(writer.context.runId, writer.context.attemptId, version);
       this.trimAttemptEntries(writer.context.runId, writer.context.attemptId);
-      writer.verifyRunDirectory();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
-      throw new AggregateError([cause, error], "Agent execution and partial-evidence indexing both failed.");
+      throw error;
     }
   }
 
@@ -998,7 +552,7 @@ export class AgentObservationLog {
     return pending;
   }
 
-  private async persistUnavailableFence(input: AgentObservationUnavailableFenceInput): Promise<void> {
+  private persistUnavailableFence(input: AgentObservationUnavailableFenceInput): void {
     const row = this.db.prepare(`
       SELECT *
       FROM agent_observation_turns
@@ -1006,103 +560,160 @@ export class AgentObservationLog {
       ORDER BY turn_no DESC
       LIMIT 1
     `).get(input.runId, input.attemptId) as TurnRow | undefined;
-    if (!row
-      || input.eventSequence !== undefined && row.fence_event_sequence === input.eventSequence
-      || input.eventSequence === undefined && row.fence_reason !== null) return;
+    if (!row) return;
+    if (input.eventSequence !== undefined && row.fence_event_sequence === input.eventSequence) return;
+    if (input.eventSequence === undefined && row.fence_reason !== null) return;
     if (input.eventSequence !== undefined && row.fence_event_sequence !== null) {
-      throw new Error(`Agent evidence turn '${input.attemptId}:${row.turn_no}' already has a different durable fence.`);
+      throw new Error(
+        `Agent observation turn '${input.attemptId}:${row.turn_no}' already has a different durable fence.`,
+      );
     }
-    const run = this.runDirectoryFence(input.runId);
-    const file = await this.verifiedEvidencePath(run, row.relative_path);
-    const path = file.path;
-    const record: Extract<AgentTurnEvidenceRecord, { type: "fence" }> = {
-      schemaVersion: evidenceSchemaVersion,
-      type: "fence",
-      sequence: row.last_record_sequence + 1,
-      observedAt: input.committedAt,
-      reason: input.reason,
-      ...(input.eventSequence === undefined
-        ? {}
-        : {
-            schedulerEventSequence: input.eventSequence,
-            schedulerCommittedAt: input.committedAt,
-          }),
-      ...(input.responseAtFence === undefined
-        ? { responseUnavailable: true }
-        : { responseAtFence: input.responseAtFence }),
-    };
-    const line = recordLine(record);
-    let indexedBytes: number;
-    let sealed: { size: number; digest: string } | undefined;
-    run.verify();
-    const handle = await open(path, "a+");
-    try {
-      run.verify();
-      const info = await handle.stat({ bigint: true });
-      if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
-      assertRunFileIdentity(file, info, `Evidence path '${path}'`);
-      indexedBytes = Number(info.size) + line.byteLength;
-      await writeFully(handle, line);
-      await handle.sync();
-      verifyRunFile(run.token(), file, `Evidence path '${path}'`);
-      run.verify();
-      sealed = row.state === "sealed" ? await fileMetadataHandle(handle, path, file) : undefined;
-    } finally {
-      await handle.close();
+    const at = input.committedAt;
+    const recording = row.state === "recording";
+    const entries: PendingSemanticEntry[] = [];
+    let sourceSequence = this.nextSourceSequence(row.run_id, row.attempt_id, row.turn_no);
+    const current = recording ? parseCurrent(row.current_json) : undefined;
+    const currentEntry = current ? entryFromCurrent(current, sourceSequence) : undefined;
+    if (currentEntry) {
+      entries.push(currentEntry);
+      sourceSequence += 1;
     }
-    verifyRunFile(run.token(), file, `Evidence path '${path}'`);
-    run.verify();
-    const storedCurrent = parseCurrent(row.current_json);
-    const recoveredEntry = storedCurrent
-      ? entryFromCurrent(storedCurrent, row.last_record_sequence)
-      : undefined;
-    const entries = recoveredEntry ? [recoveredEntry] : [];
+    if (recording) {
+      entries.push(gapEntry(row, sourceSequence, at, "observation_boundary_unavailable"));
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const version = this.advanceObservationVersion(input.runId, input.committedAt);
+      const version = this.advanceObservationVersion(input.runId, at);
       this.insertSemanticEntries(rowContext(row), entries, version);
       this.db.prepare(`
         UPDATE agent_observation_turns
-        SET fence_event_sequence = COALESCE(?, fence_event_sequence),
-            fenced_at = ?,
-            fence_reason = ?,
-            response_at_fence_bytes = ?,
-            response_at_fence_digest = ?,
-            degraded = CASE WHEN ? = 1 THEN 1 ELSE degraded END,
-            last_record_sequence = ?,
-            indexed_bytes = ?,
-            current_json = NULL,
-            current_bytes = 0,
-            current_updated_at = ?,
-            current_observation_version = ?,
-            sealed_bytes = COALESCE(?, sealed_bytes),
-            sealed_digest = COALESCE(?, sealed_digest)
+        SET fence_event_sequence = COALESCE(fence_event_sequence, ?),
+            fenced_at = COALESCE(fenced_at, ?),
+            fence_reason = COALESCE(fence_reason, ?),
+            state = CASE WHEN state = 'recording' THEN 'incomplete' ELSE state END,
+            degraded = CASE WHEN state = 'recording' THEN 1 ELSE degraded END,
+            gap_count = CASE WHEN state = 'recording' THEN gap_count + 1 ELSE gap_count END,
+            current_json = CASE WHEN state = 'recording' THEN NULL ELSE current_json END,
+            current_bytes = CASE WHEN state = 'recording' THEN 0 ELSE current_bytes END,
+            current_updated_at = CASE WHEN state = 'recording' THEN ? ELSE current_updated_at END,
+            current_observation_version = CASE WHEN state = 'recording' THEN ? ELSE current_observation_version END,
+            finished_at = CASE WHEN state = 'recording' THEN COALESCE(finished_at, ?) ELSE finished_at END
         WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
       `).run(
         input.eventSequence ?? null,
-        input.committedAt,
+        at,
         input.reason,
-        input.responseAtFence === undefined ? null : Buffer.byteLength(input.responseAtFence),
-        input.responseAtFence === undefined ? null : digest(Buffer.from(input.responseAtFence)),
-        input.responseAtFence === undefined ? 1 : 0,
-        record.sequence,
-        indexedBytes,
-        input.committedAt,
+        at,
         version,
-        sealed?.size ?? null,
-        sealed?.digest ?? null,
+        at,
         input.runId,
         input.attemptId,
         row.turn_no,
       );
       this.touchAttempt(input.runId, input.attemptId, version);
       this.trimAttemptEntries(input.runId, input.attemptId);
-      run.verify();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  private reconcileRun(runId: string): void {
+    const rows = this.db.prepare(`
+      SELECT turns.*, attempts.finished_at AS attempt_finished_at
+      FROM agent_observation_turns AS turns
+      JOIN node_attempts AS attempts
+        ON attempts.run_id = turns.run_id
+        AND attempts.attempt_id = turns.attempt_id
+      WHERE turns.run_id = ?
+        AND turns.state = 'recording'
+        AND attempts.status IN ('completed', 'failed', 'timed_out', 'cancelled', 'superseded')
+      ORDER BY turns.attempt_no, turns.turn_no
+    `).all(runId) as ReconciliationRow[];
+    for (const row of rows) this.reconcileTurn(row);
+  }
+
+  private reconcileTurn(row: ReconciliationRow): void {
+    if (row.attempt_finished_at === null) {
+      throw new Error(
+        `Terminal Agent attempt '${row.attempt_id}' has no finished_at for observation reconciliation.`,
+      );
+    }
+    const at = row.attempt_finished_at;
+    const entries: PendingSemanticEntry[] = [];
+    let sourceSequence = this.nextSourceSequence(row.run_id, row.attempt_id, row.turn_no);
+    const current = parseCurrent(row.current_json);
+    const currentEntry = current ? entryFromCurrent(current, sourceSequence) : undefined;
+    if (currentEntry) {
+      entries.push(currentEntry);
+      sourceSequence += 1;
+    }
+    entries.push(gapEntry(row, sourceSequence, at, "provider_settlement_missing_recovery"));
+    const fence = this.durableSteerFence(row);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const version = this.advanceObservationVersion(row.run_id, at);
+      this.insertSemanticEntries(rowContext(row), entries, version);
+      this.db.prepare(`
+        UPDATE agent_observation_turns
+        SET state = 'incomplete',
+            degraded = 1,
+            gap_count = gap_count + 1,
+            fence_event_sequence = COALESCE(fence_event_sequence, ?),
+            fenced_at = COALESCE(fenced_at, ?),
+            fence_reason = COALESCE(fence_reason, ?),
+            current_json = NULL,
+            current_bytes = 0,
+            current_updated_at = ?,
+            current_observation_version = ?,
+            finished_at = ?
+        WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
+          AND state = 'recording'
+      `).run(
+        fence?.eventSequence ?? null,
+        fence?.committedAt ?? null,
+        fence?.reason ?? null,
+        at,
+        version,
+        at,
+        row.run_id,
+        row.attempt_id,
+        row.turn_no,
+      );
+      this.touchAttempt(row.run_id, row.attempt_id, version);
+      this.trimAttemptEntries(row.run_id, row.attempt_id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private durableSteerFence(
+    row: Pick<TurnRow, "run_id" | "attempt_id">,
+  ): DurableSteerFence | undefined {
+    const events = this.db.prepare(`
+      SELECT sequence, payload_json, created_at
+      FROM run_events
+      WHERE run_id = ? AND type = 'control.agent_steer_requested'
+      ORDER BY sequence DESC
+    `).all(row.run_id) as Array<{
+      sequence: number;
+      payload_json: string;
+      created_at: string;
+    }>;
+    for (const event of events) {
+      const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+      if (payload.fencedAttemptId === row.attempt_id) {
+        return {
+          eventSequence: event.sequence,
+          committedAt: event.created_at,
+          reason: "operator_steered",
+        };
+      }
+    }
+    return undefined;
   }
 
   private readProjection(input: {
@@ -1166,8 +777,8 @@ export class AgentObservationLog {
     return {
       version: versionRow.observation_version,
       ...(latestRelevantVersion === undefined ? {} : { latestRelevantVersion }),
-      turns: turns.map(turnEvidence),
-      ...(input.latestTurnOnly && (turns[0]?.turn_no ?? 0) > 1 ? { omittedTurnEvidence: true } : {}),
+      turns: turns.map(observationTurn),
+      ...(input.latestTurnOnly && (turns[0]?.turn_no ?? 0) > 1 ? { omittedTurns: true } : {}),
       currents,
       entries,
       retentionOmittedBefore,
@@ -1284,480 +895,6 @@ export class AgentObservationLog {
     ) !== undefined;
   }
 
-  private async recoverRun(runId: string): Promise<void> {
-    const run = this.runDirectoryFence(runId);
-    const rows = this.db.prepare(`
-      SELECT turns.*
-      FROM agent_observation_turns AS turns
-      JOIN node_attempts AS attempts
-        ON attempts.run_id = turns.run_id
-        AND attempts.attempt_id = turns.attempt_id
-      WHERE turns.run_id = ?
-        AND attempts.status IN ('completed', 'failed', 'timed_out', 'cancelled', 'superseded')
-      ORDER BY turns.attempt_no, turns.turn_no
-    `).all(runId) as TurnRow[];
-    for (const row of rows) {
-      const durableFence = this.durableSteerFence(row);
-      if (row.state !== "sealed"
-        || durableFence !== undefined && row.fence_event_sequence !== durableFence.eventSequence) {
-        await this.recoverTurn(row, run, durableFence);
-      }
-      let current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? row;
-      await this.reconcileTracePublication(current, run);
-      current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? current;
-      await this.recoverTrace(current, run);
-      current = this.turnRow(row.run_id, row.attempt_id, row.turn_no) ?? current;
-      await this.reconcileTracePublication(current, run);
-    }
-    await this.removeOrphanPartials(run);
-  }
-
-  private async recoverTurn(
-    row: TurnRow,
-    run: RunDirectoryFence,
-    durableFence = this.durableSteerFence(row),
-  ): Promise<void> {
-    let file = await this.verifiedEvidencePath(run, row.relative_path);
-    let bytes = await readVerifiedFile(run, file);
-    if (row.indexed_bytes > bytes.byteLength) {
-      throw new Error(`Evidence '${row.relative_path}' is shorter than its indexed boundary.`);
-    }
-    let records = parseCompleteEvidence(bytes);
-    let changed = false;
-    const tail = bytes.subarray(row.indexed_bytes);
-    const lastNewline = tail.lastIndexOf(0x0a);
-    const incompleteBytes = lastNewline === tail.byteLength - 1 ? 0 : tail.byteLength - Math.max(0, lastNewline + 1);
-    if (incompleteBytes > 0) {
-      const gap: Extract<AgentTurnEvidenceRecord, { type: "gap" }> = {
-        schemaVersion: evidenceSchemaVersion,
-        type: "gap",
-        sequence: nextRecordSequence(records, row.last_record_sequence),
-        observedAt: new Date().toISOString(),
-        scope: "evidence",
-        dropped: 1,
-        droppedBytes: incompleteBytes,
-        reason: "incomplete_tail_recovery",
-      };
-      const appended = Buffer.concat([Buffer.from("\n"), recordLine(gap)]);
-      await appendSynced(file, appended, run);
-      bytes = Buffer.concat([bytes, appended]);
-      records = [...records, gap];
-      changed = true;
-    }
-    const expectedFenceSequence = row.fence_event_sequence ?? durableFence?.eventSequence ?? null;
-    const expectedFenceAt = row.fenced_at ?? durableFence?.committedAt ?? null;
-    const expectedFenceReason = row.fence_reason ?? durableFence?.reason ?? null;
-    const missingFence = expectedFenceReason !== null && !records.some(record =>
-      record.type === "fence"
-      && (expectedFenceSequence === null || record.schedulerEventSequence === expectedFenceSequence));
-    if (missingFence) {
-      const fence: Extract<AgentTurnEvidenceRecord, { type: "fence" }> = {
-        schemaVersion: evidenceSchemaVersion,
-        type: "fence",
-        sequence: nextRecordSequence(records, row.last_record_sequence),
-        observedAt: expectedFenceAt ?? new Date().toISOString(),
-        reason: expectedFenceReason ?? "unavailable_fence_recovery",
-        ...(expectedFenceSequence === null
-          ? {}
-          : { schedulerEventSequence: expectedFenceSequence }),
-        ...(expectedFenceSequence === null || expectedFenceAt === null
-          ? {}
-          : { schedulerCommittedAt: expectedFenceAt }),
-        responseUnavailable: true,
-      };
-      const appended = recordLine(fence);
-      await appendSynced(file, appended, run);
-      bytes = Buffer.concat([bytes, appended]);
-      records = [...records, fence];
-      changed = true;
-    }
-    const terminal = [...records].reverse().find(record => record.type === "turn_end");
-    if (!terminal && !records.some(record =>
-      record.type === "gap" && record.reason === "provider_settlement_missing_recovery")) {
-      const gap: Extract<AgentTurnEvidenceRecord, { type: "gap" }> = {
-        schemaVersion: evidenceSchemaVersion,
-        type: "gap",
-        sequence: nextRecordSequence(records, row.last_record_sequence),
-        observedAt: new Date().toISOString(),
-        scope: "evidence",
-        dropped: 1,
-        droppedBytes: 0,
-        reason: "provider_settlement_missing_recovery",
-      };
-      const appended = recordLine(gap);
-      await appendSynced(file, appended, run);
-      bytes = Buffer.concat([bytes, appended]);
-      records = [...records, gap];
-      changed = true;
-    }
-    const finalRelative = terminal
-      ? row.relative_path.replace(/\.partial$/, "")
-      : row.relative_path;
-    const finalPath = terminal ? file.path.replace(/\.partial$/, "") : file.path;
-    if (terminal && file.path.endsWith(".partial")) {
-      file = await publishRunFile(run.token(), file, finalPath, "Private evidence file");
-      changed = true;
-    }
-    const metadata = await fileMetadata(finalPath, run, file);
-    const current = parseCurrent(row.current_json);
-    const recoveredEntry = current
-      ? entryFromCurrent(current, row.last_record_sequence)
-      : undefined;
-    const entries = recoveredEntry ? [recoveredEntry] : [];
-    const at = terminal?.observedAt ?? new Date().toISOString();
-    const gaps = records.filter(record => record.type === "gap").length;
-    const fence = [...records].reverse().find(record => record.type === "fence");
-    const nextState: AgentObservationState = terminal ? "sealed" : "partial";
-    const unavailableFence = fence?.type === "fence" && fence.responseUnavailable === true;
-    const nextDegraded = terminal && gaps === 0 && row.unknown_event_count === 0 && !unavailableFence ? 0 : 1;
-    const needsMetadataUpdate = changed
-      || row.relative_path !== finalRelative
-      || row.state !== nextState
-      || row.degraded !== nextDegraded
-      || row.gap_count !== gaps
-      || row.indexed_bytes !== bytes.byteLength
-      || row.current_json !== null
-      || row.fence_event_sequence !== (fence?.type === "fence" ? fence.schedulerEventSequence ?? null : null)
-      || row.provider_status !== (terminal?.type === "turn_end" ? terminal.providerStatus : null);
-    if (!needsMetadataUpdate) return;
-    run.verify();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version = this.advanceObservationVersion(row.run_id, at);
-      this.insertSemanticEntries(rowContext(row), entries, version);
-      this.db.prepare(`
-        UPDATE agent_observation_turns
-        SET relative_path = ?,
-            state = ?,
-            degraded = ?,
-            gap_count = ?,
-            last_record_sequence = ?,
-            indexed_bytes = ?,
-            response_at_fence_bytes = ?,
-            response_at_fence_digest = ?,
-            fence_event_sequence = COALESCE(fence_event_sequence, ?),
-            fenced_at = COALESCE(fenced_at, ?),
-            fence_reason = COALESCE(fence_reason, ?),
-            final_response_bytes = ?,
-            final_response_digest = ?,
-            provider_status = ?,
-            current_json = NULL,
-            current_bytes = 0,
-            current_updated_at = ?,
-            current_observation_version = ?,
-            finished_at = ?,
-            sealed_bytes = ?,
-            sealed_digest = ?
-        WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
-      `).run(
-        finalRelative,
-        nextState,
-        nextDegraded,
-        gaps,
-        records.reduce((latest, record) => Math.max(latest, record.sequence), row.last_record_sequence),
-        bytes.byteLength,
-        fence?.type === "fence" && fence.responseAtFence !== undefined
-          ? Buffer.byteLength(fence.responseAtFence)
-          : null,
-        fence?.type === "fence" && fence.responseAtFence !== undefined
-          ? digest(Buffer.from(fence.responseAtFence))
-          : null,
-        fence?.type === "fence" ? fence.schedulerEventSequence ?? null : null,
-        fence?.type === "fence" ? fence.schedulerCommittedAt ?? fence.observedAt : null,
-        fence?.type === "fence" ? fence.reason : null,
-        terminal?.type === "turn_end" ? Buffer.byteLength(terminal.finalObservedResponse) : null,
-        terminal?.type === "turn_end" ? digest(Buffer.from(terminal.finalObservedResponse)) : null,
-        terminal?.type === "turn_end" ? terminal.providerStatus : null,
-        at,
-        version,
-        terminal?.type === "turn_end" ? terminal.observedAt : row.finished_at ?? at,
-        terminal ? metadata.size : null,
-        terminal ? metadata.digest : null,
-        row.run_id,
-        row.attempt_id,
-        row.turn_no,
-      );
-      this.touchAttempt(row.run_id, row.attempt_id, version);
-      this.trimAttemptEntries(row.run_id, row.attempt_id);
-      run.verify();
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  private durableSteerFence(
-    row: Pick<TurnRow, "run_id" | "attempt_id">,
-  ): DurableSteerFence | undefined {
-    const events = this.db.prepare(`
-      SELECT sequence, payload_json, created_at
-      FROM run_events
-      WHERE run_id = ? AND type = 'control.agent_steer_requested'
-      ORDER BY sequence DESC
-    `).all(row.run_id) as Array<{
-      sequence: number;
-      payload_json: string;
-      created_at: string;
-    }>;
-    for (const event of events) {
-      const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
-      if (payload.fencedAttemptId === row.attempt_id) {
-        return {
-          eventSequence: event.sequence,
-          committedAt: event.created_at,
-          reason: "operator_steered",
-        };
-      }
-    }
-    return undefined;
-  }
-
-  private async recoverTrace(row: TurnRow, run: RunDirectoryFence): Promise<void> {
-    if (row.trace_enabled === 0
-      || row.trace_relative_path === null
-      || row.trace_state === "none"
-      || row.trace_state === "sealed"
-      || row.trace_state === "published") return;
-    let file = await this.verifiedEvidencePath(run, row.trace_relative_path);
-    if (row.trace_state === "partial" && row.trace_bytes !== null) {
-      if (await verifiedFileSize(run, file) === row.trace_bytes) return;
-    }
-    const bytes = await readVerifiedFile(run, file);
-    const records = parseCompleteJsonLines(bytes);
-    const contiguous = records.every((record, index) =>
-      record && typeof record === "object" && (record as { sequence?: unknown }).sequence === index);
-    const terminal = records.at(-1);
-    const complete = contiguous
-      && terminal
-      && typeof terminal === "object"
-      && (terminal as { type?: unknown }).type === "turn_end";
-    let finalPath = file.path;
-    let relativePath = row.trace_relative_path;
-    if (complete) {
-      relativePath = relativePath.replace(/\.partial$/, "");
-      if (file.path.endsWith(".partial")) {
-        finalPath = file.path.replace(/\.partial$/, "");
-        file = await publishRunFile(run.token(), file, finalPath, "Agent trace spool");
-      }
-    }
-    const metadata = await fileMetadata(finalPath, run, file);
-    const nextState = complete ? "sealed" : "partial";
-    if (row.trace_state === nextState
-      && row.trace_relative_path === relativePath
-      && row.trace_bytes === metadata.size
-      && row.trace_digest === metadata.digest) return;
-    run.verify();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version = this.advanceObservationVersion(row.run_id, new Date().toISOString());
-      this.db.prepare(`
-        UPDATE agent_observation_turns
-        SET trace_state = ?,
-            trace_relative_path = ?,
-            trace_bytes = ?,
-            trace_digest = ?,
-            degraded = CASE WHEN ? = 'partial' THEN 1 ELSE degraded END
-        WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
-      `).run(
-        nextState,
-        relativePath,
-        metadata.size,
-        metadata.digest,
-        nextState,
-        row.run_id,
-        row.attempt_id,
-        row.turn_no,
-      );
-      this.touchAttempt(row.run_id, row.attempt_id, version);
-      run.verify();
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  private async reconcileTracePublication(row: TurnRow, run: RunDirectoryFence): Promise<void> {
-    if (row.trace_relative_path === null
-      || row.trace_artifact_relative_path === null
-      || row.trace_bytes === null
-      || row.trace_digest === null) return;
-    const metadata = { size: row.trace_bytes, digest: row.trace_digest };
-    if (!this.registeredTraceArtifact(row.run_id, row.trace_artifact_relative_path, metadata)) return;
-    if (row.trace_state !== "published") {
-      run.verify();
-      this.finalizeTracePublication(row, row.trace_artifact_relative_path, metadata);
-    }
-    try {
-      const file = await this.verifiedEvidencePath(run, row.trace_relative_path);
-      await removeRunFile(run.token(), file, "Agent trace spool");
-    } catch (error) {
-      if (!missing(error)) throw error;
-    }
-  }
-
-  private registeredTraceArtifact(
-    runId: string,
-    relativePath: string,
-    metadata: { size: number; digest: string },
-  ): boolean {
-    const artifact = this.traceArtifact(runId, relativePath);
-    return artifact?.size === metadata.size && artifact.digest === metadata.digest;
-  }
-
-  private traceArtifact(runId: string, relativePath: string): { size: number; digest: string } | undefined {
-    return this.db.prepare(`
-      SELECT size, digest
-      FROM artifacts
-      WHERE run_id = ? AND relative_path = ?
-    `).get(runId, relativePath) as { size: number; digest: string } | undefined;
-  }
-
-  private finalizeTracePublication(
-    row: Pick<TurnRow, "run_id" | "attempt_id" | "turn_no" | "trace_state">,
-    relativePath: string,
-    metadata: { size: number; digest: string },
-  ): void {
-    if (row.trace_state === "published") return;
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const version = this.advanceObservationVersion(row.run_id, new Date().toISOString());
-      this.db.prepare(`
-        UPDATE agent_observation_turns
-        SET trace_state = 'published',
-            trace_artifact_relative_path = ?,
-            trace_bytes = ?,
-            trace_digest = ?
-        WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
-      `).run(
-        relativePath,
-        metadata.size,
-        metadata.digest,
-        row.run_id,
-        row.attempt_id,
-        row.turn_no,
-      );
-      this.touchAttempt(row.run_id, row.attempt_id, version);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  private async removeOrphanPartials(run: RunDirectoryFence): Promise<void> {
-    const runId = run.runId;
-    const runDir = run.verify();
-    const evidenceRoot = join(runDir, "evidence");
-    let root;
-    try {
-      root = await lstat(evidenceRoot);
-    } catch (error) {
-      if (missing(error)) {
-        run.verify();
-        return;
-      }
-      throw error;
-    }
-    run.verify();
-    if (root.isSymbolicLink() || !root.isDirectory()) {
-      throw new Error(`Evidence root '${evidenceRoot}' is not a regular directory.`);
-    }
-    const agentRoot = join(evidenceRoot, "agents");
-    let agentRootInfo;
-    try {
-      agentRootInfo = await lstat(agentRoot);
-    } catch (error) {
-      if (missing(error)) {
-        run.verify();
-        return;
-      }
-      throw error;
-    }
-    run.verify();
-    if (agentRootInfo.isSymbolicLink() || !agentRootInfo.isDirectory()) {
-      throw new Error(`Agent evidence root '${agentRoot}' is not a regular directory.`);
-    }
-    const indexed = new Set(this.turnRows(runId).flatMap(row => [
-      row.relative_path,
-      ...(row.trace_relative_path ? [row.trace_relative_path] : []),
-    ]));
-    run.verify();
-    const attemptDirs = await readdir(agentRoot, { withFileTypes: true });
-    run.verify();
-    for (const attemptDir of attemptDirs) {
-      if (attemptDir.isSymbolicLink() || !attemptDir.isDirectory()) continue;
-      const directory = join(agentRoot, attemptDir.name);
-      run.verify();
-      const files = await readdir(directory, { withFileTypes: true });
-      run.verify();
-      for (const file of files) {
-        if (!file.isFile() || !file.name.endsWith(".partial")) continue;
-        const path = join(directory, file.name);
-        const relativePath = relative(runDir, path);
-        if (!indexed.has(relativePath)) {
-          const orphan = captureRunFile(run.token(), path, "Orphan Agent evidence partial");
-          await removeRunFile(run.token(), orphan, "Orphan Agent evidence partial");
-        }
-      }
-    }
-  }
-
-  private async prepareTurnPaths(context: AgentObservationTurnContext): Promise<PreparedTurnPaths> {
-    if (!safePathSegment(context.runId)) throw new Error(`Run id '${context.runId}' is not safe for private evidence storage.`);
-    if (!safePathSegment(context.attemptId)) throw new Error(`Attempt id '${context.attemptId}' is not safe for private evidence storage.`);
-    const run = this.runDirectoryFence(context.runId);
-    const runDir = run.verify();
-    const prefix = `turn-${String(context.turn).padStart(3, "0")}`;
-    const evidenceName = `${prefix}.evidence.jsonl.partial`;
-    const traceName = `${prefix}.trace.jsonl.partial`;
-    const evidenceRelativePath = join("evidence", "agents", context.attemptId, evidenceName);
-    const evidencePrepared = await prepareRunFilePath(
-      run.token(),
-      evidenceRelativePath,
-      `Private evidence turn '${context.attemptId}:${context.turn}'`,
-    );
-    const evidenceAbsolutePath = evidencePrepared.path;
-    const expectedEvidencePath = join(runDir, evidenceRelativePath);
-    if (evidenceAbsolutePath !== expectedEvidencePath) {
-      throw new Error(`Evidence path '${evidenceAbsolutePath}' does not match '${expectedEvidencePath}'.`);
-    }
-    const evidenceRoot = join(runDir, "evidence");
-    const agentsRoot = join(evidenceRoot, "agents");
-    const attemptDir = join(agentsRoot, context.attemptId);
-    const directories = [
-      captureDirectoryIdentity(evidenceRoot, "Evidence root"),
-      captureDirectoryIdentity(agentsRoot, "Agent evidence root"),
-      captureDirectoryIdentity(attemptDir, "Agent evidence directory"),
-    ];
-    for (const directory of directories) {
-      if (this.layout.platform !== "win32") {
-        await chmodDirectoryVerified(run, directory, 0o700, "Private evidence directory");
-      } else {
-        verifyDirectoryIdentity(directory, "Private evidence directory");
-        run.verify();
-      }
-    }
-    const directory = directories.at(-1)!;
-    return {
-      run,
-      directory,
-      evidence: {
-        absolutePath: evidenceAbsolutePath,
-        relativePath: evidenceRelativePath,
-      },
-      ...(context.trace
-        ? {
-            trace: {
-              absolutePath: join(attemptDir, traceName),
-              relativePath: join("evidence", "agents", context.attemptId, traceName),
-            },
-          }
-        : {}),
-    };
-  }
-
   private requireStartedAttempt(context: AgentObservationTurnContext): void {
     if (!this.startedAttemptMatches(context)) {
       throw new Error(`Attempt '${context.attemptId}' is not the started Agent attempt being observed.`);
@@ -1871,19 +1008,13 @@ export class AgentObservationLog {
     this.db.prepare(`
       UPDATE agent_observation_turns
       SET degraded = ?,
-          gap_count = ?,
           provider_event_count = ?,
-          unknown_event_count = ?,
-          last_response_bytes = ?,
-          last_response_digest = ?
+          unknown_event_count = ?
       WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
     `).run(
       writer.degraded ? 1 : 0,
-      writer.gapCount,
       writer.providerEventCount,
       writer.unknownEventCount,
-      Buffer.byteLength(writer.lastResponse),
-      digest(Buffer.from(writer.lastResponse)),
       writer.context.runId,
       writer.context.attemptId,
       writer.context.turn,
@@ -1968,494 +1099,140 @@ export class AgentObservationLog {
     `).get(runId, attemptId, turn) as TurnRow | undefined;
   }
 
-  private findTurn(runId: string, attemptId: string, turn: number): AgentObservationTurnEvidence | undefined {
-    const row = this.turnRow(runId, attemptId, turn);
-    return row ? turnEvidence(row) : undefined;
-  }
-
-  private requireTurn(runId: string, attemptId: string, turn: number): AgentObservationTurnEvidence {
-    const evidence = this.findTurn(runId, attemptId, turn);
-    if (!evidence) throw new Error(`Agent evidence turn '${attemptId}:${turn}' was not found.`);
-    return evidence;
-  }
-
-  private async verifiedEvidencePath(
-    run: RunDirectoryFence,
-    relativePath: string,
-  ): Promise<RunFileToken> {
-    const runId = run.runId;
-    if (!safePathSegment(runId)) throw new Error(`Run id '${runId}' is not safe for private evidence storage.`);
-    const runDir = run.verify();
-    const evidenceRoot = resolve(runDir, "evidence");
-    let absolute = resolve(runDir, relativePath);
-    if (isAbsolute(relativePath) || absolute === evidenceRoot || !contained(evidenceRoot, absolute)) {
-      throw new Error(`Evidence path '${relativePath}' escapes run '${runId}'.`);
-    }
-    await requireDirectory(evidenceRoot, "Evidence root");
-    run.verify();
-    let info: Awaited<ReturnType<typeof lstat>>;
-    try {
-      info = await lstat(absolute);
-    } catch (error) {
-      if (!missing(error) || !relativePath.endsWith(".partial")) throw error;
-      absolute = absolute.replace(/\.partial$/, "");
-      info = await lstat(absolute);
-    }
-    run.verify();
-    const attemptDirectory = resolve(absolute, "..");
-    await requireDirectory(attemptDirectory, "Agent evidence directory");
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Evidence path '${absolute}' is not a regular file.`);
-    const file = captureRunFile(run.token(), absolute, `Evidence path '${absolute}'`);
-    const realRun = await realpath(runDir);
-    const realRoot = await realpath(evidenceRoot);
-    const realAttempt = await realpath(attemptDirectory);
-    const real = await realpath(absolute);
-    run.verify();
-    if (resolve(realRoot, "..") !== realRun
-      || !contained(realRoot, realAttempt)
-      || !contained(realAttempt, real)) {
-      throw new Error(`Evidence path '${absolute}' escapes its private root.`);
-    }
-    verifyRunFile(run.token(), file, `Evidence path '${absolute}'`);
-    return file;
-  }
-
-  private async verifiedArtifactDestination(
-    run: RunDirectoryFence,
-    relativePath: string,
-  ): Promise<PreparedRunFilePath> {
-    const runId = run.runId;
-    const runDir = run.verify();
-    const artifacts = resolve(runDir, "artifacts");
-    const expected = resolve(runDir, relativePath);
-    if (isAbsolute(relativePath)
-      || expected === artifacts
-      || !contained(artifacts, expected)) {
-      throw new Error(`Trace artifact path '${relativePath}' escapes run '${runId}'.`);
-    }
-    const token = run.token();
-    const label = `Agent trace artifact '${relativePath}'`;
-    const prepared = await prepareRunFilePath(token, relativePath, label);
-    if (prepared.path !== expected) {
-      throw new Error(`Trace artifact destination '${prepared.path}' does not match '${expected}'.`);
-    }
-    if (this.layout.platform !== "win32") {
-      await chmodDirectoryVerified(run, prepared.parent, 0o700, `${label} parent directory`);
-    }
-    return prepared;
-  }
-
-  private runDirectoryFence(runId: string): RunDirectoryFence {
-    const run = this.resolveRunDirectoryFence(runId);
-    if (run.runId !== runId) {
-      throw new Error(`Run directory fence '${run.runId}' does not match requested run '${runId}'.`);
-    }
-    run.verify();
-    return run;
+  private nextSourceSequence(runId: string, attemptId: string, turn: number): number {
+    const row = this.db.prepare(`
+      SELECT MAX(source_sequence) AS source_sequence
+      FROM agent_observation_entries
+      WHERE run_id = ? AND attempt_id = ? AND turn_no = ?
+    `).get(runId, attemptId, turn) as { source_sequence: number | null };
+    return (row.source_sequence ?? -1) + 1;
   }
 }
 
 export class AgentTurnWriter {
-  indexedBytes = 0;
   fenced = false;
   providerEventCount = 0;
   unknownEventCount = 0;
-  gapCount = 0;
   degraded = false;
-  lastResponse = "";
-  evidenceFinished = false;
-  private paths?: PreparedTurnPaths;
-  private evidenceHandle: FileHandle | undefined;
-  private evidenceFile: RunFileToken | undefined;
-  private traceWriter?: AgentTraceSpoolWriter;
-  private boundarySequence = 0;
-  private sealing = false;
-  private sealCompletion?: Promise<void>;
-  private readonly fences = new Map<number, FenceOperation>();
+  private maxSourceSequence = -1;
   private readonly reducer: AgentObservationSemanticReducer;
   private failure: unknown;
-  private boundaryPending = false;
-  private deferredEntries: PendingSemanticEntry[] = [];
-  private deferredCheckpoint = false;
   private terminalMutation: SemanticMutation | undefined;
-  private providerDispatched = false;
+  private durableFenceSequence?: number;
+  private boundaryClosed = false;
+  private finished = false;
 
   constructor(
     private readonly log: AgentObservationLog,
     readonly context: AgentObservationTurnContext,
-    private readonly prompt: string,
   ) {
     this.reducer = new AgentObservationSemanticReducer(context);
   }
 
-  get acceptsBoundaries(): boolean {
-    return !this.sealing;
-  }
-
-  get evidencePath(): PreparedTurnPaths["evidence"] {
-    if (!this.paths) throw new Error("Agent evidence path is not initialized.");
-    return this.paths.evidence;
-  }
-
-  get runFence(): RunDirectoryFence {
-    if (!this.paths) throw new Error("Agent run directory fence is not initialized.");
-    return this.paths.run;
-  }
-
-  verifyRunDirectory(): string {
-    return this.runFence.verify();
-  }
-
-  verifyEvidenceDirectory(): void {
-    if (!this.paths) throw new Error("Agent evidence directory fence is not initialized.");
-    verifyDirectoryIdentity(this.paths.directory, "Agent evidence directory");
-    this.paths.run.verify();
-  }
-
-  waitForSeal(): Promise<void> {
-    return this.sealCompletion ?? Promise.resolve();
-  }
-
-  start(): Promise<void> {
-    const observedAt = new Date().toISOString();
-    return this.log.beginTurn(this, {
-      schemaVersion: evidenceSchemaVersion,
-      type: "turn_start",
-      sequence: 0,
-      observedAt,
-      runId: this.context.runId,
-      nodeId: this.context.nodeId,
-      nodeKey: this.context.nodeKey,
-      attemptId: this.context.attemptId,
-      attemptNo: this.context.attemptNo,
-      turn: this.context.turn,
-      agentKey: this.context.agentKey,
-      sessionName: this.context.sessionName,
-      cwd: this.context.cwd,
-      promptKind: this.context.promptKind,
-      prompt: this.prompt,
-      traceEnabled: this.context.trace,
-    });
-  }
-
-  attachPaths(paths: PreparedTurnPaths): void {
-    this.paths = paths;
+  start(): void {
+    this.log.beginTurn(this, new Date().toISOString());
   }
 
   initialCurrent(observedAt: string): AgentObservationCurrent {
     return this.reducer.initialCurrent(observedAt);
   }
 
-  async openFiles(evidenceLine: Buffer, traceLine: Buffer | undefined): Promise<void> {
-    this.verifyEvidenceDirectory();
-    this.evidenceHandle = await open(this.evidencePath.absolutePath, "wx", 0o600);
-    this.evidenceFile = await captureOpenedRunFile(
-      this.runFence.token(),
-      this.evidenceHandle,
-      this.evidencePath.absolutePath,
-      "Private evidence file",
-    );
-    this.verifyEvidenceDirectory();
-    await writeFully(this.evidenceHandle, evidenceLine, 0);
-    await this.evidenceHandle.sync();
-    this.indexedBytes = evidenceLine.byteLength;
-    if (this.paths?.trace && traceLine) {
-      this.traceWriter = new AgentTraceSpoolWriter(
-        this.runFence,
-        this.paths.directory,
-        this.paths.trace,
-      );
-      await this.traceWriter.start(traceLine);
-    }
-    this.verifyEvidenceDirectory();
-  }
-
   observe(observation: AgentTurnObservation): void {
-    this.lastResponse = observation.progress.responseText;
+    this.maxSourceSequence = Math.max(this.maxSourceSequence, observation.event.sequence);
     this.providerEventCount += 1;
     if (observation.event.type === "unknown") {
       this.unknownEventCount += 1;
       this.degraded = true;
     }
     try {
-      this.traceWriter?.observe(observation.event);
-      const mutation = this.reducer.observe(observation, this.gapCount, this.degraded);
+      const mutation = this.reducer.observe(observation, this.degraded);
       if (observation.event.type === "turn_end") {
         this.terminalMutation = mutation;
         return;
       }
       if (!mutation.checkpoint && mutation.entries.length === 0) return;
-      if (this.boundaryPending) {
-        this.deferredEntries.push(...mutation.entries);
-        this.deferredCheckpoint ||= mutation.checkpoint;
-        return;
-      }
       this.log.persistObservation(this, mutation);
     } catch (error) {
       this.failure ??= error;
     }
   }
 
-  markProviderDispatched(): void {
-    this.providerDispatched = true;
-  }
-
   markFenced(input: AgentObservationFenceInput): Promise<void> {
-    let operation = this.fences.get(input.eventSequence);
-    if (operation?.pending) return operation.pending;
-    if (!operation) {
-      this.fenced = true;
-      const response = this.lastResponse;
-      operation = {
-        record: {
-          schemaVersion: evidenceSchemaVersion,
-          type: "fence",
-          sequence: this.nextBoundarySequence(),
-          observedAt: input.committedAt,
-          reason: input.reason,
-          schedulerEventSequence: input.eventSequence,
-          schedulerCommittedAt: input.committedAt,
-          responseAtFence: response,
-        },
-        mutation: this.reducer.boundary(input.committedAt),
-        fileWritten: false,
-      };
-      this.fences.set(input.eventSequence, operation);
-    }
-    this.boundaryPending = true;
-    const pending = this.log.appendFence(this, operation).then(() => {
-      this.boundaryPending = false;
-      this.flushDeferred();
-    }, error => {
-      this.boundaryPending = false;
-      delete operation!.pending;
-      throw error;
-    });
-    operation.pending = pending;
-    return pending;
+    return this.applyFence(input.eventSequence, input.committedAt, input.reason);
   }
 
-  markFallbackFenced(reason: string, observedAt = new Date().toISOString()): Promise<void> {
-    if (this.fenced) return Promise.resolve();
-    this.fenced = true;
-    const response = this.lastResponse;
-    const mutation = this.reducer.boundary(observedAt);
-    this.boundaryPending = true;
-    return this.log.appendFence(this, {
-      record: {
-        schemaVersion: evidenceSchemaVersion,
-        type: "fence",
-        sequence: this.nextBoundarySequence(),
-        observedAt,
-        reason,
-        responseAtFence: response,
-      },
-      mutation,
-      fileWritten: false,
-    }).then(() => {
-      this.boundaryPending = false;
-      this.flushDeferred();
-    }, error => {
-      this.boundaryPending = false;
-      this.failure ??= error;
-      throw error;
-    });
+  markFallbackFenced(
+    reason: string,
+    observedAt = new Date().toISOString(),
+  ): Promise<void> {
+    return this.applyFence(undefined, observedAt, reason);
   }
 
-  turnEnd(result: AgentTurnResult): Extract<AgentTurnEvidenceRecord, { type: "turn_end" }> {
-    const failure = result.status === "failed"
-      ? boundedFailure(result.failure)
-      : undefined;
-    return {
-      schemaVersion: evidenceSchemaVersion,
-      type: "turn_end",
-      sequence: this.nextBoundarySequence(),
-      observedAt: result.timing.finishedAt,
-      providerStatus: providerOutcome(result),
-      finalObservedResponse: result.responseText,
-      summary: evidenceSummary(result),
-      timing: result.timing,
-      ...(failure === undefined ? {} : { failure }),
-      ...(result.status === "cancelled"
-        ? { message: utf8Head(result.message, boundedFailureEdgeBytes * 2) }
-        : {}),
-    };
+  finish(result: AgentTurnResult): void {
+    if (this.finished) return;
+    if (this.failure !== undefined) throw this.failure;
+    const remainder = this.reducer.terminal(result, this.degraded);
+    const mutation = this.terminalMutation
+      ? {
+          entries: [...this.terminalMutation.entries, ...remainder.entries],
+          checkpoint: true,
+          current: remainder.current,
+          observedAt: result.timing.finishedAt,
+        }
+      : remainder;
+    this.log.finishTurn(this, result, mutation);
+    this.finished = true;
   }
 
-  seal(result: AgentTurnResult): Promise<AgentObservationTurnEvidence> {
-    this.sealing = true;
-    const sealing = (async () => {
-      if (this.boundaryPending) await waitFor(() => !this.boundaryPending);
-      if (this.failure !== undefined) throw this.failure;
-      this.flushDeferred();
-      const remainder = this.reducer.terminal(result, this.gapCount, this.degraded);
-      const mutation = this.terminalMutation
-        ? {
-            entries: [...this.terminalMutation.entries, ...remainder.entries],
-            checkpoint: true,
-            current: remainder.current,
-            observedAt: result.timing.finishedAt,
-          }
-        : remainder;
-      return this.log.finishTurn(this, result, mutation);
-    })();
-    this.sealCompletion = sealing.then(() => {}, () => {});
-    return sealing;
-  }
-
-  closeForFailure(record: Extract<AgentTurnEvidenceRecord, { type: "gap" }>): SemanticMutation {
+  markIncomplete(reason: string): void {
+    if (this.finished) return;
+    const observedAt = new Date().toISOString();
     const mutation = this.reducer.gap(
-      record.observedAt,
-      record.sequence,
-      record.dropped,
-      record.reason,
+      observedAt,
+      this.nextSyntheticSequence(),
+      1,
+      reason,
     );
-    return mutation;
+    this.log.markWriterIncomplete(this, mutation);
+    this.finished = true;
   }
 
-  markPartial(cause: unknown): Promise<void> {
-    return this.log.markWriterPartial(this, cause);
-  }
-
-  partialEvidence(): AgentObservationTurnEvidence {
-    const trace = this.traceMetadata();
-    const relativePath = this.paths?.evidence.relativePath
-      ?? join(
-        "evidence",
-        "agents",
-        this.context.attemptId,
-        `turn-${String(this.context.turn).padStart(3, "0")}.evidence.jsonl.partial`,
-      );
-    return {
-      runId: this.context.runId,
-      attemptId: this.context.attemptId,
-      nodeKey: this.context.nodeKey,
-      nodeId: this.context.nodeId,
-      attemptNo: this.context.attemptNo,
-      turn: this.context.turn,
-      promptKind: this.context.promptKind,
-      relativePath,
-      state: "partial",
-      completeness: "degraded",
-      gapCount: this.gapCount + 1,
-      eventCount: this.providerEventCount,
-      unknownEventCount: this.unknownEventCount,
-      promptBytes: Buffer.byteLength(this.prompt),
-      promptDigest: digest(Buffer.from(this.prompt)),
-      lastResponseBytes: Buffer.byteLength(this.lastResponse),
-      lastResponseDigest: digest(Buffer.from(this.lastResponse)),
-      ...(trace.state === "none"
-        ? {}
-        : {
-            trace: {
-              state: trace.state,
-              ...(trace.relativePath ? { relativePath: trace.relativePath } : {}),
-              ...(trace.bytes === undefined ? {} : { bytes: trace.bytes }),
-              ...(trace.digest === undefined ? {} : { digest: trace.digest }),
-            },
-          }),
-      startedAt: new Date().toISOString(),
-    };
-  }
-
-  async writeEvidence(bytes: Buffer, sync: boolean): Promise<void> {
-    if (!this.evidenceHandle) throw new Error("Private evidence file is not open.");
-    await writeFully(this.evidenceHandle, bytes, this.indexedBytes);
-    if (sync) await this.evidenceHandle.sync();
-    this.indexedBytes += bytes.byteLength;
-  }
-
-  flushTrace(sync: boolean): Promise<void> {
-    return this.traceWriter?.flush(sync) ?? Promise.resolve();
-  }
-
-  sealTrace(result: AgentTurnResult): Promise<TraceSeal> {
-    if (!this.traceWriter) return Promise.resolve({ state: "none" });
-    if (!this.providerDispatched) this.traceWriter.endUndispatchedTurn(result);
-    return this.traceWriter.seal();
-  }
-
-  async markTracePartial(): Promise<void> {
-    await this.traceWriter?.markPartial();
-  }
-
-  traceMetadata(): {
-    state: AgentTraceState;
-    relativePath?: string;
-    bytes?: number;
-    digest?: string;
-  } {
-    if (!this.traceWriter) return { state: "none" };
-    return this.traceWriter.metadata();
-  }
-
-  async closeEvidence(): Promise<void> {
-    if (!this.evidenceHandle) return;
-    const handle = this.evidenceHandle;
-    this.evidenceHandle = undefined;
-    await handle.close();
-  }
-
-  async closeOpenHandles(): Promise<void> {
-    const results = await Promise.allSettled([
-      this.closeEvidence(),
-      this.traceWriter?.closeOpenFile() ?? Promise.resolve(),
-    ]);
-    const failures = results
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map(result => result.reason);
-    if (failures.length > 0) {
-      throw new AggregateError(failures, "Agent observation file handles could not be closed.");
+  private applyFence(
+    eventSequence: number | undefined,
+    committedAt: string,
+    reason: string,
+  ): Promise<void> {
+    if (this.finished) {
+      return Promise.resolve();
     }
-  }
-
-  async sealEvidence(sealedPath: string): Promise<RunFileToken> {
-    const file = this.evidenceFile;
-    if (!file) throw new Error("Private evidence file identity is not initialized.");
-    await this.closeEvidence();
-    this.verifyEvidenceDirectory();
-    const sealed = await publishRunFile(this.runFence.token(), file, sealedPath, "Private evidence file");
-    this.verifyEvidenceDirectory();
-    this.evidenceFile = sealed;
-    return sealed;
-  }
-
-  async discardStartingFiles(): Promise<void> {
-    await this.closeEvidence().catch(() => {});
-    await this.traceWriter?.discard();
-    if (this.paths) {
-      if (this.evidenceFile) {
-        this.verifyEvidenceDirectory();
-        await removeRunFile(this.paths.run.token(), this.evidenceFile, "Private evidence file");
-        this.verifyEvidenceDirectory();
-      }
+    if (eventSequence !== undefined && this.durableFenceSequence !== undefined) {
+      if (eventSequence === this.durableFenceSequence) return Promise.resolve();
+      return Promise.reject(new Error(
+        `Agent observation turn '${this.context.attemptId}:${this.context.turn}' already has a different durable fence.`,
+      ));
     }
+    const mutation = this.boundaryClosed
+      ? { entries: [], checkpoint: true, current: undefined, observedAt: committedAt }
+      : this.reducer.boundary(committedAt);
+    try {
+      this.log.persistFence(this, {
+        ...(eventSequence === undefined ? {} : { eventSequence }),
+        committedAt,
+        reason,
+        mutation,
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    this.fenced = true;
+    this.boundaryClosed = true;
+    if (eventSequence !== undefined) this.durableFenceSequence = eventSequence;
+    return Promise.resolve();
   }
 
-  nextBoundarySequence(): number {
-    this.boundarySequence += 1;
-    return this.boundarySequence;
-  }
-
-  noteGap(): void {
-    this.gapCount += 1;
-    this.degraded = true;
-  }
-
-  markEvidenceFinished(): void {
-    this.evidenceFinished = true;
-  }
-
-  private flushDeferred(): void {
-    if (!this.deferredCheckpoint && this.deferredEntries.length === 0) return;
-    const mutation = this.reducer.checkpoint(
-      this.deferredEntries,
-      this.gapCount,
-      this.degraded,
-    );
-    this.deferredEntries = [];
-    this.deferredCheckpoint = false;
-    this.log.persistObservation(this, mutation);
+  private nextSyntheticSequence(): number {
+    this.maxSourceSequence += 1;
+    return this.maxSourceSequence;
   }
 }
 
@@ -2484,12 +1261,11 @@ class AgentObservationSemanticReducer {
   initialCurrent(observedAt: string): AgentObservationCurrent {
     this.updatedAt = observedAt;
     this.lastCheckpointAt = Date.parse(observedAt);
-    return this.current(0, false);
+    return this.current(false);
   }
 
   observe(
     observation: AgentTurnObservation,
-    gaps: number,
     degraded: boolean,
   ): SemanticMutation {
     const { event } = observation;
@@ -2499,7 +1275,7 @@ class AgentObservationSemanticReducer {
       return {
         entries: [],
         checkpoint: telemetryChanged,
-        current: telemetryChanged ? this.current(gaps, degraded) : undefined,
+        current: telemetryChanged ? this.current(degraded) : undefined,
         observedAt: event.observedAt,
       };
     }
@@ -2572,7 +1348,7 @@ class AgentObservationSemanticReducer {
     return {
       entries,
       checkpoint,
-      current: event.type === "turn_end" ? undefined : this.current(gaps, degraded),
+      current: event.type === "turn_end" ? undefined : this.current(degraded),
       observedAt: event.observedAt,
     };
   }
@@ -2586,7 +1362,6 @@ class AgentObservationSemanticReducer {
 
   terminal(
     result: AgentTurnResult,
-    gaps: number,
     degraded: boolean,
   ): SemanticMutation {
     const at = result.timing.finishedAt;
@@ -2596,9 +1371,9 @@ class AgentObservationSemanticReducer {
     return {
       entries,
       checkpoint: true,
-      current: this.current(gaps, degraded, {
+      current: this.current(degraded, {
         phase: "settled",
-        state: "sealed",
+        state: "settled",
         ...(result.responseText.length === 0
           ? {}
           : { response: excerpt(result.responseText, currentResponseBytes, "tail") }),
@@ -2630,19 +1405,17 @@ class AgentObservationSemanticReducer {
 
   checkpoint(
     entries: PendingSemanticEntry[],
-    gaps: number,
     degraded: boolean,
   ): SemanticMutation {
     return {
       entries,
       checkpoint: true,
-      current: this.current(gaps, degraded),
+      current: this.current(degraded),
       observedAt: this.updatedAt,
     };
   }
 
   private current(
-    gaps: number,
     degraded: boolean,
     terminal: Partial<Pick<AgentObservationCurrent, "phase" | "response" | "state">> = {},
   ): AgentObservationCurrent {
@@ -2684,7 +1457,6 @@ class AgentObservationSemanticReducer {
         : {}),
       state: terminal.state ?? "recording",
       completeness: degraded ? "degraded" : "complete",
-      gaps,
     };
   }
 
@@ -2737,220 +1509,9 @@ function equalTelemetry(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-class AgentTraceSpoolWriter {
-  private fd: number | undefined;
-  private file: RunFileToken | undefined;
-  private buffer: Buffer[] = [];
-  private bufferedBytes = 0;
-  private writtenBytes = 0;
-  private failure: unknown;
-  private terminalSeen = false;
-  private expectedEventSequence = 0;
-  private state: "recording" | "sealed" | "partial" = "recording";
-  private finalRelativePath: string;
-  private size?: number;
-  private fileDigest?: string;
-
-  constructor(
-    private readonly run: RunDirectoryFence,
-    private readonly directory: DirectoryIdentity,
-    private readonly path: { absolutePath: string; relativePath: string },
-  ) {
-    this.finalRelativePath = path.relativePath;
-  }
-
-  async start(header: Buffer): Promise<void> {
-    this.verifyDirectory();
-    this.fd = openSync(this.path.absolutePath, "wx", 0o600);
-    this.file = captureOpenedRunFileSync(
-      this.run.token(),
-      this.fd,
-      this.path.absolutePath,
-      "Agent trace spool",
-    );
-    this.verifyDirectory();
-    writeFullySync(this.fd, header, 0);
-    fsyncSync(this.fd);
-    this.writtenBytes = header.byteLength;
-    this.verifyDirectory();
-  }
-
-  observe(event: AgentTraceEvent): void {
-    if (this.failure !== undefined) return;
-    if (this.terminalSeen) {
-      this.failure = new Error("Agent trace received an event after turn_end.");
-      return;
-    }
-    if (event.sequence !== this.expectedEventSequence) {
-      this.failure = new Error(`Agent trace event sequence ${event.sequence} did not match ${this.expectedEventSequence}.`);
-      return;
-    }
-    this.expectedEventSequence += 1;
-    if (event.type === "turn_end") this.terminalSeen = true;
-    const line = Buffer.from(`${JSON.stringify({ ...event, sequence: event.sequence + 1 })}\n`);
-    this.buffer.push(line);
-    this.bufferedBytes += line.byteLength;
-    if (this.bufferedBytes >= traceBufferBytes) {
-      try {
-        this.flushNow(false);
-      } catch (error) {
-        this.failure ??= error;
-      }
-    }
-  }
-
-  endUndispatchedTurn(result: AgentTurnResult): void {
-    if (this.terminalSeen) return;
-    this.observe({
-      schemaVersion: 1,
-      sequence: this.expectedEventSequence,
-      observedAt: result.timing.finishedAt,
-      elapsedMs: result.timing.elapsedMs,
-      type: "turn_end",
-      status: providerOutcome(result),
-      ...(result.status === "failed" ? { failure: boundedFailure(result.failure) } : {}),
-      ...(result.status === "cancelled" ? { message: result.message } : {}),
-    });
-  }
-
-  flush(sync: boolean): Promise<void> {
-    try {
-      this.flushNow(sync);
-      return Promise.resolve();
-    } catch (error) {
-      this.failure ??= error;
-      return Promise.reject(error);
-    }
-  }
-
-  private flushNow(sync: boolean): void {
-    const chunks = this.buffer;
-    this.buffer = [];
-    this.bufferedBytes = 0;
-    if (this.failure !== undefined) throw this.failure;
-    if (this.fd === undefined) throw new Error("Agent trace spool is not open.");
-    if (chunks.length > 0) {
-      const bytes = Buffer.concat(chunks);
-      writeFullySync(this.fd, bytes, this.writtenBytes);
-      this.writtenBytes += bytes.byteLength;
-    }
-    if (sync) fsyncSync(this.fd);
-  }
-
-  async seal(): Promise<TraceSeal> {
-    try {
-      await this.flush(true);
-      if (this.failure !== undefined) throw this.failure;
-      if (!this.terminalSeen) throw new Error("Agent trace ended without a terminal turn_end observation.");
-      await this.close();
-      const sealedPath = this.path.absolutePath.replace(/\.partial$/, "");
-      if (!this.file) throw new Error("Agent trace spool identity is not initialized.");
-      this.verifyDirectory();
-      this.file = await publishRunFile(this.run.token(), this.file, sealedPath, "Agent trace spool");
-      this.verifyDirectory();
-      const metadata = await fileMetadata(sealedPath, this.run, this.file);
-      this.state = "sealed";
-      this.finalRelativePath = this.path.relativePath.replace(/\.partial$/, "");
-      this.size = metadata.size;
-      this.fileDigest = metadata.digest;
-      return {
-        state: "sealed",
-        relativePath: this.finalRelativePath,
-        bytes: metadata.size,
-        digest: metadata.digest,
-      };
-    } catch (error) {
-      this.failure ??= error;
-      await this.markPartial();
-      const metadata = this.metadata();
-      return {
-        state: "partial",
-        relativePath: metadata.relativePath ?? this.path.relativePath,
-        ...(metadata.bytes === undefined ? {} : { bytes: metadata.bytes }),
-        ...(metadata.digest === undefined ? {} : { digest: metadata.digest }),
-        error,
-      };
-    }
-  }
-
-  async markPartial(): Promise<void> {
-    await this.flush(false).catch(() => {});
-    await this.close().catch(() => {});
-    this.state = "partial";
-    this.finalRelativePath = this.path.relativePath;
-    this.verifyDirectory();
-    try {
-      if (!this.file) throw new Error("Agent trace spool identity is not initialized.");
-      const metadata = await fileMetadata(this.path.absolutePath, this.run, this.file);
-      this.size = metadata.size;
-      this.fileDigest = metadata.digest;
-    } catch {
-      this.verifyDirectory();
-    }
-  }
-
-  metadata(): {
-    state: "recording" | "sealed" | "partial";
-    relativePath: string;
-    bytes?: number;
-    digest?: string;
-  } {
-    return {
-      state: this.state,
-      relativePath: this.finalRelativePath,
-      ...(this.size === undefined ? {} : { bytes: this.size }),
-      ...(this.fileDigest === undefined ? {} : { digest: this.fileDigest }),
-    };
-  }
-
-  async discard(): Promise<void> {
-    await this.close().catch(() => {});
-    if (this.file) {
-      this.verifyDirectory();
-      await removeRunFile(this.run.token(), this.file, "Agent trace spool");
-      this.verifyDirectory();
-    }
-  }
-
-  async closeOpenFile(): Promise<void> {
-    await this.close();
-  }
-
-  private verifyDirectory(): void {
-    verifyDirectoryIdentity(this.directory, "Agent evidence directory");
-    this.run.verify();
-  }
-
-  private async close(): Promise<void> {
-    if (this.fd === undefined) return;
-    const fd = this.fd;
-    this.fd = undefined;
-    closeSync(fd);
-  }
-}
-
-function traceStartLine(context: AgentObservationTurnContext, observedAt: string): Buffer | undefined {
-  if (!context.trace) return undefined;
-  return Buffer.from(`${JSON.stringify({
-    schemaVersion: 1,
-    sequence: 0,
-    observedAt,
-    elapsedMs: 0,
-    type: "turn_start",
-    runId: context.runId,
-    nodeId: context.nodeId,
-    nodeKey: context.nodeKey,
-    attemptNo: context.attemptNo,
-    turn: context.turn,
-    agentKey: context.agentKey,
-    sessionName: context.sessionName,
-    cwd: context.cwd,
-  })}\n`);
-}
-
 function mergeTool(
   previous: (AgentObservationToolActivity & { sourceSequence: number }) | undefined,
-  event: Extract<AgentTraceEvent, { type: "tool" }>,
+  event: Extract<AgentObservationEvent, { type: "tool" }>,
 ): AgentObservationToolActivity {
   const inputText = event.rawInput === undefined ? undefined : eventText(event.rawInput);
   const outputValue = event.rawOutput ?? event.content;
@@ -3137,29 +1698,46 @@ function rowContext(row: TurnRow): Pick<AgentObservationTurnContext, "runId" | "
   return { runId: row.run_id, attemptId: row.attempt_id, turn: row.turn_no };
 }
 
-function evidenceSummary(result: AgentTurnResult): AgentTurnEvidenceSummary {
-  const summary = result.summary;
+
+
+function gapEntry(
+  row: Pick<TurnRow, "attempt_id" | "turn_no">,
+  sourceSequence: number,
+  at: string,
+  reason: string,
+): PendingSemanticEntry {
   return {
-    eventCount: summary.eventCount,
-    availability: summary.availability,
-    ...(summary.stopReason === undefined ? {} : { stopReason: summary.stopReason }),
-    ...(summary.context === undefined ? {} : { context: summary.context }),
-    ...(summary.tokenUsage === undefined ? {} : { tokenUsage: summary.tokenUsage }),
-    tools: { totalToolCallCount: summary.tools.totalToolCallCount },
-    ...(summary.cwd === undefined ? {} : { cwd: summary.cwd }),
-    ...(summary.acpxRecordId === undefined ? {} : { acpxRecordId: summary.acpxRecordId }),
+    id: `observation:${row.attempt_id}:${row.turn_no}:${sourceSequence}:gap`,
+    kind: "gap",
+    attemptId: row.attempt_id,
+    turn: row.turn_no,
+    sourceSequence,
+    at,
+    dropped: 1,
+    reason,
   };
 }
 
-function boundedFailure(value: unknown): AgentJsonValue {
-  const json = JSON.stringify(value);
-  const bytes = Buffer.byteLength(json);
-  if (bytes <= boundedFailureEdgeBytes * 2) return JSON.parse(json) as AgentJsonValue;
+function observationTurn(row: TurnRow): AgentObservationTurn {
   return {
-    truncated: true,
-    originalBytes: bytes,
-    head: utf8Head(json, boundedFailureEdgeBytes),
-    tail: utf8Tail(json, boundedFailureEdgeBytes),
+    runId: row.run_id,
+    attemptId: row.attempt_id,
+    nodeKey: row.node_key,
+    nodeId: row.node_id,
+    attemptNo: row.attempt_no,
+    turn: row.turn_no,
+    promptKind: row.prompt_kind,
+    state: row.state,
+    completeness: row.degraded === 0 ? "complete" : "degraded",
+    gapCount: row.gap_count,
+    eventCount: row.provider_event_count,
+    unknownEventCount: row.unknown_event_count,
+    ...(row.fence_event_sequence === null ? {} : { fenceEventSequence: row.fence_event_sequence }),
+    ...(row.fenced_at === null ? {} : { fencedAt: row.fenced_at }),
+    ...(row.fence_reason === null ? {} : { fenceReason: row.fence_reason }),
+    ...(row.provider_status === null ? {} : { providerStatus: row.provider_status }),
+    startedAt: row.started_at,
+    ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
   };
 }
 
@@ -3244,252 +1822,14 @@ function cancelledBeforeProviderDispatch(): AgentTurnResult {
   };
 }
 
-function providerOutcome(result: AgentTurnResult): NonNullable<AgentObservationTurnEvidence["providerStatus"]> {
+function providerOutcome(result: AgentTurnResult): NonNullable<AgentObservationTurn["providerStatus"]> {
   return result.status === "failed" && result.failure.kind === "timeout" ? "timed_out" : result.status;
 }
 
-function recordLine(record: AgentTurnEvidenceRecord): Buffer {
-  return Buffer.from(`${JSON.stringify(record)}\n`);
-}
 
-function parseCompleteEvidence(bytes: Buffer): AgentTurnEvidenceRecord[] {
-  return parseCompleteJsonLines(bytes).flatMap(value => {
-    if (!value
-      || typeof value !== "object"
-      || (value as { schemaVersion?: unknown }).schemaVersion !== evidenceSchemaVersion
-      || typeof (value as { sequence?: unknown }).sequence !== "number") return [];
-    return [value as AgentTurnEvidenceRecord];
-  });
-}
 
-function parseCompleteJsonLines(bytes: Buffer): unknown[] {
-  const lastNewline = bytes.lastIndexOf(0x0a);
-  if (lastNewline < 0) return [];
-  return bytes.subarray(0, lastNewline + 1).toString("utf8").split("\n").flatMap(line => {
-    if (!line) return [];
-    try {
-      return [JSON.parse(line) as unknown];
-    } catch {
-      return [];
-    }
-  });
-}
-
-function nextRecordSequence(records: AgentTurnEvidenceRecord[], indexedSequence: number): number {
-  return records.reduce((latest, record) => Math.max(latest, record.sequence), indexedSequence) + 1;
-}
-
-function turnEvidence(row: TurnRow): AgentObservationTurnEvidence {
-  const traceRelativePath = row.trace_state === "published" ? undefined : row.trace_relative_path ?? undefined;
-  const trace = row.trace_state === "none"
-    ? undefined
-    : {
-        state: row.trace_state,
-        ...(traceRelativePath ? { relativePath: traceRelativePath } : {}),
-        ...(row.trace_bytes === null ? {} : { bytes: row.trace_bytes }),
-        ...(row.trace_digest === null ? {} : { digest: row.trace_digest }),
-      };
-  return {
-    runId: row.run_id,
-    attemptId: row.attempt_id,
-    nodeKey: row.node_key,
-    nodeId: row.node_id,
-    attemptNo: row.attempt_no,
-    turn: row.turn_no,
-    promptKind: row.prompt_kind,
-    relativePath: row.relative_path,
-    state: row.state,
-    completeness: row.degraded === 0 ? "complete" : "degraded",
-    gapCount: row.gap_count,
-    eventCount: row.provider_event_count,
-    unknownEventCount: row.unknown_event_count,
-    promptBytes: row.prompt_bytes,
-    promptDigest: row.prompt_digest,
-    lastResponseBytes: row.last_response_bytes,
-    lastResponseDigest: row.last_response_digest,
-    ...(row.response_at_fence_bytes === null ? {} : { responseAtFenceBytes: row.response_at_fence_bytes }),
-    ...(row.response_at_fence_digest === null ? {} : { responseAtFenceDigest: row.response_at_fence_digest }),
-    ...(row.fence_event_sequence === null ? {} : { fenceEventSequence: row.fence_event_sequence }),
-    ...(row.fenced_at === null ? {} : { fencedAt: row.fenced_at }),
-    ...(row.fence_reason === null ? {} : { fenceReason: row.fence_reason }),
-    ...(row.final_response_bytes === null ? {} : { finalResponseBytes: row.final_response_bytes }),
-    ...(row.final_response_digest === null ? {} : { finalResponseDigest: row.final_response_digest }),
-    ...(row.provider_status === null ? {} : { providerStatus: row.provider_status }),
-    ...(trace ? { trace } : {}),
-    startedAt: row.started_at,
-    ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
-    ...(row.sealed_bytes === null ? {} : { sealedBytes: row.sealed_bytes }),
-    ...(row.sealed_digest === null ? {} : { sealedDigest: row.sealed_digest }),
-  };
-}
-
-function digest(bytes: Buffer): string {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-}
-
-async function fileMetadata(
-  path: string,
-  run: RunDirectoryFence,
-  expected?: RunFileToken,
-): Promise<{ size: number; digest: string }> {
-  run.verify();
-  if (expected) verifyRunFile(run.token(), expected, `Evidence path '${path}'`);
-  const handle = await open(path, "r");
-  try {
-    run.verify();
-    const metadata = await fileMetadataHandle(handle, path, expected);
-    if (expected) verifyRunFile(run.token(), expected, `Evidence path '${path}'`);
-    run.verify();
-    return metadata;
-  } finally {
-    await handle.close();
-  }
-}
-
-async function fileMetadataHandle(
-  handle: FileHandle,
-  path: string,
-  expected?: RunFileToken,
-): Promise<{ size: number; digest: string }> {
-  const before = await handle.stat({ bigint: true });
-  if (!before.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
-  if (expected) assertRunFileIdentity(expected, before, `Evidence path '${path}'`);
-  const hash = createHash("sha256");
-  let size = 0;
-  for await (const chunk of handle.createReadStream({ autoClose: false, start: 0 })) {
-    hash.update(chunk);
-    size += chunk.byteLength;
-  }
-  const after = await handle.stat({ bigint: true });
-  if (expected) assertRunFileIdentity(expected, after, `Evidence path '${path}'`);
-  if (after.size !== BigInt(size)) {
-    throw new Error(`Evidence path '${path}' changed while its metadata was read.`);
-  }
-  return { size, digest: `sha256:${hash.digest("hex")}` };
-}
-
-async function readVerifiedFile(
-  run: RunDirectoryFence,
-  file: RunFileToken,
-): Promise<Buffer> {
-  const path = verifyRunFile(run.token(), file, "Evidence file");
-  const handle = await open(path, "r");
-  try {
-    run.verify();
-    const info = await handle.stat({ bigint: true });
-    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
-    assertRunFileIdentity(file, info, "Evidence file");
-    const bytes = await readFile(handle);
-    assertRunFileIdentity(file, await handle.stat({ bigint: true }), "Evidence file");
-    verifyRunFile(run.token(), file, "Evidence file");
-    run.verify();
-    return bytes;
-  } finally {
-    await handle.close();
-  }
-}
-
-async function verifiedFileSize(
-  run: RunDirectoryFence,
-  file: RunFileToken,
-): Promise<number> {
-  const path = verifyRunFile(run.token(), file, "Evidence file");
-  const handle = await open(path, "r");
-  try {
-    run.verify();
-    const info = await handle.stat({ bigint: true });
-    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
-    assertRunFileIdentity(file, info, "Evidence file");
-    verifyRunFile(run.token(), file, "Evidence file");
-    run.verify();
-    return Number(info.size);
-  } finally {
-    await handle.close();
-  }
-}
-
-async function chmodDirectoryVerified(
-  run: RunDirectoryFence,
-  directory: DirectoryIdentity,
-  mode: number,
-  label: string,
-): Promise<void> {
-  verifyDirectoryIdentity(directory, label);
-  run.verify();
-  await chmod(directory.path, mode);
-  verifyDirectoryIdentity(directory, label);
-  run.verify();
-}
-
-async function chmodTraceArtifact(
-  destination: PreparedRunFilePath,
-  file: RunFileToken,
-  mode: number,
-): Promise<void> {
-  verifyPreparedRunFilePath(destination);
-  await chmodRunFile(destination.run, file, mode, destination.label);
-  verifyPreparedRunFilePath(destination);
-}
-
-async function removePreparedArtifact(
-  destination: PreparedRunFilePath,
-  file: RunFileToken | undefined,
-): Promise<void> {
-  if (!file) {
-    verifyPreparedRunFilePath(destination);
-    return;
-  }
-  verifyPreparedRunFilePath(destination);
-  await removeRunFile(destination.run, file, destination.label);
-  verifyPreparedRunFilePath(destination);
-}
-
-async function writeFully(handle: FileHandle, bytes: Buffer, position?: number): Promise<void> {
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const written = await handle.write(
-      bytes,
-      offset,
-      bytes.byteLength - offset,
-      position === undefined ? null : position + offset,
-    );
-    if (written.bytesWritten === 0) throw new Error("Private evidence write made no progress.");
-    offset += written.bytesWritten;
-  }
-}
-
-function writeFullySync(fd: number, bytes: Buffer, position: number): void {
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const written = writeSync(fd, bytes, offset, bytes.byteLength - offset, position + offset);
-    if (written === 0) throw new Error("Agent trace write made no progress.");
-    offset += written;
-  }
-}
-
-async function appendSynced(
-  file: RunFileToken,
-  bytes: Buffer,
-  run: RunDirectoryFence,
-): Promise<void> {
-  const path = verifyRunFile(run.token(), file, "Evidence file");
-  const handle = await open(path, "a");
-  try {
-    run.verify();
-    const info = await handle.stat({ bigint: true });
-    if (!info.isFile()) throw new Error(`Evidence path '${path}' is not a regular file.`);
-    assertRunFileIdentity(file, info, "Evidence file");
-    await writeFully(handle, bytes);
-    await handle.sync();
-    verifyRunFile(run.token(), file, "Evidence file");
-    run.verify();
-  } finally {
-    await handle.close();
-  }
-}
-
-function activeKey(attemptId: string, turn: number): string {
-  return `${attemptId}\0${turn}`;
+function activeKey(runId: string, attemptId: string, turn: number): string {
+  return `${runId}\0${attemptId}\0${turn}`;
 }
 
 function notifyObserver(
@@ -3503,31 +1843,6 @@ function notifyObserver(
   } catch {}
 }
 
-function safePathSegment(value: string): boolean {
-  return value.length > 0 && value !== "." && value !== ".." && !/[\\/]/.test(value);
-}
-
-async function requireDirectory(path: string, label: string): Promise<void> {
-  const info = await lstat(path);
-  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${label} '${path}' is not a regular directory.`);
-}
-
-function contained(root: string, child: string): boolean {
-  const path = relative(resolve(root), resolve(child));
-  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
-}
-
-function missing(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "ENOTDIR");
-}
-
 function causeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-async function waitFor(predicate: () => boolean): Promise<void> {
-  while (!predicate()) await new Promise<void>(resolvePromise => setImmediate(resolvePromise));
 }

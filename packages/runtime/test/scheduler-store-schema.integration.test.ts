@@ -53,7 +53,7 @@ describe("scheduler store format", () => {
     }
   });
 
-  it("owns bounded Agent observation projections and private turn evidence in current storage", () => {
+  it("owns bounded SQLite-only Agent observations in current storage", () => {
     const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
     try {
       expect(tableColumns(db, "runs")).toEqual(expect.arrayContaining([
@@ -67,27 +67,31 @@ describe("scheduler store format", () => {
         "retention_omitted_count",
         "retention_floor_version",
       ]));
-      expect(tableColumns(db, "agent_observation_turns")).toEqual(expect.arrayContaining([
+      const observationTurnColumns = tableColumns(db, "agent_observation_turns");
+      expect(observationTurnColumns).toEqual([
         "run_id",
         "attempt_id",
+        "node_key",
+        "node_id",
+        "attempt_no",
         "turn_no",
         "prompt_kind",
-        "relative_path",
         "state",
+        "degraded",
         "gap_count",
-        "indexed_bytes",
         "provider_event_count",
         "unknown_event_count",
-        "response_at_fence_bytes",
-        "final_response_bytes",
+        "fence_event_sequence",
+        "fenced_at",
+        "fence_reason",
         "provider_status",
         "current_json",
         "current_bytes",
-        "trace_state",
-        "trace_relative_path",
-        "trace_artifact_relative_path",
-        "sealed_digest",
-      ]));
+        "current_updated_at",
+        "current_observation_version",
+        "started_at",
+        "finished_at",
+      ]);
       expect(tableColumns(db, "agent_observation_entries")).toEqual(expect.arrayContaining([
         "run_id",
         "attempt_id",
@@ -103,25 +107,26 @@ describe("scheduler store format", () => {
       const turnsSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'agent_observation_turns'")
         .get() as { sql: string };
       expect(turnsSql.sql).toContain("UNIQUE (run_id, fence_event_sequence)");
+      expect(turnsSql.sql).toContain("state IN ('recording', 'settled', 'incomplete')");
     } finally {
       db.close();
     }
   });
 
-  it("rejects storage v3 without a compatibility read path", async () => {
+  it("rejects storage v6 without a compatibility read path", async () => {
     store?.close();
     store = undefined;
     const layout = resolveRuntimeLayout(dir);
     setDatabaseFormat(layout.databasePath, {
       applicationId: RUNTIME_APPLICATION_ID,
-      userVersion: 3,
+      userVersion: 6,
     });
     const beforeDoctor = await runtimeStateFingerprint(layout.workspaceRoot);
 
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
       name: "IncompatibleRuntimeDatabaseError",
       applicationId: RUNTIME_APPLICATION_ID,
-      userVersion: 3,
+      userVersion: 6,
     });
     await expect(getRuntimeHealth(dir)).resolves.toEqual({
       ok: true,
@@ -131,7 +136,7 @@ describe("scheduler store format", () => {
       checks: [{
         area: "store",
         status: "warn",
-        message: `Runtime storage version 3 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
+        message: `Runtime storage version 6 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
       }],
     });
     expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeDoctor);

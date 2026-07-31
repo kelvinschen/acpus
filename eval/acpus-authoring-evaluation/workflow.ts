@@ -51,9 +51,9 @@ export default defineWorkflow({
     ),
   }),
   agents: {
-    pi: { use: "pi", trace: true },
-    claude: { use: "claude", trace: true },
-    traex: { use: "traex", trace: true },
+    pi: { use: "pi" },
+    claude: { use: "claude" },
+    traex: { use: "traex" },
   },
 }).build(({ input, agents, meta, step }) => {
   const evaluations = step("evaluate_requirements").fanout({
@@ -246,9 +246,9 @@ export default defineWorkflow({
         design: {
           requirementCount: input.evaluations.length,
           agents: {
-            pi: { use: "pi", trace: true, authoritativeSkillRoot: ".agents" },
-            claude: { use: "claude", trace: true, authoritativeSkillRoot: ".claude" },
-            traex: { use: "traex", trace: true, authoritativeSkillRoot: ".agents" },
+            pi: { use: "pi", authoritativeSkillRoot: ".agents" },
+            claude: { use: "claude", authoritativeSkillRoot: ".claude" },
+            traex: { use: "traex", authoritativeSkillRoot: ".agents" },
           },
           trialsPerAgent: 3,
           turnsPerSession: 2,
@@ -256,9 +256,9 @@ export default defineWorkflow({
           agentNodeExecutions: logicalSessions * 2,
         },
         measurement: {
-          formalSource: "authoring Agent trace artifacts: type=tool events only",
-          analyzer: "scripts/analyze-traces.mjs",
-          retrospectiveRole: "qualitative pitfalls and discrepancy audit only",
+          sessionSource: "run-local acpx session projections referenced by settled turn artifacts",
+          projectionRole: "copy and clean externally when formal check metrics are needed",
+          retrospectiveRole: "qualitative pitfalls and completion audit",
         },
         evaluations: input.evaluations,
       };

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureRuntimeLayout,
   resolveRuntimeLayout,
+  runAcpStateRoot,
   setRuntimeHomeForTest,
   validateWorkspaceManifest,
   type RuntimeLayoutDependencies,
@@ -18,6 +19,14 @@ afterEach(async () => {
 });
 
 describe("runtime layout", () => {
+  it("keeps run-local ACP state above the store-owned sessions directory", () => {
+    const layout = resolveRuntimeLayout("/ignored", fakeDependencies());
+
+    expect(runAcpStateRoot(layout, "run-1")).toBe(
+      "/home/alice/.acpus/workspaces/1cb2c322ad0b4052beea73178ad65c1e/runtime/runs/run-1/acp",
+    );
+  });
+
   it("derives a stable workspace shard and all owned paths from the canonical workspace", () => {
     const layout = resolveRuntimeLayout("/ignored", fakeDependencies());
 

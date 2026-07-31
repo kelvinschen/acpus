@@ -1,2 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"tool","action":"call","toolCallId":"chained-check","kind":"execute","status":"in_progress","rawInput":{"command":"acpus workflow check first.ts && acpus workflow check second.ts"}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"update","toolCallId":"chained-check","status":"completed","rawOutput":{"exit_code":0,"aggregated_output":"Both commands passed."}}

@@ -23,7 +23,7 @@ Start with the Summary path in [CLI Operations](cli-operations.md).
 - For a repeated authored target, choose one candidate `@ref` before paging or following.
 - `--page` continues only a candidate view; Timeline always shows its fixed recent window.
 - `--follow` waits until the fixed subject is terminal. `--await-decision` waits until that subject needs external input, is paused, or is terminal.
-- Inspection is text-only. It has no JSON/NDJSON, raw, Evidence, topology, controls, or custom-limit surface. Full provider-frame history needs `trace: true`; see [Agent Tracing](agent-tracing.md).
+- Inspection is text-only. It has no JSON/NDJSON, raw, topology, controls, or custom-limit surface. For settled turn artifacts or the run-local acpx session projection, see [Agent Records](agent-records.md).
 
 ## Runtime control details
 
@@ -85,11 +85,9 @@ acpus runs fork <run-id> \
 
 Fork creates a child run and leaves the source unchanged. Its receipt identifies both runs; continue inspection on the child. Unspecified workflow, input, and Agent overrides are inherited. Providing new input disables normal completed-output reuse.
 
-Replacement workflows have the same resolution as check/run/viz: use a path,
-a catalog name with optional scope, or `--workflow -` for raw UTF-8 TypeScript
-on stdin. Scope flags require `--workflow` and cannot be used with `-`.
+Replacement workflows have the same resolution as check/run/viz: use a path, a catalog name with optional scope, or `--workflow -` for raw UTF-8 TypeScript on stdin. Scope flags require `--workflow` and cannot be used with `-`.
 
-Omit `--target` unless recovery should begin at one point in the replacement workflow. For an inherited workflow, copy the target from source inspection; for a replacement, use one of its authored targets. Safe reuse carries only compatible completed prerequisites and registered artifacts. `--unsafe-reuse` relaxes workflow/input/signature compatibility checks; use it only when reusing earlier results and side effects is intentional.
+Use `--target` only to restart at one point: copy an inherited-workflow target from source inspection, or use an authored target in a replacement. Safe reuse carries compatible completed prerequisites and registered artifacts. `--unsafe-reuse` permits completed-result reuse across workflow, input, or signature changes. Use it only when those results and side effects remain valid—for example, after fixing a loop node that would otherwise rerun completed iterations. It retains target, completed-only, and artifact boundaries.
 
 ### Cancel
 

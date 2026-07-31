@@ -27,10 +27,10 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 
 ### **DO NOT read by default**
 
-- **Advanced authoring:** Read `references/advanced-authoring.md` only when the requirement needs Agent session reuse, reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, cooperative Task cancellation, or Agent tracing configuration.
+- **Advanced authoring:** Read `references/advanced-authoring.md` only when the requirement needs Agent session reuse, reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, or cooperative Task cancellation.
 - **Signal authoring:** Read `references/signal-authoring.md` only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
 - **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only when the requirement needs inspection pagination/follow mechanics, detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, standalone artifact lookup, run deletion, version lookup, or structured CLI automation.
-- **Review Agent evidence:** Read `references/agent-tracing.md` only for exact turn boundaries or opt-in Trace.
+- **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local acpx session projection.
 - **Configure hooks:** Read `references/hooks-json.md`.
 
 ### **Explain concepts:**

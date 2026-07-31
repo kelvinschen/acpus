@@ -1,2 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"tool","action":"call","toolCallId":"unknown-check","kind":"execute","status":"in_progress","rawInput":{"command":"acpus workflow check unknown.ts"}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"update","toolCallId":"unknown-check","status":"in_progress","rawOutput":"Still running."}

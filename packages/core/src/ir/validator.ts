@@ -79,14 +79,14 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
     const path = `agents.${name}`;
     if (!requireRecord(agent, diagnostics, path, "A002", `Agent '${name}' definition must be an object.`)) continue;
     if (agent.kind === "agent_definition") {
-      validateKnownFields(agent, ["kind", "use", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "use", "model", "config", "permissionMode", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.use, diagnostics, `${path}.use`, "A002", `Agent '${name}' use must be a non-empty string.`);
       validateAgentDefinitionOptions(agent, diagnostics, path, name);
       continue;
     }
 
     if (agent.kind === "agent_command") {
-      validateKnownFields(agent, ["kind", "command", "model", "config", "permissionMode", "trace", "cwd", "env"], diagnostics, path);
+      validateKnownFields(agent, ["kind", "command", "model", "config", "permissionMode", "cwd", "env"], diagnostics, path);
       validateRequiredNonEmptyString(agent.command, diagnostics, `${path}.command`, "A002", `Command-backed agent '${name}' command must be a non-empty string.`);
       validateAgentDefinitionOptions(agent, diagnostics, path, name);
       continue;
@@ -107,7 +107,6 @@ function validateAgentDefinitionOptions(
   }
   validateAgentConfig(agent.config, diagnostics, `${path}.config`);
   validatePermissionMode(agent.permissionMode, diagnostics, `${path}.permissionMode`);
-  validateAgentTrace(agent.trace, diagnostics, `${path}.trace`);
   if (agent.cwd !== undefined) validateRequiredNonEmptyString(agent.cwd, diagnostics, `${path}.cwd`, "A002", `Agent '${name}' cwd must be a non-empty string.`);
   validateStaticEnv(agent.env, diagnostics, `${path}.env`);
 }
@@ -310,12 +309,6 @@ function validateAgentConfig(value: unknown, diagnostics: DiagnosticIR[], path: 
     if (typeof configValue !== "string") {
       addError(diagnostics, "A002", `Agent config '${key}' must be a string.`, `${path}.${key}`);
     }
-  }
-}
-
-function validateAgentTrace(value: unknown, diagnostics: DiagnosticIR[], path: string): void {
-  if (value !== undefined && typeof value !== "boolean") {
-    addError(diagnostics, "A002", "Agent trace must be a boolean.", path);
   }
 }
 

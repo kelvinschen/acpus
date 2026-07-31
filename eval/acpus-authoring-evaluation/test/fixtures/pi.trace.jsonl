@@ -1,5 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"message","channel":"thought","content":{"type":"text","text":"acpus workflow check must not be counted here"}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"call","toolCallId":"pi-check","status":"pending","rawInput":{}}
-{"schemaVersion":1,"sequence":3,"type":"tool","action":"update","toolCallId":"pi-check","status":"pending","rawInput":{"command":"acpus workflow"}}
-{"schemaVersion":1,"sequence":4,"type":"tool","action":"update","toolCallId":"pi-check","status":"in_progress","rawInput":{"command":"acpus workflow check pi-workflow.ts"}}
-{"schemaVersion":1,"sequence":5,"type":"tool","action":"update","toolCallId":"pi-check","status":"failed","rawOutput":{"content":[{"type":"text","text":"Workflow check failed.\npi-workflow.ts:4:1 [error TS2322] Wrong shape.\npi-workflow.ts:5:1 [error AL002] Return .output.\nCommand exited with code 1"}]}}

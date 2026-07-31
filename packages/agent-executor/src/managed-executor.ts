@@ -30,7 +30,7 @@ const WORKERS_DIRECTORY_MODE = 0o700;
 
 export type ManagedAcpExecutorOptions = {
   workersRoot: string;
-  sessionDirectoryForRun(runId: string): string;
+  sessionStateDirectoryForRun(runId: string): string;
   daemon: { generation: string | number; pid?: number };
   onDegraded?: (manifest: AcpOwnershipManifest) => void;
 };
@@ -175,7 +175,7 @@ async function recoverManifest(
 async function startWorker(state: ManagedAcpExecutorState, input: ManagedAcpAttemptInput): Promise<WorkerState> {
   await Promise.all([
     mkdir(state.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
-    mkdir(state.options.sessionDirectoryForRun(input.runId), { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
+    mkdir(state.options.sessionStateDirectoryForRun(input.runId), { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
   ]);
   const workerId = `acp_worker_${randomUUID()}`;
   const child = spawn(process.execPath, workerEntryArgs(), {
@@ -254,7 +254,7 @@ async function startWorker(state: ManagedAcpExecutorState, input: ManagedAcpAtte
       protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
       workerId,
       attemptId: input.attemptId,
-      sessionDirectory: state.options.sessionDirectoryForRun(input.runId),
+      sessionStateDirectory: state.options.sessionStateDirectoryForRun(input.runId),
       cwd: input.cwd,
       env: input.env,
       agent: input.agent,

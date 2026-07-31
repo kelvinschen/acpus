@@ -1,2 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"tool","action":"call","toolCallId":"traex-check","kind":"execute","status":"in_progress","rawInput":{"command":["/usr/bin/zsh","-c","acpus workflow check traex-workflow.ts --input input.json"]}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"update","toolCallId":"traex-check","status":"completed","rawOutput":{"command":["/usr/bin/zsh","-c","acpus workflow check traex-workflow.ts --input input.json"],"aggregated_output":"Workflow check passed.","exit_code":0}}

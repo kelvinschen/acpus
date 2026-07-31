@@ -31,7 +31,6 @@ import type {
   AgentOutputProcessing,
   AgentOverrideMap,
   AgentOverrideValidationFailure,
-  AgentTraceRecord,
   AgentTurnArtifact,
   ArtifactRecord,
   DaemonAdmitRunInput,
@@ -373,12 +372,6 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { outcome: "rejected"; phase: "framing" | "json" }
     | { outcome: "rejected"; phase: "schema"; parsing: "direct" | "repaired"; projectionChanged: boolean }
   >();
-  expectTypeOf<Extract<AgentTraceRecord, { type: "turn_start" }>>().toMatchTypeOf<{
-    schemaVersion: 1;
-    sequence: number;
-    runId: string;
-    nodeId: string;
-  }>();
   expectTypeOf<AgentTurnArtifact>().toEqualTypeOf<{
     schemaVersion: 1;
     runId: string;
@@ -388,6 +381,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     turn: number;
     agentKey: string;
     sessionName: string;
+    sessionProjectionPath?: string;
     status: "completed" | "failed" | "cancelled";
     timing: import("@acpus/agent-executor").AgentTurnTiming;
     prompt: string;

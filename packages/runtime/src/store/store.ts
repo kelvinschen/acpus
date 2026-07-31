@@ -142,7 +142,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 5;
+export const RUNTIME_STORAGE_VERSION = 7;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -201,7 +201,7 @@ export type RunInspectionStoreRead = {
  * context and any frozen/artifact data so an unchanged poll has no projection
  * work to do.
  */
-export type RunInspectionToken = {
+type RunInspectionToken = {
   eventSequence: number;
   progressVersion: number;
   observationVersion: number;
@@ -1016,11 +1016,7 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   get observationLog(): AgentObservationLog {
-    this.observationLogInstance ??= new AgentObservationLog(
-      this.db,
-      this.layout,
-      runId => this.generation.run(runId),
-    );
+    this.observationLogInstance ??= new AgentObservationLog(this.db);
     return this.observationLogInstance;
   }
 
@@ -4746,41 +4742,21 @@ function initializeSchema(db: DatabaseSync): void {
       attempt_no INTEGER NOT NULL,
       turn_no INTEGER NOT NULL CHECK (turn_no > 0),
       prompt_kind TEXT NOT NULL CHECK (prompt_kind IN ('task', 'continuation', 'steer', 'repair')),
-      relative_path TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('recording', 'sealed', 'partial')),
+      state TEXT NOT NULL CHECK (state IN ('recording', 'settled', 'incomplete')),
       degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0, 1)),
       gap_count INTEGER NOT NULL DEFAULT 0 CHECK (gap_count >= 0),
       provider_event_count INTEGER NOT NULL DEFAULT 0 CHECK (provider_event_count >= 0),
       unknown_event_count INTEGER NOT NULL DEFAULT 0 CHECK (unknown_event_count >= 0),
-      last_record_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_record_sequence >= 0),
-      indexed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (indexed_bytes >= 0),
-      prompt_bytes INTEGER NOT NULL CHECK (prompt_bytes >= 0),
-      prompt_digest TEXT NOT NULL,
-      last_response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (last_response_bytes >= 0),
-      last_response_digest TEXT NOT NULL,
-      response_at_fence_bytes INTEGER CHECK (response_at_fence_bytes >= 0),
-      response_at_fence_digest TEXT,
       fence_event_sequence INTEGER,
       fenced_at TEXT,
       fence_reason TEXT,
-      final_response_bytes INTEGER CHECK (final_response_bytes >= 0),
-      final_response_digest TEXT,
       provider_status TEXT CHECK (provider_status IN ('completed', 'failed', 'cancelled', 'timed_out')),
       current_json TEXT,
       current_bytes INTEGER NOT NULL DEFAULT 0 CHECK (current_bytes >= 0),
       current_updated_at TEXT,
       current_observation_version INTEGER CHECK (current_observation_version > 0),
-      trace_enabled INTEGER NOT NULL DEFAULT 0 CHECK (trace_enabled IN (0, 1)),
-      trace_state TEXT NOT NULL DEFAULT 'none'
-        CHECK (trace_state IN ('none', 'recording', 'sealed', 'partial', 'published')),
-      trace_relative_path TEXT,
-      trace_artifact_relative_path TEXT,
-      trace_bytes INTEGER CHECK (trace_bytes >= 0),
-      trace_digest TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT,
-      sealed_bytes INTEGER CHECK (sealed_bytes >= 0),
-      sealed_digest TEXT,
       PRIMARY KEY (run_id, attempt_id, turn_no),
       UNIQUE (run_id, fence_event_sequence)
     );
@@ -4931,7 +4907,6 @@ function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverri
     model: override.model ?? (identityChanged ? undefined : definition.model),
     permissionMode: override.permissionMode ?? definition.permissionMode,
     config: override.config ?? (identityChanged ? undefined : definition.config),
-    trace: definition.trace,
     cwd: override.cwd ?? definition.cwd,
     env: override.env ?? definition.env,
   };

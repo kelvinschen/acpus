@@ -48,9 +48,11 @@ import type {
   RunInspectionError,
   RunInspectionControl,
   InspectionCandidates,
+  InspectionChange,
   InspectionError,
   InspectionObservation,
   InspectionRead,
+  InspectionVisibleReason,
   InspectionView,
   InspectionViewQuery,
   ObserveInspectionQuery,
@@ -523,7 +525,7 @@ export function inspectionChanges(
   current: InspectionView,
   events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>,
   run: NonNullable<RunInspectionStoreRead["run"]>,
-): import("./types.js").InspectionChange[] {
+): InspectionChange[] {
   if (previous.kind !== "run" || current.kind !== "run") {
     if (previous.kind === "target" && current.kind === "target" && sameSubject(previous.subject, current.subject)
       && JSON.stringify(targetComparable(previous)) === JSON.stringify(targetComparable(current))) return [];
@@ -558,7 +560,7 @@ function inspectionReason(
   events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>,
   subject: import("./types.js").InspectionSubject,
   run: NonNullable<RunInspectionStoreRead["run"]>,
-): import("./types.js").InspectionVisibleReason | undefined {
+): InspectionVisibleReason | undefined {
   const relevant = events.filter(event => inspectionEventAffectsSubject(event, subject, run));
   const has = (type: string) => relevant.some(event => event.type === type);
   const requeued = (reason: string) => relevant.some(event => event.type === "instance.requeued" && event.payload.reason === reason);
@@ -645,7 +647,7 @@ function inspectionEventSelectors(
 function timelineChanges(
   previous: InspectionView,
   current: InspectionView,
-  changes: readonly import("./types.js").InspectionChange[],
+  changes: readonly InspectionChange[],
 ): import("./types.js").TimelineEntry[] | undefined {
   if (previous.kind !== "target" || current.kind !== "target" || current.detail !== "timeline") return undefined;
   const before = new Set(previous.detail === "timeline" ? previous.recent.map(entry => JSON.stringify(entry)) : []);

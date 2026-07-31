@@ -38,7 +38,7 @@ describe("ACP ownership inspection", () => {
     const workers = join(root, "workers");
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
-      sessionDirectoryForRun: runId => join(root, "runs", runId, "sessions"),
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
       daemon: { generation: "test" },
     });
 
@@ -62,7 +62,7 @@ describe("ACP ownership inspection", () => {
     const workers = join(root, "workers");
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
-      sessionDirectoryForRun: runId => join(root, "runs", runId, "sessions"),
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
       daemon: { generation: "test" },
     });
     const failure = new Error("caller failed");
@@ -86,7 +86,7 @@ describe("ACP ownership inspection", () => {
     const workers = join(root, "workers");
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
-      sessionDirectoryForRun: runId => join(root, "runs", runId, "sessions"),
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
       daemon: { generation: "test" },
     });
     const attempt = executor.withAttempt({
@@ -126,7 +126,7 @@ describe("ACP ownership inspection", () => {
 
     await recoverAcpOwnership({
       workersRoot: workers,
-      sessionDirectoryForRun: runId => join(root, "runs", runId, "sessions"),
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
       daemon: { generation: "current" },
     });
 
@@ -149,7 +149,7 @@ describe("ACP ownership inspection", () => {
 
     await recoverAcpOwnership({
       workersRoot: workers,
-      sessionDirectoryForRun: runId => join(root, "runs", runId, "sessions"),
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
       daemon: { generation: "current" },
     });
 

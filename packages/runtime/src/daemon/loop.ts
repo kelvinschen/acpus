@@ -8,7 +8,7 @@ import { DAEMON_PROTOCOL_VERSION, startDaemonServer, type DaemonControlIntent, t
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
 import { createManagedAcpExecutor, recoverAcpOwnership, type ManagedAcpExecutor } from "@acpus/agent-executor";
-import { resolveRuntimeLayout, runAcpSessionsRoot } from "../runtime-layout.js";
+import { resolveRuntimeLayout, runAcpStateRoot } from "../runtime-layout.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
@@ -116,13 +116,13 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     const layout = resolveRuntimeLayout(cwd);
     const executorOptions = {
       workersRoot: layout.acpWorkersRoot,
-      sessionDirectoryForRun: (runId: string) => runAcpSessionsRoot(layout, runId),
+      sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(layout, runId),
       daemon: { generation: lease.generation, pid: process.pid },
     };
     await recoverAcpOwnership(executorOptions);
     managedAcpExecutor = await createManagedAcpExecutor(executorOptions);
     sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident, managedAcpExecutor);
-    await store.observationLog.recoverTerminalPartialTurns();
+    await store.observationLog.reconcileTerminalTurns();
     await store.cleanupStagedRunDirectories();
   } catch (error) {
     await closeDaemonServer(server);

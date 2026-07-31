@@ -23,7 +23,6 @@
 | ACP ownership evidence | `runtime/acp/workers/` |
 | Run capsule | `runtime/runs/<run-id>/` |
 | Run-local ACP sessions | `runtime/runs/<run-id>/acp/sessions/` |
-| Private Turn Evidence | `runtime/runs/<run-id>/evidence/agents/` |
 | Durable workflow snapshot | `runtime/sources/snapshots/<sha256-hex>/manifest.json` and `files/` |
 | Interrupted deletion | `runtime/trash/` |
 | Archived storage generation | `archives/<utc>-v<storage-version>/` |
@@ -43,26 +42,21 @@
 - Only new-run preparation and real pruning MAY archive an incomplete generation as one unit and rebuild current storage; read/control access and dry-run pruning MUST leave it unchanged.
 - Runtime-owned layout roots, manifests, databases, run capsules, sources, trash, and archives MUST reject symbolic-link substitution instead of following it.
 - An opened Runtime store MUST bind its runs, sources, and trash roots, and every accessed run capsule, to the device/inode identity with a nonzero inode, resolved location, and available birth time observed by that store. Whenever one of those paths is accessed again, any observable identity or resolved-location mismatch MUST fail visibly rather than be followed or adopted.
-- Long-lived Runtime-owned Evidence, Trace, and artifact writes MUST bind created files to the same observable identity. Runtime MUST revalidate the relevant bound run, parent, and file identities at checkpoints surrounding sealing, publication, registration, and cleanup, and any observable mismatch MUST fail visibly.
+- Long-lived Runtime-owned artifact writes MUST bind created files to the same observable identity. Runtime MUST revalidate the relevant bound run, parent, and file identities at checkpoints surrounding publication, registration, and cleanup, and any observable mismatch MUST fail visibly.
 - Opening a Runtime-owned root, run capsule, or long-lived file that does not expose a device/inode identity with a nonzero inode MUST fail visibly instead of degrading to path-only verification. Identity fencing detects only changes distinguishable through values reported by the host filesystem; those values may be recycled, so equality is not proof of uninterrupted path ownership.
 - An existing manifest whose key, canonical path, platform, or available filesystem identity disagrees with the current workspace MUST fail visibly instead of being adopted or rewritten.
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 5` as the current storage version.
+- The active database MUST use SQLite `user_version = 7` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
-- The active schema MUST index private Agent evidence and bounded semantic inspection through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
+- The active schema MUST index bounded Agent semantic observation through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
 - An observation-attempt row MUST store its latest observation version, retention-omitted count, and retention-floor version.
-- An observation-turn row MUST store turn identity and prompt kind, Evidence and optional Trace lifecycle/integrity metadata, gap/unknown/provider-event counts, byte/digest metadata for prompt and response boundaries, fence metadata, provider status/timing, and one bounded current-activity projection.
-- Trace lifecycle metadata MUST use `none`, `recording`, `sealed`, `published`, or `partial`.
-- A trace-enabled turn MUST progress from `none` to `recording` and become `sealed` after complete provider settlement.
-- Only a sealed Trace belonging to a writable attempt MAY become `published`.
-- An incomplete or failed private Trace MUST become `partial` instead of `published`.
+- An observation-turn row MUST store turn identity, prompt kind, `recording | settled | incomplete` state, gap/unknown/provider-event counts, fence metadata, provider status/timing, and one bounded current-activity projection.
 - An observation-entry row MUST store turn identity, deterministic entry id, observation version, source sequence, event time, semantic kind, bounded JSON payload, and exact payload byte count.
-- Observation index rows MUST NOT store an exact prompt, steering instruction, response-at-fence, final response, or raw provider frame.
-- Each durable turn-start, coalesced current checkpoint, semantic-entry batch, fence, gap, terminal, or recovery mutation MUST increment the run observation version exactly once.
-- Persisting a Trace frame MUST NOT increment the run observation version.
+- Observation rows MUST NOT store an exact prompt, steering instruction, final response, or raw provider frame.
+- Each durable turn start, coalesced current checkpoint, semantic-entry batch, fence, gap, terminal, or reconciliation mutation MUST increment the run observation version exactly once.
 - A first writable open MUST initialize the complete current schema.
 - Reopening a current-version database MUST preserve its rows.
 - New-run preparation and real pruning of an incompatible active database MUST archive every child of `runtime/` under one new `archives/<utc>-v<observed-storage-version>/` generation before creating an empty current database.
@@ -94,7 +88,7 @@
 - `packageLockDigest`, when present, is environment metadata only and MUST NOT contribute to source-graph or fork identity.
 - Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
-- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, the optional private `evidence/` tree, and the optional private `acp/` tree.
+- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, and the optional private `acp/` tree.
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
 - Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
@@ -282,12 +276,13 @@ type PruneReport = {
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
 - Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
-- Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, identity replacement clears inherited model/config, preserves permission, and never accepts `trace`.
+- Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
+- The effective acpx record id MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the canonical JSON identity `{ runId, key }` for an explicit session key or `{ runId, nodeKey }` otherwise.
 - Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after a paused, failed, completed, or canceled Agent attempt.
 - Runtime MUST serialize Agent executor admission by effective session identity within one run.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
-- Steering replacement settlement gating MUST include draining and sealing the superseded turn's Private Turn Evidence.
+- Steering replacement settlement gating MUST include draining the superseded executor.
 - Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
 - Schema-less Agents MUST return raw text with zero response repairs.
 - A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible information update before any schema-backed output contract.
@@ -328,94 +323,61 @@ type PruneReport = {
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
 - A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
-- A fenced Agent turn MUST NOT register a new ordinary turn, stderr, or trace artifact after the fence.
-- Turn metadata MUST reference a registered canonical artifact when one exists and otherwise count sealed Private Turn Evidence without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr for a writable attempt uses a separate artifact.
+- When the normalized summary identifies an acpx record, that turn artifact MUST contain the run-relative `sessionProjectionPath` `acp/sessions/<percent-encoded-acpx-record-id>.json`; it MUST reference rather than embed the session projection.
+- The session projection is session-wide and mutable across turns. It MUST NOT be treated as an exact per-event log or as a source for precise event timing, tool-update ordering, latency, or concurrency analysis.
+- A fenced Agent turn MUST NOT register a new ordinary turn or stderr artifact after the fence.
+- Turn metadata MUST reference a registered canonical artifact when one exists and otherwise retain only its bounded summary and terminal disposition; non-empty stderr for a writable attempt uses a separate artifact.
 - The daemon MUST accept an optional `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` at startup; it MUST be a canonical positive decimal integer no greater than the native timer limit or daemon startup MUST fail with `invalid-agent-acp-inactivity-fail-after-ms`.
 - When configured ACP inactivity elapses, Runtime MUST settle the Agent attempt as the retryable runtime failure `agent_acp_inactivity_stale` and retain the reported silence evidence in the durable failure.
-- Top-level Agent `trace: true` MUST enable complete schema-versioned, ordered normalized Trace spooling per turn without requesting an in-memory Runtime trace result from the Agent Executor.
 - A recognized Agent failure MUST write terminal progress/metadata once; if that write also fails, the rejection MUST retain both the recognized failure and persistence failure.
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
 - Running Agent progress MUST periodically persist a local ACP activity timestamp and MUST clear it when that turn settles.
 - Agent progress MUST retain a bounded response, at most one latest plan or provider-reported-thought intent, bounded tool input/output, and observation completeness for the active owned attempt.
 
-### Private Turn Evidence And Semantic Observation
+### Agent Semantic Observation
 
-- Runtime MUST capture each Agent turn through one observation module that owns Private Turn Evidence, bounded semantic projection, optional Trace spooling, fencing, sealing, publication, and recovery.
-- Runtime MUST persist each turn's Evidence beneath `runtime/runs/<run-id>/evidence/agents/<attempt-id>/turn-<NNN>.evidence.jsonl.partial`.
-- After persisting the provider terminal boundary, Runtime MUST atomically create the corresponding `.evidence.jsonl` path without replacing a different entry, then remove the partial path; retry MAY accept an existing final path only when it has the same opened file identity.
-- Runtime MUST persist a trace-enabled turn's private spool beside its Evidence as `turn-<NNN>.trace.jsonl.partial`.
-- The `evidence/` tree MUST remain private Runtime data and MUST NOT enter artifact listing, ArtifactRef resolution, Hooks, expressions, workflow output, fork inheritance, or another Agent prompt.
-- Runtime MUST create Evidence directories with mode `0700` and files with mode `0600` where POSIX modes are supported.
-- Evidence paths MUST use the same containment, real-path, regular-file, and symbolic-link protections as other private Runtime run data.
-- Run deletion and pruning MUST delete private Evidence, private Trace spools, and their indexes.
-- Fork MUST NOT copy private Evidence or Trace spools into the child run.
-- Private Turn Evidence MUST contain only `turn_start`, `fence`, `gap`, and `turn_end` boundary records.
-- A `turn_start` record MUST use sequence zero and contain run/node/attempt/turn identity, Agent/session/cwd, prompt kind, exact Agent-visible prompt, Trace-enabled state, and start time.
-- A `fence` record MUST contain its reason and, when available, scheduler event sequence/time plus the exact response observed at that fence.
-- A fence without an available response snapshot MUST mark that response unavailable and the Evidence degraded.
-- A `gap` record MUST identify a real persistence, corruption, queue-overflow, or recovery loss by scope, count, bytes, and reason.
-- Semantic-retention eviction MUST NOT create a gap or mark Evidence degraded.
-- A `turn_end` record MUST contain the exact final observed response, provider outcome, timing, bounded failure, and a bounded summary without a complete tool-call array.
-- The semantic entry/current budgets MUST NOT truncate the exact prompt, response-at-fence, or final response stored in Private Turn Evidence.
-- Evidence records and provider requests MUST NOT contain a Runtime steering identity.
-- Evidence prompts MUST preserve the steering prompt rules in [Agents](#agents), including the complete schema contract when present and no explanatory prefix.
-- A response-repair turn MUST preserve only its repair prompt as Evidence and MUST NOT repeat the steering instruction.
-- Runtime MUST durably persist `turn_start`, its Evidence index row, and the optional Trace header before dispatching the provider.
-- Runtime MUST revalidate attempt identity and its abort/fence after durable turn start and before provider dispatch.
+- Runtime MUST capture each Agent turn through one SQLite-backed observation module that owns bounded semantic projection, fencing, and reconciliation.
+- Runtime MUST persist a `recording` observation-turn row before dispatching the provider.
+- Runtime MUST revalidate attempt identity and its abort/fence after durable turn admission and before provider dispatch.
 - Runtime MUST continue observing a superseded provider until its process settles.
-- Runtime MUST seal Evidence and any Trace spool after provider settlement and before evaluating whether the attempt may register artifacts or commit a result.
+- Runtime MUST mark a normally settled provider turn `settled` with its provider disposition and finish time.
 - Runtime MUST revalidate attempt ownership before artifact registration and again before output conformance, repair, or scheduler result commit.
-- A late provider success MAY set the private provider outcome to `completed` but MUST NOT change a superseded scheduler disposition from discarded.
 - A superseded attempt's late output, ordinary artifact registration, progress writes, and result commit MUST remain fenced.
 - An artifact registered before a fence MAY remain registered.
-- Cleanup of an unregistered post-fence artifact file MUST NOT delete Private Turn Evidence or a private Trace spool.
 - Runtime MUST fold normalized provider observations into bounded current activity and closed semantic entries when they are received.
 - Runtime MUST merge consecutive assistant chunks into one response segment and consecutive thought or plan chunks into the corresponding intent segment.
 - Runtime MUST fold calls and updates sharing one tool-call id into one tool entry.
-- Runtime MUST retain usage observations in node progress, terminal turn summaries, Private Turn Evidence, and opt-in Trace diagnostics without adding them to semantic current activity or Timeline entries.
+- Runtime MUST retain usage observations in node progress and terminal turn summaries without adding them to semantic Timeline entries.
 - Runtime MUST exclude unknown-provider payload bodies from semantic persistence while counting unknown events and marking observation completeness degraded.
 - A tool, channel change, fence, gap, or turn terminal boundary MUST close the applicable open semantic segment.
 - Runtime MUST close pre-fence segments before the steer control marker and order subsequent late provider activity after that marker.
 - An open semantic segment MUST exist only in a turn's bounded current projection.
 - A closed semantic segment MUST exist only in `agent_observation_entries`.
-- A trace-disabled turn MUST NOT persist normalized provider frames.
+- Runtime MUST NOT persist normalized provider event envelopes as an ordered frame stream.
 - One attempt MUST retain at most 128 closed semantic entries and at most 128 KiB of their JSON payloads.
 - A turn's serialized current projection MUST contain at most 16 KiB.
 - Inserting semantic entries and evicting the oldest entries required by either retention limit MUST occur in one SQLite transaction.
 - Retention eviction MUST increment the attempt's retention-omitted count and advance its retention-floor version.
-- Retention eviction MUST NOT increment the Evidence gap count or reduce observation completeness.
+- Retention eviction MUST NOT create a gap or reduce observation completeness.
 - Runtime MUST checkpoint response or intent growth after at least 512 additional bytes or ten seconds since the preceding checkpoint.
 - Runtime MUST checkpoint phase changes, tool start/terminal, fence, gap, and turn terminal immediately.
-- A usage-only observation MUST NOT advance the inspection-visible observation version.
-- A trace-enabled turn MUST spool every normalized observation in arrival order without persisting those provider frames in Private Turn Evidence or the SQLite semantic projection.
-- A Trace spool MUST start with `turn_start` at sequence zero, assign each observation `event.sequence + 1`, and end with `turn_end`.
-- A Trace spool MUST NOT contain a prompt, fence, steering instruction, or Runtime steering identity.
-- Runtime MUST use a fixed 64 KiB Trace write buffer and flush it when full and at fence or terminal boundaries.
-- Runtime MUST synchronize and seal a complete Trace spool after the provider process settles.
-- Runtime MUST atomically create the corresponding private `.trace.jsonl` path without replacing a different entry, then remove the partial path; retry MAY accept an existing final path only when it has the same opened file identity.
-- After revalidating artifact ownership, Runtime MUST copy a sealed Trace spool to `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.trace.jsonl` and register it with the spool's size and digest.
-- Runtime MUST remove the private Trace spool after successful artifact registration on a best-effort basis.
-- A failed Trace registration MUST remove only its unregistered public copy and retain the private spool.
-- A missing Trace spool or Trace copy/registration failure for a writable attempt MUST reject execution as a system failure.
-- A fence that wins before Trace registration MUST retain the private spool without registering a public trace artifact.
-- A Trace artifact registered before a later fence MUST remain registered.
-- Failure to seal Evidence or Trace for an active writable attempt MUST reject execution as a system failure.
-- Failure to seal Evidence or Trace for a fenced attempt MUST preserve the durable control and replacement admission while marking the private record partial/degraded.
-- Evidence sealing means the provider terminal boundary is durable; Runtime MAY append one idempotent post-settlement fence annotation and recompute Evidence metadata.
-- Writable-store recovery MUST index complete unindexed Evidence boundary records.
-- Recovery MUST represent an incomplete Evidence trailing record as a gap rather than inventing its content.
-- Recovery MUST seal partial Evidence containing a valid `turn_end`.
-- Recovery MUST mark open Evidence for a terminal or superseded attempt as partial without inventing a provider outcome or final response.
-- Recovery MUST close a recoverable bounded current checkpoint with a deterministic semantic entry id.
-- Recovery MUST seal a partial Trace only when its sequence is complete and it contains a terminal record.
-- Recovery MUST retain an incomplete Trace as partial without inventing a terminal record.
-- Recovery MAY remove an orphan partial file with no index when provider dispatch was never admitted.
-- Recovery MAY remove a private Trace spool when the deterministic registered trace artifact has the same size and digest.
-- Opening a Runtime store MUST NOT trigger Evidence recovery.
-- Runtime MUST NOT recover Evidence while its indexed scheduler attempt remains `started`.
-- Executable-run Evidence recovery MUST occur only after the daemon has claimed that run and superseded attempts owned by expired epochs.
-- Terminal-run Evidence recovery MUST occur only after daemon startup owns both its endpoint and durable daemon lease.
-- Evidence recovery MUST NOT participate in scheduler decisions.
+- A durable observation fence MUST store only its scheduler event sequence, committed time, and reason.
+- Replaying the same durable fence sequence MUST be idempotent.
+- A different durable fence sequence for the same turn MUST fail as an invariant violation.
+- When an active observation writer receives a fence, Runtime MUST close its current pre-fence semantic segment and attribute subsequent activity as post-fence.
+- When a `recording` observation turn has no active writer at a committed fence, Runtime MUST preserve its bounded current activity, add one `observation_boundary_unavailable` gap, clear current, and mark the turn `incomplete`.
+- A gap MUST represent a missing observation boundary or provider settlement rather than semantic-retention eviction.
+- Reconciliation MUST process only `recording` turns whose scheduler attempt is terminal or superseded.
+- Reconciliation MUST use the scheduler attempt's durable finish time.
+- Reconciliation MUST preserve a recoverable bounded current checkpoint as a semantic entry with a deterministic id.
+- Reconciliation MUST add one `provider_settlement_missing_recovery` gap, clear current, and mark the turn `incomplete`.
+- Reconciliation MUST NOT invent a provider outcome or final response.
+- Reconciliation MUST leave a scheduler attempt that remains `started` unchanged.
+- Reconciliation MUST be idempotent and MUST NOT participate in scheduler decisions.
+- Executable-run reconciliation MUST occur only after the daemon has claimed that run and superseded attempts owned by expired epochs.
+- Terminal-run reconciliation MUST occur only after daemon startup owns both its endpoint and durable daemon lease.
+- Exact settled turn prompt/response data MUST remain in the registered turn artifact.
+- Session-wide Agent history MUST remain in the run-local ACP session projection.
 
 ### Controls And Daemon
 
@@ -464,16 +426,16 @@ type DaemonSteerControlResult = {
 - A steer target that is absent, non-Agent, or no longer started MUST return `RUN_NOT_CONTROLLABLE`.
 - A rejected steer target MUST append no events.
 - An accepted steer MUST atomically persist `control.agent_steer_requested`, supersede the targeted attempt as `operator_steered`, and requeue its node instance as `steered`.
-- The accepted steer transaction MUST return the committed control event sequence and time to the Runtime Evidence layer.
-- In the same control call stack, Runtime MUST snapshot the exact response observed at that committed fence and idempotently enqueue one private fence record before waking the scheduler.
-- A replayed steer request MUST NOT create a duplicate private fence record.
-- When no active observation handle is available, inspection MUST retain the durable fence and report unavailable response-at-fence evidence as degraded.
-- Runtime MUST best-effort flush the private fence record before returning the existing steer receipt.
+- The accepted steer transaction MUST return the committed control event sequence and time to the Runtime observation module.
+- In the same control call stack, Runtime MUST idempotently record the fence control metadata before waking the scheduler.
+- A replayed steer request MUST NOT create duplicate fence metadata or a duplicate gap.
+- When no active observation writer is available, inspection MUST retain the durable fence and report an observation gap.
+- Runtime MUST best-effort flush the semantic fence mutation before returning the existing steer receipt.
 - An accepted steer MUST fence the superseded attempt's result commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's artifact commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's progress commits before returning its receipt.
 - An accepted steer MUST request best-effort abort of the superseded Agent turn.
-- Pause, cancel, and owner-loss handling MUST add a fallback private fence for each affected active Agent turn.
+- Pause, cancel, and owner-loss handling MUST add a fallback semantic fence for each affected active Agent turn.
 - Runtime MUST NOT roll back external side effects already performed by a superseded Agent turn.
 - A steering replacement MUST reuse the frozen run, input, node configuration, Agent mapping, and output schema.
 - A steering replacement MUST reuse the effective ACP session.
@@ -541,7 +503,7 @@ type DaemonSteerControlResult = {
 Runtime owns generic inspection semantics and public shape.
 
 - Generic inspection MUST provide one coherent run, target Summary, target Timeline, or candidate view, and read-only observation of that selected view.
-- It exposes only views, candidates, observations, and public errors. It omits internal metadata and private Evidence/Trace, provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, and artifact reads remain separate.
+- It exposes only views, candidates, observations, and public errors. It omits internal metadata and provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, and artifact reads remain separate.
 - A target is `root`, an authored id, `@<12-lowercase-hex>`, or that reference with `#<positive-attempt-number>`. Malformed, absent, and colliding references MUST respectively return `invalid-query`, `target-not-found`, and a non-leaking `read-failed` result.
 - A one-shot ambiguous authored target MUST return public candidates, never select an occurrence; observation MUST reject it before attachment. Candidate pagination is one-based, bounded, only for one-shot ambiguous reads; each row contains selector, status, and breadcrumb.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
@@ -573,5 +535,5 @@ Runtime owns generic inspection semantics and public shape.
 ## Verification
 
 - `pnpm test:unit packages/runtime`: covers selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, recovery, and read-only inspection.
+- `pnpm test:integration packages/runtime`: covers durable observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

@@ -29,8 +29,8 @@ vi.mock("../src/store/store.js", async importOriginal => {
         startupRecovery.claimed = true;
         return lease;
       };
-      const recover = store.observationLog.recoverTerminalPartialTurns.bind(store.observationLog);
-      store.observationLog.recoverTerminalPartialTurns = async () => {
+      const recover = store.observationLog.reconcileTerminalTurns.bind(store.observationLog);
+      store.observationLog.reconcileTerminalTurns = async () => {
         startupRecovery.calls += 1;
         startupRecovery.claimedAtRecovery = startupRecovery.claimed;
         if (startupRecovery.failure !== undefined) throw startupRecovery.failure;

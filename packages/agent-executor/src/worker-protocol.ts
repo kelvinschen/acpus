@@ -14,7 +14,7 @@ export type AcpWorkerParentMessage =
       protocolVersion: 1;
       workerId: string;
       attemptId: string;
-      sessionDirectory: string;
+      sessionStateDirectory: string;
       cwd: string;
       env: Record<string, string | undefined>;
       agent: AgentSelector;

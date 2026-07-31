@@ -52,7 +52,6 @@ describe("workflow compilation", () => {
           use: "codex",
           permissionMode: "approve-reads",
           config: { model: "gpt-5.4", mode: "agent" },
-          trace: true,
           env: { REVIEW_PROFILE: "strict" },
         },
       },
@@ -142,7 +141,6 @@ describe("workflow compilation", () => {
         use: "codex",
         permissionMode: "approve-reads",
         config: { model: "gpt-5.4", mode: "agent" },
-        trace: true,
         env: {
           REVIEW_PROFILE: "strict",
         },
@@ -1067,7 +1065,6 @@ describe("workflow compilation", () => {
           model: "gpt-5.4",
           permissionMode: "approve-all",
           config: { model: "gpt-5.5", mode: "bypassPermissions" },
-          trace: false,
           cwd: "/tmp/work",
           env: {
             STATIC: "1",
@@ -1092,7 +1089,6 @@ describe("workflow compilation", () => {
         model: "gpt-5.4",
         permissionMode: "approve-all",
         config: { model: "gpt-5.5", mode: "bypassPermissions" },
-        trace: false,
         cwd: "/tmp/work",
         env: {
           STATIC: "1",
@@ -1112,7 +1108,6 @@ describe("workflow compilation", () => {
         ir_shaped: { kind: "agent_definition", use: "codex" },
         legacy_agent_mode: { use: "codex", agentMode: "plan" },
         bad_config: { use: "codex", config: { mode: true } },
-        bad_trace: { use: "codex", trace: "yes" },
       } as any,
     }).build(() => ({}));
 
@@ -1139,10 +1134,6 @@ describe("workflow compilation", () => {
       expect.objectContaining({
         code: "A002",
         path: "agents.bad_config.config.mode",
-      }),
-      expect.objectContaining({
-        code: "A002",
-        path: "agents.bad_trace.trace",
       }),
     ]);
   });

@@ -8,16 +8,16 @@ import {
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
 import type {
   AgentObservationInspectionProjection,
-  AgentObservationTurnEvidence,
+  AgentObservationTurn,
 } from "../src/observations/log.js";
 import type { RunDetails } from "../src/store/store.js";
 
 describe("inspection job projections", () => {
-  it("keeps ordinary target summaries free of Evidence", () => {
+  it("keeps ordinary target summaries free of private journal details", () => {
     const document = projectTargetSummary({
       run: agentRun(),
       details: agentDetails(),
-      observations: observations([turn(1, { state: "sealed", providerStatus: "completed" })]),
+      observations: observations([turn(1, { state: "settled", providerStatus: "completed" })]),
     });
 
     expect(document).toMatchObject({
@@ -26,8 +26,7 @@ describe("inspection job projections", () => {
       subject: { ref: "@1a2b3c4d5e6f#1" },
       availableActions: [{ kind: "inspect-timeline", target: "@1a2b3c4d5e6f#1" }],
     });
-    expect(document).not.toHaveProperty("evidence");
-    expect(JSON.stringify(document)).not.toContain("evidence/agents");
+    expect(document).not.toHaveProperty("journal");
   });
 
   it("prioritizes and labels settled intent with matching activity identity", () => {
@@ -36,7 +35,7 @@ describe("inspection job projections", () => {
         activity(1, "\n\n**Planning JSON structure with diverse angles**", "reported-thought"),
         activity(2, '{"query":"agent harness"}', "response"),
       ],
-      [turn(1), turn(2, { state: "sealed", providerStatus: "completed" })],
+      [turn(1), turn(2, { state: "settled", providerStatus: "completed" })],
     );
 
     expect(document.pulse).toEqual({
@@ -74,7 +73,7 @@ describe("inspection job projections", () => {
     });
   });
 
-  it("labels a settled plan and omits a headline for empty evidence", () => {
+  it("labels a settled plan and omits a headline for empty activity", () => {
     const planned = settledSummary([activity(1, "Check exact output", "plan")]);
     const empty = settledSummary([activity(1, " \n\t", "reported-thought")]);
 
@@ -94,10 +93,10 @@ describe("inspection job projections", () => {
     const projection = observations([]);
 
     const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
-    expect(summary.visibility).toEqual({ state: "degraded", reason: "boundary-evidence-unavailable" });
+    expect(summary.visibility).toEqual({ state: "degraded", reason: "observation-gap" });
   });
 
-  it("projects one bounded timeline view without Evidence paging metadata", () => {
+  it("projects one bounded timeline view without private journal metadata", () => {
     const details = agentDetails();
     const projection = observations([], [
       activity(1, "first"),
@@ -164,7 +163,6 @@ describe("inspection job projections", () => {
           },
           state: "recording",
           completeness: "complete",
-          gaps: 0,
         }],
       ),
     });
@@ -192,7 +190,7 @@ describe("inspection job projections", () => {
     const document = projectAgentExecution({
       details: agentDetails(),
       observations: observations(
-        [turn(1, { state: "sealed", finishedAt: "2026-07-25T00:00:03.000Z" })],
+        [turn(1, { state: "settled", finishedAt: "2026-07-25T00:00:03.000Z" })],
         [],
         [{
           attemptId: "attempt-1",
@@ -203,9 +201,8 @@ describe("inspection job projections", () => {
           response: inspectionExcerpt("terminal observed response", 1_536, "tail"),
           context: { used: 80, size: 100, updatedAt: "2026-07-25T00:00:03.000Z" },
           tokenUsage: { source: "usage_update", inputTokens: 70, outputTokens: 10, totalTokens: 80 },
-          state: "sealed",
+          state: "settled",
           completeness: "complete",
-          gaps: 0,
         }],
       ),
     });
@@ -222,7 +219,7 @@ describe("inspection job projections", () => {
     const document = projectAgentExecution({
       details: agentDetails(),
       observations: observations(
-        [turn(1, { state: "sealed", fencedAt: "2026-07-25T00:00:03.000Z", finishedAt: "2026-07-25T00:00:09.000Z" })],
+        [turn(1, { state: "settled", fencedAt: "2026-07-25T00:00:03.000Z", finishedAt: "2026-07-25T00:00:09.000Z" })],
         [],
         [{
           attemptId: "attempt-1",
@@ -235,9 +232,8 @@ describe("inspection job projections", () => {
             active: [{ name: "Bash", updatedAt: "2026-07-25T00:00:09.000Z" }],
             omittedActive: 0,
           },
-          state: "sealed",
+          state: "settled",
           completeness: "complete",
-          gaps: 0,
         }],
       ),
     });
@@ -361,7 +357,7 @@ function agentDetails(): ResolvedTargetState {
 }
 
 function observations(
-  turns: AgentObservationTurnEvidence[],
+  turns: AgentObservationTurn[],
   entries: AgentObservationInspectionProjection["entries"] = [],
   currents: AgentObservationInspectionProjection["currents"] = [],
 ): AgentObservationInspectionProjection {
@@ -378,7 +374,7 @@ function observations(
 
 function settledSummary(
   entries: AgentObservationInspectionProjection["entries"],
-  turns = [turn(1, { state: "sealed", providerStatus: "completed" })],
+  turns = [turn(1, { state: "settled", providerStatus: "completed" })],
 ) {
   const details = agentDetails();
   details.summary.nodeStatus = "completed";
@@ -391,8 +387,8 @@ function settledSummary(
 
 function turn(
   number: number,
-  overrides: Partial<AgentObservationTurnEvidence> = {},
-): AgentObservationTurnEvidence {
+  overrides: Partial<AgentObservationTurn> = {},
+): AgentObservationTurn {
   return {
     runId: "run-1",
     attemptId: "attempt-1",
@@ -401,16 +397,11 @@ function turn(
     attemptNo: 1,
     turn: number,
     promptKind: "task",
-    relativePath: `evidence/agents/attempt-1/turn-${String(number).padStart(3, "0")}.evidence.jsonl`,
     state: "recording",
     completeness: "complete",
     gapCount: 0,
     eventCount: 1,
     unknownEventCount: 0,
-    promptBytes: 12,
-    promptDigest: `prompt-${number}`,
-    lastResponseBytes: 0,
-    lastResponseDigest: `response-${number}`,
     startedAt: `2026-07-25T00:00:${String(number).padStart(2, "0")}.000Z`,
     ...overrides,
   };

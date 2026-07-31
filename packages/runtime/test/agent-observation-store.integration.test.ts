@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rename, symlink } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AgentTurnObservation, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
@@ -18,24 +18,8 @@ const observedAt = "2026-07-26T00:00:00.000Z";
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
 }));
-const filesystemMocks = vi.hoisted(() => ({
-  afterChmod: undefined as ((path: string) => Promise<void>) | undefined,
-}));
-
-vi.mock("node:fs/promises", async importOriginal => {
-  const original = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...original,
-    chmod: async (path: Parameters<typeof original.chmod>[0], mode: number) => {
-      await original.chmod(path, mode);
-      await filesystemMocks.afterChmod?.(String(path));
-    },
-  };
-});
-
 beforeEach(() => {
   agentMocks.executeAgentTurn.mockReset();
-  filesystemMocks.afterChmod = undefined;
 });
 
 describe("Agent observation store projection", () => {
@@ -48,184 +32,6 @@ describe("Agent observation store projection", () => {
     expect(segment.originalBytes).toBe(40_000);
     expect(Buffer.byteLength(segment.text)).toBe(1536);
     expect([...segment.text]).toHaveLength(384);
-  });
-
-  it("does not materialize Evidence children through a replaced parent directory", async () => {
-    await withRuntimeWorkspace("agent-observation-evidence-parent-replacement", async workspace => {
-      const store = await openRuntimeStore(workspace);
-      const runId = "20260726000000FFFFFFFFFFFFFFFFFFFF";
-      const attemptId = "attempt_parent";
-      const runDir = join(resolveRuntimeLayout(workspace).runsRoot, runId);
-      const evidenceRoot = join(runDir, "evidence");
-      const openedEvidenceRoot = `${evidenceRoot}.opened`;
-      const outside = join(workspace, "outside-evidence");
-      try {
-        await Promise.all([mkdir(runDir), mkdir(outside)]);
-        seedCaptureAttempt(workspace, runId, attemptId);
-        filesystemMocks.afterChmod = async path => {
-          if (path !== evidenceRoot) return;
-          filesystemMocks.afterChmod = undefined;
-          await rename(evidenceRoot, openedEvidenceRoot);
-          await symlink(outside, evidenceRoot, process.platform === "win32" ? "junction" : "dir");
-        };
-
-        await expect(store.observationLog.captureTurn({
-          runId,
-          nodeId: "agent",
-          nodeKey: "agent~1",
-          attemptId,
-          attemptNo: 1,
-          turn: 1,
-          promptKind: "task",
-          agentKey: "agent",
-          sessionName: attemptId,
-          cwd: workspace,
-          trace: true,
-        }, {
-          agent: { kind: "named", name: "mock" },
-          prompt: "work",
-          cwd: workspace,
-          env: {},
-          sessionName: attemptId,
-          permissionMode: "deny-all",
-        }, agentMocks.executeAgentTurn)).rejects.toThrow();
-
-        expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
-        await expect(readdir(outside)).resolves.toEqual([]);
-        expect(runtimeRow(
-          workspace,
-          `SELECT COUNT(*) AS count
-           FROM agent_observation_turns
-           WHERE run_id = ? AND attempt_id = ?`,
-          runId,
-          attemptId,
-        )).toEqual({ count: 0 });
-      } finally {
-        filesystemMocks.afterChmod = undefined;
-        store.close();
-      }
-    });
-  });
-
-  it.each([
-    { trace: false, label: "Evidence", replacement: "evidence file" },
-    { trace: true, label: "Trace", replacement: "trace file" },
-  ])("fails closed on same-path $replacement replacement before $label sealing", async ({
-    trace,
-    replacement,
-  }) => {
-    const workspaceName = `agent-observation-${replacement.replace(" ", "-")}-identity-${String(trace)}`;
-    await withRuntimeWorkspace(workspaceName, async workspace => {
-      const store = await openRuntimeStore(workspace);
-      const runId = "20260726000000DDDDDDDDDDDDDDDDDDDD";
-      const attemptId = "attempt_identity";
-      const layout = resolveRuntimeLayout(workspace);
-      const runDir = join(layout.runsRoot, runId);
-      let providerStarted!: () => void;
-      const started = new Promise<void>(resolve => {
-        providerStarted = resolve;
-      });
-      let releaseProvider!: () => void;
-      const providerRelease = new Promise<void>(resolve => {
-        releaseProvider = resolve;
-      });
-      let capture: ReturnType<typeof store.observationLog.captureTurn> | undefined;
-      try {
-        await mkdir(runDir);
-        seedCaptureAttempt(workspace, runId, attemptId);
-        const summary = completedTurn().summary;
-        agentMocks.executeAgentTurn.mockImplementation(async request => {
-          providerStarted();
-          await providerRelease;
-          request.onObservation?.({
-            event: {
-              schemaVersion: 1,
-              sequence: 0,
-              observedAt,
-              elapsedMs: 0,
-              type: "turn_end",
-              status: "completed",
-            },
-            progress: {
-              responseText: "done",
-              summary,
-              updatedAt: observedAt,
-            },
-          });
-          return completedTurn(summary);
-        });
-
-        capture = store.observationLog.captureTurn({
-          runId,
-          nodeId: "agent",
-          nodeKey: "agent~1",
-          attemptId,
-          attemptNo: 1,
-          turn: 1,
-          promptKind: "task",
-          agentKey: "agent",
-          sessionName: attemptId,
-          cwd: workspace,
-          trace,
-        }, {
-          agent: { kind: "named", name: "mock" },
-          prompt: "work",
-          cwd: workspace,
-          env: {},
-          sessionName: attemptId,
-          permissionMode: "deny-all",
-        }, agentMocks.executeAgentTurn);
-        await started;
-
-        const prefix = join(runDir, "evidence", "agents", attemptId, "turn-001");
-        const replacedPath = replacement === "evidence file"
-          ? `${prefix}.evidence.jsonl.partial`
-          : `${prefix}.trace.jsonl.partial`;
-        const openedPath = `${replacedPath}.opened`;
-        await rename(replacedPath, openedPath);
-        await cp(openedPath, replacedPath, { recursive: true });
-        releaseProvider();
-
-        const failure = await capture.then(() => undefined, error => error);
-        expect(failure).toBeDefined();
-        if (replacement === "trace file") {
-          expect((await readFile(`${prefix}.evidence.jsonl`, "utf8"))
-            .trim()
-            .split("\n")
-            .map(line => JSON.parse(line).type)).toEqual(["turn_start", "gap", "turn_end"]);
-        } else {
-          await expect(readFile(`${prefix}.evidence.jsonl`)).rejects.toMatchObject({ code: "ENOENT" });
-        }
-        await expect(readFile(`${prefix}.trace.jsonl`)).rejects.toMatchObject({ code: "ENOENT" });
-        if (replacement !== "trace file") {
-          expect((await readFile(`${prefix}.evidence.jsonl.partial`, "utf8"))
-            .trim()
-            .split("\n")
-            .map(line => JSON.parse(line).type)).toEqual(["turn_start"]);
-        }
-        if (trace) {
-          expect((await readFile(`${prefix}.trace.jsonl.partial`, "utf8"))
-            .trim()
-            .split("\n")
-            .map(line => JSON.parse(line).type)).toEqual(["turn_start"]);
-        }
-        expect(runtimeRow(
-          workspace,
-          `SELECT state, trace_state
-           FROM agent_observation_turns
-           WHERE run_id = ? AND attempt_id = ? AND turn_no = 1`,
-          runId,
-          attemptId,
-        )).toEqual({
-          state: replacement === "trace file" ? "sealed" : "recording",
-          trace_state: replacement === "trace file" ? "partial" : trace ? "recording" : "none",
-        });
-      } finally {
-        releaseProvider?.();
-        await capture?.catch(() => {});
-        store.close();
-      }
-    });
   });
 
   it("keeps usage telemetry in the bounded Observation projection without Timeline entries", async () => {
@@ -318,10 +124,6 @@ describe("Agent observation store projection", () => {
           attemptNo: 1,
           turn: 1,
           promptKind: "task",
-          agentKey: "agent",
-          sessionName: attemptId,
-          cwd: workspace,
-          trace: true,
         }, {
           agent: { kind: "named", name: "mock" },
           prompt: "work",
@@ -362,19 +164,10 @@ describe("Agent observation store projection", () => {
         });
 
         releaseProvider();
-        const captured = await capture;
+        await capture;
         const runDir = store.getRunDir(runId);
         if (!runDir) throw new Error("expected run directory");
-        const evidence = (await readFile(join(runDir, captured.evidence.relativePath), "utf8"))
-          .trim()
-          .split("\n")
-          .map(line => JSON.parse(line));
-        expect(evidence.map(record => record.type)).toEqual(["turn_start", "turn_end"]);
-        expect(evidence.at(-1)?.summary).toMatchObject({
-          context: { used: 95, size: 100 },
-          tokenUsage: { totalTokens: 95 },
-          tools: { totalToolCallCount: 12 },
-        });
+        await expect(readdir(runDir)).resolves.not.toContain("evidence");
         const settled = await store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
@@ -385,7 +178,7 @@ describe("Agent observation store projection", () => {
         if (settled.isErr()) throw settled.error;
         expect(settled.value.currents).toEqual([
           expect.objectContaining({
-            state: "sealed",
+            state: "settled",
             phase: "settled",
             response: expect.objectContaining({ originalBytes: 512 }),
             context: expect.objectContaining({ used: 95, size: 100 }),
@@ -394,18 +187,6 @@ describe("Agent observation store projection", () => {
         ]);
         expect(settled.value.entries).toEqual([
           expect.objectContaining({ kind: "activity", channel: "response" }),
-        ]);
-        const tracePath = captured.evidence.trace?.relativePath;
-        if (!tracePath) throw new Error("expected private trace");
-        const trace = (await readFile(join(runDir, tracePath), "utf8"))
-          .trim()
-          .split("\n")
-          .map(line => JSON.parse(line));
-        expect(trace.map(record => record.type)).toEqual([
-          "turn_start",
-          "usage",
-          "message",
-          "turn_end",
         ]);
       } finally {
         releaseProvider?.();
@@ -509,10 +290,6 @@ describe("Agent observation store projection", () => {
           attemptNo: 1,
           turn: 1,
           promptKind: "task",
-          agentKey: "agent",
-          sessionName: attemptId,
-          cwd: workspace,
-          trace: false,
         }, {
           agent: { kind: "named", name: "mock" },
           prompt: "work",
@@ -707,10 +484,6 @@ async function captureSecondTurn(
     attemptNo: 1,
     turn: 2,
     promptKind: "continuation",
-    agentKey: nodeId,
-    sessionName: attemptId,
-    cwd: workspace,
-    trace: false,
   }, {
     agent: { kind: "named", name: "mock" },
     prompt: "continue",
@@ -863,18 +636,15 @@ function seedRetentionAttempts(
     const insertTurn = db.prepare(`
       INSERT INTO agent_observation_turns (
         run_id, attempt_id, node_key, node_id, attempt_no, turn_no,
-        prompt_kind, relative_path, state, prompt_bytes, prompt_digest,
-        last_response_digest, started_at, finished_at
+        prompt_kind, state, started_at, finished_at
       )
-      VALUES (?, ?, ?, ?, 1, 1, 'task', ?, 'sealed', 1, 'sha256:prompt',
-              'sha256:response', ?, ?)
+      VALUES (?, ?, ?, ?, 1, 1, 'task', 'settled', ?, ?)
     `);
     insertTurn.run(
       runId,
       countAttemptId,
       "count~1",
       "count",
-      `evidence/agents/${countAttemptId}/turn-001.evidence.jsonl`,
       observedAt,
       observedAt,
     );
@@ -883,7 +653,6 @@ function seedRetentionAttempts(
       byteAttemptId,
       "bytes~1",
       "bytes",
-      `evidence/agents/${byteAttemptId}/turn-001.evidence.jsonl`,
       observedAt,
       observedAt,
     );
@@ -967,12 +736,9 @@ function seedObservationTurn(workspace: string, runId: string, attemptId: string
     db.prepare(`
       INSERT INTO agent_observation_turns (
         run_id, attempt_id, node_key, node_id, attempt_no, turn_no,
-        prompt_kind, relative_path, state, prompt_bytes, prompt_digest,
-        last_response_digest, started_at
+        prompt_kind, state, started_at
       )
-      VALUES (?, ?, 'agent~1', 'agent', 1, 1, 'task',
-              'evidence/agents/attempt_page/turn-001.evidence.jsonl',
-              'recording', 6, 'sha256:prompt', 'sha256:response', ?)
+      VALUES (?, ?, 'agent~1', 'agent', 1, 1, 'task', 'recording', ?)
     `).run(runId, attemptId, observedAt);
     const payload = JSON.stringify({
       channel: "response",

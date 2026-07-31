@@ -95,14 +95,14 @@ export type AgentTurnProgress = {
   updatedAt: string;
 };
 
-type AgentTraceEventBase = {
+type AgentObservationEventBase = {
   schemaVersion: 1;
   sequence: number;
   observedAt: string;
   elapsedMs: number;
 };
 
-type AgentTraceEventPayload =
+type AgentObservationEventPayload =
   | { type: "message"; channel: "assistant" | "thought"; content: AgentJsonValue; tag?: string }
   | {
       type: "tool";
@@ -128,17 +128,11 @@ type AgentTraceEventPayload =
       message?: string;
     };
 
-export type AgentTraceEvent = AgentTraceEventBase & AgentTraceEventPayload;
+export type AgentObservationEvent = AgentObservationEventBase & AgentObservationEventPayload;
 
 export type AgentTurnObservation = {
-  event: AgentTraceEvent;
+  event: AgentObservationEvent;
   progress: AgentTurnProgress;
-};
-
-export type AgentTurnTrace = {
-  startedAt: string;
-  elapsedMs: number;
-  events: AgentTraceEvent[];
 };
 
 export type AgentTurnTiming = {
@@ -153,7 +147,6 @@ export type AgentTurnResult = (
       responseText: string;
       stderr: string;
       summary: AgentTurnSummary;
-      trace?: AgentTurnTrace;
     }
   | {
       status: "failed";
@@ -161,7 +154,6 @@ export type AgentTurnResult = (
       responseText: string;
       stderr: string;
       summary: AgentTurnSummary;
-      trace?: AgentTurnTrace;
     }
   | {
       status: "cancelled";
@@ -169,7 +161,6 @@ export type AgentTurnResult = (
       responseText: string;
       stderr: string;
       summary: AgentTurnSummary;
-      trace?: AgentTurnTrace;
     }
 ) & { timing: AgentTurnTiming };
 
@@ -184,7 +175,6 @@ export type AgentTurnRequest = {
   config?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
-  captureTrace?: boolean;
   onProgress?: (progress: AgentTurnProgress) => unknown;
   onObservation?: (observation: AgentTurnObservation) => unknown;
 };

@@ -171,7 +171,7 @@ acpus runs inspect <run-id> --target @<ref>#<attemptNo> --timeline
 ```
 
 Use `--await-decision` to remain attached until an input, pause, or terminal boundary needs a decision; use `--follow` only to wait for terminal status.
-Inspection is a compact text interface. Timeline is bounded operational history; full normalized provider streaming is retained only when the Agent enables `trace: true`.
+Inspection is a compact text interface. Timeline is bounded operational history; settled Agent turn artifacts can reference the run-local acpx session projection when deeper, low-frequency analysis is needed.
 
 ### Ordinary Run Controls
 

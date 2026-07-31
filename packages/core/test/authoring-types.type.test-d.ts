@@ -42,10 +42,8 @@ test("agent tokens are typed from top-level agent keys", () => {
     reviewer: { use: "codex", permissionMode: "approve-reads" },
   } satisfies AgentMap;
 
-  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", config: { mode: "agent" }, trace: true });
+  assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", config: { mode: "agent" } });
   assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", config: { model: "gpt-5.4", mode: "bypassPermissions" } });
-  // @ts-expect-error trace is a top-level boolean policy.
-  assertType<AgentDefinitionSpec>({ use: "codex", trace: "yes" });
   // @ts-expect-error agent definitions must use either use or command, not both.
   assertType<AgentDefinitionSpec>({ use: "codex", command: "acpx worker" });
   // @ts-expect-error agentMode was replaced by the config map.
@@ -84,16 +82,8 @@ test("agent step specs require agent tokens", () => {
     agent: "reviewer",
     prompt: "bad",
   };
-  const tracedStepSpec: AgentStepSpec<undefined> = {
-    agent: reviewer,
-    prompt: "bad",
-    // @ts-expect-error trace belongs to the top-level Agent definition, not an Agent node.
-    trace: true,
-  };
-
   void stepSpec;
   void badStepSpec;
-  void tracedStepSpec;
 });
 
 test("schema-backed nodes preserve native Zod tuple output types", () => {

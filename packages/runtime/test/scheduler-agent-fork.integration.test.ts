@@ -86,7 +86,6 @@ describe("scheduler agent overrides and forks", () => {
           });
           expect(turns[0]!.model).toBeUndefined();
           expect(turns[0]!.config).toBeUndefined();
-          expect(turns[0]!.captureTrace).toBeUndefined();
         } finally {
           store.close();
         }
@@ -129,7 +128,6 @@ describe("scheduler agent overrides and forks", () => {
             model: "sonnet",
             config: { mode: "plan", effort: "high" },
             permissionMode: "deny-all",
-            trace: true,
           });
 
           const reconfigured = await forkRuntimeRun(store, source.id, {
@@ -163,7 +161,6 @@ describe("scheduler agent overrides and forks", () => {
             kind: "agent_command",
             command: "custom-acp-server",
             permissionMode: "deny-all",
-            trace: true,
           });
           expect(effective && "model" in effective ? effective.model : undefined).toBeUndefined();
           expect(effective && "config" in effective ? effective.config : undefined).toBeUndefined();
@@ -444,7 +441,6 @@ describe("scheduler agent overrides and forks", () => {
             [{ reviewer: { policy: "full" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { kind: "agent_definition" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { timeout: "1s" } }, "$.reviewer Unrecognized key"],
-            [{ reviewer: { trace: true } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { agentMode: "plan" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { use: "codex", command: "custom-acp-server" } }, "must not specify both use and command"],
             [{ reviewer: { cwd: 123 } }, "$.reviewer.cwd"],
@@ -477,7 +473,6 @@ function overrideAgentWorkflow() {
         model: "old-model",
         permissionMode: "approve-reads",
         config: { mode: "agent" },
-        trace: true,
       },
       auditor: { use: "claude" },
     },

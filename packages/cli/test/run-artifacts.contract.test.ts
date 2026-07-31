@@ -21,10 +21,10 @@ const artifacts: ArtifactRecord[] = [{
   runId: "run_1",
   nodeKey: "review~abc",
   attempt: 1,
-  mediaType: "application/x-ndjson",
+  mediaType: "application/json",
   digest: "sha256:abc",
   size: 42,
-  path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.trace.jsonl",
+  path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.json",
 }];
 
 describe("runs artifacts", () => {
@@ -39,7 +39,7 @@ describe("runs artifacts", () => {
     expect(result).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: `artifact_1 application/x-ndjson ${artifacts[0]!.path}\n`,
+      stdout: `artifact_1 application/json ${artifacts[0]!.path}\n`,
     });
     expect(runtime.listArtifacts).toHaveBeenCalledWith("/workspace", "run_1");
     expect(runtime.inspectTargetArtifacts).not.toHaveBeenCalled();

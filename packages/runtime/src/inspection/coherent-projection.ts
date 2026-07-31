@@ -105,7 +105,7 @@ export function projectInspectionTargetTimelineView(input: {
   };
 }
 
-export function inspectionRun(run: RunDetails, failure?: { origin: InspectionFailure["origin"]; code?: string; message: string }): InspectionRun {
+function inspectionRun(run: RunDetails, failure?: { origin: InspectionFailure["origin"]; code?: string; message: string }): InspectionRun {
   const end = terminalRun(run.status) ? Date.parse(run.updatedAt) : Date.now();
   return {
     id: run.id,

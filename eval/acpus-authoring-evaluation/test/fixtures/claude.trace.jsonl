@@ -1,3 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"tool","action":"call","toolCallId":"claude-check","toolName":"Bash","kind":"execute","status":"pending","rawInput":{}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"update","toolCallId":"claude-check","toolName":"Bash","kind":"execute","rawInput":{"command":"acpus workflow check claude-workflow.ts 2>&1"}}
-{"schemaVersion":1,"sequence":3,"type":"tool","action":"update","toolCallId":"claude-check","toolName":"Bash","status":"completed","rawOutput":"Workflow check passed."}

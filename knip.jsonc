@@ -34,8 +34,9 @@
       ],
       "vitest": false,
       "ignoreIssues": {
+        // tsx is loaded only when the managed executor runs workspace TypeScript sources.
         // taskkill is a Windows system executable, not an npm binary.
-        "src/managed-executor.ts": ["binaries"]
+        "src/managed-executor.ts": ["unlisted", "binaries"]
       }
     },
     "packages/cli": {
@@ -52,6 +53,8 @@
         "skills/acpus/workflows/**/*.ts!"
       ],
       "vitest": false,
+      // printf is supplied by the shell used for self-contained inline Tasks.
+      "ignoreBinaries": ["printf"],
       "ignoreIssues": {
         // tsx is used only by the workspace source-mode daemon branch.
         "src/commands/daemon.ts": ["unlisted"],

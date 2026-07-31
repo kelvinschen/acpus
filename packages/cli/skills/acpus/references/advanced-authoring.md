@@ -1,6 +1,7 @@
 # Advanced Authoring
 
-Use it only for Agent session reuse, reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, cooperative Task cancellation, or Agent tracing configuration. Ordinary Task logic belongs in inline `exec`.
+Use it only for Agent session reuse, reusable/prebuilt Tasks, third-party imports, artifacts, custom Task process controls, or cooperative Task cancellation.
+Ordinary Task logic belongs in inline `exec`.
 
 Contents:
 
@@ -9,7 +10,6 @@ Contents:
 - Write and consume artifacts
 - Configure Task processes
 - Reuse Agent sessions
-- Configure Agent tracing
 
 ## Choose Task Form
 
@@ -151,17 +151,3 @@ const cycle = step("fix_review").loop({
   },
 });
 ```
-
-## Agent Tracing
-
-Enable benchmark/replay capture only on a top-level Agent definition:
-
-```ts
-agents: {
-  reviewer: { use: "codex", trace: true },
-}
-```
-
-`trace` defaults to false, is not valid on `step(...).agent(...)`, and cannot be set by CLI `--agents` overrides. An override that changes `use` or `command` inherits the authored tracing policy. Treat tracing as sensitive-data capture.
-
-For artifact roles, event semantics, inspection, and consumption, read [Agent Tracing](agent-tracing.md).

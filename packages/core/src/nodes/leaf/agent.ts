@@ -16,7 +16,6 @@ export type AgentUseSpec = {
   model?: string;
   config?: Record<string, string>;
   permissionMode?: AgentPermissionMode;
-  trace?: boolean;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -28,7 +27,6 @@ export type AgentCommandSpec = {
   model?: string;
   config?: Record<string, string>;
   permissionMode?: AgentPermissionMode;
-  trace?: boolean;
   cwd?: string;
   env?: StaticEnvInput;
 };
@@ -69,7 +67,6 @@ function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
     model: spec.model,
     config: spec.config,
     permissionMode: spec.permissionMode,
-    trace: spec.trace,
     cwd: spec.cwd,
     env: spec.env,
   };
@@ -142,9 +139,6 @@ function lowerAgentDefinition(
   }
   if (value.permissionMode !== undefined && value.permissionMode !== "approve-reads" && value.permissionMode !== "approve-all" && value.permissionMode !== "deny-all") {
     reject(`${path}.permissionMode`, `Agent '${name}' permissionMode must be approve-reads, approve-all, or deny-all.`);
-  }
-  if (value.trace !== undefined && typeof value.trace !== "boolean") {
-    reject(`${path}.trace`, `Agent '${name}' trace must be a boolean.`);
   }
   if (invalid) return undefined;
 

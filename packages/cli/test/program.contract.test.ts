@@ -3,7 +3,7 @@ import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { resolveRuntimeLayout } from "../../runtime/src/runtime-layout.js";
-import { openRuntimeStore } from "../../runtime/src/store/store.js";
+import { openRuntimeStore, RUNTIME_STORAGE_VERSION } from "../../runtime/src/store/store.js";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -159,7 +159,7 @@ describe("CLI program usage contracts", () => {
       expect(storeCheck).toEqual({
         area: "store",
         status: "warn",
-        message: "Runtime storage version 1 is older than the supported version 5. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+        message: `Runtime storage version 1 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
       });
       expect(storeCheck).not.toHaveProperty("details");
       expect(stderr.text).toBe("");

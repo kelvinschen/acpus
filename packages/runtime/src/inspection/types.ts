@@ -30,7 +30,7 @@ export type RunInspectionRunSummary = {
   };
 };
 
-export type RunInspectionDecisionRunSummary = Omit<RunInspectionRunSummary, "agentUsage">;
+type RunInspectionDecisionRunSummary = Omit<RunInspectionRunSummary, "agentUsage">;
 
 export type RunInspectionStatus =
   | "not_started"
@@ -62,7 +62,7 @@ export type RunInspectionStatusCounts = {
   mixed?: number;
 };
 
-export type RunInspectionFailure = {
+type RunInspectionFailure = {
   origin: "provider" | "runtime" | "scheduler" | "task" | "signal" | "unknown";
   code?: string;
   message: string;
@@ -115,7 +115,7 @@ export type AgentDecisionState = {
   };
 };
 
-export type RunInspectionScopeState =
+type RunInspectionScopeState =
   | {
       kind: "branch";
       ownerKind: "if" | "switch";
@@ -184,7 +184,7 @@ export type RunInspectionOverviewAction =
   | { kind: "cancel"; target?: string; itemKey?: string }
   | { kind: "steer"; target: string; itemKey: string };
 
-export type RunInspectionAction =
+type RunInspectionAction =
   | { kind: "inspect-timeline"; target: string }
   | { kind: "follow-target"; target: string }
   | { kind: "steer"; target: string }
@@ -416,7 +416,6 @@ export type RunInspectionAttention = {
 export type RunInspectionVisibility = {
   state: "degraded";
   reason:
-    | "boundary-evidence-unavailable"
     | "observation-gap"
     | "unrecognized-provider-activity";
 };
@@ -525,7 +524,6 @@ export type RunInspectionTimelineEntry =
       action: "steered" | "paused" | "resumed" | "retried" | "cancelled";
       attemptId?: string;
       attemptNo?: number;
-      responseAtFenceBytes?: number;
     }
   | {
       id: string;
@@ -660,7 +658,7 @@ export type ObserveInspectionQuery = {
   signal?: AbortSignal;
 };
 
-export type InspectionStatus = RunInspectionStatus;
+type InspectionStatus = RunInspectionStatus;
 
 export type InspectionVisibleReason =
   | "retry"
@@ -719,7 +717,7 @@ export type InspectionRun = {
   };
 };
 
-export type InspectionRunRef = {
+type InspectionRunRef = {
   id: string;
   status: RunStatus;
 };
@@ -730,7 +728,7 @@ export type InspectionSubject = {
   selector?: string;
 };
 
-export type InspectionTreeSubject = InspectionSubject;
+type InspectionTreeSubject = InspectionSubject;
 
 export type InspectionPulse = {
   phase: RunInspectionPulse["phase"];
@@ -751,7 +749,7 @@ export type InspectionAttention =
       expected?: string;
     };
 
-export type InspectionVisibility = {
+type InspectionVisibility = {
   state: "degraded";
   reason: RunInspectionVisibility["reason"];
 };

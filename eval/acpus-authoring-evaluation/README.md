@@ -37,24 +37,15 @@ Do not run the evaluation unless a benchmark rerun was explicitly requested.
 Before an authorized run, ensure `traex` is configured and select a new
 workspace root; existing trial directories are never overwritten.
 
-## Measure An Authorized Run
+## Analyze An Authorized Run
 
-```sh
-node eval/acpus-authoring-evaluation/scripts/analyze-traces.mjs <run-id>
-```
-
-The analyzer invokes `acpus runs artifacts <run-id> --json` (preferring the
-workspace binary) and writes `results/<run-id>/trace-metrics.json` and
-`trace-metrics.md`. Use `--artifacts-json <file>` for an offline listing.
-
-Only authoring Agent `.trace.jsonl` artifacts and their `type: "tool"` events
-are read. Tool fragments are grouped by `toolCallId`; the final shell command is
-split into executable segments, and only a segment beginning
-`acpus workflow check` counts. Search commands and prose are excluded. A tool
-call with multiple checks or a check without an explicit exit code or terminal
-`completed`/`failed` status invalidates the benchmark. Diagnostic codes come
-from the final tool output.
-
-The workflow itself writes `authoring-evaluation.json` and
+The workflow writes `authoring-evaluation.json` and
 `authoring-pitfalls.md`, retaining completion reports and retrospectives for
-audit. Formal counts always come from `trace-metrics.*`.
+audit. Settled authoring-turn artifacts also reference each run-local acpx
+session projection.
+
+Formal check metrics are intentionally not built into this harness. When they
+are needed, copy the referenced projections before another turn resumes the
+session, then clean the bounded User/Agent messages, tool calls, and compact
+tool-result `content` for that benchmark. The projections do not retain exact
+provider-event timing or intermediate tool-update order.

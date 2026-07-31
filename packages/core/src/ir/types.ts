@@ -28,7 +28,6 @@ export type AgentDefinitionIR =
       model?: string;
       config?: Record<string, string>;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-      trace?: boolean;
       cwd?: string;
       env?: Record<string, string>;
     }
@@ -38,7 +37,6 @@ export type AgentDefinitionIR =
       model?: string;
       config?: Record<string, string>;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-      trace?: boolean;
       cwd?: string;
       env?: Record<string, string>;
     };

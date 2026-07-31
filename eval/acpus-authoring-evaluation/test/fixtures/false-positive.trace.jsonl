@@ -1,4 +1,0 @@
-{"schemaVersion":1,"sequence":1,"type":"message","channel":"assistant","content":{"type":"text","text":"Run acpus workflow check after editing."}}
-{"schemaVersion":1,"sequence":2,"type":"tool","action":"call","toolCallId":"search","kind":"execute","status":"in_progress","rawInput":{"command":"rg -n \"acpus workflow check\" ."}}
-{"schemaVersion":1,"sequence":3,"type":"tool","action":"update","toolCallId":"search","status":"completed","rawOutput":"README.md:4: acpus workflow check workflow.ts"}
-{"schemaVersion":1,"sequence":4,"type":"tool","action":"call","toolCallId":"read","kind":"read","status":"completed","rawInput":{"file_path":"README.md"},"rawOutput":"acpus workflow check workflow.ts"}
