@@ -401,7 +401,8 @@ export default defineWorkflow({
       if (document.length < 800 || document.includes("Replace every instructional placeholder")) {
         throw new Error("design.txt is still an incomplete instructional draft.");
       }
-      if (!/^#\s+\S+/m.test(document) || (document.match(/^##\s+/gm) ?? []).length < 5) {
+      const sectionCount = document.split(/\r?\n/).filter(line => line.startsWith("## ")).length;
+      if (!/^#\s+\S+/m.test(document) || sectionCount < 5) {
         throw new Error("design.txt needs a title and a scannable section hierarchy.");
       }
       const requiredMarkers = [
