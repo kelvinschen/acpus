@@ -12,7 +12,7 @@ describe("design-forge publication contract", () => {
     expect(source).toContain('{ mediaType: "application/json" }');
     expect(source).toContain('"design-forge-review-log.txt"');
     expect(source).toContain('{ mediaType: "text/plain" }');
-    expect(source).toContain("not a scratchpad and not a transcript");
+    expect(source).toMatch(/not a\s+scratchpad and not a transcript/);
   });
 
   it("grounds the publication in structured decisions, references, and useful diagrams", async () => {
