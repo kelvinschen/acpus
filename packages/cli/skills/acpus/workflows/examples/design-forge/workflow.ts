@@ -388,16 +388,14 @@ export default defineWorkflow({
       workspaceDir: meta.workspaceDir,
     },
     exec: async ({ input, $, artifact }) => {
-      const [brief, design, referencesText, decisions, diagramPlan, fitness, failure, simplicity] = await Promise.all([
-        $`cat brief.txt`.text(),
-        $`cat design.txt`.text(),
-        $`cat references.json`.text(),
-        $`cat decision-log.md`.text(),
-        $`cat diagram-plan.md`.text(),
-        $`cat reviews/fitness.txt`.text(),
-        $`cat reviews/failure.txt`.text(),
-        $`cat reviews/simplicity.txt`.text(),
-      ]);
+      const brief = await $`cat brief.txt`.text();
+      const design = await $`cat design.txt`.text();
+      const referencesText = await $`cat references.json`.text();
+      const decisions = await $`cat decision-log.md`.text();
+      const diagramPlan = await $`cat diagram-plan.md`.text();
+      const fitness = await $`cat reviews/fitness.txt`.text();
+      const failure = await $`cat reviews/failure.txt`.text();
+      const simplicity = await $`cat reviews/simplicity.txt`.text();
 
       const document = design.trim();
       if (document.length < 800 || document.includes("Replace every instructional placeholder")) {
