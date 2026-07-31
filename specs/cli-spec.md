@@ -22,12 +22,12 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--target`, `--timeline`, `--page`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
-| `runs artifacts <run-id>` | Optional `--target`. |
+| `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
-| `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`; optional `--json`. |
-| `doctor` | Read-only runtime and authoring health. |
+| `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`. |
+| `doctor` | Read-only runtime and authoring health; optional `--json`. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
 | `skill install` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
 | `skill uninstall` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
@@ -35,9 +35,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned by executable leaves that provide a structured result: workflow catalog/import/check; every runs leaf except inspect; hooks; doctor; and web.
-- `workflow run` and `runs inspect` MUST be text-only, reject `--json`, and omit it from help.
-- Root, group, version, workflow visualization, and every skill surface MUST reject `--json` and MUST omit it from help.
+- `--json` MUST be owned only by the `doctor` and `runs artifacts` executable leaves.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
@@ -61,7 +59,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `invalid` | `status`, `scope`, absolute `packagePath`, expected absolute `entryPath`, `requiresScope: false`, stable `errorCode`, `error`, optional extracted `name` |
 
 - Invalid entries MUST be visible when `workflow catalog` omits `name` but excluded from named catalog lookup and from check, run, and visualization lookup.
-- `workflow catalog` without `name` MUST open a single-select prompt only for text output when stdin, stdout, and stderr are interactive and at least one available entry exists; otherwise it lists directly.
+- `workflow catalog` without `name` MUST open a single-select prompt when stdin, stdout, and stderr are interactive and at least one available entry exists; otherwise it lists directly.
 - Catalog prompts MUST show invalid entries as disabled choices without paths, write interaction UI to stderr, and reserve stdout for the selected catalog result.
 - A catalog prompt selection MUST perform named lookup with the selected entry's scope; prompt cancellation is a usage failure.
 - Unscoped lookup MUST require a name unique across project and global catalogs; scoped lookup searches only the selected scope.
@@ -132,7 +130,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Omitting `--older-than` MUST select every Runtime-eligible terminal run and archive in scope.
 - `runs prune` MUST default to the current workspace; `--all-workspaces` explicitly broadens maintenance to every known workspace shard.
 - `runs prune --dry-run` MUST emit the Runtime selection report without prompting or deleting.
-- Real pruning in JSON or a non-interactive terminal MUST require `--yes` before reading runtime state.
+- Real pruning in a non-interactive terminal MUST require `--yes` before reading runtime state.
 - Real interactive text pruning without `--yes` MUST show one aggregate dry-run preview and require one confirmation before deletion.
 - Preview and deletion MUST use the same absolute selection cutoff so a run or archive that becomes eligible while confirmation is pending is not deleted without appearing in the preview.
 - With `--yes`, a zero-run/zero-archive preview MUST still execute the writable Runtime pass so orphan sources and an already-empty shard can be collected; an interactive invocation without `--yes` MAY return success without that maintenance pass.
@@ -149,8 +147,8 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - A control receipt MUST include a target only when the operator requested one, and that target MUST repeat the requested selector rather than a resolved internal occurrence key.
 - Successful text cancel output MUST collapse the action and identity into `Run <run-id> canceled.` for run-level controls or `Target <requested-selector> canceled in run <run-id>.` for targeted controls.
 - Successful text cancel output MUST omit the generic `Status` and `Workflow entry` lines.
-- A structured steer receipt MUST project the Runtime-owned steer id, requested target, and continuation, but MUST NOT expose the resolved dynamic target or fenced attempt id.
-- Text and structured steer receipts MUST NOT echo the instruction.
+- A text steer receipt MUST project the Runtime-owned steer id, requested target, and continuation, but MUST NOT expose the resolved dynamic target or fenced attempt id.
+- Text steer receipts MUST NOT echo the instruction.
 - Successful text steer output MUST point `Next` to `--await-decision` inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
@@ -213,17 +211,14 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
 - Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
 - Structured CLI result records MUST retain `schemaVersion: 1`.
-- Except when `-h`/`--help` terminates parsing, a non-streaming leaf invoked with its local `--json` option MUST emit exactly one JSON object on stdout and leave stderr empty.
+- Except when `-h`/`--help` terminates parsing, Doctor and artifact listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
-- JSON diagnostics MUST preserve sorted `DiagnosticIR` fields and exclude compiler-private origin, offset, ownership, and sequence metadata.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
-- A successful checked import MUST retain preparation diagnostics and the source-graph digest in structured output.
 - Successful checked-import text output MUST print the source-graph digest followed by diagnostics in compiler order.
-- An unchecked import MUST expose neither preparation diagnostics nor a source-graph digest.
+- Unchecked import text MUST expose neither preparation diagnostics nor a source-graph digest.
 - Successful workflow run admission and successful fork with a replacement workflow MUST retain preparation diagnostics.
-- Replacement-fork JSON MUST retain the preparation source-graph digest and applicable catalog provenance.
 - Blocking workflow run text MUST write preparation diagnostics once before observation; replacement-fork text MUST use the ordinary diagnostic presentation.
 - Default workflow run text MUST render `Run <run-id>  <workflow-name>  <status>`, then the executable `Inspect: acpus runs inspect <run-id>` command on the next line.
 - Default workflow run text MUST append preparation diagnostics after the compact receipt.
@@ -233,13 +228,10 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Blocking inspection MUST label its attached view and omit an Await command that would attach the same observation again.
 - A run-level semantic update MUST show current run elapsed time in its heading; target and Timeline update headings MUST remain unqualified.
 - A run's terminal output MUST appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
-- Diagnostic text MUST show source location when available, indent paths/hints, relativize sources inside CLI cwd, and leave JSON paths unchanged.
+- Diagnostic text MUST show source location when available, indent paths/hints, and relativize sources inside CLI cwd.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
-- Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY and JSON output MUST remain free of ANSI styling.
-- Catalog JSON MUST preserve the catalog projections and stable ordering by available name/scope then invalid absolute package path; duplicate project/global names set `requiresScope: true`.
-- Successful import JSON MUST contain phase `import`, the committed catalog entry, and `checked`, without source path or URL.
-- Successful web JSON MUST use the ordinary result envelope and place its URL and optional token under `web`.
-- A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`; JSON mode emits one failure object on stdout and leaves stderr empty.
+- Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY output MUST remain free of ANSI styling.
+- A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`.
 - Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls.
 - Default workflow run MUST exit 0 after daemon acceptance.
 - Blocking workflow run MUST exit 0 on completion, 1 on failed/canceled closure, and 0 on an awaiting-input or paused `--await-decision` closure.

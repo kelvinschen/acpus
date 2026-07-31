@@ -19,16 +19,19 @@ describe("workflow import contracts", () => {
         const original = executableWorkflowSource("static-import", marker);
         await writeFile(source, original);
 
-        const imported = await runJson(workspace, ["workflow", "import", source, "--json"]);
+        const imported = await runText(workspace, ["workflow", "import", source]);
         expect(imported.exitCode).toBe(0);
-        expect(Object.keys(imported.json).sort()).toEqual(["catalog", "checked", "message", "ok", "phase", "schemaVersion"]);
-        expect(imported.json).toMatchObject({
-          ok: true,
-          phase: "import",
-          checked: false,
-          catalog: { scope: "project", name: "static-import", status: "available", requiresScope: false },
-        });
-        expect(imported.text).not.toContain(source);
+        expect(imported.stdout).toBe([
+          "Workflow imported.",
+          "Catalog: project/static-import",
+          "Catalog status: available",
+          `Catalog package: ${join(workspace, ".acpus", "workflows", "static-import")}`,
+          `Catalog entry: ${join(workspace, ".acpus", "workflows", "static-import", "workflow.ts")}`,
+          "Checked: no",
+          "",
+        ].join("\n"));
+        expect(imported.stdout).not.toContain(source);
+        expect(imported.stderr).toBe("");
         await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
         const committedEntry = join(workspace, ".acpus", "workflows", "static-import", "workflow.ts");
         expect(await readFile(committedEntry, "utf8")).toBe(original);
@@ -36,37 +39,23 @@ describe("workflow import contracts", () => {
         expect(await readFile(committedEntry, "utf8")).toBe(original);
         expect(await readNames(join(workspace, ".acpus", "workflows", "static-import"))).toEqual(["workflow.ts"]);
 
-        const textSource = join(workspace, "text-source.ts");
-        await writeFile(textSource, workflowSource("text-import"));
-        const text = await runText(workspace, ["workflow", "import", textSource]);
-        expect(text).toEqual({
-          exitCode: 0,
-          stdout: [
-            "Workflow imported.",
-            "Catalog: project/text-import",
-            "Catalog status: available",
-            `Catalog package: ${join(workspace, ".acpus", "workflows", "text-import")}`,
-            `Catalog entry: ${join(workspace, ".acpus", "workflows", "text-import", "workflow.ts")}`,
-            "Checked: no",
-            "",
-          ].join("\n"),
-          stderr: "",
-        });
-
-        const collision = await runJson(workspace, ["workflow", "import", committedEntry, "--json"]);
+        const collision = await runText(workspace, ["workflow", "import", committedEntry]);
         expect(collision.exitCode).toBe(1);
-        expect(collision.json).toMatchObject({ ok: false, phase: "import", errorCode: "IMPORT_COLLISION" });
+        expect(collision.stdout).toBe("");
+        expect(collision.stderr).toContain("Error code: IMPORT_COLLISION");
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
 
         const unsupported = join(workspace, "source.txt");
         await writeFile(unsupported, workflowSource("unsupported"));
-        expect((await runJson(workspace, ["workflow", "import", unsupported, "--json"]))).toMatchObject({
+        expect((await runText(workspace, ["workflow", "import", unsupported]))).toMatchObject({
           exitCode: 2,
-          json: { ok: false, phase: "usage" },
+          stdout: "",
+          stderr: expect.stringContaining("Workflow import source must be a directory or end in"),
         });
-        expect((await runJson(workspace, ["workflow", "import", unsupported, "--project", "--global", "--json"]))).toMatchObject({
+        expect((await runText(workspace, ["workflow", "import", unsupported, "--project", "--global"]))).toMatchObject({
           exitCode: 2,
-          json: { ok: false, phase: "usage" },
+          stdout: "",
+          stderr: expect.stringContaining("--project and --global are mutually exclusive."),
         });
       });
     });
@@ -169,27 +158,19 @@ describe("workflow import contracts", () => {
         const checkedSource = join(workspace, "workspace-checked.ts");
         await writeFile(checkedSource, workspaceDependencyWorkflowSource("workspace-checked"));
 
-        const checked = await runJson(workspace, [
+        const checked = await runText(workspace, [
           "workflow",
           "import",
           checkedSource,
           "--global",
           "--check",
-          "--json",
         ]);
         expect(checked.exitCode).toBe(0);
-        expect(checked.json).toMatchObject({
-          ok: true,
-          phase: "import",
-          checked: true,
-          catalog: { name: "workspace-checked", scope: "global", status: "available" },
-          diagnostics: [{
-            code: "SC001",
-            severity: "warning",
-            source: { file: "workflow.ts", line: 3 },
-          }],
-          sourceGraphDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
-        });
+        expect(checked.stdout).toContain("Catalog: global/workspace-checked");
+        expect(checked.stdout).toContain("Checked: yes");
+        expect(checked.stdout).toMatch(/Source graph: sha256:[a-f0-9]{64}/u);
+        expect(checked.stdout).toMatch(/workflow\.ts:3:\d+ \[warning SC001\]/u);
+        expect(checked.stderr).toBe("");
         await expect(access(join(home, ".acpus", "workflows", "workspace-checked", "workflow.ts"))).resolves.toBeUndefined();
         expect(await readNames(globalImportRoot(home))).toEqual([]);
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
@@ -298,14 +279,6 @@ function expectOk(
 function expectImportFailure(result: Awaited<ReturnType<typeof importDirect>>, errorCode: string): void {
   expect(result.isErr()).toBe(true);
   if (result.isErr()) expect(result.error).toMatchObject({ type: "import", errorCode });
-}
-
-async function runJson(workspace: string, args: string[]): Promise<{ exitCode: number; json: any; text: string }> {
-  const stdout = new CaptureStream();
-  const stderr = new CaptureStream();
-  const exitCode = await runCli(args, { cwd: workspace, stdout, stderr });
-  expect(stderr.text).toBe("");
-  return { exitCode, json: JSON.parse(stdout.text), text: stdout.text };
 }
 
 async function runText(workspace: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {

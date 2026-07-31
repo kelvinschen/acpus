@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactRecord, RunInspectionTargetArtifactsDocument } from "@acpus/runtime";
 import { createRunsCommand } from "../src/commands/runs.js";
+import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({
@@ -46,14 +47,17 @@ describe("runs artifacts", () => {
 
   it("emits the stable JSON envelope without reading artifact bodies", async () => {
     const result = await runCommand(["artifacts", "run_1"], true);
-
-    expect(JSON.parse(result.stdout)).toEqual({
+    const expected = {
       schemaVersion: 1,
       ok: true,
       phase: "inspect",
       runId: "run_1",
       artifacts,
-    });
+    };
+
+    expect(JSON.parse(result.stdout)).toEqual(expected);
+    expect(result.stdout).toBe(`${JSON.stringify(expected)}\n`);
+    expect(result.stderr).toBe("");
     expect(result.stdout).not.toContain("artifact body contents");
   });
 
@@ -83,15 +87,33 @@ describe("runs artifacts", () => {
       stdout: "No artifacts.\n",
       stderr: "",
     });
+    expect(JSON.parse((await runCommand(["artifacts", "run_1"], true)).stdout)).toMatchObject({
+      ok: true,
+      artifacts: [],
+    });
   });
 
-  it("reports missing runs and targets through inspect errors", async () => {
+  it("reports missing runs through the structured error envelope", async () => {
     runtime.listArtifacts.mockResolvedValue(undefined);
-    await expect(runCommand(["artifacts", "missing"], true)).rejects.toMatchObject({
-      exitCode: 1,
-      result: { phase: "inspect", errorCode: "RUN_NOT_FOUND" },
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    expect(await runCli(["runs", "artifacts", "missing", "--json"], {
+      cwd: "/workspace",
+      stdout,
+      stderr,
+    })).toBe(1);
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      schemaVersion: 1,
+      ok: false,
+      phase: "inspect",
+      errorCode: "RUN_NOT_FOUND",
     });
+    expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
+    expect(stdout.text.trimEnd()).not.toContain("\n");
+    expect(stderr.text).toBe("");
+  });
 
+  it("reports missing targets through inspect errors", async () => {
     runtime.inspectTargetArtifacts.mockResolvedValue({
       isErr: () => true,
       error: { type: "target-not-found", runId: "run_1", target: "missing", message: "Run target 'missing' was not found." },

@@ -36,7 +36,6 @@ describe("update awareness", () => {
     };
 
     expect(isUpdateAwarenessEligible(input)).toBe(true);
-    expect(isUpdateAwarenessEligible({ ...input, argv: ["workflow", "catalog", "--json"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, argv: ["workflow", "catalog", "--help"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor"] })).toBe(true);
     expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor", "--json"] })).toBe(false);

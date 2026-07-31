@@ -25,7 +25,6 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
       expect(result.stdout).toContain(`Run ${runId}`);
       expect(result.stdout).toMatch(/completed/u);
       expect(result.stdout).toContain("Output:\n  {\n    \"ready\": true\n  }");
-      expect(result.stdout).not.toContain('"schemaVersion"');
       const daemonStatus = await requestDaemonStatus(workspace);
       expect(daemonStatus.isOk()).toBe(true);
       if (daemonStatus.isOk()) expect(daemonStatus.value.packageVersion).toBe(getCliPackageInfo().version);

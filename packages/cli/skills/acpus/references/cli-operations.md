@@ -51,7 +51,7 @@ Options:
 
 1. Read Summary once; for a repeated occurrence, select its candidate `@ref`.
 2. If work remains non-terminal without attention, `--await-decision` the decision-controlling target. Re-inspect only after it returns, hard attention, or new operator or external input. Use `--follow` only when terminal completion itself is the goal. **Silence means wait, be patient**.
-3. At terminal state, verify output and artifacts. Use focused `jq` for structured output.
+3. At terminal state, verify output and artifacts. Use `jq` for focused JSON reads.
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for candidate pagination or follow mechanics.
 

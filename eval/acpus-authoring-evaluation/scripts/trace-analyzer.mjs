@@ -5,7 +5,6 @@ import { isAbsolute, resolve } from "node:path";
 const AUTHORING_NODE = /(?:^|\/)(pi|claude|traex)_authoring~/u;
 const SESSION_NODE = /^evaluate_requirements\[(\d+)\]\/agent_runs\.(pi|claude|traex)\/\2_trials\[(\d+)\]\/\2_authoring~/u;
 const DIAGNOSTIC_CODE = /\[(?:error|warning|info)\s+([A-Z][A-Z0-9]*\d+)\]/gu;
-const DIAGNOSTIC_CODE_VALUE = /^[A-Z][A-Z0-9]*\d+$/u;
 
 function commandFromValue(value) {
   if (!value || typeof value !== "object") return null;
@@ -148,40 +147,7 @@ function diagnosticsFor(events) {
     const candidate = outputText(event.rawOutput);
     if (candidate) finalOutput = candidate;
   }
-  const structuredCodes = structuredDiagnosticCodes(finalOutput);
-  if (structuredCodes.length > 0) return structuredCodes;
   return [...finalOutput.matchAll(DIAGNOSTIC_CODE)].map(match => match[1]);
-}
-
-function structuredDiagnosticCodes(output) {
-  const trimmed = output.trim();
-  if (!trimmed) return [];
-
-  const values = [];
-  try {
-    values.push(JSON.parse(trimmed));
-  } catch {
-    for (const line of trimmed.split(/\r?\n/u)) {
-      try {
-        values.push(JSON.parse(line));
-      } catch {}
-    }
-  }
-
-  return values.flatMap(value => {
-    const payloads = Array.isArray(value) ? value : [value];
-    return payloads.flatMap(payload => {
-      if (!payload || typeof payload !== "object" || !Array.isArray(payload.diagnostics)) return [];
-      return payload.diagnostics.flatMap(diagnostic =>
-        diagnostic
-          && typeof diagnostic === "object"
-          && typeof diagnostic.code === "string"
-          && DIAGNOSTIC_CODE_VALUE.test(diagnostic.code)
-          ? [diagnostic.code]
-          : []
-      );
-    });
-  });
 }
 
 export function selectAuthoringTraceArtifacts(payload) {

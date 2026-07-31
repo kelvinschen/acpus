@@ -24,7 +24,7 @@ describe("workflow catalog CLI contracts", () => {
     promptMocks.select.mockReset();
   });
 
-  it("queries the catalog collection or one named entry with stable JSON fields", async () => {
+  it("queries the catalog collection or one named entry without importing modules", async () => {
     await withPlainTestWorkspace("catalog-cli", async workspace => {
       await withTestHome("catalog-cli-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "release");
@@ -36,21 +36,6 @@ describe("workflow catalog CLI contracts", () => {
         ].join("\n"));
         await workflowPackage(join(home, ".acpus", "workflows"), "deploy");
 
-        const listed = await runJson(workspace, ["workflow", "catalog", "--json"]);
-        expect(listed.exitCode).toBe(0);
-        expect(listed.json).toMatchObject({
-          ok: true,
-          phase: "inspect",
-          catalogEntries: [
-            { scope: "global", name: "deploy", status: "available", requiresScope: false },
-            { scope: "project", name: "poison", status: "available", requiresScope: false },
-            { scope: "project", name: "release", status: "available", requiresScope: false },
-          ],
-        });
-        expect(listed.json.catalogEntries[0].packagePath).toBe(join(home, ".acpus", "workflows", "deploy"));
-        expect(listed.json.catalogEntries[2].entryPath).toBe(join(workspace, ".acpus", "workflows", "release", "workflow.ts"));
-        expect(listed.json).not.toHaveProperty("message");
-
         const textList = await runText(workspace, ["workflow", "catalog"]);
         expect(textList.stdout).toBe([
           "global   available  deploy",
@@ -60,20 +45,6 @@ describe("workflow catalog CLI contracts", () => {
         ].join("\n"));
         expect(textList.stdout).not.toContain(workspace);
         expect(textList.stdout).not.toContain(home);
-
-        const shown = await runJson(workspace, ["workflow", "catalog", "release", "--json"]);
-        expect(shown.exitCode).toBe(0);
-        expect(shown.json).toMatchObject({
-          ok: true,
-          phase: "inspect",
-          catalog: {
-            scope: "project",
-            name: "release",
-            packagePath: join(workspace, ".acpus", "workflows", "release"),
-            entryPath: join(workspace, ".acpus", "workflows", "release", "workflow.ts"),
-          },
-        });
-        expect(shown.json).not.toHaveProperty("message");
 
         const plainEntry = [
           "Catalog: project/release",
@@ -107,56 +78,43 @@ describe("workflow catalog CLI contracts", () => {
         }))).toBe(0);
         expect(noColorStdout.text).toBe(plainEntry);
 
-        const poison = await runJson(workspace, ["workflow", "catalog", "poison", "--json"]);
+        const poison = await runText(workspace, ["workflow", "catalog", "poison"]);
         expect(poison.exitCode).toBe(0);
-        expect(poison.json).toMatchObject({
-          ok: true,
-          catalog: { scope: "project", name: "poison" },
-        });
+        expect(poison.stdout).toContain("Catalog: project/poison");
+        expect(poison.stderr).toBe("");
       });
     });
   });
 
-  it("reports catalog scope and lookup failures with stable phases", async () => {
+  it("reports catalog scope and lookup failures through text", async () => {
     await withPlainTestWorkspace("catalog-cli-errors", async workspace => {
       await withTestHome("catalog-cli-errors-home", async home => {
         await workflowPackage(join(workspace, ".acpus", "workflows"), "shared");
         await workflowPackage(join(home, ".acpus", "workflows"), "shared");
 
-        const scoped = await runJson(workspace, ["workflow", "catalog", "--project", "--json"]);
+        const scoped = await runText(workspace, ["workflow", "catalog", "--project"]);
         expect(scoped.exitCode).toBe(0);
-        expect(scoped.json.catalogEntries).toMatchObject([
-          { scope: "project", name: "shared", status: "available", requiresScope: true },
-        ]);
+        expect(scoped.stdout).toBe("project  available  shared  requires --project or --global\n");
 
-        const ambiguous = await runJson(workspace, ["workflow", "catalog", "shared", "--json"]);
+        const ambiguous = await runText(workspace, ["workflow", "catalog", "shared"]);
         expect(ambiguous.exitCode).toBe(2);
-        expect(ambiguous.json).toMatchObject({
-          ok: false,
-          phase: "usage",
-        });
-        expect(ambiguous.json.message).toContain("Pass --project or --global");
+        expect(ambiguous.stdout).toBe("");
+        expect(ambiguous.stderr).toContain("Pass --project or --global");
 
-        const missing = await runJson(workspace, ["workflow", "catalog", "missing", "--project", "--json"]);
+        const missing = await runText(workspace, ["workflow", "catalog", "missing", "--project"]);
         expect(missing.exitCode).toBe(1);
-        expect(missing.json).toMatchObject({
-          ok: false,
-          phase: "inspect",
-        });
+        expect(missing.stdout).toBe("");
+        expect(missing.stderr).toContain("missing");
 
-        const invalid = await runJson(workspace, ["workflow", "catalog", "not_valid", "--json"]);
+        const invalid = await runText(workspace, ["workflow", "catalog", "not_valid"]);
         expect(invalid.exitCode).toBe(2);
-        expect(invalid.json).toMatchObject({
-          ok: false,
-          phase: "usage",
-        });
+        expect(invalid.stdout).toBe("");
+        expect(invalid.stderr).not.toBe("");
 
-        const scopeConflict = await runJson(workspace, ["workflow", "catalog", "--project", "--global", "--json"]);
+        const scopeConflict = await runText(workspace, ["workflow", "catalog", "--project", "--global"]);
         expect(scopeConflict.exitCode).toBe(2);
-        expect(scopeConflict.json).toMatchObject({
-          ok: false,
-          phase: "usage",
-        });
+        expect(scopeConflict.stdout).toBe("");
+        expect(scopeConflict.stderr).toContain("--project and --global are mutually exclusive.");
       });
     });
   });
@@ -172,22 +130,18 @@ describe("workflow catalog CLI contracts", () => {
         ].join("\n"));
         await mkdir(join(workspace, ".acpus", "workflows", "missing-entry"), { recursive: true });
 
-        const listed = await runJson(workspace, ["workflow", "catalog", "--project", "--json"]);
-        expect(listed.exitCode).toBe(0);
-        expect(listed.json.catalogEntries).toMatchObject([
-          { status: "available", name: "available" },
-          { status: "invalid", errorCode: "CATALOG_ENTRY_MISSING", requiresScope: false },
-          { status: "invalid", name: "authored-name", errorCode: "CATALOG_NAME_MISMATCH", requiresScope: false },
-        ]);
-
         const text = await runText(workspace, ["workflow", "catalog", "--project"]);
+        expect(text.stdout).toContain("available");
         expect(text.stdout).toContain("missing-entry");
         expect(text.stdout).toContain("CATALOG_ENTRY_MISSING");
+        expect(text.stdout).toContain("authored-name");
+        expect(text.stdout).toContain("CATALOG_NAME_MISMATCH");
         expect(text.stdout).not.toContain(workspace);
 
-        const invalid = await runJson(workspace, ["workflow", "catalog", "authored-name", "--project", "--json"]);
+        const invalid = await runText(workspace, ["workflow", "catalog", "authored-name", "--project"]);
         expect(invalid.exitCode).toBe(1);
-        expect(invalid.json).toMatchObject({ ok: false, phase: "inspect", errorCode: "CATALOG_NAME_MISMATCH" });
+        expect(invalid.stdout).toBe("");
+        expect(invalid.stderr).toContain("Error code: CATALOG_NAME_MISMATCH");
       });
     });
   });
@@ -233,21 +187,9 @@ describe("workflow catalog CLI contracts", () => {
     });
   });
 
-  it("does not prompt for JSON or when no available workflow can be selected", async () => {
+  it("does not prompt when no available workflow can be selected", async () => {
     await withPlainTestWorkspace("catalog-cli-picker-fallback", async workspace => {
       await withTestHome("catalog-cli-picker-fallback-home", async () => {
-        await workflowPackage(join(workspace, ".acpus", "workflows"), "available");
-        const jsonStdout = new TtyCaptureStream();
-        expect(await runCli(["workflow", "catalog", "--json"], {
-          cwd: workspace,
-          stdin: new TtyInput(),
-          stdout: jsonStdout,
-          stderr: new TtyCaptureStream(),
-        })).toBe(0);
-        expect(promptMocks.select).not.toHaveBeenCalled();
-        expect(JSON.parse(jsonStdout.text).catalogEntries).toHaveLength(1);
-
-        await rm(join(workspace, ".acpus", "workflows", "available"), { recursive: true, force: true });
         await mkdir(join(workspace, ".acpus", "workflows", "broken"), { recursive: true });
         const textStdout = new TtyCaptureStream();
         expect(await runCli(["workflow", "catalog"], {
@@ -284,14 +226,6 @@ describe("workflow catalog CLI contracts", () => {
     });
   });
 });
-
-async function runJson(workspace: string, args: string[]): Promise<{ exitCode: number; json: any }> {
-  const stdout = new CaptureStream();
-  const stderr = new CaptureStream();
-  const exitCode = await runCli(args, { cwd: workspace, stdout, stderr });
-  expect(stderr.text).toBe("");
-  return { exitCode, json: JSON.parse(stdout.text) };
-}
 
 async function runText(workspace: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const stdout = new CaptureStream();

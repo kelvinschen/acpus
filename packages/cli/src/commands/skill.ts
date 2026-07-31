@@ -86,7 +86,7 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
         phase: "skill",
         message: ok ? "Acpus skill installed." : "Acpus skill installation completed with failures.",
         skill: skillResult("install", selection, options.dryRun === true, targets, { installations }),
-      }, "text", ctx, ok ? 0 : 1));
+      }, ctx, ok ? 0 : 1));
     }));
 
   command.addCommand(skillLeaf("uninstall")
@@ -101,7 +101,7 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
         phase: "skill",
         message: ok ? "Acpus skill uninstalled." : "Acpus skill uninstall completed with failures.",
         skill: skillResult("uninstall", selection, options.dryRun === true, targets, { removals }),
-      }, "text", ctx, ok ? 0 : 1));
+      }, ctx, ok ? 0 : 1));
     }));
 
   return command;

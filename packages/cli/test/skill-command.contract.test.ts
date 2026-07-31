@@ -150,7 +150,7 @@ describe("skill CLI contracts", () => {
     });
   });
 
-  it("rejects conflicting targets, invalid agents, empty custom roots, and unsupported options as usage", async () => {
+  it("rejects conflicting targets, invalid agents, and empty custom roots as usage", async () => {
     await withPlainTestWorkspace("skill-invalid-options", async workspace => {
       const invalid = [
         { args: ["--project", "--global", "--agent", "universal"], message: "Pass only one of --project or --global." },
@@ -165,16 +165,6 @@ describe("skill CLI contracts", () => {
         const result = await runSkill(workspace, testCase.args);
         expect(result.exitCode).toBe(2);
         expect(result.stderr.text).toContain(testCase.message);
-      }
-
-      for (const args of [
-        ["install", "--project", "--agent", "universal", "--json"],
-        ["uninstall", "--project", "--agent", "universal", "--json"],
-      ]) {
-        const result = await runCommand(workspace, ["skill", ...args]);
-        expect(result.exitCode).toBe(2);
-        expect(result.stdout.text).toBe("");
-        expect(result.stderr.text).toContain("unknown option");
       }
     });
   });

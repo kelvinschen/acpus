@@ -113,9 +113,9 @@ describe("skill content CLI contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("does not accept structured, bulk, raw, recursive, or excess-argument forms", async () => {
+  it("does not accept bulk, raw, recursive, or excess-argument forms", async () => {
     await withPlainTestWorkspace("skill-content-usage", async workspace => {
-      for (const option of ["--json", "--all", "--full", "--raw", "--recursive"]) {
+      for (const option of ["--all", "--full", "--raw", "--recursive"]) {
         const result = await runCommand(workspace, ["skill", "read", option]);
         expect(result.exitCode, option).toBe(2);
         expect(result.stdout).toBe("");

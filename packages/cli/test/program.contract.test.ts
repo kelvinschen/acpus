@@ -31,19 +31,7 @@ describe("CLI program usage contracts", () => {
       expect(stderr.text).toBe("");
     }
 
-    const invalidStdout = new CaptureStream();
-    const invalidStderr = new CaptureStream();
-    const invalidExitCode = await runCli(["--json", "--version"], {
-      cwd: process.cwd(),
-      stdout: invalidStdout,
-      stderr: invalidStderr,
-    });
-
-    expect(invalidExitCode).toBe(2);
-    expect(invalidStdout.text).toBe("");
-    expect(invalidStderr.text).toContain("unknown option '--json'");
-
-    for (const argv of [["--version", "doctor", "--json"], ["-V", "workflow", "catalog", "--json"]]) {
+    for (const argv of [["--version", "doctor"], ["-V", "workflow", "catalog"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(2);
@@ -132,6 +120,8 @@ describe("CLI program usage contracts", () => {
         await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
         await expect(lstat(join(home, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
         await expect(lstat(join(home, ".acpus", "cache", "update-awareness"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(stdout.text.endsWith("\n")).toBe(true);
+        expect(stdout.text.trimEnd()).not.toContain("\n");
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -180,6 +170,40 @@ describe("CLI program usage contracts", () => {
       } finally {
         unchanged.close();
       }
+    });
+  });
+
+  it("retains ACP ownership details in compact Doctor JSON", async () => {
+    await withPlainTestWorkspace("doctor-acp-ownership", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      store.close();
+      const layout = resolveRuntimeLayout(workspace);
+      await mkdir(layout.acpWorkersRoot, { recursive: true });
+      await writeFile(join(layout.acpWorkersRoot, "acp_worker_dea0.json"), JSON.stringify({
+        schemaVersion: 1,
+        workerId: "acp_worker_dea0",
+        runId: "run_1",
+        attemptId: "attempt_1",
+        sessionName: "session",
+        daemon: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" },
+        worker: { pid: 99_999_999, startToken: "pid:99999999" },
+        state: "degraded",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      }));
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+
+      expect(await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr })).toBe(0);
+      const result = JSON.parse(stdout.text);
+
+      expect(result.checks.find((check: { area: string }) => check.area === "acp").details).toMatchObject({
+        degraded: 1,
+        orphaned: 0,
+        manifests: [expect.objectContaining({ workerId: "acp_worker_dea0", state: "degraded" })],
+      });
+      expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
+      expect(stdout.text.trimEnd()).not.toContain("\n");
+      expect(stderr.text).toBe("");
     });
   });
 
@@ -284,55 +308,8 @@ describe("CLI program usage contracts", () => {
       }
     });
   });
-
-
-  it("does not infer JSON mode from an unsupported trailing token", async () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-
-    const exitCode = await runCli(["bogus", "--json"], {
-      cwd: process.cwd(),
-      stdout,
-      stderr,
-    });
-
-    expect(exitCode).toBe(2);
-    expect(stdout.text).toBe("");
-    expect(stderr.text).toContain("unknown option '--json'");
-  });
-
-  it("rejects JSON before the leaf command", async () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-
-    const exitCode = await runCli(["--json", "bogus"], {
-      cwd: process.cwd(),
-      stdout,
-      stderr,
-    });
-
-    expect(exitCode).toBe(2);
-    expect(stdout.text).toBe("");
-    expect(stderr.text).toContain("unknown option '--json'");
-  });
-
-  it("documents JSON only on structured-output leaf commands", async () => {
-    for (const argv of [["--help"], ["runs", "--help"], ["workflow", "run", "--help"], ["workflow", "viz", "--help"]]) {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-
-      const exitCode = await runCli(argv, {
-        cwd: process.cwd(),
-        stdout,
-        stderr,
-      });
-
-      expect(exitCode).toBe(0);
-      expect(stdout.text).not.toContain("--json");
-      expect(stderr.text).toBe("");
-    }
-
-    for (const argv of [["web", "--help"]]) {
+  it("documents JSON on the structured-output leaves", async () => {
+    for (const argv of [["doctor", "--help"], ["runs", "artifacts", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);
@@ -341,7 +318,7 @@ describe("CLI program usage contracts", () => {
     }
   });
 
-  it("selects machine output from the parsed leaf option only", async () => {
+  it("uses the Doctor JSON envelope for usage failures", async () => {
     const jsonStdout = new CaptureStream();
     const jsonStderr = new CaptureStream();
     expect(await runCli(["doctor", "--json", "--bogus"], {
@@ -353,18 +330,6 @@ describe("CLI program usage contracts", () => {
       phase: "usage",
     });
     expect(jsonStderr.text).toBe("");
-
-    for (const argv of [
-      ["runs", "--json", "inspect"],
-      ["runs", "signal", "--", "--json"],
-      ["runs", "inspect", "run_1", "-V"],
-    ]) {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-      expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(2);
-      expect(stdout.text).toBe("");
-      expect(stderr.text).not.toBe("");
-    }
   });
 
   it("documents compact text-only inspection and explicit blocking intents", async () => {
@@ -376,7 +341,7 @@ describe("CLI program usage contracts", () => {
     for (const option of ["--target", "--timeline", "--page", "--follow", "--await-decision"]) {
       expect(inspectStdout.text).toContain(option);
     }
-    for (const removed of ["--evidence", "--limit", "--all", "--controls", "--raw", "--json"]) {
+    for (const removed of ["--evidence", "--limit", "--all", "--controls", "--raw"]) {
       expect(inspectStdout.text).not.toContain(removed);
     }
     expect(inspectStdout.text).toContain("terminal");
@@ -396,7 +361,6 @@ describe("CLI program usage contracts", () => {
     expect(runStdout.text).toMatch(/Ctrl-C\s+detaches/u);
     expect(runStdout.text).toContain("--input <json|file.json>");
     expect(runStdout.text).toContain("- for stdin");
-    expect(runStdout.text).not.toContain("--json");
 
     const checkStdout = new CaptureStream();
     const checkStderr = new CaptureStream();
@@ -405,7 +369,6 @@ describe("CLI program usage contracts", () => {
     })).toBe(0);
     expect(checkStdout.text).toContain("--input <json|file.json>");
     expect(checkStdout.text).toContain("- for stdin");
-    expect(checkStdout.text).toContain("--json");
 
     const forkStdout = new CaptureStream();
     const forkStderr = new CaptureStream();
@@ -438,11 +401,11 @@ describe("CLI program usage contracts", () => {
       await writeFile(join(workspace, "input.txt"), "{\"ready\":true}\n");
 
       const cases = [
-        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
-        { argv: ["runs", "fork", "run_1", "--workflow", "missing.workflow.ts", "--input", "missing.json", "--json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
-        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "empty.json", "--json"], message: `--input file '${join(workspace, "empty.json")}' is empty` },
-        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "invalid.json", "--json"], message: `--input file '${join(workspace, "invalid.json")}' must be valid JSON` },
-        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "input.txt", "--json"], message: "--input must be valid JSON" },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "missing.json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["runs", "fork", "run_1", "--workflow", "missing.workflow.ts", "--input", "missing.json"], message: `--input file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "empty.json"], message: `--input file '${join(workspace, "empty.json")}' is empty` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "invalid.json"], message: `--input file '${join(workspace, "invalid.json")}' must be valid JSON` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--input", "input.txt"], message: "--input must be valid JSON" },
       ];
 
       for (const testCase of cases) {
@@ -450,9 +413,8 @@ describe("CLI program usage contracts", () => {
         const stderr = new CaptureStream();
         const exitCode = await runCli(testCase.argv, { cwd: workspace, stdout, stderr });
         expect(exitCode).toBe(2);
-        expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
-        expect(stdout.text).toContain(testCase.message);
-        expect(stderr.text).toBe("");
+        expect(stdout.text).toBe("");
+        expect(stderr.text).toContain(testCase.message);
       }
 
       const runStdout = new CaptureStream();
@@ -466,19 +428,16 @@ describe("CLI program usage contracts", () => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       const exitCode = await runCli([
-        "workflow", "check", "missing.workflow.ts", "--input", "\"sample.json\"", "--json",
+        "workflow", "check", "missing.workflow.ts", "--input", "\"sample.json\"",
       ], { cwd: workspace, stdout, stderr });
       expect(exitCode).toBe(1);
-      expect(JSON.parse(stdout.text)).not.toMatchObject({ phase: "usage" });
-      expect(stderr.text).toBe("");
+      expect(stdout.text).toBe("");
+      expect(stderr.text).not.toBe("");
     });
   });
 
-  it("rejects invalid text-only run and inspection queries before reading runtime state", async () => {
+  it("rejects invalid run and inspection queries before reading runtime state", async () => {
     const cases = [
-      { argv: ["workflow", "run", "missing.workflow.ts", "--json"], message: "unknown option '--json'" },
-      { argv: ["workflow", "run", "missing.workflow.ts", "--follow", "--json"], message: "unknown option '--json'" },
-      { argv: ["workflow", "run", "missing.workflow.ts", "--await-decision", "--json"], message: "unknown option '--json'" },
       { argv: ["runs", "inspect", "run_1", "--target", "   "], message: "--target must be a non-empty string" },
       { argv: ["runs", "inspect", "run_1", "--timeline"], message: "--timeline requires --target" },
       { argv: ["runs", "inspect", "run_1", "--page", "2"], message: "--page requires --target" },
@@ -495,7 +454,6 @@ describe("CLI program usage contracts", () => {
       { argv: ["runs", "inspect", "run_1", "--evidence"], message: "unknown option '--evidence'" },
       { argv: ["runs", "inspect", "run_1", "--limit", "12"], message: "unknown option '--limit'" },
       { argv: ["runs", "inspect", "run_1", "--raw"], message: "unknown option '--raw'" },
-      { argv: ["runs", "inspect", "run_1", "--json"], message: "unknown option '--json'" },
     ];
 
     for (const testCase of cases) {
@@ -516,18 +474,14 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["workflow", "catalog", "--json"], {
+        const exitCode = await runCli(["workflow", "catalog"], {
           cwd: workspace,
           stdout,
           stderr,
         });
 
         expect(exitCode).toBe(0);
-        expect(JSON.parse(stdout.text)).toMatchObject({
-          ok: true,
-          phase: "inspect",
-          catalogEntries: [],
-        });
+        expect(stdout.text).toBe("No cataloged workflows.\n");
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -544,18 +498,14 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["wf", "catalog", "--json"], {
+        const exitCode = await runCli(["wf", "catalog"], {
           cwd: workspace,
           stdout,
           stderr,
         });
 
         expect(exitCode).toBe(0);
-        expect(JSON.parse(stdout.text)).toMatchObject({
-          ok: true,
-          phase: "inspect",
-          catalogEntries: [],
-        });
+        expect(stdout.text).toBe("No cataloged workflows.\n");
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -581,25 +531,17 @@ describe("CLI program usage contracts", () => {
 
       const listStdout = new CaptureStream();
       const listStderr = new CaptureStream();
-      const listExit = await runCli(["hooks", "list", "--project", "--json"], { cwd: workspace, stdout: listStdout, stderr: listStderr });
+      const listExit = await runCli(["hooks", "list", "--project"], { cwd: workspace, stdout: listStdout, stderr: listStderr });
 
       expect(listExit).toBe(0);
-      expect(JSON.parse(listStdout.text)).toMatchObject({
-        ok: true,
-        phase: "inspect",
-        hooks: {
-          project: {
-            path: join(workspace, ".acpus", "hooks.json"),
-            hooks: [expect.objectContaining({ id: "notify", event: "run.completed", source: "project" })],
-          },
-        },
-      });
-      expect(JSON.parse(listStdout.text).hooks.global).toBeUndefined();
+      expect(listStdout.text).toContain(`Project: ${join(workspace, ".acpus", "hooks.json")}`);
+      expect(listStdout.text).toContain("notify  ->  echo ok  (match: workflow=^release$)");
+      expect(listStdout.text).not.toContain("Global:");
       expect(listStderr.text).toBe("");
     });
   });
 
-  it("lists project and global hooks by scope with stable JSON fields", async () => {
+  it("lists project and global hooks by scope in text", async () => {
     await withPlainTestWorkspace("hooks-scoped", async workspace => {
       const previousHome = process.env.HOME;
       const home = join(workspace, "home");
@@ -616,14 +558,10 @@ describe("CLI program usage contracts", () => {
       try {
         const validateStdout = new CaptureStream();
         const validateStderr = new CaptureStream();
-        const validateExit = await runCli(["hooks", "validate", "--json"], { cwd: workspace, stdout: validateStdout, stderr: validateStderr });
+        const validateExit = await runCli(["hooks", "validate"], { cwd: workspace, stdout: validateStdout, stderr: validateStderr });
 
         expect(validateExit).toBe(0);
-        expect(JSON.parse(validateStdout.text)).toMatchObject({
-          ok: true,
-          phase: "validate",
-          hookValidation: { count: 2 },
-        });
+        expect(validateStdout.text).toBe("OK (2 hooks)\n");
         expect(validateStderr.text).toBe("");
 
         const textStdout = new CaptureStream();
@@ -640,28 +578,12 @@ describe("CLI program usage contracts", () => {
 
         const globalStdout = new CaptureStream();
         const globalStderr = new CaptureStream();
-        const globalExit = await runCli(["hooks", "list", "--global", "--json"], { cwd: workspace, stdout: globalStdout, stderr: globalStderr });
-        const globalJson = JSON.parse(globalStdout.text);
+        const globalExit = await runCli(["hooks", "list", "--global"], { cwd: workspace, stdout: globalStdout, stderr: globalStderr });
 
         expect(globalExit).toBe(0);
-        expect(globalJson).toMatchObject({
-          ok: true,
-          phase: "inspect",
-          hooks: {
-            global: {
-              path: join(home, ".acpus", "hooks.json"),
-              hooks: [expect.objectContaining({
-                id: "global-alert",
-                event: "node.failed",
-                source: "global",
-                sourcePath: join(home, ".acpus", "hooks.json"),
-                effectiveId: "global-alert",
-                definitionHash: expect.any(String),
-              })],
-            },
-          },
-        });
-        expect(globalJson.hooks.project).toBeUndefined();
+        expect(globalStdout.text).toContain(`Global: ${join(home, ".acpus", "hooks.json")}`);
+        expect(globalStdout.text).toContain("global-alert  ->  echo global  (match: nodeId=^build$)");
+        expect(globalStdout.text).not.toContain("Project:");
         expect(globalStderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -674,53 +596,45 @@ describe("CLI program usage contracts", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
-    const exitCode = await runCli(["hooks", "list", "--project", "--global", "--json"], {
+    const exitCode = await runCli(["hooks", "list", "--project", "--global"], {
       cwd: process.cwd(),
       stdout,
       stderr,
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "usage" });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("--project and --global are mutually exclusive.");
   });
 
-  it("rejects malformed web ports through the CLI JSON error contract", async () => {
+  it("rejects malformed web ports through the text error contract", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
-    const exitCode = await runCli(["web", "--port", "123abc", "--json"], {
+    const exitCode = await runCli(["web", "--port", "123abc"], {
       cwd: process.cwd(),
       stdout,
       stderr,
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: false,
-      phase: "usage",
-      message: "--port must be an integer between 1 and 65535.",
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("--port must be an integer between 1 and 65535.");
   });
 
-  it("rejects out-of-range web ports through the CLI JSON error contract", async () => {
+  it("rejects out-of-range web ports through the text error contract", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
-    const exitCode = await runCli(["web", "--port", "70000", "--json"], {
+    const exitCode = await runCli(["web", "--port", "70000"], {
       cwd: process.cwd(),
       stdout,
       stderr,
     });
 
     expect(exitCode).toBe(2);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: false,
-      phase: "usage",
-      message: "--port must be an integer between 1 and 65535.",
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("--port must be an integer between 1 and 65535.");
   });
 
   it("reports hook validation failures through the validate phase", async () => {
@@ -732,12 +646,11 @@ describe("CLI program usage contracts", () => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
 
-      const exitCode = await runCli(["hooks", "validate", "--project", "--json"], { cwd: workspace, stdout, stderr });
+      const exitCode = await runCli(["hooks", "validate", "--project"], { cwd: workspace, stdout, stderr });
 
       expect(exitCode).toBe(1);
-      expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, phase: "validate" });
-      expect(stdout.text).toContain("Invalid hooks config");
-      expect(stderr.text).toBe("");
+      expect(stdout.text).toBe("");
+      expect(stderr.text).toContain("Invalid hooks config");
     });
   });
 });

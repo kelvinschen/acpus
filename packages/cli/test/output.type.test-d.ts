@@ -53,13 +53,11 @@ describe("CLI result type", () => {
     acceptResult({ ok: true, phase: "usage", message: "OK" });
     // @ts-expect-error usage and compilation phases represent failures
     acceptResult({ ok: true, phase: "compile", message: "OK" });
-    // @ts-expect-error web startup data belongs only to run results
-    acceptResult({ ok: true, phase: "inspect", web: { url: "http://localhost" } });
     // @ts-expect-error operational error codes are not part of check results
     acceptResult({ ok: false, phase: "check", errorCode: "CHECK_FAILED" });
 
     // @ts-expect-error successful run results cannot carry failure error codes
-    acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" }, errorCode: "LISTEN_FAILED" });
+    acceptResult({ ok: true, phase: "run", message: "Started.", errorCode: "LISTEN_FAILED" });
     acceptResult({ ok: true, phase: "run", run: {} as never });
     // @ts-expect-error a workflow submission has no structured follow-up receipt
     acceptResult({ ok: true, phase: "run", run: {} as never, followRunId: "run_1" });
@@ -74,7 +72,6 @@ describe("CLI result type", () => {
     // @ts-expect-error successful controls require an applied or consumed receipt
     acceptResult({ ok: true, phase: "control", message: "OK", run: {} as never, control: { type: "pause", runId: "run_1" } });
 
-    acceptResult({ ok: true, phase: "run", message: "Started.", web: { url: "http://localhost" } });
     acceptResult({ ok: false, phase: "control", message: "Failed.", control: { type: "pause", runId: "run_1" } });
     acceptResult({
       ok: true,
@@ -97,7 +94,6 @@ describe("CLI result type", () => {
       run: {} as never,
       control: { type: "fork", state: "applied", sourceRunId: "run_source" },
       diagnostics: [],
-      sourceGraphDigest: "sha256:replacement",
       catalog,
     });
     // @ts-expect-error preparation fields belong only to replacement fork controls

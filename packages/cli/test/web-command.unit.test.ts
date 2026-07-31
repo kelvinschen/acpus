@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 
 describe("web command options", () => {
-  it("reports an occupied port as one operational JSON failure", async () => {
+  it("reports an occupied port as an operational text failure", async () => {
     mocks.startWebServer.mockReturnValue(errAsync({
       type: "listen-failed",
       host: "127.0.0.1",
@@ -27,21 +27,19 @@ describe("web command options", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
-    const exitCode = await runCli(["web", "--host", "127.0.0.1", "--port", "4517", "--json"], {
+    const exitCode = await runCli(["web", "--host", "127.0.0.1", "--port", "4517"], {
       cwd: "/workspace",
       stdout,
       stderr,
     });
 
     expect(exitCode).toBe(1);
-    expect(JSON.parse(stdout.text)).toEqual({
-      schemaVersion: 1,
-      ok: false,
-      phase: "run",
-      message: "listen EADDRINUSE: address already in use 127.0.0.1:4517",
-      errorCode: "LISTEN_FAILED",
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toBe([
+      "listen EADDRINUSE: address already in use 127.0.0.1:4517",
+      "Error code: LISTEN_FAILED",
+      "",
+    ].join("\n"));
   });
 
   it("does not request token access for network hosts by default", async () => {
@@ -55,7 +53,7 @@ describe("web command options", () => {
       cwd: "/workspace",
       stdout,
       stderr,
-    }).parseAsync(["--host", "0.0.0.0", "--json"], { from: "user" });
+    }).parseAsync(["--host", "0.0.0.0"], { from: "user" });
     await waitForSignalListeners(listenerCounts);
 
     expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
@@ -64,14 +62,8 @@ describe("web command options", () => {
       ensureDaemonRunning: expect.any(Function),
     }));
     expect(mocks.startWebServer.mock.calls[0]![0]).not.toHaveProperty("token");
-    expect(JSON.parse(stdout.text)).toEqual({
-      schemaVersion: 1,
-      ok: true,
-      phase: "run",
-      message: "WebUI started.",
-      web: { url: "http://0.0.0.0:4517" },
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toBe("Acpus WebUI starting at http://0.0.0.0:4517\nPress Ctrl+C to stop.\n");
 
     process.emit("SIGINT");
     await command;
@@ -94,7 +86,7 @@ describe("web command options", () => {
       cwd: "/workspace",
       stdout,
       stderr,
-    }).parseAsync(["--token", "--json"], { from: "user" });
+    }).parseAsync(["--token"], { from: "user" });
     await waitForSignalListeners(listenerCounts);
 
     expect(mocks.startWebServer).toHaveBeenCalledWith(expect.objectContaining({
@@ -103,17 +95,13 @@ describe("web command options", () => {
       token: true,
       ensureDaemonRunning: expect.any(Function),
     }));
-    expect(JSON.parse(stdout.text)).toEqual({
-      schemaVersion: 1,
-      ok: true,
-      phase: "run",
-      message: "WebUI started.",
-      web: {
-        url: "http://localhost:4517/?token=generated",
-        token: "generated",
-      },
-    });
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toBe([
+      "Acpus WebUI starting at http://localhost:4517/?token=generated",
+      "Access token: generated",
+      "Press Ctrl+C to stop.",
+      "",
+    ].join("\n"));
 
     process.emit("SIGTERM");
     await command;

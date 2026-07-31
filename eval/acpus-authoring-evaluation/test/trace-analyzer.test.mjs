@@ -101,30 +101,6 @@ test("invalidates a workflow check with no explicit or terminal outcome", async 
   assert.match(session.invalidReasons[0], /no explicit exit code/u);
 });
 
-test("extracts diagnostic codes from workflow check JSON and NDJSON output", async () => {
-  const session = await analyzeTraceArtifact(
-    artifact("pi", 1, 0, fixture("json-output"), "json-output"),
-  );
-
-  assert.equal(session.valid, true);
-  assert.deepEqual(session.checks.map(check => ({
-    command: check.command,
-    outcome: check.outcome,
-    diagnosticCodes: check.diagnosticCodes,
-  })), [
-    {
-      command: "acpus workflow check json.ts --json",
-      outcome: "failed",
-      diagnosticCodes: ["TS2322", "AL002"],
-    },
-    {
-      command: "acpus workflow check ndjson.ts --json",
-      outcome: "failed",
-      diagnosticCodes: ["TS2339", "AL001"],
-    },
-  ]);
-});
-
 test("CLI writes JSON and Markdown metrics from an artifact listing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "acpus-trace-analyzer-"));
   try {

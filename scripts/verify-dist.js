@@ -289,8 +289,8 @@ assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow
     });
 
     const representativeWorkflow = join(examplesRoot, "typed-loop-state", "workflow.ts");
-    const checked = JSON.parse((await runCli(["workflow", "check", representativeWorkflow, "--json"])).stdout);
-    assert.equal(checked.ok, true, "packed CLI workflow check failed");
+    const checked = await runCli(["workflow", "check", representativeWorkflow]);
+    assert.match(checked.stdout, /WorkflowIR\s+0 errors/u, "packed CLI workflow check failed");
 
     const visualizationPath = join(consumerDirectory, "workflow-viz.html");
     await runCli(["workflow", "viz", representativeWorkflow, "--out", visualizationPath]);

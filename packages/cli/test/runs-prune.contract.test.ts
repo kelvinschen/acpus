@@ -52,10 +52,10 @@ describe("runs prune", () => {
     vi.useRealTimers();
   });
 
-  it("parses selection options and emits a stable JSON dry-run report", async () => {
+  it("parses selection options and emits a compact text dry-run report", async () => {
     runtime.pruneRuns.mockResolvedValue(agedPreview);
 
-    const result = await runCommand(["prune", "--older-than", "30d", "--all-workspaces", "--dry-run", "--json"]);
+    const result = await runCommand(["prune", "--older-than", "30d", "--all-workspaces", "--dry-run"]);
 
     expect(runtime.pruneRuns).toHaveBeenCalledOnce();
     expect(runtime.pruneRuns).toHaveBeenCalledWith("/workspace", {
@@ -65,25 +65,15 @@ describe("runs prune", () => {
       selectionCutoff: "2026-06-24T00:00:00.000Z",
     });
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      schemaVersion: 1,
-      ok: true,
-      phase: "delete",
-      prune: agedPreview,
-    });
+    expect(result.stdout).toBe("Prune preview.\nSelected: 2 workspaces, 3 runs, 1 archive, 2048 bytes\n");
     expect(result.stderr).toBe("");
   });
 
-  it("requires explicit consent for non-interactive and JSON deletion", async () => {
-    for (const { argv, tty } of [
-      { argv: ["prune"], tty: false },
-      { argv: ["prune", "--json"], tty: true },
-    ]) {
-      await expect(runCommand(argv, tty)).rejects.toMatchObject({
-        exitCode: 2,
-        result: { ok: false, phase: "usage" },
-      });
-    }
+  it("requires explicit consent for non-interactive deletion", async () => {
+    await expect(runCommand(["prune"])).rejects.toMatchObject({
+      exitCode: 2,
+      result: { ok: false, phase: "usage" },
+    });
     expect(runtime.pruneRuns).not.toHaveBeenCalled();
   });
 
@@ -116,18 +106,15 @@ describe("runs prune", () => {
     };
     runtime.pruneRuns.mockResolvedValueOnce(empty).mockResolvedValueOnce(maintained);
 
-    const result = await runCommand(["prune", "--yes", "--json"]);
+    const result = await runCommand(["prune", "--yes"]);
 
     expect(runtime.pruneRuns.mock.calls).toEqual([
       ["/workspace", { allWorkspaces: false, dryRun: true, selectionCutoff: "2026-07-24T00:00:00.000Z" }],
       ["/workspace", { allWorkspaces: false, dryRun: false, selectionCutoff: "2026-07-24T00:00:00.000Z" }],
     ]);
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      ok: true,
-      phase: "delete",
-      prune: maintained,
-    });
+    expect(result.stdout).toContain("Runs pruned.");
+    expect(result.stdout).toContain("Removed workspaces: 1");
   });
 
   it("returns exit 1 and the final report when any workspace shard fails", async () => {
@@ -140,20 +127,16 @@ describe("runs prune", () => {
     };
     runtime.pruneRuns.mockResolvedValueOnce(preview).mockResolvedValueOnce(partial);
 
-    const result = await runCommand(["prune", "--yes", "--json"]);
+    const result = await runCommand(["prune", "--yes"]);
 
     expect(result.exitCode).toBe(1);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      schemaVersion: 1,
-      ok: false,
-      phase: "delete",
-      prune: partial,
-    });
-    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Run pruning completed with failures.");
+    expect(result.stderr).toContain(`Failed: ${"f".repeat(32)}\tdatabase is unreadable`);
   });
 
   it("rejects invalid age durations before reading runtime state", async () => {
-    await expect(runCommand(["prune", "--older-than", "1week", "--dry-run", "--json"])).rejects.toMatchObject({
+    await expect(runCommand(["prune", "--older-than", "1week", "--dry-run"])).rejects.toMatchObject({
       exitCode: 2,
       result: { ok: false, phase: "usage" },
     });

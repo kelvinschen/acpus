@@ -43,7 +43,7 @@ acpx --help | sed -n '/^Commands:/,/^$/p' | grep -E '^[[:space:]]+[[:alnum:]_-]+
 If the agent appears in that command list, or is configured under `~/.acpx/config.json` `agents`, use `{ use: "<agent>" }`. Use `{ command: "..." }` only when the agent is a raw ACP server command and acpx has no named token for it.
 
 ## ACP Agent Config 
-Use top-level `config` for a static string map: `config.model` selects the model, and every other key is applied to the persistent ACP session before its initial turn.
+Use top-level `config` for a static string map: `config.model` selects the model, and every other key is applied to the persistent ACP session.
 Verified keys: Codex `model`, `reasoning_effort`; Claude `model`, `effort`; Trae `model`, `reasoning_effort`.
 
 ## Claude User Settings

@@ -2,13 +2,13 @@ import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createDoctorCommand } from "./commands/doctor.js";
 import { createHooksCommand } from "./commands/hooks.js";
-import { selectedOutputFormat } from "./commands/output-option.js";
+import { selectedJsonOutput } from "./commands/output-option.js";
 import { createRunsCommand } from "./commands/runs.js";
 import { createSkillCommand } from "./commands/skill.js";
 import { createWebCommand } from "./commands/web.js";
 import { createWorkflowCommand } from "./commands/workflow.js";
 import { CliError, usageError } from "./errors.js";
-import { writeResult } from "./output.js";
+import { writeJsonLine, writeResult } from "./output.js";
 import { getCliPackageInfo } from "./package-info.js";
 import { createUpdateAwareness } from "./update-awareness.js";
 
@@ -31,15 +31,19 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     await awareness.finish(exitCode);
     return exitCode;
   } catch (error) {
-    const format = selectedOutputFormat(program);
+    const json = selectedJsonOutput(program);
     if (error instanceof CliError) {
-      return writeResult(error.result, format, io, error.exitCode);
+      if (json) {
+        writeJsonLine(io.stdout, { schemaVersion: 1, ...error.result });
+        return error.exitCode;
+      }
+      return writeResult(error.result, io, error.exitCode);
     }
     if (error instanceof CommanderError) {
       if (error.code === "commander.helpDisplayed") return error.exitCode;
-      if (format === "json") {
-        const result = usageError(error.message).result;
-        return writeResult(result, "json", io, 2);
+      if (json) {
+        writeJsonLine(io.stdout, { schemaVersion: 1, ...usageError(error.message).result });
+        return 2;
       }
       return 2;
     }
@@ -116,7 +120,7 @@ function configureCommandTree(command: Command, program: Command, io: CliIo): vo
   command.configureOutput({
     writeOut: text => io.stdout.write(text),
     writeErr: text => {
-      if (selectedOutputFormat(program) === "text") io.stderr.write(text);
+      if (!selectedJsonOutput(program)) io.stderr.write(text);
     },
     outputError: (text, write) => write(text),
   });

@@ -57,7 +57,7 @@ describe("workflow source command plumbing", () => {
   });
 
   it.each([
-    { action: "check", flags: ["--json"] },
+    { action: "check", flags: [] },
     { action: "run", flags: [] },
     { action: "viz", flags: [] },
   ] as const)("passes stdin through the shared source preparer for workflow $action -", async ({ action, flags }) => {
@@ -127,7 +127,6 @@ describe("workflow source command plumbing", () => {
       "run_source",
       "--workflow",
       "-",
-      "--json",
     ], { from: "user" });
 
     expect(mock.prepareWorkflowForCli).toHaveBeenCalledWith({
@@ -161,7 +160,6 @@ describe("workflow source command plumbing", () => {
       "--workflow",
       "replacement",
       "--global",
-      "--json",
     ], { from: "user" });
 
     expect(mock.prepareWorkflowForCli).toHaveBeenCalledWith({
@@ -270,47 +268,6 @@ describe("workflow source command plumbing", () => {
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       "",
     ].join("\n"));
-  });
-
-  it("preserves replacement preparation fields in fork JSON", async () => {
-    const stdout = new CaptureStream();
-    mock.prepareWorkflowForCli.mockResolvedValue({
-      prepared: preparedWorkflow([sourceCaptureWarning()]),
-      catalog: catalogEntry(),
-    });
-    const command = createRunsCommand({
-      cwd: "/workspace",
-      stdin: Readable.from([]),
-      stdout,
-      stderr: new CaptureStream(),
-      setExitCode: vi.fn(),
-    });
-
-    await command.parseAsync([
-      "fork",
-      "run_source",
-      "--workflow",
-      "dynamic-source",
-      "--global",
-      "--json",
-    ], { from: "user" });
-
-    expect(JSON.parse(stdout.text)).toEqual({
-      schemaVersion: 1,
-      ok: true,
-      phase: "control",
-      message: "Fork run created.",
-      control: {
-        type: "fork",
-        state: "applied",
-        sourceRunId: "run_source",
-      },
-      run: publicRunRecord("run_child"),
-      followRunId: "run_child",
-      diagnostics: [sourceCaptureWarning()],
-      sourceGraphDigest: preparedSourceGraphDigest,
-      catalog: catalogEntry(),
-    });
   });
 
   it("rejects a fork catalog scope without a replacement workflow", async () => {
@@ -465,20 +422,6 @@ function catalogEntry() {
     entryPath: "/home/.acpus/workflows/dynamic-source/workflow.ts",
     status: "available" as const,
     requiresScope: false,
-  };
-}
-
-function publicRunRecord(id = "run_admitted") {
-  const details = runDetails(id);
-  return {
-    id: details.id,
-    name: details.name,
-    status: details.status,
-    workflowEntry: details.workflowEntry,
-    sourceGraphDigest: details.sourceGraphDigest,
-    createdAt: details.createdAt,
-    updatedAt: details.updatedAt,
-    progressVersion: details.progressVersion,
   };
 }
 

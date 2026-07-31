@@ -16,7 +16,7 @@ describe("workflow stdin CLI contract", () => {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
 
-      const exitCode = await runCli(["workflow", "check", "-", "--json"], {
+      const exitCode = await runCli(["workflow", "check", "-"], {
         cwd: workspace,
         stdin: Readable.from([Buffer.from(source)]),
         stdout,
@@ -24,28 +24,8 @@ describe("workflow stdin CLI contract", () => {
       });
 
       expect(exitCode, stdout.text).toBe(0);
-      expect(JSON.parse(stdout.text)).toMatchObject({
-        ok: true,
-        phase: "check",
-        workflow: {
-          name: "stdin-check",
-          diagnostics: {
-            total: 1,
-            errors: 0,
-            warnings: 1,
-            infos: 0,
-          },
-        },
-        diagnostics: [{
-          code: "SC001",
-          severity: "warning",
-          source: {
-            file: "workflow.ts",
-            line: 2,
-            column: expect.any(Number),
-          },
-        }],
-      });
+      expect(stdout.text).toContain("✓ WorkflowIR          0 errors · 0 static nodes");
+      expect(stdout.text).toMatch(/workflow\.ts:2:\d+ \[warning SC001\]/u);
       expect(stderr.text).toBe("");
     });
   });

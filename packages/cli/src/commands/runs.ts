@@ -24,19 +24,19 @@ import {
   type RunRecord,
 } from "@acpus/runtime";
 import { controlError, deleteError, notFoundError, usageError, validationError } from "../errors.js";
-import { writeResult, type CliAppliedControl, type OutputFormat } from "../output.js";
 import { followExitCode, followRun } from "../run-follow.js";
 import {
   formatInspectionCandidates,
   formatInspectionView,
 } from "../run-inspection-surface.js";
+import { writeJsonLine, writeResult, type CliAppliedControl } from "../output.js";
 import { prepareWorkflowForCli } from "../workflow-preparation.js";
 import type { WorkflowCatalogScopeOptions } from "../catalog.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "./json.js";
 import { confirmAction, confirmDelete, pickRunId, pickRunsToDelete, type DeleteRunChoice } from "./runs-picker.js";
 import { canPrompt } from "./prompt-io.js";
 import { daemonControlRequestId, sendDaemonControl, type DaemonControlFailure } from "./daemon.js";
-import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
+import { jsonOutputFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 import { toRunRecord } from "../run-record.js";
 
 export type RunsCommandContext = {
@@ -51,7 +51,7 @@ type Target = {
   target?: string;
 };
 
-type TargetOptions = Target & JsonOutputOptions;
+type TargetOptions = Target;
 
 type ForkMutation = Target & WorkflowCatalogScopeOptions & {
   input?: string;
@@ -60,14 +60,14 @@ type ForkMutation = Target & WorkflowCatalogScopeOptions & {
   unsafeReuse?: boolean;
 };
 
-type ForkOptions = ForkMutation & JsonOutputOptions;
+type ForkOptions = ForkMutation;
 
-type SignalOptions = JsonOutputOptions & {
+type SignalOptions = {
   target: string;
   payload: string;
 };
 
-type SteerOptions = JsonOutputOptions & {
+type SteerOptions = {
   target: string;
   instruction: string;
 };
@@ -84,7 +84,7 @@ type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
 };
 
-type PruneRunOptions = JsonOutputOptions & {
+type PruneRunOptions = {
   olderThan?: string;
   allWorkspaces?: boolean;
   dryRun?: boolean;
@@ -124,42 +124,42 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
       await artifactsRunCommand(ctx, runId, options);
     }));
 
-  command.addCommand(withJsonOutput(new Command("delete")
+  command.addCommand(new Command("delete")
     .exitOverride()
     .description("Delete durable run state and run-local artifacts.")
     .argument("[run-id]", "run id")
-    ).action(async (runId: string | undefined, options: JsonOutputOptions) => {
-      await deleteRunCommand(ctx, runId, outputFormatFor(options));
+    .action(async (runId: string | undefined) => {
+      await deleteRunCommand(ctx, runId);
     }));
 
-  command.addCommand(withJsonOutput(new Command("prune")
+  command.addCommand(new Command("prune")
     .exitOverride()
     .description("Delete terminal runs selected by age.")
     .option("--older-than <duration>", "select runs older than a duration such as 30d")
     .option("--all-workspaces", "select runs from every known workspace")
     .option("--dry-run", "report selected runs without deleting them")
     .option("--yes", "skip the interactive confirmation")
-    ).action(async (options: PruneRunOptions) => {
+    .action(async (options: PruneRunOptions) => {
       await pruneRunsCommand(ctx, options);
     }));
 
   for (const name of ["pause", "resume", "retry", "cancel"] as const) {
-    const control = withJsonOutput(new Command(name)
+    const control = new Command(name)
       .exitOverride()
       .description(controlDescription(name))
       .argument("<run-id>", "run id")
-    ).action(async (runId: string, options: TargetOptions) => {
-      const request: RunMutation = name === "pause" || name === "resume"
-        ? { type: name }
-        : { type: name, ...(options.target === undefined ? {} : { target: options.target }) };
-      await mutateRun(ctx, runId, request, outputFormatFor(options));
-    });
+      .action(async (runId: string, options: TargetOptions) => {
+        const request: RunMutation = name === "pause" || name === "resume"
+          ? { type: name }
+          : { type: name, ...(options.target === undefined ? {} : { target: options.target }) };
+        await mutateRun(ctx, runId, request);
+      });
     if (name === "retry") control.option("--target <run-target>", "retry only a failed run target");
     if (name === "cancel") control.option("--target <run-target>", "cancel only a non-terminal run target");
     command.addCommand(control);
   }
 
-  command.addCommand(withJsonOutput(new Command("fork")
+  command.addCommand(new Command("fork")
     .exitOverride()
     .description("Fork a run, optionally replacing its workflow or recovery target.")
     .argument("<run-id>", "run id")
@@ -170,7 +170,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--agents <json>", "override inherited agents for the fork")
     .option("--target <run-target>", "target a replacement workflow recovery point")
     .option("--unsafe-reuse", "dangerously reuse completed fork prerequisites despite workflow, input, or signature changes")
-    ).action(async (runId: string, options: ForkOptions) => {
+    .action(async (runId: string, options: ForkOptions) => {
       await mutateRun(ctx, runId, {
         type: "fork",
         ...(options.target === undefined ? {} : { target: options.target }),
@@ -180,27 +180,27 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
         ...(options.global === true ? { global: true } : {}),
         ...(options.agents === undefined ? {} : { agents: options.agents }),
         ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
-      }, outputFormatFor(options));
+      });
     }));
 
-  command.addCommand(withJsonOutput(new Command("signal")
+  command.addCommand(new Command("signal")
     .exitOverride()
     .description("Deliver a payload to one open Signal wait.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "signal wait target")
     .requiredOption("--payload <json>", "signal payload JSON")
-    ).action(async (runId: string, options: SignalOptions) => {
-      await signalRun(ctx, runId, options, outputFormatFor(options));
+    .action(async (runId: string, options: SignalOptions) => {
+      await signalRun(ctx, runId, options);
     }));
 
-  command.addCommand(withJsonOutput(new Command("steer")
+  command.addCommand(new Command("steer")
     .exitOverride()
     .description("Apply an admitted in-scope information update to one running Agent attempt.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "running Agent attempt, dynamic node, or static node")
     .requiredOption("--instruction <text>", "admitted in-scope information update or constraint")
-    ).action(async (runId: string, options: SteerOptions) => {
-      await steerRun(ctx, runId, options, outputFormatFor(options));
+    .action(async (runId: string, options: SteerOptions) => {
+      await steerRun(ctx, runId, options);
     }));
 
   return command;
@@ -288,15 +288,15 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
     artifacts = inspected.value.artifacts;
   }
 
-  if (outputFormatFor(options) === "json") {
-    ctx.stdout.write(`${JSON.stringify({
+  if (jsonOutputFor(options)) {
+    writeJsonLine(ctx.stdout, {
       schemaVersion: 1,
       ok: true,
       phase: "inspect",
       runId,
       ...(options.target === undefined ? {} : { target: options.target }),
       artifacts,
-    }, null, 2)}\n`);
+    });
   } else if (artifacts.length === 0) {
     ctx.stdout.write("No artifacts.\n");
   } else {
@@ -325,7 +325,7 @@ function validateInspectOptions(options: InspectRunOptions): void {
   }
 }
 
-async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined, format: OutputFormat): Promise<void> {
+async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefined): Promise<void> {
   if (runId !== undefined) {
     const deleted = await deleteOneRun(ctx, runId);
     ctx.setExitCode(writeResult({
@@ -335,10 +335,9 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
       run: deleted,
       deletedRuns: [deleted],
       skippedRuns: [],
-    }, format, ctx, 0));
+    }, ctx, 0));
     return;
   }
-  if (format === "json") throw usageError("Run id is required when --json is used.");
   if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
   const choices = await deleteChoices(ctx);
@@ -360,7 +359,7 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
     message: deletedRuns.length === 1 ? "Run deleted." : "Runs deleted.",
     deletedRuns,
     skippedRuns,
-  }, format, ctx, 0));
+  }, ctx, 0));
 }
 
 async function deleteChoices(ctx: RunsCommandContext): Promise<DeleteRunChoice[]> {
@@ -408,7 +407,6 @@ async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<Run
 }
 
 async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOptions): Promise<void> {
-  const format = outputFormatFor(options);
   const olderThanMs = parsePruneAge(options.olderThan);
   const selectionCutoff = new Date(Date.now() - (olderThanMs ?? 0)).toISOString();
   const request = {
@@ -416,17 +414,17 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
     allWorkspaces: options.allWorkspaces ?? false,
     selectionCutoff,
   };
-  if (!options.dryRun && !options.yes && (format === "json" || !canPrompt(ctx))) {
+  if (!options.dryRun && !options.yes && !canPrompt(ctx)) {
     throw usageError("--yes is required to prune runs without an interactive terminal.");
   }
   const preview = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: true });
   const selectedItems = preview.selected.runs + preview.selected.archives;
   if (options.dryRun) {
-    writePruneResult(ctx, preview, "Prune preview.", format);
+    writePruneResult(ctx, preview, "Prune preview.");
     return;
   }
   if (selectedItems === 0 && preview.failures.length === 0 && !options.yes) {
-    writePruneResult(ctx, preview, "No runs to prune.", format);
+    writePruneResult(ctx, preview, "No runs to prune.");
     return;
   }
   if (!options.yes) {
@@ -435,7 +433,7 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
       phase: "delete",
       message: "Prune preview.",
       prune: preview,
-    }, "text", ctx, preview.failures.length === 0 ? 0 : 1);
+    }, ctx, preview.failures.length === 0 ? 0 : 1);
     const confirmed = preview.failures.length === 0
       ? await confirmDelete(selectedItems, ctx, "item")
       : await confirmAction(
@@ -446,7 +444,7 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
   }
 
   const report = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: false });
-  writePruneResult(ctx, report, report.failures.length === 0 ? "Runs pruned." : "Run pruning completed with failures.", format);
+  writePruneResult(ctx, report, report.failures.length === 0 ? "Runs pruned." : "Run pruning completed with failures.");
 }
 
 function parsePruneAge(value: string | undefined): number | undefined {
@@ -456,20 +454,20 @@ function parsePruneAge(value: string | undefined): number | undefined {
   return parsed.value;
 }
 
-function writePruneResult(ctx: RunsCommandContext, report: PruneReport, message: string, format: OutputFormat): void {
+function writePruneResult(ctx: RunsCommandContext, report: PruneReport, message: string): void {
   const exitCode = report.failures.length === 0 ? 0 : 1;
   ctx.setExitCode(writeResult({
     ok: exitCode === 0,
     phase: "delete",
     message,
     prune: report,
-  }, format, ctx, exitCode));
+  }, ctx, exitCode));
 }
 
-async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions, format: OutputFormat): Promise<void> {
+async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
   const controlled = await sendDaemonControl(ctx.cwd, { requestId: daemonControlRequestId(), type: "signal", runId, nodeId: options.target, payload });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target, format);
+  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
   const result = controlled.value;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
   ctx.setExitCode(writeResult({
@@ -479,10 +477,10 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: Signal
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, format, ctx, 0));
+  }, ctx, 0));
 }
 
-async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions, format: OutputFormat): Promise<void> {
+async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions): Promise<void> {
   if (options.target.trim() === "") throw usageError("--target must be a non-empty string.");
   if (options.instruction.trim() === "") throw usageError("--instruction must be a non-empty string.");
   const controlled = await sendDaemonControl(ctx.cwd, {
@@ -492,7 +490,7 @@ async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOp
     target: options.target,
     instruction: options.instruction,
   });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target, format);
+  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
   const result = controlled.value;
   if (result.type !== "steer") throw new Error(`Daemon returned '${result.type}' for steer control.`);
   ctx.setExitCode(writeResult({
@@ -502,10 +500,10 @@ async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOp
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, format, ctx, 0));
+  }, ctx, 0));
 }
 
-async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation, format: OutputFormat): Promise<void> {
+async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation): Promise<void> {
   if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
   if (request.type === "fork" && request.project && request.global) {
     throw usageError("--project and --global are mutually exclusive.");
@@ -553,7 +551,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       break;
   }
   const controlled = await sendDaemonControl(ctx.cwd, intent);
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, requestedTarget, format);
+  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, requestedTarget);
   const result = controlled.value;
   if (result.type !== request.type) throw new Error(`Daemon returned '${result.type}' for ${request.type} control.`);
   const control = appliedControl(result, requestedTarget);
@@ -571,10 +569,9 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
         ? {}
         : {
             diagnostics: preparation.prepared.ir.diagnostics,
-            sourceGraphDigest: preparation.prepared.sourceGraphDigest,
             ...(preparation.catalog === undefined ? {} : { catalog: preparation.catalog }),
           }),
-    }, format, ctx, 0));
+    }, ctx, 0));
     return;
   }
   ctx.setExitCode(writeResult({
@@ -584,7 +581,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
     control,
     run,
     ...follow,
-  }, format, ctx, 0));
+  }, ctx, 0));
 }
 
 function controlDescription(type: Exclude<ControlAction, "fork">): string {
@@ -657,7 +654,6 @@ async function runControlError(
   ctx: RunsCommandContext,
   error: DaemonControlFailure,
   target: string | undefined,
-  format: OutputFormat,
 ): Promise<ReturnType<typeof controlError>> {
   const candidates = target === undefined
     || error.cause.type !== "rejected"
@@ -674,7 +670,7 @@ async function runControlError(
         message: `Control '${error.controlType}' target '${target}' matches multiple occurrences. Select one @ref from the candidate view.`,
       };
   const message = inspectionError?.message ?? error.message;
-  return controlError(candidates && format === "text"
+  return controlError(candidates
     ? `${formatInspectionCandidates(candidates).trimEnd()}\n${message}`
     : message, {
     errorCode: error.code,

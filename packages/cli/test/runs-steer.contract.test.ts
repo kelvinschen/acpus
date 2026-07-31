@@ -54,8 +54,8 @@ describe("runs steer", () => {
     runtime.readInspection.mockReset();
   });
 
-  it("sends the exact correction and emits a redacted JSON receipt", async () => {
-    const result = await runCommand(["steer", "run_1", "--target", "@1a2b3c4d5e6f", "--instruction", "SECRET correction", "--json"]);
+  it("sends the exact correction and emits a redacted text receipt", async () => {
+    const result = await runCommand(["steer", "run_1", "--target", "@1a2b3c4d5e6f", "--instruction", "SECRET correction"]);
 
     expect(daemon.sendDaemonControl).toHaveBeenCalledWith("/workspace", {
       requestId: "cli:steer-1",
@@ -65,29 +65,6 @@ describe("runs steer", () => {
       instruction: "SECRET correction",
     });
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      schemaVersion: 1,
-      ok: true,
-      phase: "control",
-      message: "Attempt fenced; information update queued.",
-      control: {
-        type: "steer",
-        state: "applied",
-        runId: "run_1",
-        steerId: "cli:steer-1",
-        target: "@1a2b3c4d5e6f",
-        continuation: "queued",
-      },
-    });
-    expect(result.stdout).not.toContain("SECRET correction");
-    expect(result.stdout).not.toContain("review~abc");
-    expect(result.stdout).not.toContain("attempt_1");
-    expect(result.stderr).toBe("");
-  });
-
-  it("renders the requested short ref in the follow command without echoing the instruction", async () => {
-    const result = await runCommand(["steer", "run_1", "--target", "@1a2b3c4d5e6f", "--instruction", "SECRET correction"]);
-
     expect(result.stdout).toContain("Steer: cli:steer-1");
     expect(result.stdout).toContain("Target: @1a2b3c4d5e6f");
     expect(result.stdout).toContain("Continuation: queued");
@@ -95,6 +72,7 @@ describe("runs steer", () => {
     expect(result.stdout).not.toContain("SECRET correction");
     expect(result.stdout).not.toContain("review~abc");
     expect(result.stdout).not.toContain("attempt_1");
+    expect(result.stderr).toBe("");
   });
 
   it("rejects blank targets and instructions before contacting the daemon", async () => {
@@ -134,25 +112,6 @@ describe("runs steer", () => {
     expect(text.stderr).not.toContain("review~one");
     expect(text.stderr).not.toContain("review~two");
 
-    const json = await runCliCommand(["runs", "retry", "run_1", "--target", "review", "--json"]);
-    expect(json.exitCode).toBe(1);
-    expect(json.stderr).toBe("");
-    expect(JSON.parse(json.stdout)).toMatchObject({
-      phase: "control",
-      inspectionError: {
-        type: "target-ambiguous",
-        target: "review",
-        candidates: {
-          kind: "candidates",
-          entries: [
-            { selector: "@1a2b3c4d5e6f" },
-            { selector: "@6f5e4d3c2b1a" },
-          ],
-        },
-      },
-    });
-    expect(json.stdout).not.toContain("review~one");
-    expect(json.stdout).not.toContain("review~two");
   });
 
   it("preserves a non-ambiguous daemon failure without querying candidates", async () => {

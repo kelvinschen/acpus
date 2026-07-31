@@ -132,8 +132,7 @@ Trace v1 starts with `turn_start` at sequence 0 and ends with `turn_end`;
 records preserve provider arrival order. `sequence` is continuous,
 `observedAt` is UTC arrival time, and `elapsedMs` is monotonic.
 
-Normalized Trace omits prompts and client/control metadata. It is a normalized
-public-runtime projection, not a recording of raw ACP transport frames.
+Normalized Trace omits prompts and client/control metadata. It is a normalized public-runtime projection, not a recording of raw ACP transport frames.
 
 ## Build A Consumer
 

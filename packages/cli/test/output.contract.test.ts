@@ -25,7 +25,7 @@ describe("CLI result output contracts", () => {
         progressVersion: 0,
       },
       followRunId: "run_child",
-    }, "text", { stdout, stderr }, 0)).toBe(0);
+    }, { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
       "Fork run created.",
@@ -64,7 +64,7 @@ describe("CLI result output contracts", () => {
         progressVersion: 1,
       },
       followRunId: "run_1",
-    }, "text", { stdout, stderr }, 0)).toBe(0);
+    }, { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
       "Signal consumed.",
@@ -106,7 +106,7 @@ describe("CLI result output contracts", () => {
         progressVersion: 2,
       },
       followRunId: "run_1",
-    }, "text", { stdout, stderr }, 0)).toBe(0);
+    }, { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
       "Attempt fenced; information update queued.",
@@ -140,7 +140,7 @@ describe("CLI result output contracts", () => {
     ] as const) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
-      expect(writeResult({ ok: true, phase: "control", message: "Retry applied.", control, run, followRunId: run.id }, "text", { stdout, stderr }, 0)).toBe(0);
+      expect(writeResult({ ok: true, phase: "control", message: "Retry applied.", control, run, followRunId: run.id }, { stdout, stderr }, 0)).toBe(0);
       expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --await-decision\n`);
       expect(stdout.text).not.toContain("retryd");
       expect(stdout.text).not.toContain("retried");
@@ -176,7 +176,7 @@ describe("CLI result output contracts", () => {
         control,
         run: { ...run, status: control.target === undefined ? "canceled" : "running" },
         ...(control.target === undefined ? {} : { followRunId: run.id }),
-      }, "text", { stdout, stderr }, 0)).toBe(0);
+      }, { stdout, stderr }, 0)).toBe(0);
       expect(stdout.text).toBe(expected);
       expect(stdout.text).not.toContain("Status:");
       expect(stdout.text).not.toContain("Workflow entry:");
@@ -220,30 +220,6 @@ describe("CLI result output contracts", () => {
     expect(summarizeWorkflow(ir).nodeCount).toBe(4);
   });
 
-  it("writes stable JSON results to stdout", () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    const exitCode = writeResult(checkResult(), "json", { stdout, stderr }, 0);
-
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      ok: true,
-      phase: "check",
-      workflow: {
-        name: "cli-valid",
-        description: "Validate CLI workflow summaries.",
-        irVersion: 7,
-        nodeCount: 1,
-        outputShape: { kind: "object", possibleKeys: ["ready"] },
-        diagnostics: {
-          errors: 0,
-          warnings: 0,
-        },
-      },
-    });
-    expect(stderr.text).toBe("");
-  });
-
   it("aligns Doctor status, area, and message columns", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
@@ -257,7 +233,7 @@ describe("CLI result output contracts", () => {
         { status: "ok", area: "workspace", message: "Workspace resolved." },
         { status: "warn", area: "store", message: "Runtime store needs attention." },
       ],
-    }, "text", { stdout, stderr }, 0)).toBe(0);
+    }, { stdout, stderr }, 0)).toBe(0);
 
     expect(stdout.text).toBe([
       "Doctor checks passed with warnings.",
@@ -292,7 +268,7 @@ describe("CLI result output contracts", () => {
     try {
       const stdout = new TtyCaptureStream();
       const stderr = new TtyCaptureStream();
-      expect(writeResult(report, "text", { stdout, stderr }, 0)).toBe(0);
+      expect(writeResult(report, { stdout, stderr }, 0)).toBe(0);
       expect(stdout.text).toBe([
         "\u001b[32mDoctor checks passed with warnings.\u001b[0m",
         "\u001b[36mPersistence:\u001b[0m \u001b[1m/home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef\u001b[0m",
@@ -303,21 +279,13 @@ describe("CLI result output contracts", () => {
       expect(stripVTControlCharacters(stdout.text)).toBe(plain);
       expect(stderr.text).toBe("");
 
-      const jsonStdout = new TtyCaptureStream();
-      expect(writeResult(report, "json", {
-        stdout: jsonStdout,
-        stderr: new TtyCaptureStream(),
-      }, 0)).toBe(0);
-      expect(JSON.parse(jsonStdout.text)).toMatchObject({ ok: true, phase: "doctor" });
-      expect(jsonStdout.text).not.toContain("\u001b");
-
       const failedStderr = new TtyCaptureStream();
       expect(writeResult({
         ok: false,
         phase: "doctor",
         message: "Doctor checks failed.",
         checks: [{ status: "fail", area: "store", message: "Runtime store unreadable." }],
-      }, "text", { stdout: new TtyCaptureStream(), stderr: failedStderr }, 1)).toBe(1);
+      }, { stdout: new TtyCaptureStream(), stderr: failedStderr }, 1)).toBe(1);
       expect(failedStderr.text).toBe([
         "\u001b[31mDoctor checks failed.\u001b[0m",
         "\u001b[31mfail\u001b[0m  \u001b[36mstore\u001b[0m  Runtime store unreadable.",
@@ -326,7 +294,7 @@ describe("CLI result output contracts", () => {
 
       process.env.NO_COLOR = "1";
       const noColorStdout = new TtyCaptureStream();
-      expect(writeResult(report, "text", {
+      expect(writeResult(report, {
         stdout: noColorStdout,
         stderr: new TtyCaptureStream(),
       }, 0)).toBe(0);
@@ -340,7 +308,7 @@ describe("CLI result output contracts", () => {
   it("writes concise successful workflow check stages", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    const exitCode = writeResult(checkResult(), "text", { stdout, stderr }, 0);
+    const exitCode = writeResult(checkResult(), { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
     expect(stdout.text).toBe([
@@ -366,7 +334,7 @@ describe("CLI result output contracts", () => {
       diagnostics: [{ code: "VIZ001", severity: "info", message: "Visualization note." }],
     };
 
-    expect(writeResult(result, "text", { stdout, stderr }, 0)).toBe(0);
+    expect(writeResult(result, { stdout, stderr }, 0)).toBe(0);
     expect(stdout.text).toBe("semantic\ninput {}\n\n[info VIZ001] Visualization note.\n");
     expect(stdout.text).not.toContain("Workflow visualization rendered.");
     expect(stdout.text).not.toContain("Workflow: cli-valid");
@@ -390,7 +358,7 @@ describe("CLI result output contracts", () => {
         updatedAt: "2026-06-29T00:00:01.000Z",
         progressVersion: 0,
       },
-    }, "text", { stdout, stderr }, 0);
+    }, { stdout, stderr }, 0);
 
     expect(exitCode).toBe(0);
     expect(stdout.text).toBe([
@@ -406,14 +374,14 @@ describe("CLI result output contracts", () => {
     const checkStdout = new CaptureStream();
     const checkStderr = new CaptureStream();
 
-    expect(writeResult(checkResult(), "text", { stdout: checkStdout, stderr: checkStderr }, 0)).toBe(0);
+    expect(writeResult(checkResult(), { stdout: checkStdout, stderr: checkStderr }, 0)).toBe(0);
     expect(checkStdout.text).toContain("✓ WorkflowIR          0 errors · 1 static node");
     expect(checkStdout.text).not.toContain("Workflow check passed.");
     expect(checkStderr.text).toBe("");
 
     const failedStdout = new CaptureStream();
     const failedStderr = new CaptureStream();
-    expect(writeResult({ ok: false, phase: "usage", message: "Bad input." }, "text", { stdout: failedStdout, stderr: failedStderr }, 2)).toBe(2);
+    expect(writeResult({ ok: false, phase: "usage", message: "Bad input." }, { stdout: failedStdout, stderr: failedStderr }, 2)).toBe(2);
     expect(failedStdout.text).toBe("");
     expect(failedStderr.text).toBe("Bad input.\n");
   });
@@ -439,7 +407,7 @@ describe("CLI result output contracts", () => {
     const textStdout = new CaptureStream();
     const textStderr = new CaptureStream();
 
-    expect(writeResult(result, "text", { stdout: textStdout, stderr: textStderr, cwd: "/workspace" }, 1)).toBe(1);
+    expect(writeResult(result, { stdout: textStdout, stderr: textStderr, cwd: "/workspace" }, 1)).toBe(1);
     expect(textStdout.text).toBe("");
     expect(textStderr.text).toBe([
       "Workflow validation failed.",
@@ -451,13 +419,6 @@ describe("CLI result output contracts", () => {
       "",
     ].join("\n"));
 
-    const jsonStdout = new CaptureStream();
-    const jsonStderr = new CaptureStream();
-
-    expect(writeResult(result, "json", { stdout: jsonStdout, stderr: jsonStderr, cwd: "/workspace" }, 1)).toBe(1);
-    expect(JSON.parse(jsonStdout.text)).toEqual({ schemaVersion: 1, ...result });
-    expect(JSON.parse(jsonStdout.text).diagnostics[0].source.file).toBe("/workspace/src/workflow.ts");
-    expect(jsonStderr.text).toBe("");
   });
 
   it("keeps outside absolute paths and renders source-less diagnostics without a prefix", () => {
@@ -484,7 +445,7 @@ describe("CLI result output contracts", () => {
       }],
     };
 
-    writeResult(result, "text", { stdout, stderr, cwd: "/workspace" }, 1);
+    writeResult(result, { stdout, stderr, cwd: "/workspace" }, 1);
 
     expect(stderr.text).toContain("/outside/helper.ts:2:4 [error TS2322] Outside source.");
     expect(stderr.text).toContain("[error ID001] No source.");
@@ -504,7 +465,7 @@ describe("CLI result output contracts", () => {
         { code: "TB003", severity: "error", message: "third" },
         { code: "TS2339", severity: "error", message: "fourth" },
       ],
-    }, "text", { stdout: failedStdout, stderr: failedStderr }, 1);
+    }, { stdout: failedStdout, stderr: failedStderr }, 1);
     expect(failedStdout.text).toBe("");
     expect(failedStderr.text).toBe([
       "✗ typescript          2 errors",
@@ -527,7 +488,7 @@ describe("CLI result output contracts", () => {
       phase: "check",
       message: "Workflow check failed.",
       diagnostics: [{ code: "AL002", severity: "error", message: "Return .output." }],
-    }, "text", { stdout, stderr }, 1);
+    }, { stdout, stderr }, 1);
     expect(stdout.text).toBe("");
     expect(stderr.text).toBe([
       "✓ typescript          0 errors",
@@ -546,7 +507,7 @@ describe("CLI result output contracts", () => {
       phase: "check",
       message: "Workflow check failed.",
       diagnostics: [{ code: "WF002", severity: "error", message: "TypeScript service unavailable." }],
-    }, "text", { stdout, stderr }, 1);
+    }, { stdout, stderr }, 1);
     expect(stdout.text).toBe("");
     expect(stderr.text).toBe([
       "✗ check infrastructure 1 error",
@@ -598,7 +559,7 @@ describe("CLI result output contracts", () => {
     for (const { result, expected } of cases) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
-      writeResult(result, "text", { stdout, stderr }, 1);
+      writeResult(result, { stdout, stderr }, 1);
       expect(stdout.text).toBe("");
       expect(stderr.text).toBe(`${expected.join("\n")}\n`);
     }
@@ -620,7 +581,7 @@ describe("CLI result output contracts", () => {
       message: "Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       source: { file: "workflow.ts", line: 2, column: 62 },
     }];
-    writeResult(summary, "text", { stdout: summaryStdout, stderr: summaryStderr }, 0);
+    writeResult(summary, { stdout: summaryStdout, stderr: summaryStderr }, 0);
     expect(summaryStdout.text).toBe([
       "✓ typescript          0 errors",
       "✓ authoring rules     0 errors",
@@ -654,7 +615,7 @@ describe("CLI result output contracts", () => {
         source: { file: "workflow.ts", line: 2, column: 5 },
       }],
       sourceGraphDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    }, "text", { stdout, stderr, cwd: "/workspace" }, 0);
+    }, { stdout, stderr, cwd: "/workspace" }, 0);
 
     expect(stdout.text).toBe([
       "Workflow imported.",
@@ -694,6 +655,5 @@ function checkResult(): CliResult {
       },
     },
     diagnostics: [],
-    sourceGraphDigest: "sha256:def",
   };
 }

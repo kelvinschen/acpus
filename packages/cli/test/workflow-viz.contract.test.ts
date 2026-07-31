@@ -44,18 +44,6 @@ agents: none
       expect(exitCode).toBe(0);
       expect(stdout.text).toBe(`${expected}\n`);
       expect(stderr.text).toBe("");
-
-      const unsupportedStdout = new CaptureStream();
-      const unsupportedStderr = new CaptureStream();
-      const unsupportedExitCode = await runCli(["workflow", "viz", workflow, "--json"], {
-        cwd: workspace,
-        stdout: unsupportedStdout,
-        stderr: unsupportedStderr,
-      });
-
-      expect(unsupportedExitCode).toBe(2);
-      expect(unsupportedStdout.text).toBe("");
-      expect(unsupportedStderr.text).toContain("unknown option '--json'");
     });
   });
 

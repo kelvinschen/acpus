@@ -1,9 +1,7 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
 import { runError, usageError } from "../errors.js";
-import { writeResult } from "../output.js";
 import { ensureDaemonRunning } from "./daemon.js";
-import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 
 export type WebCommandContext = {
   cwd: string;
@@ -11,15 +9,15 @@ export type WebCommandContext = {
   stderr: Writable;
 };
 
-type WebOptions = JsonOutputOptions & { host?: string; port?: string; token?: boolean };
+type WebOptions = { host?: string; port?: string; token?: boolean };
 
 export function createWebCommand(ctx: WebCommandContext): Command {
-  return withJsonOutput(new Command("web")
+  return new Command("web")
     .exitOverride()
     .description("Start the local web operator console.")
     .option("--host <host>", "bind host (default: localhost)")
     .option("--port <port>", "bind port (default: random)")
-    .option("--token", "protect the WebUI with a generated access token"))
+    .option("--token", "protect the WebUI with a generated access token")
     .action(async (options: WebOptions) => {
       const host = options.host ?? "localhost";
       const port = parsePort(options.port);
@@ -38,20 +36,11 @@ export function createWebCommand(ctx: WebCommandContext): Command {
       if (started.isErr()) throw runError(started.error.message, { errorCode: "LISTEN_FAILED" });
       const server = started.value;
 
-      if (outputFormatFor(options) === "json") {
-        writeResult({
-          ok: true,
-          phase: "run",
-          message: "WebUI started.",
-          web: { url: server.url, ...(server.token ? { token: server.token } : {}) },
-        }, "json", ctx, 0);
-      } else {
-        ctx.stderr.write(`Acpus WebUI starting at ${server.url}\n`);
-        if (server.token) {
-          ctx.stderr.write(`Access token: ${server.token}\n`);
-        }
-        ctx.stderr.write("Press Ctrl+C to stop.\n");
+      ctx.stderr.write(`Acpus WebUI starting at ${server.url}\n`);
+      if (server.token) {
+        ctx.stderr.write(`Access token: ${server.token}\n`);
       }
+      ctx.stderr.write("Press Ctrl+C to stop.\n");
 
       await waitForShutdownSignal(server);
     });

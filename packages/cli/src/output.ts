@@ -73,12 +73,10 @@ type CliResultFields = {
   errorCode?: string;
   inspectionError?: PublicRunInspectionError;
   control?: CliControl;
-  hookValidation?: { count: number };
   hooks?: HookListResult;
   outputPath?: string;
   visualization?: string;
   skill?: SkillCommandResult;
-  web?: { url: string; token?: string };
   catalog?: WorkflowCatalogEntry;
   checked?: boolean;
 };
@@ -131,7 +129,7 @@ type NonForkControlSuccessCliResult = Omit<ResultRecord<"control", true, "messag
 type ForkControlSuccessCliResult = Omit<ResultRecord<
   "control",
   true,
-  "message" | "run" | "followRunId" | "control" | "diagnostics" | "sourceGraphDigest" | "catalog",
+  "message" | "run" | "followRunId" | "control" | "diagnostics" | "catalog",
   "message" | "run" | "control"
 >, "control"> & {
   control: Extract<CliAppliedControl, { type: "fork" }>;
@@ -141,15 +139,14 @@ type ControlSuccessCliResult = NonForkControlSuccessCliResult | ForkControlSucce
 
 export type CliResult =
   | ResultRecord<"usage", false, "message", "message">
-  | ResultRecord<"check", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog", "message" | "workflow">
+  | ResultRecord<"check", true, "message" | "workflow" | "diagnostics" | "catalog", "message" | "workflow">
   | ResultRecord<"check", false, "message" | "diagnostics", "message">
   | ResultRecord<"source" | "compile" | "lock", false, "message", "message">
-  | ResultRecord<"validate", true, "message" | "hookValidation", "message" | "hookValidation">
+  | ResultRecord<"validate", true, "message", "message">
   | ResultRecord<"validate", false, "message" | "workflow" | "diagnostics", "message">
   | ImportSuccessCliResult
   | ResultRecord<"import", false, "message" | "errorCode", "message">
   | ResultRecord<"run", true, "diagnostics" | "run", "run">
-  | ResultRecord<"run", true, "message" | "web", "message" | "web">
   | ResultRecord<"run", false, "message" | "run" | "errorCode", "message">
   | ResultRecord<"inspect", true, "catalog", "catalog">
   | ResultRecord<"inspect", true, "catalogEntries", "catalogEntries">
@@ -161,8 +158,8 @@ export type CliResult =
   | ResultRecord<"delete", true, "message" | "prune", "message" | "prune">
   | ResultRecord<"delete", false, "message" | "run" | "errorCode" | "prune", "message">
   | ResultRecord<"doctor", boolean, "message" | "persistence" | "checks" | "authoring", "message" | "checks">
-  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "visualization", "message" | "workflow" | "visualization">
-  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "sourceGraphDigest" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
+  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "visualization", "message" | "workflow" | "visualization">
+  | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
   | ResultRecord<"viz", false, "message", "message">
   | ResultRecord<"skill", true, "message" | "skill", "message" | "skill">
   | ResultRecord<"skill", false, "message" | "skill" | "errorCode", "message">;
@@ -182,8 +179,6 @@ export type SkillCommandResult = {
   removals?: SkillRemoval[];
 };
 
-export type OutputFormat = "text" | "json";
-
 const healthStatusColors = {
   ok: 32,
   warn: 33,
@@ -192,15 +187,9 @@ const healthStatusColors = {
 
 export function writeResult(
   result: CliResult,
-  format: OutputFormat,
   streams: { stdout: Writable; stderr: Writable; cwd?: string },
   exitCode: number,
 ): number {
-  if (format === "json") {
-    streams.stdout.write(`${JSON.stringify({ schemaVersion: 1, ...result }, null, 2)}\n`);
-    return exitCode;
-  }
-
   const stream = result.ok ? streams.stdout : streams.stderr;
   if (result.visualization !== undefined) {
     stream.write(`${result.visualization}\n`);

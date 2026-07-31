@@ -15,7 +15,6 @@ import { toRunRecord } from "../run-record.js";
 import { importWorkflowPackage } from "../workflow-import.js";
 import { renderWorkflowTerminalViz } from "../workflow-terminal-viz.js";
 import { supportsColor } from "../terminal-style.js";
-import { outputFormatFor, withJsonOutput, type JsonOutputOptions } from "./output-option.js";
 import { canPrompt } from "./prompt-io.js";
 import { pickWorkflowCatalogEntry } from "./workflow-catalog-picker.js";
 
@@ -27,14 +26,14 @@ export type WorkflowCommandContext = {
   setExitCode(code: number): void;
 };
 
-type CatalogOutputOptions = WorkflowCatalogScopeOptions & JsonOutputOptions;
+type CatalogOptions = WorkflowCatalogScopeOptions;
 
 type WorkflowInputOptions = {
   input?: string;
   agents?: string;
 } & WorkflowCatalogScopeOptions;
 
-type CheckWorkflowOptions = WorkflowInputOptions & JsonOutputOptions;
+type CheckWorkflowOptions = WorkflowInputOptions;
 
 type RunWorkflowOptions = WorkflowInputOptions & {
   follow?: boolean;
@@ -46,7 +45,7 @@ type VizWorkflowOptions = WorkflowCatalogScopeOptions & {
   force?: boolean;
 };
 
-type ImportWorkflowOptions = CatalogOutputOptions & {
+type ImportWorkflowOptions = CatalogOptions & {
   check?: boolean;
 };
 
@@ -56,28 +55,28 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .exitOverride()
     .description("Browse, import, check, run, and visualize workflow definitions.");
 
-  command.addCommand(withJsonOutput(new Command("catalog")
+  command.addCommand(new Command("catalog")
     .exitOverride()
     .description("Browse the workflow catalog or inspect one entry.")
     .argument("[name]", "workflow catalog name; omit to browse the catalog")
     .option("--project", "use the project workflow catalog")
     .option("--global", "use the global workflow catalog")
-    ).action(async (name: string | undefined, options: CatalogOutputOptions) => {
+    .action(async (name: string | undefined, options: CatalogOptions) => {
       await queryCatalog(ctx, name, options);
     }));
 
-  command.addCommand(withJsonOutput(new Command("import")
+  command.addCommand(new Command("import")
     .exitOverride()
     .description("Import a workflow package snapshot into a local catalog.")
     .argument("<source>", "local workflow source or HTTP/HTTPS URL")
     .option("--project", "import into the project workflow catalog (default)")
     .option("--global", "import into the global workflow catalog")
     .option("--check", "fully prepare the workflow before committing (executes module top-level code)")
-    ).action(async (source: string, options: ImportWorkflowOptions) => {
+    .action(async (source: string, options: ImportWorkflowOptions) => {
       await importWorkflow(ctx, source, options);
     }));
 
-  command.addCommand(withJsonOutput(new Command("check")
+  command.addCommand(new Command("check")
     .exitOverride()
     .description("Standalone workflow validation without admitting or executing a run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin")
@@ -85,7 +84,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .option("--agents <json>", "validate submit-time agent overrides")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
-    ).action(async (workflow: string, options: CheckWorkflowOptions) => {
+    .action(async (workflow: string, options: CheckWorkflowOptions) => {
       await checkWorkflow(ctx, workflow, options);
     }));
 
@@ -118,15 +117,14 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
   return command;
 }
 
-async function queryCatalog(ctx: WorkflowCommandContext, name: string | undefined, options: CatalogOutputOptions): Promise<void> {
+async function queryCatalog(ctx: WorkflowCommandContext, name: string | undefined, options: CatalogOptions): Promise<void> {
   if (name !== undefined) {
     await writeCatalogEntryResult(ctx, name, options);
     return;
   }
 
   const catalogEntries = await discoverWorkflowCatalog(ctx.cwd, options);
-  if (outputFormatFor(options) === "text"
-    && canPrompt(ctx)
+  if (canPrompt(ctx)
     && catalogEntries.some(entry => entry.status === "available")) {
     const selected = await pickWorkflowCatalogEntry(catalogEntries, ctx);
     if (selected === undefined) throw usageError("Workflow selection cancelled.");
@@ -139,16 +137,16 @@ async function queryCatalog(ctx: WorkflowCommandContext, name: string | undefine
     ok: true,
     phase: "inspect",
     catalogEntries,
-  }, outputFormatFor(options), ctx, 0));
+  }, ctx, 0));
 }
 
-async function writeCatalogEntryResult(ctx: WorkflowCommandContext, name: string, options: CatalogOutputOptions): Promise<void> {
+async function writeCatalogEntryResult(ctx: WorkflowCommandContext, name: string, options: CatalogOptions): Promise<void> {
   const catalog = await lookupWorkflowCatalogEntry(ctx.cwd, name, options);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "inspect",
     catalog,
-  }, outputFormatFor(options), ctx, 0));
+  }, ctx, 0));
 }
 
 async function importWorkflow(ctx: WorkflowCommandContext, source: string, options: ImportWorkflowOptions): Promise<void> {
@@ -177,7 +175,7 @@ async function importWorkflow(ctx: WorkflowCommandContext, source: string, optio
             message: "Workflow imported.",
             catalog: result.catalog,
             checked: false,
-          }, outputFormatFor(options), ctx, 0));
+          }, ctx, 0));
     },
     failure => {
       if (failure.type === "preparation") throw workflowPreparationCliError(failure.failure);
@@ -214,9 +212,8 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
     message: "Workflow check passed.",
     workflow: summarizeWorkflow(prepared.ir),
     diagnostics: prepared.ir.diagnostics,
-    sourceGraphDigest: prepared.sourceGraphDigest,
     ...(catalog ? { catalog } : {}),
-  }, outputFormatFor(options), ctx, 0));
+  }, ctx, 0));
 }
 
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
@@ -243,7 +240,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
       phase: "run",
       diagnostics: prepared.ir.diagnostics,
       run: toRunRecord(admitted),
-    }, "text", ctx, 0));
+    }, ctx, 0));
     return;
   }
 
@@ -300,9 +297,8 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
       visualization,
       workflow: summarizeWorkflow(prepared.ir),
       diagnostics: prepared.ir.diagnostics,
-      sourceGraphDigest: prepared.sourceGraphDigest,
       ...(catalog ? { catalog } : {}),
-    }, "text", ctx, 0));
+    }, ctx, 0));
     return;
   }
 
@@ -329,8 +325,7 @@ async function visualizeWorkflow(ctx: WorkflowCommandContext, workflow: string, 
     message: "Workflow visualization written.",
     workflow: summarizeWorkflow(prepared.ir),
     diagnostics: prepared.ir.diagnostics,
-    sourceGraphDigest: prepared.sourceGraphDigest,
     outputPath,
     ...(catalog ? { catalog } : {}),
-  }, "text", ctx, 0));
+  }, ctx, 0));
 }

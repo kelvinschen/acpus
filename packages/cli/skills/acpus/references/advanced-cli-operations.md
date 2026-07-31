@@ -110,7 +110,7 @@ acpus workflow catalog [name] [--project | --global]
 acpus workflow import <file|directory|zip|tgz|http-url> [--project | --global] [--check]
 ```
 
-Omit `name` in an interactive terminal to select an available workflow; piped text lists compact scope/status/name rows without paths, and `--json` returns the complete catalog projection without prompting. Provide a name to inspect its unique available entry; its TTY detail view uses restrained semantic color and honors `NO_COLOR`. Use a scope flag when project and global catalogs contain the same name.
+Omit `name` in an interactive terminal to select an available workflow; piped text lists compact scope/status/name rows without paths. Provide a name to inspect its unique available entry; its TTY detail view uses restrained semantic color and honors `NO_COLOR`. Use a scope flag when project and global catalogs contain the same name.
 
 Import copies one snapshot: it does not install dependencies, track the source, update, or overwrite. Default import reads metadata statically. `--check` executes trusted module top-level code and commits only after preparation succeeds; a global check proves compatibility only in the current workspace.
 
@@ -126,10 +126,10 @@ With no `--out`, it prints a compact semantic tree to stdout; `--out` writes sel
 ## Web operator console
 
 ```sh
-acpus web [--host <host>] [--port <port>] [--token] [--json]
+acpus web [--host <host>] [--port <port>] [--token]
 ```
 
-The command ensures the workspace daemon is running, binds to localhost and a random port by default, and stops on `Ctrl-C`. Use `--token` when access needs protection; JSON output can contain that sensitive token.
+The command ensures the workspace daemon is running, binds to localhost and a random port by default, and stops on `Ctrl-C`. Use `--token` when access needs protection.
 
 ## Bundled skill and version
 
@@ -146,7 +146,7 @@ Alternatively, `--dir <skills-root>` selects one custom skills root without an A
 ## Artifact registry
 
 ```sh
-acpus runs artifacts <run-id> [--target <node-or-frame-or-attempt>]
+acpus runs artifacts <run-id> [--target <node-or-frame-or-attempt>] [--json]
 ```
 
 This lists registered artifact metadata and absolute paths without reading file bodies. Use `--target` to narrow one static/dynamic node, frame, or attempt; use target inspection instead when surrounding execution state is also needed.
@@ -154,7 +154,3 @@ This lists registered artifact metadata and absolute paths without reading file 
 ## Run maintenance
 
 `acpus runs delete [run-id]` hard-deletes durable state and run-local artifacts without starting the daemon. It rejects active live runs and opens a multi-select picker when run id is omitted. Ask before deleting unless already explicitly requested.
-
-## Structured automation
-
-Put `--json` after an executable leaf that supports structured output.
