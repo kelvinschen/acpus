@@ -16,16 +16,25 @@ export function agentTiming(elapsedMs = 1): AgentTurnResult["timing"] {
   };
 }
 
-export function completedAgentTurn(responseText: string, stderr = "", summary = agentSummary(1)): AgentTurnResult {
-  return { status: "completed", responseText, stderr, summary, timing: agentTiming() };
+export function completedAgentTurn(finalResponse: string, stderr = "", summary = agentSummary(1)): AgentTurnResult {
+  return segmentedCompletedAgentTurn(finalResponse.length === 0 ? [] : [finalResponse], finalResponse, stderr, summary);
+}
+
+export function segmentedCompletedAgentTurn(
+  responses: readonly string[],
+  finalResponse: string,
+  stderr = "",
+  summary = agentSummary(1),
+): AgentTurnResult {
+  return { status: "completed", responses: [...responses], finalResponse, stderr, summary, timing: agentTiming() };
 }
 
 export function taggedAgentOutput(payload: string): string {
   return `<ACPUS_OUTPUT>\n${payload}\n</ACPUS_OUTPUT>`;
 }
 
-export function observedCompletedAgentTurn(request: AgentTurnRequest, responseText: string): AgentTurnResult {
-  const result = completedAgentTurn(responseText);
+export function observedCompletedAgentTurn(request: AgentTurnRequest, finalResponse: string): AgentTurnResult {
+  const result = completedAgentTurn(finalResponse);
   request.onObservation?.({
     event: {
       schemaVersion: 1,
@@ -34,10 +43,10 @@ export function observedCompletedAgentTurn(request: AgentTurnRequest, responseTe
       elapsedMs: 1,
       type: "message",
       channel: "assistant",
-      content: responseText,
+      content: finalResponse,
     },
     progress: {
-      responseText,
+      responses: [...result.responses],
       summary: result.summary,
       updatedAt: "2026-07-01T00:00:00.001Z",
     },
@@ -52,7 +61,7 @@ export function observedCompletedAgentTurn(request: AgentTurnRequest, responseTe
       status: "completed",
     },
     progress: {
-      responseText,
+      responses: [...result.responses],
       summary: result.summary,
       updatedAt: "2026-07-01T00:00:00.001Z",
     },

@@ -373,7 +373,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { outcome: "rejected"; phase: "schema"; parsing: "direct" | "repaired"; projectionChanged: boolean }
   >();
   expectTypeOf<AgentTurnArtifact>().toEqualTypeOf<{
-    schemaVersion: 1;
+    schemaVersion: 2;
     runId: string;
     nodeId: string;
     nodeKey: string;
@@ -382,14 +382,15 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     agentKey: string;
     sessionName: string;
     sessionProjectionPath?: string;
-    status: "completed" | "failed" | "cancelled";
     timing: import("@acpus/agent-executor").AgentTurnTiming;
     prompt: string;
-    response: string;
+    responses: string[];
     summary: AgentTurnSummary;
-    failure?: import("@acpus/agent-executor").AgentBackendFailure;
-    message?: string;
-  }>();
+  } & (
+    | { status: "completed"; finalResponse: string }
+    | { status: "failed"; failure: import("@acpus/agent-executor").AgentBackendFailure }
+    | { status: "cancelled"; message: string }
+  )>();
   expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
     origin: string;
     message: string;

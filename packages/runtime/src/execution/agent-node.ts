@@ -93,8 +93,8 @@ type AgentTurnRecord = {
   message?: string;
 };
 
-export type AgentTurnArtifact = {
-  schemaVersion: 1;
+type AgentTurnArtifactBase = {
+  schemaVersion: 2;
   runId: string;
   nodeId: string;
   nodeKey: string;
@@ -103,14 +103,17 @@ export type AgentTurnArtifact = {
   agentKey: string;
   sessionName: string;
   sessionProjectionPath?: string;
-  status: AgentTurnResult["status"];
   timing: AgentTurnTiming;
   prompt: string;
-  response: string;
+  responses: string[];
   summary: AgentTurnSummary;
-  failure?: AgentBackendFailure;
-  message?: string;
 };
+
+export type AgentTurnArtifact = AgentTurnArtifactBase & (
+  | { status: "completed"; finalResponse: string }
+  | { status: "failed"; failure: AgentBackendFailure }
+  | { status: "cancelled"; message: string }
+);
 
 type AgentTurnSummaryProjection = Pick<AgentTurnSummary, "eventCount" | "availability" | "stopReason" | "context" | "tokenUsage"> & {
   tools: { totalToolCallCount: number };
@@ -294,9 +297,9 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       }
       if (!node.outputSchema) {
         await writeTerminalState("completed", undefined, result);
-        return ok(result.responseText);
+        return ok(result.finalResponse);
       }
-      const conformed = conformAgentOutput(node.outputSchema, result.responseText, node.id);
+      const conformed = conformAgentOutput(node.outputSchema, result.finalResponse, node.id);
       const outputProcessing = conformed.isOk() ? conformed.value.outputProcessing : conformed.error.outputProcessing;
       turns[turn] = { ...turns[turn]!, outputProcessing };
       if (conformed.isOk()) {
@@ -376,7 +379,7 @@ function unavailableManagedAcpExecutor(): ManagedAcpExecutor {
       runTurn: async () => ({
         status: "failed",
         failure: { kind: "worker_lost", origin: "runtime", message: "Agent execution requires a managed ACP executor." },
-        responseText: "",
+        responses: [],
         stderr: "",
         summary: {
           eventCount: 0,
@@ -480,7 +483,7 @@ async function writeAgentTurnArtifacts(
   const base = agentTurnRecord(turn, result);
   if (!options.store || !options.runId) return base;
   const turnArtifact: AgentTurnArtifact = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: options.runId,
     nodeId: node.id,
     nodeKey: options.nodeKey ?? node.id,
@@ -491,13 +494,15 @@ async function writeAgentTurnArtifacts(
     ...(result.summary.acpxRecordId === undefined
       ? {}
       : { sessionProjectionPath: `acp/${acpxSessionProjectionPath(result.summary.acpxRecordId)}` }),
-    status: result.status,
     timing: result.timing,
     prompt: request.prompt,
-    response: result.responseText,
+    responses: [...result.responses],
     summary: result.summary,
-    ...(result.status === "failed" ? { failure: result.failure } : {}),
-    ...(result.status === "cancelled" ? { message: result.message } : {}),
+    ...(result.status === "completed"
+      ? { status: result.status, finalResponse: result.finalResponse }
+      : result.status === "failed"
+        ? { status: result.status, failure: result.failure }
+        : { status: result.status, message: result.message }),
   };
   const record: AgentTurnRecord = {
     ...base,

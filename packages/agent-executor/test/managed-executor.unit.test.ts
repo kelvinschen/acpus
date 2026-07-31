@@ -109,7 +109,9 @@ describe("ACP ownership inspection", () => {
 
     await executor.shutdown();
 
-    await expect(attempt).resolves.toMatchObject({ status: "failed", failure: { kind: "worker_lost" } });
+    const result = await attempt;
+    expect(result).toMatchObject({ status: "failed", failure: { kind: "worker_lost" }, responses: [] });
+    expect(result).not.toHaveProperty("finalResponse");
     expect(await readdir(workers)).toEqual([]);
   });
 

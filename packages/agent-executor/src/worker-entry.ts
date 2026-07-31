@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import { observationEventFromRuntime, toAgentJsonValue } from "./runtime-event.js";
 import { createAcpusSessionStore } from "./session-store.js";
+import { createTurnResponseCollector } from "./turn-responses.js";
 import { failureFromAcpRuntime, type AcpRuntimeOperation } from "./worker-failure.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
@@ -48,7 +49,7 @@ type TurnAccumulator = {
   startedAt: string;
   startedAtMonotonic: number;
   sequence: number;
-  responseText: string;
+  responses: ReturnType<typeof createTurnResponseCollector>;
   context?: AgentTurnSummary["context"];
   tokenUsage?: AgentTurnSummary["tokenUsage"];
   tools: Map<string, AgentToolCallSummary>;
@@ -204,10 +205,8 @@ function emitTurnEnd(state: InitializedWorker, turnId: string, accumulator: Turn
 }
 
 function updateAccumulator(accumulator: TurnAccumulator, event: AcpRuntimeEvent, observedAt: string): void {
-  if (event.type === "text_delta") {
-    if (event.stream !== "thought") accumulator.responseText += event.text;
-    return;
-  }
+  accumulator.responses.observe(event);
+  if (event.type === "text_delta") return;
   if (event.type === "status") {
     if (event.used !== undefined && event.size !== undefined) {
       accumulator.context = { used: event.used, size: event.size, updatedAt: observedAt };
@@ -271,7 +270,7 @@ function createAccumulator(): TurnAccumulator {
     startedAt: new Date().toISOString(),
     startedAtMonotonic: performance.now(),
     sequence: 0,
-    responseText: "",
+    responses: createTurnResponseCollector(),
     tools: new Map(),
     eventCount: 0,
     ...(handle?.acpxRecordId === undefined ? {} : { acpxRecordId: handle.acpxRecordId }),
@@ -281,7 +280,7 @@ function createAccumulator(): TurnAccumulator {
 function completedResult(accumulator: TurnAccumulator, stopReason?: string): AgentTurnResult {
   return {
     status: "completed",
-    responseText: accumulator.responseText,
+    ...accumulator.responses.complete(),
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
@@ -292,7 +291,7 @@ function cancelledResult(accumulator: TurnAccumulator, message: string, stopReas
   return {
     status: "cancelled",
     message,
-    responseText: accumulator.responseText,
+    responses: accumulator.responses.snapshot(),
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
@@ -303,7 +302,7 @@ function failedResult(accumulator: TurnAccumulator, failure: AgentBackendFailure
   return {
     status: "failed",
     failure,
-    responseText: accumulator.responseText,
+    responses: accumulator.responses.snapshot(),
     stderr: "",
     summary: summary(accumulator, stopReason),
     timing: timing(accumulator),
@@ -326,7 +325,7 @@ function staleResult(accumulator: TurnAccumulator): AgentTurnResult {
 }
 
 function progress(accumulator: TurnAccumulator, updatedAt: string): AgentTurnProgress {
-  return { responseText: accumulator.responseText, summary: summary(accumulator), updatedAt };
+  return { responses: accumulator.responses.snapshot(), summary: summary(accumulator), updatedAt };
 }
 
 function summary(accumulator: TurnAccumulator, stopReason?: string): AgentTurnSummary {

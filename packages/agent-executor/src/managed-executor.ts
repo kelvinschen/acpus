@@ -311,7 +311,10 @@ function onWorkerMessage(worker: WorkerState, value: unknown): void {
     return;
   }
   if (message.type === "turn-observation") {
-    active.lastProgress = message.observation.progress;
+    active.lastProgress = {
+      ...message.observation.progress,
+      responses: [...message.observation.progress.responses],
+    };
     notify(active.request.onProgress, message.observation.progress);
     notify(active.request.onObservation, message.observation);
     return;
@@ -436,7 +439,7 @@ function failedWithoutWorker(kind: AgentBackendFailure["kind"], message: string,
   return {
     status: "failed",
     failure: { kind, origin: "runtime", retryable: true, message },
-    responseText: active?.lastProgress?.responseText ?? "",
+    responses: partialResponses(active),
     stderr: "",
     summary: active?.lastProgress?.summary ?? emptySummary(),
     timing,
@@ -447,7 +450,7 @@ function cancelledResult(active: ActiveTurn): AgentTurnResult {
   return {
     status: "cancelled",
     message: "Agent turn was aborted.",
-    responseText: active.lastProgress?.responseText ?? "",
+    responses: partialResponses(active),
     stderr: "",
     summary: active.lastProgress?.summary ?? emptySummary(),
     timing: resultTiming(active),
@@ -458,7 +461,7 @@ function timeoutResult(active: ActiveTurn): AgentTurnResult {
   return {
     status: "failed",
     failure: { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored timeout." },
-    responseText: active.lastProgress?.responseText ?? "",
+    responses: partialResponses(active),
     stderr: "",
     summary: active.lastProgress?.summary ?? emptySummary(),
     timing: resultTiming(active),
@@ -481,11 +484,15 @@ function staleResult(active: ActiveTurn, failAfterMs: number): AgentTurnResult {
         silenceStartedAt: silence?.startedAt ?? active.startedAt,
       },
     },
-    responseText: active.lastProgress?.responseText ?? "",
+    responses: partialResponses(active),
     stderr: "",
     summary: active.lastProgress?.summary ?? emptySummary(),
     timing: resultTiming(active),
   };
+}
+
+function partialResponses(active: ActiveTurn | undefined): readonly string[] {
+  return [...(active?.lastProgress?.responses ?? [])];
 }
 
 function emptySummary() {

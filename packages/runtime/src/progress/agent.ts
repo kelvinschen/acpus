@@ -51,13 +51,13 @@ type ObservationState = {
   toolOutputs: Map<string, JsonValue>;
 };
 
-type ProgressSample = Pick<AgentTurnProgress, "responseText" | "summary">;
+type ProgressSample = Pick<AgentTurnProgress, "responses" | "summary">;
 
 export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentProgressTurn {
   const observation: ObservationState = { toolOutputs: new Map() };
   let lastFlushAt: number | undefined;
   let lastSignature = "";
-  let lastSample: ProgressSample = { responseText: "", summary: emptySummary() };
+  let lastSample: ProgressSample = { responses: [], summary: emptySummary() };
   let acpActivityAt: string | undefined;
   let lastAcpActivityFlushAt: number | undefined;
 
@@ -66,8 +66,8 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
       onObservation: next => updateObservation(observation, next),
       onProgress: progress => {
         if (input.signal?.aborted) return;
-        lastSample = progress;
-        const next = progressSnapshot(input, progress, observation, "running", `turn ${input.turn}`, acpActivityAt);
+        lastSample = { responses: [...progress.responses], summary: progress.summary };
+        const next = progressSnapshot(input, progress, latestResponse(progress.responses), observation, "running", `turn ${input.turn}`, acpActivityAt);
         const signature = JSON.stringify([next.context, next.tokenUsage, next.tools, next.intent, next.acpActivityAt]);
         const now = Date.now();
         if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < FLUSH_INTERVAL_MS) return;
@@ -82,6 +82,7 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
       input.writer.writeNodeProgress(progressSnapshot(
         input,
         result,
+        terminalResponse(result),
         observation,
         status,
         message ?? `turn ${input.turn} ${status}`,
@@ -93,13 +94,13 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
       acpActivityAt = observedAt;
       const now = Date.now();
       if (lastAcpActivityFlushAt !== undefined && now - lastAcpActivityFlushAt < ACP_ACTIVITY_FLUSH_INTERVAL_MS) return;
-      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, observation, "running", `turn ${input.turn}`, acpActivityAt));
+      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, latestResponse(lastSample.responses), observation, "running", `turn ${input.turn}`, acpActivityAt));
       lastAcpActivityFlushAt = now;
     },
     clearAcpActivity: () => {
       if (input.signal?.aborted || acpActivityAt === undefined) return;
       acpActivityAt = undefined;
-      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, observation));
+      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, latestResponse(lastSample.responses), observation));
     },
   };
 }
@@ -107,12 +108,13 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
 function progressSnapshot(
   input: AgentProgressTurnInput,
   progress: ProgressSample,
+  response: string,
   observation: ObservationState,
   status: "running" | AgentProgressTerminalStatus = "running",
   message = `turn ${input.turn}`,
   acpActivityAt?: string,
 ): WriteNodeProgressInput {
-  const output = outputTail(progress.responseText);
+  const output = outputTail(response);
   return pruneUndefined({
     runId: input.runId,
     nodeKey: input.nodeKey,
@@ -130,6 +132,14 @@ function progressSnapshot(
     intent: observation.intent,
     acpActivityAt,
   }) as WriteNodeProgressInput;
+}
+
+function latestResponse(responses: readonly string[]): string {
+  return responses.at(-1) ?? "";
+}
+
+function terminalResponse(result: AgentTurnResult): string {
+  return result.status === "completed" ? result.finalResponse : latestResponse(result.responses);
 }
 
 function emptySummary(): AgentTurnSummary {

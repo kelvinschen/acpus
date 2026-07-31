@@ -144,6 +144,33 @@ describe("Agent progress turn", () => {
     expect(writes).toHaveLength(2);
   });
 
+  it("uses only the latest segment for running display and never falls back from an empty final", () => {
+    const writes: WriteNodeProgressInput[] = [];
+    const reporter = progressTurn(recordingWriter(writes));
+
+    reporter.callbacks.onProgress(progressSegments(["intermediate", "current"]));
+    reporter.publishTerminal("completed", completedResult("", ["intermediate", "current"]));
+
+    expect(writes[0]?.output).toEqual({ tail: "current", totalBytes: 7, truncated: false });
+    expect(writes[1]).not.toHaveProperty("output");
+  });
+
+  it("retains the latest partial response for failed terminal display", () => {
+    const writes: WriteNodeProgressInput[] = [];
+    const reporter = progressTurn(recordingWriter(writes));
+
+    reporter.publishTerminal("failed", {
+      status: "failed",
+      failure: { kind: "provider_exit", message: "failed" },
+      responses: ["earlier", "partial"],
+      stderr: "",
+      summary: summary(),
+      timing: { startedAt: observedAt, finishedAt: observedAt, elapsedMs: 0 },
+    });
+
+    expect(writes[0]?.output).toEqual({ tail: "partial", totalBytes: 7, truncated: false });
+  });
+
   it("does not swallow writer failures or throttle the immediate retry", () => {
     const sentinel = new Error("progress unavailable");
     const writeNodeProgress = vi.fn(() => {
@@ -208,7 +235,7 @@ describe("Agent progress turn", () => {
 
     const second = progressTurn(writer, { turn: 2 });
     second.callbacks.onProgress(progress("second", { tools: { totalToolCallCount: 1, calls: [toolCall(1)] } }));
-    second.publishTerminal("completed", completedResult(""));
+    second.publishTerminal("completed", completedResult("", ["intermediate"]));
 
     expect(writes).toHaveLength(3);
     expect(writes[1]).toEqual(expect.objectContaining({
@@ -267,9 +294,13 @@ function recordingWriter(writes: WriteNodeProgressInput[]): NodeProgressWriter {
   return { writeNodeProgress: input => writes.push(input) };
 }
 
-function progress(responseText: string, overrides: Partial<AgentTurnSummary> = {}): AgentTurnProgress {
+function progress(response: string, overrides: Partial<AgentTurnSummary> = {}): AgentTurnProgress {
+  return progressSegments(response.length === 0 ? [] : [response], overrides);
+}
+
+function progressSegments(responses: readonly string[], overrides: Partial<AgentTurnSummary> = {}): AgentTurnProgress {
   return {
-    responseText,
+    responses,
     updatedAt: observedAt,
     summary: { ...summary(), ...overrides },
   };
@@ -283,10 +314,14 @@ function summary(): AgentTurnSummary {
   };
 }
 
-function completedResult(responseText: string): AgentTurnResult {
+function completedResult(
+  finalResponse: string,
+  responses: readonly string[] = finalResponse.length === 0 ? [] : [finalResponse],
+): AgentTurnResult {
   return {
     status: "completed",
-    responseText,
+    responses,
+    finalResponse,
     stderr: "",
     summary: summary(),
     timing: { startedAt: observedAt, finishedAt: observedAt, elapsedMs: 0 },

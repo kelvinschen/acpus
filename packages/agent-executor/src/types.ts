@@ -90,7 +90,7 @@ export type AgentTurnSummary = {
 };
 
 export type AgentTurnProgress = {
-  responseText: string;
+  responses: readonly string[];
   summary: AgentTurnSummary;
   updatedAt: string;
 };
@@ -141,28 +141,27 @@ export type AgentTurnTiming = {
   elapsedMs: number;
 };
 
-export type AgentTurnResult = (
+type AgentTurnResultBase = {
+  responses: readonly string[];
+  stderr: string;
+  summary: AgentTurnSummary;
+  timing: AgentTurnTiming;
+};
+
+export type AgentTurnResult = AgentTurnResultBase & (
   | {
       status: "completed";
-      responseText: string;
-      stderr: string;
-      summary: AgentTurnSummary;
+      finalResponse: string;
     }
   | {
       status: "failed";
       failure: AgentBackendFailure;
-      responseText: string;
-      stderr: string;
-      summary: AgentTurnSummary;
     }
   | {
       status: "cancelled";
       message: string;
-      responseText: string;
-      stderr: string;
-      summary: AgentTurnSummary;
     }
-) & { timing: AgentTurnTiming };
+);
 
 export type AgentTurnRequest = {
   agent: AgentSelector;

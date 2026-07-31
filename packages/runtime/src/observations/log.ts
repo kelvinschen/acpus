@@ -1368,15 +1368,16 @@ class AgentObservationSemanticReducer {
     this.updatedAt = at;
     this.updateTelemetry(result.summary);
     const entries = this.closeAll();
+    const response = result.status === "completed" ? result.finalResponse : result.responses.at(-1) ?? "";
     return {
       entries,
       checkpoint: true,
       current: this.current(degraded, {
         phase: "settled",
         state: "settled",
-        ...(result.responseText.length === 0
+        ...(response.length === 0
           ? {}
-          : { response: excerpt(result.responseText, currentResponseBytes, "tail") }),
+          : { response: excerpt(response, currentResponseBytes, "tail") }),
       }),
       observedAt: at,
     };
@@ -1807,7 +1808,7 @@ function cancelledBeforeProviderDispatch(): AgentTurnResult {
   return {
     status: "cancelled",
     message: "Agent turn was fenced before provider dispatch.",
-    responseText: "",
+    responses: [],
     stderr: "",
     summary: {
       eventCount: 0,

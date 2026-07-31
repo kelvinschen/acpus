@@ -39,6 +39,35 @@ and operator-facing recovery.
 - `runTurn` MUST return the public normalized result union and MUST deliver
   normalized progress and observation callbacks without letting callback
   failures change turn settlement.
+- The managed executor MUST reject child IPC messages with an unsupported
+  version or malformed discriminant-specific payload. A turn result MUST carry
+  string response segments, shared summary and timing data, and exactly the
+  terminal detail required by its status, including completed-only
+  `finalResponse`.
+- Each turn MUST start with an empty response collector that is not shared with
+  any earlier repair, retry, resumed, or steering turn.
+- The response collector MUST append each non-thought `text_delta` exactly as
+  received to the current response segment.
+- A thought or plan event MUST close the current response segment without
+  invalidating the latest final-response candidate.
+- Every tool call or tool update MUST close the current response segment and
+  invalidate every earlier final-response candidate.
+- Usage, ordinary status, and unknown status events MUST NOT enter or segment
+  responses and MUST NOT change the final-response candidate.
+- Empty text deltas MUST NOT create response segments. Non-empty whitespace
+  MUST be preserved as response text.
+- Response collection MUST depend only on normalized event order and MUST NOT
+  use provider names or response-text heuristics.
+- Turn progress MUST expose the ordered response segments observed so far; its
+  final segment MAY still be growing.
+- Every progress and result response array MUST be detached from the mutable
+  collector state.
+- A completed turn MUST expose `finalResponse` as its latest valid
+  final-response candidate.
+- A completed turn without a valid final-response candidate MUST expose an
+  empty `finalResponse` instead of falling back to an earlier response.
+- A failed or cancelled turn MUST retain its observed response segments and
+  MUST NOT expose `finalResponse`.
 - A rejected static session option MUST return a `config` failure with upstream
   operation `session.set_config_option`.
 - The executor MUST not expose raw ACP transport capture or raw provider wire
@@ -100,8 +129,8 @@ and operator-facing recovery.
 
 ## Verification
 
-- `pnpm test:unit packages/agent-executor`: verifies managed-worker lifecycle,
-  bounded cleanup, identity-safe startup recovery, session projection
-  persistence, and normalized status classification.
+- `pnpm test:unit packages/agent-executor`: verifies response collection,
+  managed-worker lifecycle, bounded cleanup, identity-safe startup recovery,
+  session projection persistence, and normalized status classification.
 - `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
   verify the exported managed-executor and normalized result surface.

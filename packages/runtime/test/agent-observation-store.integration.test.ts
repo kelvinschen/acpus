@@ -69,7 +69,7 @@ describe("Agent observation store projection", () => {
               tokenUsage: { input_tokens: 90, output_tokens: 5 },
             },
             progress: {
-              responseText: "",
+              responses: [],
               summary,
               updatedAt: "2026-07-26T00:00:20.000Z",
             },
@@ -86,7 +86,7 @@ describe("Agent observation store projection", () => {
               content: "x".repeat(512),
             },
             progress: {
-              responseText: "x".repeat(512),
+              responses: ["x".repeat(512)],
               summary,
               updatedAt: "2026-07-26T00:00:21.000Z",
             },
@@ -104,7 +104,7 @@ describe("Agent observation store projection", () => {
               status: "completed",
             },
             progress: {
-              responseText: "x".repeat(512),
+              responses: ["x".repeat(512)],
               summary,
               updatedAt: "2026-07-26T00:00:22.000Z",
             },
@@ -196,6 +196,77 @@ describe("Agent observation store projection", () => {
     });
   });
 
+  it("settles completed current activity from final response without partial fallback", async () => {
+    await withRuntimeWorkspace("agent-observation-final-response", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      const runId = "20260726000000BBBBBBBBBBBBBBBBBBBB";
+      const attemptId = "attempt_final";
+      try {
+        await mkdir(join(resolveRuntimeLayout(workspace).runsRoot, runId));
+        seedCaptureAttempt(workspace, runId, attemptId);
+        const summary = diagnosticSummary();
+        agentMocks.executeAgentTurn.mockImplementation(async request => {
+          request.onObservation?.({
+            event: {
+              schemaVersion: 1,
+              sequence: 0,
+              observedAt,
+              elapsedMs: 0,
+              type: "message",
+              channel: "assistant",
+              content: "intermediate",
+            },
+            progress: { responses: ["intermediate"], summary, updatedAt: observedAt },
+          });
+          request.onObservation?.({
+            event: {
+              schemaVersion: 1,
+              sequence: 1,
+              observedAt,
+              elapsedMs: 0,
+              type: "turn_end",
+              status: "completed",
+            },
+            progress: { responses: ["intermediate"], summary, updatedAt: observedAt },
+          });
+          return completedTurn(summary, "", undefined, ["intermediate"]);
+        });
+
+        await store.observationLog.captureTurn({
+          runId,
+          nodeId: "agent",
+          nodeKey: "agent~1",
+          attemptId,
+          attemptNo: 1,
+          turn: 1,
+          promptKind: "task",
+        }, {
+          agent: { kind: "named", name: "mock" },
+          prompt: "work",
+          cwd: workspace,
+          env: {},
+          sessionName: attemptId,
+          permissionMode: "deny-all",
+        }, agentMocks.executeAgentTurn);
+        const settled = await store.observationLog.readInspectionProjection({
+          runId,
+          attemptIds: [attemptId],
+          latestTurnOnly: true,
+          entryLimit: 50,
+        });
+        expect(settled.isOk()).toBe(true);
+        if (settled.isErr()) throw settled.error;
+        expect(settled.value.currents[0]).toMatchObject({ state: "settled", phase: "settled" });
+        expect(settled.value.currents[0]).not.toHaveProperty("response");
+        expect(settled.value.entries).toEqual([
+          expect.objectContaining({ kind: "activity", channel: "response" }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("persists post-fence attribution when late activity shares the fence timestamp", async () => {
     await withRuntimeWorkspace("agent-observation-post-fence-attribution", async workspace => {
       const store = await openRuntimeStore(workspace);
@@ -235,7 +306,7 @@ describe("Agent observation store projection", () => {
               content: "before fence",
             },
             progress: {
-              responseText: "before fence",
+              responses: ["before fence"],
               summary,
               updatedAt: fenceAt,
             },
@@ -253,7 +324,7 @@ describe("Agent observation store projection", () => {
               content: " after fence",
             },
             progress: {
-              responseText: "before fence after fence",
+              responses: ["before fence after fence"],
               summary,
               updatedAt: fenceAt,
             },
@@ -270,7 +341,7 @@ describe("Agent observation store projection", () => {
               status: "completed",
             },
             progress: {
-              responseText: "before fence after fence",
+              responses: ["before fence after fence"],
               summary,
               updatedAt: fenceAt,
             },
@@ -500,16 +571,18 @@ function completedTurn(
     availability: { context: "unavailable", tokenUsage: "unavailable" },
     tools: { totalToolCallCount: 0, calls: [] },
   },
-  responseText = "done",
+  finalResponse = "done",
   timing: AgentTurnResult["timing"] = {
     startedAt: observedAt,
     finishedAt: observedAt,
     elapsedMs: 0,
   },
+  responses: readonly string[] = finalResponse.length === 0 ? [] : [finalResponse],
 ): AgentTurnResult {
   return {
     status: "completed",
-    responseText,
+    responses,
+    finalResponse,
     stderr: "",
     summary,
     timing,

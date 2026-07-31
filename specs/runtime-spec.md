@@ -284,7 +284,8 @@ type PruneReport = {
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
 - Steering replacement settlement gating MUST include draining the superseded executor.
 - Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
-- Schema-less Agents MUST return raw text with zero response repairs.
+- Schema-less Agents MUST return the completed turn's `finalResponse` verbatim
+  with zero response repairs.
 - A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible information update before any schema-backed output contract.
 - A steering turn MUST NOT expose its Runtime steering identity to the Agent.
 - A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible information update.
@@ -295,6 +296,10 @@ type PruneReport = {
 - Result Shape MUST parenthesize union or nullable array items, quote non-identifier property names with JSON string quoting, preserve valid prototype-named keys, add `[key: string]: unknown` only for open objects, omit defaults, and never introduce `undefined` or an exact-object marker.
 - Result Shape MUST render a non-empty `SchemaIR.description` as a flattened, block-comment-safe advisory comment on its type node; comments MUST NOT affect Runtime conformance.
 - A schema-backed Agent response MUST end with one `<ACPUS_OUTPUT>...</ACPUS_OUTPUT>` frame whose payload is one JSON value.
+- Runtime MUST apply schema-backed output framing and conformance only to the
+  current completed turn's `finalResponse`.
+- Runtime MUST NOT scan or combine earlier responses or earlier turns while
+  processing schema-backed output.
 - Text before the opening marker MAY contain commentary.
 - Only whitespace MAY follow the terminal closing marker.
 - The two Tagged JSON protocol markers MUST NOT appear in prefix text.
@@ -322,7 +327,9 @@ type PruneReport = {
 - A response-repair prompt MUST repeat the declared Result Shape.
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
-- A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
+- A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` using schema version 2 and containing identities, exact prompt, ordered responses, normalized summary/timing, status, and structured terminal detail.
+- A completed turn artifact MUST contain `finalResponse`.
+- A failed or cancelled turn artifact MUST NOT contain `finalResponse`.
 - When the normalized summary identifies an acpx record, that turn artifact MUST contain the run-relative `sessionProjectionPath` `acp/sessions/<percent-encoded-acpx-record-id>.json`; it MUST reference rather than embed the session projection.
 - The session projection is session-wide and mutable across turns. It MUST NOT be treated as an exact per-event log or as a source for precise event timing, tool-update ordering, latency, or concurrency analysis.
 - A fenced Agent turn MUST NOT register a new ordinary turn or stderr artifact after the fence.
@@ -333,6 +340,11 @@ type PruneReport = {
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
 - Running Agent progress MUST periodically persist a local ACP activity timestamp and MUST clear it when that turn settles.
 - Agent progress MUST retain a bounded response, at most one latest plan or provider-reported-thought intent, bounded tool input/output, and observation completeness for the active owned attempt.
+- Completed terminal Agent progress MUST derive its bounded response only from
+  `finalResponse` and MUST NOT fall back to an earlier response when it is
+  empty.
+- Failed or cancelled terminal Agent progress MAY display the latest partial
+  response without treating it as output.
 
 ### Agent Semantic Observation
 
@@ -376,7 +388,8 @@ type PruneReport = {
 - Reconciliation MUST be idempotent and MUST NOT participate in scheduler decisions.
 - Executable-run reconciliation MUST occur only after the daemon has claimed that run and superseded attempts owned by expired epochs.
 - Terminal-run reconciliation MUST occur only after daemon startup owns both its endpoint and durable daemon lease.
-- Exact settled turn prompt/response data MUST remain in the registered turn artifact.
+- Exact settled turn prompt, ordered responses, and completed-turn
+  `finalResponse` data MUST remain in the registered turn artifact.
 - Session-wide Agent history MUST remain in the run-local ACP session projection.
 
 ### Controls And Daemon

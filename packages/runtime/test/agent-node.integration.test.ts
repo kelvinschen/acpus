@@ -17,7 +17,7 @@ import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
 import type { HookContext } from "../src/hooks/context.js";
 import type { HookRunner } from "../src/hooks/runner.js";
-import { agentSummary, agentTiming, completedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
+import { agentSummary, agentTiming, completedAgentTurn, segmentedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 
@@ -192,7 +192,7 @@ describe("agent node execution", () => {
               executeAgentTurn: async request => {
                 turns.push(request);
                 const turnProgress: AgentTurnProgress = {
-                  responseText: `turn-${turns.length}-partial`,
+                  responses: [`turn-${turns.length}-partial`],
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: agentSummary(0),
                 };
@@ -327,7 +327,7 @@ describe("agent node execution", () => {
             if (!runDir) throw new Error("expected run dir");
             const turnArtifact = await readJsonFile(join(runDir, artifactRoot, "turn-001.json"));
             expect(turnArtifact).toMatchObject({
-              schemaVersion: 1,
+              schemaVersion: 2,
               runId: run.id,
               nodeId: "review",
               nodeKey: "review.dynamic",
@@ -339,7 +339,8 @@ describe("agent node execution", () => {
               status: "completed",
               timing: agentTiming(),
               prompt: turns[0]!.prompt,
-              response: taggedAgentOutput("{\"attempt\":1,\"extra\":\"drop\"}"),
+              responses: [taggedAgentOutput("{\"attempt\":1,\"extra\":\"drop\"}")],
+              finalResponse: taggedAgentOutput("{\"attempt\":1,\"extra\":\"drop\"}"),
               summary: {
                 eventCount: 5,
                 availability: { context: "available", tokenUsage: "available" },
@@ -363,6 +364,7 @@ describe("agent node execution", () => {
             });
             expect(turnArtifact).not.toHaveProperty("summary.prompt");
             expect(turnArtifact).not.toHaveProperty("summary.response");
+            expect(turnArtifact).not.toHaveProperty("response");
             expect(turnArtifact).not.toHaveProperty("summary.thinking");
             expect(turnArtifact).not.toHaveProperty("summary.rawOutput");
             await expect(readJsonFile(join(runDir, artifactRoot, "turn-002.json"))).resolves.toMatchObject({
@@ -486,7 +488,7 @@ describe("agent node execution", () => {
 
             const artifacts = store.listArtifacts(run.id);
             expect(artifacts).toHaveLength(1);
-            await expect(readFile(artifacts[0]!.path, "utf8")).resolves.toContain("\"schemaVersion\": 1");
+            await expect(readFile(artifacts[0]!.path, "utf8")).resolves.toContain("\"schemaVersion\": 2");
           } finally {
             registration?.mockRestore();
             tokenLookup?.mockRestore();
@@ -510,7 +512,7 @@ describe("agent node execution", () => {
               store,
               executeAgentTurn: async request => {
                 const reportedProgress: AgentTurnProgress = {
-                  responseText: "hello from a long running agent",
+                  responses: ["hello from a long running agent"],
                   updatedAt: "2026-07-01T00:00:00.000Z",
                   summary: agentSummary(1),
                 };
@@ -564,7 +566,7 @@ describe("agent node execution", () => {
               executeAgentTurn: async () => ({
                 status: "failed",
                 failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
-                responseText: "partial",
+                responses: ["partial"],
                 stderr: "",
                 summary: agentSummary(1),
                 timing: agentTiming(),
@@ -588,6 +590,17 @@ describe("agent node execution", () => {
                 output: { tail: "partial", totalBytes: 7, truncated: false },
               }),
             ]);
+            const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
+            expect(turn).toBeDefined();
+            const artifact = await readJsonFile(turn!.path);
+            expect(artifact).toMatchObject({
+              schemaVersion: 2,
+              status: "failed",
+              responses: ["partial"],
+              failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
+            });
+            expect(artifact).not.toHaveProperty("finalResponse");
+            expect(artifact).not.toHaveProperty("response");
           } finally {
             store.close();
           }
@@ -609,7 +622,7 @@ describe("agent node execution", () => {
               executeAgentTurn: async () => ({
                 status: "cancelled",
                 message: "paused by operator",
-                responseText: "partial",
+                responses: ["partial"],
                 stderr: "",
                 summary: agentSummary(1),
                 timing: agentTiming(),
@@ -633,6 +646,17 @@ describe("agent node execution", () => {
                 output: { tail: "partial", totalBytes: 7, truncated: false },
               }),
             ]);
+            const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
+            expect(turn).toBeDefined();
+            const artifact = await readJsonFile(turn!.path);
+            expect(artifact).toMatchObject({
+              schemaVersion: 2,
+              status: "cancelled",
+              responses: ["partial"],
+              message: "paused by operator",
+            });
+            expect(artifact).not.toHaveProperty("finalResponse");
+            expect(artifact).not.toHaveProperty("response");
           } finally {
             store.close();
           }
@@ -666,7 +690,7 @@ describe("agent node execution", () => {
                     data: { acpxCode: "RUNTIME", origin: "cli", details: "credential helper failed" },
                   },
                 },
-                responseText: "partial",
+                responses: ["partial"],
                 stderr: "",
                 summary: agentSummary(1),
                 timing: agentTiming(),
@@ -866,7 +890,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("returns raw response text for schema-less agent nodes", async () => {
+    it("returns only the final response for schema-less agent nodes", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-raw-string", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
             name: "raw_agent",
@@ -881,8 +905,65 @@ describe("agent node execution", () => {
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
             agents: prepared.ir.agents,
-            executeTurn: async () => completedAgentTurn("plain text"),
+            executeTurn: async () => segmentedCompletedAgentTurn(["intermediate", "plain text"], "plain text"),
           })).resolves.toBe("plain text");
+        });
+      });
+
+    it("does not fall back to an earlier schema-less response when final is empty", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-empty-final", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
+            name: "empty_final_agent",
+            agents: { reviewer: { use: "mock" } },
+          }).build(({ agents, step }) => {
+            step("review").agent({ agent: agents.reviewer, prompt: "review" });
+            return {};
+          }));
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+
+          await expect(executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            executeTurn: async () => segmentedCompletedAgentTurn(["intermediate"], ""),
+          })).resolves.toBe("");
+        });
+      });
+
+    it("conforms only the final response and ignores earlier response frames", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-final-only", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const turns: AgentTurnRequest[] = [];
+
+          await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            hostPolicy: loadAgentHostPolicy({ ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1" }),
+            executeTurn: async request => {
+              turns.push(request);
+              return turns.length === 1
+                ? segmentedCompletedAgentTurn([taggedAgentOutput("{\"ok\":true}"), "invalid final"], "invalid final")
+                : segmentedCompletedAgentTurn(["repair commentary", taggedAgentOutput("{\"ok\":false}")], taggedAgentOutput("{\"ok\":false}"));
+            },
+          }))).resolves.toEqual({ ok: false });
+          expect(turns).toHaveLength(2);
+        });
+      });
+
+    it("accepts a valid final response even when an earlier response is invalid", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-valid-final", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const finalResponse = taggedAgentOutput("{\"ok\":true}");
+
+          await expect(executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            executeTurn: async () => segmentedCompletedAgentTurn(["invalid earlier response", finalResponse], finalResponse),
+          })).resolves.toEqual({ ok: true });
         });
       });
 
@@ -1024,7 +1105,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           agentMocks.executeAgentTurn.mockImplementation(async request => {
             controller.abort();
             request.onProgress?.({
-              responseText: "late progress",
+              responses: ["late progress"],
               updatedAt: "2026-07-01T00:00:00.000Z",
               summary: agentSummary(1),
             });
@@ -1338,7 +1419,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           const executeTurn = vi.fn(async (): Promise<AgentTurnResult> => ({
             status: "failed",
             failure: { kind: "provider_exit", message: "backend unavailable" },
-            responseText: "",
+            responses: [],
             stderr: "",
             summary: agentSummary(0),
             timing: agentTiming(),
@@ -1375,7 +1456,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                       silenceStartedAt: "2026-07-30T00:00:00.000Z",
                     },
                   },
-                  responseText: "",
+                  responses: [],
                   stderr: "",
                   summary: agentSummary(0),
                   timing: agentTiming(),
@@ -1540,7 +1621,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               executeAgentTurn: async () => ({
                 status: "failed",
                 failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
-                responseText: "",
+                responses: [],
                 stderr: "",
                 summary: agentSummary(0),
                 timing: agentTiming(),
@@ -1572,15 +1653,18 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             });
             const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
             expect(turn).toBeDefined();
-            await expect(readJsonFile(turn!.path)).resolves.toMatchObject({
-              schemaVersion: 1,
+            const turnArtifact = await readJsonFile(turn!.path);
+            expect(turnArtifact).toMatchObject({
+              schemaVersion: 2,
               status: "failed",
               prompt: expect.stringContaining("# RESULT HANDOFF [MANDATORY]"),
-              response: "",
+              responses: [],
               summary: agentSummary(0),
               timing: agentTiming(),
               failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
             });
+            expect(turnArtifact).not.toHaveProperty("finalResponse");
+            expect(turnArtifact).not.toHaveProperty("response");
           } finally {
             store.close();
           }
@@ -1670,7 +1754,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                     resolve({
                       status: "cancelled",
                       message: "paused by operator",
-                      responseText: "partial response\n",
+                      responses: ["partial response\n"],
                       stderr: "partial stderr\n",
                       summary: agentSummary(1),
                       timing: agentTiming(),
@@ -1831,7 +1915,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           agentMocks.executeAgentTurn.mockResolvedValue({
             status: "failed",
             failure: { kind: "provider_exit", message: "provider unavailable" },
-            responseText: "partial",
+            responses: ["partial"],
             stderr: "",
             summary: agentSummary(1),
             timing: agentTiming(),
@@ -2256,7 +2340,7 @@ function blankSessionAgentWorkflow() {
   });
 }
 
-function agentObservation(sequence: number, content: string, responseText: string): AgentTurnObservation {
+function agentObservation(sequence: number, content: string, response: string): AgentTurnObservation {
   const observedAt = `2026-07-01T00:00:0${sequence}.000Z`;
   return {
     event: {
@@ -2269,7 +2353,7 @@ function agentObservation(sequence: number, content: string, responseText: strin
       content,
     },
     progress: {
-      responseText,
+      responses: [response],
       summary: agentSummary(sequence + 1),
       updatedAt: observedAt,
     },
