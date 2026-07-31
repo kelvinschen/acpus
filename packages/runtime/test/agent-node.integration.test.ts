@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, stat, symlink, unlink, writeFile } fr
 import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import type { AgentTurnObservation, AgentTurnProgress, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentTurnObservation, AgentTurnProgress, AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -26,10 +26,6 @@ import { rootFrameStarted } from "./support/scheduler.js";
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
 }));
-vi.mock("@acpus/agent-executor", async importOriginal => ({
-  ...await importOriginal<typeof import("@acpus/agent-executor")>(),
-  executeAgentTurn: agentMocks.executeAgentTurn,
-}));
 declare global {
   var __acpusPromptResolutionCount: number | undefined;
   var __acpusTimeoutResolutionCount: number | undefined;
@@ -45,19 +41,19 @@ afterEach(() => {
   restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
 });
 function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> }) {
-  const { executeAgentTurn, ...productionInput } = input;
+  const { executeAgentTurn, managedAcpExecutor = testManagedAcpExecutor(), ...productionInput } = input;
   if (executeAgentTurn) agentMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
-  return advanceFrozenRunProduction(productionInput);
+  return advanceFrozenRunProduction({ ...productionInput, managedAcpExecutor });
 }
 type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy"> & {
   hostPolicy?: AgentHostPolicy;
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
 };
 async function executeAgentNode(node: Parameters<typeof executeAgentNodeProduction>[0], scope: Parameters<typeof executeAgentNodeProduction>[1], options: TestAgentExecutorOptions) {
-  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), ...productionOptions } = options;
+  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(), ...productionOptions } = options;
   if (executeTurn) agentMocks.executeAgentTurn.mockImplementation(executeTurn);
   const result = !productionOptions.store || !productionOptions.runId
-    ? await executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy })
+    ? await executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy, managedAcpExecutor })
     : await (() => {
         const attempt = ensureTestAttempt(
           productionOptions.store,
@@ -66,7 +62,7 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
           node.id,
           productionOptions.attemptId,
         );
-        return executeAgentNodeProduction(node, scope, { ...productionOptions, ...attempt, hostPolicy });
+        return executeAgentNodeProduction(node, scope, { ...productionOptions, ...attempt, hostPolicy, managedAcpExecutor });
       })();
   if (result.isOk()) return result.value;
   const error = result.error.type === "resolution"
@@ -78,14 +74,21 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
 }
 type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
-  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), ...productionInput } = input;
+  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(), ...productionInput } = input;
   if (executeAgentTurn) agentMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
-  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy });
+  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy, managedAcpExecutor });
   return {
     execute(context: Parameters<typeof executor.execute>[0]) {
       const attempt = ensureTestAttempt(input.store, context.runId, context.nodeKey, context.nodeId, context.attemptId);
       return executor.execute({ ...context, ...attempt });
     },
+  };
+}
+
+function testManagedAcpExecutor(): ManagedAcpExecutor {
+  return {
+    withAttempt: async (_input, use) => use({ runTurn: request => agentMocks.executeAgentTurn(request) }),
+    shutdown: async () => {},
   };
 }
 
@@ -172,6 +175,14 @@ describe("agent node execution", () => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const store = await openRuntimeStore(workspace);
           const turns: AgentTurnRequest[] = [];
+          const attempts: unknown[] = [];
+          const managedAcpExecutor: ManagedAcpExecutor = {
+            withAttempt: async (input, use) => {
+              attempts.push(input);
+              return use({ runTurn: request => agentMocks.executeAgentTurn(request) });
+            },
+            shutdown: async () => {},
+          };
           try {
             const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
             const executor = createRuntimeNodeExecutor({
@@ -179,6 +190,7 @@ describe("agent node execution", () => {
               ir: prepared.ir,
               scope: {},
               store,
+              managedAcpExecutor,
               executeAgentTurn: async request => {
                 turns.push(request);
                 const turnProgress: AgentTurnProgress = {
@@ -241,6 +253,9 @@ describe("agent node execution", () => {
               output: { attempt: "2" },
             });
             expect(turns).toHaveLength(2);
+            expect(attempts).toEqual([
+              expect.objectContaining({ runId: run.id, sessionName: turns[0]!.sessionName }),
+            ]);
             const terminalProgress = store.getRun(run.id)?.dynamic?.progress[0];
             expect(terminalProgress).toMatchObject({
               status: "completed",
@@ -564,7 +579,6 @@ describe("agent node execution", () => {
             const traces = store.listArtifacts(run.id).filter(artifact => artifact.path.endsWith(".trace.jsonl"));
             expect(traces).toHaveLength(2);
             expect(traces.map(artifact => artifact.mediaType)).toEqual(["application/x-ndjson", "application/x-ndjson"]);
-            expect(store.listArtifacts(run.id).some(artifact => artifact.path.endsWith(".raw-acp.jsonl"))).toBe(false);
             await expect(listRunArtifacts(workspace, run.id)).resolves.toEqual(store.listArtifacts(run.id));
             await expect(listRunArtifacts(workspace, "missing")).resolves.toBeUndefined();
 
@@ -1073,108 +1087,6 @@ describe("agent node execution", () => {
         });
       });
 
-    it("writes raw ACP debug artifacts only when the host debug switch is enabled", async () => {
-        await withRuntimeWorkspace("scheduler-node-executor-agent-raw-acp-debug", async workspace => {
-          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
-          const store = await openRuntimeStore(workspace);
-          const previous = process.env.ACPUS_AGENT_RAW_ACP_DEBUG;
-          const rawStdout = "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\"}\n";
-          try {
-            delete process.env.ACPUS_AGENT_RAW_ACP_DEBUG;
-            const disabled = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            await expect(advanceFrozenRun({
-              cwd: workspace,
-              runId: disabled.id,
-              ownerId: "owner-disabled",
-              store,
-              executeAgentTurn: async request => {
-                expect(request.captureRawDebug).toBeUndefined();
-                return completedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
-              },
-            })).resolves.toMatchObject({ status: "completed" });
-            expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND relative_path LIKE '%raw-acp%'", disabled.id)).toEqual([]);
-
-            process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "true";
-            const nonOne = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            await expect(advanceFrozenRun({
-              cwd: workspace,
-              runId: nonOne.id,
-              ownerId: "owner-non-one",
-              store,
-              executeAgentTurn: async request => {
-                expect(request.captureRawDebug).toBeUndefined();
-                return { ...completedAgentTurn(taggedAgentOutput("{\"ok\":true}")), rawDebug: { stdout: rawStdout } };
-              },
-            })).resolves.toMatchObject({ status: "completed" });
-            expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? AND relative_path LIKE '%raw-acp%'", nonOne.id)).toEqual([]);
-
-            process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "1";
-            const enabled = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            await expect(advanceFrozenRun({
-              cwd: workspace,
-              runId: enabled.id,
-              ownerId: "owner-enabled",
-              store,
-              executeAgentTurn: async request => {
-                expect(request.captureRawDebug).toBe(true);
-                return { ...completedAgentTurn(taggedAgentOutput("{\"ok\":true}")), rawDebug: { stdout: rawStdout } };
-              },
-            })).resolves.toMatchObject({ status: "completed" });
-
-            const nodeKey = deriveInstanceKey(appendNode([], "review"));
-            const metadataEntry = store.getRun(enabled.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
-            if (!metadataEntry?.attemptId) throw new Error("expected enabled agent attempt metadata");
-            const rawAcpPath = `artifacts/${nodeKey}/attempt-1/${metadataEntry.attemptId}/agent/turn-001.raw-acp.jsonl`;
-            const artifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", enabled.id, nodeKey) as RuntimeArtifactRow[];
-            expect(artifactRows).toContainEqual(expect.objectContaining({
-              media_type: "application/x-ndjson",
-              relative_path: rawAcpPath,
-            }));
-            const metadata = metadataEntry.metadata as AgentAttemptMetadata;
-            expectAgentArtifactRef(metadata?.turns?.[0]?.rawAcpDebugArtifact, rawAcpPath, "application/x-ndjson", artifactRows);
-            const runDir = store.getRunDir(enabled.id);
-            if (!runDir) throw new Error("expected run dir");
-            await expect(readFile(join(runDir, rawAcpPath), "utf8")).resolves.toBe(rawStdout);
-
-            const failed = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            await expect(advanceFrozenRun({
-              cwd: workspace,
-              runId: failed.id,
-              ownerId: "owner-failed",
-              store,
-              executeAgentTurn: async request => {
-                expect(request.captureRawDebug).toBe(true);
-                return {
-                  status: "failed",
-                  failure: { kind: "provider_exit", message: "agent crashed" },
-                  responseText: "",
-                  stderr: "",
-                  summary: agentSummary(1),
-                  timing: agentTiming(),
-                  rawDebug: { stdout: rawStdout },
-                };
-              },
-            })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
-            const failedMetadataEntry = store.getRun(failed.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt");
-            if (!failedMetadataEntry?.attemptId) throw new Error("expected failed agent attempt metadata");
-            const failedRawAcpPath = `artifacts/${nodeKey}/attempt-1/${failedMetadataEntry.attemptId}/agent/turn-001.raw-acp.jsonl`;
-            const failedArtifactRows = runtimeRows(workspace, "SELECT id, media_type, relative_path FROM artifacts WHERE run_id = ? AND node_key = ? ORDER BY relative_path", failed.id, nodeKey) as RuntimeArtifactRow[];
-            expect(failedArtifactRows).toContainEqual(expect.objectContaining({
-              media_type: "application/x-ndjson",
-              relative_path: failedRawAcpPath,
-            }));
-            const failedMetadata = failedMetadataEntry.metadata as AgentAttemptMetadata;
-            expect(failedMetadata).toMatchObject({
-              status: "failed",
-              turns: [expect.objectContaining({ status: "failed", failure: { kind: "provider_exit", message: "agent crashed" } })],
-            });
-            expectAgentArtifactRef(failedMetadata?.turns?.[0]?.rawAcpDebugArtifact, failedRawAcpPath, "application/x-ndjson", failedArtifactRows);
-          } finally {
-            restoreEnv("ACPUS_AGENT_RAW_ACP_DEBUG", previous);
-            store.close();
-          }
-        });
-      });
     });
 
     describe("response conformance and host policy", () => {
@@ -1405,6 +1317,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               ...attempt,
               agents: prepared.ir.agents,
               hostPolicy: loadAgentHostPolicy(process.env),
+              managedAcpExecutor: testManagedAcpExecutor(),
               store,
               signal: controller.signal,
             });
@@ -1554,6 +1467,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               ...attempt,
               agents: prepared.ir.agents,
               hostPolicy: loadAgentHostPolicy(process.env),
+              managedAcpExecutor: testManagedAcpExecutor(),
               store,
               signal: new AbortController().signal,
             });
@@ -1641,7 +1555,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-unknown",
               permissionMode: "approve-all",
-            });
+            }, agentMocks.executeAgentTurn);
 
             expect(captured.evidence).toMatchObject({
               state: "sealed",
@@ -1802,7 +1716,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-seal-failure",
               permissionMode: "approve-all",
-            })).rejects.toThrow("simulated observation seal failure");
+            }, agentMocks.executeAgentTurn)).rejects.toThrow("simulated observation seal failure");
 
             expect(agentMocks.executeAgentTurn).toHaveBeenCalledOnce();
             const evidence = runtimeRow(
@@ -1901,7 +1815,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-fenced-seal-failure",
               permissionMode: "approve-all",
-            });
+            }, agentMocks.executeAgentTurn);
             await started;
             await store.observationLog.markFenced({
               runId: run.id,
@@ -2013,7 +1927,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                 env: {},
                 sessionName: "session-runs-root-symlink",
                 permissionMode: "approve-all",
-              })).rejects.toThrow(/Runtime runs root .* is not a regular directory/);
+              }, agentMocks.executeAgentTurn)).rejects.toThrow(/Runtime runs root .* is not a regular directory/);
 
               expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
               expect(runtimeRows(
@@ -2056,7 +1970,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-not-started",
               permissionMode: "approve-all",
-            })).rejects.toThrow("is not the started Agent attempt");
+            }, agentMocks.executeAgentTurn)).rejects.toThrow("is not the started Agent attempt");
             expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
             expect(runtimeRows(
               workspace,
@@ -2111,7 +2025,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-admission-fence",
               permissionMode: "approve-all",
-            });
+            }, agentMocks.executeAgentTurn);
             await admitted;
             const fence = store.observationLog.markFenced({
               runId: run.id,
@@ -2195,7 +2109,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               env: {},
               sessionName: "session-post-settle-fence",
               permissionMode: "approve-all",
-            });
+            }, agentMocks.executeAgentTurn);
             await sealing;
             const fence = store.observationLog.markFenced({
               runId: run.id,
@@ -2278,7 +2192,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               sessionName: "session-pre-abort",
               permissionMode: "approve-all",
               signal: controller.signal,
-            });
+            }, agentMocks.executeAgentTurn);
 
             expect(captured.result.status).toBe("cancelled");
             expect(captured.evidence).toMatchObject({
@@ -2326,6 +2240,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             ownerEpoch: 1,
             agents: prepared.ir.agents,
             hostPolicy: loadAgentHostPolicy(process.env),
+            managedAcpExecutor: testManagedAcpExecutor(),
             progressWriter: { writeNodeProgress },
             signal: controller.signal,
             initialPrompt: { kind: "steer", instruction: "Use the smaller fix." },
@@ -2491,10 +2406,8 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           if (!node || node.kind !== "agent") throw new Error("expected review agent node");
           const store = await openRuntimeStore(workspace);
           const turns: AgentTurnRequest[] = [];
-          const previousRawDebug = process.env.ACPUS_AGENT_RAW_ACP_DEBUG;
           try {
             const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "0";
             await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
               cwd: workspace,
               runId: run.id,
@@ -2505,13 +2418,11 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               agents: prepared.ir.agents,
               hostPolicy: loadAgentHostPolicy({
                 ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1",
-                ACPUS_AGENT_RAW_ACP_DEBUG: "1",
               }),
               executeTurn: async request => {
                 turns.push(request);
                 if (turns.length === 1) {
                   process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX = "0";
-                  process.env.ACPUS_AGENT_RAW_ACP_DEBUG = "0";
                 }
                 return completedAgentTurn(turns.length === 1 ? "not json" : taggedAgentOutput("{\"ok\":true}"));
               },
@@ -2519,13 +2430,10 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
 
             expect(turns).toHaveLength(2);
             expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
-            expect(turns.map(turn => turn.captureRawDebug)).toEqual([true, true]);
             expect(turns.map(turn => turn.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX)).toEqual(["0", "0"]);
-            expect(turns.map(turn => turn.env.ACPUS_AGENT_RAW_ACP_DEBUG)).toEqual(["0", "0"]);
             const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({ responseRepairMax: 1, turnCount: 2 });
           } finally {
-            restoreEnv("ACPUS_AGENT_RAW_ACP_DEBUG", previousRawDebug);
             store.close();
           }
         });
@@ -2642,6 +2550,70 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             executeTurn,
           }))).rejects.toMatchObject({ failure: { origin: "provider", code: "provider_exit" } });
           expect(executeTurn).toHaveBeenCalledOnce();
+      });
+    });
+
+    it("persists ACP inactivity as a retryable runtime failure with evidence", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-acp-inactivity", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const store = await openRuntimeStore(workspace);
+          const attempts: unknown[] = [];
+          const managedAcpExecutor: ManagedAcpExecutor = {
+            withAttempt: async (input, use) => {
+              attempts.push(input);
+              return use({
+                runTurn: async () => ({
+                  status: "failed",
+                  failure: {
+                    kind: "inactivity_stale",
+                    origin: "runtime",
+                    retryable: true,
+                    message: "ACP agent was silent for the configured inactivity limit.",
+                    evidence: {
+                      failAfterMs: 60_000,
+                      silentForMs: 60_000,
+                      silenceStartedAt: "2026-07-30T00:00:00.000Z",
+                    },
+                  },
+                  responseText: "",
+                  stderr: "",
+                  summary: agentSummary(0),
+                  timing: agentTiming(),
+                }),
+              });
+            },
+            shutdown: async () => {},
+          };
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+
+            await expect(advanceFrozenRun({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "owner-a",
+              store,
+              agentHostPolicy: loadAgentHostPolicy({}, 60_000),
+              managedAcpExecutor,
+            })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+            expect(attempts).toEqual([expect.objectContaining({ runId: run.id, inactivityFailAfterMs: 60_000 })]);
+            expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
+              status: "failed",
+              terminalReason: "agent_acp_inactivity_stale",
+              error: {
+                origin: "runtime",
+                code: "agent_acp_inactivity_stale",
+                retryable: true,
+                evidence: {
+                  failAfterMs: 60_000,
+                  silentForMs: 60_000,
+                  silenceStartedAt: "2026-07-30T00:00:00.000Z",
+                },
+              },
+            });
+          } finally {
+            store.close();
+          }
         });
       });
 
@@ -3078,6 +3050,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               ownerEpoch: 1,
               agents: prepared.ir.agents,
               hostPolicy: loadAgentHostPolicy(process.env),
+              managedAcpExecutor: testManagedAcpExecutor(),
               progressWriter: { writeNodeProgress },
             });
           } catch (error) {
@@ -3406,14 +3379,14 @@ function hostRepairBudgetAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-host-repair-budget",
     agents: {
-      reviewer: { use: "codex", env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0", ACPUS_AGENT_RAW_ACP_DEBUG: "0" } },
+      reviewer: { use: "codex", env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" } },
     },
   }).build(({ agents, step }) => {
     step("review").agent({
       outputSchema: z.object({ ok: z.boolean() }),
       agent: agents.reviewer,
       prompt: "review",
-      env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0", ACPUS_AGENT_RAW_ACP_DEBUG: "0" },
+      env: { ACPUS_AGENT_RESPONSE_REPAIR_MAX: "0" },
     });
     return {};
   });

@@ -853,6 +853,7 @@ export type InspectionView =
       subject: InspectionSubject;
       state: InspectionVisibleState;
       pulse?: InspectionPulse;
+      acp?: { silentForMs: number };
       attention?: InspectionAttention;
       visibility?: InspectionVisibility;
       occurrences?: InspectionCounts;

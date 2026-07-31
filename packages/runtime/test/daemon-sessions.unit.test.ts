@@ -347,7 +347,6 @@ function runtimeConfiguration() {
   const configuration = tryLoadRuntimeConfiguration({
     ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY: "7",
     ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1",
-    ACPUS_AGENT_RAW_ACP_DEBUG: "1",
   });
   if (configuration.isErr()) throw new Error(configuration.error.message);
   return configuration.value;

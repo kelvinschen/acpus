@@ -12,6 +12,7 @@ import {
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import { resolveRuntimeLayout } from "../runtime-layout.js";
+import { inspectAcpOwnership } from "@acpus/agent-executor";
 import {
   IncompatibleRuntimeDatabaseError,
   openExistingRuntimeStore,
@@ -44,7 +45,7 @@ export type RunVisualizationSnapshot = {
 type RuntimeHealthStatus = "ok" | "warn" | "fail";
 
 export type RuntimeHealthCheck = {
-  area: "workspace" | "store" | "daemon" | "runs" | "idle-stop";
+  area: "workspace" | "store" | "daemon" | "runs" | "idle-stop" | "acp";
   status: RuntimeHealthStatus;
   message: string;
   details?: Record<string, JsonValue>;
@@ -232,17 +233,21 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
     };
   }
   if (!store) {
+    const acp = await acpOwnershipCheck(cwd);
     return {
       ok: true,
       phase: "doctor",
       state: "not-initialized",
       persistence,
-      checks: [{
-        area: "workspace",
-        status: "ok",
-        message: "Runtime store is not initialized.",
-        details: { cwd },
-      }],
+      checks: [
+        {
+          area: "workspace",
+          status: "ok",
+          message: "Runtime store is not initialized.",
+          details: { cwd },
+        },
+        ...(acp === undefined ? [] : [acp]),
+      ],
     };
   }
   try {
@@ -267,6 +272,8 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
         details: { staleRunLeases: diagnostics.leases.stale },
       });
     }
+    const acp = await acpOwnershipCheck(cwd, diagnostics.daemon);
+    if (acp) checks.push(acp);
     return {
       ok: checks.every(check => check.status !== "fail"),
       phase: "doctor",
@@ -288,6 +295,28 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
     };
   } finally {
     store.close();
+  }
+}
+
+async function acpOwnershipCheck(cwd: string, daemon?: DaemonDiagnostics): Promise<RuntimeHealthCheck | undefined> {
+  try {
+    const ownership = await inspectAcpOwnership({
+      workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
+      ...(daemon === undefined ? {} : { daemon: { generation: daemon.generation, ...(daemon.pid === undefined ? {} : { pid: daemon.pid }) } }),
+    });
+    if (ownership.degraded === 0 && ownership.orphaned === 0) return undefined;
+    return {
+      area: "acp",
+      status: "warn",
+      message: `ACP ownership warning: degraded=${ownership.degraded} orphaned=${ownership.orphaned}`,
+      details: {
+        degraded: ownership.degraded,
+        orphaned: ownership.orphaned,
+        manifests: ownership.manifests as unknown as JsonValue,
+      },
+    };
+  } catch {
+    return undefined;
   }
 }
 

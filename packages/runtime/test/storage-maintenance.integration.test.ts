@@ -192,7 +192,7 @@ describe("runtime storage maintenance", () => {
     });
   });
 
-  it.each(["run lease", "daemon"] as const)(
+  it.each(["run lease", "daemon", "ACP ownership"] as const)(
     "refuses to archive a generation with an active %s",
     async blocker => {
       await withStorageWorkspace(`storage-maintenance-${blocker.replace(" ", "-")}`, async workspace => {
@@ -205,7 +205,7 @@ describe("runtime storage maintenance", () => {
             cwd: workspace,
           });
           expect(store.scheduler.claimRun(run.id, "owner", 60_000)).toBeDefined();
-        } else {
+        } else if (blocker === "daemon") {
           store.claimDaemon({
             workspaceRealpath: workspace,
             pid: process.pid,
@@ -218,6 +218,9 @@ describe("runtime storage maintenance", () => {
         }
         store.close();
         const layout = resolveRuntimeLayout(workspace);
+        if (blocker === "ACP ownership") {
+          await writeFile(join(layout.acpWorkersRoot, "acp_worker_dea0.json"), "{}\n");
+        }
         const before = await runtimeStateFingerprint(layout.runtimeRoot);
 
         let failure: unknown;

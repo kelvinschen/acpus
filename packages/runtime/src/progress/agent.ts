@@ -13,6 +13,7 @@ import { utf8Head, utf8Tail } from "../utf8.js";
 import type { NodeProgressWriter } from "./writer.js";
 
 const FLUSH_INTERVAL_MS = 1_000;
+const ACP_ACTIVITY_FLUSH_INTERVAL_MS = 5_000;
 const OUTPUT_TAIL_BYTES = 16 * 1024;
 const TOOL_LIMIT = 3;
 const DETAIL_EDGE_BYTES = 2 * 1024;
@@ -41,6 +42,8 @@ export type AgentProgressTurn = {
     result: AgentTurnResult,
     message?: string,
   ): void;
+  recordAcpActivity(observedAt: string): void;
+  clearAcpActivity(): void;
 };
 
 type ObservationState = {
@@ -54,14 +57,18 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
   const observation: ObservationState = { toolOutputs: new Map() };
   let lastFlushAt: number | undefined;
   let lastSignature = "";
+  let lastSample: ProgressSample = { responseText: "", summary: emptySummary() };
+  let acpActivityAt: string | undefined;
+  let lastAcpActivityFlushAt: number | undefined;
 
   return {
     callbacks: {
       onObservation: next => updateObservation(observation, next),
       onProgress: progress => {
         if (input.signal?.aborted) return;
-        const next = progressSnapshot(input, progress, observation);
-        const signature = JSON.stringify([next.context, next.tokenUsage, next.tools, next.intent]);
+        lastSample = progress;
+        const next = progressSnapshot(input, progress, observation, "running", `turn ${input.turn}`, acpActivityAt);
+        const signature = JSON.stringify([next.context, next.tokenUsage, next.tools, next.intent, next.acpActivityAt]);
         const now = Date.now();
         if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < FLUSH_INTERVAL_MS) return;
         input.writer.writeNodeProgress(next);
@@ -71,13 +78,28 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
     },
     publishTerminal: (status, result, message) => {
       if (input.signal?.aborted) return;
+      acpActivityAt = undefined;
       input.writer.writeNodeProgress(progressSnapshot(
         input,
         result,
         observation,
         status,
         message ?? `turn ${input.turn} ${status}`,
+        undefined,
       ));
+    },
+    recordAcpActivity: observedAt => {
+      if (input.signal?.aborted) return;
+      acpActivityAt = observedAt;
+      const now = Date.now();
+      if (lastAcpActivityFlushAt !== undefined && now - lastAcpActivityFlushAt < ACP_ACTIVITY_FLUSH_INTERVAL_MS) return;
+      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, observation, "running", `turn ${input.turn}`, acpActivityAt));
+      lastAcpActivityFlushAt = now;
+    },
+    clearAcpActivity: () => {
+      if (input.signal?.aborted || acpActivityAt === undefined) return;
+      acpActivityAt = undefined;
+      input.writer.writeNodeProgress(progressSnapshot(input, lastSample, observation));
     },
   };
 }
@@ -88,6 +110,7 @@ function progressSnapshot(
   observation: ObservationState,
   status: "running" | AgentProgressTerminalStatus = "running",
   message = `turn ${input.turn}`,
+  acpActivityAt?: string,
 ): WriteNodeProgressInput {
   const output = outputTail(progress.responseText);
   return pruneUndefined({
@@ -105,7 +128,16 @@ function progressSnapshot(
     tokenUsage: progress.summary.tokenUsage,
     tools: progressTools(progress.summary.tools, input.turn, observation.toolOutputs),
     intent: observation.intent,
+    acpActivityAt,
   }) as WriteNodeProgressInput;
+}
+
+function emptySummary(): AgentTurnSummary {
+  return {
+    eventCount: 0,
+    availability: { context: "unavailable", tokenUsage: "unavailable" },
+    tools: { totalToolCallCount: 0, calls: [] },
+  };
 }
 
 function outputTail(value: string): NonNullable<WriteNodeProgressInput["output"]> | undefined {

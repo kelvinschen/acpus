@@ -2,7 +2,7 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { readdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import type { AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
@@ -15,10 +15,6 @@ import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-t
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
-}));
-vi.mock("@acpus/agent-executor", async importOriginal => ({
-  ...await importOriginal<typeof import("@acpus/agent-executor")>(),
-  executeAgentTurn: executorMocks.executeAgentTurn,
 }));
 vi.mock("../src/execution/task-process.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/execution/task-process.js")>(),
@@ -33,7 +29,14 @@ beforeEach(() => {
 function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> }) {
   const { executeAgentTurn, ...productionInput } = input;
   if (executeAgentTurn) executorMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
-  return advanceFrozenRunProduction(productionInput);
+  return advanceFrozenRunProduction({ ...productionInput, managedAcpExecutor: testManagedAcpExecutor() });
+}
+
+function testManagedAcpExecutor(): ManagedAcpExecutor {
+  return {
+    withAttempt: async (_input, use) => use({ runTurn: request => executorMocks.executeAgentTurn(request) }),
+    shutdown: async () => {},
+  };
 }
 
 async function forkRuntimeRun(

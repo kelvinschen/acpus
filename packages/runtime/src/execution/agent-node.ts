@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
-import { executeAgentTurn, type AgentBackendFailure, type AgentTraceEvent, type AgentTurnRequest, type AgentTurnResult, type AgentTurnSummary, type AgentTurnTiming } from "@acpus/agent-executor";
+import type { AgentBackendFailure, AgentTraceEvent, AgentTurnRequest, AgentTurnResult, AgentTurnSummary, AgentTurnTiming, ManagedAcpExecutor } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import {
@@ -44,8 +44,10 @@ export type AgentNodeFailure =
     }
   | {
       origin: "runtime";
-      code: "invalid_agent_response_repair_max";
+      code: "invalid_agent_response_repair_max" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
       message: string;
+      retryable?: boolean;
+      evidence?: AgentBackendFailure["evidence"];
     };
 
 export type AgentAttemptFailure =
@@ -66,6 +68,7 @@ export type AgentExecutorOptions = {
   deadlineAt?: string;
   store?: RuntimeStore;
   progressWriter?: NodeProgressWriter;
+  managedAcpExecutor?: ManagedAcpExecutor;
   initialPrompt?: AgentInitialPrompt;
   signal?: AbortSignal;
 };
@@ -81,7 +84,6 @@ type AgentTurnRecord = {
   summary?: AgentTurnSummaryProjection;
   turnArtifact?: AgentArtifactRef;
   stderrArtifact?: AgentArtifactRef;
-  rawAcpDebugArtifact?: AgentArtifactRef;
   traceArtifact?: AgentArtifactRef;
   outputProcessing?: AgentOutputProcessing;
   failure?: { kind: string; message: string; upstream?: AgentBackendFailure["upstream"] };
@@ -239,7 +241,7 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       agent: agentSelector(definition),
       cwd: cwd.value,
       env,
-      sessionName: sessionNameForMetadata,
+      sessionName: session.value.sessionName,
       permissionMode: node.run.permissionMode ?? definition.permissionMode ?? "approve-all",
       ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
       ...(options.signal ? { signal: options.signal } : {}),
@@ -257,8 +259,20 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     let prompt = node.outputSchema
       ? buildAgentOutputPrompt(renderedPrompt, node.outputSchema)
       : renderedPrompt;
-    const captureRawDebug = options.hostPolicy.captureRawAcpDebug;
-    for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
+    const managedAcpExecutor = options.managedAcpExecutor ?? unavailableManagedAcpExecutor();
+    return await managedAcpExecutor.withAttempt({
+      runId: options.runId ?? `local-${node.id}`,
+      attemptId: options.attemptId ?? `local-${node.id}`,
+      sessionName: sessionNameForMetadata,
+      cwd: cwd.value,
+      env,
+      agent: agentSelector(definition),
+      permissionMode: turnBase.permissionMode,
+      ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+      ...(options.hostPolicy.inactivityFailAfterMs === undefined ? {} : { inactivityFailAfterMs: options.hostPolicy.inactivityFailAfterMs }),
+      onAcpActivity: observedAt => activeProgress?.recordAcpActivity(observedAt),
+    }, async attempt => {
+      for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
       const remaining = remainingTimeout(deadline, node.id);
       if (remaining.isErr()) return finishFailure(remaining.error);
       activeProgress = progressContext
@@ -269,7 +283,6 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         prompt,
         ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
         ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
-        ...(captureRawDebug ? { captureRawDebug: true } : {}),
         ...(activeProgress?.callbacks ?? {}),
       } satisfies AgentTurnRequest;
       const observed = await executeObservedAgentTurn(
@@ -279,8 +292,10 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         turn === 0 ? initialPrompt.kind : "repair",
         definition.trace === true,
         request,
+        attempt.runTurn,
       );
       const result = observed.result;
+      activeProgress?.clearAcpActivity();
       if (options.signal?.aborted) {
         turns.push(agentTurnRecord(turn + 1, result));
         return finishFailure(abortedTurnFailure(result));
@@ -293,7 +308,6 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
           turn + 1,
           request,
           result,
-          captureRawDebug,
           observed.evidence,
           artifactRun,
         );
@@ -335,8 +349,9 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
       if (delayed.isErr()) return finishFailure(delayed.error);
       prompt = buildAgentOutputRepairPrompt(node.outputSchema, rejected.phase);
-    }
-    throw new Error(`Agent node '${node.id}' exhausted response repair.`);
+      }
+      throw new Error(`Agent node '${node.id}' exhausted response repair.`);
+    });
 }
 
 async function executeObservedAgentTurn(
@@ -346,13 +361,14 @@ async function executeObservedAgentTurn(
   promptKind: "task" | "continuation" | "steer" | "repair",
   trace: boolean,
   request: AgentTurnRequest,
+  runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
 ): Promise<ObservedAgentTurn> {
   if (!options.store
     || !options.runId
     || !options.nodeKey
     || !options.attemptId
     || options.attemptNo === undefined) {
-    return { result: await executeAgentTurn(request) };
+    return { result: await runTurn(request) };
   }
   const captured = await options.store.observationLog.captureTurn({
     runId: options.runId,
@@ -367,16 +383,53 @@ async function executeObservedAgentTurn(
     cwd: request.cwd,
     trace,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-  }, request);
+  }, request, runTurn);
   return captured;
 }
 
 function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
+  if (failure.kind === "inactivity_stale") {
+    return {
+      origin: "runtime",
+      code: "agent_acp_inactivity_stale",
+      message: failure.message,
+      ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+      ...(failure.evidence === undefined ? {} : { evidence: failure.evidence }),
+    };
+  }
+  if (failure.kind === "worker_lost") {
+    return {
+      origin: "runtime",
+      code: "agent_acp_worker_lost",
+      message: failure.message,
+      ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+    };
+  }
   return {
     origin: "provider",
     code: failure.kind,
     message: failure.message,
     ...(failure.upstream ? { upstream: failure.upstream } : {}),
+  };
+}
+
+function unavailableManagedAcpExecutor(): ManagedAcpExecutor {
+  return {
+    withAttempt: async (_input, use) => use({
+      runTurn: async () => ({
+        status: "failed",
+        failure: { kind: "worker_lost", origin: "runtime", message: "Agent execution requires a managed ACP executor." },
+        responseText: "",
+        stderr: "",
+        summary: {
+          eventCount: 0,
+          availability: { context: "unavailable", tokenUsage: "unavailable" },
+          tools: { totalToolCallCount: 0, calls: [] },
+        },
+        timing: { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), elapsedMs: 0 },
+      }),
+    }),
+    shutdown: async () => {},
   };
 }
 
@@ -465,7 +518,6 @@ async function writeAgentTurnArtifacts(
   turn: number,
   request: AgentTurnRequest,
   result: AgentTurnResult,
-  captureRawDebug: boolean,
   evidence?: AgentObservationTurnEvidence,
   artifactRun?: RunDirectoryToken,
 ): Promise<AgentTurnRecord> {
@@ -492,7 +544,6 @@ async function writeAgentTurnArtifacts(
     ...base,
     turnArtifact: await writeAgentArtifact(options, artifactRun, turn, "json", `${JSON.stringify(turnArtifact, null, 2)}\n`, "application/json"),
     ...(result.stderr ? { stderrArtifact: await writeAgentArtifact(options, artifactRun, turn, "stderr.log", result.stderr, "text/plain") } : {}),
-    ...(captureRawDebug && result.rawDebug ? { rawAcpDebugArtifact: await writeAgentArtifact(options, artifactRun, turn, "raw-acp.jsonl", result.rawDebug.stdout, "application/x-ndjson") } : {}),
   };
   if (evidence?.trace) {
     record.traceArtifact = await publishAgentTraceArtifact(options, artifactRun, turn);

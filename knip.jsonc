@@ -23,6 +23,21 @@
       ],
       "vitest": false
     },
+    "packages/agent-executor": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        "src/worker-entry.ts!"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "test/**/*.{ts,tsx,mjs}"
+      ],
+      "vitest": false,
+      "ignoreIssues": {
+        // taskkill is a Windows system executable, not an npm binary.
+        "src/managed-executor.ts": ["binaries"]
+      }
+    },
     "packages/cli": {
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",

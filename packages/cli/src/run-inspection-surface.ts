@@ -107,6 +107,7 @@ function formatTargetSummary(view: TargetSummaryView, showAwait: boolean): strin
     `Target ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
     `State ${formatState(view.state)}`,
     ...(view.pulse === undefined ? [] : [`Pulse ${formatPulse(view.pulse)}`]),
+    ...(view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
     ...(view.attention === undefined ? [] : formatAttention(view.attention, view.run.id)),
     ...(view.visibility === undefined ? [] : [formatVisibility(view.visibility.reason)]),
     ...(view.occurrences === undefined ? [] : [`Occurrences total=${view.occurrences.total}${formatCounts(view.occurrences)}`]),

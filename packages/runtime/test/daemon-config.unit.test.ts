@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_RAW_ACP_DEBUG_ENV, AGENT_RESPONSE_REPAIR_MAX_ENV, RUN_MAX_LEAF_CONCURRENCY_ENV, loadAgentHostPolicy, tryLoadRuntimeConfiguration } from "../src/configuration.js";
+import { AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV, AGENT_RESPONSE_REPAIR_MAX_ENV, RUN_MAX_LEAF_CONCURRENCY_ENV, loadAgentHostPolicy, tryLoadRuntimeConfiguration } from "../src/configuration.js";
 
 describe("daemon runtime configuration", () => {
   it("defaults the per-run leaf concurrency ceiling to 32", () => {
@@ -10,7 +10,6 @@ describe("daemon runtime configuration", () => {
       runMaxLeafConcurrency: 32,
       agentHostPolicy: {
         responseRepair: { type: "valid", max: 2 },
-        captureRawAcpDebug: false,
       },
     });
   });
@@ -57,10 +56,20 @@ describe("daemon runtime configuration", () => {
     });
   });
 
-  it("enables raw ACP debug only for the exact value 1", () => {
-    expect(loadAgentHostPolicy({ [AGENT_RAW_ACP_DEBUG_ENV]: "1" }).captureRawAcpDebug).toBe(true);
-    for (const value of [undefined, "0", "true", " 1", "1 "]) {
-      expect(loadAgentHostPolicy(value === undefined ? {} : { [AGENT_RAW_ACP_DEBUG_ENV]: value }).captureRawAcpDebug).toBe(false);
-    }
+  it("parses a bounded host inactivity limit once at daemon startup", () => {
+    const result = tryLoadRuntimeConfiguration({ [AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV]: "3600000" });
+
+    expect(result.isOk() ? result.value.agentHostPolicy.inactivityFailAfterMs : undefined).toBe(3_600_000);
+  });
+
+  it.each(["", "0", "01", "-1", "1.5", "2147483648", "Infinity"])("rejects invalid ACP inactivity limit %j", value => {
+    const result = tryLoadRuntimeConfiguration({ [AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV]: value });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) expect(result.error).toMatchObject({
+      type: "invalid-agent-acp-inactivity-fail-after-ms",
+      variable: AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV,
+      value,
+    });
   });
 });

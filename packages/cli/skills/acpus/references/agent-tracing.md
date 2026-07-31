@@ -1,7 +1,6 @@
 # Agent Tracing
 
-Use this only for exact Agent-turn boundaries, opt-in normalized Trace, or raw
-ACP. Start with [CLI Operations](cli-operations.md); tracing configuration is in
+Use this only for exact Agent-turn boundaries or opt-in normalized Trace. Start with [CLI Operations](cli-operations.md); tracing configuration is in
 [Advanced Authoring](advanced-authoring.md#agent-tracing).
 
 ## Data Roles
@@ -13,7 +12,6 @@ ACP. Start with [CLI Operations](cli-operations.md); tracing configuration is in
 | Private Turn Evidence | Exact prompt, fence, gap, and terminal boundaries for every dispatched turn. |
 | `turn-<NNN>.json` | Canonical settled-turn artifact for a still-writable attempt. |
 | `turn-<NNN>.trace.jsonl` | Full normalized provider stream when `trace: true`; published for a writable attempt. |
-| `turn-<NNN>.raw-acp.jsonl` | Exact prompt-command stdout when raw-debug capture is enabled and the attempt remains writable. |
 | `turn-<NNN>.stderr.log` | Non-empty provider stderr for a writable attempt. |
 
 Each response-repair turn gets its own Private Turn Evidence and, when enabled
@@ -134,9 +132,8 @@ Trace v1 starts with `turn_start` at sequence 0 and ends with `turn_end`;
 records preserve provider arrival order. `sequence` is continuous,
 `observedAt` is UTC arrival time, and `elapsedMs` is monotonic.
 
-Normalized Trace omits prompts and client/control metadata. Raw ACP debug
-(`ACPUS_AGENT_RAW_ACP_DEBUG=1` at daemon startup) preserves prompt-command
-stdout only.
+Normalized Trace omits prompts and client/control metadata. It is a normalized
+public-runtime projection, not a recording of raw ACP transport frames.
 
 ## Build A Consumer
 

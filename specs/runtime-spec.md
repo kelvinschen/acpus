@@ -20,7 +20,9 @@
 | Manifest | `workspace.json` |
 | Daemon socket when the platform path fits | `daemon.sock` |
 | Active database | `runtime/runtime.db` |
+| ACP ownership evidence | `runtime/acp/workers/` |
 | Run capsule | `runtime/runs/<run-id>/` |
+| Run-local ACP sessions | `runtime/runs/<run-id>/acp/sessions/` |
 | Private Turn Evidence | `runtime/runs/<run-id>/evidence/agents/` |
 | Durable workflow snapshot | `runtime/sources/snapshots/<sha256-hex>/manifest.json` and `files/` |
 | Interrupted deletion | `runtime/trash/` |
@@ -47,7 +49,7 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 4` as the current storage version.
+- The active database MUST use SQLite `user_version = 5` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index private Agent evidence and bounded semantic inspection through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -92,7 +94,7 @@
 - `packageLockDigest`, when present, is environment metadata only and MUST NOT contribute to source-graph or fork identity.
 - Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
-- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, and the optional private `evidence/` tree.
+- Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, the optional private `evidence/` tree, and the optional private `acp/` tree.
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
 - Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
@@ -125,6 +127,7 @@
 - Pruning with `olderThanMs` MUST NOT select an archive created by recovery during that same invocation.
 - Real pruning MUST delete selected runs through the Runtime-owned trash protocol.
 - Real pruning and generation archival MUST fail while another process holds the workspace runtime for writable use.
+- Generation archival MUST fail while the workspace retains ACP ownership evidence.
 - After selected run deletion, Runtime MUST delete only workflow snapshots whose digest no remaining run references.
 - A shard MUST be removed only when it has no runs, archives, workflow snapshots, unresolved trash, or live daemon.
 - Empty-shard removal MUST reject a `daemon.sock` entry unless the active layout uses that path and the entry is a Unix socket.
@@ -274,13 +277,14 @@ type PruneReport = {
 ### Agents
 
 - Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and static Agent `config` values, resolving a directly interpolated ArtifactRef to its verified absolute path.
-- Runtime MUST call the [Agent Executor](agent-executor-spec.md) for normalized acpx execution/progress and never parse raw ACP JSON for decisions, summaries, or progress.
+- Runtime MUST call the [Agent Executor](agent-executor-spec.md) through one managed attempt for normalized ACP execution and progress; Runtime MUST not parse raw ACP transport for decisions, summaries, or progress.
 - Runtime MUST translate each effective named or command Agent definition into the corresponding [Agent Executor](agent-executor-spec.md) request variant; absent permission defaults to `approve-all`.
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
 - Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, identity replacement clears inherited model/config, preserves permission, and never accepts `trace`.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
+- Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after a paused, failed, completed, or canceled Agent attempt.
 - Runtime MUST serialize Agent executor admission by effective session identity within one run.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
 - Steering replacement settlement gating MUST include draining and sealing the superseded turn's Private Turn Evidence.
@@ -317,18 +321,21 @@ type PruneReport = {
 - Agent output-processing metadata MUST NOT embed raw output.
 - The daemon MUST capture `ACPUS_AGENT_RESPONSE_REPAIR_MAX` at startup, default additional repair turns to two, accept canonical non-negative safe integers, and expose invalid configuration as `invalid_agent_response_repair_max` before provider invocation.
 - Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid generic config-option reapplication, and never process backend failures as output failures.
+- Runtime MUST execute every response-repair turn in the same managed ACP worker as its initial turn; retry, resume, and steering start a new managed worker against the persisted session.
 - A response-repair prompt MUST request a complete replacement Tagged JSON frame.
 - A response-repair prompt MUST repeat the Tagged JSON output contract.
 - A response-repair prompt MUST repeat the declared Result Shape.
 - A response-repair prompt MUST identify only the bounded failure phase.
 - A response-repair prompt MUST omit the rejected response and its dynamic error text.
 - A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` containing schema version, identities, exact prompt/response, normalized summary/timing, status, and structured terminal detail.
-- A fenced Agent turn MUST NOT register a new ordinary turn, stderr, raw, or trace artifact after the fence.
+- A fenced Agent turn MUST NOT register a new ordinary turn, stderr, or trace artifact after the fence.
 - Turn metadata MUST reference a registered canonical artifact when one exists and otherwise count sealed Private Turn Evidence without embedding prompt, response, timing, complete tools, or filesystem paths; non-empty stderr for a writable attempt uses a separate artifact.
-- `ACPUS_AGENT_RAW_ACP_DEBUG=1` MUST be captured at daemon startup and MAY persist exact wire output for a writable turn without affecting execution or repair.
+- The daemon MUST accept an optional `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` at startup; it MUST be a canonical positive decimal integer no greater than the native timer limit or daemon startup MUST fail with `invalid-agent-acp-inactivity-fail-after-ms`.
+- When configured ACP inactivity elapses, Runtime MUST settle the Agent attempt as the retryable runtime failure `agent_acp_inactivity_stale` and retain the reported silence evidence in the durable failure.
 - Top-level Agent `trace: true` MUST enable complete schema-versioned, ordered normalized Trace spooling per turn without requesting an in-memory Runtime trace result from the Agent Executor.
 - A recognized Agent failure MUST write terminal progress/metadata once; if that write also fails, the rejection MUST retain both the recognized failure and persistence failure.
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
+- Running Agent progress MUST periodically persist a local ACP activity timestamp and MUST clear it when that turn settles.
 - Agent progress MUST retain a bounded response, at most one latest plan or provider-reported-thought intent, bounded tool input/output, and observation completeness for the active owned attempt.
 
 ### Private Turn Evidence And Semantic Observation
@@ -449,6 +456,7 @@ type DaemonSteerControlResult = {
 - Unknown daemon handler failures MUST become sanitized `INTERNAL_ERROR` responses and MUST NOT be classified as business control failures.
 - Socket binding MUST arbitrate one daemon per workspace; a valid response proves liveness, while stale removal requires local evidence of a dead/expired owner.
 - The daemon MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
+- After acquiring its workspace lease and before scheduling, the daemon MUST perform the [Agent Executor](agent-executor-spec.md#ownership-and-cleanup)'s bounded ACP ownership recovery and create the workspace-managed executor.
 - Session start MUST distinguish `started`, `already-active`, `terminal`, and `quarantined`; daemon tick activity counts only `started` executions and dispatched hook work.
 - Pause/cancel MUST durably fence their effect and abort only applicable active attempt controllers; late executor results cannot overwrite control state.
 - Steer MUST resolve an exact started Agent attempt from an exact attempt id, exact dynamic node key, `@ref`, `@ref#attemptNo`, or unambiguous authored Agent id within the control transaction.
@@ -521,6 +529,7 @@ type DaemonSteerControlResult = {
 - `listRuns`, `getRun`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
 - Read-only inspection MUST validate persisted frozen IR, lock, and source metadata without resolving or hashing a workflow snapshot; execution and explicit frozen-run source resolution MUST fully verify the snapshot before returning its source root.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
+- `getRuntimeHealth` MUST inspect ACP ownership read-only and add an `acp` warning only when degraded or orphaned ownership evidence exists.
 - When an active database has the Acpus application id and a positive storage version older than the current version, `getRuntimeHealth` MUST return `ok: true`, `state: "unreadable"`, and a `store` warning.
 - That warning MUST use `Runtime storage version <observed> is older than the supported version <expected>. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`
 - `getRuntimeHealth` MUST retain a `store` failure for storage version zero, a newer storage version, a mismatched application id, and every other database-open failure.
@@ -537,6 +546,7 @@ Runtime owns generic inspection semantics and public shape.
 - A one-shot ambiguous authored target MUST return public candidates, never select an occurrence; observation MUST reject it before attachment. Candidate pagination is one-based, bounded, only for one-shot ambiguous reads; each row contains selector, status, and breadcrumb.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
 - A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
+- A Summary for a running Agent target with a durable ACP activity timestamp MUST include the elapsed duration since that activity; it MUST not include an inactivity threshold or predicted failure time.
 - The tree MUST retain meaningful distinct state in deterministic semantic order and may fold contiguous equivalent Fanout items or Loop rounds. A fold shows their shared visible state without choosing a representative selector.
 - Observation emits attachment, zero or more state updates, then closure; a subject already at its stop boundary emits closure only. Abort is silent, and an observation error ends without closure.
 - Each update MUST provide the smallest coherent change that affects the next valid action. Time, liveness aging, usage, hooks, and silence MUST NOT emit alone.

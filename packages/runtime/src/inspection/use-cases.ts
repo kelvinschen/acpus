@@ -252,7 +252,11 @@ async function readCoherentView(
       details,
       ...(observations ? { observations } : {}),
     });
-    return ok(withRequiredSignal(projected, requiredTargetSignal(state.run, details)));
+    const acp = acpSilence(details);
+    return ok(withRequiredSignal({
+      ...projected,
+      ...(acp === undefined ? {} : { acp }),
+    }, requiredTargetSignal(state.run, details)));
   }
   const observations = await readRecentTimelineObservations(
     state.store.observationLog,
@@ -270,6 +274,19 @@ async function readCoherentView(
     observations,
   });
   return ok(withRequiredSignal(projected, requiredTargetSignal(state.run, details)));
+}
+
+function acpSilence(details: ResolvedTargetState): { silentForMs: number } | undefined {
+  if (details.staticNode?.kind !== "agent") return undefined;
+  const attemptId = targetAttemptId(details);
+  if (!attemptId) return undefined;
+  const progress = details.progress
+    .filter(candidate => candidate.attemptId === attemptId && candidate.kind === "agent" && candidate.status === "running" && candidate.acpActivityAt !== undefined)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  if (!progress?.acpActivityAt) return undefined;
+  const anchor = Date.parse(progress.acpActivityAt);
+  if (!Number.isFinite(anchor)) return undefined;
+  return { silentForMs: Math.max(0, Date.now() - anchor) };
 }
 
 function resolveCoherentTarget(

@@ -59,3 +59,9 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 - Runtime automatically settles derivable work after cancellation or owner loss, even when another branch awaits an untimed Signal.  DO NOT intervene solely because a run is temporarily non-terminal; re-inspect after settlement, then retry or fork if needed.
 
 - For standalone artifact registry lookup, read `advanced-cli-operations.md`; use target inspection when paths need surrounding recovery state. DO NOT guess at run-local paths.
+
+## ACP worker silence and residual ownership
+
+- `ACP silent for <duration>` is an observation, not proof of failure. Do not act on silence alone.
+- To fail a long-silent Agent automatically, set `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` before starting the daemon. Then use the normal retry, steer, or fork decision.
+- Pause, failure, completion, and cancel release the worker. `acpus doctor` warns only when cleanup leaves an unresolved worker.

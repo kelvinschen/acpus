@@ -538,6 +538,7 @@ async function shardIsEmpty(layout: RuntimeLayout): Promise<boolean> {
   await assertEmptyOwnedDirectory(layout.runsRoot, "Runtime runs root");
   await assertEmptyOwnedDirectory(layout.trashRoot, "Runtime trash");
   await assertEmptySourcesRoot(layout.sourcesRoot);
+  await assertEmptyOwnedDirectory(layout.acpWorkersRoot, "ACP ownership directory");
   await assertEmptyRuntimeGenerationShape(layout);
   await assertEmptyWorkspaceShape(layout);
   return true;
@@ -633,13 +634,14 @@ async function assertEmptyRuntimeGenerationShape(layout: RuntimeLayout): Promise
     "runs",
     "sources",
     "trash",
+    "acp",
   ]);
   for (const entry of await readOwnedDirectory(layout.runtimeRoot, "Runtime generation")) {
     if (!allowed.has(entry.name) || entry.isSymbolicLink()) {
       throw new Error(`Runtime generation '${layout.runtimeRoot}' contains unexpected entry '${entry.name}'.`);
     }
     const path = join(layout.runtimeRoot, entry.name);
-    const directory = entry.name === "runs" || entry.name === "sources" || entry.name === "trash";
+    const directory = entry.name === "runs" || entry.name === "sources" || entry.name === "trash" || entry.name === "acp";
     if (directory ? !entry.isDirectory() : !entry.isFile()) {
       throw new Error(`Runtime generation entry '${path}' has an unexpected file type.`);
     }

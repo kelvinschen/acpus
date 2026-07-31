@@ -58,6 +58,21 @@ describe("inspection text surface", () => {
     expect(text).not.toContain("Await:");
   });
 
+  it("renders only the ACP silence duration without policy or countdown detail", () => {
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f" },
+      state: { status: "running" },
+      acp: { silentForMs: 840_000 },
+    } satisfies InspectionView, { showAwait: false });
+
+    expect(text).toContain("ACP silent for 14m0s");
+    expect(text).not.toContain("failure in");
+    expect(text).not.toContain("threshold");
+  });
+
   it("uses the exact blocking Signal rather than a selected composite in Timeline", () => {
     const text = formatInspectionView({
       kind: "target",

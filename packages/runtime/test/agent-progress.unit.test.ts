@@ -224,6 +224,26 @@ describe("Agent progress turn", () => {
     }));
     expect(writes[2]).not.toHaveProperty("output");
   });
+
+  it("persists ACP activity with the current progress snapshot and clears it between turns", () => {
+    const writes: WriteNodeProgressInput[] = [];
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const reporter = progressTurn(recordingWriter(writes));
+
+    reporter.callbacks.onProgress(progress("partial"));
+    reporter.recordAcpActivity("2026-07-30T00:00:00.000Z");
+    now = 1_000;
+    reporter.recordAcpActivity("2026-07-30T00:00:01.000Z");
+    reporter.clearAcpActivity();
+
+    expect(writes).toHaveLength(3);
+    expect(writes[1]).toMatchObject({
+      output: { tail: "partial" },
+      acpActivityAt: "2026-07-30T00:00:00.000Z",
+    });
+    expect(writes[2]).not.toHaveProperty("acpActivityAt");
+  });
 });
 
 function progressTurn(

@@ -12,6 +12,7 @@ import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput } from "./store-port.js";
 import { indexNodes } from "./ir-walk.js";
 import type { AgentHostPolicy } from "../configuration.js";
+import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 
 export type RuntimeNodeExecutorInput = {
   cwd: string;
@@ -20,6 +21,7 @@ export type RuntimeNodeExecutorInput = {
   scope: EvaluationScope;
   store: RuntimeStore;
   agentHostPolicy: AgentHostPolicy;
+  managedAcpExecutor?: ManagedAcpExecutor;
   progressWriter?: NodeProgressWriter;
 };
 
@@ -78,6 +80,8 @@ function agentFailurePayload(failure: AgentNodeFailure): JsonObject {
     origin: failure.origin,
     code: failure.code,
     message: failure.message,
+    ...(failure.origin === "runtime" && failure.retryable !== undefined ? { retryable: failure.retryable } : {}),
+    ...(failure.origin === "runtime" && failure.evidence !== undefined ? { evidence: failure.evidence as JsonValue } : {}),
     ...(failure.origin === "provider" && failure.upstream !== undefined
       ? { upstream: failure.upstream as JsonValue }
       : {}),
@@ -122,6 +126,7 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     store: input.store,
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
+    ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
     initialPrompt,
     signal: context.signal,
   });

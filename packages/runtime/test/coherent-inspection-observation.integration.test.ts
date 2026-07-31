@@ -56,6 +56,54 @@ describe("coherent inspection observation boundaries", () => {
     });
   });
 
+  it("shows ACP silence only on a running Agent target summary", async () => {
+    await withRuntimeWorkspace("inspection-observation-acp-silence", async workspace => {
+      const started = await startedAgent(workspace);
+      try {
+        const review = instance(started.store, started.runId, "review");
+        const attempt = Object.values(throwingSchedulerStore(started.store.scheduler).loadRunSnapshot(started.runId).projection.attempts)
+          .find(candidate => candidate.nodeKey === review.nodeKey && candidate.status === "started");
+        if (!attempt) throw new Error("Expected started Agent attempt.");
+        started.store.writeNodeProgress({
+          runId: started.runId,
+          nodeKey: review.nodeKey,
+          nodeId: review.nodeId,
+          attemptId: attempt.attemptId,
+          attemptNo: attempt.attemptNo,
+          ownerEpoch: attempt.ownerEpoch,
+          kind: "agent",
+          status: "running",
+          acpActivityAt: new Date(Date.now() - 14 * 60_000).toISOString(),
+        });
+        const selector = deriveOccurrenceRef(review.instancePath);
+
+        const summary = await readInspection(workspace, {
+          view: { kind: "target", runId: started.runId, target: selector, detail: "summary" },
+        });
+        expect(summary.isOk() ? summary.value : undefined).toMatchObject({
+          kind: "target",
+          detail: "summary",
+          acp: { silentForMs: expect.any(Number) },
+        });
+        const summaryView = summary.isOk() && summary.value.kind === "target" && summary.value.detail === "summary"
+          ? summary.value
+          : undefined;
+        expect(summaryView?.acp?.silentForMs).toBeGreaterThanOrEqual(14 * 60_000);
+
+        const timeline = await readInspection(workspace, {
+          view: { kind: "target", runId: started.runId, target: selector, detail: "timeline" },
+        });
+        expect(timeline.isOk() ? timeline.value : undefined).not.toHaveProperty("acp");
+        const root = await readInspection(workspace, {
+          view: { kind: "target", runId: started.runId, target: "root", detail: "summary" },
+        });
+        expect(root.isOk() ? root.value : undefined).not.toHaveProperty("acp");
+      } finally {
+        started.store.close();
+      }
+    });
+  });
+
   it("closes an exact attempt at its fence instead of migrating to the replacement", async () => {
     vi.useFakeTimers();
     await withRuntimeWorkspace("inspection-observation-exact-attempt-fence", async workspace => {

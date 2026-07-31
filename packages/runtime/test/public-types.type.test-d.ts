@@ -216,7 +216,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { type: "valid"; max: number }
     | { type: "invalid"; failure: AgentHostPolicyFailure }
   >();
-  expectTypeOf<AgentHostPolicy["captureRawAcpDebug"]>().toEqualTypeOf<boolean>();
+  expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
   expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<3>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();

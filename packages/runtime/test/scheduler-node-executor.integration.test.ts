@@ -25,7 +25,7 @@ beforeEach(() => {
   taskMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
 });
 type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { taskAttemptRunner?: TaskAttemptRunner };
-const taskOnlyAgentHostPolicy: AgentHostPolicy = { responseRepair: { type: "valid", max: 0 }, captureRawAcpDebug: false };
+const taskOnlyAgentHostPolicy: AgentHostPolicy = { responseRepair: { type: "valid", max: 0 } };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { taskAttemptRunner, ...productionInput } = input;
   if (taskAttemptRunner) taskMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);

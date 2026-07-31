@@ -156,7 +156,7 @@ export async function archiveRuntimeGeneration(
 
 export async function recreateRuntimeGeneration(layout: RuntimeLayout): Promise<void> {
   await validateRuntimeLayoutBoundary(layout);
-  for (const path of [layout.runtimeRoot, layout.runsRoot, layout.sourcesRoot, layout.trashRoot]) {
+  for (const path of [layout.runtimeRoot, layout.runsRoot, layout.sourcesRoot, layout.trashRoot, layout.acpRoot, layout.acpWorkersRoot]) {
     await ensurePrivateDirectory(path, layout.platform);
   }
   const store = await openRuntimeStoreAtLayout(layout, { lock: false, prevalidated: true });

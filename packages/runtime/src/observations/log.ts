@@ -17,7 +17,6 @@ import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
-  executeAgentTurn,
   type AgentContextSummary,
   type AgentJsonValue,
   type AgentTraceEvent,
@@ -436,6 +435,7 @@ export class AgentObservationLog {
   async captureTurn(
     context: AgentObservationTurnContext,
     request: AgentTurnRequest,
+    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
   ): Promise<{ result: AgentTurnResult; evidence: AgentObservationTurnEvidence }> {
     const writer = new AgentTurnWriter(this, context, request.prompt);
     const key = activeKey(context.attemptId, context.turn);
@@ -443,7 +443,7 @@ export class AgentObservationLog {
     this.active.set(key, writer);
     try {
       await writer.start();
-      return await this.captureStartedTurn(writer, context, request);
+      return await this.captureStartedTurn(writer, context, request, runTurn);
     } finally {
       this.active.delete(key);
     }
@@ -453,6 +453,7 @@ export class AgentObservationLog {
     writer: AgentTurnWriter,
     context: AgentObservationTurnContext,
     request: AgentTurnRequest,
+    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
   ): Promise<{ result: AgentTurnResult; evidence: AgentObservationTurnEvidence }> {
     const onAbort = (): void => {
       const committedAt = new Date().toISOString();
@@ -485,7 +486,7 @@ export class AgentObservationLog {
         ? cancelledBeforeProviderDispatch()
         : await (async () => {
             writer.markProviderDispatched();
-            return executeAgentTurn({
+            return runTurn({
               ...runtimeRequest,
               onObservation: observation => {
                 writer.observe(observation);

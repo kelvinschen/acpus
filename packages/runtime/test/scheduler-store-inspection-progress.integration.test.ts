@@ -258,6 +258,7 @@ describe("scheduler store inspection, progress, and validation", () => {
           context: { used: 90, size: 200 },
           tokenUsage: { inputTokens: 10, outputTokens: 2 },
           tools: { totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "running" }] },
+          acpActivityAt: "2026-07-30T00:00:00.000Z",
         });
 
         const details = store.getRun(run.id);
@@ -280,6 +281,7 @@ describe("scheduler store inspection, progress, and validation", () => {
             context: { used: 90, size: 200 },
             tokenUsage: { inputTokens: 10, outputTokens: 2 },
             tools: { totalToolCallCount: 1, lastCalls: [{ toolName: "Bash", status: "running" }] },
+            acpActivityAt: "2026-07-30T00:00:00.000Z",
             updatedAt: expect.any(String),
           }),
         ]);

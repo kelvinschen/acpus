@@ -31,6 +31,8 @@ export type RuntimeLayout = {
   runsRoot: string;
   sourcesRoot: string;
   trashRoot: string;
+  acpRoot: string;
+  acpWorkersRoot: string;
   archivesRoot: string;
   daemonSocketPath: string;
   daemonEndpoint: string;
@@ -117,6 +119,8 @@ export function resolveRuntimeLayout(
     runsRoot: join(runtimeRoot, "runs"),
     sourcesRoot: join(runtimeRoot, "sources"),
     trashRoot: join(runtimeRoot, "trash"),
+    acpRoot: join(runtimeRoot, "acp"),
+    acpWorkersRoot: join(runtimeRoot, "acp", "workers"),
     archivesRoot: join(workspaceRoot, "archives"),
     daemonSocketPath,
     daemonEndpoint: resolveDaemonEndpoint(daemonSocketPath, key, home, dependencies),
@@ -147,6 +151,8 @@ export function runtimeLayoutFromManifest(
     runsRoot: join(runtimeRoot, "runs"),
     sourcesRoot: join(runtimeRoot, "sources"),
     trashRoot: join(runtimeRoot, "trash"),
+    acpRoot: join(runtimeRoot, "acp"),
+    acpWorkersRoot: join(runtimeRoot, "acp", "workers"),
     archivesRoot: join(workspaceRoot, "archives"),
     daemonSocketPath,
     daemonEndpoint: resolveDaemonEndpoint(daemonSocketPath, key, home, dependencies),
@@ -249,6 +255,10 @@ export function setRuntimeHomeForTest(workspace: string, home: string): () => vo
   };
 }
 
+export function runAcpSessionsRoot(layout: RuntimeLayout, runId: string): string {
+  return join(layout.runsRoot, runId, "acp", "sessions");
+}
+
 async function ensureRuntimeLayoutValue(
   cwd: string,
   overrides: Partial<RuntimeLayoutDependencies>,
@@ -269,6 +279,8 @@ async function ensureRuntimeLayoutValue(
     layout.runsRoot,
     layout.sourcesRoot,
     layout.trashRoot,
+    layout.acpRoot,
+    layout.acpWorkersRoot,
     layout.archivesRoot,
   ]) {
     await ensurePrivateDirectory(path, layout.platform);

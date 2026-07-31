@@ -10,6 +10,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 - The package MUST expose the `acpus` binary, the bundled `skills/acpus/SKILL.md`, and authoring facades at `acpus/core`, `acpus/expression`, and `acpus/tasks/git`.
 - The bundled skill version MUST equal the containing CLI package version; the root package entrypoint does not combine the authoring facades.
+- The CLI daemon entry MUST publish its containing CLI package version through daemon status and lease `packageVersion` metadata.
 - The CLI MUST expose the following command grammar; bracketed flags are optional and `wf` aliases `workflow`.
 
 | Command | Options and behavior |
@@ -120,6 +121,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `--timeline` requires `--target`; `--page` requires `--target`, is one-shot candidate paging only, and conflicts with blocking inspection. `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
 - A one-shot ambiguous target MUST render candidates successfully. A blocking ambiguous target MUST render its candidate handoff and fail without attaching.
 - Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, Select, and next candidate page. It MUST preserve Timeline detail for candidate selection and never recommend retry, fork, cancel, or steer.
+- When Runtime includes an Agent Summary ACP silence duration, text inspection MUST render `ACP silent for <duration>` and MUST omit an inactivity threshold, failure countdown, and cleanup controls.
 - Empty targets and invalid pages MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
 - Ctrl-C MUST detach without canceling the run and print a one-shot recovery command that retains selected target and Timeline detail.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
@@ -152,6 +154,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Successful text steer output MUST point `Next` to `--await-decision` inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
 - Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
+- Doctor MUST render an ACP ownership warning only when Runtime reports degraded or orphaned ownership evidence; Doctor MUST not recover or clean ACP workers.
 - Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
 - On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
 - JSON Doctor output MUST expose that workspace shard root as `persistence.path`.

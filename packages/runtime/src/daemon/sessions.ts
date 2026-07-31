@@ -13,6 +13,7 @@ import type { DaemonControlIntent, DaemonControlResult } from "./socket.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 
 type ActiveRunSession = {
   execution: RunExecution;
@@ -51,6 +52,7 @@ export class RunExecutionSessions {
     private readonly hookRunner: HookRunner | undefined,
     runtimeConfiguration: RuntimeConfiguration,
     private readonly onRunIncident: (incident: RunIncident) => void = () => undefined,
+    managedAcpExecutor?: ManagedAcpExecutor,
   ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
     this.scheduler = createRuntimeRunScheduler({
@@ -58,6 +60,7 @@ export class RunExecutionSessions {
       store,
       maxLeafConcurrency: runtimeConfiguration.runMaxLeafConcurrency,
       agentHostPolicy: runtimeConfiguration.agentHostPolicy,
+      ...(managedAcpExecutor === undefined ? {} : { managedAcpExecutor }),
       ...(hookRunner === undefined ? {} : { hookRunner }),
       shouldDispatchHooks: runId => this.shouldDispatchHooks(runId),
       onHookIncident: (runId, error) => this.recordHookIncident(runId, error),

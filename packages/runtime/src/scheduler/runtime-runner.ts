@@ -19,6 +19,7 @@ import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 import { readVerifiedArtifact } from "../artifacts/access.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
+import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -35,6 +36,7 @@ export type AdvanceFrozenRunInput = {
   shouldDispatchHooks?: (runId: string) => boolean;
   onHookIncident?: (runId: string, error: unknown) => void;
   progressWriter?: NodeProgressWriter;
+  managedAcpExecutor?: ManagedAcpExecutor;
 };
 
 type RunExecutionExitStatus = "completed" | "failed" | "canceled" | "paused" | "awaiting" | "lease_lost";
@@ -69,6 +71,7 @@ export function createRuntimeRunScheduler(input: {
   shouldDispatchHooks?: (runId: string) => boolean;
   onHookIncident?: (runId: string, error: unknown) => void;
   progressWriter?: NodeProgressWriter;
+  managedAcpExecutor?: ManagedAcpExecutor;
 }): RuntimeRunScheduler {
   return {
     start: identity => {
@@ -97,6 +100,7 @@ export function createRuntimeRunScheduler(input: {
             ...(input.shouldDispatchHooks === undefined ? {} : { shouldDispatchHooks: input.shouldDispatchHooks }),
             ...(input.onHookIncident === undefined ? {} : { onHookIncident: input.onHookIncident }),
             ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
+            ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
           });
           return ok(runExecutionExit(identity.runId, advanced));
         } catch (error) {
@@ -223,6 +227,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       sourceRoot: frozen.sourceRoot ?? input.cwd,
       agentHostPolicy,
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
+      ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
     }),
   });
   dispatchHooksAtCheckpoint({ ...input, frozen });

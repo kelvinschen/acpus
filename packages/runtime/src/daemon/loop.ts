@@ -7,6 +7,8 @@ import { RuntimeMutationQueue } from "./mutation-queue.js";
 import { DAEMON_PROTOCOL_VERSION, startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure, type DaemonServerHandle } from "./socket.js";
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
+import { createManagedAcpExecutor, recoverAcpOwnership, type ManagedAcpExecutor } from "@acpus/agent-executor";
+import { resolveRuntimeLayout, runAcpSessionsRoot } from "../runtime-layout.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
@@ -35,7 +37,8 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     throw new Error(formatHookLoadError(hooksConfig.error));
   }
   const hookRunner = createHookRunner(hooksConfig.value, store);
-  const sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident);
+  let sessions: RunExecutionSessions | undefined;
+  let managedAcpExecutor: ManagedAcpExecutor | undefined;
   const mutations = new RuntimeMutationQueue();
   let server: DaemonServerHandle;
   try {
@@ -60,7 +63,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
             ...(request.agentOverrides === undefined ? {} : { agentOverrides: request.agentOverrides }),
           });
           if (admitted.isErr()) return err(handlerFailure("INVALID_REQUEST", admitted.error.message));
-          return ok(sessions.start(admitted.value.id).run);
+          return ok(sessions!.start(admitted.value.id).run);
         } catch (error) {
           if (isRuntimeStoreBusyError(error)) return err(handlerFailure("STORE_BUSY", "Runtime store is busy. Retry the request."));
           throw error;
@@ -70,7 +73,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
         if (!store.getRun(intent.runId)) return err(handlerFailure("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`));
         try {
-          const result = await sessions.control(intent);
+          const result = await sessions!.control(intent);
           if (result.isErr()) return err(daemonControlFailure(intent, result.error));
           return ok(result.value);
         } catch (error) {
@@ -82,7 +85,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
         if (server.activeConnections() > 1) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active client requests."));
         if (!mutations.isIdle()) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active runtime mutations."));
-        if (sessions.activeCount() > 0) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active run sessions."));
+        if ((sessions?.activeCount() ?? 0) > 0) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active run sessions."));
         setImmediate(() => {
           requestShutdown("external");
         });
@@ -110,11 +113,21 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     throw error;
   }
   try {
+    const layout = resolveRuntimeLayout(cwd);
+    const executorOptions = {
+      workersRoot: layout.acpWorkersRoot,
+      sessionDirectoryForRun: (runId: string) => runAcpSessionsRoot(layout, runId),
+      daemon: { generation: lease.generation, pid: process.pid },
+    };
+    await recoverAcpOwnership(executorOptions);
+    managedAcpExecutor = await createManagedAcpExecutor(executorOptions);
+    sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident, managedAcpExecutor);
     await store.observationLog.recoverTerminalPartialTurns();
     await store.cleanupStagedRunDirectories();
   } catch (error) {
     await closeDaemonServer(server);
     try {
+      await managedAcpExecutor?.shutdown();
       store.releaseDaemon({
         workspaceRealpath: cwd,
         generation: lease.generation,
@@ -155,8 +168,9 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         if (source !== "tick") await activeTick;
         if (source !== "heartbeat") await activeHeartbeat;
         await closeDaemonServer(server);
-        await sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
-        await sessions.drainHooks();
+        await sessions?.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
+        await managedAcpExecutor?.shutdown();
+        await sessions?.drainHooks();
       } finally {
         try {
           store.releaseDaemon({
@@ -200,11 +214,11 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     ticking = true;
     try {
       const result = await runDaemonTick(store, {
-        startSession: runId => sessions.start(runId).disposition,
-        dispatchHooks: runId => sessions.dispatchHooks(runId),
+        startSession: runId => sessions!.start(runId).disposition,
+        dispatchHooks: runId => sessions!.dispatchHooks(runId),
       });
       if (stopped) return;
-      if (result.runs > 0 || result.idleBlockers > 0 || sessions.activeCount() > 0 || sessions.hookActiveCount() > 0 || server.activeConnections() > 0) {
+      if (result.runs > 0 || result.idleBlockers > 0 || sessions!.activeCount() > 0 || sessions!.hookActiveCount() > 0 || server.activeConnections() > 0) {
         idleSince = undefined;
         store.setDaemonIdleState({ workspaceRealpath: cwd, generation: lease.generation, idleStopMs });
         return;

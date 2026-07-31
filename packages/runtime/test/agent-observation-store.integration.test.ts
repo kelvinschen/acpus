@@ -33,11 +33,6 @@ vi.mock("node:fs/promises", async importOriginal => {
   };
 });
 
-vi.mock("@acpus/agent-executor", async importOriginal => ({
-  ...await importOriginal<typeof import("@acpus/agent-executor")>(),
-  executeAgentTurn: agentMocks.executeAgentTurn,
-}));
-
 beforeEach(() => {
   agentMocks.executeAgentTurn.mockReset();
   filesystemMocks.afterChmod = undefined;
@@ -93,7 +88,7 @@ describe("Agent observation store projection", () => {
           env: {},
           sessionName: attemptId,
           permissionMode: "deny-all",
-        })).rejects.toThrow();
+        }, agentMocks.executeAgentTurn)).rejects.toThrow();
 
         expect(agentMocks.executeAgentTurn).not.toHaveBeenCalled();
         await expect(readdir(outside)).resolves.toEqual([]);
@@ -179,7 +174,7 @@ describe("Agent observation store projection", () => {
           env: {},
           sessionName: attemptId,
           permissionMode: "deny-all",
-        });
+        }, agentMocks.executeAgentTurn);
         await started;
 
         const prefix = join(runDir, "evidence", "agents", attemptId, "turn-001");
@@ -337,7 +332,7 @@ describe("Agent observation store projection", () => {
           onObservation: observation => {
             forwarded.push(observation);
           },
-        });
+        }, agentMocks.executeAgentTurn);
         await ready;
 
         expect(afterUsage?.observationVersion).toBe((beforeUsage?.observationVersion ?? 0) + 1);
@@ -525,7 +520,7 @@ describe("Agent observation store projection", () => {
           env: {},
           sessionName: attemptId,
           permissionMode: "deny-all",
-        });
+        }, agentMocks.executeAgentTurn);
         await started;
         await store.observationLog.markFenced({
           runId,
@@ -723,7 +718,7 @@ async function captureSecondTurn(
     env: {},
     sessionName: attemptId,
     permissionMode: "deny-all",
-  });
+  }, agentMocks.executeAgentTurn);
 }
 
 function completedTurn(

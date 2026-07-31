@@ -142,7 +142,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 4;
+export const RUNTIME_STORAGE_VERSION = 5;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -414,6 +414,7 @@ export type RunNodeProgress = {
   tokenUsage?: unknown;
   tools?: unknown;
   intent?: unknown;
+  acpActivityAt?: string;
   updatedAt: string;
 };
 
@@ -586,6 +587,7 @@ export type WriteNodeProgressInput = {
   tokenUsage?: JsonValue;
   tools?: JsonValue;
   intent?: JsonValue;
+  acpActivityAt?: string;
 };
 
 type RunRow = {
@@ -752,6 +754,7 @@ export async function openExistingRuntimeStoreAtLayout(
 }
 
 export async function assertRuntimeArchiveSafe(layout: RuntimeLayout): Promise<void> {
+  await assertAcpOwnershipClear(layout);
   try {
     await access(layout.databasePath);
   } catch (error) {
@@ -795,10 +798,26 @@ export async function assertRuntimeArchiveSafe(layout: RuntimeLayout): Promise<v
 export class RuntimeArchiveActiveError extends Error {
   constructor(
     readonly path: string,
-    readonly blocker: "run lease" | "daemon",
+    readonly blocker: "run lease" | "daemon" | "ACP ownership",
   ) {
     super(`Runtime generation '${path}' has an active ${blocker} and cannot be archived.`);
     this.name = "RuntimeArchiveActiveError";
+  }
+}
+
+async function assertAcpOwnershipClear(layout: RuntimeLayout): Promise<void> {
+  let info;
+  try {
+    info = await lstat(layout.acpWorkersRoot);
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`ACP ownership directory '${layout.acpWorkersRoot}' is not a regular directory.`);
+  }
+  if ((await readdir(layout.acpWorkersRoot)).length > 0) {
+    throw new RuntimeArchiveActiveError(layout.runtimeRoot, "ACP ownership");
   }
 }
 
@@ -2223,9 +2242,9 @@ class SqliteRuntimeStore implements RuntimeStore {
         INSERT INTO node_progress (
           run_id, node_key, node_id, attempt_id, attempt_no, kind, status, message,
           output_tail, output_total_bytes, output_truncated,
-          context_json, token_usage_json, tools_json, intent_json, updated_at
+          context_json, token_usage_json, tools_json, intent_json, acp_activity_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, node_key) DO UPDATE SET
           node_id = excluded.node_id,
           attempt_id = excluded.attempt_id,
@@ -2240,6 +2259,7 @@ class SqliteRuntimeStore implements RuntimeStore {
           token_usage_json = excluded.token_usage_json,
           tools_json = excluded.tools_json,
           intent_json = excluded.intent_json,
+          acp_activity_at = excluded.acp_activity_at,
           updated_at = excluded.updated_at
       `).run(
         input.runId,
@@ -2257,6 +2277,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         input.tokenUsage === undefined ? null : stableJsonLine(input.tokenUsage),
         input.tools === undefined ? null : stableJsonLine(input.tools),
         input.intent === undefined ? null : stableJsonLine(input.intent),
+        input.acpActivityAt ?? null,
         now,
       );
       this.db.prepare(`
@@ -4188,7 +4209,7 @@ function readRunNodeProgress(db: DatabaseSync, runId: string): RunNodeProgress[]
   const rows = db.prepare(`
     SELECT node_key, node_id, attempt_id, attempt_no, kind, status, message,
       output_tail, output_total_bytes, output_truncated,
-      context_json, token_usage_json, tools_json, intent_json, updated_at
+      context_json, token_usage_json, tools_json, intent_json, acp_activity_at, updated_at
     FROM node_progress
     WHERE run_id = ?
     ORDER BY updated_at ASC, node_key ASC
@@ -4210,6 +4231,7 @@ function readRunNodeProgress(db: DatabaseSync, runId: string): RunNodeProgress[]
     tokenUsage: row.token_usage_json === null ? undefined : JSON.parse(String(row.token_usage_json)) as unknown,
     tools: row.tools_json === null ? undefined : JSON.parse(String(row.tools_json)) as unknown,
     intent: row.intent_json === null ? undefined : JSON.parse(String(row.intent_json)) as unknown,
+    acpActivityAt: nullableString(row.acp_activity_at),
     updatedAt: String(row.updated_at),
   }) as RunNodeProgress);
 }
@@ -4702,6 +4724,7 @@ function initializeSchema(db: DatabaseSync): void {
       token_usage_json TEXT,
       tools_json TEXT,
       intent_json TEXT,
+      acp_activity_at TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (run_id, node_key)
     );

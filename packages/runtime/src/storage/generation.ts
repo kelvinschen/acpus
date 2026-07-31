@@ -48,13 +48,13 @@ export function classifyRuntimeGeneration(
   runtimeRoot: string,
   entries: RuntimeGenerationEntry[],
 ): Exclude<RuntimeGenerationState, "absent"> {
-  const allowed = new Set(["runtime.db", "runtime.db-shm", "runtime.db-wal", "runs", "sources", "trash"]);
+  const allowed = new Set(["runtime.db", "runtime.db-shm", "runtime.db-wal", "runs", "sources", "trash", "acp"]);
   const unexpected = entries.find(entry => !allowed.has(entry.name));
   if (unexpected) {
     throw new PartialRuntimeGenerationError(runtimeRoot, `unexpected entry '${unexpected.name}'`);
   }
   for (const entry of entries) {
-    const directory = entry.name === "runs" || entry.name === "sources" || entry.name === "trash";
+    const directory = entry.name === "runs" || entry.name === "sources" || entry.name === "trash" || entry.name === "acp";
     if (directory ? entry.kind !== "directory" : entry.kind !== "file") {
       throw new PartialRuntimeGenerationError(runtimeRoot, `entry '${entry.name}' has an invalid file type`);
     }

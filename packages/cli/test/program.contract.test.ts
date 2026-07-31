@@ -169,7 +169,7 @@ describe("CLI program usage contracts", () => {
       expect(storeCheck).toEqual({
         area: "store",
         status: "warn",
-        message: "Runtime storage version 1 is older than the supported version 4. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
+        message: "Runtime storage version 1 is older than the supported version 5. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
       });
       expect(storeCheck).not.toHaveProperty("details");
       expect(stderr.text).toBe("");
