@@ -1,5 +1,26 @@
 # @acpus/agent-executor
 
+## 0.4.0
+
+### Minor Changes
+
+- 387dfe7: Run each ACP Agent attempt in an owned worker process, with bounded best-effort
+  cleanup and startup recovery for recorded worker ownership. Runtime now exposes
+  optional ACP silence information, can fail an attempt after a configured
+  inactivity boundary, and reports only unresolved ACP ownership through Doctor.
+
+  Daemon lease and status metadata now report the installed CLI package version
+  instead of a stale alpha value.
+
+- 898831e: Remove opt-in raw Agent Trace authoring and storage. Settled Agent turn
+  artifacts now reference the run-local acpx session projection, whose compact
+  messages, thinking, tool calls, and tool-result content are retained without
+  the optional full tool output.
+
+  Use short run-local ACP session identities, and treat only known routine acpx
+  status metadata as observation noise so unsupported provider activity remains
+  visible as degraded evidence.
+
 ## 0.3.0
 
 ### Minor Changes

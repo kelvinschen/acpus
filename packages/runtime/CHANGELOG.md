@@ -1,5 +1,58 @@
 # @acpus/runtime
 
+## 0.13.0
+
+### Minor Changes
+
+- 43c1df1: Replace the public Runtime inspection APIs with `readInspection` and
+  `observeInspection`: one coherent, privacy-safe model for run, target Summary,
+  target Timeline, candidate, and append-only semantic observation views.
+  Observation now pins its selected subject across automatic replacement and
+  separates terminal waits from actionable decision boundaries. Run summaries
+  omit unselected and empty structural paths, collapse sole-child control paths,
+  and share one selector-free shape across equivalent repeated occurrences.
+
+  Simplify CLI inspection to a text-only interface using public occurrence
+  selectors and candidate-only pagination. `--follow` now waits for the fixed
+  subject to become terminal, while `--await-decision` returns for input, pause,
+  or terminal decisions. Remove `workflow run --json`, `runs inspect --json`, and
+  the inspection `--all`, `--controls`, `--evidence`, `--limit`, and `--raw`
+  surfaces. Blocking transcripts label their attachment, omit recursive Await
+  navigation, and add run elapsed context only when a semantic update is emitted.
+
+  Document Steer as exceptional recovery for admitted, in-scope information
+  updates rather than elapsed-time or convergence pressure.
+
+- 387dfe7: Run each ACP Agent attempt in an owned worker process, with bounded best-effort
+  cleanup and startup recovery for recorded worker ownership. Runtime now exposes
+  optional ACP silence information, can fail an attempt after a configured
+  inactivity boundary, and reports only unresolved ACP ownership through Doctor.
+
+  Daemon lease and status metadata now report the installed CLI package version
+  instead of a stale alpha value.
+
+- 898831e: Remove opt-in raw Agent Trace authoring and storage. Settled Agent turn
+  artifacts now reference the run-local acpx session projection, whose compact
+  messages, thinking, tool calls, and tool-result content are retained without
+  the optional full tool output.
+
+  Use short run-local ACP session identities, and treat only known routine acpx
+  status metadata as observation noise so unsupported provider activity remains
+  visible as degraded evidence.
+
+- 898831e: Remove private per-turn Evidence journals and their exact prompt, response, and
+  fence snapshots. Runtime now keeps Agent semantic observations and visible gaps
+  only in SQLite, while exact settled turns remain available through turn
+  artifacts and session history through run-local ACP projections.
+
+### Patch Changes
+
+- Updated dependencies [387dfe7]
+- Updated dependencies [898831e]
+  - @acpus/agent-executor@0.4.0
+  - @acpus/core@0.11.0
+  - @acpus/loader@0.2.2
+
 ## 0.12.1
 
 ### Patch Changes
