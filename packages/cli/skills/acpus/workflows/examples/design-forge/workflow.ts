@@ -542,7 +542,8 @@ export default defineWorkflow({
         workspace,
       };
 
-      const cited = [...document.matchAll(/\[((?:R|W)[1-9]\d*)\]/g)].map(match => match[1]);
+      const cited = [...document.matchAll(/\[((?:R|W)[1-9]\d*)\]/g)]
+        .flatMap(match => match[1] === undefined ? [] : [match[1]]);
       const citedIds = new Set(cited);
       const unresolvedCitations = [...citedIds].filter(id => !ids.has(id));
       if (unresolvedCitations.length) {
