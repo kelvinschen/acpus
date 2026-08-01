@@ -1,6 +1,7 @@
 /** Research-package assembly and optional Markdown/HTML report delivery Tasks. */
 import { task, z, type ArtifactRef } from "acpus/core";
 import {
+  EvidenceLedger,
   PrepareReportInputsInput,
   PublishRenderedReportInput,
   WriteResearchPackageInput,
@@ -160,22 +161,34 @@ two for deep, and up to three for xdeep. Do not publish planning or review notes
 
 type WriteResearchPackageInput = z.infer<typeof WriteResearchPackageInput>;
 
-/** Writes the format-neutral research package consumed by optional presentation adapters. */
+/** Finalizes evidence accounting and writes the format-neutral research package. */
 export const writeResearchPackage = task.define({
   inputSchema: WriteResearchPackageInput,
   exec: async ({ input, artifact }): Promise<{ artifact: ArtifactRef }> => {
     const value: WriteResearchPackageInput = input;
     const { readFile } = await import("node:fs/promises");
     const report = JSON.parse(await readFile(artifact.path(value.report), "utf8")) as unknown;
-    const evidence = JSON.parse(await readFile(artifact.path(value.ledger), "utf8")) as unknown;
+    const evidence = JSON.parse(await readFile(artifact.path(value.ledger), "utf8")) as z.infer<typeof EvidenceLedger>;
+    const finalEvidence: z.infer<typeof EvidenceLedger> = {
+      ...evidence,
+      stats: {
+        ...evidence.stats,
+        editorialRepairCalls: value.editorialRepairCalls,
+        logicalAgentCalls: evidence.stats.logicalAgentCalls + value.editorialRepairCalls,
+      },
+    };
+    await artifact.write(
+      "verified-evidence-ledger.json",
+      JSON.stringify(finalEvidence, null, 2),
+      { mediaType: "application/json" },
+    );
     const file = await artifact.write(
       "research-package.json",
       JSON.stringify({
         schemaVersion: 1,
         runId: value.runId,
-        reportLanguage: value.reportLanguage,
         report,
-        evidence,
+        evidence: finalEvidence,
       }, null, 2),
       { mediaType: "application/json" },
     );
@@ -206,14 +219,14 @@ export const prepareReportInputs = task.define({
           draftName: "index.html",
           defaultPath: `.acpus/reports/${value.runId}/index.html`,
           extension: ".html",
-          languageRule: `Use \`${value.reportLanguage}\` for every reader-facing string and for the HTML \`lang\` attribute.`,
+          languageRule: "Use the research question's language for every reader-facing string and set the HTML `lang` attribute accordingly.",
         }
       : {
           design: MARKDOWN_REPORT_DESIGN,
           draftName: "report.md",
           defaultPath: `.acpus/reports/${value.runId}/report.md`,
           extension: ".md",
-          languageRule: `Use \`${value.reportLanguage}\` for every reader-facing string.`,
+          languageRule: "Use the research question's language for every reader-facing string.",
         };
     const designSpec = await artifact.write(
       "report-design.md",

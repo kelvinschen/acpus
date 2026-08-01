@@ -6,7 +6,6 @@ const SourceQuality = z.enum(["primary", "secondary", "blog", "forum", "unreliab
 const Importance = z.enum(["central", "supporting", "tangential"]);
 const Confidence = z.enum(["high", "medium", "low"]);
 const ToolStatus = z.enum(["ok", "tool_unavailable"]);
-const ReportLanguage = z.enum(["zh-CN", "en"]);
 
 const ArtifactRefSchema = z.object({
   kind: z.literal("artifact"),
@@ -193,6 +192,15 @@ export const EditorialBundleOutput = z.object({
   scrutiny: ScrutinyOutput,
 });
 
+export const InconclusiveReportOutput = z.object({
+  title: z.string(),
+  deck: z.string(),
+  throughline: z.string(),
+  executiveSummary: z.string(),
+  limitations: z.array(z.string()),
+  openQuestions: z.array(z.string()),
+});
+
 const ResearchBudget = z.object({
   depth: z.enum(["quick", "deep", "xdeep"]),
   maxSearchRounds: z.number().int(),
@@ -236,7 +244,6 @@ export const EvidenceLedger = z.object({
   schemaVersion: z.number().int(),
   question: z.string(),
   context: z.string(),
-  reportLanguage: ReportLanguage,
   budget: ResearchBudget,
   planning: z.object({
     researchFrame: z.string(),
@@ -265,20 +272,10 @@ export const RankClaimsInput = z.object({
   claimLimit: z.number().int().min(0),
 });
 
-export const BatchClaimsInput = z.object({
-  claims: z.array(RankedClaim),
-  batchSize: z.number().int().min(1),
-});
-
 export const RequireInitialVerdictsInput = z.object({
   claims: z.array(RankedClaim),
   voterA: VerificationBatchOutput,
   voterB: VerificationBatchOutput,
-});
-
-export const PlanTieBreakBatchesInput = z.object({
-  initial: z.array(InitialVerificationResult),
-  batchSize: z.number().int().min(1),
 });
 
 export const RequireTieBreakVerdictsInput = z.object({
@@ -296,7 +293,6 @@ export const WriteEvidenceLedgerInput = z.object({
   request: z.object({
     question: z.string(),
     context: z.string(),
-    reportLanguage: ReportLanguage,
   }),
   planning: z.object({
     researchFrame: z.string(),
@@ -330,11 +326,6 @@ export const WriteEvidenceLedgerInput = z.object({
   budget: ResearchBudget,
 });
 
-export const FinalizeEvidenceLedgerInput = z.object({
-  ledger: ArtifactRefSchema,
-  editorialRepairCalls: z.number().int().min(0),
-});
-
 export const ValidateEditorialInput = z.object({
   ledger: ArtifactRefSchema,
   narrative: NarrativeOutput,
@@ -343,7 +334,6 @@ export const ValidateEditorialInput = z.object({
 
 export const GroundEditorialInput = z.object({
   ledger: ArtifactRefSchema,
-  reportLanguage: ReportLanguage,
   narrative: NarrativeOutput,
   scrutiny: ScrutinyOutput,
   editorialRepairCalls: z.number().int().min(0),
@@ -352,13 +342,12 @@ export const GroundEditorialInput = z.object({
 export const WriteResearchPackageInput = z.object({
   report: ArtifactRefSchema,
   ledger: ArtifactRefSchema,
-  reportLanguage: ReportLanguage,
+  editorialRepairCalls: z.number().int().min(0),
   runId: z.string(),
 });
 
 export const PrepareReportInputsInput = z.object({
   format: z.enum(["md", "html"]),
-  reportLanguage: ReportLanguage,
   reportPath: z.string(),
   runId: z.string(),
   workspaceDir: z.string(),

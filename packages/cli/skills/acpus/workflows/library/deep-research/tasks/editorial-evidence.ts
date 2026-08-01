@@ -39,7 +39,7 @@ function resolveEvidenceRef(byId: Map<string, LedgerClaim>, ref: EvidenceRef) {
 type ValidateEditorialInput = z.infer<typeof ValidateEditorialInput>;
 type ValidateEditorialResult = {
   valid: boolean;
-  artifact: ArtifactRef;
+  violations: Violation[];
 };
 
 /** Validates editorial claim references against the ledger's status-specific evidence roles. */
@@ -92,18 +92,7 @@ export const validateEditorialEvidenceRefs = task.define({
       validateRefs(item.evidenceRefs, `Uncertainty ${index + 1}`, "uncertainty");
     });
 
-    const payload = {
-      schemaVersion: 1,
-      valid: violations.length === 0,
-      violations,
-      draft: { narrative: value.narrative, scrutiny: value.scrutiny },
-    };
-    const file = await artifact.write(
-      "editorial-validation.json",
-      JSON.stringify(payload, null, 2),
-      { mediaType: "application/json" },
-    );
-    return { valid: payload.valid, artifact: file };
+    return { valid: violations.length === 0, violations };
   },
 });
 
@@ -189,7 +178,6 @@ export const groundEditorialCitations = task.define({
     }));
     const report = {
       schemaVersion: 1,
-      language: value.reportLanguage,
       title: value.narrative.title,
       deck: value.narrative.deck,
       throughline: value.narrative.throughline,

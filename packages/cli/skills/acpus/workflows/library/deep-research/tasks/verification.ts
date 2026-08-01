@@ -1,11 +1,7 @@
-/** Deterministic verification batching, coverage, and majority-tally Tasks. */
+/** Deterministic verification coverage and majority-tally Tasks. */
 import { task, z } from "acpus/core";
 import {
-  BatchClaimsInput,
-  ClaimReview,
   InitialVerificationResult,
-  PlanTieBreakBatchesInput,
-  RankedClaim,
   RequireInitialVerdictsInput,
   RequireTieBreakVerdictsInput,
   TallyVerifiedClaimsInput,
@@ -13,32 +9,6 @@ import {
   VerificationVerdictOutput,
   VerifiedClaim,
 } from "../contracts.js";
-
-type BatchClaimsInput = z.infer<typeof BatchClaimsInput>;
-type ClaimBatch = { batchId: string; claims: Array<z.infer<typeof RankedClaim>> };
-
-/** Groups ranked claims into small verification batches, preferring shared sources or topics. */
-export const batchClaimsForVerification = task.define({
-  inputSchema: BatchClaimsInput,
-  exec: async ({ input }): Promise<{ batches: ClaimBatch[] }> => {
-    const value: BatchClaimsInput = input;
-    const remaining = [...value.claims];
-    const batches: ClaimBatch[] = [];
-    while (remaining.length) {
-      const first = remaining.shift();
-      if (!first) break;
-      const relatedIndex = remaining.findIndex(claim => claim.sourceUrl === first.sourceUrl);
-      const topicalIndex = remaining.findIndex(claim => claim.angle === first.angle);
-      const partnerIndex = relatedIndex >= 0 ? relatedIndex : topicalIndex >= 0 ? topicalIndex : 0;
-      const partner = value.batchSize > 1 && remaining.length ? remaining.splice(partnerIndex, 1)[0] : undefined;
-      batches.push({
-        batchId: `VB${String(batches.length + 1).padStart(3, "0")}`,
-        claims: partner ? [first, partner] : [first],
-      });
-    }
-    return { batches };
-  },
-});
 
 type RequireInitialVerdictsInput = z.infer<typeof RequireInitialVerdictsInput>;
 type InitialVerdictsResult = z.infer<typeof InitialVerificationResult>;
@@ -70,33 +40,6 @@ export const requireInitialVerdicts = task.define({
       verdicts: [voterA[index]!, voterB[index]!],
     }));
     return { reviews };
-  },
-});
-
-type PlanTieBreakBatchesInput = z.infer<typeof PlanTieBreakBatchesInput>;
-type TieBreakPlanResult = {
-  reviews: Array<z.infer<typeof ClaimReview>>;
-  batches: ClaimBatch[];
-  initialAgentCalls: number;
-};
-
-/** Collects initial reviews and batches only disputed claims for fresh tie-break verification. */
-export const planTieBreakBatches = task.define({
-  inputSchema: PlanTieBreakBatchesInput,
-  exec: async ({ input }): Promise<TieBreakPlanResult> => {
-    const value: PlanTieBreakBatchesInput = input;
-    const reviews = value.initial.flatMap(batch => batch.reviews);
-    const disputedClaims = reviews
-      .filter(review => review.verdicts[0]!.decision !== review.verdicts[1]!.decision)
-      .map(review => review.claim);
-    const batches = Array.from(
-      { length: Math.ceil(disputedClaims.length / value.batchSize) },
-      (_, index) => ({
-        batchId: `TB${String(index + 1).padStart(3, "0")}`,
-        claims: disputedClaims.slice(index * value.batchSize, (index + 1) * value.batchSize),
-      }),
-    );
-    return { reviews, batches, initialAgentCalls: value.initial.length * 2 };
   },
 });
 

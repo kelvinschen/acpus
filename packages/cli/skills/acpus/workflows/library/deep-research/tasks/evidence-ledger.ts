@@ -1,8 +1,7 @@
-/** Deterministic evidence-ledger assembly and final accounting Tasks. */
+/** Deterministic evidence-ledger assembly Task. */
 import { task, z, type ArtifactRef } from "acpus/core";
 import {
   EvidenceLedger,
-  FinalizeEvidenceLedgerInput,
   ResearchStats,
   WriteEvidenceLedgerInput,
 } from "../contracts.js";
@@ -52,13 +51,12 @@ export const writeEvidenceLedger = task.define({
         + value.planning.planningAgentCalls
         + value.selection.sourcesFetched
         + value.verification.verificationAgentCalls
-        + (confirmed.length > 0 ? value.budget.editorialPasses : 0),
+        + (confirmed.length > 0 ? value.budget.editorialPasses : 1),
     };
     const payload: EvidenceLedger = {
       schemaVersion: 1,
       question: value.request.question,
       context: value.request.context,
-      reportLanguage: value.request.reportLanguage,
       budget: value.budget,
       planning: {
         researchFrame: value.planning.researchFrame,
@@ -80,28 +78,5 @@ export const writeEvidenceLedger = task.define({
       { mediaType: "application/json" },
     );
     return { artifact: file, hasConfirmed: confirmed.length > 0 };
-  },
-});
-
-type FinalizeEvidenceLedgerInput = z.infer<typeof FinalizeEvidenceLedgerInput>;
-
-/** Adds editorial repair accounting and writes the final verified evidence ledger. */
-export const finalizeEvidenceLedger = task.define({
-  inputSchema: FinalizeEvidenceLedgerInput,
-  exec: async ({ input, artifact }): Promise<{ artifact: ArtifactRef }> => {
-    const value: FinalizeEvidenceLedgerInput = input;
-    const { readFile } = await import("node:fs/promises");
-    const payload = JSON.parse(await readFile(artifact.path(value.ledger), "utf8")) as EvidenceLedger;
-    const stats: ResearchStats = {
-      ...payload.stats,
-      editorialRepairCalls: value.editorialRepairCalls,
-      logicalAgentCalls: payload.stats.logicalAgentCalls + value.editorialRepairCalls,
-    };
-    const file = await artifact.write(
-      "verified-evidence-ledger.json",
-      JSON.stringify({ ...payload, stats }, null, 2),
-      { mediaType: "application/json" },
-    );
-    return { artifact: file };
   },
 });
