@@ -2,4 +2,4 @@
 "acpus": patch
 ---
 
-Publish reader-facing Markdown from the bundled design-forge workflow with structured references, decision and diagram planning, deterministic publication checks, and separate audit artifacts.
+Publish a reader-facing Markdown document from the bundled design-forge workflow, with Agent-directed structure, optional diagrams and references, readability-aware resident challenges, and a separate review log.
