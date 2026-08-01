@@ -118,23 +118,32 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const fork = await forkRun(workspace, source.run.id);
 
-      expect(fork?.run.status).toBe("completed");
+      expect(fork.run.status).toBe("pending");
       expect(fork?.run.id).not.toBe(source.run.id);
       expect(source.run.fork).toBeUndefined();
       expect(fork?.run.fork).toEqual({ sourceRunId: source.run.id });
       const sourceArtifacts = runtimeRows(workspace, "SELECT id, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", source.run.id);
-      const forkArtifacts = runtimeRows(workspace, "SELECT id, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", fork!.run.id);
+      expect(runtimeRows(workspace, "SELECT id FROM artifacts WHERE run_id = ?", fork.run.id)).toEqual([]);
+
+      await advanceRun(workspace, fork.run.id);
+
+      const forkArtifacts = runtimeRows(workspace, "SELECT id, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", fork.run.id);
       expect(forkArtifacts).toHaveLength(sourceArtifacts.length);
       expect(forkArtifacts.map(row => row.id)).not.toEqual(sourceArtifacts.map(row => row.id));
-      expect(forkArtifacts.map(({ id: _id, ...row }) => row)).toEqual(sourceArtifacts.map(({ id: _id, ...row }) => row));
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: { ok: true }, fork: { sourceRunId: source.run.id } });
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ fork: {
+      expect(forkArtifacts.map(({ id: _id, relative_path: _path, ...row }) => row))
+        .toEqual(sourceArtifacts.map(({ id: _id, relative_path: _path, ...row }) => row));
+      expect(forkArtifacts.map(row => String(row.relative_path))).toEqual([
+        expect.stringContaining(join("artifacts", ".fork-replay")),
+      ]);
+      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true }, fork: { sourceRunId: source.run.id } });
+      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ fork: {
         sourceRunId: source.run.id,
       } });
 
-      const forkOfFork = await forkRun(workspace, fork!.run.id);
-      expect(forkOfFork?.run).toMatchObject({ status: "completed", fork: { sourceRunId: fork!.run.id } });
-      await expect(getRun(workspace, forkOfFork!.run.id)).resolves.toMatchObject({ output: { ok: true } });
+      const forkOfFork = await forkRun(workspace, fork.run.id);
+      expect(forkOfFork.run).toMatchObject({ status: "pending", fork: { sourceRunId: fork.run.id } });
+      await advanceRun(workspace, forkOfFork.run.id);
+      await expect(getRun(workspace, forkOfFork.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true } });
     });
   });
 
@@ -234,8 +243,10 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const fork = await forkRun(workspace, source.run.id);
 
-      expect(fork?.run).toMatchObject({ status: "completed", output: "ready" });
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ output: "ready" });
+      expect(fork.run.status).toBe("pending");
+      expect(fork.run.output).toBeUndefined();
+      await advanceRun(workspace, fork.run.id);
+      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ status: "completed", output: "ready" });
     });
   });
 
@@ -369,12 +380,16 @@ describe.concurrent("runtime controls and recovery", () => {
       }
 
       const fork = await forkRun(workspace, source.run.id);
-      const forkArtifacts = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id);
+      expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ?", fork.run.id)).toEqual([]);
+
+      await advanceRun(workspace, fork.run.id);
+
+      const forkArtifacts = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork.run.id);
       expect(forkArtifacts).toHaveLength(1);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(failedRelativePath);
       expect(forkArtifacts.map(row => row.relative_path)).not.toContain(supersededRelativePath);
-      await expect(access(join(runtimeRunDir(workspace, fork!.run.id), failedRelativePath))).rejects.toThrow();
-      await expect(access(join(runtimeRunDir(workspace, fork!.run.id), supersededRelativePath))).rejects.toThrow();
+      await expect(access(join(runtimeRunDir(workspace, fork.run.id), failedRelativePath))).rejects.toThrow();
+      await expect(access(join(runtimeRunDir(workspace, fork.run.id), supersededRelativePath))).rejects.toThrow();
     });
   });
 
@@ -385,11 +400,13 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const fork = await forkRun(workspace, source.run.id);
 
-      expect(fork?.run.status).toBe("completed");
+      expect(fork.run.status).toBe("pending");
       expect(fork?.run.id).not.toBe(source.run.id);
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({
+      await advanceRun(workspace, fork.run.id);
+      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({
+        status: "completed",
         output: {
-          runId: fork!.run.id,
+          runId: fork.run.id,
           workflowPath: "cli-meta.workflow.ts",
           workflowName: "cli-meta",
           workspaceDir: workspace,
@@ -406,7 +423,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const fork = await forkRun(workspace, source.run.id, { prepared: replacement });
 
-      expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "running" });
+      expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "pending" });
       const store = await openExistingWritableRuntimeStore(workspace);
       expect(store).toBeDefined();
       try {
@@ -419,7 +436,11 @@ describe.concurrent("runtime controls and recovery", () => {
         id: fork!.run.id,
         name: "cli-task-replacement",
       });
-      expect(runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id)).toHaveLength(1);
+      const replacementArtifacts = runtimeRows(workspace, "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path", fork!.run.id);
+      expect(replacementArtifacts).toHaveLength(1);
+      expect(String(replacementArtifacts[0]!.relative_path)).not.toContain(".fork-replay");
+      await expect(readFile(join(runtimeRunDir(workspace, fork.run.id), String(replacementArtifacts[0]!.relative_path)), "utf8"))
+        .resolves.toBe("replacement\n");
 
       const inputSource = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
       const input = (await tryNormalizeForkInput(workspace, inputSource.run.id, { value: "new" }))._unsafeUnwrap();
@@ -436,8 +457,8 @@ describe.concurrent("runtime controls and recovery", () => {
     });
   }, 20_000);
 
-  it("reports targeted fork seed failures from the store boundary", async () => {
-    await withRuntimeWorkspace("runtime-fork-seed-typed-error", async workspace => {
+  it("reports targeted fork checkpoint failures from the store boundary", async () => {
+    await withRuntimeWorkspace("runtime-fork-checkpoint-typed-error", async workspace => {
       const completed = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
 
       await expect(forkRun(workspace, completed.run.id, { target: "missing~abc" })).rejects.toMatchObject({
@@ -589,6 +610,52 @@ describe.concurrent("runtime controls and recovery", () => {
     });
   });
 
+  it("replays only completed members when forking an active fanout-all", async () => {
+    await withRuntimeWorkspace("runtime-fork-active-fanout", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, fanoutSignalWorkflow(), { items: ["a", "b", "c"] });
+      const sourceWaits = runtimeRows(workspace, "SELECT node_key FROM signal_waits WHERE run_id = ? ORDER BY node_key", source.run.id);
+      await signalRun(workspace, source.run.id, String(sourceWaits[0]!.node_key), { ok: true });
+
+      const fork = await forkRun(workspace, source.run.id);
+      await advanceRun(workspace, fork.run.id);
+
+      const child = await getRun(workspace, fork.run.id);
+      expect(child?.status).toBe("awaiting");
+      expect(child?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.reusedFromRunId === source.run.id)).toHaveLength(1);
+      const childWaits = runtimeRows(workspace, "SELECT node_key FROM signal_waits WHERE run_id = ? AND status = 'awaiting' ORDER BY node_key", fork.run.id);
+      expect(childWaits).toHaveLength(2);
+      await signalRun(workspace, fork.run.id, String(childWaits[0]!.node_key), { ok: true });
+      await expect(signalRun(workspace, fork.run.id, String(childWaits[1]!.node_key), { ok: true })).resolves.toMatchObject({
+        run: { status: "completed" },
+      });
+    });
+  });
+
+  it("replays consumed signals by default and re-asks a targeted signal", async () => {
+    await withRuntimeWorkspace("runtime-fork-signal-replay", async workspace => {
+      const source = await admitSyntheticWorkflow(workspace, signalWorkflow());
+      await signalRun(workspace, source.run.id, "approve", { ok: true });
+
+      const replayed = await forkRun(workspace, source.run.id);
+      await advanceRun(workspace, replayed.run.id);
+      await expect(getRun(workspace, replayed.run.id)).resolves.toMatchObject({
+        status: "completed",
+        output: { ok: true },
+      });
+      expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", replayed.run.id)).toEqual([]);
+      expect((await getRun(workspace, replayed.run.id))?.dynamic?.nodeInstances).toEqual([
+        expect.objectContaining({ reusedFromRunId: source.run.id }),
+      ]);
+
+      const targeted = await forkRun(workspace, source.run.id, { target: "approve" });
+      await advanceRun(workspace, targeted.run.id);
+      await expect(getRun(workspace, targeted.run.id)).resolves.toMatchObject({ status: "awaiting" });
+      await expect(signalRun(workspace, targeted.run.id, "approve", { ok: true })).resolves.toMatchObject({
+        run: { status: "completed", output: { ok: true } },
+      });
+    });
+  });
+
   it("signals parallel all and race branches through scheduler control", async () => {
     await withRuntimeWorkspace("runtime-signal-parallel", async workspace => {
       const all = await admitSyntheticWorkflow(workspace, parallelSignalAllWorkflow());
@@ -603,11 +670,12 @@ describe.concurrent("runtime controls and recovery", () => {
         },
       });
       const fork = await forkRun(workspace, all.run.id);
-      expect(fork).toMatchObject({
-        run: {
-          status: "completed",
-          output: { approvals: { left: { ok: true }, right: { ok: true } } },
-        },
+      expect(fork.run.status).toBe("pending");
+      expect(fork.run.output).toBeUndefined();
+      await advanceRun(workspace, fork.run.id);
+      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({
+        status: "completed",
+        output: { approvals: { left: { ok: true }, right: { ok: true } } },
       });
 
       const race = await admitSyntheticWorkflow(workspace, parallelSignalRaceWorkflow());
@@ -625,6 +693,14 @@ describe.concurrent("runtime controls and recovery", () => {
         { node_id: "right_approve", status: "cancelled" },
       ]);
       await expect(signalRun(workspace, race.run.id, String(loser!.node_key), { ok: true })).rejects.toThrow(`target '${String(loser!.node_key)}' was not found`);
+
+      const raceFork = await forkRun(workspace, race.run.id);
+      await advanceRun(workspace, raceFork.run.id);
+      await expect(getRun(workspace, raceFork.run.id)).resolves.toMatchObject({
+        status: "completed",
+        output: { approval: { winner: "left", result: { ok: true } } },
+      });
+      expect(runtimeRows(workspace, "SELECT node_id FROM signal_waits WHERE run_id = ?", raceFork.run.id)).toEqual([]);
     });
   });
 
@@ -635,7 +711,6 @@ type ForkOptions = {
   target?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
-  unsafeReuse?: boolean;
 };
 
 async function controlRun(
@@ -694,6 +769,16 @@ async function forkRun(workspace: string, runId: string, options: ForkOptions = 
     const run = store.getRun(fork.id);
     if (!run) throw new Error(`Fork run '${fork.id}' was not found.`);
     return { run };
+  } finally {
+    store.close();
+  }
+}
+
+async function advanceRun(workspace: string, runId: string): Promise<void> {
+  const store = await openExistingWritableRuntimeStore(workspace);
+  if (!store) throw new Error("Expected runtime store.");
+  try {
+    await advanceRuntimeRun(workspace, store, runId, `test:${runId}`);
   } finally {
     store.close();
   }

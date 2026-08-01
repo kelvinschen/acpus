@@ -120,7 +120,6 @@ function inspectionRun(run: RunDetails, failure?: { origin: InspectionFailure["o
       ? {
           fork: {
             sourceRunId: run.fork.sourceRunId,
-            ...(run.fork.unsafeReuse ? { unsafeReuse: true } : {}),
           },
         }
       : {}),

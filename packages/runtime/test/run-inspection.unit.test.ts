@@ -204,12 +204,9 @@ describe("run inspection projection", () => {
 
   it("omits a targeted fork's raw target from the generic run view", () => {
     const run = repeatedAgentRun(0);
-    run.fork = { sourceRunId: "source-run", target: "review~private-key", unsafeReuse: true };
+    run.fork = { sourceRunId: "source-run", target: "review~private-key" };
 
-    expect(projectInspectionRunView({ ir: compositeWorkflow(), run }).run.fork).toEqual({
-      sourceRunId: "source-run",
-      unsafeReuse: true,
-    });
+    expect(projectInspectionRunView({ ir: compositeWorkflow(), run }).run.fork).toEqual({ sourceRunId: "source-run" });
   });
 
   it("keeps opaque failure payloads out of the generic run view", () => {
@@ -477,11 +474,11 @@ describe("run inspection projection", () => {
 
   it("projects only direct fork lineage into inspection summaries", () => {
     const run = repeatedAgentRun(0);
-    run.fork = { sourceRunId: "run_source", target: "review~failed", unsafeReuse: true };
+    run.fork = { sourceRunId: "run_source", target: "review~failed" };
     const document = snapshot(compositeWorkflow(), run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
 
-    expect(document.run.fork).toEqual({ sourceRunId: "run_source", target: "review~failed", unsafeReuse: true });
+    expect(document.run.fork).toEqual({ sourceRunId: "run_source", target: "review~failed" });
   });
 
   it("counts every repeated Assert frame as a distinct execution context", () => {

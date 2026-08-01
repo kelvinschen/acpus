@@ -2,6 +2,7 @@ import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
 import type { SchedulerEvent } from "./events.js";
 import type { SchedulerProjection } from "./types.js";
+import type { ReplayIdentity } from "./types.js";
 
 export type RunOwnerClaim = {
   runId: string;
@@ -90,6 +91,24 @@ export type AttemptStartInput = {
   expectedVersion: number;
   deadlineAt?: string;
   idempotencyKey: string;
+  replayIdentity?: ReplayIdentity;
+};
+
+export type ReplayCandidate = {
+  nodeKey: string;
+};
+
+export type ReplayCommitInput = {
+  runId: string;
+  nodeKey: string;
+  ownerEpoch: number;
+  expectedVersion: number;
+  replayIdentity: ReplayIdentity;
+};
+
+export type ReplayCommitResult = {
+  disposition: "replayed" | "mismatch";
+  snapshot: SchedulerSnapshot;
 };
 
 export type AttemptStartResult = {
@@ -186,6 +205,8 @@ export type SchedulerStorePort = {
   tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot>;
   tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot>;
   tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult>;
+  listReplayCandidates(runId: string): ReplayCandidate[];
+  tryCommitReplay(input: ReplayCommitInput): SchedulerStoreResult<ReplayCommitResult>;
   tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot>;

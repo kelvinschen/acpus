@@ -2,13 +2,14 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { readdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
+import { template } from "@acpus/expression";
 import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
-import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 
@@ -175,8 +176,8 @@ describe("scheduler agent overrides and forks", () => {
       });
     });
 
-  it("seeds compatible completed prerequisites from a failed source fork", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-seed", async workspace => {
+  it("replays compatible completions while recovering a failed source without a target", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-fork-recovery", async workspace => {
         const sourcePrepared = await prepareSyntheticWorkflow(workspace, targetedForkFailedSourceWorkflow());
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, targetedForkReplacementWorkflow());
         const store = await openRuntimeStore(workspace);
@@ -196,19 +197,14 @@ describe("scheduler agent overrides and forks", () => {
           });
 
           const fork = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared });
-          const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
-          expect(seeded.instances[firstKey]).toMatchObject({
-            status: "completed",
-            output: { ok: true },
-          });
-          expect(Object.values(seeded.attempts).filter(attempt => attempt.nodeKey === firstKey)).toHaveLength(0);
+          expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances).toEqual({});
 
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: fork.id,
             ownerId: "fork-owner",
             store,
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 2 });
 
           const completed = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
           const fixedKey = deriveInstanceKey(appendNode([], "fixed"));
@@ -221,14 +217,63 @@ describe("scheduler agent overrides and forks", () => {
       });
     });
 
-  it("unsafe targeted fork reuses loop history across a changed failed task definition", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-unsafe-loop-fork", async workspace => {
-        const sourcePrepared = await prepareSyntheticWorkflow(workspace, unsafeLoopForkWorkflow(false));
-        const replacementPrepared = await prepareSyntheticWorkflow(workspace, unsafeLoopForkWorkflow(true));
+  it("reruns only leaves whose declared workflow input changed", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-fork-field-input", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, fieldInputForkWorkflow());
+        const store = await openRuntimeStore(workspace);
+        try {
+          const source = await admitRunForTest(store, {
+            prepared,
+            input: { a: "old", b: "same" },
+            cwd: workspace,
+          });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+
+          const fork = await forkRuntimeRun(store, source.id, { input: { a: "new", b: "same" } });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 1, completed: 2 });
+
+          const attempts = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts);
+          expect(attempts.map(attempt => attempt.nodeId)).toEqual(["from_a"]);
+          expect(store.getRun(fork.id)).toMatchObject({ output: { a: "new", b: "same" } });
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("replays a downstream leaf when a changed predecessor reproduces the same output", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-fork-stable-output", async workspace => {
+        const sourcePrepared = await prepareSyntheticWorkflow(workspace, stableOutputForkWorkflow(false));
+        const replacementPrepared = await prepareSyntheticWorkflow(workspace, stableOutputForkWorkflow(true));
         const store = await openRuntimeStore(workspace);
         try {
           const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
-          await expect(driveFrozenRunToTerminal(workspace, store, source.id, "unsafe-loop-source")).resolves.toMatchObject({ status: "failed" });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+
+          const fork = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 1, completed: 2 });
+
+          const attempts = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts);
+          expect(attempts.map(attempt => attempt.nodeId)).toEqual(["produce"]);
+          expect(store.getRun(fork.id)).toMatchObject({ output: { value: 1 } });
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("replays unchanged loop work and reruns changed operations by round", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-loop-fork", async workspace => {
+        const sourcePrepared = await prepareSyntheticWorkflow(workspace, loopForkWorkflow(false));
+        const replacementPrepared = await prepareSyntheticWorkflow(workspace, loopForkWorkflow(true));
+        const store = await openRuntimeStore(workspace);
+        try {
+          const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
+          await expect(driveFrozenRunToTerminal(workspace, store, source.id, "loop-source")).resolves.toMatchObject({ status: "failed" });
 
           const iter0Prepare = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "prepare"));
           const iter0Maybe = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "maybe_fail"));
@@ -236,29 +281,23 @@ describe("scheduler agent overrides and forks", () => {
           const iter1Maybe = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "maybe_fail"));
           const iter2Prepare = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 2), "prepare"));
           const failedTarget = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 2), "maybe_fail"));
-          const inherited = [iter0Prepare, iter0Maybe, iter1Prepare, iter1Maybe, iter2Prepare];
+          const inherited = [iter0Prepare, iter1Prepare, iter2Prepare];
+          const changed = [iter0Maybe, iter1Maybe];
           const sourceProjection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(source.id).projection;
           for (const nodeKey of inherited) expect(sourceProjection.instances[nodeKey]).toMatchObject({ status: "completed" });
           expect(sourceProjection.instances[failedTarget]).toMatchObject({ status: "failed" });
 
-          const implicit = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared, unsafeReuse: true });
-          expect(store.getRun(implicit.id)?.fork).toEqual({ sourceRunId: source.id, unsafeReuse: true });
-          assertUnsafeLoopForkSeed(store, implicit.id, inherited, failedTarget);
-          await expect(driveFrozenRunToTerminal(workspace, store, implicit.id, "unsafe-loop-implicit")).resolves.toMatchObject({ status: "completed" });
-          assertUnsafeLoopForkCompleted(store, implicit.id, inherited, failedTarget);
-
-          const explicit = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared, target: failedTarget, unsafeReuse: true });
-          expect(store.getRun(explicit.id)?.fork).toEqual({ sourceRunId: source.id, target: failedTarget, unsafeReuse: true });
-          assertUnsafeLoopForkSeed(store, explicit.id, inherited, failedTarget);
-          await expect(driveFrozenRunToTerminal(workspace, store, explicit.id, "unsafe-loop-explicit")).resolves.toMatchObject({ status: "completed" });
-          assertUnsafeLoopForkCompleted(store, explicit.id, inherited, failedTarget);
+          const implicit = await forkRuntimeRun(store, source.id, { prepared: replacementPrepared });
+          expect(store.getRun(implicit.id)?.fork).toEqual({ sourceRunId: source.id });
+          await expect(driveFrozenRunToTerminal(workspace, store, implicit.id, "loop-fork")).resolves.toMatchObject({ status: "completed" });
+          assertLoopForkCompleted(store, implicit.id, inherited, [...changed, failedTarget]);
         } finally {
           store.close();
         }
       });
     });
 
-  it("does not seed an explicit fork target even when the source completed it", async () => {
+  it("uses target ready time as an exclusive replay checkpoint", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-explicit-target", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, targetedForkCompletedSourceWorkflow());
         const store = await openRuntimeStore(workspace);
@@ -274,16 +313,14 @@ describe("scheduler agent overrides and forks", () => {
           const fork = await forkRuntimeRun(store, source.id, { target: "second" });
           const firstKey = deriveInstanceKey(appendNode([], "first"));
           const secondKey = deriveInstanceKey(appendNode([], "second"));
-          const seeded = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
-          expect(seeded.instances[firstKey]).toMatchObject({ status: "completed" });
-          expect(seeded.instances[secondKey]).toMatchObject({ status: "ready" });
+          expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances).toEqual({});
 
           await expect(advanceFrozenRun({
             cwd: workspace,
             runId: fork.id,
             ownerId: "fork-owner",
             store,
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 2 });
 
           const completed = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
           expect(Object.values(completed.attempts).filter(attempt => attempt.nodeKey === firstKey)).toHaveLength(0);
@@ -294,7 +331,7 @@ describe("scheduler agent overrides and forks", () => {
       });
     });
 
-  it("uses targeted fork mode when agent overrides are supplied even if unchanged", async () => {
+  it("drives completed children through the same replay path", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-empty-agent-overrides", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, targetedForkCompletedSourceWorkflow());
         const store = await openRuntimeStore(workspace);
@@ -308,16 +345,77 @@ describe("scheduler agent overrides and forks", () => {
           })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
           const fork = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
-
-          expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM scheduler_commits WHERE run_id = ? AND idempotency_key = ?", fork.id, `fork-seed:${fork.id}`)).toMatchObject({ count: 1 });
-          expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[deriveInstanceKey(appendNode([], "first"))]).toMatchObject({ status: "completed" });
+          expect(store.getRun(fork.id)).toMatchObject({ status: "pending" });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 2 });
+          expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toHaveLength(0);
         } finally {
           store.close();
         }
       });
     });
 
-  it("rolls back targeted fork admission when seed artifact rewriting fails", async () => {
+  it("replays compatible agents without creating a child attempt or session", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-replay", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({
+            cwd: workspace,
+            runId: source.id,
+            ownerId: "source-owner",
+            store,
+            executeAgentTurn: async request => {
+              turns.push(request);
+              return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+            },
+          });
+
+          const fork = await forkRuntimeRun(store, source.id);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 1 });
+
+          expect(turns).toHaveLength(1);
+          expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
+          expect(store.getRun(fork.id)?.dynamic?.nodeInstances).toEqual([
+            expect.objectContaining({ reusedFromRunId: source.id, reusedFromNodeKey: expect.any(String) }),
+          ]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("reruns explicit-session agents in a fresh child session", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-explicit-session", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
+
+          const fork = await forkRuntimeRun(store, source.id);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+
+          expect(turns).toHaveLength(4);
+          expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+          expect(turns[3]!.sessionName).toBe(turns[2]!.sessionName);
+          expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("rolls back fork admission when a replay output references an unknown artifact", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-rollback", async workspace => {
         const sourcePrepared = await prepareSyntheticWorkflow(workspace, targetedForkFailedSourceWorkflow());
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, targetedForkReplacementWorkflow());
@@ -362,6 +460,7 @@ describe("scheduler agent overrides and forks", () => {
           nodeInstances: [],
           nodeStates: [],
           artifacts: [],
+          replayFacts: [],
         });
         await expect(readdir(runtimeRunsRoot(workspace)).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
       });
@@ -391,7 +490,7 @@ describe("scheduler agent overrides and forks", () => {
             agentOverrides: { reviewer: { command: "custom-acp-server" } },
           });
           const forkRun = store.getRun(fork.id);
-          expect(forkRun).toMatchObject({ status: "running" });
+          expect(forkRun).toMatchObject({ status: "pending" });
           expect(forkRun).not.toHaveProperty("output");
 
           await expect(advanceFrozenRun({
@@ -498,38 +597,25 @@ async function driveFrozenRunToTerminal(
   throw new Error(`Run '${runId}' did not reach a terminal state.`);
 }
 
-function assertUnsafeLoopForkSeed(
+function assertLoopForkCompleted(
   store: Awaited<ReturnType<typeof openRuntimeStore>>,
   runId: string,
   inherited: string[],
-  target: string,
-): void {
-  const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
-  for (const nodeKey of inherited) {
-    expect(projection.instances[nodeKey]).toMatchObject({ status: "completed" });
-    expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey)).toHaveLength(0);
-  }
-  expect(projection.instances[target]).toMatchObject({ status: "ready" });
-  expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === target)).toHaveLength(0);
-}
-
-function assertUnsafeLoopForkCompleted(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
-  runId: string,
-  inherited: string[],
-  target: string,
+  executed: string[],
 ): void {
   const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
   for (const nodeKey of inherited) {
     expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey)).toHaveLength(0);
   }
-  expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === target)).toHaveLength(1);
+  for (const nodeKey of executed) {
+    expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === nodeKey)).toHaveLength(1);
+  }
   expect(store.getRun(runId)).toMatchObject({ status: "completed", output: { done: true, last: "fixed-2" } });
 }
 
-function unsafeLoopForkWorkflow(fixed: boolean) {
+function loopForkWorkflow(fixed: boolean) {
   return defineWorkflow({
-    name: fixed ? "scheduler-node-executor-unsafe-loop-replacement" : "scheduler-node-executor-unsafe-loop-source",
+    name: fixed ? "scheduler-node-executor-loop-replacement" : "scheduler-node-executor-loop-source",
   }).build(({ step }) => {
     const retry = step("retry").loop({
       state: { done: false as boolean, last: "initial" },
@@ -554,6 +640,52 @@ function unsafeLoopForkWorkflow(fixed: boolean) {
       },
     });
     return { done: retry.output.done, last: retry.output.last };
+  });
+}
+
+function forkAgentWorkflow(sessionKey?: string) {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-agent-session",
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, step }) => {
+    const first = step("first_review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      prompt: "review",
+      ...(sessionKey === undefined ? {} : { sessionKey }),
+    });
+    step("second_review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      prompt: template`review again: ${first.output.ok}`,
+      ...(sessionKey === undefined ? {} : { sessionKey }),
+    });
+    return {};
+  });
+}
+
+function fieldInputForkWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-field-input",
+    inputSchema: z.object({ a: z.string(), b: z.string() }),
+  }).build(({ input, step }) => {
+    const fromA = step("from_a").task({ input: input.a, exec: async ({ input }) => input });
+    const fromB = step("from_b").task({ input: input.b, exec: async ({ input }) => input });
+    return { a: fromA.output, b: fromB.output };
+  });
+}
+
+function stableOutputForkWorkflow(changed: boolean) {
+  return defineWorkflow({ name: "scheduler-node-executor-fork-stable-output" }).build(({ step }) => {
+    const produced = step("produce").task({
+      input: null,
+      exec: changed ? async () => ({ value: 1, implementation: "new" }) : async () => ({ value: 1 }),
+    });
+    const consumed = step("consume").task({
+      input: produced.output.value,
+      exec: async ({ input }) => ({ value: input }),
+    });
+    return { value: consumed.output.value };
   });
 }
 
@@ -610,8 +742,18 @@ function targetedForkCompletedSourceWorkflow() {
 function replaceCompletedInstanceEventOutput(workspace: string, runId: string, nodeKey: string, output: unknown): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
+    const row = db.prepare("SELECT payload_json FROM run_events WHERE run_id = ? AND type = 'instance.completed' AND node_key = ?")
+      .get(runId, nodeKey) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Expected completed event for '${nodeKey}'.`);
+    const envelope = JSON.parse(row.payload_json) as { schedulerEventVersion: number; payload: Record<string, unknown> };
+    envelope.payload.output = output;
     db.prepare("UPDATE run_events SET payload_json = ? WHERE run_id = ? AND type = 'instance.completed' AND node_key = ?").run(
-      JSON.stringify({ schedulerEventVersion: 1, payload: { nodeKey, output } }),
+      JSON.stringify(envelope),
+      runId,
+      nodeKey,
+    );
+    db.prepare("UPDATE node_instances SET output_json = ? WHERE run_id = ? AND node_key = ?").run(
+      JSON.stringify(output),
       runId,
       nodeKey,
     );
@@ -631,5 +773,6 @@ function forkAdmissionLeaks(workspace: string, knownRunIds: Set<string>) {
     nodeInstances: unknown(runtimeRows(workspace, "SELECT run_id, node_key, status FROM node_instances ORDER BY run_id, node_key")),
     nodeStates: unknown(runtimeRows(workspace, "SELECT run_id, node_key, status FROM node_states ORDER BY run_id, node_key")),
     artifacts: unknown(runtimeRows(workspace, "SELECT run_id, id FROM artifacts ORDER BY run_id, id")),
+    replayFacts: unknown(runtimeRows(workspace, "SELECT run_id, node_key FROM fork_replay_facts ORDER BY run_id, node_key")),
   };
 }

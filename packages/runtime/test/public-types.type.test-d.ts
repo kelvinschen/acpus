@@ -150,7 +150,6 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
   }>();
   expectTypeOf<NonNullable<Extract<InspectionView, { kind: "run" }>["run"]["fork"]>>().toEqualTypeOf<{
     sourceRunId: string;
-    unsafeReuse?: boolean;
   }>();
   expectTypeOf<Extract<InspectionView, { kind: "target"; detail: "timeline" }>>().toMatchTypeOf<{
     subject: { label: string; kind: string; selector?: string };
@@ -261,7 +260,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
 
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
   expectTypeOf<RunDetails["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
-  expectTypeOf<RunForkInfo>().toEqualTypeOf<{ sourceRunId: string; target?: string; unsafeReuse?: true }>();
+  expectTypeOf<RunForkInfo>().toEqualTypeOf<{ sourceRunId: string; target?: string }>();
   expectTypeOf<NonNullable<RunDetails["dynamic"]>>().toEqualTypeOf<RunDynamicDetails>();
   expectTypeOf<RunDynamicDetails["frames"][number]>().toEqualTypeOf<RunDynamicFrame>();
   expectTypeOf<RunDynamicDetails["nodeInstances"][number]>().toEqualTypeOf<RunDynamicNodeInstance>();
@@ -289,6 +288,10 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   }>();
   expectTypeOf<NonNullable<RunDynamicFrame["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
   expectTypeOf<NonNullable<RunDynamicNodeInstance["instancePath"]>[number]>().toMatchTypeOf<{ kind: string }>();
+  expectTypeOf<RunDynamicNodeInstance>().toMatchTypeOf<{
+    reusedFromRunId?: string;
+    reusedFromNodeKey?: string;
+  }>();
   expectTypeOf<undefined>().toMatchTypeOf<RunDynamicFrame["instancePath"]>();
   expectTypeOf<undefined>().toMatchTypeOf<RunDynamicNodeInstance["instancePath"]>();
   expectTypeOf<RunDynamicGroupMember["completionSequence"]>().toEqualTypeOf<number | undefined>();
@@ -325,7 +328,6 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     runId: string;
     target?: string;
     input?: JsonValue;
-    unsafeReuse?: boolean;
   }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "signal" }>>().toEqualTypeOf<{
     requestId: string;

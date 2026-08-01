@@ -62,6 +62,13 @@ export type NodeInstance = {
   output?: JsonValue;
   error?: JsonObject;
   acceptedAttemptId?: string;
+  replayIdentity?: ReplayIdentity;
+  reusedFrom?: { runId: string; nodeKey: string };
+};
+
+export type ReplayIdentity = {
+  operationDigest: string;
+  inputDigest: string;
 };
 
 type NodeAttempt = {

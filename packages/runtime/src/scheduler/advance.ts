@@ -56,6 +56,9 @@ export type AdvanceRunInput = {
   maxLeafConcurrency?: number;
   signalNodeIds?: ReadonlySet<string>;
   executorResourceFor?: (instance: NodeInstance, projection: SchedulerProjection) => string | undefined;
+  replayIdentityFor?: (instance: NodeInstance, projection: SchedulerProjection) => NodeInstance["replayIdentity"];
+  replayCandidates?: ReturnType<SchedulerStorePort["listReplayCandidates"]>;
+  tryCommitReplay?: SchedulerStorePort["tryCommitReplay"];
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
@@ -130,6 +133,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
   const coordinatedWakeup = input.wakeup !== undefined;
   const now = input.now ?? (() => new Date());
   const counters: Counters = { started: 0, completed: 0, failed: 0, cancelled: 0 };
+  const replayCandidates = new Map((input.replayCandidates ?? []).map(candidate => [candidate.nodeKey, candidate]));
   const active = new Map<string, ActiveExecution>();
   const settledAttemptIds: string[] = [];
   let leaseLost = false;
@@ -224,6 +228,17 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
         return withCounters(terminal, claim, counters);
       }
 
+      const replay = replayReadyInstance(input, claim, snapshot, replayCandidates);
+      if (replay === "lease_lost") {
+        leaseLost = true;
+        continue;
+      }
+      if (replay) {
+        counters.completed += 1;
+        checkpoint(input, replay);
+        continue;
+      }
+
       const admission = selectNextAdmission({
         projection: snapshot.projection,
         maxLeafConcurrency: input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY,
@@ -235,7 +250,12 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
         signalNodeIds: input.signalNodeIds ?? new Set(),
       });
       if (admission?.kind === "signal") {
-        const events = input.awaitableEventsFor?.(admission.instance, snapshot.projection, now()) ?? [];
+        const replayIdentity = input.replayIdentityFor?.(admission.instance, snapshot.projection);
+        const events = (input.awaitableEventsFor?.(admission.instance, snapshot.projection, now()) ?? []).map(event =>
+          event.type === "instance.awaiting" && replayIdentity !== undefined
+            ? { ...event, payload: { ...event.payload, replayIdentity } }
+            : event
+        );
         if (events.length === 0) throw new Error(`Signal instance '${admission.instance.nodeKey}' produced no awaiting transition.`);
         const appended = input.store.tryAppendSchedulerEvents({
           runId: input.runId,
@@ -258,6 +278,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       }
 
       if (admission?.kind === "executor") {
+        const replayIdentity = input.replayIdentityFor?.(admission.instance, snapshot.projection);
         const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now()) ?? ok(undefined);
         const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
         const executorResource = input.executorResourceFor?.(admission.instance, snapshot.projection);
@@ -268,6 +289,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
           ownerEpoch: claim.ownerEpoch,
           expectedVersion: snapshot.version,
           ...(deadlineAt === undefined ? {} : { deadlineAt }),
+          ...(replayIdentity === undefined ? {} : { replayIdentity }),
           idempotencyKey: `scheduler:start:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
         });
         if (started.isErr()) {
@@ -343,6 +365,40 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
         : `Run '${input.runId}' cleanup failed.`);
     }
   }
+}
+
+function replayReadyInstance(
+  input: AdvanceRunInput,
+  claim: RunOwnerClaim,
+  snapshot: SchedulerSnapshot,
+  candidates: Map<string, NonNullable<AdvanceRunInput["replayCandidates"]>[number]>,
+): SchedulerSnapshot | "lease_lost" | undefined {
+  if (!input.replayIdentityFor || !input.tryCommitReplay) return undefined;
+  for (const candidate of candidates.values()) {
+    const instance = snapshot.projection.instances[candidate.nodeKey];
+    if (instance?.status !== "ready") continue;
+    const replayIdentity = input.replayIdentityFor(instance, snapshot.projection);
+    if (!replayIdentity) {
+      candidates.delete(candidate.nodeKey);
+      continue;
+    }
+    const replayed = input.tryCommitReplay({
+      runId: input.runId,
+      nodeKey: instance.nodeKey,
+      ownerEpoch: claim.ownerEpoch,
+      expectedVersion: snapshot.version,
+      replayIdentity,
+    });
+    if (replayed.isErr()) {
+      if (isVersionMismatchError(replayed.error) || isInstanceNotReadyError(replayed.error) || isPausedError(replayed.error)) return undefined;
+      if (isLeaseLostError(replayed.error)) return "lease_lost";
+      unwrapStoreResult(replayed);
+      continue;
+    }
+    candidates.delete(candidate.nodeKey);
+    if (replayed.value.disposition === "replayed") return replayed.value.snapshot;
+  }
+  return undefined;
 }
 
 function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): "appended" | "quiescent" | "lease_lost" {

@@ -69,7 +69,7 @@ export type DaemonControlIntent =
   | { requestId: string; type: "pause" | "resume"; runId: string }
   | { requestId: string; type: "retry" | "cancel"; runId: string; target?: string }
   | { requestId: string; type: "steer"; runId: string; target: string; instruction: string }
-  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap; unsafeReuse?: boolean }
+  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap }
   | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue };
 
 type DaemonResponse =
@@ -533,10 +533,9 @@ function isRunExecutionState(value: unknown): boolean {
 
 function isRunForkInfo(value: unknown): boolean {
   return isPlainRecord(value)
-    && hasExactKeys(value, ["sourceRunId"], ["target", "unsafeReuse"])
+    && hasExactKeys(value, ["sourceRunId"], ["target"])
     && typeof value.sourceRunId === "string"
-    && (value.target === undefined || typeof value.target === "string")
-    && (value.unsafeReuse === undefined || value.unsafeReuse === true);
+    && (value.target === undefined || typeof value.target === "string");
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -582,12 +581,11 @@ function isControlIntent(value: unknown): value is DaemonControlIntent {
       && isJsonValue(value.payload);
   }
   if (value.type !== "fork"
-    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentOverrides", "unsafeReuse"])) return false;
+    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentOverrides"])) return false;
   return (value.target === undefined || typeof value.target === "string" && value.target.length > 0)
     && (value.prepared === undefined || isPreparedRunWorkflow(value.prepared))
     && (value.input === undefined || isJsonValue(value.input))
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
-    && (value.unsafeReuse === undefined || typeof value.unsafeReuse === "boolean");
+    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides));
 }
 
 function isAdmitRunRequest(value: Record<string, unknown>): value is DaemonAdmitRunRequest {

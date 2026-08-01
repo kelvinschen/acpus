@@ -713,7 +713,6 @@ export type InspectionRun = {
   failure?: InspectionFailure;
   fork?: {
     sourceRunId: string;
-    unsafeReuse?: boolean;
   };
 };
 

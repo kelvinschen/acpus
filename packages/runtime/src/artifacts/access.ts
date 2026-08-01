@@ -148,7 +148,7 @@ function unavailablePath(uri: string, runId: string, artifactId: string, reason:
   };
 }
 
-function parseArtifactUri(uri: string): Result<{ runId: string; artifactId: string }, ArtifactPathError> {
+export function parseArtifactUri(uri: string): Result<{ runId: string; artifactId: string }, ArtifactPathError> {
   const match = /^artifact:\/\/([^/?#\s]+)\/([^/?#\s]+)$/.exec(uri);
   return match
     ? ok({ runId: match[1]!, artifactId: match[2]! })

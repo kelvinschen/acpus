@@ -8,6 +8,7 @@ import type {
   GroupMemberStatus,
   InstancePath,
   NodeInstanceStatus,
+  ReplayIdentity,
 } from "./types.js";
 
 type BaseEvent<Type extends string, Payload extends object> = {
@@ -36,15 +37,15 @@ export type SchedulerEvent =
   | BaseEvent<"frame.loop_advanced", { frameKey: string; iter: number; state?: JsonValue; transition?: JsonValue }>
   // Makes a dynamic node instance known to the scheduler.
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number; timeoutMs?: number }>
-  | BaseEvent<"instance.started", { nodeKey: string; attemptId?: string }>
-  | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string }>
+  | BaseEvent<"instance.started", { nodeKey: string; attemptId?: string; replayIdentity?: ReplayIdentity }>
+  | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string; replayIdentity?: ReplayIdentity }>
   | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded" | "steered"; readinessSequence?: number; steerId?: string }>
   | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number; retryDependencyMemberKeys?: string[] }>
-  | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string; attemptId?: string }>
+  | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string; attemptId?: string; replayIdentity?: ReplayIdentity; reusedFrom?: { runId: string; nodeKey: string } }>
   | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string; attemptId?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>
   // Tracks one scheduler-visible leaf attempt; executor-internal sub-attempts are not events here.
-  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; deadlineAt?: string; steerId?: string }>
+  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; deadlineAt?: string; steerId?: string; replayIdentity?: ReplayIdentity }>
   | BaseEvent<"attempt.completed", { attemptId: string; result?: JsonValue }>
   | BaseEvent<"attempt.failed", { attemptId: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"attempt.timed_out", { attemptId: string; error?: JsonObject }>

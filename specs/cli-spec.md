@@ -25,7 +25,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
-| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input`, `--agents`, `--target`, and `--unsafe-reuse`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
+| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input`, `--agents`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
 | `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`. |
 | `doctor` | Read-only runtime and authoring health; optional `--json`. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
@@ -41,7 +41,8 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
 - `workflow run --help` MUST distinguish terminal `--follow` from decision-boundary `--await-decision` and state that `Ctrl-C` detaches.
 - `workflow check --help` MUST present the command as independent validation without run admission.
-- Empty `runs fork --target` input MUST fail before runtime mutation; `--unsafe-reuse` explicitly opts into reuse despite workflow, input, or signature changes.
+- Empty `runs fork --target` input MUST fail before runtime mutation.
+- Fork help MUST describe `--target` as an optional rewind point that runs the selected source occurrence and later work again.
 - Fork catalog scope flags MUST be mutually exclusive.
 - Fork catalog scope flags MUST require `--workflow`.
 - Empty or whitespace-only steer target input MUST fail before daemon startup.
@@ -189,6 +190,11 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
 - Bundled deep-research report drafts MUST be confined to `$HOME/.acpus/tmp/report-drafts/<run-id>/`.
 - An explicit deep-research report destination MUST remain inside the workflow workspace.
+- Bundled deep-research reader-facing Agents MUST choose their output language from the research question available in their context.
+- The bundled deep-research workflow MUST NOT expose a report-language input.
+- The bundled deep-research workflow MUST NOT pass a report-language value between nodes.
+- Bundled deep-research Agent-to-Agent context MUST flow directly through workflow expressions instead of Task-written handoff artifacts.
+- Bundled deep-research Tasks MUST be reserved for deterministic validation, safety-bounded selection or aggregation, durable artifacts, and filesystem delivery.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 

@@ -115,7 +115,7 @@ bindings.
 Signal, fork, and visualization. Those are retained product foundations, not
 capabilities that 0.6 invented. 0.6's main change is the typed authoring and
 runtime boundary: TypeScript graph construction, `Expr<T>` value flow, typed
-Tasks, current inspection surfaces, and compatibility-aware replacement fork.
+Tasks, current inspection surfaces, and leaf-by-leaf replacement fork replay.
 
 ## Map the workflow definition
 
@@ -329,12 +329,12 @@ acpus runs fork <run-id> --workflow fixed.workflow.ts
 acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
 ```
 
-Safe fork reuse is compatibility-aware. It reuses only accepted completed facts
-inside the target and dependency boundaries. Changed input disables normal
-completed-output reuse; workflow or node signature changes can also make old
-facts ineligible. Task side effects and artifact provenance still require human
-review. `--unsafe-reuse` is an explicit dangerous override, not a cache switch or
-a fix for an invalid target.
+Fork reuse is direct-parent, leaf-by-leaf replay. Each child leaf reuses an
+accepted completion only when its exact dynamic occurrence, effective operation,
+and declared logical input values still match. A changed input field therefore
+reruns only leaves that read it; failed or in-progress work simply executes. Task
+side effects and ambient environment changes still require human review because
+they are intentionally outside replay identity.
 
 Workspace-source reusable Tasks remain live module references. Snapshot
 admission durably captures supported local Task modules and dependencies.
@@ -523,8 +523,8 @@ an in-place package upgrade.
 - [ ] `acpus runs inspect <run-id>` exposes enough evidence for the team runbook.
 - [ ] Retry is reserved for the same frozen plan; fork is used for changed
       workflow/input/Agents.
-- [ ] Fork reuse is treated as compatibility-bounded completed-fact reuse, not
-      unconditional memoization; `--unsafe-reuse` is absent from routine runbooks.
+- [ ] Fork reuse is treated as direct-parent, exact leaf replay rather than
+      long-lived caching or unconditional memoization.
 - [ ] No process depends on 0.5 run state, replay, TUI, hooks injectors, or
       YAML catalog behavior after cutover.
 

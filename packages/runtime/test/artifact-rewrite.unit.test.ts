@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { rewriteArtifactValue } from "../src/artifacts/rewrite.js";
 
 describe("artifact reference rewriting", () => {
-  it("rewrites nested source artifact URIs for fork seed payloads", () => {
+  it("rewrites nested source artifact URIs for fork replay facts", () => {
     expect(rewriteArtifactValue({
       nodeKey: "first",
       output: {

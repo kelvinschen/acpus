@@ -48,7 +48,7 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 7` as the current storage version.
+- The active database MUST use SQLite `user_version = 8` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index bounded Agent semantic observation through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -489,13 +489,23 @@ type DaemonSteerControlResult = {
 - Read-side retry applicability MUST use the same pure frozen-workflow settlement that mutation admission performs before planning, without persisting its derived events; read-side cancel applicability MUST remain based on the durable pre-settlement snapshot used by cancel mutation.
 - Read-side cancel applicability MUST distinguish a useful run cancellation from an idempotently accepted terminal no-op and MUST expose a selected target only as an exact planner-approved dynamic key.
 - Read-side control applicability is advisory; every submitted control MUST resolve and validate again inside the control transaction.
-- Fork MUST create an idempotently identified child from verified frozen source data, optionally replacing prepared workflow, input, Agent overrides, or target without reading live source.
-- Fork MUST materialize only the child's frozen files and reachable registered artifacts selected for inheritance.
-- Fork MUST NOT copy unregistered or otherwise unknown source-run filesystem entries into the child.
-- Run reads MUST project the child's direct fork source, requested target, and unsafe-reuse flag from the durable `run.forked` event without deriving recursive ancestry. Generic inspection MUST omit a raw requested target and expose only public-safe fork provenance.
-- Safe targeted fork MUST accept an exact source key, occurrence reference, or authored replacement target, reuse only compatible completed prerequisite facts/artifacts, preserve target closure, avoid inherited attempt events/active state, and reject missing, ambiguous, or impossible replacement targets before admission.
-- Changed input MUST disable completed-output reuse; explicit `unsafeReuse` permits it across input/signature changes while retaining target, materialization, artifact, and completed-only safety boundaries.
-- Race/quorum fork reuse MUST preserve only scheduler-accepted winners/members when replacement order/identity is compatible; otherwise eligible prerequisite work executes normally.
+- Fork MUST create a new pending child run from the selected source run.
+- Fork MUST leave the source run unchanged.
+- A fork child MUST inherit the source workflow, input, and Agent mapping except where the request supplies a replacement.
+- A fork child MUST execute its selected workflow from initial run state rather than continue the source execution state.
+- Fork reuse MUST consider only accepted completed Agent, Task, and Signal results from the direct source run.
+- A source result MUST be reusable only for the same child occurrence when its effective Agent, Task, or Signal definition and every resolved workflow value it reads are unchanged.
+- Ambient host files, network state, wall-clock state, and Provider behavior MUST NOT change reuse eligibility.
+- A reusable result MUST complete the child occurrence without executing or waiting for it again.
+- An occurrence without a reusable result MUST execute normally.
+- A changed predecessor MUST NOT invalidate a later result when the later occurrence's own definition and resolved input values remain unchanged.
+- An Agent occurrence with an explicit `sessionKey` MUST NOT be reused.
+- Source-run artifacts inherited by the child MUST be exactly those referenced by reused results, with unchanged content.
+- Without a fork target, every otherwise reusable direct-source result MUST remain eligible.
+- A fork target MUST resolve before child creation to one materialized source Agent, Task, or Signal occurrence.
+- A targeted fork MUST NOT reuse the selected occurrence or source work completed after that occurrence first became eligible to run.
+- A missing, ambiguous, or non-materialized fork target MUST fail without creating a child run.
+- Generic inspection MUST identify only the direct source run for a fork child.
 - Signal control MUST target one open dynamic wait by exact node key, occurrence reference without an attempt suffix, or unambiguous authored alias, normalize payload, consume idempotently, and resume the recovered session from persisted state.
 - `shutdown()` MUST stop only without active sessions, otherwise return `CONTROL_CONFLICT`; shutdown/idle-stop never mutates runs and no force-shutdown control exists.
 
@@ -547,6 +557,6 @@ Runtime owns generic inspection semantics and public shape.
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
+- `pnpm test:unit packages/runtime`: covers fork reuse and rewind boundaries, selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers durable fork recovery, observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

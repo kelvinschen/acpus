@@ -16,9 +16,10 @@ import { frozenRunScope, settleFrozenSnapshot } from "./settle.js";
 import { throwSchedulerStoreResult } from "./store-port.js";
 import type { SchedulerSnapshot } from "./store-port.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
-import { readVerifiedArtifact } from "../artifacts/access.js";
+import { parseArtifactUri, readVerifiedArtifact } from "../artifacts/access.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
+import { isReplayLeaf, replayIdentity } from "./fork-replay.js";
 import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 
 export type AdvanceFrozenRunInput = {
@@ -146,10 +147,13 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
   const nodes = indexNodes(frozen.ir.root);
   const signalNodeIds = new Set([...nodes.values()].filter(node => node.kind === "signal").map(node => node.id));
   const agentHostPolicy = input.agentHostPolicy ?? loadAgentHostPolicy(process.env);
+  const schedulerStore = input.store.scheduler;
   const summary = await advanceRun({
     runId: input.runId,
     ownerId: input.ownerId,
-    store: input.store.scheduler,
+    store: schedulerStore,
+    replayCandidates: schedulerStore.listReplayCandidates(input.runId),
+    tryCommitReplay: replay => schedulerStore.tryCommitReplay(replay),
     ...(input.maxLeafConcurrency === undefined ? {} : { maxLeafConcurrency: input.maxLeafConcurrency }),
     signalNodeIds,
     executorResourceFor: (instance, projection) => {
@@ -159,6 +163,20 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       return resolveAgentSessionIdentity(node, attemptScope, input.runId, instance.nodeKey)
         .map(identity => identity.sessionName)
         .unwrapOr(undefined);
+    },
+    replayIdentityFor: (instance, projection) => {
+      const node = nodes.get(instance.nodeId);
+      if (!node || !isReplayLeaf(node)) return undefined;
+      return replayIdentity(
+        node,
+        scopeForNodeAttempt(scope, projection, instance.nodeKey),
+        node.kind === "agent" ? frozen.ir.agents[node.run.agent] : undefined,
+        uri => {
+          const parsed = parseArtifactUri(uri);
+          if (parsed.isErr() || parsed.value.runId !== input.runId) return undefined;
+          return input.store.getArtifact(input.runId, parsed.value.artifactId)?.digest;
+        },
+      );
     },
     awaitableEventsFor: (instance, projection, now) => {
       const node = nodes.get(instance.nodeId);

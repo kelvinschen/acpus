@@ -1,5 +1,5 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
@@ -175,8 +175,8 @@ describe("runtime scheduler task process", () => {
     });
   });
 
-  it("rewrites seeded artifact refs into fork-local scheduler payloads", async () => {
-    await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-artifact-seed", async workspace => {
+  it("activates fork-local artifact refs only when their completion is replayed", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-fork-artifact-replay", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
@@ -191,6 +191,16 @@ describe("runtime scheduler task process", () => {
         const fork = (await store.forkRun(source.id, { prepared }))._unsafeUnwrap();
         const nodeKey = deriveInstanceKey(appendNode([], "local_task"));
         const sourceArtifact = runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", source.id, nodeKey);
+        expect(runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", fork.id, nodeKey)).toBeUndefined();
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances[nodeKey]).toBeUndefined();
+
+        await expect(advanceFrozenRun({
+          cwd: workspace,
+          runId: fork.id,
+          ownerId: "fork-owner",
+          store,
+        })).resolves.toMatchObject({ status: "completed", started: 0, completed: 1 });
+
         const forkArtifact = runtimeRow(workspace, "SELECT id FROM artifacts WHERE run_id = ? AND node_key = ?", fork.id, nodeKey);
         expect(forkArtifact?.id).toBeDefined();
         expect(forkArtifact?.id).not.toBe(sourceArtifact?.id);
@@ -206,6 +216,30 @@ describe("runtime scheduler task process", () => {
         expect(isAbsolute(resolved.value.path)).toBe(true);
         expect(resolved.value.path).toContain(fork.id);
         await expect(readFile(resolved.value.path, "utf8")).resolves.toBe("artifact-ok\n");
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rolls back replay when a staged child artifact fails activation verification", async () => {
+    await withRuntimeWorkspace("scheduler-node-executor-fork-artifact-activation", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store });
+        const fork = (await store.forkRun(source.id))._unsafeUnwrap();
+        const fact = runtimeRow(workspace, "SELECT artifacts_json FROM fork_replay_facts WHERE run_id = ?", fork.id);
+        const artifacts = JSON.parse(String(fact?.artifacts_json)) as Array<{ relativePath: string }>;
+        await writeFile(join(runtimeRunDir(workspace, fork.id), artifacts[0]!.relativePath), "tampered\n");
+
+        await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+          .rejects.toThrow("failed activation verification");
+
+        expect(runtimeRows(workspace, "SELECT id FROM artifacts WHERE run_id = ?", fork.id)).toEqual([]);
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.instances)
+          .toEqual({ [deriveInstanceKey(appendNode([], "local_task"))]: expect.objectContaining({ status: "ready" }) });
       } finally {
         store.close();
       }

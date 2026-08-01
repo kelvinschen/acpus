@@ -134,7 +134,7 @@ function formatRunHeader(run: Run): string {
   const parts = [`Run ${run.id}`, run.name, run.status, run.durationMs === undefined ? undefined : formatDurationMs(run.durationMs)].filter((part): part is string => part !== undefined);
   const lines = [parts.join("  ")];
   if (run.liveness && run.liveness !== "active" && run.liveness !== "terminal") lines.push(`Liveness ${run.liveness}`);
-  if (run.fork) lines.push(`Fork: source=${run.fork.sourceRunId}${run.fork.unsafeReuse ? "  unsafe-reuse" : ""}`);
+  if (run.fork) lines.push(`Fork: source=${run.fork.sourceRunId}`);
   if (run.failure) lines.push(formatFailure(run.failure));
   return lines.join("\n");
 }

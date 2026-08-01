@@ -57,7 +57,6 @@ type ForkMutation = Target & WorkflowCatalogScopeOptions & {
   input?: string;
   workflow?: string;
   agents?: string;
-  unsafeReuse?: boolean;
 };
 
 type ForkOptions = ForkMutation;
@@ -161,15 +160,14 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
 
   command.addCommand(new Command("fork")
     .exitOverride()
-    .description("Fork a run, optionally replacing its workflow or recovery target.")
+    .description("Fork a run with optional workflow, input, or Agent changes.")
     .argument("<run-id>", "run id")
     .option("--workflow <workflow-module>", "use a replacement workflow module path or - for stdin")
     .option("--project", "resolve replacement workflow name from the project catalog")
     .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
     .option("--agents <json>", "override inherited agents for the fork")
-    .option("--target <run-target>", "target a replacement workflow recovery point")
-    .option("--unsafe-reuse", "dangerously reuse completed fork prerequisites despite workflow, input, or signature changes")
+    .option("--target <run-target>", "rewind: rerun this occurrence and later work")
     .action(async (runId: string, options: ForkOptions) => {
       await mutateRun(ctx, runId, {
         type: "fork",
@@ -179,7 +177,6 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
         ...(options.project === true ? { project: true } : {}),
         ...(options.global === true ? { global: true } : {}),
         ...(options.agents === undefined ? {} : { agents: options.agents }),
-        ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
       });
     }));
 
@@ -546,7 +543,6 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
         ...(prepared ? { prepared } : {}),
         ...(forkInput !== undefined ? { input: forkInput } : {}),
         ...(agentOverrides !== undefined ? { agentOverrides } : {}),
-        ...(request.unsafeReuse === true ? { unsafeReuse: true } : {}),
       };
       break;
   }

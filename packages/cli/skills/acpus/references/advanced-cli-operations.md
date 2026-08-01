@@ -72,7 +72,7 @@ acpus runs retry <run-id> [--target <target>]
 
 Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame. Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
 
-Resume a paused run before retrying it. Retry rejects completed/canceled blockers, incompatible composite state, and targets that cannot make work admissible; rejection leaves durable state unchanged. Dynamic targets come from the source run's frozen workflow. Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
+Retry rejects completed/canceled blockers, incompatible composite state, and targets that cannot make work admissible; rejection leaves durable state unchanged. Dynamic targets come from the source run's frozen workflow. Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
 
 ### Fork
 
@@ -80,14 +80,20 @@ Resume a paused run before retrying it. Retry rejects completed/canceled blocker
 acpus runs fork <run-id> \
   [--workflow <workflow> [--project | --global]] [--input <json|file.json>] \
   [--agents '<json>'] \
-  [--target <replacement-target>] [--unsafe-reuse]
+  [--target <source-target>]
 ```
 
-Fork creates a child run and leaves the source unchanged. Its receipt identifies both runs; continue inspection on the child. Unspecified workflow, input, and Agent overrides are inherited. Providing new input disables normal completed-output reuse.
+Use fork when the workflow, input, Agent mapping, or Task definition must change. It creates a child run, leaves the source unchanged, and inherits every option you do not replace. Continue inspection on the child id from the receipt.
 
-Replacement workflows have the same resolution as check/run/viz: use a path, a catalog name with optional scope, or `--workflow -` for raw UTF-8 TypeScript on stdin. Scope flags require `--workflow` and cannot be used with `-`.
+Usually omit `--target`, including after a failure. Acpus reuses completed work that is still valid and runs affected or unfinished work normally:
 
-Use `--target` only to restart at one point: copy an inherited-workflow target from source inspection, or use an authored target in a replacement. Safe reuse carries compatible completed prerequisites and registered artifacts. `--unsafe-reuse` permits completed-result reuse across workflow, input, or signature changes. Use it only when those results and side effects remain valid—for example, after fixing a loop node that would otherwise rerun completed iterations. It retains target, completed-only, and artifact boundaries.
+- Changing one input field reruns only work that reads it.
+- Changing one step reruns that step; later work may still be reused when its input remains the same.
+- Fork starts new Agent conversations, so work using `sessionKey` runs again. Reused artifacts follow their results automatically.
+
+Use `--target` only to deliberately rewind, such as re-asking a consumed Signal. Copy the displayed target from source inspection; that point and later work run again.
+
+`--workflow` accepts the same path, catalog, or `-` stdin forms as `workflow run`. Use `--project` or `--global` only with a catalog workflow.
 
 ### Cancel
 

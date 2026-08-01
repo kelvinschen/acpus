@@ -6,14 +6,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import { isJsonValue, staticExprShape, type ExprIR, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
+import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
-import { evaluateExpr } from "../evaluation/evaluator.js";
-import { normalizeWorkflowData } from "../evaluation/admissible.js";
 import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
 import { probeProcessLiveness } from "../process-liveness.js";
@@ -24,9 +22,8 @@ import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { planSteerControl } from "../scheduler/steer-plan.js";
 import { applySchedulerEvents, createSchedulerProjection, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
-import { planTargetedForkSeed, type ForkSeedFailure, type ForkSeedPlan } from "../scheduler/fork-seed.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStoreResult, type ReplayCandidate, type ReplayCommitInput, type ReplayCommitResult } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
 import { nextFrozenRunTransitionEvents, settleFrozenProjection } from "../scheduler/settle.js";
 import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event-codec.js";
@@ -74,10 +71,15 @@ export type AdmitRunFailure = PreparedRunValidationFailure
 export type ForkRunFailure = PreparedRunValidationFailure
   | AgentOverrideValidationFailure
   | SchemaNormalizationFailure
-  | ForkSeedFailure
+  | ForkReplayFailure
+  | ArtifactRewriteFailure
   | ForkSourceVersionMismatch
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "fork-request-conflict"; requestId: string; message: string };
+
+type ForkReplayFailure =
+  | { type: "target-resolution-failure"; target: string; message: string }
+  | { type: "dynamic-target-ambiguity"; target: string; message: string };
 
 type ForkSourceVersionMismatch = {
   type: "fork-source-version-mismatch";
@@ -142,7 +144,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 7;
+export const RUNTIME_STORAGE_VERSION = 8;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -318,7 +320,6 @@ export type RunDetails = RunRecord & {
 export type RunForkInfo = {
   sourceRunId: string;
   target?: string;
-  unsafeReuse?: true;
 };
 
 type RunExecutionState = {
@@ -447,6 +448,8 @@ export type RunDynamicNodeInstance = {
   output?: unknown;
   error?: unknown;
   acceptedAttemptId?: string;
+  reusedFromRunId?: string;
+  reusedFromNodeKey?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -538,7 +541,6 @@ type ControlOptions = {
   input?: JsonValue;
   agentOverrides?: AgentOverrideMap;
   target?: string;
-  unsafeReuse?: boolean;
 };
 
 export type RegisterArtifactInput = {
@@ -631,6 +633,25 @@ type ArtifactRow = {
   digest: unknown;
   size: unknown;
   relative_path: unknown;
+};
+
+type ForkReplayArtifact = {
+  id: string;
+  nodeKey?: string;
+  attempt: number;
+  mediaType?: string;
+  digest: string;
+  size: number;
+  relativePath: string;
+};
+
+type ForkReplayFact = {
+  nodeKey: string;
+  sourceSequence: number;
+  operationDigest: string;
+  inputDigest: string;
+  output?: JsonValue;
+  artifacts: ForkReplayArtifact[];
 };
 
 type HookJournalRow = {
@@ -1445,9 +1466,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
     const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
-    const sourceIr = JSON.parse(sourceWorkflowIrJson) as WorkflowIR;
-    const sourceEffectiveIr = withAgentOverrides(sourceIr, sourceAgentOverrides);
-    const forkEffectiveIr = withAgentOverrides(forkIr, forkAgentOverrides);
     let forkInput = options.input;
     if (forkInput !== undefined || options.prepared) {
       const normalized = tryNormalizeWorkflowInput(forkIr, forkInput ?? JSON.parse(input.input_json) as JsonValue, "Fork input");
@@ -1463,111 +1481,56 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
     const forkId = newRunId();
     const now = new Date().toISOString();
-    const replacement = Boolean(options.prepared || options.input !== undefined || options.target !== undefined || options.agentOverrides !== undefined || options.unsafeReuse === true);
-    const targetedReplacement = replacement;
-    const forkStatus = source.status === "completed" && !replacement ? "completed" : "pending";
-    const completedOutputRows = completedSchedulerOutputRows(this.db, runId);
-    const completedNodeKeys = new Set([
-      ...this.db.prepare(`
-      SELECT node_key
-      FROM node_states
-      WHERE run_id = ? AND status = 'completed'
-    `).all(runId).map(row => String(row.node_key)),
-      ...completedOutputRows.map(row => row.nodeKey),
-    ]);
-    const sourceNodeSignatures = nodeSignatures(sourceEffectiveIr.root);
-    const forkNodeSignatures = nodeSignatures(forkEffectiveIr.root);
-    const irNodeKeys = new Set(forkNodeSignatures.keys());
-    const knownCompletedNodeKeys = new Set([...completedNodeKeys].filter(nodeKey => {
-      if (forkNodeSignatures.has(nodeKey)) return forkNodeSignatures.get(nodeKey) === sourceNodeSignatures.get(nodeKey);
-      return !replacement && source.status === "completed";
-    }));
-    let seedPlan: ForkSeedPlan | undefined;
-    if (targetedReplacement) {
-      const planned = planTargetedForkSeed({
-          forkRunId: forkId,
-          sourceWorkflow: sourceEffectiveIr,
-          replacementWorkflow: forkEffectiveIr,
-          replacementScope: {
-            input: JSON.parse(forkInputJson) as JsonValue,
-            nodes: {},
-            meta: {
-              runId: forkId,
-              workflowPath: forkWorkflowEntry,
-              workflowName: forkName,
-              workspaceDir: resolve(this.cwd),
-            },
-            fanout: {},
-            loop: {},
-          },
-          sourceProjection: sourceSnapshot.projection,
-          inputChanged: options.input !== undefined,
-          unsafeReuse: options.unsafeReuse === true,
-          ...(options.target === undefined ? {} : { target: options.target }),
-        });
-      if (planned.isErr()) return err(planned.error);
-      seedPlan = planned.value;
-    }
-    const sourceOccurrenceNodeKey = options.target?.startsWith("@")
-      ? requireForkSourceOccurrenceNodeKey(sourceSnapshot.projection, options.target)
-      : undefined;
-    const inheritableNodeKeys = seedPlan?.inheritedNodeKeys ?? (options.input !== undefined ? new Set<string>() : source.status === "completed"
-      ? knownCompletedNodeKeys
-      : inheritableCompletedNodeKeys(forkIr, knownCompletedNodeKeys));
-    const nodeRows = this.db.prepare("SELECT node_key, node_id, status, output_json FROM node_states WHERE run_id = ?").all(runId) as Array<Record<string, unknown>>;
-    const reachableArtifactIds = reachableInheritedArtifactIds({
+    const checkpoint = resolveForkCheckpoint(this.db, sourceSnapshot.projection, runId, options.target);
+    if (checkpoint.isErr()) return err(checkpoint.error);
+    const replayFacts = completedReplayFacts(
+      this.db,
       runId,
-      outputJson: input.output_json,
-      nodeRows,
-      inheritableNodeKeys,
-    });
-    if (seedPlan) {
-      for (const event of seedPlan.events) collectArtifactIds(event.payload as JsonValue, runId, reachableArtifactIds);
+      sourceSnapshot.projection,
+      checkpoint.value.replayBeforeSequence,
+    );
+    const reachableArtifactIds = new Set<string>();
+    for (const fact of replayFacts) {
+      if (fact.output !== undefined) collectArtifactIds(fact.output, runId, reachableArtifactIds);
     }
     const artifacts = this.db.prepare(`
       SELECT id, node_key, attempt, media_type, digest, size, relative_path
       FROM artifacts
       WHERE run_id = ?
-    `).all(runId).filter(artifact => reachableArtifactIds.has(String(artifact.id)) && inheritableNodeKeys.has(String(artifact.node_key))) as ArtifactRow[];
+    `).all(runId).filter(artifact => reachableArtifactIds.has(String(artifact.id))) as ArtifactRow[];
     const artifactIdMap = Object.fromEntries(artifacts.map(artifact => [
       String(artifact.id),
       `artifact_${randomUUID()}`,
     ]));
-    let forkOutputJson: string | null = null;
-    if (source.status === "completed" && !replacement && input.output_json) {
-      const rewrittenOutput = forkCompletedOutputJson({
-          output: forkIr.root.output,
-          completedOutputRows,
-          inheritableNodeKeys,
-          inputJson: forkInputJson,
-          meta: {
-            runId: forkId,
-            workflowPath: forkWorkflowEntry,
-            workflowName: forkName,
-            workspaceDir: resolve(this.cwd),
-          },
-          sourceRunId: runId,
-          forkRunId: forkId,
-          artifactIdMap,
-        });
-      if (rewrittenOutput.isErr()) return err(rewrittenOutput.error);
-      forkOutputJson = rewrittenOutput.value;
-    }
-    const rewrittenNodeRows: Array<Record<string, unknown>> = [];
-    for (const row of nodeRows) {
-      if (!inheritableNodeKeys.has(String(row.node_key)) || !row.output_json) {
-        rewrittenNodeRows.push(row);
-        continue;
+    const artifactPathMap = Object.fromEntries(artifacts.map(artifact => [
+      String(artifact.id),
+      join("artifacts", ".fork-replay", requireArtifactId(artifactIdMap, String(artifact.id))),
+    ]));
+    const rewrittenFacts: ForkReplayFact[] = [];
+    for (const fact of replayFacts) {
+      let output: JsonValue | undefined;
+      if (fact.output !== undefined) {
+        const rewritten = rewriteArtifactValue(fact.output, runId, forkId, artifactIdMap);
+        if (rewritten.isErr()) return err(rewritten.error);
+        output = rewritten.value;
       }
-      const output = rewriteArtifactRefs(String(row.output_json), runId, forkId, artifactIdMap);
-      if (output.isErr()) return err(output.error);
-      rewrittenNodeRows.push({ ...row, output_json: output.value });
-    }
-    let rewrittenSeedPlan = seedPlan;
-    if (seedPlan) {
-      const rewritten = rewriteForkSeedPlan(seedPlan, runId, forkId, artifactIdMap);
-      if (rewritten.isErr()) return err(rewritten.error);
-      rewrittenSeedPlan = rewritten.value;
+      const factArtifactIds = new Set<string>();
+      if (fact.output !== undefined) collectArtifactIds(fact.output, runId, factArtifactIds);
+      rewrittenFacts.push({
+        ...fact,
+        ...(output === undefined ? {} : { output }),
+        artifacts: artifacts
+          .filter(artifact => factArtifactIds.has(String(artifact.id)))
+          .map(artifact => ({
+            id: requireArtifactId(artifactIdMap, String(artifact.id)),
+            ...(artifact.node_key === null ? {} : { nodeKey: String(artifact.node_key) }),
+            attempt: Number(artifact.attempt ?? 0),
+            ...(artifact.media_type === null ? {} : { mediaType: String(artifact.media_type) }),
+            digest: String(artifact.digest),
+            size: Number(artifact.size),
+            relativePath: requireArtifactPath(artifactPathMap, String(artifact.id)),
+          })),
+      });
     }
     sourceRun.verify();
     const publishedFork = await publishRunDirectory({
@@ -1580,7 +1543,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         await verifyFrozenRunFiles(runDir, forkLockJson, forkIrJson);
         assertCurrent();
         sourceRun.verify();
-        await copyVerifiedArtifacts(sourceRun, runDir, artifacts, assertCurrent);
+        await copyVerifiedArtifacts(sourceRun, runDir, artifacts, artifactPathMap, assertCurrent);
         sourceRun.verify();
       },
     });
@@ -1602,14 +1565,15 @@ class SqliteRuntimeStore implements RuntimeStore {
           message: `Fork source run '${runId}' changed while the fork was preparing.`,
         });
       }
-      if (sourceOccurrenceNodeKey !== undefined
-        && requireForkSourceOccurrenceNodeKey(currentSourceSnapshot.projection, options.target!) !== sourceOccurrenceNodeKey) {
-        throw new Error(`Fork source occurrence target '${options.target}' changed without a scheduler version change.`);
+      const currentCheckpoint = resolveForkCheckpoint(this.db, currentSourceSnapshot.projection, runId, options.target);
+      if (currentCheckpoint.isErr()
+        || stableJsonLine(currentCheckpoint.value) !== stableJsonLine(checkpoint.value)) {
+        throw new Error(`Fork source target '${options.target}' changed without a scheduler version change.`);
       }
       this.db.prepare(`
         INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(forkId, forkName, forkStatus, forkWorkflowEntry, forkSourceGraphDigest, now, now);
+      `).run(forkId, forkName, "pending", forkWorkflowEntry, forkSourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
           run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_path, lock_digest, package_lock_digest, source_json
@@ -1621,7 +1585,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         digest(Buffer.from(forkIrJson)),
         forkInputJson,
         stableJsonLine(forkAgentOverrides),
-        forkOutputJson,
+        null,
         "lock.json",
         digest(Buffer.from(forkLockJson)),
         forkPackageLockDigest,
@@ -1630,65 +1594,42 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
-      `).run(forkId, stableJsonLine({ sourceRunId: runId, requestFingerprint, ...(options.target === undefined ? {} : { target: options.target }), ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}), ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}) }), now, forkRequestKey ?? `fork:${forkId}:${runId}`);
-      if (forkStatus === "completed" && forkOutputJson) {
-        this.db.prepare(`
-          INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
-          VALUES (?, 2, 'run.completed', NULL, ?, ?, ?)
-        `).run(forkId, stableJsonLine({ output: JSON.parse(forkOutputJson) as JsonValue }), now, `complete:${forkId}`);
-      }
-      if (forkStatus !== "completed") {
-        this.db.prepare(`
-          INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
-          VALUES (?, 1, ?, ?)
-        `).run(forkId, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
-      }
+      `).run(forkId, stableJsonLine({
+        sourceRunId: runId,
+        requestFingerprint,
+        ...(options.target === undefined ? {} : {
+          target: options.target,
+          replayBeforeSequence: checkpoint.value.replayBeforeSequence,
+        }),
+        ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}),
+      }), now, forkRequestKey ?? `fork:${forkId}:${runId}`);
+      this.db.prepare(`
+        INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
+        VALUES (?, 1, ?, ?)
+      `).run(forkId, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
       this.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(forkId);
-      if (targetedReplacement && rewrittenSeedPlan) {
-        this.schedulerStore().insertForkSeedEventsInTransaction({
-          runId: forkId,
-          plan: rewrittenSeedPlan,
-          now,
-        });
-      } else {
-        const insertedNodeKeys = new Set<string>();
-        for (const row of rewrittenNodeRows) {
-          const nodeKey = String(row.node_key);
-          if (!irNodeKeys.has(nodeKey) && !inheritableNodeKeys.has(nodeKey)) continue;
-          insertedNodeKeys.add(nodeKey);
-          this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status, output_json)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(
-            forkId,
-            nodeKey,
-            String(row.node_id),
-            inheritableNodeKeys.has(nodeKey) ? "completed" : "pending",
-            inheritableNodeKeys.has(nodeKey) && row.output_json ? String(row.output_json) : null,
-          );
-        }
-        for (const nodeKey of irNodeKeys) {
-          if (insertedNodeKeys.has(nodeKey)) continue;
-          this.db.prepare(`
-            INSERT INTO node_states (run_id, node_key, node_id, status)
-            VALUES (?, ?, ?, 'pending')
-          `).run(forkId, nodeKey, nodeKey);
-        }
-      }
-      for (const artifact of artifacts) {
+      for (const nodeId of collectNodeIds(forkIr.root)) {
         this.db.prepare(`
-          INSERT INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO node_states (run_id, node_key, node_id, status)
+          VALUES (?, ?, ?, 'pending')
+        `).run(forkId, nodeId, nodeId);
+      }
+      for (const fact of rewrittenFacts) {
+        this.db.prepare(`
+          INSERT INTO fork_replay_facts (
+            run_id, node_key, source_run_id, source_sequence,
+            operation_digest, input_digest, output_json, artifacts_json
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          requireArtifactId(artifactIdMap, String(artifact.id)),
           forkId,
-          artifact.node_key === null ? null : String(artifact.node_key),
-          Number(artifact.attempt ?? 0),
-          artifact.media_type === null ? null : String(artifact.media_type),
-          String(artifact.digest),
-          Number(artifact.size),
-          String(artifact.relative_path),
-          now,
+          fact.nodeKey,
+          runId,
+          fact.sourceSequence,
+          fact.operationDigest,
+          fact.inputDigest,
+          fact.output === undefined ? null : stableJsonLine(fact.output),
+          stableJsonLine(fact.artifacts),
         );
       }
       sourceRun.verify();
@@ -2328,11 +2269,9 @@ class SqliteRuntimeStore implements RuntimeStore {
     const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
     if (typeof payload.sourceRunId !== "string") throw new Error(`Fork event for run '${runId}' is missing sourceRunId.`);
     if (payload.target !== undefined && typeof payload.target !== "string") throw new Error(`Fork event for run '${runId}' has an invalid target.`);
-    if (payload.unsafeReuse !== undefined && payload.unsafeReuse !== true) throw new Error(`Fork event for run '${runId}' has an invalid unsafeReuse flag.`);
     return {
       sourceRunId: payload.sourceRunId,
       ...(payload.target === undefined ? {} : { target: payload.target }),
-      ...(payload.unsafeReuse === true ? { unsafeReuse: true } : {}),
     };
   }
 
@@ -2676,30 +2615,134 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  insertForkSeedEventsInTransaction(input: {
-    runId: string;
-    plan: ForkSeedPlan;
-    now: string;
-  }): void {
-    if (input.plan.events.length === 0) return;
-    const events = input.plan.events;
-    const current = this.loadRunSnapshot(input.runId);
-    const commitKey = `fork-seed:${input.runId}`;
-    this.db.prepare(`
-      INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest)
-      VALUES (?, ?, ?, ?)
-    `).run(input.runId, commitKey, events.length, schedulerEventDigest(events));
-    this.commitProjectionEventsInTransaction({
-      runId: input.runId,
-      current,
-      events,
-      now: input.now,
-      idempotencyKeys: events.map((_, index) => schedulerEventIdempotencyKey(input.runId, commitKey, index)),
-    });
-  }
-
   tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
     return schedulerStoreResult(() => this.startAttempt(input));
+  }
+
+  listReplayCandidates(runId: string): ReplayCandidate[] {
+    return (this.db.prepare(`
+      SELECT node_key
+      FROM fork_replay_facts
+      WHERE run_id = ?
+      ORDER BY source_sequence, node_key
+    `).all(runId) as Array<Record<string, string>>).map(row => ({
+      nodeKey: String(row.node_key),
+    }));
+  }
+
+  tryCommitReplay(input: ReplayCommitInput): SchedulerStoreResult<ReplayCommitResult> {
+    return schedulerStoreResult(() => this.commitReplay(input));
+  }
+
+  private commitReplay(input: ReplayCommitInput): ReplayCommitResult {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const currentVersion = this.currentVersion(input.runId);
+      if (currentVersion !== input.expectedVersion) {
+        throwSchedulerStoreError({
+          type: "version-mismatch",
+          runId: input.runId,
+          expectedVersion: input.expectedVersion,
+          actualVersion: currentVersion,
+          message: `Run '${input.runId}' scheduler version mismatch.`,
+        });
+      }
+      this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+      const current = this.loadRunSnapshot(input.runId);
+      if (current.projection.run.status === "paused") {
+        throwSchedulerStoreError({ type: "run-paused", runId: input.runId, message: `Run '${input.runId}' is paused.` });
+      }
+      const instance = current.projection.instances[input.nodeKey];
+      if (!instance || instance.status !== "ready") {
+        throwSchedulerStoreError({
+          type: "instance-not-ready",
+          runId: input.runId,
+          nodeKey: input.nodeKey,
+          status: instance?.status ?? "missing",
+          message: `Node instance '${input.nodeKey}' is not ready.`,
+        });
+      }
+      const fact = this.db.prepare(`
+        SELECT source_run_id, operation_digest, input_digest, output_json, artifacts_json
+        FROM fork_replay_facts
+        WHERE run_id = ? AND node_key = ?
+      `).get(input.runId, input.nodeKey) as Record<string, string | null> | undefined;
+      if (!fact
+        || fact.operation_digest !== input.replayIdentity.operationDigest
+        || fact.input_digest !== input.replayIdentity.inputDigest) {
+        this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ? AND node_key = ?").run(input.runId, input.nodeKey);
+        this.db.exec("COMMIT");
+        return { disposition: "mismatch", snapshot: current };
+      }
+      const output = fact.output_json === null ? undefined : JSON.parse(String(fact.output_json)) as JsonValue;
+      const artifacts = JSON.parse(String(fact.artifacts_json)) as ForkReplayArtifact[];
+      this.activateReplayArtifacts(input.runId, artifacts);
+      const events: SchedulerEvent[] = [{
+        type: "instance.completed",
+        payload: {
+          nodeKey: input.nodeKey,
+          ...(output === undefined ? {} : { output }),
+          replayIdentity: input.replayIdentity,
+          reusedFrom: { runId: String(fact.source_run_id), nodeKey: input.nodeKey },
+        },
+      }];
+      const member = current.projection.groupMembers[input.nodeKey];
+      if (member?.status === "ready" || member?.status === "running") {
+        events.push({
+          type: "group.member_completed",
+          payload: {
+            memberKey: member.memberKey,
+            completionSequence: current.version + events.length + 1,
+            ...(output === undefined ? {} : { output }),
+          },
+        });
+      }
+      const commitKey = `fork-replay:${input.runId}:${input.nodeKey}`;
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: input.runId,
+        current,
+        events,
+        now: new Date().toISOString(),
+        idempotencyKeys: events.map((_, index) => schedulerEventIdempotencyKey(input.runId, commitKey, index)),
+        nodeKeys: events.map(() => input.nodeKey),
+      });
+      this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ? AND node_key = ?").run(input.runId, input.nodeKey);
+      this.db.exec("COMMIT");
+      this.snapshotCache.set(input.runId, snapshot);
+      return { disposition: "replayed", snapshot };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private activateReplayArtifacts(runId: string, artifacts: ForkReplayArtifact[]): void {
+    const runDir = this.resolveRunDirectory(runId);
+    const artifactRoot = resolve(runDir, "artifacts");
+    for (const artifact of artifacts) {
+      const path = resolve(runDir, artifact.relativePath);
+      if (path === artifactRoot || !isContainedPath(artifactRoot, path)) {
+        throw new Error(`Fork replay artifact '${artifact.id}' has invalid relative path.`);
+      }
+      const bytes = readContainedFileSync(runDir, artifact.relativePath);
+      if (bytes.byteLength !== artifact.size || digest(bytes) !== artifact.digest) {
+        throw new Error(`Fork replay artifact '${artifact.id}' failed activation verification.`);
+      }
+      this.db.prepare(`
+        INSERT OR IGNORE INTO artifacts (id, run_id, node_key, attempt, media_type, digest, size, relative_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        artifact.id,
+        runId,
+        artifact.nodeKey ?? null,
+        artifact.attempt,
+        artifact.mediaType ?? null,
+        artifact.digest,
+        artifact.size,
+        artifact.relativePath,
+        new Date().toISOString(),
+      );
+    }
   }
 
   private startAttempt(input: AttemptStartInput): AttemptStartResult {
@@ -2782,8 +2825,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         admissionVersion: input.expectedVersion,
         ...(steer === undefined ? {} : { steerId: steer.steerId }),
         ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
+        ...(input.replayIdentity === undefined ? {} : { replayIdentity: input.replayIdentity }),
       };
-      const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey, attemptId } };
+      const instanceStartedEvent: SchedulerEvent = { type: "instance.started", payload: { nodeKey: input.nodeKey, attemptId, ...(input.replayIdentity === undefined ? {} : { replayIdentity: input.replayIdentity }) } };
       const attemptStartedEvent: SchedulerEvent = { type: "attempt.started", payload };
       const memberStartedEvents = this.groupMemberStartedEventsForNode(input.runId, input.nodeKey, current.projection);
       const events = [instanceStartedEvent, ...memberStartedEvents, attemptStartedEvent];
@@ -2852,8 +2896,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       if (attempt.status !== "started") throwSchedulerStoreError({ type: "terminal-attempt", attemptId: input.attemptId, status: attempt.status, message: `Attempt '${input.attemptId}' is already ${attempt.status}.` });
       const current = this.loadRunSnapshot(input.runId);
       const event = attemptResultEvent(input, String(attempt.node_key));
-      const instanceEvent = instanceResultEvent(input, String(attempt.node_key), event);
-      const memberEvent = this.groupMemberResultEventForNode(input.runId, String(attempt.node_key), input.result, current.projection);
+      const nodeKey = String(attempt.node_key);
+      const instanceEvent = instanceResultEvent(input, nodeKey, event, current.projection.instances[nodeKey]?.replayIdentity);
+      const memberEvent = this.groupMemberResultEventForNode(input.runId, nodeKey, input.result, current.projection);
       const events = [event, instanceEvent, ...(memberEvent ? [memberEvent] : [])];
       const snapshot = this.commitProjectionEventsInTransaction({
         runId: input.runId,
@@ -2861,7 +2906,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         events,
         now,
         idempotencyKeys: [input.idempotencyKey, derivedIdempotencyKey(input.idempotencyKey, "instance"), ...(memberEvent ? [derivedIdempotencyKey(input.idempotencyKey, "member")] : [])],
-        nodeKeys: events.map(() => String(attempt.node_key)),
+        nodeKeys: events.map(() => nodeKey),
       });
       this.db.exec("COMMIT");
       this.snapshotCache.set(input.runId, snapshot);
@@ -2962,6 +3007,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         payload: {
           nodeKey: input.nodeKey,
           output: input.payload,
+          ...(snapshot.projection.instances[input.nodeKey]?.replayIdentity === undefined
+            ? {}
+            : { replayIdentity: snapshot.projection.instances[input.nodeKey]!.replayIdentity }),
         },
       },
     ];
@@ -3393,6 +3441,9 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
     if (input.events.length > 0) {
       this.syncSchedulerProjectionTables(input.runId, input.now, input.current.projection, projection);
       this.syncPublicRunProjection(input.runId, input.now, input.current.projection, projection);
+      if (projection.run.status === "completed" || projection.run.status === "canceled") {
+        this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ?").run(input.runId);
+      }
     }
     const version = this.currentVersion(input.runId);
     this.maybePersistSchedulerCheckpoint(input.runId, version, projection, input.now);
@@ -3591,9 +3642,11 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.db.prepare(`
         INSERT INTO node_instances (
           run_id, node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
-          readiness_sequence, output_json, error_json, accepted_attempt_id, created_at, updated_at
+          readiness_sequence, output_json, error_json, accepted_attempt_id,
+          reused_from_run_id, reused_from_node_key,
+          created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, node_key) DO UPDATE SET
           node_id = excluded.node_id,
           parent_frame_key = excluded.parent_frame_key,
@@ -3604,6 +3657,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           output_json = excluded.output_json,
           error_json = excluded.error_json,
           accepted_attempt_id = excluded.accepted_attempt_id,
+          reused_from_run_id = excluded.reused_from_run_id,
+          reused_from_node_key = excluded.reused_from_node_key,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
       `).run(
@@ -3618,6 +3673,8 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         instance.output === undefined ? null : stableJsonLine(instance.output),
         instance.error === undefined ? null : stableJsonLine(instance.error),
         instance.acceptedAttemptId ?? null,
+        instance.reusedFrom?.runId ?? null,
+        instance.reusedFrom?.nodeKey ?? null,
         timing?.createdAt ?? now,
         timing?.updatedAt ?? now,
       );
@@ -4051,7 +4108,8 @@ function readRunDynamicFrames(db: DatabaseSync, runId: string): RunDynamicFrame[
 function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynamicNodeInstance[] {
   const rows = db.prepare(`
     SELECT node_key, node_id, parent_frame_key, instance_path_json, status, status_reason,
-      output_json, error_json, accepted_attempt_id, created_at, updated_at
+      output_json, error_json, accepted_attempt_id, reused_from_run_id, reused_from_node_key,
+      created_at, updated_at
     FROM node_instances
     WHERE run_id = ?
     ORDER BY node_key
@@ -4069,6 +4127,8 @@ function readRunDynamicNodeInstances(db: DatabaseSync, runId: string): RunDynami
       output: parseOptionalJson(row.output_json),
       error: parseOptionalJson(row.error_json),
       acceptedAttemptId: nullableString(row.accepted_attempt_id),
+      reusedFromRunId: nullableString(row.reused_from_run_id),
+      reusedFromNodeKey: nullableString(row.reused_from_node_key),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     }) as RunDynamicNodeInstance;
@@ -4330,6 +4390,7 @@ function instanceResultEvent(
   input: AttemptCommitInput,
   nodeKey: string,
   attemptEvent: Extract<SchedulerEvent, { type: "attempt.completed" | "attempt.failed" | "attempt.timed_out" | "attempt.cancelled" }>,
+  replayIdentity: SchedulerProjection["instances"][string]["replayIdentity"],
 ): Extract<SchedulerEvent, { type: "instance.completed" | "instance.failed" | "instance.cancelled" }> {
   if (attemptEvent.type === "attempt.completed") {
     return {
@@ -4339,6 +4400,7 @@ function instanceResultEvent(
         attemptId: input.attemptId,
         acceptedAttemptId: input.attemptId,
         ...(input.result.status === "completed" && input.result.output !== undefined ? { output: input.result.output } : {}),
+        ...(replayIdentity === undefined ? {} : { replayIdentity }),
       },
     };
   }
@@ -4363,7 +4425,8 @@ function matchesAttemptStartInput(input: AttemptStartInput, payload: Record<stri
     && payload.nodeId === input.nodeId
     && payload.ownerEpoch === input.ownerEpoch
     && payload.admissionVersion === input.expectedVersion
-    && (payload.deadlineAt ?? undefined) === input.deadlineAt;
+    && (payload.deadlineAt ?? undefined) === input.deadlineAt
+    && stableJsonLine(payload.replayIdentity ?? null) === stableJsonLine(input.replayIdentity ?? null);
 }
 
 function encodeSchedulerPayload(payload: object): string {
@@ -4634,6 +4697,8 @@ function initializeSchema(db: DatabaseSync): void {
       output_json TEXT,
       error_json TEXT,
       accepted_attempt_id TEXT,
+      reused_from_run_id TEXT,
+      reused_from_node_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (run_id, node_key)
@@ -4839,6 +4904,20 @@ function initializeSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_artifacts_run_created
       ON artifacts(run_id, created_at, id);
+
+    CREATE TABLE IF NOT EXISTS fork_replay_facts (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      node_key TEXT NOT NULL,
+      source_run_id TEXT NOT NULL,
+      source_sequence INTEGER NOT NULL,
+      operation_digest TEXT NOT NULL,
+      input_digest TEXT NOT NULL,
+      output_json TEXT,
+      artifacts_json TEXT NOT NULL,
+      PRIMARY KEY (run_id, node_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fork_replay_facts_order
+      ON fork_replay_facts(run_id, source_sequence, node_key);
   `);
   db.exec(`
     INSERT INTO hook_dispatch_cursors (run_id, event_sequence)
@@ -4940,22 +5019,6 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
 
 function collectNodeIds(scope: ScopeIR): string[] {
   return Array.from(walkNodes(scope), ({ node }) => node.id);
-}
-
-function inheritableCompletedNodeKeys(ir: WorkflowIR, completed: Set<string>): Set<string> {
-  const ancestors = nodeAncestors(ir.root);
-  return new Set([...completed].filter(nodeKey => (ancestors.get(nodeKey) ?? []).every(parent => completed.has(parent))));
-}
-
-function nodeAncestors(scope: ScopeIR): Map<string, string[]> {
-  return new Map(Array.from(walkNodes(scope), ({ node, ancestry }) => [
-    node.id,
-    ancestry.map(({ owner }) => owner.id),
-  ] as const));
-}
-
-function nodeSignatures(scope: ScopeIR): Map<string, string> {
-  return new Map(Array.from(walkNodes(scope), ({ node }) => [node.id, stableJsonLine(node)] as const));
 }
 
 export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
@@ -5145,119 +5208,16 @@ function stableJsonLine(value: unknown): string {
   return `${stableJson(value)}\n`;
 }
 
-function assertJsonValue(value: unknown, path: string): JsonValue {
-  if (!isJsonValue(value)) throw new Error(`${path} is not JSON-serializable.`);
-  return value;
-}
-
-function evaluateRecordedOutput(output: ExprIR, nodes: Record<string, unknown>, input: JsonValue, meta: Record<string, string>): JsonValue {
-  return normalizeWorkflowData(evaluateExpr(output, {
-    input,
-    meta,
-    nodes: Object.fromEntries(Object.entries(nodes).map(([nodeKey, value]) => [nodeKey, { status: "completed", output: value }])),
-  }), "fork output") as JsonValue;
-}
-
-function forkCompletedOutputJson(args: {
-  output: ExprIR;
-  completedOutputRows: Array<{ nodeKey: string; nodeId: string; output: unknown }>;
-  inheritableNodeKeys: Set<string>;
-  inputJson: string;
-  meta: Record<string, string>;
-  sourceRunId: string;
-  forkRunId: string;
-  artifactIdMap: Record<string, string>;
-}): Result<string, ArtifactRewriteFailure> {
-  const rows: Array<{ nodeKey: string; nodeId: string; output: JsonValue }> = [];
-  for (const row of args.completedOutputRows) {
-    if (!args.inheritableNodeKeys.has(row.nodeKey)) continue;
-    const rewritten = rewriteArtifactValue(assertJsonValue(row.output, `fork node '${row.nodeKey}' output`), args.sourceRunId, args.forkRunId, args.artifactIdMap);
-    if (rewritten.isErr()) return err(rewritten.error);
-    rows.push({ ...row, output: rewritten.value });
-  }
-  const nodes = completedOutputMap(rows);
-  const output = evaluateRecordedOutput(args.output, nodes, JSON.parse(args.inputJson) as JsonValue, args.meta);
-  return rewriteArtifactRefs(stableJsonLine(output), args.sourceRunId, args.forkRunId, args.artifactIdMap);
-}
-
-function completedSchedulerOutputRows(db: DatabaseSync, runId: string): Array<{ nodeKey: string; nodeId: string; output: unknown }> {
-  const nodeRows = db.prepare(`
-    SELECT node_key, node_id, output_json
-    FROM node_states
-    WHERE run_id = ? AND status = 'completed' AND output_json IS NOT NULL
-  `).all(runId) as Array<{ node_key: unknown; node_id: unknown; output_json: unknown }>;
-  const frameRows = db.prepare(`
-    SELECT frame_key, node_id, result_json
-    FROM scheduler_frames
-    WHERE run_id = ?
-      AND status = 'completed'
-      AND frame_kind IN ('node', 'loop')
-      AND node_id IS NOT NULL
-      AND result_json IS NOT NULL
-  `).all(runId) as Array<{ frame_key: unknown; node_id: unknown; result_json: unknown }>;
-  return [
-    ...nodeRows.map(row => ({
-      nodeKey: String(row.node_key),
-      nodeId: String(row.node_id),
-      output: JSON.parse(String(row.output_json)) as unknown,
-    })),
-    ...frameRows.map(row => ({
-      nodeKey: String(row.frame_key),
-      nodeId: String(row.node_id),
-      output: JSON.parse(String(row.result_json)) as unknown,
-    })),
-  ];
-}
-
-function completedOutputMap(rows: Array<{ nodeKey: string; nodeId: string; output: unknown }>): Record<string, unknown> {
-  const byKey = Object.fromEntries(rows.map(row => [row.nodeKey, row.output]));
-  const byId = new Map<string, Array<{ nodeKey: string; output: unknown }>>();
-  for (const row of rows) byId.set(row.nodeId, [...byId.get(row.nodeId) ?? [], { nodeKey: row.nodeKey, output: row.output }]);
-  for (const [nodeId, matches] of byId) {
-    if (matches.length === 1 && byKey[nodeId] === undefined) byKey[nodeId] = matches[0]!.output;
-  }
-  return byKey;
-}
-
-function rewriteArtifactRefs(json: string, sourceRunId: string, forkRunId: string, artifactIds: Record<string, string>): Result<string, ArtifactRewriteFailure> {
-  const value = JSON.parse(json) as JsonValue;
-  return rewriteArtifactValue(value, sourceRunId, forkRunId, artifactIds).map(stableJsonLine);
-}
-
-function rewriteForkSeedPlan(
-  plan: ForkSeedPlan,
-  sourceRunId: string,
-  forkRunId: string,
-  artifactIds: Record<string, string>,
-): Result<ForkSeedPlan, ArtifactRewriteFailure> {
-  const events: SchedulerEvent[] = [];
-  for (const event of plan.events) {
-    const payload = rewriteArtifactValue(event.payload as JsonValue, sourceRunId, forkRunId, artifactIds);
-    if (payload.isErr()) return err(payload.error);
-    events.push({ ...event, payload: payload.value } as SchedulerEvent);
-  }
-  return ok({ ...plan, events });
-}
-
 function requireArtifactId(map: Record<string, string>, sourceId: string): string {
   const id = map[sourceId];
   if (!id) throw new Error(`Missing fork artifact id for '${sourceId}'.`);
   return id;
 }
 
-function reachableInheritedArtifactIds(args: {
-  runId: string;
-  outputJson: string | null;
-  nodeRows: Array<Record<string, unknown>>;
-  inheritableNodeKeys: Set<string>;
-}): Set<string> {
-  const ids = new Set<string>();
-  if (args.outputJson) collectArtifactIds(JSON.parse(args.outputJson) as JsonValue, args.runId, ids);
-  for (const row of args.nodeRows) {
-    if (!args.inheritableNodeKeys.has(String(row.node_key)) || !row.output_json) continue;
-    collectArtifactIds(JSON.parse(String(row.output_json)) as JsonValue, args.runId, ids);
-  }
-  return ids;
+function requireArtifactPath(map: Record<string, string>, sourceId: string): string {
+  const path = map[sourceId];
+  if (!path) throw new Error(`Missing fork artifact path for '${sourceId}'.`);
+  return path;
 }
 
 function collectArtifactIds(value: JsonValue, runId: string, out: Set<string>): void {
@@ -5709,6 +5669,7 @@ async function copyVerifiedArtifacts(
   sourceRun: RunDirectoryFence,
   destinationRunDir: string,
   artifacts: ArtifactRow[],
+  destinationPaths: Record<string, string>,
   assertDestination: () => void,
 ): Promise<void> {
   const sourceRunDir = sourceRun.verify();
@@ -5725,7 +5686,7 @@ async function copyVerifiedArtifacts(
     const relativePath = String(artifact.relative_path);
     const sourcePath = resolve(sourceRunDir, relativePath);
     const destinationArtifactRoot = resolve(destinationRunDir, "artifacts");
-    const destination = resolve(destinationRunDir, relativePath);
+    const destination = resolve(destinationRunDir, requireArtifactPath(destinationPaths, String(artifact.id)));
     if (
       isAbsolute(relativePath)
       || sourcePath === sourceArtifactRoot
@@ -5907,12 +5868,104 @@ function verifyRegisteredArtifact(
   run.verify();
 }
 
-function requireForkSourceOccurrenceNodeKey(projection: SchedulerProjection, target: string): string {
-  const occurrence = resolveOccurrenceRef(projection, target, { attempt: "reject" });
-  if (!occurrence?.ok || occurrence.value.kind !== "node") {
-    throw new Error(`Fork source occurrence target '${target}' no longer resolves to a scheduler leaf.`);
+function resolveForkCheckpoint(
+  db: DatabaseSync,
+  projection: SchedulerProjection,
+  runId: string,
+  target: string | undefined,
+): Result<{ nodeKey?: string; replayBeforeSequence: number }, ForkReplayFailure> {
+  if (target === undefined) {
+    const row = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as CountRow;
+    return ok({ replayBeforeSequence: Number(row.count) });
   }
-  return occurrence.value.nodeKey;
+  let nodeKey: string | undefined;
+  if (projection.instances[target]) {
+    nodeKey = target;
+  } else if (target.startsWith("@")) {
+    const occurrence = resolveOccurrenceRef(projection, target, { attempt: "reject" });
+    if (occurrence && !occurrence.ok && occurrence.error.type === "occurrence-ref-collision") {
+      return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is ambiguous.` });
+    }
+    if (occurrence?.ok && occurrence.value.kind === "node") nodeKey = occurrence.value.nodeKey;
+  } else {
+    const matches = Object.values(projection.instances)
+      .filter(instance => instance.nodeId === target)
+      .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
+    if (matches.length > 1) {
+      return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' matches multiple source occurrences.` });
+    }
+    nodeKey = matches[0]?.nodeKey;
+  }
+  if (!nodeKey) {
+    return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' is not a materialized source leaf.` });
+  }
+  const ready = db.prepare(`
+    SELECT sequence
+    FROM run_events
+    WHERE run_id = ? AND node_key = ? AND type = 'instance.ready'
+    ORDER BY sequence
+    LIMIT 1
+  `).get(runId, nodeKey) as { sequence: number } | undefined;
+  if (!ready) {
+    return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' has no durable ready checkpoint.` });
+  }
+  return ok({ nodeKey, replayBeforeSequence: Number(ready.sequence) });
+}
+
+function completedReplayFacts(
+  db: DatabaseSync,
+  runId: string,
+  projection: SchedulerProjection,
+  replayBeforeSequence: number,
+): ForkReplayFact[] {
+  const rows = db.prepare(`
+    SELECT node_key, sequence, type, payload_json
+    FROM run_events
+    WHERE run_id = ?
+      AND type IN (
+        'instance.ready', 'instance.started', 'instance.awaiting', 'instance.requeued',
+        'instance.retry_requested', 'instance.completed', 'instance.failed', 'instance.cancelled'
+      )
+      AND sequence < ?
+    ORDER BY sequence, node_key
+  `).all(runId, replayBeforeSequence) as Array<{ node_key: string; sequence: number; type: string; payload_json: string }>;
+  const latestByNode = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) latestByNode.set(row.node_key, row);
+  const facts: ForkReplayFact[] = [];
+  for (const row of latestByNode.values()) {
+    if (row.type !== "instance.completed") continue;
+    if (!acceptedForkCompletion(projection, row.node_key)) continue;
+    const payload = decodeSchedulerPayload(row.payload_json, "instance.completed");
+    const identity = payload.replayIdentity;
+    if (typeof identity !== "object" || identity === null || Array.isArray(identity)) continue;
+    const operationDigest = (identity as Record<string, unknown>).operationDigest;
+    const inputDigest = (identity as Record<string, unknown>).inputDigest;
+    if (typeof operationDigest !== "string" || typeof inputDigest !== "string") continue;
+    facts.push({
+      nodeKey: row.node_key,
+      sourceSequence: Number(row.sequence),
+      operationDigest,
+      inputDigest,
+      ...(Object.prototype.hasOwnProperty.call(payload, "output") ? { output: payload.output as JsonValue } : {}),
+      artifacts: [],
+    });
+  }
+  return facts;
+}
+
+function acceptedForkCompletion(projection: SchedulerProjection, nodeKey: string): boolean {
+  for (const member of ancestorGroupMembersForNode(projection, nodeKey)) {
+    const group = projection.groups[member.groupKey];
+    if (!group || group.strategy === "all") continue;
+    const result = group.result;
+    const accepted = result && typeof result === "object" && !Array.isArray(result)
+      ? result.acceptedMemberKeys
+      : undefined;
+    if (group.status !== "completed"
+      || !Array.isArray(accepted)
+      || !accepted.includes(member.memberKey)) return false;
+  }
+  return true;
 }
 
 function forkRequestFingerprint(runId: string, options: ControlOptions): string {
@@ -5928,7 +5981,6 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
     ...(options.input === undefined ? {} : { input: options.input }),
     ...(options.agentOverrides === undefined ? {} : { agentOverrides: options.agentOverrides }),
     ...(options.target === undefined ? {} : { target: options.target }),
-    ...(options.unsafeReuse === true ? { unsafeReuse: true } : {}),
   });
 }
 
