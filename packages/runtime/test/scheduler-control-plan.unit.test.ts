@@ -281,6 +281,80 @@ describe("scheduler control plans", () => {
     });
   });
 
+  it("rejects a completed node inside a completed group member", () => {
+    const memberKey = "parallel.finished";
+    const nodeKey = `${memberKey}/task`;
+    const snapshot = schedulerSnapshot([
+      rootStarted(),
+      {
+        type: "frame.started",
+        payload: {
+          runId: "run_1",
+          frameKey: "parallel",
+          frameKind: "node",
+          parentFrameKey: "root",
+          nodeKey: "parallel",
+          nodeId: "parallel",
+          strategy: "all",
+        },
+      },
+      {
+        type: "group.started",
+        payload: {
+          runId: "run_1",
+          groupKey: "parallel",
+          nodeKey: "parallel",
+          nodeId: "parallel",
+          kind: "parallel",
+          strategy: "all",
+        },
+      },
+      {
+        type: "frame.started",
+        payload: {
+          runId: "run_1",
+          frameKey: memberKey,
+          frameKind: "branch",
+          parentFrameKey: "parallel",
+        },
+      },
+      {
+        type: "group.member_ready",
+        payload: {
+          runId: "run_1",
+          groupKey: "parallel",
+          memberKey,
+          childFrameKey: memberKey,
+          memberKind: "branch",
+          branchId: "finished",
+          readinessSequence: 1,
+        },
+      },
+      {
+        type: "instance.ready",
+        payload: {
+          runId: "run_1",
+          nodeKey,
+          nodeId: "task",
+          parentFrameKey: memberKey,
+          instancePath: [],
+        },
+      },
+      { type: "instance.completed", payload: { nodeKey, output: null } },
+      { type: "frame.completed", payload: { frameKey: memberKey, result: null } },
+      {
+        type: "group.member_completed",
+        payload: { memberKey, output: null, completionSequence: 1 },
+      },
+    ]);
+
+    expect(planCancelControl(snapshot, nodeKey)._unsafeUnwrapErr()).toMatchObject({
+      type: "invalid-cancel-target",
+      targetKey: nodeKey,
+      status: "completed",
+    });
+  });
+
   it("keeps batch assessment aligned with the exact mutation planner", () => {
     const snapshot = schedulerSnapshot(nestedCompletionDependencyEvents(3));
     const targets = new Set(retryControlTargets(snapshot).map(target => target.target));

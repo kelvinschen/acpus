@@ -365,6 +365,17 @@ function planCancel(snapshot: SchedulerSnapshot, target: string | undefined): Ca
     ? "root"
     : cancelTargetKey(target, snapshot).match(value => value, rejectControl);
   assertSingleControlIdentity(snapshot.projection, targetKey);
+  const status = snapshot.projection.frames[targetKey]?.status
+    ?? snapshot.projection.instances[targetKey]?.status;
+  if (status && terminalStatus(status)) {
+    rejectControl({
+      type: "invalid-cancel-target",
+      runId: snapshot.runId,
+      targetKey,
+      status,
+      message: `Cancel target '${targetKey}' is already ${status}.`,
+    });
+  }
   const events = targetKey === "root"
     && !snapshot.projection.frames.root
     && (snapshot.projection.run.status === "pending"
@@ -379,8 +390,6 @@ function planCancel(snapshot: SchedulerSnapshot, target: string | undefined): Ca
         ? cancellationEventsForFrame(snapshot.projection, targetKey, "operator_cancelled")
         : cancellationEventsForNode(snapshot.projection, targetKey, "operator_cancelled");
   if (events.length === 0) {
-    const status = snapshot.projection.frames[targetKey]?.status
-      ?? snapshot.projection.instances[targetKey]?.status;
     if (status) {
       rejectControl({
         type: "invalid-cancel-target",
