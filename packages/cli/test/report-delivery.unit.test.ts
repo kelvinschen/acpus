@@ -21,7 +21,9 @@ describe("deep-research report delivery", () => {
       } as const;
       const writtenDesigns: string[] = [];
       const artifact = {
-        write: async (_name: string, content: string) => {
+        write: async (...args: unknown[]) => {
+          const content = args[1];
+          if (typeof content !== "string") throw new Error("Expected a text design specification.");
           writtenDesigns.push(content);
           return designSpec;
         },
