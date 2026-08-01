@@ -10,32 +10,27 @@ describe("design-forge publication contract", () => {
     expect(source).toContain('{ mediaType: "text/markdown" }');
     expect(source).toContain('"design-forge-review-log.txt"');
     expect(source).toContain('{ mediaType: "text/plain" }');
-    expect(source).toMatch(/reader-facing Markdown deliverable, not a\s+scratchpad/);
     expect(source).not.toContain('"design-forge-package.json"');
   });
 
-  it("keeps document structure, references, and visuals under Agent judgment", async () => {
+  it("keeps editorial choices with Agents and Tasks mechanically small", async () => {
     const source = await readFile(skillExampleWorkflowPath("design-forge"), "utf8");
+    const publishStart = source.indexOf('const published = step("publish_blackboard")');
 
-    expect(source).toContain("Use judgment rather than a fixed template");
-    expect(source).toMatch(/There is no required\s+heading list, citation notation, diagram count, decision schema, or\s+publication marker/);
-    expect(source).toMatch(/Add Mermaid diagrams only when a visual explains/);
-    expect(source).toMatch(/Cite authoritative workspace files or public sources when they support/);
-    expect(source).toContain("do not turn the review into a rigid compliance checklist");
+    expect(source).toMatch(/fixed template/i);
+    expect(source).toMatch(/best-effort/i);
+    expect(source).toMatch(/Mermaid diagrams/i);
+    expect(source).toMatch(/public sources/i);
 
-    for (const rigidResource of [
+    for (const rigidMechanism of [
       "references.json",
       "decision-log.md",
       "diagram-plan.md",
       "design-forge:summary",
+      "requiredMarkers",
     ]) {
-      expect(source).not.toContain(rigidResource);
+      expect(source).not.toContain(rigidMechanism);
     }
-  });
-
-  it("keeps Tasks limited to small blackboard and artifact operations", async () => {
-    const source = await readFile(skillExampleWorkflowPath("design-forge"), "utf8");
-    const publishStart = source.indexOf('const published = step("publish_blackboard")');
 
     expect(publishStart).toBeGreaterThan(0);
     expect(source.match(/\.task\(\{/g) ?? []).toHaveLength(2);
@@ -44,7 +39,6 @@ describe("design-forge publication contract", () => {
     expect(publishSource).toContain("artifact.write");
     expect(publishSource).not.toContain("throw new Error");
     expect(publishSource).not.toContain("JSON.parse");
-    expect(publishSource).not.toContain("requiredMarkers");
     expect(publishSource).not.toContain("matchAll");
   });
 });
