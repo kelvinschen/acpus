@@ -7,123 +7,154 @@ import {
 } from "../contracts.js";
 
 const HTML_REPORT_DESIGN = `
-# Deep-research HTML design contract
+# Reader-first deep-research HTML publication contract
 
-Create one self-contained HTML5 document. The visual direction is an editorial
-research article: quiet, authoritative, information-dense, and designed for
-long-form reading rather than a generic dashboard or an audit report.
+Create one self-contained HTML5 research article. It should feel deliberately
+edited for a human reader, not exported from a claim database, audit log, or
+generic dashboard.
 
-## Voice and shape
+## Editorial north star
 
-- This is an article to be read, not a ledger to be scanned. Open with the
-  headline, deck, and the package throughline stated as the piece's governing
-  argument, then carry that argument through the story.
-- Weave findings, corrections, tensions, and unresolved evidence into flowing
-  prose with real transitions. Do not render one card per claim or stack
-  confidence chips beside every sentence.
-- You may add connective, ordering, and interpretive sentences that relate the
-  package's own material, but introduce no new fact: every factual assertion
-  must trace to the package, and confidence, refutation, and uncertainty must
-  never be overstated.
+- Reader comprehension comes first. Factual correctness and research depth
+  support that experience rather than replacing it.
+- Answer or orient the reader in the first screen. Infer the likely audience
+  from the question and context, establish only the foundations they need, then
+  deepen into mechanisms, evidence, comparisons, disagreements, uncertainty,
+  and implications.
+- Use an adaptive story structure. Do not force a fixed section count, a card per
+  claim, or the same template onto every topic.
+- Use descriptive headings that state the question answered or conclusion
+  reached. Explain terminology before relying on it, and use transitions to
+  make the logic between sections visible.
+- Place corrections, counter-evidence, and uncertainty beside the conclusion
+  they qualify. Keep the full audit trail, verification mechanics, evidence
+  ledger, and source index in a clearly separated methods appendix.
 
-## Information architecture
+## Agent-led publication method
 
-- A sticky left rail identifies the report, links to every major section, and
-  contains the theme control.
-- The hero uses an editorial headline, the deck, and the throughline. Keep
-  provenance chips and the metric panel compact; the metric panel may live in
-  the hero or fold into the appendix.
-- The main story runs as continuous reading: executive summary, the argument
-  and its findings, tensions or contrary evidence, corrections to refuted
-  claims, unresolved evidence, implications, limitations, and open questions,
-  in whatever order reads best.
-- Move the audit apparatus into a collapsible "Methods and evidence" appendix:
-  research depth, research Agent calls versus the configured ceiling, search
-  worker/planning calls, sources fetched, verifier Agent calls versus
-  claim-level votes, tie-breaker calls, editorial repairs, the evidence ledger,
-  and the source index.
-- Cite with footnotes or hover/expandable references rather than inline vote
-  tallies. Link only URLs stored in structured source fields. Never turn
-  arbitrary evidence text into links.
-- Keep refuted and unverified claims visible as transparency records, woven in
-  as narrative beats and preserved in full in the appendix, clearly separated
-  from confirmed conclusions.
-- Present correction-role evidence as a correction to the original wording,
-  never as automatic proof that the logical negation is true.
+Before finalizing the file, silently complete these passes inside the same
+publication turn:
 
-## Visual system
+1. Build a concise publication brief: likely reader, prior knowledge, first-screen
+   answer, progressive reading path, and the few visuals that would materially
+   improve understanding.
+2. Write the complete article and all chosen visuals.
+3. Re-read the actual draft as a fresh reader. Repair late answers, missing
+   definitions, abrupt depth jumps, generic headings, repetitive caveats, weak
+   transitions, and claim-by-claim structure.
+4. Re-read it as an evidence and visual-integrity editor. Repair unsupported
+   wording, misleading scales or arrows, unfair comparisons, weak attribution,
+   inaccessible visuals, and any confusion between refutation and proof of the
+   logical opposite.
+5. Revise the complete file until no material blocker remains. Use the package's
+   research depth to bound effort: one review pass for quick, up to two for deep,
+   and up to three for xdeep. Do not expose planning or review notes in the
+   published article.
 
-- Default to a deep navy background (#0d1724), slightly lighter panels
-  (#162231), warm ivory text (#f1eadc), muted sand text (#aaa08e), and restrained
-  amber accents (#d6aa55). Provide an accessible light theme with the same
-  hierarchy.
-- Use a serif display face from the local system stack for titles and a highly
-  readable serif or sans-serif system stack for body text. Do not load fonts.
-- Use generous whitespace, thin low-contrast borders, callout bands, compact
-  metric tiles, and readable tables. Avoid gradients, neon, glassmorphism,
-  oversized pills, decorative charts, and ornamental animation.
-- Target a 1440px editorial canvas with a roughly 250px rail and a centered
-  reading column. Collapse to one column below 900px.
+## Visual editorial
 
-## Interaction and accessibility
+- Use a visual only when it communicates structure, comparison, sequence,
+  magnitude, change, or evidence relationships better than prose.
+- Choose the form from the information: compact tables for precise comparison,
+  bar or line charts for verified quantitative data, timelines for chronology,
+  process diagrams for sequences, architecture diagrams for components and
+  interfaces, and evidence maps for agreement, tension, or uncertainty.
+- Derive every value, label, node, arrow, sequence, and relationship from the
+  research package. Never estimate missing values, invent relationships, or use
+  decorative charts to make the report appear richer.
+- Place each figure next to the passage it explains. Give it a specific title,
+  caption, source note, and useful alt text. Complex visuals also need an
+  adjacent prose explanation or readable data table.
+- Inline SVG is encouraged for original charts and diagrams. Keep labels legible,
+  make scales honest, preserve units and scope, and do not rely on color alone.
+- Source images or source figures are optional. Embed one only when its source,
+  attribution, and reuse basis are explicit and defensible. Source-media
+  retrieval may be used only to obtain that exact visual and rights metadata,
+  never to add facts to the research. If retrieval is unavailable or rights are
+  unclear, link to the cited source or create an original explanatory visual
+  from verified package evidence instead.
 
-- Include a keyboard-operable dark/light theme toggle and persist the choice in
-  localStorage.
-- Make the appendix and long footnotes keyboard-operable; highlight the active
-  section while scrolling when practical.
-- Use semantic header, nav, main, section, article, table, and footer elements;
-  visible focus states; sufficient contrast; reduced-motion support; and a
-  responsive viewport declaration.
+## Information architecture and visual system
 
-## Delivery constraints
+- Prefer a strong headline, compact deck, first-screen answer, a small set of key
+  takeaways, and a continuous main story. Add orientation, glossary, comparison,
+  or advanced-detail sections only when the topic benefits from them.
+- Navigation may use a restrained sticky rail or compact table of contents when
+  the article is long. Do not let navigation or metric tiles dominate the page.
+- Use system fonts, a readable measure, generous spacing, restrained borders,
+  clear figure treatment, and responsive tables. Choose an editorial palette
+  appropriate to the subject with an accessible light or dark presentation;
+  avoid gradients, neon, glassmorphism, oversized pills, ornamental animation,
+  and repeated card grids.
+- Design for a wide desktop canvas but collapse cleanly to one column on narrow
+  screens. Include print styles that preserve headings, figures, captions,
+  citations, and tables.
 
+## Interaction, accessibility, and delivery
+
+- Use semantic header, nav, main, article, section, figure, figcaption, table,
+  details, and footer elements where appropriate. Maintain a valid heading
+  hierarchy, visible focus states, sufficient contrast, reduced-motion support,
+  and a responsive viewport.
+- Theme controls, expandable citations, and the methods appendix must be keyboard
+  operable. The article must remain understandable when scripts are disabled.
 - Escape all research text before placing it in HTML.
-- Use only inline CSS and optional inline JavaScript. No external stylesheets,
-  scripts, fonts, images, iframes, analytics, network calls, or build step.
+- Use inline CSS, optional inline JavaScript, inline SVG, and data-URI images only.
+  Do not use external stylesheets, scripts, fonts, iframes, analytics, runtime
+  network calls, or a build step.
 - Write exactly one file at the requested draft path and no other files.
 `;
 
 const MARKDOWN_REPORT_DESIGN = `
-# Deep-research Markdown design contract
+# Reader-first deep-research Markdown publication contract
 
-Create one standalone Markdown document optimized for careful reading, review,
-quotation, and downstream conversion to other presentation formats. This is an
-article to be read, not a ledger to be scanned.
+Create one standalone Markdown research article optimized for careful reading,
+review, quotation, and downstream conversion. It should feel deliberately edited
+for a human reader, not exported from a claim database or audit log.
 
-## Voice and shape
+## Editorial north star
 
-- Open with the title, deck, and the package throughline stated as the piece's
-  governing argument, then carry that argument through the story.
-- Weave findings, corrections, tensions, and unresolved evidence into flowing
-  prose with real transitions rather than one bullet or heading per claim.
-- You may add connective, ordering, and interpretive sentences that relate the
-  package's own material, but introduce no new fact: every factual assertion
-  must trace to the package, and confidence, refutation, and uncertainty must
-  never be overstated.
+- Answer or orient the reader early, infer likely prior knowledge from the
+  question and context, then move from foundations into mechanisms, evidence,
+  comparisons, disagreements, uncertainty, and implications.
+- Use an adaptive story structure rather than a fixed section count or one
+  heading per claim. Use descriptive headings, explain terms before relying on
+  them, and connect sections with real transitions.
+- Place corrections and uncertainty beside the conclusion they qualify. Move
+  verification mechanics, the evidence ledger, and the source index into a final
+  methods-and-evidence appendix.
 
-## Information architecture
+## Agent-led publication method
 
-- Start with the report title, deck, throughline, and a compact provenance line.
-- Run the body as continuous reading: executive summary, the argument and its
-  findings, tensions or contrary evidence, corrections, unresolved evidence,
-  implications, limitations, and open questions, in whatever order reads best.
-- Keep confirmed, refuted, and unverified claims visibly distinct in the prose,
-  refuted framed as a correction to the original wording and never as proof of
-  the logical negation.
-- Cite with linked footnotes beside the claims they support. Link only
-  structured source URLs from the package.
-- Move the audit apparatus into a final "Methods and evidence" appendix:
-  research depth, research Agent calls versus the configured ceiling, search and
-  verification activity, tie-breakers, editorial repairs, the evidence ledger,
-  and the source index.
+Before finalizing, silently plan the reader journey, write the complete article,
+then re-read the actual draft from two fresh perspectives: first for reader
+comprehension, then for evidence and visual integrity. Revise the full document
+until no material blocker remains. Use one review pass for quick research, up to
+two for deep, and up to three for xdeep. Do not publish planning or review notes.
 
-## Formatting
+## Visual editorial
 
-- Use standard Markdown headings, paragraphs, lists, blockquotes, tables, and
-  links. Avoid raw HTML and renderer-specific extensions.
-- Keep tables compact enough to remain readable as plain text.
-- Preserve quotations and source titles exactly when translation would damage
-  provenance.
+- Use visuals only when they communicate comparison, chronology, process,
+  architecture, magnitude, change, or evidence relationships better than prose.
+- Prefer portable Markdown tables for exact comparisons. A fenced Mermaid diagram
+  may be used when it materially improves understanding, but include an adjacent
+  prose explanation or table fallback because renderer support varies.
+- Every number, label, relationship, and sequence must come from the research
+  package. Preserve units, scope, and source attribution. Never estimate missing
+  values or add decorative diagrams.
+- Source images are optional. Include or link one only when source, attribution,
+  and reuse basis are explicit. If rights or retrieval are uncertain, cite the
+  original source and explain the figure in prose, or create a package-grounded
+  table or diagram instead.
+
+## Formatting and delivery
+
+- Use standard Markdown headings, paragraphs, lists, blockquotes, tables,
+  footnotes, links, and fenced diagrams where useful. Keep the plain-text form
+  readable and avoid raw HTML unless the requested downstream target requires it.
+- Put citations beside the claims they support and link only structured source
+  URLs from the package. Preserve source titles and quotations when translation
+  would damage provenance.
 - Write exactly one file at the requested draft path and no other files.
 `;
 
@@ -186,7 +217,7 @@ export const prepareReportInputs = task.define({
         };
     const designSpec = await artifact.write(
       "report-design.md",
-      `${delivery.design.trim()}\n\n## Content constraints\n\n- Use the research package as the only content source.\n- Write a readable article, not an audit report: lead with the throughline and weave the evidence into prose.\n- Connective, ordering, and interpretive sentences over the package's own material are allowed, but do not browse, invent facts, alter conclusions, or add citations absent from the package.\n- ${delivery.languageRule}\n\n## Prose quality\n\nWrite in plain, neutral analyst prose. Do not add opinions, first person, or personality; for a research report, plain is the human voice.\n\n- Use no em dashes or en dashes. Use periods, commas, colons, or parentheses instead.\n- Prefer plain verbs (is, has, runs) over "serves as", "stands as", "boasts", or "represents a shift".\n- Cut inflated and promotional vocabulary such as crucial, pivotal, vibrant, robust, groundbreaking, seamless, testament, tapestry, delve, showcase, and underscore.\n- Drop tacked-on "-ing" clauses that fake depth ("highlighting its importance", "reflecting a broader trend"), and do not claim significance the evidence does not carry.\n- Attribute each claim to its named source, never to "experts", "observers", or "some critics".\n- Avoid forced groups of three, "not only X but Y" constructions, and "from X to Y" ranges whose ends are not on one scale.\n- Convey uncertainty through the report's confidence, corrections, and limitations, not through empty hedges like "it could possibly be argued".\n- Vary sentence length. Do not stack short dramatic fragments, quotable closers, or aphorisms ("X is the language of Y").\n- Skip signposting ("let's look at", "here is what you need to know") and upbeat send-offs ("the future looks bright"); end on the last substantive finding.\n- Use sentence case for headings. Do not use emojis or bold every key phrase.\n`,
+      `${delivery.design.trim()}\n\n## Evidence and content boundaries\n\n- Use the research package as the only factual source and preserve its confidence, corrections, refutations, and unresolved evidence.\n- Do not browse for new facts. Narrow retrieval of an exact cited source image or figure is allowed only for source-media delivery and rights checking. If that capability is unavailable, continue without the source image.\n- Link citations only from structured source URL fields in the package. Never infer URLs from prose or turn arbitrary evidence text into a link.\n- Connective, ordering, explanatory, and interpretive sentences over package material are allowed, but do not introduce new entities, dates, quantities, mechanisms, or conclusions.\n- ${delivery.languageRule}\n\n## Reader and prose quality\n\n- Infer the likely reader from the question and context. Give them an answer or useful orientation before asking them to absorb detail.\n- Build from prerequisite concepts to deeper analysis. Explain unfamiliar terms, define scope, and use examples or analogies only when grounded in the package.\n- Adapt the organization to the subject. Do not force a fixed number of sections, bullets, tables, figures, or takeaways.\n- Write in plain, neutral analyst prose with varied sentence and paragraph length. Prefer concrete verbs, named attribution, and descriptive headings over promotional language, generic labels, dramatic fragments, or repetitive caveats.\n- Use tables and visuals as explanations, not decoration. Keep them close to the prose they support and provide a textual equivalent for complex figures.\n- End on the last substantive conclusion, implication, limitation, or open question rather than an upbeat send-off.\n`,
       { mediaType: "text/markdown" },
     );
 
