@@ -2,7 +2,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { walkNodes, type NodeVisit, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type ExprIR, type NodeVisit, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
 import { buildAgentOutputPrompt } from "../../runtime/src/execution/agent-output.js";
@@ -158,7 +158,7 @@ describe("skill workflow contracts", () => {
       throw new Error("design-forge file operations must remain inline Tasks");
     }
     expect(seed.run.target.source).toContain("/tmp/acpus-design-forge/");
-    expect(seed.run.target.source).toContain("design.txt");
+    expect(seed.run.target.source).toContain("design.md");
     expect(publish.run.target.source).toContain("artifact.write");
     expect(publish.run.target.source).toContain('"text/plain"');
     expect(design.outputSchema).toBeUndefined();
@@ -167,6 +167,9 @@ describe("skill workflow contracts", () => {
       path: ["nodes", "seed_blackboard", "output", "root"],
     });
     expect(design.run.sessionKey).toBeUndefined();
+    expect(templateText(design.run.prompt)).toContain(
+      "Write the design and every review response in the task language used by\nbrief.txt.",
+    );
 
     for (const { name, gate, challenge } of reviewers) {
       if (gate.kind !== "if" || challenge.kind !== "agent") {
@@ -209,6 +212,12 @@ describe("skill workflow contracts", () => {
           },
         ]),
       });
+      expect(templateText(challenge.run.prompt)).toContain(
+        "Write your notebook in the task language used by brief.txt.",
+      );
+      expect(templateText(challenge.run.prompt)).toContain(
+        "cannot identify a concrete unresolved issue\nthat could materially change a decision, implementation, operational risk,",
+      );
     }
 
     expect(publish.run.cwd).toEqual({
@@ -384,6 +393,14 @@ function resultShape(schema: SchemaIR): string {
   const match = prompt.match(/<ACPUS_OUTPUT>\n([\s\S]*)\n<\/ACPUS_OUTPUT>$/u);
   if (!match) throw new Error("Expected a Result Shape handoff.");
   return match[1]!;
+}
+
+function templateText(expression: ExprIR): string {
+  if (expression.kind !== "template") throw new Error("Expected a template expression.");
+  return expression.parts
+    .filter((part): part is Extract<typeof part, { kind: "text" }> => part.kind === "text")
+    .map(part => part.value)
+    .join("");
 }
 
 function documentedInputNames(markdown: string): string[] {

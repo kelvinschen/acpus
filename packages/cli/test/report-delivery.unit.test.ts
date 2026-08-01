@@ -19,6 +19,18 @@ describe("deep-research report delivery", () => {
         uri: "artifact://run_1/design",
         mediaType: "text/markdown",
       } as const;
+      const writtenDesigns: string[] = [];
+      const artifact = {
+        write: async (...args: unknown[]) => {
+          const content = args[1];
+          if (typeof content !== "string") throw new Error("Expected a text design specification.");
+          writtenDesigns.push(content);
+          return designSpec;
+        },
+        path: () => {
+          throw new Error("artifact.path is not used");
+        },
+      };
       const result = await prepareReportInputs.fn({
         input: {
           format: "md",
@@ -27,12 +39,20 @@ describe("deep-research report delivery", () => {
           runId: "run_1",
           workspaceDir: workspace,
         },
-        artifact: {
-          write: async () => designSpec,
-          path: () => {
-            throw new Error("artifact.path is not used");
-          },
+        artifact,
+        $: undefined as never,
+        env: {},
+        abortSignal: new AbortController().signal,
+      });
+      await prepareReportInputs.fn({
+        input: {
+          format: "html",
+          reportLanguage: "zh-CN",
+          reportPath: "deliverables/report.html",
+          runId: "run_2",
+          workspaceDir: workspace,
         },
+        artifact,
         $: undefined as never,
         env: {},
         abortSignal: new AbortController().signal,
@@ -45,6 +65,16 @@ describe("deep-research report delivery", () => {
         draftPath: join(home, ".acpus", "tmp", "report-drafts", "run_1", "report.md"),
         outputPath: join(workspace, "deliverables", "report.md"),
       });
+      expect(writtenDesigns).toHaveLength(2);
+      expect(writtenDesigns[0]).toContain("Agent-led publication method");
+      expect(writtenDesigns[0]).toContain("fresh perspectives");
+      expect(writtenDesigns[0]).toContain("fenced Mermaid diagram");
+      expect(writtenDesigns[0]).toContain("Do not force a fixed number of sections");
+      expect(writtenDesigns[1]).toContain("first-screen answer");
+      expect(writtenDesigns[1]).toContain("Inline SVG is encouraged");
+      expect(writtenDesigns[1]).toContain("Source images or source figures are optional");
+      expect(writtenDesigns[1]).toContain("data-URI images only");
+      expect(writtenDesigns[1]).toContain("Use `zh-CN` for every reader-facing string");
       await expect(access(result.draftDir)).resolves.toBeUndefined();
       if (process.platform !== "win32") {
         expect((await stat(result.draftDir)).mode & 0o777).toBe(0o700);

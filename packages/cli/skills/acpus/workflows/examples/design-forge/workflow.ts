@@ -1,6 +1,5 @@
 /*
- * Pattern: Develop one design through three resident challenge conversations
- * sharing a run-scoped plain-text blackboard.
+ * Pattern: Develop one reader-facing design through three resident challenge conversations sharing a run-scoped text blackboard, then publish the design separately from the review history.
  * Scale: at most maxRounds × (1 designer + 3 challengers); peak ready Agents: 3.
  * Nodes: agent, task, if, parallel, loop
  */
@@ -13,10 +12,10 @@ const Completion = z.object({
 
 export default defineWorkflow({
   name: "design-forge",
-  description: "Develop a decision-ready design through resident challenges on a shared text blackboard.",
+  description: "Develop and publish a readable Markdown design through resident challenges on a shared text blackboard.",
   inputSchema: z.object({
     brief: z.string().describe(
-      "The problem, goals, constraints, and success criteria for the design.",
+      "The problem, audience, goals, constraints, success criteria, and any useful starting context for the design.",
     ),
     maxRounds: z.number().int().positive().default(5).describe(
       "Maximum number of design and challenge rounds.",
@@ -42,7 +41,7 @@ export default defineWorkflow({
       await $`mkdir -p ${`${root}/reviews`}`;
       await $`chmod 700 ${root}`;
       await writeOnce(`${root}/brief.txt`, `${input.brief}\n`);
-      await writeOnce(`${root}/design.txt`, "No design has been written yet.\n");
+      await writeOnce(`${root}/design.md`, "No design has been written yet.\n");
       await writeOnce(`${root}/reviews/fitness.txt`, "No fitness review has been recorded yet.\n");
       await writeOnce(`${root}/reviews/failure.txt`, "No failure review has been recorded yet.\n");
       await writeOnce(`${root}/reviews/simplicity.txt`, "No simplicity review has been recorded yet.\n");
@@ -62,26 +61,64 @@ export default defineWorkflow({
         agent: agents.designer,
         cwd: blackboard.output.root,
         prompt: md`
-          Work directly in the plain-text blackboard at
-          ${blackboard.output.root}. Read brief.txt, design.txt, and the three
-          files under reviews/. The source workspace is ${meta.workspaceDir};
-          inspect it when useful, but modify only files in the blackboard.
+          You own both the design and the document that communicates it.
+
+          Work directly in the text blackboard at ${blackboard.output.root}. Read
+          brief.txt, design.md, and the three files under reviews/. The source
+          workspace is ${meta.workspaceDir}; inspect it when useful. You may also
+          consult public sources when they materially improve the proposal, but
+          modify only files in the blackboard.
 
           Reviewer completion:
           - fitness: ${state.fitnessDone}
           - failure: ${state.failureDone}
           - simplicity: ${state.simplicityDone}
 
-          On the first pass, create the strongest useful design you can in
-          design.txt. On later passes, improve it and respond inside the review
-          notebooks to every unresolved or reopened concern. Mark what you
-          believe is resolved, preserve useful history and accepted constraints,
-          and do not disturb a reviewer that has completed.
+          design.md is the reader-facing Markdown deliverable, not a scratchpad
+          or review transcript. On the first pass, write the strongest useful
+          proposal you can. On later passes, improve it and respond inside each
+          active review notebook to unresolved or reopened concerns. Preserve
+          accepted constraints and do not disturb a reviewer that has completed.
+          Write the design and every review response in the task language used by
+          brief.txt. Preserve code, identifiers, and source quotations in their
+          original language when that improves precision.
 
-          There is no required notation or document template. Organize and
-          rewrite the text however best supports the reasoning. The files, not
-          your response, are the source of truth. Return only a very short note
-          that this pass is complete.
+          Use judgment rather than a fixed template. Shape the document around the
+          brief, its audience, and the actual design. Make the recommendation and
+          its consequences easy to find, then provide the context, alternatives,
+          design detail, risks, operations, validation, and delivery information
+          that this particular proposal needs. Omit sections that add no value and
+          add sections the subject genuinely requires.
+
+          Optimize for reading and decision making:
+          - Prefer a clear narrative with useful headings and progressive detail.
+          - Separate facts, assumptions, decisions, trade-offs, and open questions.
+          - Explain important boundaries, responsibilities, interfaces, flows,
+            failure behavior, security concerns, and rollout implications when
+            they matter to the design.
+          - Use a compact table when comparison is easier to understand in rows and
+            columns.
+          - Add Mermaid diagrams only when a visual explains an important
+            architecture, process, interaction, lifecycle, data relationship, or
+            deployment more clearly than prose. Give each useful diagram enough
+            surrounding explanation to be understood and keep it consistent with
+            the text. Do not add decorative diagrams.
+          - Cite authoritative workspace files or public sources when they support
+            material factual claims, standards, constraints, or prior art. Use
+            normal Markdown links or a references section in whatever style best
+            fits the document. Never invent a source, and do not force citations
+            onto design judgments or common background knowledge.
+          - Keep the final document self-contained. Keep challenge history in the
+            review notebooks rather than copying it into the proposal.
+
+          This is a best-effort design, not a compliance form. There is no required
+          heading list, citation notation, diagram count, decision schema, or
+          publication marker. The quality bar is that the result is useful,
+          credible, appropriately visual, and easy for its intended readers to
+          follow.
+
+          The files, not your response, are the source of truth. Return only a very
+          short note that this pass is complete.
         `,
       });
 
@@ -95,20 +132,43 @@ export default defineWorkflow({
 
         The Designer has completed the current pass: ${design.output}
         Work in the blackboard at ${blackboard.output.root}. Read brief.txt,
-        design.txt, and any review notebook useful for context. Write only to
-        ${notebook}; never edit design.txt or another challenger's notebook.
+        design.md, and any review notebook useful for context. The source
+        workspace is ${meta.workspaceDir}; inspect it or relevant public sources
+        when useful. Write only to ${notebook}; never edit design.md or another
+        challenger's notebook.
+        Write your notebook in the task language used by brief.txt. Preserve code,
+        identifiers, and source quotations in their original language when that
+        improves precision.
 
-        On your first visit, record several consequential questions or
-        counterexamples, make it clear that they remain unresolved, and return
-        done=false. On later visits, judge the Designer's responses using the
-        full design: accept adequate resolutions, reopen weak ones with concrete
-        reasons, and add another useful batch when material uncertainty remains.
+        Challenge both the proposal and how well design.md communicates it, but
+        do not turn the review into a rigid compliance checklist. Concentrate on
+        consequential gaps, weak assumptions, counterexamples, misleading
+        explanations, and choices that a decision maker, implementer, operator, or
+        future maintainer could misunderstand.
+
+        Consider whether the document makes the recommendation, rationale,
+        alternatives, trade-offs, boundaries, important failure modes, and open
+        questions clear at the depth appropriate to this brief. Also consider
+        whether a table, diagram, or reference would materially improve the
+        explanation, and whether any existing visual or citation is useful and
+        trustworthy. Do not demand a particular section, notation, source count,
+        or diagram merely for completeness.
+
+        On your first visit, record a useful batch of the most important unresolved
+        concerns and return done=false. On later visits, judge the Designer's
+        responses against the full current design, accept adequate resolutions,
+        reopen weak ones with concrete reasons, and add new concerns only when they
+        are material. Organize the notebook however best supports the conversation.
+        After the first visit, if you cannot identify a concrete unresolved issue
+        that could materially change a decision, implementation, operational risk,
+        or confidence in the supporting evidence, record acceptance and return
+        done=true; do not keep the review open for minor wording, optional detail,
+        or speculative concerns.
 
         When your lens has no meaningful unresolved issue and its important
         constraints are protected, record your acceptance and the constraints
         future edits must preserve, then return done=true. Otherwise return
-        done=false. Use whatever plain-text organization best supports your
-        reasoning; the workflow never parses the notebook.
+        done=false. Return only JSON matching the schema.
       `;
 
       const challenges = step("challenge_panel").parallel({
@@ -124,7 +184,7 @@ export default defineWorkflow({
               outputSchema: Completion,
               prompt: challengePrompt(
                 "fitness",
-                "Fit to the brief, goals, constraints, success criteria, users, and important alternatives.",
+                "Fit to the brief, audience, goals, constraints, success criteria, important alternatives, and strength of the recommendation and supporting evidence.",
                 "reviews/fitness.txt",
               ),
             }).output,
@@ -139,7 +199,7 @@ export default defineWorkflow({
               outputSchema: Completion,
               prompt: challengePrompt(
                 "failure",
-                "Counterexamples, edge cases, recovery, concurrency, security, and operational failure.",
+                "Counterexamples, edge cases, recovery, concurrency, security, privacy, compatibility, rollout, observability, and operational failure.",
                 "reviews/failure.txt",
               ),
             }).output,
@@ -154,7 +214,7 @@ export default defineWorkflow({
               outputSchema: Completion,
               prompt: challengePrompt(
                 "simplicity",
-                "Unnecessary complexity, coupling, cheaper approaches, testability, comprehension, and operation.",
+                "Unnecessary complexity, coupling, cheaper approaches, testability, operability, document hierarchy, terminology, duplication, and whether every table or diagram earns its cognitive cost.",
                 "reviews/simplicity.txt",
               ),
             }).output,
@@ -191,23 +251,19 @@ export default defineWorkflow({
       settled,
     },
     exec: async ({ input, $, artifact }) => {
-      const [brief, design, fitness, failure, simplicity] = await Promise.all([
-        $`cat brief.txt`.text(),
-        $`cat design.txt`.text(),
-        $`cat reviews/fitness.txt`.text(),
-        $`cat reviews/failure.txt`.text(),
-        $`cat reviews/simplicity.txt`.text(),
-      ]);
-      const content = [
-        "DESIGN FORGE",
-        `Outcome: ${input.settled ? "consensus" : "round limit"}`,
+      const brief = await $`cat brief.txt`.text();
+      const design = await $`cat design.md`.text();
+      const fitness = await $`cat reviews/fitness.txt`.text();
+      const failure = await $`cat reviews/failure.txt`.text();
+      const simplicity = await $`cat reviews/simplicity.txt`.text();
+      const outcome = input.settled ? "consensus" : "round limit";
+      const reviewLog = [
+        "DESIGN FORGE REVIEW LOG",
+        `Outcome: ${outcome}`,
         `Rounds: ${input.rounds}`,
         "",
         "===== BRIEF =====",
         brief.trimEnd(),
-        "",
-        "===== DESIGN =====",
-        design.trimEnd(),
         "",
         "===== FITNESS REVIEW =====",
         fitness.trimEnd(),
@@ -219,13 +275,18 @@ export default defineWorkflow({
         simplicity.trimEnd(),
         "",
       ].join("\n");
-      return {
-        blackboard: await artifact.write(
-          "design-forge.txt",
-          content,
-          { mediaType: "text/plain" },
-        ),
-      };
+
+      const blackboard = await artifact.write(
+        "design-forge.md",
+        `${design.trimEnd()}\n`,
+        { mediaType: "text/markdown" },
+      );
+      await artifact.write(
+        "design-forge-review-log.txt",
+        reviewLog,
+        { mediaType: "text/plain" },
+      );
+      return { blackboard };
     },
   });
 
