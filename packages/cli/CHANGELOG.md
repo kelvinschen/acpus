@@ -1,5 +1,33 @@
 # acpus
 
+## 0.12.0
+
+### Minor Changes
+
+- a775e12: Resolve ArtifactRefs into verified local source metadata without reading artifact contents.
+- bcac75e: Replace fork seed planning with direct-parent, leaf-ready replay keyed by each
+  occurrence's effective operation and declared logical inputs. Fork children now
+  start pending with empty scheduler state, `--target` is an exclusive parent
+  checkpoint, and the unsafe-reuse option is removed.
+
+### Patch Changes
+
+- bcac75e: Let bundled deep-research Agents follow the research question's language from context, pass search and editorial handoffs directly through Agent context, and reserve Tasks for deterministic and durable seams.
+- 0a9355c: Separate exact Agent response segments from the completed turn response used
+  for node output and schema conformance.
+- 160be82: Publish the bundled design-forge workflow, with a resident Designer, scoped resident challenges, incremental blocker resolution, compact reviewer state, direct natural writing guidance, and a separate final review-state artifact.
+- 8a5c380: Resolve named Agent commands from the pinned Acpx global and project
+  configuration for each managed attempt while keeping explicit commands and
+  other Acpx configuration domains outside the integration.
+- 15560d5: Show the installed CLI package version at the start of root help.
+- Updated dependencies [0a9355c]
+- Updated dependencies [a775e12]
+- Updated dependencies [4937cc5]
+- Updated dependencies [8a5c380]
+- Updated dependencies [bcac75e]
+  - @acpus/runtime@0.14.0
+  - @acpus/web@0.2.3
+
 ## 0.11.0
 
 ### Minor Changes

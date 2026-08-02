@@ -1,5 +1,18 @@
 # @acpus/agent-executor
 
+## 0.5.0
+
+### Minor Changes
+
+- 0a9355c: Separate exact Agent response segments from the completed turn response used
+  for node output and schema conformance.
+
+### Patch Changes
+
+- 8a5c380: Resolve named Agent commands from the pinned Acpx global and project
+  configuration for each managed attempt while keeping explicit commands and
+  other Acpx configuration domains outside the integration.
+
 ## 0.4.0
 
 ### Minor Changes
