@@ -3,6 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { err, ok, type Result } from "neverthrow";
+import {
+  AcpxAgentResolutionSystemError,
+  resolveAcpxAgentCommand,
+  type AcpxAgentResolutionFailure,
+} from "./acpx-agent-resolution.js";
 import type {
   AcpOwnershipHealth,
   AcpOwnershipManifest,
@@ -75,7 +81,7 @@ type ManagedAcpExecutorState = {
   readonly options: ManagedAcpExecutorOptions;
   readonly daemon: { pid: number; startToken?: string; generation: string };
   readonly workers: Map<string, WorkerState>;
-  readonly starting: Set<Promise<WorkerState>>;
+  readonly starting: Set<Promise<Result<WorkerState, AcpxAgentResolutionFailure>>>;
   shuttingDown: boolean;
 };
 
@@ -91,19 +97,27 @@ export async function createManagedAcpExecutor(options: ManagedAcpExecutorOption
   const state: ManagedAcpExecutorState = { options, daemon, workers: new Map(), starting: new Set(), shuttingDown: false };
   return {
     withAttempt: async <T>(input: ManagedAcpAttemptInput, use: (attempt: ManagedAcpAttempt) => Promise<T>): Promise<T> => {
-      if (state.shuttingDown) return use(unavailableAttempt("ACP executor is shutting down."));
+      if (state.shuttingDown) return use(unavailableAttempt(workerLostFailure("ACP executor is shutting down.")));
       let worker: WorkerState | undefined;
+      let handedToCaller = false;
       try {
         const starting = startWorker(state, input);
         state.starting.add(starting);
         try {
-          worker = await starting;
+          const started = await starting;
+          if (started.isErr()) {
+            handedToCaller = true;
+            return use(unavailableAttempt(configFailure(started.error)));
+          }
+          worker = started.value;
         } finally {
           state.starting.delete(starting);
         }
-        if (state.shuttingDown) return use(unavailableAttempt("ACP executor is shutting down."));
+        if (state.shuttingDown) return use(unavailableAttempt(workerLostFailure("ACP executor is shutting down.")));
+        handedToCaller = true;
         return await use({ runTurn: request => runWorkerTurn(worker!, request) });
       } catch (error) {
+        if (handedToCaller || error instanceof AcpxAgentResolutionSystemError) throw error;
         if (!worker) return use(unavailableAttempt(errorMessage(error)));
         throw error;
       } finally {
@@ -172,7 +186,20 @@ async function recoverManifest(
   else await removeManifest(path);
 }
 
-async function startWorker(state: ManagedAcpExecutorState, input: ManagedAcpAttemptInput): Promise<WorkerState> {
+async function startWorker(
+  state: ManagedAcpExecutorState,
+  input: ManagedAcpAttemptInput,
+): Promise<Result<WorkerState, AcpxAgentResolutionFailure>> {
+  const resolved = await resolveAcpxAgentCommand({ agent: input.agent, cwd: input.cwd, env: input.env });
+  if (resolved.isErr()) return err(resolved.error);
+  return ok(await startResolvedWorker(state, input, resolved.value));
+}
+
+async function startResolvedWorker(
+  state: ManagedAcpExecutorState,
+  input: ManagedAcpAttemptInput,
+  resolvedCommand: string,
+): Promise<WorkerState> {
   await Promise.all([
     mkdir(state.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
     mkdir(state.options.sessionStateDirectoryForRun(input.runId), { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
@@ -258,6 +285,7 @@ async function startWorker(state: ManagedAcpExecutorState, input: ManagedAcpAtte
       cwd: input.cwd,
       env: input.env,
       agent: input.agent,
+      resolvedCommand,
       permissionMode: input.permissionMode,
       ...(input.model === undefined ? {} : { model: input.model }),
     });
@@ -426,24 +454,33 @@ async function cleanupWorkerValue(state: ManagedAcpExecutorState, worker: Worker
   }
 }
 
-function unavailableAttempt(message: string): ManagedAcpAttempt {
-  return { runTurn: async () => failedWithoutWorker("worker_lost", message) };
+function unavailableAttempt(failure: AgentBackendFailure | string): ManagedAcpAttempt {
+  const normalized = typeof failure === "string" ? workerLostFailure(failure) : failure;
+  return { runTurn: async () => failedWithoutWorker(normalized) };
 }
 
 function workerLostResult(worker: WorkerState, message: string): AgentTurnResult {
-  return failedWithoutWorker("worker_lost", message, worker.active);
+  return failedWithoutWorker(workerLostFailure(message), worker.active);
 }
 
-function failedWithoutWorker(kind: AgentBackendFailure["kind"], message: string, active?: ActiveTurn): AgentTurnResult {
+function failedWithoutWorker(failure: AgentBackendFailure, active?: ActiveTurn): AgentTurnResult {
   const timing = resultTiming(active);
   return {
     status: "failed",
-    failure: { kind, origin: "runtime", retryable: true, message },
+    failure,
     responses: partialResponses(active),
     stderr: "",
     summary: active?.lastProgress?.summary ?? emptySummary(),
     timing,
   };
+}
+
+function workerLostFailure(message: string): AgentBackendFailure {
+  return { kind: "worker_lost", origin: "runtime", retryable: true, message };
+}
+
+function configFailure(failure: AcpxAgentResolutionFailure): AgentBackendFailure {
+  return { kind: "config", origin: "runtime", retryable: false, message: failure.message };
 }
 
 function cancelledResult(active: ActiveTurn): AgentTurnResult {

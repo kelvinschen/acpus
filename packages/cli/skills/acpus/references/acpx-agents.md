@@ -26,7 +26,9 @@ The upstream acpx built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `
 
 ## Local Named Agents
 
-Some local acpx installs expose additional named agents from `~/.acpx/config.json`, for example `my-agent`. These are also valid with `use`:
+Acpus resolves additional named Agents from `~/.acpx/config.json` and the
+effective working directory's `.acpxrc.json`, for example `my-agent`. These are
+valid with `use`:
 
 ```ts
 agents: {
@@ -40,7 +42,19 @@ When a user asks for an agent that is not in the built-in list, inspect local ac
 acpx --help | sed -n '/^Commands:/,/^$/p' | grep -E '^[[:space:]]+[[:alnum:]_-]+([[:space:]]|$)'
 ```
 
-If the agent appears in that command list, or is configured under `~/.acpx/config.json` `agents`, use `{ use: "<agent>" }`. Use `{ command: "..." }` only when the agent is a raw ACP server command and acpx has no named token for it.
+If the Agent appears in that command list, or is configured in either Acpx
+`agents` map, use `{ use: "<agent>" }`. Acpus resolves that command once per
+managed attempt, so repair and steering turns keep the same command while a
+later attempt observes config changes. Use `{ command: "..." }` only when the
+Agent is a raw ACP server command and Acpx has no named token for it; explicit
+commands bypass Acpx config validation.
+
+Acpus reuses only Acpx named Agent commands. It does not apply Acpx
+`mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or
+format. Agent login state, provider environment variables, and `ACPX_AUTH_*`
+variables remain available through the inherited Agent environment. Because
+Acpx validates its complete config before exposing the resolved `agents` map,
+an invalid value in another Acpx config field can still block named resolution.
 
 ## ACP Agent Config 
 Use top-level `config` for a static string map: `config.model` selects the model, and every other key is applied to the persistent ACP session.

@@ -18,6 +18,21 @@ and operator-facing recovery.
   clean its worker tree after the callback settles, regardless of the callback
   result.
 - A managed attempt MUST admit at most one active turn at a time.
+- A named Agent's command MUST match package-pinned Acpx resolution for the
+  attempt's effective working directory and environment.
+- Named Agent resolution MUST complete before the executor creates a worker or
+  ownership evidence.
+- A managed attempt MUST resolve its named Agent once and reuse that command for
+  every turn; a later attempt MUST resolve against the then-current config.
+- A command selector MUST use its authored command directly and MUST NOT read or
+  validate Acpx configuration.
+- The executor MUST NOT apply any Acpx configuration domain other than
+  `agents`.
+- A recoverable Acpx configuration-resolution failure MUST return a
+  non-retryable runtime `config` failure without creating ownership evidence.
+- An unavailable or incompatible package-pinned Acpx resolver MUST surface as a
+  system failure.
+- The executor MUST NOT expose or persist the full resolved Acpx configuration.
 - A worker MUST use the `acpx/runtime` API with the supplied persistent session
   directory; turns in one managed attempt MUST reuse that worker and session.
 - `acpxSessionProjectionPath` MUST map an acpx record id to
@@ -129,8 +144,11 @@ and operator-facing recovery.
 
 ## Verification
 
-- `pnpm test:unit packages/agent-executor`: verifies response collection,
-  managed-worker lifecycle, bounded cleanup, identity-safe startup recovery,
-  session projection persistence, and normalized status classification.
+- `pnpm test:unit packages/agent-executor`: verifies named Agent resolution,
+  command bypass, worker IPC, response collection, managed-worker lifecycle,
+  bounded cleanup, identity-safe startup recovery, session projection
+  persistence, and normalized status classification.
+- `pnpm test:integration packages/agent-executor`: verifies effective Acpx
+  configuration and managed named-Agent startup and failure behavior.
 - `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
   verify the exported managed-executor and normalized result surface.

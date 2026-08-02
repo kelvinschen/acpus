@@ -190,7 +190,7 @@ Steer is exceptional recovery: use it only when a started Agent needs new, in-sc
 
 ## Configuring Agents
 
-Acpus uses `acpx` as the source of truth for named agent configuration. Define a custom agent globally in `~/.acpx/config.json` or per project in `.acpxrc.json`:
+Acpus uses the pinned `acpx` dependency as the source of truth for named Agent commands. Before each named Agent attempt, it resolves the effective `agents` map from the global `~/.acpx/config.json` and project `.acpxrc.json` files using that attempt's working directory and environment:
 
 ```json
 {
@@ -200,7 +200,9 @@ Acpus uses `acpx` as the source of truth for named agent configuration. Define a
 }
 ```
 
-Then reference that name in the workflow with `{ use: "my-agent" }`. See the `acpx` guides for [pinning a custom agent name](https://github.com/openclaw/acpx/blob/main/docs/config.md#pin-a-custom-agent-name-without-colliding-with-a-built-in) and [config-defined agents](https://github.com/openclaw/acpx/blob/main/docs/custom-agents.md#3-config-defined-agents).
+Then reference that name in the workflow with `{ use: "my-agent" }`. Project entries override global entries, configured names can override built-ins, and an explicit `{ command: "..." }` bypasses Acpx configuration entirely. See the pinned Acpx guides for [the `agents` map](https://github.com/openclaw/acpx/blob/v0.12.1/docs/config.md#the-agents-map) and [config-defined agents](https://github.com/openclaw/acpx/blob/v0.12.1/docs/custom-agents.md#3-config-defined-agents).
+
+Only named Agent commands are reused. Acpus does not apply Acpx `mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or format; Agent login state, provider environment variables, and `ACPX_AUTH_*` variables continue to work through the inherited Agent environment. Acpx validates the complete config before returning its resolved view, so an invalid value in any Acpx config field can still prevent a named attempt from starting.
 
 ## Core Concepts
 

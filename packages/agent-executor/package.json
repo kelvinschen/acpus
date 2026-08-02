@@ -32,7 +32,8 @@
     "tsx": "^4.23.0"
   },
   "dependencies": {
-    "acpx": "0.12.1"
+    "acpx": "0.12.1",
+    "neverthrow": "^8.2.0"
   },
   "repository": {
     "type": "git",

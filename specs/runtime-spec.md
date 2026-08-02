@@ -337,6 +337,8 @@ type PruneReport = {
 - Turn metadata MUST reference a registered canonical artifact when one exists and otherwise retain only its bounded summary and terminal disposition; non-empty stderr for a writable attempt uses a separate artifact.
 - The daemon MUST accept an optional `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` at startup; it MUST be a canonical positive decimal integer no greater than the native timer limit or daemon startup MUST fail with `invalid-agent-acp-inactivity-fail-after-ms`.
 - When configured ACP inactivity elapses, Runtime MUST settle the Agent attempt as the retryable runtime failure `agent_acp_inactivity_stale` and retain the reported silence evidence in the durable failure.
+- Runtime MUST map a named Agent's Acpx configuration failure to the
+  non-retryable runtime diagnostic `agent_acpx_config_resolution_failed`.
 - A recognized Agent failure MUST write terminal progress/metadata once; if that write also fails, the rejection MUST retain both the recognized failure and persistence failure.
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
 - Running Agent progress MUST periodically persist a local ACP activity timestamp and MUST clear it when that turn settles.

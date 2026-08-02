@@ -38,6 +38,9 @@ importers:
       acpx:
         specifier: 0.12.1
         version: 0.12.1
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
     devDependencies:
       '@types/node':
         specifier: ^22.20.1

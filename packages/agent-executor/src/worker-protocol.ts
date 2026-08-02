@@ -6,24 +6,25 @@ import type {
   AgentTurnResult,
 } from "./types.js";
 
-export const ACP_WORKER_PROTOCOL_VERSION = 2;
+export const ACP_WORKER_PROTOCOL_VERSION = 3;
 
 export type AcpWorkerParentMessage =
   | {
       type: "initialize";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       sessionStateDirectory: string;
       cwd: string;
       env: Record<string, string | undefined>;
       agent: AgentSelector;
+      resolvedCommand: string;
       permissionMode: AgentPermissionMode;
       model?: string;
     }
   | {
       type: "run-turn";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -31,7 +32,7 @@ export type AcpWorkerParentMessage =
     }
   | {
       type: "abort-turn";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -39,7 +40,7 @@ export type AcpWorkerParentMessage =
     }
   | {
       type: "close-attempt";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       reason: string;
@@ -48,13 +49,13 @@ export type AcpWorkerParentMessage =
 export type AcpWorkerChildMessage =
   | {
       type: "ready";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
     }
   | {
       type: "acp-activity";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -62,7 +63,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-observation";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -70,7 +71,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-result";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -78,17 +79,42 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "worker-failure";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
       message: string;
     }
   | {
       type: "closed";
-      protocolVersion: 2;
+      protocolVersion: 3;
       workerId: string;
       attemptId: string;
     };
+
+export function isAcpWorkerParentMessage(value: unknown): value is AcpWorkerParentMessage {
+  if (!record(value)
+    || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION
+    || typeof value.workerId !== "string"
+    || typeof value.attemptId !== "string") return false;
+  if (value.type === "initialize") {
+    return typeof value.sessionStateDirectory === "string"
+      && typeof value.cwd === "string"
+      && environment(value.env)
+      && isAgentSelector(value.agent)
+      && typeof value.resolvedCommand === "string"
+      && value.resolvedCommand.trim().length > 0
+      && isPermissionMode(value.permissionMode)
+      && (value.model === undefined || typeof value.model === "string");
+  }
+  if (value.type === "run-turn") {
+    return typeof value.turnId === "string" && record(value.request);
+  }
+  if (value.type === "abort-turn") {
+    return typeof value.turnId === "string"
+      && (value.reason === "aborted" || value.reason === "timeout" || value.reason === "inactivity");
+  }
+  return value.type === "close-attempt" && typeof value.reason === "string";
+}
 
 export function isAcpWorkerChildMessage(value: unknown): value is AcpWorkerChildMessage {
   if (!record(value)
@@ -172,6 +198,20 @@ function stringArray(value: unknown): value is string[] {
 
 function nonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function environment(value: unknown): value is Record<string, string | undefined> {
+  return record(value) && Object.values(value).every(item => item === undefined || typeof item === "string");
+}
+
+function isAgentSelector(value: unknown): value is AgentSelector {
+  return record(value)
+    && ((value.kind === "named" && typeof value.name === "string")
+      || (value.kind === "command" && typeof value.command === "string"));
+}
+
+function isPermissionMode(value: unknown): value is AgentPermissionMode {
+  return value === "approve-reads" || value === "approve-all" || value === "deny-all";
 }
 
 function record(value: unknown): value is Record<string, unknown> {

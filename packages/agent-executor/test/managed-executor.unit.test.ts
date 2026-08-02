@@ -36,6 +36,7 @@ describe("ACP ownership inspection", () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-agent-executor-"));
     temporaryDirectories.push(root);
     const workers = join(root, "workers");
+    await writeFile(join(root, ".acpxrc.json"), "{ invalid", "utf8");
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
@@ -48,7 +49,7 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "named", name: "codex" },
+      agent: { kind: "command", command: "unused-acp" },
       permissionMode: "deny-all",
     }, async () => "settled");
 
@@ -73,7 +74,7 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "named", name: "codex" },
+      agent: { kind: "command", command: "unused-acp" },
       permissionMode: "deny-all",
     }, async () => { throw failure; })).rejects.toThrow("caller failed");
 
@@ -95,10 +96,10 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "named", name: "codex" },
+      agent: { kind: "command", command: "unused-acp" },
       permissionMode: "deny-all",
     }, managed => managed.runTurn({
-      agent: { kind: "named", name: "codex" },
+      agent: { kind: "command", command: "unused-acp" },
       prompt: "unused",
       cwd: root,
       env: {},

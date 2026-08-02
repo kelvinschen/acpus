@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { ACP_WORKER_PROTOCOL_VERSION, isAcpWorkerChildMessage } from "../src/worker-protocol.js";
+import {
+  ACP_WORKER_PROTOCOL_VERSION,
+  isAcpWorkerChildMessage,
+  isAcpWorkerParentMessage,
+} from "../src/worker-protocol.js";
 
 describe("ACP worker protocol", () => {
-  it("accepts only the response-segment protocol version", () => {
-    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(2);
+  it("accepts only the current protocol version", () => {
+    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(3);
     expect(isAcpWorkerChildMessage({
       type: "ready",
-      protocolVersion: 2,
+      protocolVersion: 3,
       workerId: "worker",
       attemptId: "attempt",
     })).toBe(true);
@@ -16,6 +20,25 @@ describe("ACP worker protocol", () => {
       workerId: "worker",
       attemptId: "attempt",
     })).toBe(false);
+  });
+
+  it("requires the resolved command on worker initialization", () => {
+    const initialize = {
+      type: "initialize",
+      protocolVersion: 3,
+      workerId: "worker",
+      attemptId: "attempt",
+      sessionStateDirectory: "/tmp/sessions",
+      cwd: "/tmp/workspace",
+      env: { HOME: "/tmp/home" },
+      agent: { kind: "named", name: "configured" },
+      resolvedCommand: "configured-acp --stdio",
+      permissionMode: "approve-all",
+    };
+
+    expect(isAcpWorkerParentMessage(initialize)).toBe(true);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedCommand: undefined })).toBe(false);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedCommand: "" })).toBe(false);
   });
 
   it("validates the discriminant-specific child payload", () => {
@@ -67,7 +90,7 @@ describe("ACP worker protocol", () => {
     }))).toBe(false);
     expect(isAcpWorkerChildMessage({
       type: "turn-result",
-      protocolVersion: 2,
+      protocolVersion: 3,
       workerId: "worker",
       attemptId: "attempt",
       turnId: "turn",
@@ -78,7 +101,7 @@ describe("ACP worker protocol", () => {
 function turnResult(result: unknown) {
   return {
     type: "turn-result",
-    protocolVersion: 2,
+    protocolVersion: 3,
     workerId: "worker",
     attemptId: "attempt",
     turnId: "turn",

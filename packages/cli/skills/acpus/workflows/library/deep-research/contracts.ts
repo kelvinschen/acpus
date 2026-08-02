@@ -132,7 +132,7 @@ export const VerificationBatchOutput = z.object({
 
 const ClaimVerdict = VerificationVerdictOutput.omit({ claimId: true });
 
-export const ClaimReview = z.object({
+const ClaimReview = z.object({
   claim: RankedClaim,
   verdicts: z.array(VerificationVerdictOutput),
 });

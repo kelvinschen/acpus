@@ -1434,6 +1434,38 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
       });
     });
 
+    it("maps Acpx named Agent resolution failures to a non-retryable runtime diagnostic", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-acpx-config", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+
+          await expect(executeAgentNode(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            executeTurn: async () => ({
+              status: "failed",
+              failure: {
+                kind: "config",
+                origin: "runtime",
+                retryable: false,
+                message: "Failed to resolve named Agent 'reviewer' through Acpx configuration.",
+              },
+              responses: [],
+              stderr: "",
+              summary: agentSummary(0),
+              timing: agentTiming(),
+            }),
+          })).rejects.toMatchObject({
+            failure: {
+              origin: "runtime",
+              code: "agent_acpx_config_resolution_failed",
+              retryable: false,
+            },
+          });
+        });
+      });
+
     it("persists ACP inactivity as a retryable runtime failure with evidence", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-acp-inactivity", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());

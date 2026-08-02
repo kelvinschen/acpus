@@ -48,7 +48,7 @@ export type AgentNodeFailure =
     }
   | {
       origin: "runtime";
-      code: "invalid_agent_response_repair_max" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
+      code: "invalid_agent_response_repair_max" | "agent_acpx_config_resolution_failed" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
       message: string;
       retryable?: boolean;
       evidence?: AgentBackendFailure["evidence"];
@@ -348,6 +348,14 @@ async function executeObservedAgentTurn(
 }
 
 function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
+  if (failure.kind === "config" && failure.origin === "runtime") {
+    return {
+      origin: "runtime",
+      code: "agent_acpx_config_resolution_failed",
+      message: failure.message,
+      ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+    };
+  }
   if (failure.kind === "inactivity_stale") {
     return {
       origin: "runtime",

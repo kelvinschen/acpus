@@ -23,6 +23,7 @@ import { createTurnResponseCollector } from "./turn-responses.js";
 import { failureFromAcpRuntime, type AcpRuntimeOperation } from "./worker-failure.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
+  isAcpWorkerParentMessage,
   type AcpWorkerChildMessage,
   type AcpWorkerParentMessage,
 } from "./worker-protocol.js";
@@ -63,7 +64,7 @@ let active: ActiveTurn | undefined;
 let closing = false;
 
 process.on("message", raw => {
-  if (!isParentMessage(raw)) return;
+  if (!isAcpWorkerParentMessage(raw)) return;
   void receive(raw).catch(error => fail(error));
 });
 
@@ -88,9 +89,7 @@ async function receive(message: AcpWorkerParentMessage): Promise<void> {
       runtime: createAcpRuntime({
         cwd: message.cwd,
         sessionStore: createAcpusSessionStore(message.sessionStateDirectory),
-        agentRegistry: createAgentRegistry(message.agent.kind === "command"
-          ? { overrides: { [agentName]: message.agent.command } }
-          : undefined),
+        agentRegistry: createAgentRegistry({ overrides: { [agentName]: message.resolvedCommand } }),
         permissionMode: message.permissionMode,
       }),
     };
@@ -388,15 +387,6 @@ function requireInitialized(message: AcpWorkerParentMessage): InitializedWorker 
     throw new Error("ACP worker received a message before initialization.");
   }
   return initialized;
-}
-
-function isParentMessage(value: unknown): value is AcpWorkerParentMessage {
-  if (!value || typeof value !== "object") return false;
-  const message = value as Record<string, unknown>;
-  return message.protocolVersion === ACP_WORKER_PROTOCOL_VERSION
-    && typeof message.workerId === "string"
-    && typeof message.attemptId === "string"
-    && typeof message.type === "string";
 }
 
 function applyEnvironment(env: Record<string, string | undefined>): void {
