@@ -25,6 +25,7 @@ export type ArtifactAccessContext = {
 };
 
 type BoundRegisteredArtifact = {
+  artifact: ArtifactRecord;
   run: RunDirectoryToken;
   file: RunFileToken;
 };
@@ -42,6 +43,14 @@ export function tryBindArtifactRef(
   value: unknown,
   context: ArtifactAccessContext,
 ): Result<RunFileToken, ArtifactPathError> {
+  const resolved = tryResolveArtifactRef(value, context);
+  return resolved.isErr() ? err(resolved.error) : ok(resolved.value.file);
+}
+
+export function tryResolveArtifactRef(
+  value: unknown,
+  context: ArtifactAccessContext,
+): Result<BoundRegisteredArtifact, ArtifactPathError> {
   if (!isArtifactRefCandidate(value) || typeof value.uri !== "string") {
     return err({ type: "invalid-artifact-ref", message: "ArtifactRef must contain a string uri." });
   }
@@ -65,7 +74,7 @@ export function tryBindArtifactRef(
     });
   }
   const bound = tryBindRegisteredArtifact(value.uri, context, artifact);
-  return bound.isErr() ? err(bound.error) : ok(bound.value.file);
+  return bound.isErr() ? err(bound.error) : ok(bound.value);
 }
 
 export function readVerifiedArtifact(
@@ -129,7 +138,7 @@ function tryBindRegisteredArtifact(
         : "path is not a regular file";
     return err(unavailablePath(uri, context.runId, artifact.id, reason));
   }
-  return ok({ run, file: file.value });
+  return ok({ artifact, run, file: file.value });
 }
 
 function assertRegularDescriptor(
@@ -148,7 +157,9 @@ function unavailablePath(uri: string, runId: string, artifactId: string, reason:
   };
 }
 
-export function parseArtifactUri(uri: string): Result<{ runId: string; artifactId: string }, ArtifactPathError> {
+export function parseArtifactUri(
+  uri: string,
+): Result<{ runId: string; artifactId: string }, Extract<ArtifactPathError, { type: "invalid-artifact-ref" }>> {
   const match = /^artifact:\/\/([^/?#\s]+)\/([^/?#\s]+)$/.exec(uri);
   return match
     ? ok({ runId: match[1]!, artifactId: match[2]! })

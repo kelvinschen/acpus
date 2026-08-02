@@ -1,10 +1,11 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { readArtifact } from "../src/runs/use-cases.js";
+import { readArtifact, resolveArtifact } from "../src/runs/use-cases.js";
+import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { openRuntimeStore, type RegisterArtifactInput, type RuntimeStore } from "../src/store/store.js";
@@ -281,6 +282,11 @@ describe("scheduler store attempt fences", () => {
 
   it("registers and publicly reads only the exact regular file with valid metadata", async () => {
     await withRuntimeWorkspace("scheduler-store-artifact-file-verification", async workspace => {
+      const absentShard = resolveRuntimeLayout(workspace).workspaceRoot;
+      await expect(resolveArtifact(workspace, "artifact://run_missing/artifact_missing")).resolves.toMatchObject({
+        error: { type: "artifact-not-found", runId: "run_missing", artifactId: "artifact_missing" },
+      });
+      await expect(lstat(absentShard)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(readArtifact(workspace, "run_missing", "artifact_missing")).resolves.toBeUndefined();
       const store = await openedStore(workspace);
       try {
@@ -308,10 +314,32 @@ describe("scheduler store attempt fences", () => {
           artifact: expected,
           bytes: Buffer.from("x"),
         });
+        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
+          value: {
+            ...expected,
+            uri: `artifact://${run.id}/${artifact.id}`,
+          },
+        });
+        await expect(resolveArtifact(workspace, "artifact://missing")).resolves.toMatchObject({
+          error: { type: "invalid-artifact-ref" },
+        });
+        await expect(resolveArtifact(workspace, `artifact://${run.id}/artifact_missing`)).resolves.toMatchObject({
+          error: { type: "artifact-not-found", runId: run.id, artifactId: "artifact_missing" },
+        });
         await expect(readArtifact(workspace, run.id, "artifact_missing")).resolves.toBeUndefined();
         await expect(readArtifact(workspace, "run_missing", artifact.id)).resolves.toBeUndefined();
         await writeFile(path, "y");
+        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
+          value: {
+            ...expected,
+            uri: `artifact://${run.id}/${artifact.id}`,
+          },
+        });
         await expect(readArtifact(workspace, run.id, artifact.id)).rejects.toThrow("size/digest verification");
+        await rm(path);
+        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
+          error: { type: "artifact-path-invalid", runId: run.id, artifactId: artifact.id },
+        });
       } finally {
         store.close();
       }

@@ -309,7 +309,7 @@ describe("CLI program usage contracts", () => {
     });
   });
   it("documents JSON on the structured-output leaves", async () => {
-    for (const argv of [["doctor", "--help"], ["runs", "artifacts", "--help"]]) {
+    for (const argv of [["doctor", "--help"], ["runs", "artifact", "--help"], ["runs", "artifacts", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);

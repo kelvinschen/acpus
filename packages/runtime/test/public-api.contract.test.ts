@@ -32,6 +32,7 @@ describe("@acpus/runtime public API", () => {
       "requestDaemonControl",
       "requestDaemonShutdown",
       "requestDaemonStatus",
+      "resolveArtifact",
       "startDaemonLoop",
       "tryLoadRuntimeConfiguration",
       "tryNormalizeForkInput",

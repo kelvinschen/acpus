@@ -22,6 +22,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--target`, `--timeline`, `--page`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
+| `runs artifact <artifact-ref>` | Resolves one `artifact://<run-id>/<artifact-id>` to verified local source metadata; optional `--json`. |
 | `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
@@ -35,7 +36,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned only by the `doctor` and `runs artifacts` executable leaves.
+- `--json` MUST be owned only by the `doctor`, `runs artifact`, and `runs artifacts` executable leaves.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
@@ -110,8 +111,10 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifacts, `runs prune --dry-run`, catalog reads, hook reads, Doctor, and skill read.
+- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifact lookup, artifact listing, `runs prune --dry-run`, catalog reads, hook reads, Doctor, and skill read.
 - Runtime-backed read-only commands MUST use Runtime read APIs.
+- Artifact lookup MUST delegate `ArtifactRef` parsing and path safety to Runtime `resolveArtifact`.
+- Artifact lookup MUST present the verified absolute path and registered media type, size, digest, node key, and attempt without reading the file body.
 - Artifact listing MUST present Runtime-owned registry records, including each absolute public path, without reading bodies.
 - An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
 #### Inspection
@@ -217,7 +220,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
 - Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
 - Structured CLI result records MUST retain `schemaVersion: 1`.
-- Except when `-h`/`--help` terminates parsing, Doctor and artifact listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
+- Except when `-h`/`--help` terminates parsing, Doctor, artifact lookup, and artifact listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.

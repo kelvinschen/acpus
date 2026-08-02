@@ -264,6 +264,7 @@ type PruneReport = {
 - Artifact writes MUST use attempt-local run paths while the runtime parent exclusively registers SQLite records and rejects registration after timeout/cancellation.
 - ArtifactRef resolution MUST return tagged failures for malformed/cross-run/unregistered refs and missing, symlink, or non-regular registered files.
 - ArtifactRef path resolution MUST NOT read file bodies or verify recorded size/digest.
+- `resolveArtifact` MUST accept `artifact://<run-id>/<artifact-id>` and return its registered metadata, canonical URI, and verified absolute local path.
 - Artifact registry escape, SQLite, permission, and I/O failures MUST propagate rather than become ArtifactRef validation failures.
 - Signal prompt, timeout message, and deadline MUST resolve once on awaiting entry; the persisted wait resumes durably from normalized input or fails ancestors with `signal_timeout` on expiry.
 - Pause/resume MUST suspend and restore Signal timeout budgets atomically; an unrepresentable restored deadline returns `deadline-out-of-range` without state change.
@@ -511,7 +512,7 @@ type DaemonSteerControlResult = {
 
 ### Read APIs And Daemon Lifecycle
 
-- `listRuns`, `getRun`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
+- `listRuns`, `getRun`, `resolveArtifact`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
 - Read-only inspection MUST validate persisted frozen IR, lock, and source metadata without resolving or hashing a workflow snapshot; execution and explicit frozen-run source resolution MUST fully verify the snapshot before returning its source root.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
 - `getRuntimeHealth` MUST inspect ACP ownership read-only and add an `acp` warning only when degraded or orphaned ownership evidence exists.

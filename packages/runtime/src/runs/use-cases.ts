@@ -1,7 +1,11 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
-import { readVerifiedArtifact } from "../artifacts/access.js";
+import {
+  parseArtifactUri,
+  readVerifiedArtifact,
+  tryResolveArtifactRef,
+} from "../artifacts/access.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import {
   canCancelRun,
@@ -71,6 +75,15 @@ export type ForkInputNormalizationFailure =
   | { type: "run-not-found"; runId: string; message: string }
   | SchemaNormalizationFailure;
 
+export type ArtifactResolutionFailure =
+  | { type: "invalid-artifact-ref"; message: string }
+  | { type: "artifact-not-found"; runId: string; artifactId: string; message: string }
+  | { type: "artifact-path-invalid"; runId: string; artifactId: string; message: string };
+
+export type ResolvedArtifact = ArtifactRecord & {
+  uri: string;
+};
+
 export async function listRuns(cwd: string): Promise<RunRecord[]> {
   const store = await openExistingRuntimeStore(cwd);
   if (!store) return [];
@@ -111,6 +124,28 @@ export async function getArtifact(cwd: string, runId: string, artifactId: string
   } finally {
     store.close();
   }
+}
+
+export function resolveArtifact(cwd: string, artifactRef: string): ResultAsync<ResolvedArtifact, ArtifactResolutionFailure> {
+  return new ResultAsync((async () => {
+    const parsed = parseArtifactUri(artifactRef);
+    if (parsed.isErr()) return err(parsed.error);
+    const store = await openExistingRuntimeStore(cwd);
+    if (!store) return err(artifactNotFound(artifactRef, parsed.value));
+    try {
+      const resolved = tryResolveArtifactRef(
+        { kind: "artifact", uri: artifactRef },
+        { cwd, runId: parsed.value.runId, store },
+      );
+      if (resolved.isErr()) {
+        if (resolved.error.type === "artifact-run-mismatch") throw new Error(resolved.error.message);
+        return err(resolved.error);
+      }
+      return ok({ ...resolved.value.artifact, uri: artifactRef });
+    } finally {
+      store.close();
+    }
+  })());
 }
 
 export async function readArtifact(
@@ -322,6 +357,17 @@ async function acpOwnershipCheck(cwd: string, daemon?: DaemonDiagnostics): Promi
 
 function runNotFound(runId: string): Extract<ForkInputNormalizationFailure, { type: "run-not-found" }> {
   return { type: "run-not-found", runId, message: `Run '${runId}' was not found.` };
+}
+
+function artifactNotFound(
+  uri: string,
+  identity: { runId: string; artifactId: string },
+): Extract<ArtifactResolutionFailure, { type: "artifact-not-found" }> {
+  return {
+    type: "artifact-not-found",
+    ...identity,
+    message: `Artifact '${uri}' is not registered in run '${identity.runId}'.`,
+  };
 }
 
 function daemonCheck(daemon: DaemonDiagnostics | undefined): RuntimeHealthCheck {

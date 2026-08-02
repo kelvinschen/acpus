@@ -8,12 +8,14 @@ import { CaptureStream } from "./support/capture-stream.js";
 const runtime = vi.hoisted(() => ({
   inspectTargetArtifacts: vi.fn(),
   listArtifacts: vi.fn(),
+  resolveArtifact: vi.fn(),
 }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
   inspectTargetArtifacts: runtime.inspectTargetArtifacts,
   listArtifacts: runtime.listArtifacts,
+  resolveArtifact: runtime.resolveArtifact,
 }));
 
 const artifacts: ArtifactRecord[] = [{
@@ -26,11 +28,16 @@ const artifacts: ArtifactRecord[] = [{
   size: 42,
   path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.json",
 }];
+const resolvedArtifact = {
+  ...artifacts[0]!,
+  uri: "artifact://run_1/artifact_1",
+};
 
 describe("runs artifacts", () => {
   beforeEach(() => {
     runtime.listArtifacts.mockReset().mockResolvedValue(artifacts);
     runtime.inspectTargetArtifacts.mockReset().mockResolvedValue(okTarget(artifacts));
+    runtime.resolveArtifact.mockReset().mockResolvedValue(okArtifact(resolvedArtifact));
   });
 
   it("lists all artifact metadata as id, media type, and absolute path", async () => {
@@ -125,6 +132,80 @@ describe("runs artifacts", () => {
   });
 });
 
+describe("runs artifact", () => {
+  beforeEach(() => {
+    runtime.resolveArtifact.mockReset().mockResolvedValue(okArtifact(resolvedArtifact));
+  });
+
+  it("locates one verified local source without reading its body", async () => {
+    const result = await runCommand(["artifact", resolvedArtifact.uri], false);
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: [
+        `Path: ${resolvedArtifact.path}`,
+        `Media-Type: ${resolvedArtifact.mediaType}`,
+        `Size: ${resolvedArtifact.size} bytes`,
+        `Digest: ${resolvedArtifact.digest}`,
+        `Source: ${resolvedArtifact.nodeKey} attempt ${resolvedArtifact.attempt}`,
+        "",
+      ].join("\n"),
+    });
+    expect(runtime.resolveArtifact).toHaveBeenCalledWith("/workspace", resolvedArtifact.uri);
+    expect(result.stdout).not.toContain("artifact body contents");
+  });
+
+  it("emits the resolved artifact in a stable JSON envelope", async () => {
+    const result = await runCommand(["artifact", resolvedArtifact.uri], true);
+    const expected = {
+      schemaVersion: 1,
+      ok: true,
+      phase: "inspect",
+      artifact: resolvedArtifact,
+    };
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: `${JSON.stringify(expected)}\n`,
+    });
+  });
+
+  it("uses a text placeholder and omits absent media type in JSON", async () => {
+    const { mediaType: _mediaType, ...withoutMediaType } = resolvedArtifact;
+    runtime.resolveArtifact.mockResolvedValue(okArtifact(withoutMediaType));
+
+    expect((await runCommand(["artifact", withoutMediaType.uri], false)).stdout).toContain("Media-Type: -\n");
+    expect(JSON.parse((await runCommand(["artifact", withoutMediaType.uri], true)).stdout).artifact)
+      .not.toHaveProperty("mediaType");
+  });
+
+  it.each([
+    ["invalid-artifact-ref", "usage", 2, undefined],
+    ["artifact-not-found", "inspect", 1, "ARTIFACT_NOT_FOUND"],
+    ["artifact-path-invalid", "inspect", 1, "ARTIFACT_PATH_INVALID"],
+  ])("maps %s failures to quiet JSON", async (type, phase, exitCode, errorCode) => {
+    runtime.resolveArtifact.mockResolvedValue(errArtifact(type));
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    expect(await runCli(["runs", "artifact", resolvedArtifact.uri, "--json"], {
+      cwd: "/workspace",
+      stdout,
+      stderr,
+    })).toBe(exitCode);
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      schemaVersion: 1,
+      ok: false,
+      phase,
+      ...(errorCode === undefined ? {} : { errorCode }),
+    });
+    expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
+    expect(stderr.text).toBe("");
+  });
+});
+
 async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -159,5 +240,24 @@ function okTarget(value: ArtifactRecord[]) {
   return {
     isErr: () => false as const,
     value: document,
+  };
+}
+
+function okArtifact(value: typeof resolvedArtifact | Omit<typeof resolvedArtifact, "mediaType">) {
+  return {
+    isErr: () => false as const,
+    value,
+  };
+}
+
+function errArtifact(type: string) {
+  return {
+    isErr: () => true as const,
+    error: {
+      type,
+      runId: "run_1",
+      artifactId: "artifact_1",
+      message: "Artifact lookup failed.",
+    },
   };
 }

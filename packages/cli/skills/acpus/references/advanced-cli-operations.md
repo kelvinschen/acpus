@@ -147,13 +147,21 @@ Skill commands manage the Acpus skill bundled with this CLI and refuse targets n
 
 Alternatively, `--dir <skills-root>` selects one custom skills root without an Agent selection and installs or uninstalls `<skills-root>/acpus`. 
 
-## Artifact registry
+## Artifacts
 
 ```sh
+acpus runs artifact 'artifact://<run-id>/<artifact-id>' [--json]
 acpus runs artifacts <run-id> [--target <node-or-frame-or-attempt>] [--json]
 ```
 
-This lists registered artifact metadata and absolute paths without reading file bodies. Use `--target` to narrow one static/dynamic node, frame, or attempt; use target inspection instead when surrounding execution state is also needed.
+Use singular `artifact` to resolve one ArtifactRef into verified local source
+metadata. It prints the absolute path, media type, size, digest, and producing
+node attempt without reading the file body. Inspect the source through that path
+with a range- or query-limited tool appropriate to its type and size.
+
+Use plural `artifacts` to list registered artifact metadata and absolute paths.
+Use `--target` to narrow one static/dynamic node, frame, or attempt; use target
+inspection instead when surrounding execution state is also needed.
 
 ## Run maintenance
 

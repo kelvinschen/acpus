@@ -13,6 +13,7 @@ import {
   listArtifacts,
   listRuns,
   observeInspection,
+  resolveArtifact,
   readInspection,
   requestDaemonAdmitRun,
   requestDaemonControl,
@@ -32,6 +33,7 @@ import type {
   AgentOverrideMap,
   AgentOverrideValidationFailure,
   AgentTurnArtifact,
+  ArtifactResolutionFailure,
   ArtifactRecord,
   DaemonAdmitRunInput,
   DaemonClientFailure,
@@ -81,6 +83,7 @@ import type {
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimePersistence,
+  ResolvedArtifact,
   SchemaNormalizationFailure,
   Sha256Digest,
   WorkflowSourceBundle,
@@ -178,6 +181,15 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
 test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
+  expectTypeOf(resolveArtifact).toEqualTypeOf<
+    (cwd: string, artifactRef: string) => ResultAsync<ResolvedArtifact, ArtifactResolutionFailure>
+  >();
+  expectTypeOf<ResolvedArtifact>().toEqualTypeOf<ArtifactRecord & { uri: string }>();
+  expectTypeOf<ArtifactResolutionFailure>().toEqualTypeOf<
+    | { type: "invalid-artifact-ref"; message: string }
+    | { type: "artifact-not-found"; runId: string; artifactId: string; message: string }
+    | { type: "artifact-path-invalid"; runId: string; artifactId: string; message: string }
+  >();
   expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunVisualizationSnapshot | undefined>>();

@@ -10,7 +10,9 @@ import {
   listRuns,
   pruneRuns as pruneRuntimeRuns,
   readInspection,
+  resolveArtifact,
   tryNormalizeForkInput,
+  type ArtifactResolutionFailure,
   type ArtifactRecord,
   type DaemonControlIntent,
   type DaemonControlResult,
@@ -83,6 +85,8 @@ type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
 };
 
+type ArtifactRunOptions = JsonOutputOptions;
+
 type PruneRunOptions = {
   olderThan?: string;
   allWorkspaces?: boolean;
@@ -121,6 +125,14 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--target <run-target>", "list artifacts for one static node, dynamic node, frame, or attempt")
     ).action(async (runId: string, options: ArtifactsRunOptions) => {
       await artifactsRunCommand(ctx, runId, options);
+    }));
+
+  command.addCommand(withJsonOutput(new Command("artifact")
+    .exitOverride()
+    .description("Locate an artifact's verified local source.")
+    .argument("<artifact-ref>", "artifact://<run-id>/<artifact-id>")
+    ).action(async (artifactRef: string, options: ArtifactRunOptions) => {
+      await artifactRunCommand(ctx, artifactRef, options);
     }));
 
   command.addCommand(new Command("delete")
@@ -300,6 +312,35 @@ async function artifactsRunCommand(ctx: RunsCommandContext, runId: string, optio
     ctx.stdout.write(`${artifacts.map(artifact => `${artifact.id} ${artifact.mediaType ?? "-"} ${artifact.path}`).join("\n")}\n`);
   }
   ctx.setExitCode(0);
+}
+
+async function artifactRunCommand(ctx: RunsCommandContext, artifactRef: string, options: ArtifactRunOptions): Promise<void> {
+  const resolved = await resolveArtifact(ctx.cwd, artifactRef);
+  if (resolved.isErr()) throw artifactResolutionError(resolved.error);
+  const artifact = resolved.value;
+  if (jsonOutputFor(options)) {
+    writeJsonLine(ctx.stdout, {
+      schemaVersion: 1,
+      ok: true,
+      phase: "inspect",
+      artifact,
+    });
+  } else {
+    ctx.stdout.write([
+      `Path: ${artifact.path}`,
+      `Media-Type: ${artifact.mediaType ?? "-"}`,
+      `Size: ${artifact.size} bytes`,
+      `Digest: ${artifact.digest}`,
+      `Source: ${artifact.nodeKey} attempt ${artifact.attempt}`,
+      "",
+    ].join("\n"));
+  }
+  ctx.setExitCode(0);
+}
+
+function artifactResolutionError(error: ArtifactResolutionFailure): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
+  if (error.type === "invalid-artifact-ref") return usageError(error.message);
+  return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
 }
 
 function artifactInspectionError(error: { type: string; message: string }): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
