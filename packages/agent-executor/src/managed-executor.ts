@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import {
   AcpxAgentResolutionSystemError,
-  resolveAcpxAgentCommand,
+  resolveAcpxAgentLaunch,
+  type AcpxAgentLaunch,
   type AcpxAgentResolutionFailure,
 } from "./acpx-agent-resolution.js";
 import type {
@@ -190,7 +191,7 @@ async function startWorker(
   state: ManagedAcpExecutorState,
   input: ManagedAcpAttemptInput,
 ): Promise<Result<WorkerState, AcpxAgentResolutionFailure>> {
-  const resolved = await resolveAcpxAgentCommand({ agent: input.agent, cwd: input.cwd, env: input.env });
+  const resolved = await resolveAcpxAgentLaunch({ agent: input.agent, cwd: input.cwd, env: input.env });
   if (resolved.isErr()) return err(resolved.error);
   return ok(await startResolvedWorker(state, input, resolved.value));
 }
@@ -198,7 +199,7 @@ async function startWorker(
 async function startResolvedWorker(
   state: ManagedAcpExecutorState,
   input: ManagedAcpAttemptInput,
-  resolvedCommand: string,
+  resolvedLaunch: AcpxAgentLaunch,
 ): Promise<WorkerState> {
   await Promise.all([
     mkdir(state.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
@@ -285,7 +286,7 @@ async function startResolvedWorker(
       cwd: input.cwd,
       env: input.env,
       agent: input.agent,
-      resolvedCommand,
+      resolvedLaunch,
       permissionMode: input.permissionMode,
       ...(input.model === undefined ? {} : { model: input.model }),
     });

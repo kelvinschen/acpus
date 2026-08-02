@@ -89,7 +89,7 @@ async function receive(message: AcpWorkerParentMessage): Promise<void> {
       runtime: createAcpRuntime({
         cwd: message.cwd,
         sessionStore: createAcpusSessionStore(message.sessionStateDirectory),
-        agentRegistry: createAgentRegistry({ overrides: { [agentName]: message.resolvedCommand } }),
+        agentRegistry: createAgentRegistry({ overrides: { [agentName]: message.resolvedLaunch } }),
         permissionMode: message.permissionMode,
       }),
     };

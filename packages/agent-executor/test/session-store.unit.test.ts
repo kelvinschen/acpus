@@ -32,6 +32,7 @@ describe("Acpus ACP session store", () => {
     }));
 
     const loaded = await createAcpusSessionStore(root).load(recordId);
+    expect(loaded?.agentArgv).toEqual(["codex-acp", "--stdio"]);
     expect(loaded?.messages).toEqual([
       { User: { id: "user-1", content: [{ Text: "inspect" }] } },
       {
@@ -77,6 +78,7 @@ function sessionRecord(acpxRecordId: string): AcpSessionRecord {
     acpxRecordId,
     acpSessionId: "backend-1",
     agentCommand: "codex-acp",
+    agentArgv: ["codex-acp", "--stdio"],
     cwd: "/workspace",
     createdAt: "2026-07-31T00:00:00.000Z",
     lastUsedAt: "2026-07-31T00:00:01.000Z",

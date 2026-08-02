@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveAcpxAgentCommand } from "../src/acpx-agent-resolution.js";
+import { resolveAcpxAgentLaunch, type AcpxAgentLaunch } from "../src/acpx-agent-resolution.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -20,15 +20,15 @@ describe("pinned Acpx named Agent resolution", () => {
     });
     await writeConfig(fixture.projectConfig, {
       agents: {
-        codex: { command: "project-acp" },
+        codex: { argv: ["project acp", "--stdio"] },
       },
     });
 
-    await expectResolved("codex", fixture, "project-acp");
+    await expectResolved("codex", fixture, ["project acp", "--stdio"]);
   });
 
   it("returns explicit commands without consulting cwd or Acpx config", async () => {
-    const result = await resolveAcpxAgentCommand({
+    const result = await resolveAcpxAgentLaunch({
       agent: { kind: "command", command: "custom-acp --stdio" },
       cwd: join(tmpdir(), "acpus-does-not-exist"),
       env: {},
@@ -67,12 +67,12 @@ async function writeConfig(path: string, config: unknown): Promise<void> {
 async function expectResolved(
   name: string,
   fixture: Awaited<ReturnType<typeof configFixture>>,
-  expected: string,
+  expected: AcpxAgentLaunch,
 ): Promise<void> {
-  const result = await resolveAcpxAgentCommand({
+  const result = await resolveAcpxAgentLaunch({
     agent: { kind: "named", name },
     cwd: fixture.cwd,
     env: fixture.env,
   });
-  expect(result._unsafeUnwrap()).toBe(expected);
+  expect(result._unsafeUnwrap()).toEqual(expected);
 }

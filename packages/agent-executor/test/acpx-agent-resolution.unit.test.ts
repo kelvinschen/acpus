@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AcpxAgentResolutionSystemError,
   parseAcpxAgentOverrides,
-  resolveAcpxAgentCommand,
+  resolveAcpxAgentLaunch,
 } from "../src/acpx-agent-resolution.js";
 
 const mocks = vi.hoisted(() => ({
@@ -26,17 +26,17 @@ beforeEach(() => {
 });
 
 describe("Acpx Agent config-show output", () => {
-  it("extracts only resolved Agent commands", () => {
+  it("extracts only resolved Agent launches", () => {
     expect(parseAcpxAgentOverrides(JSON.stringify({
       defaultAgent: "codex",
       agents: {
-        custom: { command: "custom-acp --stdio" },
+        custom: { argv: ["custom acp", "--stdio", ""] },
         codex: { command: "wrapped-codex" },
       },
       authMethods: ["secret_method"],
       paths: { global: "/tmp/config.json", project: "/tmp/.acpxrc.json" },
     }))).toEqual({
-      custom: "custom-acp --stdio",
+      custom: ["custom acp", "--stdio", ""],
       codex: "wrapped-codex",
     });
   });
@@ -47,6 +47,9 @@ describe("Acpx Agent config-show output", () => {
     ["non-object agents", JSON.stringify({ agents: [] })],
     ["missing command", JSON.stringify({ agents: { custom: {} } })],
     ["empty command", JSON.stringify({ agents: { custom: { command: "" } } })],
+    ["empty argv", JSON.stringify({ agents: { custom: { argv: [] } } })],
+    ["empty executable", JSON.stringify({ agents: { custom: { argv: [""] } } })],
+    ["non-string argv", JSON.stringify({ agents: { custom: { argv: ["custom-acp", 1] } } })],
     ["drifted entry", JSON.stringify({ agents: { custom: { command: "custom-acp", argv: ["custom-acp"] } } })],
   ])("rejects %s as an integration contract failure", (_case, payload) => {
     expect(() => parseAcpxAgentOverrides(payload)).toThrow(AcpxAgentResolutionSystemError);
@@ -82,7 +85,7 @@ describe("Acpx Agent config-show output", () => {
   });
 
   it("treats successful schema drift as a system fault", async () => {
-    mockConfigShow(null, JSON.stringify({ agents: { configured: { argv: ["configured"] } } }));
+    mockConfigShow(null, JSON.stringify({ agents: { configured: { executable: "configured" } } }));
 
     await expect(resolveNamed()).rejects.toThrow(AcpxAgentResolutionSystemError);
   });
@@ -103,7 +106,7 @@ describe("Acpx Agent config-show output", () => {
 });
 
 function resolveNamed(name = "configured") {
-  return resolveAcpxAgentCommand({
+  return resolveAcpxAgentLaunch({
     agent: { kind: "named", name },
     cwd: process.cwd(),
     env: process.env,

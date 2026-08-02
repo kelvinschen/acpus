@@ -21,13 +21,13 @@ afterEach(async () => {
 describe("managed Acpx Agent resolution", () => {
   it("uses effective HOME and resolves once before handing off the attempt", async () => {
     const fixture = await managedFixture();
-    await writeAgentConfig(fixture.configPath, "claude", "first");
+    await writeAgentConfig(fixture.configPath, "claude", "first response");
 
     await fixture.executor.withAttempt(attemptInput(fixture, "attempt-1", "session-1", named("claude")), async attempt => {
-      await writeAgentConfig(fixture.configPath, "claude", "second");
+      await writeAgentConfig(fixture.configPath, "claude", "second response");
       expect(await attempt.runTurn(turnRequest(fixture, "session-1", named("claude")))).toMatchObject({
         status: "completed",
-        finalResponse: "first|1",
+        finalResponse: "first response|1",
       });
     });
 
@@ -120,7 +120,7 @@ function named(name: string): AgentSelector {
 async function writeAgentConfig(path: string, name: string, response: string): Promise<void> {
   await writeFile(path, `${JSON.stringify({
     agents: {
-      [name]: { command: process.execPath, args: [fixtureAgent, response] },
+      [name]: { argv: [process.execPath, fixtureAgent, response] },
     },
   })}\n`, "utf8");
 }

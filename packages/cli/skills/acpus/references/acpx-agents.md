@@ -18,7 +18,7 @@ agents: {
 
 ## Built-in Agents
 
-The upstream acpx built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `qoder`, `qwen`, and `trae`.
+The upstream acpx built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `pool`, `qoder`, `qwen`, `trae`, and `zeroclaw`.
 
 `factory-droid` and `factorydroid` also resolve to `droid`.
 
@@ -43,17 +43,18 @@ acpx --help | sed -n '/^Commands:/,/^$/p' | grep -E '^[[:space:]]+[[:alnum:]_-]+
 ```
 
 If the Agent appears in that command list, or is configured in either Acpx
-`agents` map, use `{ use: "<agent>" }`. Acpus resolves that command once per
-managed attempt, so repair and steering turns keep the same command while a
+`agents` map, use `{ use: "<agent>" }`. Acpus resolves that launch once per
+managed attempt, so repair and steering turns keep the same launch while a
 later attempt observes config changes. Use `{ command: "..." }` only when the
 Agent is a raw ACP server command and Acpx has no named token for it; explicit
 commands bypass Acpx config validation.
 
-Acpus reuses only Acpx named Agent commands. It does not apply Acpx
-`mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or
-format. Agent login state, provider environment variables, and `ACPX_AUTH_*`
-variables remain available through the inherited Agent environment. Because
-Acpx validates its complete config before exposing the resolved `agents` map,
+Acpus reuses only Acpx named Agent launches, including structured `argv`. It
+does not apply Acpx `mcpServers`, `auth`, permission defaults, `defaultAgent`,
+TTL, timeout, or format. Agent login state, provider environment variables, and
+`ACPX_AUTH_*` variables remain available through the inherited Agent
+environment. Because Acpx validates its complete config before exposing the
+resolved `agents` map,
 an invalid value in another Acpx config field can still block named resolution.
 
 ## ACP Agent Config 

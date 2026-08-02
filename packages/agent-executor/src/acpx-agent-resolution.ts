@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { createAgentRegistry } from "acpx/runtime";
+import { createAgentRegistry, type AcpAgentRegistry } from "acpx/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { AgentSelector } from "./types.js";
 
@@ -14,6 +14,8 @@ export type AcpxAgentResolutionFailure = {
   message: string;
 };
 
+export type AcpxAgentLaunch = ReturnType<AcpAgentRegistry["resolve"]>;
+
 export class AcpxAgentResolutionSystemError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -21,15 +23,15 @@ export class AcpxAgentResolutionSystemError extends Error {
   }
 }
 
-export function resolveAcpxAgentCommand(input: {
+export function resolveAcpxAgentLaunch(input: {
   agent: AgentSelector;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): ResultAsync<string, AcpxAgentResolutionFailure> {
-  return new ResultAsync(resolveAcpxAgentCommandValue(input));
+}): ResultAsync<AcpxAgentLaunch, AcpxAgentResolutionFailure> {
+  return new ResultAsync(resolveAcpxAgentLaunchValue(input));
 }
 
-export function parseAcpxAgentOverrides(stdout: string): Record<string, string> {
+export function parseAcpxAgentOverrides(stdout: string): Record<string, AcpxAgentLaunch> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -40,24 +42,29 @@ export function parseAcpxAgentOverrides(stdout: string): Record<string, string> 
     throw new AcpxAgentResolutionSystemError("Pinned Acpx config show omitted the required agents object.");
   }
 
-  const entries: Array<[string, string]> = [];
+  const entries: Array<[string, AcpxAgentLaunch]> = [];
   for (const [name, rawEntry] of Object.entries(parsed.agents)) {
-    if (!record(rawEntry)
-      || Object.keys(rawEntry).length !== 1
-      || typeof rawEntry.command !== "string"
-      || rawEntry.command.trim().length === 0) {
+    if (!record(rawEntry) || Object.keys(rawEntry).length !== 1) {
       throw new AcpxAgentResolutionSystemError(`Pinned Acpx config show returned an invalid agents.${name} entry.`);
     }
-    entries.push([name, rawEntry.command]);
+    if (typeof rawEntry.command === "string" && rawEntry.command.trim().length > 0) {
+      entries.push([name, rawEntry.command]);
+      continue;
+    }
+    if (agentArgv(rawEntry.argv)) {
+      entries.push([name, [...rawEntry.argv]]);
+      continue;
+    }
+    throw new AcpxAgentResolutionSystemError(`Pinned Acpx config show returned an invalid agents.${name} entry.`);
   }
   return Object.fromEntries(entries);
 }
 
-async function resolveAcpxAgentCommandValue(input: {
+async function resolveAcpxAgentLaunchValue(input: {
   agent: AgentSelector;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): Promise<Result<string, AcpxAgentResolutionFailure>> {
+}): Promise<Result<AcpxAgentLaunch, AcpxAgentResolutionFailure>> {
   if (input.agent.kind === "command") return ok(input.agent.command);
 
   const cliPath = resolvePinnedAcpxCli();
@@ -146,4 +153,12 @@ function boundedDetail(value: string | undefined): string | undefined {
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function agentArgv(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && typeof value[0] === "string"
+    && value[0].length > 0
+    && value.every(item => typeof item === "string");
 }

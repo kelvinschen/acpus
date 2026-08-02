@@ -18,11 +18,13 @@ and operator-facing recovery.
   clean its worker tree after the callback settles, regardless of the callback
   result.
 - A managed attempt MUST admit at most one active turn at a time.
-- A named Agent's command MUST match package-pinned Acpx resolution for the
+- A named Agent's launch MUST match package-pinned Acpx resolution for the
   attempt's effective working directory and environment.
+- Structured argv returned by Acpx MUST cross worker startup without being
+  rendered back into a command string.
 - Named Agent resolution MUST complete before the executor creates a worker or
   ownership evidence.
-- A managed attempt MUST resolve its named Agent once and reuse that command for
+- A managed attempt MUST resolve its named Agent once and reuse that launch for
   every turn; a later attempt MUST resolve against the then-current config.
 - A command selector MUST use its authored command directly and MUST NOT read or
   validate Acpx configuration.
@@ -44,6 +46,7 @@ and operator-facing recovery.
   `acpxSessionProjectionPath`.
 - The adapter MUST load that projection for later workers that resume the same
   session.
+- The adapter MUST preserve structured Agent argv in the session projection.
 - Before saving, the adapter MUST preserve the acpx-projected User and Agent
   messages, including Text, Thinking, tool calls, and each tool result's compact
   `content`; it MUST omit each tool result's optional `output`.

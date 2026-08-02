@@ -5,26 +5,27 @@ import type {
   AgentTurnRequest,
   AgentTurnResult,
 } from "./types.js";
+import type { AcpxAgentLaunch } from "./acpx-agent-resolution.js";
 
-export const ACP_WORKER_PROTOCOL_VERSION = 3;
+export const ACP_WORKER_PROTOCOL_VERSION = 4;
 
 export type AcpWorkerParentMessage =
   | {
       type: "initialize";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       sessionStateDirectory: string;
       cwd: string;
       env: Record<string, string | undefined>;
       agent: AgentSelector;
-      resolvedCommand: string;
+      resolvedLaunch: AcpxAgentLaunch;
       permissionMode: AgentPermissionMode;
       model?: string;
     }
   | {
       type: "run-turn";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -32,7 +33,7 @@ export type AcpWorkerParentMessage =
     }
   | {
       type: "abort-turn";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -40,7 +41,7 @@ export type AcpWorkerParentMessage =
     }
   | {
       type: "close-attempt";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       reason: string;
@@ -49,13 +50,13 @@ export type AcpWorkerParentMessage =
 export type AcpWorkerChildMessage =
   | {
       type: "ready";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
     }
   | {
       type: "acp-activity";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -63,7 +64,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-observation";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -71,7 +72,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-result";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -79,14 +80,14 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "worker-failure";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
       message: string;
     }
   | {
       type: "closed";
-      protocolVersion: 3;
+      protocolVersion: 4;
       workerId: string;
       attemptId: string;
     };
@@ -101,8 +102,7 @@ export function isAcpWorkerParentMessage(value: unknown): value is AcpWorkerPare
       && typeof value.cwd === "string"
       && environment(value.env)
       && isAgentSelector(value.agent)
-      && typeof value.resolvedCommand === "string"
-      && value.resolvedCommand.trim().length > 0
+      && agentLaunch(value.resolvedLaunch)
       && isPermissionMode(value.permissionMode)
       && (value.model === undefined || typeof value.model === "string");
   }
@@ -194,6 +194,16 @@ function isFailure(value: unknown): boolean {
 
 function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function agentLaunch(value: unknown): value is AcpxAgentLaunch {
+  return typeof value === "string"
+    ? value.trim().length > 0
+    : Array.isArray(value)
+      && value.length > 0
+      && typeof value[0] === "string"
+      && value[0].length > 0
+      && value.every(item => typeof item === "string");
 }
 
 function nonnegativeInteger(value: unknown): value is number {

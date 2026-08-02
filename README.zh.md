@@ -172,19 +172,19 @@ Retry 用于重试当前 run 中失败的部分。Fork 会创建新 run，并且
 
 ## 配置 Agent
 
-Acpus 以锁定版本的 `acpx` 依赖作为具名 Agent 命令的配置来源。每次启动具名 Agent attempt 前，Acpus 会使用该 attempt 的工作目录和环境，从全局 `~/.acpx/config.json` 与项目 `.acpxrc.json` 中解析最终的 `agents` 映射：
+Acpus 以锁定版本的 `acpx` 依赖作为具名 Agent 启动方式的配置来源。每次启动具名 Agent attempt 前，Acpus 会使用该 attempt 的工作目录和环境，从全局 `~/.acpx/config.json` 与项目 `.acpxrc.json` 中解析最终的 `agents` 映射：
 
 ```json
 {
   "agents": {
-    "my-agent": { "command": "node ./scripts/agent-acp-bridge.mjs" }
+    "my-agent": { "argv": ["node", "./scripts/agent-acp-bridge.mjs"] }
   }
 }
 ```
 
-然后在 workflow 中通过 `{ use: "my-agent" }` 引用该名称。项目配置会覆盖全局配置，配置项也可以覆盖 built-in；显式 `{ command: "..." }` 则完全绕过 Acpx 配置。更多配置方式请参考锁定版本 Acpx 的 [`agents` map](https://github.com/openclaw/acpx/blob/v0.12.1/docs/config.md#the-agents-map) 和 [config-defined agents](https://github.com/openclaw/acpx/blob/v0.12.1/docs/custom-agents.md#3-config-defined-agents)。
+然后在 workflow 中通过 `{ use: "my-agent" }` 引用该名称。项目配置会覆盖全局配置，配置项也可以覆盖 built-in；显式 `{ command: "..." }` 则完全绕过 Acpx 配置。更多配置方式请参考锁定版本 Acpx 的 [`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map) 和 [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents)。
 
-Acpus 只复用具名 Agent 命令，不应用 Acpx 的 `mcpServers`、`auth`、权限默认值、`defaultAgent`、TTL、timeout 或 format。Agent 登录态、Provider 环境变量与 `ACPX_AUTH_*` 变量仍会通过继承的 Agent 环境生效。Acpx 会先验证完整配置再返回解析结果，因此任一 Acpx 配置字段非法时，具名 attempt 仍可能无法启动。
+Acpus 只复用具名 Agent 启动方式，不应用 Acpx 的 `mcpServers`、`auth`、权限默认值、`defaultAgent`、TTL、timeout 或 format。Agent 登录态、Provider 环境变量与 `ACPX_AUTH_*` 变量仍会通过继承的 Agent 环境生效。Acpx 会先验证完整配置再返回解析结果，因此任一 Acpx 配置字段非法时，具名 attempt 仍可能无法启动。
 
 ## 核心概念
 

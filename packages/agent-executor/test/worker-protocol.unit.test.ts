@@ -7,10 +7,10 @@ import {
 
 describe("ACP worker protocol", () => {
   it("accepts only the current protocol version", () => {
-    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(3);
+    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(4);
     expect(isAcpWorkerChildMessage({
       type: "ready",
-      protocolVersion: 3,
+      protocolVersion: 4,
       workerId: "worker",
       attemptId: "attempt",
     })).toBe(true);
@@ -22,23 +22,26 @@ describe("ACP worker protocol", () => {
     })).toBe(false);
   });
 
-  it("requires the resolved command on worker initialization", () => {
+  it("requires a resolved command or structured argv on worker initialization", () => {
     const initialize = {
       type: "initialize",
-      protocolVersion: 3,
+      protocolVersion: 4,
       workerId: "worker",
       attemptId: "attempt",
       sessionStateDirectory: "/tmp/sessions",
       cwd: "/tmp/workspace",
       env: { HOME: "/tmp/home" },
       agent: { kind: "named", name: "configured" },
-      resolvedCommand: "configured-acp --stdio",
+      resolvedLaunch: "configured-acp --stdio",
       permissionMode: "approve-all",
     };
 
     expect(isAcpWorkerParentMessage(initialize)).toBe(true);
-    expect(isAcpWorkerParentMessage({ ...initialize, resolvedCommand: undefined })).toBe(false);
-    expect(isAcpWorkerParentMessage({ ...initialize, resolvedCommand: "" })).toBe(false);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedLaunch: ["configured acp", "--stdio"] })).toBe(true);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedLaunch: undefined })).toBe(false);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedLaunch: "" })).toBe(false);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedLaunch: [] })).toBe(false);
+    expect(isAcpWorkerParentMessage({ ...initialize, resolvedLaunch: [""] })).toBe(false);
   });
 
   it("validates the discriminant-specific child payload", () => {
@@ -90,7 +93,7 @@ describe("ACP worker protocol", () => {
     }))).toBe(false);
     expect(isAcpWorkerChildMessage({
       type: "turn-result",
-      protocolVersion: 3,
+      protocolVersion: 4,
       workerId: "worker",
       attemptId: "attempt",
       turnId: "turn",
@@ -101,7 +104,7 @@ describe("ACP worker protocol", () => {
 function turnResult(result: unknown) {
   return {
     type: "turn-result",
-    protocolVersion: 3,
+    protocolVersion: 4,
     workerId: "worker",
     attemptId: "attempt",
     turnId: "turn",
