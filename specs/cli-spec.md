@@ -38,6 +38,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
 - `--json` MUST be owned only by the `doctor`, `runs artifact`, and `runs artifacts` executable leaves.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
+- Root help MUST display the CLI package version before usage.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
 - `workflow run --help` MUST state that the command typechecks, compiles, and validates the workflow before admission and execution.
 - `workflow run --help` MUST distinguish terminal `--follow` from decision-boundary `--await-decision` and state that `Ctrl-C` detaches.

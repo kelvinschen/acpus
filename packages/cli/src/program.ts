@@ -74,6 +74,7 @@ function createProgram(
       if (options.version) io.stdout.write(`${packageInfo.version}\n`);
       else program.outputHelp();
     });
+  program.addHelpText("before", `Acpus ${packageInfo.version}\n`);
   program.hook("preSubcommand", command => {
     if (command.opts<{ version?: boolean }>().version === true) {
       throw usageError("--version cannot be combined with a command.");

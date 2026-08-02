@@ -55,6 +55,20 @@ describe("CLI program usage contracts", () => {
     expect(stderr.text).toContain("version");
   });
 
+  it("shows the package version before root usage", async () => {
+    const version = getCliPackageInfo().version;
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    expect(await runCli(["--help"], {
+      cwd: process.cwd(),
+      stdout,
+      stderr,
+    })).toBe(0);
+
+    expect(stdout.text.startsWith(`Acpus ${version}\n\nUsage: acpus `)).toBe(true);
+    expect(stderr.text).toBe("");
+  });
+
   it("does not omit or move the documented unloaded-Skill guidance below the command list", async () => {
     const rootStdout = new CaptureStream();
     const rootStderr = new CaptureStream();
