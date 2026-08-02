@@ -189,7 +189,7 @@ Only after applying the rules above, choose the closest compact teaching example
 | [`typed-loop-state`](../workflows/examples/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
 | [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `task`, `parallel`, `fanout`, `loop` | Iterate with resident and fresh reviewers in a bounded loop. |
 | [`change-approval`](../workflows/examples/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
-| [`design-forge`](../workflows/examples/design-forge/workflow.ts) | `agent`, `task`, `if`, `parallel`, `loop` | Refine a shared blackboard with three resident challengers and publish the result as an artifact. |
+| [`design-forge`](../workflows/examples/design-forge/workflow.ts) | `agent`, `task`, `if`, `parallel`, `loop` | Long example (higher token cost to read) with a resident Designer and three scoped challengers. |
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
 | [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a standard-scale fanout and reduce results in batches. |
 | [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `fanout` | Fan out six worktree candidates and judge them. |

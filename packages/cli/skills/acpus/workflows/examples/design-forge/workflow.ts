@@ -1,5 +1,5 @@
 /*
- * Pattern: Develop one reader-facing design through three resident challenge conversations sharing a run-scoped text blackboard, then publish the design separately from the review history.
+ * Pattern: Develop one reader-facing design through a resident Designer and three scoped resident challenge conversations sharing a run-scoped text blackboard, then publish the design with final review state.
  * Scale: at most maxRounds × (1 designer + 3 challengers); peak ready Agents: 3.
  * Nodes: agent, task, if, parallel, loop
  */
@@ -37,14 +37,28 @@ export default defineWorkflow({
         const existing = await $`test -e ${path}`.nothrow();
         if (existing.exitCode !== 0) await $`printf %s ${content} > ${path}`;
       };
+      const pendingReview = [
+        "# Status",
+        "",
+        "pending",
+        "",
+        "# Active Blockers",
+        "",
+        "None recorded yet.",
+        "",
+        "# Accepted Constraints",
+        "",
+        "None recorded yet.",
+        "",
+      ].join("\n");
 
       await $`mkdir -p ${`${root}/reviews`}`;
       await $`chmod 700 ${root}`;
       await writeOnce(`${root}/brief.txt`, `${input.brief}\n`);
       await writeOnce(`${root}/design.md`, "No design has been written yet.\n");
-      await writeOnce(`${root}/reviews/fitness.txt`, "No fitness review has been recorded yet.\n");
-      await writeOnce(`${root}/reviews/failure.txt`, "No failure review has been recorded yet.\n");
-      await writeOnce(`${root}/reviews/simplicity.txt`, "No simplicity review has been recorded yet.\n");
+      await writeOnce(`${root}/reviews/fitness.txt`, pendingReview);
+      await writeOnce(`${root}/reviews/failure.txt`, pendingReview);
+      await writeOnce(`${root}/reviews/simplicity.txt`, pendingReview);
       return { root };
     },
   });
@@ -57,38 +71,42 @@ export default defineWorkflow({
       rounds: 0,
     },
     do({ state, round }) {
-      const design = step("design_board").agent({
+      step("design_board").agent({
         agent: agents.designer,
         cwd: blackboard.output.root,
+        sessionKey: "design-forge:designer",
         prompt: md`
           You own both the design and the document that communicates it.
 
-          Work directly in the text blackboard at ${blackboard.output.root}. Read
-          brief.txt, design.md, and the three files under reviews/. The source
-          workspace is ${meta.workspaceDir}; inspect it when useful. You may also
-          consult public sources when they materially improve the proposal, but
-          modify only files in the blackboard.
-
-          Reviewer completion:
-          - fitness: ${state.fitnessDone}
-          - failure: ${state.failureDone}
-          - simplicity: ${state.simplicityDone}
+          Read brief.txt, design.md, and the three files under reviews/. brief.txt
+          contains the design problem, audience, goals, constraints, success
+          criteria, and starting context. The source workspace is
+          ${meta.workspaceDir}. Modify only design.md.
 
           design.md is the reader-facing Markdown deliverable, not a scratchpad
-          or review transcript. On the first pass, write the strongest useful
-          proposal you can. On later passes, improve it and respond inside each
-          active review notebook to unresolved or reopened concerns. Preserve
-          accepted constraints and do not disturb a reviewer that has completed.
-          Write the design and every review response in the task language used by
-          brief.txt. Preserve code, identifiers, and source quotations in their
-          original language when that improves precision.
+          or review transcript. If no design has been written, inspect the source
+          workspace and public sources as needed, then write the strongest useful
+          proposal you can. Otherwise, treat Active Blockers as the authoritative
+          delta: make the smallest coherent edits that resolve them, preserve every
+          Accepted Constraint, and keep accepted decisions stable. Do not broaden
+          the pass unless resolving a blocker requires it. Prefer deleting stale
+          text over adding parallel explanations.
 
-          Use judgment rather than a fixed template. Shape the document around the
-          brief, its audience, and the actual design. Make the recommendation and
-          its consequences easy to find, then provide the context, alternatives,
-          design detail, risks, operations, validation, and delivery information
-          that this particular proposal needs. Omit sections that add no value and
-          add sections the subject genuinely requires.
+          Write the design in the task language used by brief.txt. Preserve code,
+          identifiers, and source quotations in their original language when that
+          improves precision.
+
+          Write like a knowledgeable teammate addressing this audience: direct,
+          concrete, and natural. Let facts and reasoning carry the argument; do
+          not manufacture weight with stock framing, empty summaries, inflated
+          claims, or performative jargon. Preserve facts, terminology, attribution,
+          responsibility, and uncertainty. Once the document is clear and useful,
+          stop polishing rather than trade precision for personality.
+
+          Shape the document around the brief, its audience, and the actual design.
+          Make the recommendation and its consequences easy to find, then provide
+          only the context, alternatives, design detail, risks, operations,
+          validation, and delivery information that this proposal needs.
 
           Optimize for reading and decision making:
           - Prefer a clear narrative with useful headings and progressive detail.
@@ -98,27 +116,18 @@ export default defineWorkflow({
             they matter to the design.
           - Use a compact table when comparison is easier to understand in rows and
             columns.
-          - Add Mermaid diagrams only when a visual explains an important
-            architecture, process, interaction, lifecycle, data relationship, or
-            deployment more clearly than prose. Give each useful diagram enough
-            surrounding explanation to be understood and keep it consistent with
-            the text. Do not add decorative diagrams.
+          - Use Mermaid diagrams to make important architecture, processes,
+            interactions, lifecycles, data relationships, or deployments easier to
+            understand. Give each diagram enough surrounding explanation, keep it
+            consistent with the text, and omit diagrams that add no information.
           - Cite authoritative workspace files or public sources when they support
             material factual claims, standards, constraints, or prior art. Use
             normal Markdown links or a references section in whatever style best
             fits the document. Never invent a source, and do not force citations
             onto design judgments or common background knowledge.
-          - Keep the final document self-contained. Keep challenge history in the
-            review notebooks rather than copying it into the proposal.
+          - Keep the final document self-contained.
 
-          This is a best-effort design, not a compliance form. There is no required
-          heading list, citation notation, diagram count, decision schema, or
-          publication marker. The quality bar is that the result is useful,
-          credible, appropriately visual, and easy for its intended readers to
-          follow.
-
-          The files, not your response, are the source of truth. Return only a very
-          short note that this pass is complete.
+          Update design.md, then reply with a very short completion note.
         `,
       });
 
@@ -127,48 +136,43 @@ export default defineWorkflow({
         focus: string,
         notebook: string,
       ) => md`
-        Continue as the resident ${lens} challenger.
+        You are the ${lens} challenger.
         Focus: ${focus}
 
-        The Designer has completed the current pass: ${design.output}
-        Work in the blackboard at ${blackboard.output.root}. Read brief.txt,
-        design.md, and any review notebook useful for context. The source
-        workspace is ${meta.workspaceDir}; inspect it or relevant public sources
-        when useful. Write only to ${notebook}; never edit design.md or another
-        challenger's notebook.
+        Read brief.txt, design.md, and ${notebook}. brief.txt contains the design
+        problem, audience, goals, constraints, success criteria, and starting
+        context. Do not read another challenger's notebook.
+        The source workspace is ${meta.workspaceDir}. Inspect it or relevant public
+        sources only as needed to establish or adjudicate a blocker.
+        Write only to that notebook; never edit design.md or another challenger's
+        notebook.
         Write your notebook in the task language used by brief.txt. Preserve code,
         identifiers, and source quotations in their original language when that
         improves precision.
 
-        Challenge both the proposal and how well design.md communicates it, but
-        do not turn the review into a rigid compliance checklist. Concentrate on
-        consequential gaps, weak assumptions, counterexamples, misleading
-        explanations, and choices that a decision maker, implementer, operator, or
-        future maintainer could misunderstand.
+        Write like a knowledgeable teammate: direct, concrete, and natural. Let
+        facts and reasoning carry the judgment; do not manufacture weight with
+        stock framing, empty summaries, inflated claims, or performative jargon.
+        Preserve facts, terminology, attribution, responsibility, and uncertainty.
 
-        Consider whether the document makes the recommendation, rationale,
-        alternatives, trade-offs, boundaries, important failure modes, and open
-        questions clear at the depth appropriate to this brief. Also consider
-        whether a table, diagram, or reference would materially improve the
-        explanation, and whether any existing visual or citation is useful and
-        trustworthy. Do not demand a particular section, notation, source count,
-        or diagram merely for completeness.
+        Review both the proposal and how clearly design.md communicates it. Block
+        only on concrete gaps, weak assumptions, counterexamples, or misleading
+        explanations within your focus that could materially change a decision,
+        implementation, operational risk, or confidence in the evidence.
 
-        On your first visit, record a useful batch of the most important unresolved
-        concerns and return done=false. On later visits, judge the Designer's
-        responses against the full current design, accept adequate resolutions,
-        reopen weak ones with concrete reasons, and add new concerns only when they
-        are material. Organize the notebook however best supports the conversation.
-        After the first visit, if you cannot identify a concrete unresolved issue
-        that could materially change a decision, implementation, operational risk,
-        or confidence in the supporting evidence, record acceptance and return
-        done=true; do not keep the review open for minor wording, optional detail,
-        or speculative concerns.
+        If Status is pending, record at most three highest-consequence blockers;
+        accept immediately if none exists. If Status is open, adjudicate only the
+        existing Active Blockers. Add a blocker only for a regression introduced by
+        the latest design pass; ignore newly noticed pre-existing concerns.
 
-        When your lens has no meaningful unresolved issue and its important
-        constraints are protected, record your acceptance and the constraints
-        future edits must preserve, then return done=true. Otherwise return
-        done=false. Return only JSON matching the schema.
+        Replace the entire notebook in every review; never append review history.
+        Keep exactly these compact sections:
+        - Status: replace the initial pending value with open or accepted.
+        - Active Blockers: only unresolved blockers, or "None."
+        - Accepted Constraints: concise decisions future edits must preserve.
+
+        Return done=true exactly when Status is accepted and Active Blockers is
+        empty. Return done=false exactly when Status is open.
       `;
 
       const challenges = step("challenge_panel").parallel({
@@ -257,8 +261,8 @@ export default defineWorkflow({
       const failure = await $`cat reviews/failure.txt`.text();
       const simplicity = await $`cat reviews/simplicity.txt`.text();
       const outcome = input.settled ? "consensus" : "round limit";
-      const reviewLog = [
-        "DESIGN FORGE REVIEW LOG",
+      const reviewState = [
+        "DESIGN FORGE FINAL REVIEW STATE",
         `Outcome: ${outcome}`,
         `Rounds: ${input.rounds}`,
         "",
@@ -282,8 +286,8 @@ export default defineWorkflow({
         { mediaType: "text/markdown" },
       );
       await artifact.write(
-        "design-forge-review-log.txt",
-        reviewLog,
+        "design-forge-review-state.txt",
+        reviewState,
         { mediaType: "text/plain" },
       );
       return { blackboard };
