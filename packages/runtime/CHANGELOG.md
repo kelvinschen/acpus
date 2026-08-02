@@ -1,5 +1,28 @@
 # @acpus/runtime
 
+## 0.14.0
+
+### Minor Changes
+
+- 0a9355c: Separate exact Agent response segments from the completed turn response used
+  for node output and schema conformance.
+- a775e12: Resolve ArtifactRefs into verified local source metadata without reading artifact contents.
+- bcac75e: Replace fork seed planning with direct-parent, leaf-ready replay keyed by each
+  occurrence's effective operation and declared logical inputs. Fork children now
+  start pending with empty scheduler state, `--target` is an exclusive parent
+  checkpoint, and the unsafe-reuse option is removed.
+
+### Patch Changes
+
+- 4937cc5: Reject targeted cancellation of terminal nodes before planning descendant
+  events so inspection of completed parallel and fanout work remains read-only.
+- 8a5c380: Resolve named Agent commands from the pinned Acpx global and project
+  configuration for each managed attempt while keeping explicit commands and
+  other Acpx configuration domains outside the integration.
+- Updated dependencies [0a9355c]
+- Updated dependencies [8a5c380]
+  - @acpus/agent-executor@0.5.0
+
 ## 0.13.0
 
 ### Minor Changes
