@@ -394,7 +394,7 @@ describe("CLI program usage contracts", () => {
     expect(forkStdout.text).toContain("stdin");
     expect(forkStdout.text).toContain("--project");
     expect(forkStdout.text).toContain("--global");
-    expect(forkStdout.text).toContain("rewind: rerun this occurrence and later work");
+    expect(forkStdout.text).toMatch(/rewind: rerun this occurrence and later work;\s+omit #attemptNo/u);
     const steerStdout = new CaptureStream();
     const steerStderr = new CaptureStream();
     expect(await runCli(["runs", "steer", "--help"], {

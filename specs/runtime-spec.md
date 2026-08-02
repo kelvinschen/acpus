@@ -506,6 +506,7 @@ type DaemonSteerControlResult = {
 - Source-run artifacts inherited by the child MUST be exactly those referenced by reused results, with unchanged content.
 - Without a fork target, every otherwise reusable direct-source result MUST remain eligible.
 - A fork target MUST resolve before child creation to one materialized source Agent, Task, or Signal occurrence.
+- A fork target with an attempt suffix MUST fail without creating a child run.
 - A targeted fork MUST NOT reuse the selected occurrence or source work completed after that occurrence first became eligible to run.
 - A missing, ambiguous, or non-materialized fork target MUST fail without creating a child run.
 - Generic inspection MUST identify only the direct source run for a fork child.

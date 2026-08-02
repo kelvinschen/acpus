@@ -5883,8 +5883,18 @@ function resolveForkCheckpoint(
     nodeKey = target;
   } else if (target.startsWith("@")) {
     const occurrence = resolveOccurrenceRef(projection, target, { attempt: "reject" });
-    if (occurrence && !occurrence.ok && occurrence.error.type === "occurrence-ref-collision") {
-      return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is ambiguous.` });
+    if (occurrence && !occurrence.ok) {
+      if (occurrence.error.type === "occurrence-ref-collision") {
+        return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is ambiguous.` });
+      }
+      if (occurrence.error.type === "occurrence-ref-attempt-not-allowed") {
+        const occurrenceTarget = target.slice(0, target.lastIndexOf("#"));
+        return err({
+          type: "target-resolution-failure",
+          target,
+          message: `Fork target '${target}' selects attempt ${occurrence.error.attemptNo}; use occurrence target '${occurrenceTarget}' without the attempt suffix.`,
+        });
+      }
     }
     if (occurrence?.ok && occurrence.value.kind === "node") nodeKey = occurrence.value.nodeKey;
   } else {

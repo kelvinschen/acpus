@@ -91,7 +91,7 @@ Usually omit `--target`, including after a failure. Acpus reuses completed work 
 - Changing one step reruns that step; later work may still be reused when its input remains the same.
 - Fork starts new Agent conversations, so work using `sessionKey` runs again. Reused artifacts follow their results automatically.
 
-Use `--target` only to deliberately rewind, such as re-asking a consumed Signal. Copy the displayed target from source inspection; that point and later work run again.
+Use `--target` only to deliberately rewind, such as re-asking a consumed Signal. Copy the occurrence selector `@ref` (without suffixes like `#1` ) from source inspection; that point and later work run again.
 
 `--workflow` accepts the same path, catalog, or `-` stdin forms as `workflow run`. Use `--project` or `--global` only with a catalog workflow.
 

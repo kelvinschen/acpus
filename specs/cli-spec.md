@@ -45,6 +45,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `workflow check --help` MUST present the command as independent validation without run admission.
 - Empty `runs fork --target` input MUST fail before runtime mutation.
 - Fork help MUST describe `--target` as an optional rewind point that runs the selected source occurrence and later work again.
+- Fork help MUST state that an occurrence target omits an attempt suffix.
 - Fork catalog scope flags MUST be mutually exclusive.
 - Fork catalog scope flags MUST require `--workflow`.
 - Empty or whitespace-only steer target input MUST fail before daemon startup.
@@ -192,13 +193,9 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - The bundled skill MUST reserve library/catalog lookup and reuse for explicit user `/wf:<hint>` and `/workflow:<hint>` requests.
 - For unmarked requests, the bundled skill MUST NOT look up or reuse library/catalog workflows; it MAY read a user-named workflow to explain, modify, or diagnose it.
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
-- Bundled deep-research report drafts MUST be confined to `$HOME/.acpus/tmp/report-drafts/<run-id>/`.
-- An explicit deep-research report destination MUST remain inside the workflow workspace.
 - Bundled deep-research reader-facing Agents MUST choose their output language from the research question available in their context.
 - The bundled deep-research workflow MUST NOT expose a report-language input.
 - The bundled deep-research workflow MUST NOT pass a report-language value between nodes.
-- Bundled deep-research Agent-to-Agent context MUST flow directly through workflow expressions instead of Task-written handoff artifacts.
-- Bundled deep-research Tasks MUST be reserved for deterministic validation, safety-bounded selection or aggregation, durable artifacts, and filesystem delivery.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 

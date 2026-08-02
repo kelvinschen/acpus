@@ -179,7 +179,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
     .option("--agents <json>", "override inherited agents for the fork")
-    .option("--target <run-target>", "rewind: rerun this occurrence and later work")
+    .option("--target <source-occurrence>", "rewind: rerun this occurrence and later work; omit #attemptNo")
     .action(async (runId: string, options: ForkOptions) => {
       await mutateRun(ctx, runId, {
         type: "fork",

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
 import { getRun, getRunVisualizationSnapshot, inspectNode, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { openExistingWritableRuntimeStore, openRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
@@ -466,6 +467,27 @@ describe.concurrent("runtime controls and recovery", () => {
           type: "target-resolution-failure",
           target: "missing~abc",
         },
+      });
+
+      const instancePath = completed.run.dynamic?.nodeInstances
+        .find(instance => instance.nodeId === "local_task")?.instancePath;
+      if (!instancePath) throw new Error("Expected local_task to have a materialized instance path.");
+      const occurrenceTarget = deriveOccurrenceRef(instancePath);
+      const attemptTarget = `${occurrenceTarget}#1`;
+      const message = `Fork target '${attemptTarget}' selects attempt 1; use occurrence target '${occurrenceTarget}' without the attempt suffix.`;
+
+      await expect(forkRun(workspace, completed.run.id, { target: attemptTarget })).rejects.toMatchObject({
+        message,
+        failure: {
+          type: "target-resolution-failure",
+          target: attemptTarget,
+          message,
+        },
+      });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM runs")).toEqual({ count: 1 });
+
+      await expect(forkRun(workspace, completed.run.id, { target: occurrenceTarget })).resolves.toMatchObject({
+        run: { fork: { sourceRunId: completed.run.id, target: occurrenceTarget } },
       });
     });
   });
