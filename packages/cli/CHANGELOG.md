@@ -1,5 +1,11 @@
 # acpus
 
+## 0.12.2
+
+### Patch Changes
+
+- 06bf2ac: optimize deep-research prompt
+
 ## 0.12.1
 
 ### Patch Changes
