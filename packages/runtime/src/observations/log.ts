@@ -32,7 +32,7 @@ type AgentObservationPhase =
   | "planning"
   | "tool"
   | "repairing"
-  | "settling"
+  | "between"
   | "settled";
 
 export type AgentObservationTurnContext = {
@@ -328,7 +328,7 @@ export class AgentObservationLog {
     attemptIds?: readonly string[];
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
-    latestTurnOnly?: true;
+    latestTurnPerAttempt?: true;
     includeOlderCount?: boolean;
   }): ResultAsync<AgentObservationInspectionProjection, AgentObservationReadError> {
     return ResultAsync.fromPromise(
@@ -721,16 +721,13 @@ export class AgentObservationLog {
     attemptIds?: readonly string[];
     beforeEntry?: AgentObservationEntryCursor;
     entryLimit?: number;
-    latestTurnOnly?: true;
+    latestTurnPerAttempt?: true;
     includeOlderCount?: boolean;
   }): AgentObservationInspectionProjection {
-    if (input.latestTurnOnly && input.attemptIds?.length !== 1) {
-      throw new Error("Latest-turn inspection requires exactly one attempt.");
-    }
     const versionRow = this.db.prepare("SELECT observation_version FROM runs WHERE id = ?")
       .get(input.runId) as { observation_version: number } | undefined;
     if (!versionRow) throw new Error(`Run '${input.runId}' was not found.`);
-    const turns = this.turnRows(input.runId, input.attemptIds, input.latestTurnOnly);
+    const turns = this.turnRows(input.runId, input.attemptIds, input.latestTurnPerAttempt);
     const attempts = this.attemptRows(input.runId, input.attemptIds);
     const entryRows = input.entryLimit === undefined || input.attemptIds?.length === 0
       ? []
@@ -763,7 +760,7 @@ export class AgentObservationLog {
     const retentionFloorVersion = floors.length === 0 ? undefined : Math.max(...floors);
     const oldestObservationVersion = entries[0]?.observationVersion;
     const hasOlderEntries = entryRows.length > chosenRows.length;
-    const olderEntryCount = input.latestTurnOnly || input.includeOlderCount === false
+    const olderEntryCount = input.latestTurnPerAttempt || input.includeOlderCount === false
       ? Number(hasOlderEntries)
       : Math.max(
           0,
@@ -778,7 +775,7 @@ export class AgentObservationLog {
       version: versionRow.observation_version,
       ...(latestRelevantVersion === undefined ? {} : { latestRelevantVersion }),
       turns: turns.map(observationTurn),
-      ...(input.latestTurnOnly && (turns[0]?.turn_no ?? 0) > 1 ? { omittedTurns: true } : {}),
+      ...(input.latestTurnPerAttempt && turns.some(row => row.turn_no > 1) ? { omittedTurns: true } : {}),
       currents,
       entries,
       retentionOmittedBefore,
@@ -1060,18 +1057,25 @@ export class AgentObservationLog {
   private turnRows(
     runId: string,
     attemptIds?: readonly string[],
-    latestOnly?: true,
+    latestPerAttempt?: true,
   ): TurnRow[] {
     if (attemptIds?.length === 0) return [];
     const attemptClause = attemptIds === undefined
       ? ""
-      : ` AND attempt_id IN (${attemptIds.map(() => "?").join(", ")})`;
+      : ` AND turn.attempt_id IN (${attemptIds.map(() => "?").join(", ")})`;
+    const latestClause = latestPerAttempt
+      ? ` AND turn.turn_no = (
+          SELECT MAX(candidate.turn_no)
+          FROM agent_observation_turns AS candidate
+          WHERE candidate.run_id = turn.run_id
+            AND candidate.attempt_id = turn.attempt_id
+        )`
+      : "";
     return this.db.prepare(`
-      SELECT *
-      FROM agent_observation_turns
-      WHERE run_id = ?${attemptClause}
-      ORDER BY ${latestOnly ? "turn_no DESC" : "attempt_no, turn_no"}
-      ${latestOnly ? "LIMIT 1" : ""}
+      SELECT turn.*
+      FROM agent_observation_turns AS turn
+      WHERE turn.run_id = ?${attemptClause}${latestClause}
+      ORDER BY turn.attempt_no, turn.attempt_id, turn.turn_no
     `).all(runId, ...(attemptIds ?? [])) as TurnRow[];
   }
 
@@ -1476,6 +1480,7 @@ class AgentObservationSemanticReducer {
     if (this.segment?.channel === "plan") return "planning";
     if (this.segment?.channel === "reported-thought") return "thinking";
     if (this.segment?.channel === "response" && this.segment.text) return "responding";
+    if (this.recentTool) return "between";
     return this.contextIdentity.promptKind === "repair" ? "repairing" : "starting";
   }
 

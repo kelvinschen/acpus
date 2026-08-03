@@ -15,6 +15,10 @@ import {
 } from "./support/runtime-fixtures.js";
 
 const observedAt = "2026-07-26T00:00:00.000Z";
+type ObservationBase = "schemaVersion" | "sequence" | "observedAt" | "elapsedMs";
+type ObservationEventInput = AgentTurnObservation["event"] extends infer Event
+  ? Event extends unknown ? Omit<Event, ObservationBase> : never
+  : never;
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
 }));
@@ -34,7 +38,46 @@ describe("Agent observation store projection", () => {
     expect([...segment.text]).toHaveLength(384);
   });
 
-  it("keeps usage telemetry in the bounded Observation projection without Timeline entries", async () => {
+  it("reads only the latest Turn for each requested attempt", async () => {
+    await withRuntimeWorkspace("agent-observation-latest-turns", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      const runId = "20260726000000LLLLLLLLLLLLLLLLLLLL";
+      const attempts = [
+        { attemptId: "attempt_a", nodeKey: "agent-a~1", nodeId: "agent-a" },
+        { attemptId: "attempt_b", nodeKey: "agent-b~1", nodeId: "agent-b" },
+      ];
+      try {
+        seedCaptureAttempts(workspace, runId, attempts);
+        agentMocks.executeAgentTurn.mockResolvedValue(completedTurn());
+        for (const attempt of attempts) {
+          await captureSettledTurn(store, workspace, runId, attempt.attemptId, attempt.nodeKey, attempt.nodeId, 1);
+          await captureSettledTurn(store, workspace, runId, attempt.attemptId, attempt.nodeKey, attempt.nodeId, 2);
+        }
+
+        const latest = await store.observationLog.readInspectionProjection({
+          runId,
+          attemptIds: attempts.map(attempt => attempt.attemptId),
+          latestTurnPerAttempt: true,
+        });
+
+        expect(latest.isOk()).toBe(true);
+        if (latest.isErr()) throw latest.error;
+        expect(latest.value.turns.map(value => [value.attemptId, value.turn])).toEqual([
+          ["attempt_a", 2],
+          ["attempt_b", 2],
+        ]);
+        expect(latest.value.currents.map(value => [value.attemptId, value.turn])).toEqual([
+          ["attempt_a", 2],
+          ["attempt_b", 2],
+        ]);
+        expect(latest.value.omittedTurns).toBe(true);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("preserves a completed tool's between phase through a usage checkpoint", async () => {
     await withRuntimeWorkspace("agent-observation-usage-telemetry", async workspace => {
       const store = await openRuntimeStore(workspace);
       const runId = "20260726000000AAAAAAAAAAAAAAAAAAAA";
@@ -55,64 +98,53 @@ describe("Agent observation store projection", () => {
       try {
         await mkdir(join(resolveRuntimeLayout(workspace).runsRoot, runId));
         seedCaptureAttempt(workspace, runId, attemptId);
-        const summary = diagnosticSummary();
+        const initialSummary = completedTurn().summary;
+        const telemetrySummary = diagnosticSummary();
         agentMocks.executeAgentTurn.mockImplementation(async request => {
+          request.onObservation?.(turnObservation(0, {
+            type: "message",
+            channel: "thought",
+            content: "Inspect the evidence.",
+          }, initialSummary));
+          request.onObservation?.(turnObservation(1, {
+            type: "tool",
+            action: "call",
+            toolCallId: "tool-1",
+            toolName: "Bash",
+            status: "running",
+            rawInput: { cmd: "pnpm test" },
+          }, initialSummary));
+          request.onObservation?.(turnObservation(2, {
+            type: "tool",
+            action: "update",
+            toolCallId: "tool-1",
+            toolName: "Bash",
+            status: "completed",
+            rawOutput: "passed",
+          }, initialSummary));
           beforeUsage = semanticCheckpoint(workspace, runId, attemptId);
-          request.onObservation?.({
-            event: {
-              schemaVersion: 1,
-              sequence: 0,
-              observedAt: "2026-07-26T00:00:20.000Z",
-              elapsedMs: 20_000,
-              type: "usage",
-              context: { used: 95, size: 100 },
-              tokenUsage: { input_tokens: 90, output_tokens: 5 },
-            },
-            progress: {
-              responses: [],
-              summary,
-              updatedAt: "2026-07-26T00:00:20.000Z",
-            },
-          });
+          request.onObservation?.(turnObservation(3, {
+            type: "usage",
+            context: { used: 95, size: 100 },
+            tokenUsage: { input_tokens: 90, output_tokens: 5 },
+          }, telemetrySummary));
           afterUsage = semanticCheckpoint(workspace, runId, attemptId);
-          request.onObservation?.({
-            event: {
-              schemaVersion: 1,
-              sequence: 1,
-              observedAt: "2026-07-26T00:00:21.000Z",
-              elapsedMs: 21_000,
-              type: "message",
-              channel: "assistant",
-              content: "x".repeat(512),
-            },
-            progress: {
-              responses: ["x".repeat(512)],
-              summary,
-              updatedAt: "2026-07-26T00:00:21.000Z",
-            },
-          });
+          request.onObservation?.(turnObservation(4, {
+            type: "message",
+            channel: "assistant",
+            content: "x".repeat(512),
+          }, telemetrySummary, ["x".repeat(512)]));
           afterResponse = semanticCheckpoint(workspace, runId, attemptId);
           inspectionReady();
           await providerRelease;
-          request.onObservation?.({
-            event: {
-              schemaVersion: 1,
-              sequence: 2,
-              observedAt: "2026-07-26T00:00:22.000Z",
-              elapsedMs: 22_000,
-              type: "turn_end",
-              status: "completed",
-            },
-            progress: {
-              responses: ["x".repeat(512)],
-              summary,
-              updatedAt: "2026-07-26T00:00:22.000Z",
-            },
-          });
-          return completedTurn(summary, "x".repeat(512), {
+          request.onObservation?.(turnObservation(5, {
+            type: "turn_end",
+            status: "completed",
+          }, telemetrySummary, ["x".repeat(512)]));
+          return completedTurn(telemetrySummary, "x".repeat(512), {
             startedAt: observedAt,
-            finishedAt: "2026-07-26T00:00:22.000Z",
-            elapsedMs: 22_000,
+            finishedAt: "2026-07-26T00:00:25.000Z",
+            elapsedMs: 25_000,
           });
         });
 
@@ -137,11 +169,19 @@ describe("Agent observation store projection", () => {
         }, agentMocks.executeAgentTurn);
         await ready;
 
+        expect(JSON.parse(beforeUsage?.currentJson ?? "{}")).toMatchObject({
+          phase: "between",
+          tools: {
+            active: [],
+            recent: expect.objectContaining({ name: "Bash", status: "completed" }),
+          },
+        });
         expect(afterUsage?.observationVersion).toBe((beforeUsage?.observationVersion ?? 0) + 1);
         expect(afterUsage?.currentObservationVersion)
           .toBe((beforeUsage?.currentObservationVersion ?? 0) + 1);
         const usageCurrent = JSON.parse(afterUsage?.currentJson ?? "{}");
         expect(usageCurrent).toMatchObject({
+          phase: "between",
           context: { used: 95, size: 100 },
           tokenUsage: { source: "usage_update", totalTokens: 95 },
         });
@@ -157,7 +197,7 @@ describe("Agent observation store projection", () => {
           tokenUsage: { source: "usage_update", totalTokens: 95 },
         });
         expect(current).not.toHaveProperty("totalToolCalls");
-        expect(forwarded[0]?.progress.summary).toMatchObject({
+        expect(forwarded.find(observation => observation.event.type === "usage")?.progress.summary).toMatchObject({
           context: { used: 95, size: 100 },
           tokenUsage: { totalTokens: 95 },
           tools: { totalToolCallCount: 12 },
@@ -171,7 +211,7 @@ describe("Agent observation store projection", () => {
         const settled = await store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
-          latestTurnOnly: true,
+          latestTurnPerAttempt: true,
           entryLimit: 50,
         });
         expect(settled.isOk()).toBe(true);
@@ -185,9 +225,8 @@ describe("Agent observation store projection", () => {
             tokenUsage: expect.objectContaining({ source: "usage_update", totalTokens: 95 }),
           }),
         ]);
-        expect(settled.value.entries).toEqual([
-          expect.objectContaining({ kind: "activity", channel: "response" }),
-        ]);
+        expect(settled.value.entries.map(entry => entry.kind === "activity" ? entry.channel : entry.kind))
+          .toEqual(["reported-thought", "tool", "response"]);
       } finally {
         releaseProvider?.();
         await capture?.catch(() => {});
@@ -251,7 +290,7 @@ describe("Agent observation store projection", () => {
         const settled = await store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
-          latestTurnOnly: true,
+          latestTurnPerAttempt: true,
           entryLimit: 50,
         });
         expect(settled.isOk()).toBe(true);
@@ -435,8 +474,8 @@ describe("Agent observation store projection", () => {
         seedRetentionAttempts(workspace, runId, countAttemptId, byteAttemptId);
         agentMocks.executeAgentTurn.mockResolvedValue(completedTurn());
 
-        await captureSecondTurn(store, workspace, runId, countAttemptId, "count~1", "count");
-        await captureSecondTurn(store, workspace, runId, byteAttemptId, "bytes~1", "bytes");
+        await captureSettledTurn(store, workspace, runId, countAttemptId, "count~1", "count");
+        await captureSettledTurn(store, workspace, runId, byteAttemptId, "bytes~1", "bytes");
 
         expect(runtimeRow(
           workspace,
@@ -539,13 +578,14 @@ describe("Agent observation store projection", () => {
   });
 });
 
-async function captureSecondTurn(
+async function captureSettledTurn(
   store: Awaited<ReturnType<typeof openRuntimeStore>>,
   workspace: string,
   runId: string,
   attemptId: string,
   nodeKey: string,
   nodeId: string,
+  turn = 2,
 ): Promise<void> {
   await store.observationLog.captureTurn({
     runId,
@@ -553,8 +593,8 @@ async function captureSecondTurn(
     nodeKey,
     attemptId,
     attemptNo: 1,
-    turn: 2,
-    promptKind: "continuation",
+    turn,
+    promptKind: turn === 1 ? "task" : "continuation",
   }, {
     agent: { kind: "named", name: "mock" },
     prompt: "continue",
@@ -608,6 +648,25 @@ function diagnosticSummary(): AgentTurnResult["summary"] {
   };
 }
 
+function turnObservation(
+  sequence: number,
+  event: ObservationEventInput,
+  summary: AgentTurnResult["summary"],
+  responses: readonly string[] = [],
+): AgentTurnObservation {
+  const updatedAt = `2026-07-26T00:00:${20 + sequence}.000Z`;
+  return {
+    event: {
+      schemaVersion: 1,
+      sequence,
+      observedAt: updatedAt,
+      elapsedMs: (20 + sequence) * 1_000,
+      ...event,
+    } as AgentTurnObservation["event"],
+    progress: { responses, summary, updatedAt },
+  };
+}
+
 type SemanticCheckpointRow = {
   observationVersion: number;
   currentObservationVersion: number;
@@ -646,6 +705,14 @@ function semanticCheckpoint(
 }
 
 function seedCaptureAttempt(workspace: string, runId: string, attemptId: string): void {
+  seedCaptureAttempts(workspace, runId, [{ attemptId, nodeKey: "agent~1", nodeId: "agent" }]);
+}
+
+function seedCaptureAttempts(
+  workspace: string,
+  runId: string,
+  attempts: readonly { attemptId: string; nodeKey: string; nodeId: string }[],
+): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.exec("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE");
@@ -656,13 +723,16 @@ function seedCaptureAttempt(workspace: string, runId: string, attemptId: string)
       )
       VALUES (?, 'usage telemetry', 'running', 'workflow.ts', 'sha256:test', ?, ?)
     `).run(runId, observedAt, observedAt);
-    db.prepare(`
+    const insertAttempt = db.prepare(`
       INSERT INTO node_attempts (
         run_id, attempt_id, node_key, node_id, attempt_no,
         owner_epoch, status, started_at
       )
-      VALUES (?, ?, 'agent~1', 'agent', 1, 1, 'started', ?)
-    `).run(runId, attemptId, observedAt);
+      VALUES (?, ?, ?, ?, 1, 1, 'started', ?)
+    `);
+    for (const attempt of attempts) {
+      insertAttempt.run(runId, attempt.attemptId, attempt.nodeKey, attempt.nodeId, observedAt);
+    }
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

@@ -242,7 +242,14 @@ async function readCoherentView(
   candidatePage?: number,
   pin?: CoherentPin,
 ): Promise<Result<InspectionRead, InspectionError>> {
-  if (view.kind === "run") return ok(projectInspectionRunView({ ir: state.frozen.ir, run: state.run }));
+  if (view.kind === "run") {
+    const observations = await coherentRunObservations(state);
+    return ok(projectInspectionRunView({
+      ir: state.frozen.ir,
+      run: state.run,
+      ...(observations ? { observations } : {}),
+    }));
+  }
   const resolved = resolveCoherentTarget(state, view.target, candidatePage, pin);
   if (resolved.isErr()) return err(resolved.error);
   if (resolved.value.kind === "candidates") return ok(resolved.value.candidates);
@@ -381,6 +388,23 @@ async function coherentTargetObservations(
     runId: state.run.id,
     attemptIds: [attemptId],
     entryLimit: 50,
+  });
+  if (result.isErr()) throw result.error;
+  return result.value;
+}
+
+async function coherentRunObservations(
+  state: CoherentInspectionRun,
+): Promise<AgentObservationInspectionProjection | undefined> {
+  const attemptIds = state.run.dynamic?.attempts
+    .filter(attempt => attempt.status === "started")
+    .map(attempt => attempt.attemptId) ?? [];
+  if (attemptIds.length === 0) return undefined;
+  const result = await state.store.observationLog.readInspectionProjection({
+    runId: state.run.id,
+    attemptIds,
+    latestTurnPerAttempt: true,
+    includeOlderCount: false,
   });
   if (result.isErr()) throw result.error;
   return result.value;
@@ -843,7 +867,7 @@ export function inspectAgentExecution(
           runId: query.runId,
           attemptIds: [attemptId],
           entryLimit: 50,
-          latestTurnOnly: true,
+          latestTurnPerAttempt: true,
         });
     if (observationResult?.isErr()) throw observationResult.error;
     return ok(projectAgentExecution({

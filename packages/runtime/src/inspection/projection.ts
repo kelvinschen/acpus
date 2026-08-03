@@ -502,7 +502,6 @@ function snapshotNodeItem(
 ): RunInspectionItem {
   if (instance) {
     const state = indexedInstanceState(indexes, instance);
-    const progress = indexes.progressByNodeKey.get(instance.nodeKey);
     return {
       key,
       role: "instance",
@@ -523,7 +522,7 @@ function snapshotNodeItem(
       ...(state.attempt?.finishedAt ? { finishedAt: state.attempt.finishedAt } : {}),
       ...(state.attempt?.deadlineAt ? { deadlineAt: state.attempt.deadlineAt } : {}),
       ...failureDetails(node, instance.error ?? state.attempt?.error, instance.statusReason ?? state.attempt?.terminalReason),
-      ...(node.kind === "agent" ? { agent: agentDecisionState(node, progress) } : {}),
+      ...(node.kind === "agent" ? { agent: agentDecisionState(node) } : {}),
       ...(node.kind === "task" ? { task: { target: node.run.target.kind } } : {}),
       ...(node.kind === "signal" ? { signal: {
         target: instance.nodeKey,
@@ -1051,24 +1050,8 @@ function compositeDetails(run: RunDetails, node: NodeIR, nodeKey?: string): Pick
 
 function agentDecisionState(
   node: Extract<NodeIR, { kind: "agent" }>,
-  progress: RunNodeProgress | undefined,
 ): AgentDecisionState {
-  const tools = record(progress?.tools);
-  const calls = Array.isArray(tools?.lastCalls) ? tools.lastCalls : [];
-  const activeCall = [...calls].reverse().map(record).find(call => {
-    const status = string(call?.status);
-    return call !== undefined && !["completed", "failed", "cancelled", "canceled"].includes(status ?? "");
-  });
-  const command = activeCall ? toolLabel(activeCall) : undefined;
-  const status = activeCall ? string(activeCall.status) : undefined;
-  const turn = number(tools?.turn);
-  return {
-    key: node.run.agent,
-    ...(turn === undefined ? {} : { turn }),
-    ...(command
-      ? { activeTool: { command, ...(status ? { status: normalizeToolStatus(status) } : {}) } }
-      : {}),
-  };
+  return { key: node.run.agent };
 }
 
 function agentDetails(
@@ -1155,22 +1138,6 @@ function inspectionTokenUsage(value: unknown): NonNullable<AgentInspectionState[
     ...(number(data?.totalTokens) === undefined ? {} : { totalTokens: number(data?.totalTokens)! }),
   };
   return Object.keys(tokenUsage).length > 0 ? tokenUsage : undefined;
-}
-
-function toolLabel(call: Record<string, unknown>): string | undefined {
-  const toolName = string(call.toolName);
-  const title = string(call.title);
-  const kind = string(call.kind);
-  const name = toolName ?? title ?? kind;
-  if (!name) return undefined;
-  const normalized = name.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  if (!normalized) return undefined;
-  const characters = Array.from(normalized);
-  return characters.length > 160 ? `${characters.slice(0, 159).join("").trimEnd()}…` : normalized;
-}
-
-function normalizeToolStatus(status: string): string {
-  return status === "canceled" ? "cancelled" : status;
 }
 
 function failureDetails(node: NodeIR | undefined, error: unknown, statusReason?: string): Pick<RunInspectionItem, "failure"> | {} {

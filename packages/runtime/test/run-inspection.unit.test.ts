@@ -7,6 +7,7 @@ import {
   semanticChanges,
 } from "../src/inspection/projection.js";
 import { projectInspectionRunView } from "../src/inspection/coherent-projection.js";
+import type { AgentObservationInspectionProjection } from "../src/observations/log.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
@@ -136,11 +137,7 @@ describe("run inspection projection", () => {
       expect.objectContaining({
         role: "instance",
         nodeKey: "review~0",
-        agent: {
-          key: "reviewer",
-          turn: 4,
-          activeTool: { command: "Bash", status: "running" },
-        },
+        agent: { key: "reviewer" },
       }),
     ]));
     const compact = JSON.stringify(overview);
@@ -152,6 +149,54 @@ describe("run inspection projection", () => {
       expect(agent).not.toHaveProperty("context");
       expect(agent).not.toHaveProperty("turnCount");
     }
+  });
+
+  it("projects the Agent tree pulse from the matching Observation current", () => {
+    const run = repeatedAgentRun(1);
+    run.dynamic!.nodeInstances[0]!.status = "running";
+    const thinking = runAgentObservations({
+      phase: "thinking",
+      intent: {
+        kind: "reported-thought",
+        excerpt: { text: "private reasoning", originalBytes: 17, truncated: false },
+      },
+    });
+    const thoughtView = projectInspectionRunView({ ir: compositeWorkflow(), run, observations: thinking });
+    const thought = inspectionItems(thoughtView.tree).find(entry => entry.subject.kind === "agent");
+
+    expect(thought?.pulse).toEqual({ phase: "reported-thought", turn: 1 });
+    expect(JSON.stringify(thoughtView)).not.toContain("private reasoning");
+
+    const toolView = projectInspectionRunView({
+      ir: compositeWorkflow(),
+      run,
+      observations: runAgentObservations({
+        phase: "tool",
+        tools: {
+          active: [{ name: "Bash", status: "running", updatedAt: "2026-07-01T00:00:02.000Z" }],
+          omittedActive: 0,
+        },
+      }),
+    });
+    expect(inspectionItems(toolView.tree).find(entry => entry.subject.kind === "agent")?.pulse).toEqual({
+      phase: "tool",
+      turn: 1,
+      headline: "Bash running",
+    });
+
+    const betweenView = projectInspectionRunView({
+      ir: compositeWorkflow(),
+      run,
+      observations: runAgentObservations({
+        phase: "between",
+        tools: {
+          active: [],
+          recent: { name: "Bash", status: "completed", updatedAt: "2026-07-01T00:00:03.000Z" },
+          omittedActive: 0,
+        },
+      }),
+    });
+    expect(inspectionItems(betweenView.tree).find(entry => entry.subject.kind === "agent")).not.toHaveProperty("pulse");
   });
 
   it("folds homogeneous fanout contexts without exposing an invalid candidate selector", () => {
@@ -430,7 +475,7 @@ describe("run inspection projection", () => {
     expect(overview).not.toHaveProperty("omitted");
   });
 
-  it("projects only the current Agent turn identity into overview", () => {
+  it("keeps progress-derived Agent activity out of overview", () => {
     const run = repeatedAgentRun(1);
     run.dynamic!.attempts.push({
       attemptId: "attempt-retry",
@@ -456,11 +501,7 @@ describe("run inspection projection", () => {
 
     const document = snapshot(compositeWorkflow(), run);
     if (document?.kind !== "snapshot") throw new Error("expected snapshot");
-    expect(document.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({
-      key: "reviewer",
-      turn: 3,
-      activeTool: { command: "Bash", status: "running" },
-    });
+    expect(document.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({ key: "reviewer" });
     expect(document.run).not.toHaveProperty("agentUsage");
   });
 
@@ -931,11 +972,7 @@ describe("run inspection projection", () => {
     const target = targetState(ir, run, "review");
 
     if (overview.kind !== "snapshot") throw new Error("expected inspection document");
-    expect(overview.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({
-      key: "reviewer",
-      turn: 4,
-      activeTool: { command: "Bash", status: "running" },
-    });
+    expect(overview.items.find(item => item.nodeKey === "review~0")?.agent).toEqual({ key: "reviewer" });
     expect(JSON.stringify(overview)).not.toContain("some-provider");
     expect(target.summary.agent).toMatchObject({
       key: "reviewer",
@@ -1822,6 +1859,43 @@ function repeatedAgentRun(count: number): RunDetails {
         updatedAt: "2026-07-01T00:00:02.000Z",
       }],
     },
+  };
+}
+
+function runAgentObservations(
+  current: Omit<AgentObservationInspectionProjection["currents"][number],
+    "attemptId" | "turn" | "promptKind" | "updatedAt" | "state" | "completeness">,
+): AgentObservationInspectionProjection {
+  return {
+    version: 1,
+    turns: [{
+      runId: "run-inspection",
+      attemptId: "attempt-0",
+      nodeKey: "review~0",
+      nodeId: "review",
+      attemptNo: 1,
+      turn: 1,
+      promptKind: "task",
+      state: "recording",
+      completeness: "complete",
+      gapCount: 0,
+      eventCount: 1,
+      unknownEventCount: 0,
+      startedAt: "2026-07-01T00:00:01.000Z",
+    }],
+    currents: [{
+      attemptId: "attempt-0",
+      turn: 1,
+      promptKind: "task",
+      updatedAt: "2026-07-01T00:00:02.000Z",
+      state: "recording",
+      completeness: "complete",
+      ...current,
+    }],
+    entries: [],
+    retentionOmittedBefore: 0,
+    olderEntryCount: 0,
+    hasOlderEntries: false,
   };
 }
 

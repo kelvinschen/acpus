@@ -7,6 +7,7 @@ import {
   resolveTargetState,
   terminalRun,
 } from "./projection.js";
+import { createAgentActivityProjector } from "./agent-activity-projection.js";
 import {
   projectTargetSummary,
   projectTimeline,
@@ -34,13 +35,15 @@ import type { WorkflowIR } from "@acpus/core/ir";
 export function projectInspectionRunView(input: {
   ir: WorkflowIR;
   run: RunDetails;
+  observations?: AgentObservationInspectionProjection;
 }): Extract<InspectionView, { kind: "run" }> {
   const snapshot = projectRunSnapshot({ ir: input.ir, run: input.run });
+  const projectAgentActivity = createAgentActivityProjector(input.observations);
   return {
     kind: "run",
     run: inspectionRun(input.run, snapshot.run.failure),
     counts: counts(snapshot.counts),
-    tree: projectTree(snapshot.items, input.run),
+    tree: projectTree(snapshot.items, input.run, projectAgentActivity),
     ...(snapshot.output === undefined ? {} : { output: snapshot.output }),
   };
 }
@@ -130,11 +133,15 @@ export function boundedInspectionText(value: string, limit = 240): string {
   return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`;
 }
 
-function projectTree(items: readonly RunInspectionItem[], run: RunDetails): InspectionTreeEntry[] {
+function projectTree(
+  items: readonly RunInspectionItem[],
+  run: RunDetails,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+): InspectionTreeEntry[] {
   const byKey = new Map<string, InternalTree>();
   const roots: InternalTree[] = [];
   for (const item of items) {
-    const node: InternalTree = { item, entry: treeItem(item, run), children: [] };
+    const node: InternalTree = { item, entry: treeItem(item, run, projectAgentActivity), children: [] };
     byKey.set(item.key, node);
     const parent = item.parentKey ? byKey.get(item.parentKey) : undefined;
     if (parent) parent.children.push(node);
@@ -178,12 +185,17 @@ function collapsibleStructure(node: InternalTree): boolean {
     && node.entry.pulse === undefined;
 }
 
-function treeItem(item: RunInspectionItem, run: RunDetails): Extract<InspectionTreeEntry, { type: "item" }> {
+function treeItem(
+  item: RunInspectionItem,
+  run: RunDetails,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+): Extract<InspectionTreeEntry, { type: "item" }> {
   const selector = item.ref
     ? item.attemptNo === undefined ? item.ref : occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo)
     : item.nodeId;
   const attention = itemAttention(item, selector, run);
   const elapsed = terminalItemStatus(item.status) ? duration(item.startedAt, item.finishedAt) : undefined;
+  const pulse = itemPulse(item, run.updatedAt, projectAgentActivity);
   return {
     type: "item",
     subject: {
@@ -196,7 +208,7 @@ function treeItem(item: RunInspectionItem, run: RunDetails): Extract<InspectionT
       ...(elapsed === undefined ? {} : { durationMs: elapsed }),
     }, item.failure),
     ...(item.composite?.counts ? { progress: progress(item.composite.counts) } : {}),
-    ...(itemPulse(item) ? { pulse: itemPulse(item)! } : {}),
+    ...(pulse ? { pulse } : {}),
     ...(attention ? { attention } : {}),
     children: [],
   };
@@ -301,21 +313,26 @@ function removeRepeatIdentity(entries: readonly InspectionTreeEntry[]): Inspecti
       });
 }
 
-function itemPulse(item: RunInspectionItem): InspectionPulse | undefined {
+function itemPulse(
+  item: RunInspectionItem,
+  runUpdatedAt: string,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+): InspectionPulse | undefined {
   if (!item.agent) return undefined;
-  if (item.status === "completed" || item.status === "failed" || item.status === "timed_out" || item.status === "cancelled") {
-    return { phase: "settled" };
-  }
-  if (item.agent.activeTool) {
-    return {
-      phase: "tool",
-      ...(item.agent.turn === undefined ? {} : { turn: item.agent.turn }),
-      headline: boundedInspectionText(`${item.agent.activeTool.command}${item.agent.activeTool.status ? ` ${item.agent.activeTool.status}` : ""}`),
-    };
-  }
+  const activity = projectAgentActivity({
+    status: item.status,
+    updatedAt: item.finishedAt ?? item.updatedAt ?? runUpdatedAt,
+    ...(item.attemptId ? { attemptId: item.attemptId } : {}),
+    ...(item.attemptNo === undefined ? {} : { attemptNo: item.attemptNo }),
+  });
+  if (!activity) return undefined;
+  const tool = activity.current?.tools?.active.at(-1);
   return {
-    phase: item.status === "running" ? "starting" : "starting",
-    ...(item.agent.turn === undefined ? {} : { turn: item.agent.turn }),
+    phase: activity.phase,
+    ...(activity.turn === undefined ? {} : { turn: activity.turn }),
+    ...(tool
+      ? { headline: boundedInspectionText(`${tool.name}${tool.status ? ` ${tool.status}` : ""}`) }
+      : {}),
   };
 }
 

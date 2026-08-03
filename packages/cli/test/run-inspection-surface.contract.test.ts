@@ -26,6 +26,15 @@ describe("inspection text surface", () => {
     expect(text).not.toContain("attempt_internal");
   });
 
+  it("distinguishes a true Agent start from the interval between activities", () => {
+    const starting = formatInspectionView(agentActivityView({ phase: "starting", turn: 1 }));
+    const between = formatInspectionView(agentActivityView());
+
+    expect(starting).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · starting · turn 1");
+    expect(between).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running\n");
+    expect(between).not.toContain("starting");
+  });
+
   it("renders a pruned completed run as shared repeat shapes without skipped branches", () => {
     const text = formatInspectionView(prunedDesignForgeView());
 
@@ -221,6 +230,23 @@ function runView(): RunInspectionView {
       type: "item",
       subject: { label: "publish_blackboard", kind: "task" },
       state: { status: "not_started" },
+      children: [],
+    }],
+  };
+}
+
+function agentActivityView(
+  pulse?: Extract<RunInspectionView["tree"][number], { type: "item" }>["pulse"],
+): RunInspectionView {
+  return {
+    kind: "run",
+    run: { id: "run_1", name: "deep-research", status: "running" },
+    counts: { total: 1, running: 1 },
+    tree: [{
+      type: "item",
+      subject: { label: "write_report", kind: "agent", selector: "@3f19e12fc389#1" },
+      state: { status: "running" },
+      ...(pulse ? { pulse } : {}),
       children: [],
     }],
   };

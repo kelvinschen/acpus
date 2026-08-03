@@ -29,6 +29,120 @@ describe("inspection job projections", () => {
     expect(document).not.toHaveProperty("journal");
   });
 
+  it("omits current activity between a completed tool and the next semantic segment", () => {
+    const projection = observations(
+      [turn(1)],
+      [{
+        id: "tool-activity",
+        observationVersion: 1,
+        attemptId: "attempt-1",
+        turn: 1,
+        sourceSequence: 2,
+        at: "2026-07-25T00:00:02.000Z",
+        kind: "activity",
+        channel: "tool",
+        summary: inspectionExcerpt("Bash completed", 512, "tail"),
+        tool: {
+          toolCallId: "tool-1",
+          name: "Bash",
+          status: "completed",
+          updatedAt: "2026-07-25T00:00:02.000Z",
+          finishedAt: "2026-07-25T00:00:02.000Z",
+        },
+      }],
+      [{
+        attemptId: "attempt-1",
+        turn: 1,
+        promptKind: "task",
+        phase: "between",
+        updatedAt: "2026-07-25T00:00:02.000Z",
+        tools: {
+          active: [],
+          recent: {
+            toolCallId: "tool-1",
+            name: "Bash",
+            status: "completed",
+            updatedAt: "2026-07-25T00:00:02.000Z",
+            finishedAt: "2026-07-25T00:00:02.000Z",
+          },
+          omittedActive: 0,
+        },
+        state: "recording",
+        completeness: "complete",
+      }],
+    );
+    const details = agentDetails();
+    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const timeline = projectInspectionTargetTimelineView({
+      run: agentRun(),
+      details,
+      events: [],
+      observations: projection,
+    });
+
+    expect(summary).not.toHaveProperty("pulse");
+    expect(timeline).not.toHaveProperty("current");
+    expect(timeline.recent).toEqual([
+      expect.objectContaining({ kind: "activity", channel: "tool", summary: "Bash" }),
+    ]);
+  });
+
+  it("keeps true initial activity as starting without a redundant headline", () => {
+    const document = projectTargetSummary({
+      run: agentRun(),
+      details: agentDetails(),
+      observations: observations([turn(1)], [], [{
+        attemptId: "attempt-1",
+        turn: 1,
+        promptKind: "task",
+        phase: "starting",
+        updatedAt: "2026-07-25T00:00:01.000Z",
+        state: "recording",
+        completeness: "complete",
+      }]),
+    });
+
+    expect(document.pulse).toEqual({
+      phase: "starting",
+      turn: 1,
+      updatedAt: "2026-07-25T00:00:01.000Z",
+    });
+  });
+
+  it("projects terminal lifecycle consistently while the provider still records", () => {
+    const details = agentDetails();
+    details.summary.nodeStatus = "cancelled";
+    details.attempts[0] = {
+      ...details.attempts[0]!,
+      status: "superseded",
+      finishedAt: "2026-07-25T00:00:02.000Z",
+    };
+    const projection = observations([turn(1)], [], [{
+      attemptId: "attempt-1",
+      turn: 1,
+      promptKind: "task",
+      phase: "tool",
+      updatedAt: "2026-07-25T00:00:03.000Z",
+      tools: {
+        active: [{ name: "Bash", status: "running", updatedAt: "2026-07-25T00:00:03.000Z" }],
+        omittedActive: 0,
+      },
+      state: "recording",
+      completeness: "complete",
+    }]);
+
+    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const timeline = projectInspectionTargetTimelineView({
+      run: agentRun(),
+      details,
+      events: [],
+      observations: projection,
+    });
+
+    expect(summary.pulse).toMatchObject({ phase: "settled", turn: 1 });
+    expect(timeline.current).toEqual({ kind: "agent", phase: "settled", turn: 1 });
+  });
+
   it("prioritizes and labels settled intent with matching activity identity", () => {
     const document = settledSummary(
       [

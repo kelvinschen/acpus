@@ -376,6 +376,9 @@ type PruneReport = {
 - Retention eviction MUST NOT create a gap or reduce observation completeness.
 - Runtime MUST checkpoint response or intent growth after at least 512 additional bytes or ten seconds since the preceding checkpoint.
 - Runtime MUST checkpoint phase changes, tool start/terminal, fence, gap, and turn terminal immediately.
+- An ordinary Agent turn MUST use the `starting` current phase only before its first recognized semantic activity.
+- After a terminal tool observation and before the next semantic activity, Runtime MUST retain bounded telemetry and the recent tool in current projection with the internal `between` phase.
+- A usage checkpoint received during `between` MUST preserve that phase.
 - A durable observation fence MUST store only its scheduler event sequence, committed time, and reason.
 - Replaying the same durable fence sequence MUST be idempotent.
 - A different durable fence sequence for the same turn MUST fail as an invariant violation.
@@ -535,6 +538,13 @@ Runtime owns generic inspection semantics and public shape.
 - A one-shot ambiguous authored target MUST return public candidates, never select an occurrence; observation MUST reject it before attachment. Candidate pagination is one-based, bounded, only for one-shot ambiguous reads; each row contains selector, status, and breadcrumb.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
 - A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
+- A run view MUST read Agent activity in one coherent bounded projection containing at most the latest Observation Turn per started attempt and no semantic Timeline entries.
+- Generic inspection MUST derive a running Agent's Tree pulse, Summary pulse, and Timeline current from the exact latest-turn Observation current.
+- Generic inspection MUST NOT infer Agent activity from scheduler progress, an older turn, or the absence of an exact latest-turn current.
+- When the exact latest-turn Observation current is `between`, the Tree and Summary MUST omit pulse and Timeline MUST omit current.
+- A tool closed before `between` MUST remain eligible for Timeline Recent activity.
+- A provider-settled Agent current whose occurrence remains non-terminal MUST project as `settling`; a terminal Agent occurrence MUST project as `settled`.
+- A Tree Agent pulse MUST omit thought and response bodies; an active tool pulse MAY include its bounded name and status.
 - A Summary for a running Agent target with a durable ACP activity timestamp MUST include the elapsed duration since that activity; it MUST not include an inactivity threshold or predicted failure time.
 - The tree MUST omit unselected conditional subtrees and completed empty branches while retaining their materialized occurrences in Counts.
 - The tree MUST collapse a sole-child branch, `if`, or `switch` wrapper only when it has the same state as its child and carries no attention, failure, progress, or pulse.
@@ -563,4 +573,5 @@ Runtime owns generic inspection semantics and public shape.
 
 - `pnpm test:unit packages/runtime`: covers fork reuse and rewind boundaries, selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
 - `pnpm test:integration packages/runtime`: covers durable fork recovery, observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
+- `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

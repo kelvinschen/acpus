@@ -108,11 +108,6 @@ export type AgentInspectionState = {
 
 export type AgentDecisionState = {
   key: string;
-  turn?: number;
-  activeTool?: {
-    command: string;
-    status?: string;
-  };
 };
 
 type RunInspectionScopeState =
@@ -446,7 +441,7 @@ export type RunInspectionExcerpt = {
   truncated: boolean;
 };
 
-export type RunInspectionToolActivity = {
+type RunInspectionToolActivity = {
   toolCallId?: string;
   name: string;
   status?: string;

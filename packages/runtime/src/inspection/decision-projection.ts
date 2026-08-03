@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
   AgentObservationInspectionProjection,
 } from "../observations/log.js";
@@ -12,9 +11,9 @@ import {
   normalizeInspectionStatus,
   semanticChanges,
 } from "./projection.js";
+import { createAgentActivityProjector } from "./agent-activity-projection.js";
 import { occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
 import type {
-  AgentCurrentActivity,
   RunInspectionAttention,
   RunInspectionCurrentActivity,
   RunInspectionExcerpt,
@@ -24,7 +23,6 @@ import type {
   RunInspectionTargetSummaryDocument,
   RunInspectionTimelineDocument,
   RunInspectionTimelineEntry,
-  RunInspectionToolActivity,
   RunInspectionVisibility,
 } from "./types.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
@@ -34,12 +32,7 @@ const attentionCharacters = 160;
 const timelineDefaultLimit = 12;
 const timelineMaximumLimit = 50;
 const timelineEntryBytes = 512;
-const currentResponseBytes = 1536;
 const currentIntentBytes = 768;
-const currentToolBytes = 768;
-const toolNameCharacters = 160;
-const toolStatusCharacters = 64;
-const toolCallIdBytes = 128;
 const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
 
 export function projectTargetSummary(input: {
@@ -51,8 +44,14 @@ export function projectTargetSummary(input: {
   const aggregate = staticAggregate(input.details);
   const subject = inspectionSubject(input.details);
   const state = inspectionTargetState(input.details);
-  const progress = aggregate ? undefined : selectedProgress(input.run, input.details);
-  const pulse = aggregate ? undefined : targetPulse(input.details, progress, input.observations);
+  const progress = aggregate || input.details.staticNode?.kind === "agent"
+    ? undefined
+    : selectedProgress(input.run, input.details);
+  const pulse = aggregate
+    ? undefined
+    : input.details.staticNode?.kind === "agent"
+      ? agentTargetPulse(input.details, input.observations)
+      : targetPulse(input.details, progress);
   const attention = targetAttention(state, input.details);
   const visibility = input.observations
     ? inspectionVisibility(input.details, input.observations)
@@ -202,31 +201,61 @@ function selectedProgress(run: RunDetails, details: ResolvedTargetState): RunNod
 function targetPulse(
   details: ResolvedTargetState,
   progress: RunNodeProgress | undefined,
-  observations: AgentObservationInspectionProjection | undefined,
 ): RunInspectionPulse | undefined {
   const state = inspectionTargetState(details);
-  const attemptId = selectedAttempt(details)?.attemptId;
-  const latestTurn = observations?.turns
-    .filter(turn => turn.attemptId === attemptId)
-    .sort((left, right) => left.turn - right.turn)
-    .at(-1);
-  const projected = observations?.currents
-    .filter(current => current.attemptId === attemptId)
-    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
-    .at(-1);
   const terminal = terminalInspectionStatus(state.status);
-  const projectedCurrent = !terminal ? projected : undefined;
-  const projectedTool = projectedCurrent?.tools?.active.at(-1);
   const tools = progressTools(progress);
   const activeTool = terminal
     ? undefined
     : tools.calls.filter(call => !terminalToolStatuses.has(string(call.status) ?? "")).at(-1);
   const intent = terminal ? undefined : progressIntent(progress);
   const response = terminal ? undefined : progress?.output?.tail;
-  const settledActivities = terminal
+  let phase: RunInspectionPulse["phase"] = "starting";
+  if (terminal) phase = "settled";
+  else if (activeTool) phase = "tool";
+  else if (intent?.kind === "plan") phase = "planning";
+  else if (intent) phase = "reported-thought";
+  else if (response) phase = "responding";
+
+  let headline: string | undefined;
+  if (activeTool) {
+    headline = toolHeadline(activeTool);
+  } else if (intent) {
+    headline = visibleSummary(intent.text, summaryHeadlineCharacters);
+  } else if (response) {
+    headline = visibleSummary(response, summaryHeadlineCharacters);
+  } else if (state.status !== "not_started" && !terminalInspectionStatus(state.status)) {
+    headline = "starting";
+  }
+  const updatedAt = string(activeTool?.updatedAt) ?? intent?.updatedAt ?? progress?.updatedAt
+    ?? state.finishedAt ?? details.run.updatedAt;
+  const turn = number(record(progress?.tools)?.turn);
+  return state.status === "not_started" && !headline
+    ? undefined
+    : {
+        phase,
+        ...(headline ? { headline } : {}),
+        ...(turn === undefined ? {} : { turn }),
+        updatedAt,
+      };
+}
+
+function agentTargetPulse(
+  details: ResolvedTargetState,
+  observations: AgentObservationInspectionProjection | undefined,
+): RunInspectionPulse | undefined {
+  const state = inspectionTargetState(details);
+  const attempt = selectedAttempt(details);
+  const activity = createAgentActivityProjector(observations)({
+    status: state.status,
+    updatedAt: state.finishedAt ?? details.run.updatedAt,
+    ...(attempt ? { attemptId: attempt.attemptId, attemptNo: attempt.attemptNo } : {}),
+  });
+  if (!activity) return undefined;
+  const settledActivities = activity.phase === "settled"
     ? observations?.entries
       .flatMap(entry => entry.kind === "activity"
-        && entry.attemptId === attemptId
+        && entry.attemptId === attempt?.attemptId
         && visibleSummary(entry.summary.text, summaryHeadlineCharacters).length > 0
         ? [entry]
         : [])
@@ -240,16 +269,15 @@ function targetPulse(
       .sort((left, right) => left.at.localeCompare(right.at) || left.sourceSequence - right.sourceSequence)
       .at(-1);
   const settledActivity = settledIntent ?? settledResponse;
-  let phase: RunInspectionPulse["phase"] = "starting";
-  if (terminal) phase = "settled";
-  else if (projectedCurrent) phase = publicAgentPhase(projectedCurrent.phase);
-  else if (activeTool) phase = "tool";
-  else if (intent?.kind === "plan") phase = "planning";
-  else if (intent) phase = "reported-thought";
-  else if (latestTurn?.promptKind === "repair") phase = "output-repair";
-  else if (response) phase = "responding";
-
-  let headline: string | undefined;
+  const current = activity.current;
+  const tool = current?.tools?.active.at(-1);
+  let headline = tool
+    ? visibleSummary(`${tool.name}${tool.status ? ` ${tool.status}` : ""}`, summaryHeadlineCharacters)
+    : current?.intent
+      ? visibleSummary(current.intent.excerpt.text, summaryHeadlineCharacters)
+      : current?.response
+        ? visibleSummary(current.response.text, summaryHeadlineCharacters)
+        : undefined;
   if (settledActivity?.kind === "activity") {
     const label = settledActivity.channel === "plan"
       ? "Plan"
@@ -259,35 +287,14 @@ function targetPulse(
       `${label}: ${missingPrefix}${settledActivity.summary.text}`,
       summaryHeadlineCharacters,
     );
-  } else if (projectedTool) {
-    headline = visibleSummary(
-      `${projectedTool.name}${projectedTool.status ? ` ${projectedTool.status}` : ""}`,
-      summaryHeadlineCharacters,
-    );
-  } else if (projectedCurrent?.intent) {
-    headline = visibleSummary(projectedCurrent.intent.excerpt.text, summaryHeadlineCharacters);
-  } else if (projectedCurrent?.response) {
-    headline = visibleSummary(projectedCurrent.response.text, summaryHeadlineCharacters);
-  } else if (activeTool) {
-    headline = toolHeadline(activeTool);
-  } else if (intent) {
-    headline = visibleSummary(intent.text, summaryHeadlineCharacters);
-  } else if (response) {
-    headline = visibleSummary(response, summaryHeadlineCharacters);
-  } else if (state.status !== "not_started" && !terminalInspectionStatus(state.status)) {
-    headline = "starting";
   }
-  const updatedAt = settledActivity?.at ?? projectedCurrent?.updatedAt ?? string(activeTool?.updatedAt) ?? intent?.updatedAt ?? progress?.updatedAt ?? latestTurn?.finishedAt ?? latestTurn?.startedAt
-    ?? state.finishedAt ?? details.run.updatedAt;
-  const turn = settledActivity?.turn ?? projectedCurrent?.turn ?? number(record(progress?.tools)?.turn) ?? latestTurn?.turn;
-  return state.status === "not_started" && !headline
-    ? undefined
-    : {
-        phase,
-        ...(headline ? { headline } : {}),
-        ...(turn === undefined ? {} : { turn }),
-        updatedAt,
-      };
+  const turn = settledActivity?.turn ?? activity.turn;
+  return {
+    phase: activity.phase,
+    ...(headline ? { headline } : {}),
+    ...(turn === undefined ? {} : { turn }),
+    updatedAt: settledActivity?.at ?? activity.updatedAt,
+  };
 }
 
 function progressIntent(progress: RunNodeProgress | undefined): {
@@ -428,11 +435,12 @@ function currentActivity(
   attempt: RunDynamicAttempt | undefined,
 ): RunInspectionCurrentActivity | undefined {
   const state = inspectionTargetState(details);
-  const providerStillRecording = attempt
-    && observations.turns.some(turn => turn.attemptId === attempt.attemptId && turn.state === "recording");
-  if (details.staticNode?.kind === "agent" && attempt
-    && (providerStillRecording || ["running", "starting", "awaiting"].includes(state.status))) {
-    return currentAgentActivity(attempt, selectedProgress(run, details), observations);
+  if (details.staticNode?.kind === "agent") {
+    return createAgentActivityProjector(observations)({
+      status: state.status,
+      updatedAt: state.finishedAt ?? details.items.at(-1)?.updatedAt ?? run.updatedAt,
+      ...(attempt ? { attemptId: attempt.attemptId, attemptNo: attempt.attemptNo } : {}),
+    })?.current;
   }
   if (!["running", "starting", "awaiting"].includes(state.status)) return undefined;
   if (details.staticNode?.kind === "signal" && state.status === "awaiting") {
@@ -453,106 +461,6 @@ function currentActivity(
     updatedAt: details.items.at(-1)?.updatedAt ?? run.updatedAt,
     ...(details.items.at(-1)?.statusReason ? { message: details.items.at(-1)!.statusReason } : {}),
   };
-}
-
-function currentAgentActivity(
-  attempt: RunDynamicAttempt,
-  progress: RunNodeProgress | undefined,
-  observations: AgentObservationInspectionProjection,
-): AgentCurrentActivity {
-  const turns = observations.turns.filter(turn => turn.attemptId === attempt.attemptId)
-    .sort((left, right) => left.turn - right.turn);
-  const turn = turns.at(-1);
-  const projected = observations.currents
-    .filter(current => current.attemptId === attempt.attemptId)
-    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
-    .at(-1);
-  if (projected) {
-    const active = projected.tools?.active ?? [];
-    return {
-      kind: "agent",
-      attemptId: attempt.attemptId,
-      attemptNo: attempt.attemptNo,
-      ...(projected.postFence ? { postFence: true } : {}),
-      turn: projected.turn,
-      turnKind: projected.promptKind,
-      phase: publicAgentPhase(projected.phase),
-      updatedAt: projected.updatedAt,
-      ...(projected.response ? { response: projected.response } : {}),
-      ...(projected.intent ? { intent: projected.intent } : {}),
-      ...(active.length > 0
-        ? { tools: { active, omittedActive: projected.tools?.omittedActive ?? 0 } }
-        : {}),
-    };
-  }
-  const response = progress?.output?.tail ?? "";
-  const reported = progressIntent(progress);
-  const intent = reported
-    ? { kind: reported.kind, excerpt: excerpt(reported.text, currentIntentBytes, "tail") }
-    : undefined;
-  const allTools = progressTools(progress).calls
-    .map(call => progressToolActivity(call))
-    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
-  const updatedAt = progress?.updatedAt ?? turn?.finishedAt ?? turn?.startedAt ?? attempt.startedAt;
-  const active = allTools.filter(tool => !terminalToolStatuses.has(tool.status ?? ""));
-  const selectedActive = active.slice(-2);
-  const phase: AgentCurrentActivity["phase"] = selectedActive.length > 0
-    ? "tool"
-    : intent?.kind === "plan" ? "planning"
-      : intent ? "reported-thought"
-        : response ? "responding"
-          : turn?.promptKind === "repair" ? "output-repair"
-            : turn?.state === "settled" ? "settling" : "starting";
-  return {
-    kind: "agent",
-    attemptId: attempt.attemptId,
-    attemptNo: attempt.attemptNo,
-    ...(turn ? { turn: turn.turn, turnKind: turn.promptKind } : {}),
-    phase,
-    updatedAt,
-    ...(response ? { response: excerpt(response, currentResponseBytes, "tail") } : {}),
-    ...(intent ? { intent } : {}),
-    ...(selectedActive.length > 0 ? {
-      tools: {
-        active: selectedActive,
-        omittedActive: Math.max(0, active.length - selectedActive.length),
-      },
-    } : {}),
-  };
-}
-
-function progressToolActivity(call: Record<string, unknown> & { updatedAt: string }): RunInspectionToolActivity {
-  const toolCallId = string(call.toolCallId);
-  const startedAt = string(call.startedAt);
-  const status = string(call.status);
-  const input = string(call.inputPreview);
-  const outputValue = call.outputPreview ?? call.output;
-  const output = outputValue === undefined ? undefined : eventText(outputValue);
-  return {
-    ...(toolCallId ? { toolCallId: publicToolCallId(toolCallId) } : {}),
-    name: visibleSummary(toolName(call), toolNameCharacters),
-    ...(status ? { status: visibleSummary(status, toolStatusCharacters) } : {}),
-    ...boundedToolPayload(
-      input === undefined ? undefined : excerpt(input, currentToolBytes, "head"),
-      output === undefined ? undefined : excerpt(output, currentToolBytes, "tail"),
-      currentToolBytes,
-    ),
-    ...(startedAt ? { startedAt } : {}),
-    updatedAt: call.updatedAt,
-    ...(terminalToolStatuses.has(status ?? "") ? { finishedAt: call.updatedAt } : {}),
-  };
-}
-
-function publicAgentPhase(phase: string): RunInspectionPulse["phase"] {
-  if (phase === "thinking") return "reported-thought";
-  if (phase === "repairing") return "output-repair";
-  if (phase === "starting"
-    || phase === "responding"
-    || phase === "planning"
-    || phase === "tool"
-    || phase === "settling"
-    || phase === "settled") return phase;
-  return "starting";
 }
 
 function observationTimelineEntries(
@@ -699,32 +607,6 @@ function toolName(call: Record<string, unknown>): string {
   return string(call.toolName) ?? string(call.title) ?? string(call.kind) ?? "tool";
 }
 
-function boundedToolPayload(
-  input: RunInspectionExcerpt | undefined,
-  output: RunInspectionExcerpt | undefined,
-  budget: number,
-): Pick<RunInspectionToolActivity, "input" | "output"> {
-  const inputBudget = input && output ? Math.floor(budget / 2) : budget;
-  const outputBudget = input && output ? budget - inputBudget : budget;
-  return {
-    ...(input ? { input: limitExcerpt(input, inputBudget, "head") } : {}),
-    ...(output ? { output: limitExcerpt(output, outputBudget, "tail") } : {}),
-  };
-}
-
-function limitExcerpt(
-  value: RunInspectionExcerpt,
-  limit: number,
-  direction: "head" | "tail",
-): RunInspectionExcerpt {
-  const limited = excerpt(value.text, limit, direction);
-  return {
-    ...limited,
-    originalBytes: value.originalBytes,
-    truncated: value.truncated || limited.truncated,
-  };
-}
-
 export function inspectionExcerpt(value: string, limit: number, direction: "head" | "tail" = "head"): RunInspectionExcerpt {
   return excerpt(value, limit, direction);
 }
@@ -798,11 +680,6 @@ function timelineFenceOrder(entry: RunInspectionTimelineEntry): number {
   if (entry.kind === "activity" && entry.postFence) return 2;
   if (entry.kind === "control" && entry.action === "steered") return 1;
   return 0;
-}
-
-function publicToolCallId(value: string): string {
-  if (Buffer.byteLength(value) <= toolCallIdBytes) return value;
-  return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
