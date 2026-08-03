@@ -208,8 +208,8 @@ async function verifyPackedCli(packages) {
     const homeDirectory = join(consumerDirectory, "home");
     await mkdir(homeDirectory);
     const environment = { ...cliEnvironment(), HOME: homeDirectory, USERPROFILE: homeDirectory };
-    const runCli = async args => {
-      const result = await execFileAsync(process.execPath, [cliEntry, ...args], { cwd: consumerDirectory, env: environment });
+    const runCli = async (args, cwd = consumerDirectory) => {
+      const result = await execFileAsync(process.execPath, [cliEntry, ...args], { cwd, env: environment });
       assert.equal(result.stderr, "", `packed CLI wrote to stderr: ${args.join(" ")}`);
       return result;
     };
@@ -291,6 +291,29 @@ assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow
     const representativeWorkflow = join(examplesRoot, "typed-loop-state", "workflow.ts");
     const checked = await runCli(["workflow", "check", representativeWorkflow]);
     assert.match(checked.stdout, /WorkflowIR\s+0 errors/u, "packed CLI workflow check failed");
+
+    const externalPackageRoot = join(workspace, "external-installation", "node_modules", "acpus");
+    await mkdir(dirname(externalPackageRoot), { recursive: true });
+    await cp(join(consumerDirectory, "node_modules", "acpus"), externalPackageRoot, {
+      recursive: true,
+      dereference: true,
+    });
+    const externalWorkspace = join(workspace, "external-workspace");
+    await mkdir(externalWorkspace);
+    await Promise.all([
+      writeFile(join(externalWorkspace, "tsconfig.json"), `${JSON.stringify({
+        compilerOptions: { noLib: true, types: [] },
+        files: ["unrelated.ts"],
+      }, null, 2)}\n`),
+      writeFile(join(externalWorkspace, "unrelated.ts"), "const value: string = 1;\n"),
+    ]);
+    const externalWorkflow = join(externalPackageRoot, "skills/acpus/workflows/library/deep-research/workflow.ts");
+    const externalChecked = await runCli(["workflow", "check", externalWorkflow], externalWorkspace);
+    assert.match(
+      externalChecked.stdout,
+      /WorkflowIR\s+0 errors/u,
+      "packed CLI failed to check an installed workflow from an external workspace",
+    );
 
     const visualizationPath = join(consumerDirectory, "workflow-viz.html");
     await runCli(["workflow", "viz", representativeWorkflow, "--out", visualizationPath]);

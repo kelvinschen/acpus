@@ -82,12 +82,17 @@ function dependencyFileSystem(dependencyRoot: string, sourcePath: string): FileS
   const authority = resolve(dependencyRoot, "node_modules");
   const mapped = (path: string): string | undefined => {
     const absolute = resolve(path);
-    if (isContained(authority, absolute)) return undefined;
+    if (absolute === sourcePath || isContained(authority, absolute)) return undefined;
     const marker = `${sep}node_modules`;
     const index = absolute.lastIndexOf(marker);
     if (index < 0) return undefined;
     const searchRoot = absolute.slice(0, index) || sep;
     if (!isContained(searchRoot, sourcePath)) return undefined;
+    try {
+      if (statSync(absolute, { throwIfNoEntry: false })) return undefined;
+    } catch (cause) {
+      if (!isMissingPathError(cause)) throw cause;
+    }
     const suffixStart = index + marker.length;
     const suffix = absolute.slice(suffixStart).replace(/^[/\\]+/, "");
     return suffix ? join(authority, suffix) : authority;
@@ -182,7 +187,7 @@ async function closeNativeApi(api: API): Promise<void> {
   }
 }
 
-export function requestCleanExit(child: ChildProcess): Promise<void> {
+function requestCleanExit(child: ChildProcess): Promise<void> {
   return new Promise((resolveExit, rejectExit) => {
     const stdin = child.stdin;
     let settled = false;
