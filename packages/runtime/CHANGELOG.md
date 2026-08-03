@@ -1,5 +1,16 @@
 # @acpus/runtime
 
+## 0.14.1
+
+### Patch Changes
+
+- cbd73b7: Keep Agent inspection activity consistent across Tree, Summary, and Timeline by projecting lifecycle state from the latest bounded Observation evidence.
+- 23421cc: Clarify fork rewind targets by correcting attempt-suffixed selectors in Runtime
+  diagnostics and documenting occurrence-only selectors in CLI help and the
+  bundled Acpus Skill.
+- Updated dependencies [63203bf]
+  - @acpus/agent-executor@0.5.1
+
 ## 0.14.0
 
 ### Minor Changes
