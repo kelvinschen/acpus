@@ -1,5 +1,13 @@
 # @acpus/web
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [cbd73b7]
+- Updated dependencies [23421cc]
+  - @acpus/runtime@0.14.1
+
 ## 0.2.3
 
 ### Patch Changes

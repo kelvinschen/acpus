@@ -1,5 +1,12 @@
 # @acpus/agent-executor
 
+## 0.5.1
+
+### Patch Changes
+
+- 63203bf: Update the bundled acpx dependency to 0.13.0 and preserve structured Agent argv
+  through resolution, worker startup, and session persistence.
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,26 @@
 # acpus
 
+## 0.12.1
+
+### Patch Changes
+
+- 23421cc: Clarify fork rewind targets by correcting attempt-suffixed selectors in Runtime
+  diagnostics and documenting occurrence-only selectors in CLI help and the
+  bundled Acpus Skill.
+- e7cf60d: Redesign the bundled deep-research workflow as an orchestrator-worker system: a
+  resident lead decomposes the question into independent lanes, parallel workers
+  each investigate one lane end to end from whichever sources fit (public web,
+  local workspace, or shell), and a writer fuses the lane reports into one
+  reader-facing report. Cross-check becomes an advisory skeptic pass rather than
+  the axis, and research judgment moves out of deterministic Tasks into the Agents.
+  The input surface collapses to `question`, `context`, a `depth` tier
+  (quick/deep/xdeep) that sets lane breadth, rounds, and cross-check together, and
+  `reportFormat`; the report is returned as a durable artifact.
+- Updated dependencies [cbd73b7]
+- Updated dependencies [23421cc]
+  - @acpus/runtime@0.14.1
+  - @acpus/web@0.2.4
+
 ## 0.12.0
 
 ### Minor Changes
