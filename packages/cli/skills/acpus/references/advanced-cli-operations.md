@@ -85,13 +85,11 @@ acpus runs fork <run-id> \
 
 Use fork when the workflow, input, Agent mapping, or Task definition must change. It creates a child run, leaves the source unchanged, and inherits every option you do not replace. Continue inspection on the child id from the receipt.
 
-Usually omit `--target`, including after a failure. Acpus reuses completed work that is still valid and runs affected or unfinished work normally:
+Use `--target` for a restart point; omit it for compatibility-based reuse. It is a replay checkpoint, not a reuse override: the target and work completed after it became ready rerun; earlier results remain reusable only if their definitions and resolved inputs are unchanged.
 
-- Changing one input field reruns only work that reads it.
-- Changing one step reruns that step; later work may still be reused when its input remains the same.
-- Fork starts new Agent conversations, so work using `sessionKey` runs again. Reused artifacts follow their results automatically.
+Without `--target`, Acpus reuses every compatible result. Input or step changes rerun work whose own definition or resolved inputs change; later work can still be reused. New Agent conversations rerun work using `sessionKey`; artifacts follow reused results.
 
-Use `--target` only to deliberately rewind, such as re-asking a consumed Signal. Copy the occurrence selector `@ref` (without suffixes like `#1` ) from source inspection; that point and later work run again.
+To rewind, such as re-asking a consumed Signal, copy its `@ref` (without `#1`) from source inspection.
 
 `--workflow` accepts the same path, catalog, or `-` stdin forms as `workflow run`. Use `--project` or `--global` only with a catalog workflow.
 

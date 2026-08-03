@@ -182,28 +182,28 @@ async function closeNativeApi(api: API): Promise<void> {
   }
 }
 
-function requestCleanExit(child: ChildProcess): Promise<void> {
+export function requestCleanExit(child: ChildProcess): Promise<void> {
   return new Promise((resolveExit, rejectExit) => {
     const stdin = child.stdin;
     let settled = false;
     const timeout = setTimeout(() => {
       finish(new Error("TypeScript native service did not exit after its input was closed."));
     }, 2_000);
-    const onClose = (): void => finish();
+    const onExit = (): void => finish();
     const onError = (cause: Error): void => finish(cause);
 
     function finish(cause?: Error): void {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      child.off("close", onClose);
+      child.off("exit", onExit);
       child.off("error", onError);
       stdin?.off("error", onError);
       if (cause) rejectExit(cause);
       else resolveExit();
     }
 
-    child.once("close", onClose);
+    child.once("exit", onExit);
     child.once("error", onError);
     stdin?.once("error", onError);
     if (stdin && !stdin.destroyed) stdin.end();
