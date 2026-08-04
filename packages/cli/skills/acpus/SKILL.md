@@ -2,7 +2,7 @@
 name: acpus
 description: Use when Acpus is the intended orchestration layer, or when an existing Acpus workflow or durable run is in scope.
 metadata:
-  acpus-version: 0.12.2
+  acpus-version: 0.12.3
 ---
 
 # Acpus

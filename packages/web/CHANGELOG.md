@@ -1,5 +1,14 @@
 # @acpus/web
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [1d6dad0]
+- Updated dependencies [a82e969]
+  - @acpus/runtime@0.14.2
+  - @acpus/workflow-compiler@0.3.3
+
 ## 0.2.4
 
 ### Patch Changes

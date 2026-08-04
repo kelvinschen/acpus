@@ -1,5 +1,11 @@
 # @acpus/runtime
 
+## 0.14.2
+
+### Patch Changes
+
+- 1d6dad0: Keep incremental inspection updates decision-relevant, stream only durable closed Timeline activity, and render every triggering change facet.
+
 ## 0.14.1
 
 ### Patch Changes
