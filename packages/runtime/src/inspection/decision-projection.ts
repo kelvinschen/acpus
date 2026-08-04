@@ -274,19 +274,19 @@ function agentTargetPulse(
   let headline = tool
     ? visibleSummary(`${tool.name}${tool.status ? ` ${tool.status}` : ""}`, summaryHeadlineCharacters)
     : current?.intent
-      ? visibleSummary(current.intent.excerpt.text, summaryHeadlineCharacters)
+      ? visibleTailInspectionExcerpt(current.intent.excerpt, summaryHeadlineCharacters)
       : current?.response
-        ? visibleSummary(current.response.text, summaryHeadlineCharacters)
+        ? visibleTailInspectionExcerpt(current.response, summaryHeadlineCharacters)
         : undefined;
   if (settledActivity?.kind === "activity") {
     const label = settledActivity.channel === "plan"
       ? "Plan"
       : settledActivity.channel === "reported-thought" ? "Reported thought" : "Response tail";
-    const missingPrefix = settledActivity.channel === "response" && settledActivity.summary.truncated ? "…" : "";
-    headline = visibleSummary(
-      `${label}: ${missingPrefix}${settledActivity.summary.text}`,
-      summaryHeadlineCharacters,
-    );
+    const prefix = `${label}: `;
+    headline = `${prefix}${visibleTailInspectionExcerpt(
+      settledActivity.summary,
+      summaryHeadlineCharacters - Array.from(prefix).length,
+    )}`;
   }
   const turn = settledActivity?.turn ?? activity.turn;
   return {
@@ -611,6 +611,19 @@ export function inspectionExcerpt(value: string, limit: number, direction: "head
   return excerpt(value, limit, direction);
 }
 
+export function visibleTailInspectionExcerpt(value: RunInspectionExcerpt, limit: number): string {
+  if (limit <= 0) return "";
+  const normalized = normalizeSummary(value.text);
+  const characters = Array.from(normalized);
+  if (value.truncated) {
+    const budget = limit - 1;
+    return `…${budget === 0 ? "" : characters.slice(-budget).join("")}`;
+  }
+  return characters.length <= limit
+    ? normalized
+    : `${characters.slice(0, Math.max(0, limit - 1)).join("")}…`;
+}
+
 function excerpt(value: string, limit: number, direction: "head" | "tail"): RunInspectionExcerpt {
   const originalBytes = Buffer.byteLength(value);
   if (originalBytes <= limit) return { text: value, originalBytes, truncated: false };
@@ -647,9 +660,13 @@ function eventText(value: unknown): string {
 }
 
 function visibleSummary(value: string, limit: number): string {
-  const normalized = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const normalized = normalizeSummary(value);
   const characters = Array.from(normalized);
   return characters.length <= limit ? normalized : `${characters.slice(0, limit - 1).join("")}…`;
+}
+
+function normalizeSummary(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function terminalStatus(status: string): boolean {

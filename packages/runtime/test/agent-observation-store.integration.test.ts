@@ -5,6 +5,7 @@ import type { AgentTurnObservation, AgentTurnRequest, AgentTurnResult } from "@a
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendSemanticText,
+  visibleToolName,
 } from "../src/observations/log.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { openRuntimeStore } from "../src/store/store.js";
@@ -36,6 +37,12 @@ describe("Agent observation store projection", () => {
     expect(segment.originalBytes).toBe(40_000);
     expect(Buffer.byteLength(segment.text)).toBe(1536);
     expect([...segment.text]).toHaveLength(384);
+  });
+
+  it("normalizes and marks a truncated tool name within its 160-character budget", () => {
+    expect(visibleToolName("  Searching\n the Web  ")).toBe("Searching the Web");
+    expect(visibleToolName("🙂".repeat(160))).toBe("🙂".repeat(160));
+    expect(visibleToolName("🙂".repeat(161))).toBe(`${"🙂".repeat(159)}…`);
   });
 
   it("reads only the latest Turn for each requested attempt", async () => {

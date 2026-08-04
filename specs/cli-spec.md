@@ -125,6 +125,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `--timeline` requires `--target`; `--page` requires `--target`, is one-shot candidate paging only, and conflicts with blocking inspection. `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
 - A one-shot ambiguous target MUST render candidates successfully. A blocking ambiguous target MUST render its candidate handoff and fail without attaching.
 - Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, Select, and next candidate page. It MUST preserve Timeline detail for candidate selection and never recommend retry, fork, cancel, or steer.
+- Inspection text MUST distinguish activity labels from their detail and omit default or duplicate metadata that does not change the visible subject, lifecycle, or next executable action.
 - When Runtime includes an Agent Summary ACP silence duration, text inspection MUST render `ACP silent for <duration>` and MUST omit an inactivity threshold, failure countdown, and cleanup controls.
 - Empty targets and invalid pages MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
 - Ctrl-C MUST detach without canceling the run and print a one-shot recovery command that retains selected target and Timeline detail.

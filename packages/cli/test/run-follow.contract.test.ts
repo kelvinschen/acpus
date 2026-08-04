@@ -49,7 +49,8 @@ describe("inspection observation transcript", () => {
     expect(stdout.text.match(/Tree:/g)).toHaveLength(2);
     expect(stdout.text.slice(0, stdout.text.indexOf("Updates"))).not.toContain("Await:");
     expect(stdout.text).toContain("Updates · run 8m19s:\n  ✓ design_board  @1a2b3c4d5e6f · completed");
-    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  phase tool  turn=1");
+    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  phase tool");
+    expect(stdout.text).not.toContain("turn=1");
     expect(stdout.text).toContain("Output:\n  {\n    \"accepted\": true\n  }");
     expect(stdout.text).not.toContain("spinner");
     expect(stdout.text).not.toContain("heartbeat");
@@ -119,7 +120,10 @@ describe("inspection observation transcript", () => {
       stderr: new CaptureStream(),
     });
 
-    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  tool  attempt=2  turn=1  Bash");
+    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  tool  Bash");
+    expect(stdout.text).not.toContain("attempt=2");
+    expect(stdout.text).not.toContain("Attempt 2:");
+    expect(stdout.text).not.toContain("turn=1");
     expect(stdout.text).not.toContain("Updates:");
   });
 

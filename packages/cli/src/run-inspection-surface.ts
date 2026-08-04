@@ -38,11 +38,10 @@ export function formatInspectionCandidates(
   document: InspectionCandidates,
   view: InspectionCandidateView = {},
 ): string {
-  const paged = document.total > document.entries.length;
   const args = view.timeline ? ["--timeline"] : [];
   const lines = [
     `Run ${document.run.id}  ${document.run.status}`,
-    `Target ${document.target}  matches=${document.total}${paged ? `  page=${document.page}` : ""}`,
+    `Target ${document.target}  matches=${document.total}${document.page > 1 ? `  page=${document.page}` : ""}`,
     ...(document.entries.length === 0
       ? ["  (no occurrences on this page)"]
       : document.entries.flatMap(entry => [
@@ -62,13 +61,15 @@ export function formatInspectionChanges(changes: readonly Change[], runId: strin
       `  ${statusGlyph(change.state.status)} ${subjectText(change.subject.label, change.subject.selector)} · ${formatState(change.state)}${change.progress ? ` · ${formatProgress(change.progress)}` : ""}${change.occurrences ? ` · occurrences total=${change.occurrences.total}${formatCounts(change.occurrences)}` : ""}${change.reason ? ` · ${change.reason.replaceAll("-", " ")}` : ""}`,
     ];
     if (change.attention?.kind === "awaiting-input") {
+      const prompt = change.attention.prompt === undefined ? undefined : oneLine(change.attention.prompt);
+      const summary = oneLine(change.attention.summary);
       lines.push(
-        `     Attention ${oneLine(change.attention.summary)}`,
-        ...(change.attention.prompt === undefined ? [] : [`     Prompt ${oneLine(change.attention.prompt)}`]),
+        `     Attention ${summary}`,
+        ...(prompt === undefined || prompt === summary ? [] : [`     Prompt ${prompt}`]),
         ...(change.attention.expected === undefined ? [] : [`     Expected ${oneLine(change.attention.expected)}`]),
         `     Signal: ${signalCommand(runId, change.attention.signal)}`,
       );
-    } else if (change.attention && change.attention.summary !== change.state.failure?.message) {
+    } else if (change.attention && !sameText(change.attention.summary, change.state.failure?.message)) {
       lines.push(`     Attention ${oneLine(change.attention.summary)}`);
     }
     if (change.visibility) lines.push(`     ${formatVisibility(change.visibility.reason)}`);
@@ -76,8 +77,35 @@ export function formatInspectionChanges(changes: readonly Change[], runId: strin
   }).join("\n");
 }
 
-export function formatTimelineEntries(entries: readonly TimelineEntry[]): string {
-  return entries.map(entry => `  ${formatTimelineEntry(entry)}`).join("\n");
+export function formatTimelineEntries(
+  entries: readonly TimelineEntry[],
+  selector?: string,
+): string {
+  const exactAttempt = selectorAttempt(selector);
+  if (exactAttempt !== undefined) {
+    return entries.map(entry => `  ${formatTimelineEntry(entry, exactAttempt)}`).join("\n");
+  }
+  const attempts = new Set(entries.flatMap(entry => {
+    const attempt = timelineAttempt(entry);
+    return attempt === undefined ? [] : [attempt];
+  }));
+  if (attempts.size < 2 && ![...attempts].some(attempt => attempt > 1)) {
+    return entries.map(entry => `  ${formatTimelineEntry(entry)}`).join("\n");
+  }
+  const lines: string[] = [];
+  let activeAttempt: number | undefined;
+  for (const entry of entries) {
+    const attempt = timelineAttempt(entry);
+    if (attempt === undefined) {
+      activeAttempt = undefined;
+      lines.push(`  ${formatTimelineEntry(entry)}`);
+      continue;
+    }
+    if (attempt !== activeAttempt) lines.push(`  Attempt ${attempt}:`);
+    lines.push(`    ${formatTimelineEntry(entry, attempt)}`);
+    activeAttempt = attempt;
+  }
+  return lines.join("\n");
 }
 
 export function inspectionRecoveryCommand(view: InspectionViewQuery): string {
@@ -118,13 +146,14 @@ function formatRunView(view: RunView, showAwait: boolean): string {
 }
 
 function formatTargetSummary(view: TargetSummaryView, showAwait: boolean): string {
+  const pulse = view.pulse === undefined ? undefined : formatSummaryPulse(view.state.status, view.pulse);
   const lines = [
     `Run ${view.run.id}  ${view.run.status}`,
     `Target ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
     `State ${formatState(view.state)}`,
-    ...(view.pulse === undefined ? [] : [`Pulse ${formatPulse(view.pulse)}`]),
+    ...(pulse === undefined ? [] : [pulse]),
     ...(view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
-    ...(view.attention === undefined ? [] : formatAttention(view.attention, view.run.id)),
+    ...(view.attention === undefined ? [] : formatAttention(view.attention, view.run.id, view.state.failure?.message)),
     ...(view.visibility === undefined ? [] : [formatVisibility(view.visibility.reason)]),
     ...(view.occurrences === undefined ? [] : [`Occurrences total=${view.occurrences.total}${formatCounts(view.occurrences)}`]),
     ...formatTargetNavigation(view, showAwait),
@@ -133,14 +162,19 @@ function formatTargetSummary(view: TargetSummaryView, showAwait: boolean): strin
 }
 
 function formatTargetTimeline(view: TargetTimelineView, showAwait: boolean): string {
+  const activity = view.current === undefined
+    ? undefined
+    : formatActivity(view.current, view.subject.kind, view.state.status);
   const lines = [
     `Run ${view.run.id}  ${view.run.status}`,
     `Timeline ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
     `State ${formatState(view.state)}`,
     ...(view.visibility === undefined ? [] : [formatVisibility(view.visibility.reason)]),
-    ...(view.current === undefined ? [] : ["Current:", `  ${formatActivity(view.current)}`]),
+    ...(activity === undefined ? [] : [`${activity.heading}:`, `  ${activity.text}`]),
     "Recent:",
-    ...(view.recent.length === 0 ? ["  (no recent activity)"] : formatTimelineEntries(view.recent).split("\n")),
+    ...(view.recent.length === 0
+      ? ["  (no recent activity)"]
+      : formatTimelineEntries(view.recent, view.subject.selector).split("\n")),
     ...formatTimelineNavigation(view, showAwait),
   ];
   return `${lines.join("\n")}\n`;
@@ -175,13 +209,16 @@ function formatTreeEntry(entry: TreeEntry): string {
       : `round ${entry.range.start}–${entry.range.end}`;
     return `… ${range} ×${entry.count} · ${statusGlyph(entry.state.status)} · ${formatState(entry.state)}`;
   }
+  const pulse = entry.pulse === undefined
+    ? undefined
+    : formatPulse(entry.pulse, terminal(entry.state.status) && entry.pulse.phase === "settled");
   const fields = [
     `${statusGlyph(entry.state.status)} ${entry.subject.label}`,
     entry.subject.kind,
-    entry.subject.selector,
+    entry.subject.selector === entry.subject.label ? undefined : entry.subject.selector,
     formatState(entry.state),
     entry.progress === undefined ? undefined : formatProgress(entry.progress),
-    entry.pulse === undefined ? undefined : formatPulse(entry.pulse),
+    pulse,
   ].filter((field): field is string => field !== undefined);
   return fields.join(" · ");
 }
@@ -202,30 +239,37 @@ function formatTreeAttention(entry: Extract<TreeEntry, { type: "item" }>, runId:
   const attention = entry.attention!;
   const subject = subjectText(entry.subject.label, entry.subject.selector);
   if (attention.kind === "awaiting-input") {
+    const prompt = attention.prompt === undefined ? undefined : oneLine(attention.prompt);
+    const summary = oneLine(attention.summary);
     return [
-      `  ${statusGlyph("awaiting")} ${subject} — ${attention.summary}`,
-      ...(attention.prompt === undefined ? [] : [`     Prompt: ${oneLine(attention.prompt)}`]),
+      `  ${statusGlyph("awaiting")} ${subject} — ${summary}`,
+      ...(prompt === undefined || prompt === summary ? [] : [`     Prompt: ${prompt}`]),
       ...(attention.expected === undefined ? [] : [`     Expected: ${oneLine(attention.expected)}`]),
       `     Signal: ${signalCommand(runId, attention.signal)}`,
       ...(entry.subject.selector === undefined ? [] : [`     Timeline: ${command("acpus", "runs", "inspect", runId, "--target", entry.subject.selector, "--timeline")}`]),
     ];
   }
+  const summary = sameText(attention.summary, entry.state.failure?.message)
+    ? ""
+    : ` — ${oneLine(attention.summary)}`;
   return [
-    `  ${statusGlyph(entry.state.status)} ${subject} — ${attention.summary}`,
+    `  ${statusGlyph(entry.state.status)} ${subject}${summary}`,
     ...(entry.subject.selector === undefined ? [] : [`     Timeline: ${command("acpus", "runs", "inspect", runId, "--target", entry.subject.selector, "--timeline")}`]),
   ];
 }
 
-function formatAttention(attention: Attention, runId: string): string[] {
+function formatAttention(attention: Attention, runId: string, failureMessage?: string): string[] {
   if (attention.kind === "awaiting-input") {
+    const prompt = attention.prompt === undefined ? undefined : oneLine(attention.prompt);
+    const summary = oneLine(attention.summary);
     return [
-      `Attention ${attention.summary}`,
-      ...(attention.prompt === undefined ? [] : [`Prompt ${oneLine(attention.prompt)}`]),
+      `Attention ${summary}`,
+      ...(prompt === undefined || prompt === summary ? [] : [`Prompt ${prompt}`]),
       ...(attention.expected === undefined ? [] : [`Expected ${oneLine(attention.expected)}`]),
       `Signal: ${signalCommand(runId, attention.signal)}`,
     ];
   }
-  return [`Attention ${attention.summary}`];
+  return sameText(attention.summary, failureMessage) ? [] : [`Attention ${oneLine(attention.summary)}`];
 }
 
 function formatTargetNavigation(view: TargetSummaryView, showAwait: boolean): string[] {
@@ -253,27 +297,82 @@ function formatState(state: VisibleState): string {
   return [status, duration, failure].filter((part): part is string => part !== undefined).join(" · ");
 }
 
-function formatPulse(pulse: { phase: string; turn?: number; headline?: string }): string {
-  return [pulse.phase.replaceAll("-", " "), pulse.turn === undefined ? undefined : `turn ${pulse.turn}`, pulse.headline === undefined ? undefined : oneLine(pulse.headline)].filter((part): part is string => part !== undefined).join(" · ");
+function formatSummaryPulse(
+  status: string,
+  pulse: { phase: string; turn?: number; headline?: string },
+): string | undefined {
+  const settled = terminal(status) && pulse.phase === "settled";
+  const text = formatPulse(pulse, settled);
+  return text === undefined ? undefined : `${settled ? "Last" : "Pulse"} ${text}`;
 }
 
-function formatActivity(activity: Activity): string {
+function formatPulse(
+  pulse: { phase: string; turn?: number; headline?: string },
+  omitSettled = false,
+): string | undefined {
+  const phase = omitSettled && pulse.phase === "settled"
+    ? visibleHeadline(pulse.phase, pulse.headline)
+    : formatAgentPhase(pulse.phase, pulse.headline);
+  const fields = [formatTurn(pulse.turn), phase].filter((part): part is string => part !== undefined);
+  return fields.length === 0 ? undefined : fields.join(" · ");
+}
+
+function formatActivity(
+  activity: Activity,
+  subjectKind: string,
+  stateStatus: string,
+): { heading: "Current" | "Last"; text: string } | undefined {
+  const kind = activity.kind === subjectKind ? undefined : activity.kind;
+  if (activity.kind === "agent") {
+    const settled = terminal(stateStatus) && activity.phase === "settled";
+    const headline = visibleHeadline(activity.phase, activity.headline);
+    const turn = formatTurn(activity.turn);
+    if (kind === undefined && turn === undefined && headline === undefined && (settled || impliedPhase(stateStatus, activity.phase))) return undefined;
+    return {
+      heading: settled ? "Last" : "Current",
+      text: [
+        kind,
+        turn,
+        settled ? headline : formatAgentPhase(activity.phase, activity.headline),
+      ].filter((part): part is string => part !== undefined).join(" · "),
+    };
+  }
+  const headline = activity.kind !== "signal"
+    ? visibleHeadline(activity.phase, activity.headline)
+    : undefined;
+  const prompt = activity.kind === "signal" && activity.prompt !== undefined
+    ? oneLine(activity.prompt)
+    : undefined;
+  const expected = activity.kind === "signal" && activity.expected !== undefined
+    ? `expected ${oneLine(activity.expected)}`
+    : undefined;
+  if (kind === undefined && headline === undefined && prompt === undefined && expected === undefined && impliedPhase(stateStatus, activity.phase)) return undefined;
   const fields = [
-    activity.kind,
+    kind,
     activity.phase.replaceAll("-", " "),
-    activity.kind === "agent" && activity.turn !== undefined ? `turn ${activity.turn}` : undefined,
-    activity.kind === "signal" && activity.prompt !== undefined ? oneLine(activity.prompt) : undefined,
-    activity.kind === "signal" && activity.expected !== undefined ? `expected ${oneLine(activity.expected)}` : undefined,
-    activity.kind !== "signal" && activity.headline !== undefined ? oneLine(activity.headline) : undefined,
+    prompt,
+    expected,
+    headline,
   ].filter((part): part is string => part !== undefined);
-  return fields.join(" · ");
+  return { heading: "Current", text: fields.join(" · ") };
 }
 
-function formatTimelineEntry(entry: TimelineEntry): string {
-  if (entry.kind === "transition") return `${entry.at}  ${entry.action}${entry.status ? `/${displayStatus(entry.status)}` : ""}${entry.attempt === undefined ? "" : `  attempt=${entry.attempt}`}${entry.summary === undefined ? "" : `  ${oneLine(entry.summary)}`}`;
-  if (entry.kind === "activity") return `${entry.at}  ${entry.channel}${entry.attempt === undefined ? "" : `  attempt=${entry.attempt}`}${entry.turn === undefined ? "" : `  turn=${entry.turn}`}  ${oneLine(entry.summary)}`;
-  if (entry.kind === "control") return `${entry.at}  ${entry.action}${entry.attempt === undefined ? "" : `  attempt=${entry.attempt}`}`;
-  if (entry.kind === "phase") return `${entry.at}  phase ${entry.phase.replaceAll("-", " ")}${entry.attempt === undefined ? "" : `  attempt=${entry.attempt}`}${entry.turn === undefined ? "" : `  turn=${entry.turn}`}`;
+function formatAgentPhase(phase: string, headline?: string): string {
+  const label = phase.replaceAll("-", " ");
+  const visible = visibleHeadline(phase, headline);
+  return visible === undefined ? label : `${label}: ${visible}`;
+}
+
+function formatTimelineEntry(entry: TimelineEntry, impliedAttempt?: number): string {
+  if (entry.kind === "transition") {
+    const status = entry.status === undefined || entry.status === impliedTransitionStatus(entry.action)
+      ? ""
+      : `/${displayStatus(entry.status)}`;
+    return `${entry.at}  ${entry.action}${status}${formatAttempt(entry.attempt, impliedAttempt)}${entry.summary === undefined ? "" : `  ${oneLine(entry.summary)}`}`;
+  }
+  if (entry.kind === "activity") return `${entry.at}  ${entry.channel}${formatAttempt(entry.attempt, impliedAttempt)}${formatTimelineTurn(entry.turn)}  ${oneLine(entry.summary)}`;
+  if (entry.kind === "control") return `${entry.at}  ${entry.action}${formatAttempt(entry.attempt, impliedAttempt)}`;
+  if (entry.kind === "phase") return `${entry.at}  phase ${entry.phase.replaceAll("-", " ")}${formatAttempt(entry.attempt, impliedAttempt)}${formatTimelineTurn(entry.turn)}`;
   if (entry.kind === "visibility") return `${entry.at}  Visibility ${entry.state}${entry.reason === undefined ? "" : `/${entry.reason}`}`;
   return `${entry.at}  gap  dropped=${entry.dropped}  ${oneLine(entry.reason)}`;
 }
@@ -306,7 +405,53 @@ function subjectText(label: string, selector: string | undefined): string {
 }
 
 function terminal(status: string): boolean {
-  return status === "completed" || status === "failed" || status === "timed_out" || status === "cancelled" || status === "canceled";
+  return status === "completed" || status === "failed" || status === "timed_out" || status === "cancelled" || status === "canceled" || status === "not_selected";
+}
+
+function impliedPhase(status: string, phase: string): boolean {
+  return displayStatus(status) === displayStatus(phase) || terminal(status) && phase === "settled";
+}
+
+function impliedTransitionStatus(action: Extract<TimelineEntry, { kind: "transition" }>["action"]): string {
+  if (action === "started" || action === "resumed") return "running";
+  if (action === "retry") return "pending";
+  if (action === "steer") return "ready";
+  return action === "timed-out" ? "timed_out" : action;
+}
+
+function formatTurn(turn: number | undefined): string | undefined {
+  return turn !== undefined && turn > 1 ? `turn ${turn}` : undefined;
+}
+
+function formatAttempt(attempt: number | undefined, impliedAttempt?: number): string {
+  return attempt !== undefined && attempt !== impliedAttempt && (impliedAttempt !== undefined || attempt > 1)
+    ? `  attempt=${attempt}`
+    : "";
+}
+
+function formatTimelineTurn(turn: number | undefined): string {
+  return turn !== undefined && turn > 1 ? `  turn=${turn}` : "";
+}
+
+function timelineAttempt(entry: TimelineEntry): number | undefined {
+  return "attempt" in entry ? entry.attempt : undefined;
+}
+
+function selectorAttempt(selector: string | undefined): number | undefined {
+  const value = selector?.match(/#([1-9]\d*)$/u)?.[1];
+  if (value === undefined) return undefined;
+  const attempt = Number(value);
+  return Number.isSafeInteger(attempt) ? attempt : undefined;
+}
+
+function visibleHeadline(phase: string, headline: string | undefined): string | undefined {
+  if (headline === undefined) return undefined;
+  const visible = oneLine(headline);
+  return visible.length === 0 || visible === phase.replaceAll("-", " ") ? undefined : visible;
+}
+
+function sameText(left: string | undefined, right: string | undefined): boolean {
+  return left !== undefined && right !== undefined && oneLine(left) === oneLine(right);
 }
 
 function displayStatus(status: string): string {

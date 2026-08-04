@@ -116,6 +116,7 @@ export async function followRun(
 class InspectionTranscriptPresenter {
   private emitted = false;
   private attachedRun?: { durationMs: number; observedAt: number };
+  private timelineSelector: string | undefined;
 
   constructor(
     private readonly stdout: Writable,
@@ -129,6 +130,9 @@ class InspectionTranscriptPresenter {
           durationMs: observation.view.run.durationMs,
           observedAt: Date.now(),
         };
+      }
+      if (observation.view.kind === "target" && observation.view.detail === "timeline") {
+        this.timelineSelector = observation.view.subject.selector;
       }
       this.block(`Attached:\n${formatInspectionView(observation.view, { showAwait: false })}`);
       return;
@@ -147,7 +151,9 @@ class InspectionTranscriptPresenter {
       ...(observation.changes.length === 0
         ? []
         : [`Updates${elapsedMs === undefined ? "" : ` · run ${formatDurationMs(elapsedMs)}`}:\n${formatInspectionChanges(observation.changes, this.runId)}`]),
-      ...(observation.timeline?.length ? [`Timeline:\n${formatTimelineEntries(observation.timeline)}`] : []),
+      ...(observation.timeline?.length
+        ? [`Timeline:\n${formatTimelineEntries(observation.timeline, this.timelineSelector)}`]
+        : []),
     ];
     if (blocks.length > 0) this.block(`${blocks.join("\n\n")}\n`);
   }

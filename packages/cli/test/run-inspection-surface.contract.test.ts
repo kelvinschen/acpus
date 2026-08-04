@@ -3,6 +3,7 @@ import type { InspectionCandidates, InspectionView } from "@acpus/runtime";
 import {
   formatInspectionCandidates,
   formatInspectionChanges,
+  formatTimelineEntries,
   formatInspectionView,
   inspectionRecoveryCommand,
 } from "../src/run-inspection-surface.js";
@@ -16,7 +17,9 @@ describe("inspection text surface", () => {
     expect(text).toContain("Run run_1  design  running  1m36s");
     expect(text).toContain("Counts total=3  not-started=1  running=1  completed=1");
     expect(text).toContain("┌─ ✓ seed_blackboard · task · completed");
-    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · tool · turn 1");
+    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · tool: Searching the Web");
+    expect(text).toContain("└─ ○ publish_blackboard · task · not started");
+    expect(text).not.toContain("publish_blackboard · task · publish_blackboard");
     expect(text).toContain("└┄ … round 1–4 ×4 · ⠋ · running");
     expect(text).toContain("Await: acpus runs inspect run_1 --await-decision");
     expect(text).not.toContain("Retry:");
@@ -28,11 +31,99 @@ describe("inspection text surface", () => {
 
   it("distinguishes a true Agent start from the interval between activities", () => {
     const starting = formatInspectionView(agentActivityView({ phase: "starting", turn: 1 }));
+    const repairing = formatInspectionView(agentActivityView({ phase: "output-repair", turn: 2, headline: "output repair" }));
     const between = formatInspectionView(agentActivityView());
 
-    expect(starting).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · starting · turn 1");
+    expect(starting).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · starting");
+    expect(starting).not.toContain("turn 1");
+    expect(repairing).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · turn 2 · output repair");
+    expect(repairing).not.toContain("output repair: output repair");
     expect(between).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running\n");
     expect(between).not.toContain("starting");
+  });
+
+  it("renders Agent current activity from turn context through phase detail", () => {
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "timeline",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "running" },
+      current: { kind: "agent", phase: "tool", turn: 1, headline: "Searching the Web" },
+      recent: [],
+    } satisfies InspectionView);
+
+    expect(text).toContain("Current:\n  tool: Searching the Web");
+    expect(text).not.toContain("turn 1");
+    expect(text).not.toContain("Current:\n  agent");
+  });
+
+  it("shows only activity that adds information beyond target state", () => {
+    const ordinary = formatInspectionView({
+      kind: "target",
+      detail: "timeline",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "prepare", kind: "task", selector: "prepare" },
+      state: { status: "running" },
+      current: { kind: "task", phase: "running" },
+      recent: [],
+    } satisfies InspectionView);
+    const repaired = formatInspectionView({
+      kind: "target",
+      detail: "timeline",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+      state: { status: "completed" },
+      current: { kind: "agent", phase: "settled", turn: 2 },
+      recent: [],
+    } satisfies InspectionView);
+
+    expect(ordinary).not.toContain("Current:");
+    expect(repaired).toContain("Last:\n  turn 2");
+    expect(repaired).not.toContain("settled");
+  });
+
+  it("labels useful terminal Agent activity as Last", () => {
+    const normal = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "completed" },
+      pulse: { phase: "settled", turn: 1, headline: "Plan: Verify the report." },
+    } satisfies InspectionView);
+    const empty = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "completed" },
+      pulse: { phase: "settled", turn: 1 },
+    } satisfies InspectionView);
+
+    expect(normal).toContain("Last Plan: Verify the report.");
+    expect(normal).not.toContain("turn 1");
+    expect(normal).not.toContain("settled");
+    expect(empty).not.toContain("Pulse ");
+    expect(empty).not.toContain("Last ");
+  });
+
+  it("keeps a repaired turn but omits settled from a terminal Tree pulse", () => {
+    const text = formatInspectionView({
+      kind: "run",
+      run: { id: "run_1", name: "research", status: "completed" },
+      counts: { total: 1, completed: 1 },
+      tree: [{
+        type: "item",
+        subject: { label: "write_report", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+        state: { status: "completed" },
+        pulse: { phase: "settled", turn: 2 },
+        children: [],
+      }],
+    } satisfies InspectionView);
+
+    expect(text).toContain("write_report · agent · @1a2b3c4d5e6f#2 · completed · turn 2");
+    expect(text).not.toContain("settled");
   });
 
   it("renders a pruned completed run as shared repeat shapes without skipped branches", () => {
@@ -46,16 +137,16 @@ describe("inspection text surface", () => {
       "┌─ ✓ seed_blackboard · task · @b1ac9dc8e1c8#1 · completed · 244ms",
       "├─ ✓ design_cycle · loop · @e6bacaf847b3 · completed",
       "│  ├┄ … round 1–3 ×3 · ✓ · completed",
-      "│  │  ├─ ✓ design_board · agent · completed · settled",
+      "│  │  ├─ ✓ design_board · agent · completed",
       "│  │  └─ ✓ challenge_panel · parallel · completed · 3/3",
-      "│  │     ├─ ✓ challenge_fitness · agent · completed · settled",
-      "│  │     ├─ ✓ challenge_failure · agent · completed · settled",
-      "│  │     └─ ✓ challenge_simplicity · agent · completed · settled",
+      "│  │     ├─ ✓ challenge_fitness · agent · completed",
+      "│  │     ├─ ✓ challenge_failure · agent · completed",
+      "│  │     └─ ✓ challenge_simplicity · agent · completed",
       "│  └┄ … round 4–5 ×2 · ✓ · completed",
-      "│     ├─ ✓ design_board · agent · completed · settled",
+      "│     ├─ ✓ design_board · agent · completed",
       "│     └─ ✓ challenge_panel · parallel · completed · 3/3",
       "│        ├─ ✓ fitness_gate · if · completed",
-      "│        ├─ ✓ challenge_failure · agent · completed · settled",
+      "│        ├─ ✓ challenge_failure · agent · completed",
       "│        └─ ✓ simplicity_gate · if · completed",
       "└─ ✓ publish_blackboard · task · @4b326bcc34ef#1 · completed · 235ms",
       "",
@@ -78,7 +169,7 @@ describe("inspection text surface", () => {
       state: { status: "awaiting" },
       attention: {
         kind: "awaiting-input",
-        summary: "waiting for approval",
+        summary: "Approve the proposal?",
         signal: "@ab12cd34ef56",
         prompt: "Approve the proposal?",
         expected: "{ approved: boolean }",
@@ -87,6 +178,8 @@ describe("inspection text surface", () => {
 
     expect(text).toContain("Signal: acpus runs signal run_1 --target @ab12cd34ef56 --payload '<json>'");
     expect(text).toContain("Timeline: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline");
+    expect(text.match(/Approve the proposal\?/g)).toHaveLength(1);
+    expect(text).not.toContain("Prompt Approve the proposal?");
     expect(text).not.toContain("--await-decision");
   });
 
@@ -135,6 +228,7 @@ describe("inspection text surface", () => {
     } satisfies InspectionView, { showAwait: false });
 
     expect(text).toContain("Signal: acpus runs signal run_1 --target @signal000000 --payload '<json>'");
+    expect(text).toContain("Current:\n  signal · awaiting · Approve the review?");
     expect(text).not.toContain("signal run_1 --target @parent000000");
     expect(text).not.toContain("--await-decision");
   });
@@ -166,12 +260,151 @@ describe("inspection text surface", () => {
   it("makes every ambiguous candidate selection executable and preserves Timeline detail", () => {
     const text = formatInspectionCandidates(candidates(), { timeline: true });
 
-    expect(text).toContain("Target review  matches=13  page=1");
+    const next = formatInspectionCandidates({ ...candidates(), page: 2, nextPage: 3 }, { timeline: true });
+
+    expect(text).toContain("Target review  matches=13");
+    expect(text).not.toContain("page=1");
+    expect(next).toContain("Target review  matches=13  page=2");
     expect(text).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline");
     expect(text).toContain("Select: acpus runs inspect run_1 --target @6f5e4d3c2b1a --timeline");
     expect(text).toContain("Next: acpus runs inspect run_1 --target review --timeline --page 2");
     expect(text).not.toContain("--follow");
     expect(text).not.toContain("--await-decision");
+  });
+
+  it("omits only implied Timeline ordinals and transition statuses", () => {
+    const text = formatTimelineEntries([{
+      kind: "transition",
+      at: "2026-07-30T00:00:01.000Z",
+      action: "started",
+      status: "running",
+      attempt: 1,
+    }, {
+      kind: "activity",
+      at: "2026-07-30T00:00:02.000Z",
+      channel: "tool",
+      attempt: 1,
+      turn: 1,
+      summary: "Read",
+    }, {
+      kind: "transition",
+      at: "2026-07-30T00:00:03.000Z",
+      action: "completed",
+      status: "failed",
+      attempt: 2,
+    }, {
+      kind: "activity",
+      at: "2026-07-30T00:00:04.000Z",
+      channel: "tool",
+      attempt: 2,
+      turn: 2,
+      summary: "Write",
+    }]);
+
+    expect(text).toBe([
+      "  Attempt 1:",
+      "    2026-07-30T00:00:01.000Z  started",
+      "    2026-07-30T00:00:02.000Z  tool  Read",
+      "  Attempt 2:",
+      "    2026-07-30T00:00:03.000Z  completed/failed",
+      "    2026-07-30T00:00:04.000Z  tool  turn=2  Write",
+    ].join("\n"));
+
+    const retried = formatTimelineEntries([{
+      kind: "activity",
+      at: "2026-07-30T00:00:05.000Z",
+      channel: "reported-thought",
+      attempt: 2,
+      summary: "Inspect",
+    }, {
+      kind: "activity",
+      at: "2026-07-30T00:00:06.000Z",
+      channel: "response",
+      attempt: 2,
+      summary: "Done",
+    }]);
+    expect(retried).toBe([
+      "  Attempt 2:",
+      "    2026-07-30T00:00:05.000Z  reported-thought  Inspect",
+      "    2026-07-30T00:00:06.000Z  response  Done",
+    ].join("\n"));
+  });
+
+  it("uses an exact Timeline selector as the attempt context", () => {
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "timeline",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+      state: { status: "running" },
+      recent: [{
+        kind: "transition",
+        at: "2026-07-30T00:00:01.000Z",
+        action: "started",
+        status: "running",
+        attempt: 2,
+      }, {
+        kind: "activity",
+        at: "2026-07-30T00:00:02.000Z",
+        channel: "reported-thought",
+        attempt: 2,
+        turn: 1,
+        summary: "Inspect the evidence.",
+      }, {
+        kind: "activity",
+        at: "2026-07-30T00:00:03.000Z",
+        channel: "response",
+        attempt: 1,
+        turn: 1,
+        summary: "Late mismatched evidence.",
+      }],
+    } satisfies InspectionView);
+
+    expect(text).toContain("Timeline review  @1a2b3c4d5e6f#2 · agent");
+    expect(text).not.toContain("attempt=2");
+    expect(text).not.toContain("Attempt 2:");
+    expect(text).toContain("response  attempt=1  Late mismatched evidence.");
+  });
+
+  it("deduplicates Attention text without removing recovery navigation", () => {
+    const run = formatInspectionView({
+      kind: "run",
+      run: { id: "run_1", name: "review", status: "failed" },
+      counts: { total: 1, failed: 1 },
+      tree: [{
+        type: "item",
+        subject: { label: "review", kind: "agent", selector: "@fedcba987654#1" },
+        state: { status: "failed", failure: { origin: "runtime", message: "Review failed." } },
+        attention: { kind: "failure", summary: "Review failed." },
+        children: [],
+      }],
+    } satisfies InspectionView);
+    const target = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "failed" },
+      subject: { label: "review", kind: "agent", selector: "@fedcba987654#1" },
+      state: { status: "failed", failure: { origin: "runtime", message: "Review failed." } },
+      attention: { kind: "failure", summary: "Review failed." },
+    } satisfies InspectionView);
+    const update = formatInspectionChanges([{
+      subject: { label: "approve", selector: "@ab12cd34ef56" },
+      state: { status: "awaiting" },
+      attention: {
+        kind: "awaiting-input",
+        summary: "Approve the proposal?",
+        prompt: "Approve the proposal?",
+        signal: "@ab12cd34ef56",
+      },
+    }], "run_1");
+
+    expect(run.match(/Review failed\./g)).toHaveLength(1);
+    expect(run).toContain("Attention:\n  ◆ review  @fedcba987654#1\n     Timeline: acpus runs inspect run_1 --target '@fedcba987654#1' --timeline");
+    expect(target.match(/Review failed\./g)).toHaveLength(1);
+    expect(target).toContain("Timeline: acpus runs inspect run_1 --target '@fedcba987654#1' --timeline");
+    expect(update.match(/Approve the proposal\?/g)).toHaveLength(1);
+    expect(update).not.toContain("Prompt Approve the proposal?");
+    expect(update).toContain("Signal: acpus runs signal run_1 --target @ab12cd34ef56 --payload '<json>'");
   });
 
   it("renders every decision facet carried by an update", () => {
@@ -243,7 +476,7 @@ function runView(): RunInspectionView {
       subject: { label: "design_cycle", kind: "loop", selector: "@e6bacaf847b3" },
       state: { status: "running" },
       progress: { completed: 1, total: 2 },
-      pulse: { phase: "tool", turn: 1 },
+      pulse: { phase: "tool", turn: 1, headline: "Searching the Web" },
       children: [{
         type: "fold",
         scope: "loop-rounds",
@@ -254,7 +487,7 @@ function runView(): RunInspectionView {
       }],
     }, {
       type: "item",
-      subject: { label: "publish_blackboard", kind: "task" },
+      subject: { label: "publish_blackboard", kind: "task", selector: "publish_blackboard" },
       state: { status: "not_started" },
       children: [],
     }],

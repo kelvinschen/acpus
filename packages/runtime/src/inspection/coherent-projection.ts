@@ -11,6 +11,7 @@ import { createAgentActivityProjector } from "./agent-activity-projection.js";
 import {
   projectTargetSummary,
   projectTimeline,
+  visibleTailInspectionExcerpt,
 } from "./decision-projection.js";
 import { signalBlocksInspectionTarget } from "./signal-boundary.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
@@ -419,14 +420,15 @@ function activity(
     };
   }
   if (current.kind === "agent") {
-    const headline = current.tools?.active.at(-1)?.name
-      ?? current.intent?.excerpt.text
-      ?? current.response?.text;
+    const tool = current.tools?.active.at(-1);
+    const excerpt = current.intent?.excerpt ?? current.response;
+    const headline = tool?.name
+      ?? (excerpt ? visibleTailInspectionExcerpt(excerpt, 240) : undefined);
     return {
       kind: "agent",
       phase: current.phase,
       ...(current.turn === undefined ? {} : { turn: current.turn }),
-      ...(headline ? { headline: boundedInspectionText(headline) } : {}),
+      ...(headline ? { headline: tool ? boundedInspectionText(headline) : headline } : {}),
     };
   }
   return {
@@ -455,7 +457,9 @@ function timelineEntry(entry: import("./types.js").RunInspectionTimelineEntry): 
     channel: entry.channel,
     ...(entry.attemptNo === undefined ? {} : { attempt: entry.attemptNo }),
     ...(entry.turn === undefined ? {} : { turn: entry.turn }),
-    summary: boundedInspectionText(entry.tool?.name ?? entry.summary.text),
+    summary: entry.tool
+      ? boundedInspectionText(entry.tool.name)
+      : visibleTailInspectionExcerpt(entry.summary, 240),
   }];
   if (entry.kind === "gap") return [{ kind: "gap", at: entry.at, dropped: entry.dropped, reason: entry.reason }];
   if (entry.kind === "visibility") return [{

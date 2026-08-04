@@ -1529,7 +1529,7 @@ function mergeTool(
   const toolCallId = event.toolCallId ?? previous?.toolCallId;
   return {
     ...(toolCallId ? { toolCallId } : {}),
-    name: visible(event.toolName ?? event.title ?? event.kind ?? previous?.name ?? "tool", 160),
+    name: visibleToolName(event.toolName ?? event.title ?? event.kind ?? previous?.name ?? "tool"),
     ...(status ? { status: visible(status, 64) } : {}),
     ...(inputText === undefined
       ? previous?.input ? { input: previous.input } : {}
@@ -1794,6 +1794,11 @@ function limitExcerpt(
 
 function visible(value: string, maxCharacters: number): string {
   return [...value.replace(/\s+/g, " ").trim()].slice(0, maxCharacters).join("");
+}
+
+export function visibleToolName(value: string): string {
+  const characters = [...value.replace(/\s+/g, " ").trim()];
+  return characters.length <= 160 ? characters.join("") : `${characters.slice(0, 159).join("")}…`;
 }
 
 function eventText(value: unknown): string {

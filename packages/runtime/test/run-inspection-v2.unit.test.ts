@@ -170,6 +170,7 @@ describe("inspection job projections", () => {
       updatedAt: "2026-07-25T00:00:01.000Z",
     });
     expect(document.pulse?.headline).toMatch(/^Response tail: …/);
+    expect(document.pulse?.headline).toMatch(/agent harness"\}$/);
     expect(Array.from(document.pulse?.headline ?? "")).toHaveLength(240);
   });
 
@@ -236,6 +237,47 @@ describe("inspection job projections", () => {
     });
     expect(timeline).not.toHaveProperty("evidence");
     expect(timeline).not.toHaveProperty("page");
+  });
+
+  it("marks an omitted activity prefix while preserving the retained tail", () => {
+    const retainedTail = `${"z".repeat(235)}-END`;
+    const source = `${"discarded-prefix-".repeat(40)}${retainedTail}`;
+    const expected = `…${retainedTail}`;
+    const excerpt = inspectionExcerpt(source, 512, "tail");
+    const projection = observations(
+      [turn(1)],
+      [
+        activity(1, source, "reported-thought"),
+        activity(1, "report.ger", "response", "2026-07-25T00:00:02.000Z"),
+      ],
+      [{
+        attemptId: "attempt-1",
+        turn: 1,
+        promptKind: "task",
+        phase: "thinking",
+        updatedAt: "2026-07-25T00:00:01.000Z",
+        intent: { kind: "reported-thought", excerpt },
+        state: "recording",
+        completeness: "complete",
+      }],
+    );
+    const details = agentDetails();
+
+    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const timeline = projectInspectionTargetTimelineView({
+      run: agentRun(),
+      details,
+      events: [],
+      observations: projection,
+    });
+
+    expect(summary.pulse?.headline).toBe(expected);
+    expect(timeline.current).toMatchObject({ kind: "agent", headline: expected });
+    expect(timeline.recent).toEqual([
+      expect.objectContaining({ kind: "activity", summary: expected }),
+      expect.objectContaining({ kind: "activity", summary: "report.ger" }),
+    ]);
+    expect(Array.from(expected)).toHaveLength(240);
   });
 
   it("projects Agent execution from retained Observations, not progress or execution metadata", () => {

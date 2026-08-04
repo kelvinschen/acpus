@@ -362,6 +362,7 @@ type PruneReport = {
 - Runtime MUST fold normalized provider observations into bounded current activity and closed semantic entries when they are received.
 - Runtime MUST merge consecutive assistant chunks into one response segment and consecutive thought or plan chunks into the corresponding intent segment.
 - Runtime MUST fold calls and updates sharing one tool-call id into one tool entry.
+- Runtime MUST mark an omitted prefix or suffix at that edge when projecting bounded Agent activity text for inspection.
 - Runtime MUST retain usage observations in node progress and terminal turn summaries without adding them to semantic Timeline entries.
 - Runtime MUST exclude unknown-provider payload bodies from semantic persistence while counting unknown events and marking observation completeness degraded.
 - A tool, channel change, fence, gap, or turn terminal boundary MUST close the applicable open semantic segment.
