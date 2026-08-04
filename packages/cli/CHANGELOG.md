@@ -1,5 +1,20 @@
 # acpus
 
+## 0.12.3
+
+### Patch Changes
+
+- 1d6dad0: Keep incremental inspection updates decision-relevant, stream only durable closed Timeline activity, and render every triggering change facet.
+- a82e969: Preserve physical package files when checking workflows installed outside the
+  workspace, and use workspace dependencies only when source-side resolution is
+  missing.
+- af79bca: Add the bundled Agent-first wide-research workflow for source-rich, coverage-oriented investigations over many comparable units.
+- Updated dependencies [1d6dad0]
+- Updated dependencies [a82e969]
+  - @acpus/runtime@0.14.2
+  - @acpus/workflow-compiler@0.3.3
+  - @acpus/web@0.2.5
+
 ## 0.12.2
 
 ### Patch Changes
