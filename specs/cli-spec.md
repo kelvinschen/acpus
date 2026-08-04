@@ -193,9 +193,6 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - The bundled skill MUST reserve library/catalog lookup and reuse for explicit user `/wf:<hint>` and `/workflow:<hint>` requests.
 - For unmarked requests, the bundled skill MUST NOT look up or reuse library/catalog workflows; it MAY read a user-named workflow to explain, modify, or diagnose it.
 - Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
-- Bundled deep-research reader-facing Agents MUST choose their output language from the research question available in their context.
-- The bundled deep-research workflow MUST NOT expose a report-language input.
-- The bundled deep-research workflow MUST NOT pass a report-language value between nodes.
 - Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 

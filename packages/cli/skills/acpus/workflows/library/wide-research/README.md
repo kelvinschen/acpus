@@ -1,0 +1,54 @@
+# Wide Research Workflow
+
+Only an explicit `/wf:wide-research` or `/workflow:wide-research` request runs
+this workflow.
+
+Use this workflow to research many comparable items under one consistent rubric
+and turn the findings into a sourced comparison. An item can be a product,
+company, paper, person, source, jurisdiction, dataset, file, case, or any other
+independently researchable unit.
+
+Wide research is a good fit when:
+
+- the goal is broad coverage rather than a deep investigation of a few
+  interdependent questions;
+- every item should receive comparable attention;
+- the result should show coverage, missing evidence, and source provenance.
+
+Use deep research instead when the work depends on adaptive follow-up,
+cross-checking, or developing one line of argument.
+
+## Inputs
+
+- `question` (required): the population to research and the comparison or survey
+  goal.
+- `context` (optional): constraints such as audience, time range, required
+  fields, repositories, source preferences, or a precise definition of one item.
+- `breadth` (optional): coverage preset: `quick` (8 items), `wide` (16,
+  default), or `xwide` (64). The workflow may return fewer when evidence is
+  insufficient.
+- `reportFormat` (optional): `html` (default), `md`, or `none`.
+
+## Outputs
+
+Every run produces `wide-research-evidence-bundle.json` with the research scope,
+selected items, per-item findings, coverage statistics, unresolved gaps, and a
+deduplicated source index.
+
+Unless `reportFormat` is `none`, the run also produces a reader-facing Markdown
+or self-contained HTML report. The report uses the language of the research
+question.
+
+## Run
+
+Resolve the active Acpus skill directory and use the workflow's absolute path:
+
+```sh
+acpus workflow run /absolute/path/to/acpus-skill/workflows/library/wide-research/workflow.ts --input '{"question":"Compare 16 agent orchestration frameworks by execution model, durability, observability, and extension surface.","breadth":"wide","reportFormat":"html"}'
+```
+
+For a source survey, define what counts as one item:
+
+```sh
+acpus workflow run /absolute/path/to/acpus-skill/workflows/library/wide-research/workflow.ts --input '{"question":"Survey 64 primary publications on inference-time scaling and summarize each publication under a common evidence rubric.","context":"One coverage unit is one paper or official technical report; prefer original publications over commentary.","breadth":"xwide","reportFormat":"md"}'
+```

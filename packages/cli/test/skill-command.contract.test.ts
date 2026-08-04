@@ -191,6 +191,7 @@ describe("skill CLI contracts", () => {
       for (const relativePath of [
         "SKILL.md",
         join("workflows", "library", "deep-research", "workflow.ts"),
+        join("workflows", "library", "wide-research", "workflow.ts"),
       ]) {
         await expect(readFile(join(universal, relativePath)))
           .resolves.toEqual(await readFile(join(bundled, relativePath)));

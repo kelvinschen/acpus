@@ -38,13 +38,21 @@ any standfirst or deck should orient with the subject, the intended reader, and 
 evidence scope or confidence boundary, not a recap of the report's own section taxonomy
 or of the research process that produced it (lanes, rounds, 多车道研究). Use an
 adaptive structure driven by the subject, not a fixed section count or one block per
-finding. Use descriptive headings that state the question answered or the conclusion
-reached, but vary their grammar and length so they read as written by a person: mix
-short noun phrases, plain questions, and full sentences, and do not cast every heading
-in one mold such as "claim, but qualifier" or a matched two-part couplet, and do not
-pack each one with a parallel list. Open each section and paragraph with its point
-before the supporting detail, explain terms before relying on them, and connect
-sections with real transitions.
+finding. Treat headings primarily as navigation and retrieval labels, not miniature
+editorials. Default to concrete, domain-standard noun phrases that name the section's
+subject. Use a question or complete claim only when the section genuinely resolves it,
+and reserve claim-like headings for the report's few central conclusions. Ordinary
+headings are acceptable: do not embellish them merely to make them varied, quotable,
+memorable, or independently interesting. Do not manufacture contrast, reversal,
+metaphor, personification, wordplay, or balanced cadence for a heading. Avoid
+compressing qualified or continuous relationships into binary formulas such as "X,
+not Y", "from A rather than B", or "X can..., but Y cannot..." unless the evidence
+supports that exact contrast and the distinction is necessary. Prefer established
+terms and concrete objects over freshly coined abstractions or figurative labels.
+Judge a heading set by rhetorical function, not only by surface grammar: varied syntax
+still feels mechanical when every heading is a compressed claim or punchline. Open
+each section and paragraph with its point before the supporting detail, explain terms
+before relying on them, and connect sections with real transitions.
 
 Place corrections, counter-evidence, and uncertainty beside the conclusion they
 qualify rather than hiding them. Calibrate confidence to the lane reports; convey
@@ -80,6 +88,12 @@ reference markers or a source list, not as long locator strings dumped inline af
 sentences. End on the last substantive
 conclusion, implication, limitation, or open question.
 
+Keep the author's presence quieter than the evidence. State routine observations
+literally instead of turning them into maxims, slogans, or polished oppositions. A
+sentence does not need a reveal, reversal, or memorable closing cadence to earn its
+place. Put interpretation and qualification where the supporting evidence can be seen,
+and prefer the least rhetorical wording that preserves the exact meaning.
+
 Apply these plainness rules in the report's own language, not only in English. Cut
 opening filler and meta-commentary (值得注意的是, 让我来解释, Great question), empty
 summary connectives (综上所述, 归根结底, 本质上, at the end of the day), and business or
@@ -110,8 +124,7 @@ with distinct sizes and weights for the title, deck, section headings, body, and
 captions, using system font stacks (a characterful serif or sans for display and a
 complementary body face), and hold body text to a readable measure of about 60 to 80
 characters with comfortable line height. Avoid the current AI-default looks unless the
-subject genuinely calls for one: a cream background with a high-contrast serif and a
-terracotta accent, a near-black background with one acid accent, or a hairline-ruled
+subject genuinely calls for one: a near-black background with one acid accent, or a hairline-ruled
 broadsheet of dense columns.
 
 Let structural devices such as dividers, eyebrows, labels, and numbering encode
@@ -150,7 +163,7 @@ export default defineWorkflow({
   inputSchema: z.object({
     question: z.string().describe("The research question to investigate."),
     context: z.string().default("").describe("Optional constraints, background, time range, audience, repositories, or preferred source types."),
-    depth: z.enum(["quick", "deep", "xdeep"]).default("deep").describe("Research tier controlling lane breadth, rounds, and cross-check: quick=4 lanes 1 round no cross-check, deep=6 lanes 2 rounds, xdeep=10 lanes 3 rounds."),
+    depth: z.enum(["quick", "deep", "xdeep"]).default("deep").describe("Research tier controlling lane breadth, rounds, and cross-check: quick=4 lanes 1 round no cross-check, deep=6 lanes 2 rounds, xdeep=12 lanes 3 rounds."),
     reportFormat: z.enum(["none", "md", "html"]).default("html").describe("Presentation format. None returns only the evidence bundle."),
   }),
   agents: {
@@ -163,7 +176,7 @@ export default defineWorkflow({
   const profile = lift(input.depth, depth => ({
     quick: { breadth: 4, rounds: 1, crossCheck: false },
     deep: { breadth: 6, rounds: 2, crossCheck: true },
-    xdeep: { breadth: 10, rounds: 3, crossCheck: true },
+    xdeep: { breadth: 12, rounds: 3, crossCheck: true },
   }[depth]));
 
   const request = step("prepare_request").task({
@@ -478,7 +491,7 @@ export default defineWorkflow({
           Method
           - Use the lane reports as the only content source. You may add connective, ordering, and interpretive sentences, but introduce no new fact and never overstate confidence.
           - Plan the reader journey, write the full article and its visuals, then re-read your own draft as a fresh reader, as an evidence editor, and once more only for machine-writing tells, and revise until no material problem remains.
-          - On the tells pass, read the headings as a set and rewrite any that share one mold or matched length; break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's own method; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or the confidence treatment. Preserve every fact, source, and stated uncertainty while doing so.
+          - On the tells pass, read the headings as a set and simplify any that sound like slogans, miniature editorials, crafted contrasts, metaphors, personification, or punchlines; do not rewrite a plain heading merely to create variety. Break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's own method; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or the confidence treatment. Preserve every fact, source, and stated uncertainty while doing so.
           - Write in the research question's language. After writing the file, respond with only: done
         `,
         timeout: "60m",
