@@ -1,5 +1,11 @@
 # acpus
 
+## 0.12.4
+
+### Patch Changes
+
+- 47a3299: Allow `--agents` to read strict JSON objects from `.json` file paths for workflow check, run, and fork commands.
+
 ## 0.12.3
 
 ### Patch Changes
