@@ -743,7 +743,7 @@ export type InspectionAttention =
       expected?: string;
     };
 
-type InspectionVisibility = {
+export type InspectionVisibility = {
   state: "degraded";
   reason: RunInspectionVisibility["reason"];
 };
@@ -887,6 +887,9 @@ export type InspectionChange = {
   };
   state: InspectionVisibleState;
   progress?: InspectionProgress;
+  occurrences?: InspectionCounts;
+  attention?: InspectionAttention;
+  visibility?: InspectionVisibility;
   reason?: InspectionVisibleReason;
 };
 

@@ -550,11 +550,11 @@ Runtime owns generic inspection semantics and public shape.
 - The tree MUST collapse a sole-child branch, `if`, or `switch` wrapper only when it has the same state as its child and carries no attention, failure, progress, or pulse.
 - The tree MUST fold two or more contiguous equivalent Fanout items or Loop rounds. Equivalence ignores occurrence identity and duration but preserves visible state, progress, pulse, failure, attention, and shared subtree shape.
 - A fold MUST show one shared subtree without representative selectors or durations and MUST NOT contain actionable attention.
-- Observation emits attachment, zero or more state updates, then closure; a subject already at its stop boundary emits closure only. Abort is silent, and an observation error ends without closure.
-- Each update MUST provide the smallest coherent change that affects the next valid action. Time, liveness aging, usage, hooks, and silence MUST NOT emit alone.
-- Reasons MAY clarify a transition only when state is insufficient. Event-history discontinuity MUST NOT prevent observing a readable current view.
+- Observation emits attachment, zero or more updates, then closure; an initial stop emits closure only, abort is silent, and error ends without closure.
+- Each update MUST expose the smallest coherent next-action delta that caused it; Agent pulse or current activity, time, liveness aging, usage, hooks, and silence MUST NOT emit alone.
+- Reasons MAY clarify transitions when state is insufficient; event-history gaps MUST NOT prevent a readable current view.
 - `subject-terminal` closes only when the fixed subject is terminal. `decision-boundary` closes for a terminal or paused run, actionable run Signal, or an actionable Signal required by the target. Evaluate boundaries after settlement; absorbed Race/Quorum failures and unrelated siblings do not close a target.
-- Timeline is a bounded activity view of the selected subject. It shares the observation stop policy, preserves visible gaps, and never independently closes observation.
+- Timeline appends only newly visible durable closed entries to a bounded activity view; it preserves gaps, shares the observation stop policy, and never closes observation independently.
 
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.

@@ -37,13 +37,13 @@ Options:
 
 | Need | Use | Get |
 | --- | --- | --- |
-| State / next action | Summary (default) | Decision state and navigation |
-| Proof of work | `--timeline` | Current and recent activity |
+| State / next action | Summary (default) | Decision changes and navigation |
+| Proof of work | `--timeline` | Current and closed activity |
 | Wait for a terminal result | `--follow` | Semantic updates until the fixed subject is terminal |
 | Wait for the next decision | `--await-decision` | Semantic updates until input, pause, or terminal state requires action |
 
 - `--follow` keeps its fixed run or target attached until that subject is terminal. `--await-decision` returns only at a real decision boundary; use it for ordinary long-running orchestration.
-- Both modes append durable semantic changes rather than emitting a heartbeat or a timer refresh. Silence neither proves a problem nor authorizes intervention.
+- Summary reports decision changes; Timeline also appends closed activity. Neither emits heartbeats or timer refreshes; silence authorizes no intervention.
 - Add `#attemptNo` only for one Agent attempt. 
 - `Ctrl-C` only detaches.
 

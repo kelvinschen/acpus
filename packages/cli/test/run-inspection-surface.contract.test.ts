@@ -174,7 +174,7 @@ describe("inspection text surface", () => {
     expect(text).not.toContain("--await-decision");
   });
 
-  it("renders only the current visible state in compact update lines", () => {
+  it("renders every decision facet carried by an update", () => {
     const text = formatInspectionChanges([{
       subject: { label: "design_board", selector: "@2771ef6ac8e9" },
       state: { status: "completed" },
@@ -183,11 +183,37 @@ describe("inspection text surface", () => {
       state: { status: "running" },
       progress: { completed: 1, total: 3 },
       reason: "race-selected",
-    }]);
+    }, {
+      subject: { label: "approve", selector: "@1a2b3c4d5e6f" },
+      state: { status: "awaiting" },
+      occurrences: { total: 3, awaiting: 1, completed: 2 },
+      attention: {
+        kind: "awaiting-input",
+        summary: "Approval required.",
+        signal: "@ab12cd34ef56",
+        prompt: "Approve the proposal?",
+        expected: "{ approved: boolean }",
+      },
+      visibility: { state: "degraded", reason: "observation-gap" },
+    }, {
+      subject: { label: "failed_review", selector: "@fedcba987654" },
+      state: {
+        status: "failed",
+        failure: { origin: "runtime", message: "Review failed." },
+      },
+      attention: { kind: "failure", summary: "Review failed." },
+    }], "run_1");
 
     expect(text).toBe([
       "  ✓ design_board  @2771ef6ac8e9 · completed",
       "  ⠋ challenge_panel · running · 1/3 · race selected",
+      "  ⏳ approve  @1a2b3c4d5e6f · awaiting · occurrences total=3  awaiting=1  completed=2",
+      "     Attention Approval required.",
+      "     Prompt Approve the proposal?",
+      "     Expected { approved: boolean }",
+      "     Signal: acpus runs signal run_1 --target @ab12cd34ef56 --payload '<json>'",
+      "     Visibility degraded/observation-gap  Inspection may be incomplete.",
+      "  ◆ failed_review  @fedcba987654 · failed · Error (runtime): Review failed.",
     ].join("\n"));
   });
 

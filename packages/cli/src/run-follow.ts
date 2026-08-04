@@ -53,7 +53,7 @@ export async function followRun(
     until: options.until,
     signal: controller.signal,
   })[Symbol.asyncIterator]();
-  const presenter = new InspectionTranscriptPresenter(options.stdout);
+  const presenter = new InspectionTranscriptPresenter(options.stdout, view.runId);
   let closed: Extract<InspectionObservation, { kind: "closed" }> | undefined;
 
   try {
@@ -117,7 +117,10 @@ class InspectionTranscriptPresenter {
   private emitted = false;
   private attachedRun?: { durationMs: number; observedAt: number };
 
-  constructor(private readonly stdout: Writable) {}
+  constructor(
+    private readonly stdout: Writable,
+    private readonly runId: string,
+  ) {}
 
   observation(observation: InspectionObservation): void {
     if (observation.kind === "attached") {
@@ -143,7 +146,7 @@ class InspectionTranscriptPresenter {
     const blocks = [
       ...(observation.changes.length === 0
         ? []
-        : [`Updates${elapsedMs === undefined ? "" : ` · run ${formatDurationMs(elapsedMs)}`}:\n${formatInspectionChanges(observation.changes)}`]),
+        : [`Updates${elapsedMs === undefined ? "" : ` · run ${formatDurationMs(elapsedMs)}`}:\n${formatInspectionChanges(observation.changes, this.runId)}`]),
       ...(observation.timeline?.length ? [`Timeline:\n${formatTimelineEntries(observation.timeline)}`] : []),
     ];
     if (blocks.length > 0) this.block(`${blocks.join("\n\n")}\n`);

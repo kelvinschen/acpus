@@ -85,6 +85,44 @@ describe("inspection observation transcript", () => {
     expect(stdout.text).not.toContain("Updates · run");
   });
 
+  it("prints durable Timeline evidence without an empty state update", async () => {
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: targetTimeline() }),
+      ok({
+        kind: "update",
+        changes: [],
+        timeline: [{
+          kind: "activity",
+          at: "2026-07-30T00:00:02.000Z",
+          channel: "tool",
+          attempt: 2,
+          turn: 1,
+          summary: "Bash",
+        }],
+      }),
+      ok({
+        kind: "closed",
+        reason: "subject-terminal",
+        view: { ...targetTimeline(), state: { status: "completed" } },
+      }),
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f#2",
+      detail: "timeline",
+    }, {
+      until: "subject-terminal",
+      stdout,
+      stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text).toContain("Timeline:\n  2026-07-30T00:00:02.000Z  tool  attempt=2  turn=1  Bash");
+    expect(stdout.text).not.toContain("Updates:");
+  });
+
   it("falls back to an unqualified run update when attachment has no duration", async () => {
     const attached = runningView();
     delete attached.run.durationMs;

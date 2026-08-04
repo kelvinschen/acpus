@@ -1,37 +1,51 @@
 # Acpus Codes of Conduct
 
-> Acpus is a TypeScript-first product built around `@acpus/core` in
-> `packages/core`. The previous YAML product remains available at the
-> `acpus@0.5.2` Git tag. Treat current development as greenfield and **NEVER add
-> compatibility shims unless explicitly requested**.
+> Treat current development as greenfield and **NEVER add compatibility shims unless explicitly requested**.
 
 ## Specification Maintenance
 
 - Follow the [specification maintenance guide](docs/specification-maintenance.md)
   before adding or reorganizing specs.
+
 - Current behavior belongs in `specs/`; future work belongs in `docs/roadmap/`;
   completed plans and previous product history belong in Git history and
   release tags.
+
 - Read the owning spec before changing behavior. Update the canonical spec and
   verification in the same change; behavior-preserving refactors do not add
   normative requirements.
+
+- Prefer replacing or compressing requirements over appending. Specify stable
+  observable behavior and decision boundaries, not implementation detail;
+  avoid net growth when existing text can carry the new semantics.
+
 - Specs use the template and RFC 2119 language in `specs/INDEX.md`. Keep each
   behavior canonical in one owner spec and link from delegating specs.
+
 - Treat feature changes as greenfield current behavior. Do not add migration
   warnings, legacy-field diagnostics, compatibility shims, or removed-behavior
   tests unless explicitly requested.
 
 ## Development Practice
 
-- Read the relevant spec before changing implementation. If code and spec disagree, fix one of them in the same change.
-- Use the smallest layer that solves the task. Prefer a pure lowering/helper change over adding a new wrapper or abstraction.
+- Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
+
+- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
+
 - Model recoverable boundary failures with typed Result/ResultAsync and tagged errors. Keep local absence as `undefined`, invariant/system failures as throws, and never serialize Result objects into IR, events, SQLite rows, or CLI JSON.
-- Do not restore previous-product code from older tags unless the task
-  explicitly asks for historical maintenance.
 
-## LLM-Oriented Product Design
+- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
 
-For every design decision, ask first: Does this enable the consumer's next valid action with the minimum authoritative delta?
+- Keep components modular and concerns clearly separated.
+
+- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
+
+- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+
+- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
+
+- LLM-Oriented product design: for every design decision, ask first: Does this enable the consumer's next valid action with the minimum authoritative delta?
+
 
 ## The Way of Clean Code
 
@@ -70,4 +84,3 @@ Detailed guidance lives in `docs/development-testing.md`.
 - After fully completing any feature implementation, MUST run the relevant build/test command so checked-in generated artifacts stay current.
 - Prefer the narrow command while developing (`pnpm test:unit`, `pnpm test:contract`, `pnpm test:integration`, `pnpm test:e2e`) and broader checks before handoff (`pnpm test`, `pnpm typecheck`).
 - After material test changes, MUST benchmark `pnpm test` against the <10s baseline; investigate regressions over 500ms as test-design overhead or unavoidable cost, and report the conclusion.
-- If a command could not be run, the final response MUST state that clearly.

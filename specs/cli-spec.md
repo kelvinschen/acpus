@@ -229,8 +229,8 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Default workflow run text MUST omit the generic workflow metadata summary and catalog paths.
 - Blocking workflow run MUST begin with observation rather than a separate admission receipt. If it cannot attach after admission, its error MUST include the run id and a one-shot inspection command.
 - Inspection MUST render Runtime-owned views and candidates append-only in both TTY and non-TTY output. It MUST retain only public selectors and public Runtime error context; copyable commands MUST execute in a POSIX shell.
-- Blocking inspection MUST label its attached view and omit an Await command that would attach the same observation again.
-- A run-level semantic update MUST show current run elapsed time in its heading; target and Timeline update headings MUST remain unqualified.
+- Blocking inspection MUST label attachment and omit its recursive Await command.
+- Update output MUST expose its triggering Runtime delta, omit empty Updates blocks, qualify run headings with elapsed time, and leave target and Timeline headings unqualified.
 - A run's terminal output MUST appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
 - Diagnostic text MUST show source location when available, indent paths/hints, and relativize sources inside CLI cwd.
 - Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.

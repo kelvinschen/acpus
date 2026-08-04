@@ -111,6 +111,7 @@ describe("coherent inspection observation boundaries", () => {
   });
 
   it("projects one Agent activity truth across run, Summary, and Timeline views", async () => {
+    vi.useFakeTimers();
     await withRuntimeWorkspace("inspection-observation-agent-activity", async workspace => {
       const started = await startedAgent(workspace);
       let releaseProvider!: () => void;
@@ -182,7 +183,26 @@ describe("coherent inspection observation boundaries", () => {
           progress: { responses: [], summary, updatedAt: `2026-08-03T00:00:0${sequence + 1}.000Z` },
         });
 
+        const controller = new AbortController();
+        const iterator = observeInspection(workspace, {
+          view: { kind: "target", runId: started.runId, target: selector, detail: "timeline" },
+          until: "subject-terminal",
+          signal: controller.signal,
+        })[Symbol.asyncIterator]();
+        expect(observation(await iterator.next())).toMatchObject({
+          kind: "attached",
+          view: { detail: "timeline", current: { kind: "agent", phase: "starting" } },
+        });
+        const next = iterator.next();
+        await vi.advanceTimersByTimeAsync(0);
+
         observe(0, { type: "message", channel: "thought", content: "Inspect the evidence." });
+        await vi.advanceTimersByTimeAsync(1_000);
+        let emitted = false;
+        void next.then(() => { emitted = true; });
+        await Promise.resolve();
+        expect(emitted).toBe(false);
+
         const thoughtRead = await readInspection(workspace, { view: { kind: "run", runId: started.runId } });
         const thoughtView = thoughtRead.isOk() && thoughtRead.value.kind === "run" ? thoughtRead.value : undefined;
         expect(inspectionTreeItem(thoughtView?.tree ?? [], treeSelector)?.pulse).toEqual({
@@ -198,6 +218,17 @@ describe("coherent inspection observation boundaries", () => {
           status: "completed",
           rawOutput: "passed",
         });
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(observation(await next)).toMatchObject({
+          kind: "update",
+          changes: [],
+          timeline: [
+            { kind: "activity", channel: "reported-thought", summary: "Inspect the evidence." },
+            { kind: "activity", channel: "tool", summary: "Bash" },
+          ],
+        });
+        controller.abort();
+        await expect(iterator.next()).resolves.toMatchObject({ done: true });
 
         const runRead = await readInspection(workspace, { view: { kind: "run", runId: started.runId } });
         const runView = runRead.isOk() && runRead.value.kind === "run" ? runRead.value : undefined;
@@ -306,6 +337,57 @@ describe("coherent inspection observation boundaries", () => {
 
         controller.abort();
         await expect(next).resolves.toMatchObject({ done: true });
+      } finally {
+        prepared.store.close();
+      }
+    });
+  });
+
+  it("emits Agent completion while the observed run remains non-terminal", async () => {
+    vi.useFakeTimers();
+    await withRuntimeWorkspace("inspection-observation-agent-completion", async workspace => {
+      const prepared = await bootstrappedRun(workspace, agentAndSignalWorkflow(), {});
+      try {
+        const scheduler = throwingSchedulerStore(prepared.store.scheduler);
+        const review = instance(prepared.store, prepared.runId, "review");
+        const approval = instance(prepared.store, prepared.runId, "approve");
+        const attempt = scheduler.startAttempt({
+          runId: prepared.runId,
+          nodeKey: review.nodeKey,
+          nodeId: review.nodeId,
+          ownerEpoch: prepared.claim.ownerEpoch,
+          idempotencyKey: "inspection-observation:completion:start",
+        });
+        awaitSignal(prepared.store, prepared.runId, prepared.claim, approval.nodeKey, approval.nodeId, "inspection-observation:completion:awaiting");
+        const controller = new AbortController();
+        const iterator = observeInspection(workspace, {
+          view: { kind: "run", runId: prepared.runId },
+          until: "subject-terminal",
+          signal: controller.signal,
+        })[Symbol.asyncIterator]();
+        expect(observation(await iterator.next())).toMatchObject({ kind: "attached" });
+        const next = iterator.next();
+        await vi.advanceTimersByTimeAsync(0);
+
+        scheduler.commitAttemptResult({
+          runId: prepared.runId,
+          attemptId: attempt.attemptId,
+          ownerEpoch: prepared.claim.ownerEpoch,
+          result: { status: "completed", output: { ok: true } },
+          idempotencyKey: "inspection-observation:completion:complete",
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        const update = observation(await next);
+        expect(update).toMatchObject({ kind: "update" });
+        expect(update.kind === "update" ? update.changes : []).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            subject: { label: "review", kind: "agent", selector: expect.any(String) },
+            state: expect.objectContaining({ status: "completed" }),
+          }),
+        ]));
+        controller.abort();
+        await expect(iterator.next()).resolves.toMatchObject({ done: true });
       } finally {
         prepared.store.close();
       }

@@ -67,9 +67,13 @@ export {
 } from "./inspection/use-cases.js";
 export type {
   InspectionCandidates,
+  InspectionChange,
+  InspectionAttention,
+  InspectionCounts,
   InspectionError,
   InspectionObservation,
   InspectionRead,
+  InspectionVisibility,
   InspectionView,
   InspectionViewQuery,
   ObserveInspectionQuery,

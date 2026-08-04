@@ -8,9 +8,11 @@ describe("coherent inspection change selection", () => {
     const targetBefore = targetView({ total: 3, completed: 1, awaiting: 2 });
     const targetAfter = targetView({ total: 3, completed: 2, awaiting: 1 });
 
-    expect(inspectionChanges(targetBefore, targetAfter, [], run())).toEqual([
-      expect.objectContaining({ subject: expect.objectContaining({ label: "review" }), state: { status: "mixed" } }),
-    ]);
+    expect(inspectionChanges(targetBefore, targetAfter, [], run())).toEqual([{
+      subject: { label: "review", kind: "agent" },
+      state: { status: "mixed" },
+      occurrences: { total: 3, completed: 2, awaiting: 1 },
+    }]);
 
     expect(inspectionChanges(
       runView("running", 0, "running"),
@@ -85,6 +87,7 @@ describe("coherent inspection change selection", () => {
       {
         subject: { label: "item[1]", kind: "fanout_item", selector: "@111111111111" },
         state: { status: "failed", failure: { origin: "runtime", message: "Review failed." } },
+        attention: { kind: "failure", summary: "Review failed." },
       },
     ]);
   });
@@ -103,7 +106,76 @@ describe("coherent inspection change selection", () => {
       { subject: { label: "review", kind: "agent", selector: "@abcdefabcdef" }, state: { status: "running" } },
     ]);
   });
+
+  it("omits Agent pulse and Timeline current-only changes", () => {
+    const runBefore = treeView([{
+      ...item("review", "agent", "@abcdefabcdef", "running"),
+      pulse: { phase: "starting", turn: 1 },
+    }]);
+    const runAfter = treeView([{
+      ...item("review", "agent", "@abcdefabcdef", "running"),
+      pulse: { phase: "tool", turn: 1, headline: "Bash running" },
+    }]);
+    const summaryBefore = targetActivityView("summary", { pulse: { phase: "reported-thought", turn: 1, headline: "Inspect" } });
+    const summaryAfter = targetActivityView("summary", { pulse: { phase: "responding", turn: 1, headline: "Done" } });
+    const timelineBefore = targetActivityView("timeline", { current: { kind: "agent", phase: "tool", turn: 1, headline: "Bash" } });
+    const timelineAfter = targetActivityView("timeline", { current: { kind: "agent", phase: "responding", turn: 1, headline: "Done" } });
+
+    expect(inspectionChanges(runBefore, runAfter, [], run())).toEqual([]);
+    expect(inspectionChanges(summaryBefore, summaryAfter, [], run())).toEqual([]);
+    expect(inspectionChanges(timelineBefore, timelineAfter, [], run())).toEqual([]);
+  });
+
+  it("carries attention and visibility that trigger a target change", () => {
+    const before = targetActivityView("summary", {});
+    const after = targetActivityView("summary", {
+      attention: {
+        kind: "awaiting-input",
+        summary: "Approval required.",
+        signal: "@111111111111",
+        prompt: "Approve?",
+        expected: "boolean",
+      },
+      visibility: { state: "degraded", reason: "observation-gap" },
+    });
+
+    expect(inspectionChanges(before, after, [], run())).toEqual([{
+      subject: { label: "review", kind: "agent", selector: "@abcdefabcdef" },
+      state: { status: "running" },
+      attention: {
+        kind: "awaiting-input",
+        summary: "Approval required.",
+        signal: "@111111111111",
+        prompt: "Approve?",
+        expected: "boolean",
+      },
+      visibility: { state: "degraded", reason: "observation-gap" },
+    }]);
+  });
 });
+
+function targetActivityView(
+  detail: "summary",
+  extra: Partial<Extract<InspectionView, { kind: "target"; detail: "summary" }>>,
+): Extract<InspectionView, { kind: "target"; detail: "summary" }>;
+function targetActivityView(
+  detail: "timeline",
+  extra: Partial<Extract<InspectionView, { kind: "target"; detail: "timeline" }>>,
+): Extract<InspectionView, { kind: "target"; detail: "timeline" }>;
+function targetActivityView(
+  detail: "summary" | "timeline",
+  extra: Record<string, unknown>,
+): Extract<InspectionView, { kind: "target" }> {
+  const base = {
+    kind: "target" as const,
+    detail,
+    run: { id: "run", status: "running" as const },
+    subject: { label: "review", kind: "agent", selector: "@abcdefabcdef" },
+    state: { status: "running" as const },
+    ...extra,
+  };
+  return detail === "timeline" ? { ...base, detail, recent: [] } : { ...base, detail };
+}
 
 function treeView(children: InspectionTreeEntry[]): Extract<InspectionView, { kind: "run" }> {
   return {

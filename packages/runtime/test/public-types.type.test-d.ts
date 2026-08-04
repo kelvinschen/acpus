@@ -45,12 +45,16 @@ import type {
   DaemonStatus,
   ForkInputNormalizationFailure,
   InspectAgentExecutionQuery,
+  InspectionAttention,
   InspectionCandidates,
+  InspectionChange,
+  InspectionCounts,
   InspectionError,
   InspectionObservation,
   InspectionRead,
   InspectionView,
   InspectionViewQuery,
+  InspectionVisibility,
   InspectNodeQuery,
   InspectTargetArtifactsQuery,
   ObserveInspectionQuery,
@@ -161,7 +165,15 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
   expectTypeOf<Extract<InspectionObservation, { kind: "update" }>["changes"][number]>().toMatchTypeOf<{
     subject: { label: string; selector?: string };
     state: { status: RunInspectionStatus };
+    occurrences?: InspectionCounts;
+    attention?: InspectionAttention;
+    visibility?: InspectionVisibility;
     reason?: "retry" | "steer" | "resume" | "operator-cancelled" | "parent-cancelled" | "branch-selected" | "race-selected" | "quorum-selected" | "superseded";
+  }>();
+  expectTypeOf<InspectionChange>().toMatchTypeOf<Extract<InspectionObservation, { kind: "update" }>["changes"][number]>();
+  expectTypeOf<InspectionVisibility>().toEqualTypeOf<{
+    state: "degraded";
+    reason: "observation-gap" | "unrecognized-provider-activity";
   }>();
   expectTypeOf<Extract<InspectionObservation, { kind: "closed" }>>().toEqualTypeOf<{
     kind: "closed";

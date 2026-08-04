@@ -43,7 +43,22 @@ export function projectInspectionRunView(input: {
     kind: "run",
     run: inspectionRun(input.run, snapshot.run.failure),
     counts: counts(snapshot.counts),
-    tree: projectTree(snapshot.items, input.run, projectAgentActivity),
+    tree: projectTree(snapshot.items, input.run, projectAgentActivity, true),
+    ...(snapshot.output === undefined ? {} : { output: snapshot.output }),
+  };
+}
+
+/** Builds the pulse-free run tree used only for incremental decision changes. */
+export function projectInspectionRunDecisionView(input: {
+  ir: WorkflowIR;
+  run: RunDetails;
+}): Extract<InspectionView, { kind: "run" }> {
+  const snapshot = projectRunSnapshot({ ir: input.ir, run: input.run });
+  return {
+    kind: "run",
+    run: inspectionRun(input.run, snapshot.run.failure),
+    counts: counts(snapshot.counts),
+    tree: projectTree(snapshot.items, input.run, createAgentActivityProjector(), false),
     ...(snapshot.output === undefined ? {} : { output: snapshot.output }),
   };
 }
@@ -137,11 +152,12 @@ function projectTree(
   items: readonly RunInspectionItem[],
   run: RunDetails,
   projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+  includePulse: boolean,
 ): InspectionTreeEntry[] {
   const byKey = new Map<string, InternalTree>();
   const roots: InternalTree[] = [];
   for (const item of items) {
-    const node: InternalTree = { item, entry: treeItem(item, run, projectAgentActivity), children: [] };
+    const node: InternalTree = { item, entry: treeItem(item, run, projectAgentActivity, includePulse), children: [] };
     byKey.set(item.key, node);
     const parent = item.parentKey ? byKey.get(item.parentKey) : undefined;
     if (parent) parent.children.push(node);
@@ -189,13 +205,14 @@ function treeItem(
   item: RunInspectionItem,
   run: RunDetails,
   projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+  includePulse: boolean,
 ): Extract<InspectionTreeEntry, { type: "item" }> {
   const selector = item.ref
     ? item.attemptNo === undefined ? item.ref : occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo)
     : item.nodeId;
   const attention = itemAttention(item, selector, run);
   const elapsed = terminalItemStatus(item.status) ? duration(item.startedAt, item.finishedAt) : undefined;
-  const pulse = itemPulse(item, run.updatedAt, projectAgentActivity);
+  const pulse = includePulse ? itemPulse(item, run.updatedAt, projectAgentActivity) : undefined;
   return {
     type: "item",
     subject: {

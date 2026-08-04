@@ -56,8 +56,24 @@ export function formatInspectionCandidates(
   return `${lines.join("\n")}\n`;
 }
 
-export function formatInspectionChanges(changes: readonly Change[]): string {
-  return changes.map(change => `  ${statusGlyph(change.state.status)} ${subjectText(change.subject.label, change.subject.selector)} · ${formatState(change.state)}${change.progress ? ` · ${formatProgress(change.progress)}` : ""}${change.reason ? ` · ${change.reason.replaceAll("-", " ")}` : ""}`).join("\n");
+export function formatInspectionChanges(changes: readonly Change[], runId: string): string {
+  return changes.flatMap(change => {
+    const lines = [
+      `  ${statusGlyph(change.state.status)} ${subjectText(change.subject.label, change.subject.selector)} · ${formatState(change.state)}${change.progress ? ` · ${formatProgress(change.progress)}` : ""}${change.occurrences ? ` · occurrences total=${change.occurrences.total}${formatCounts(change.occurrences)}` : ""}${change.reason ? ` · ${change.reason.replaceAll("-", " ")}` : ""}`,
+    ];
+    if (change.attention?.kind === "awaiting-input") {
+      lines.push(
+        `     Attention ${oneLine(change.attention.summary)}`,
+        ...(change.attention.prompt === undefined ? [] : [`     Prompt ${oneLine(change.attention.prompt)}`]),
+        ...(change.attention.expected === undefined ? [] : [`     Expected ${oneLine(change.attention.expected)}`]),
+        `     Signal: ${signalCommand(runId, change.attention.signal)}`,
+      );
+    } else if (change.attention && change.attention.summary !== change.state.failure?.message) {
+      lines.push(`     Attention ${oneLine(change.attention.summary)}`);
+    }
+    if (change.visibility) lines.push(`     ${formatVisibility(change.visibility.reason)}`);
+    return lines;
+  }).join("\n");
 }
 
 export function formatTimelineEntries(entries: readonly TimelineEntry[]): string {

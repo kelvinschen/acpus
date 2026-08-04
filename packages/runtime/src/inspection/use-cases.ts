@@ -28,6 +28,7 @@ import {
 } from "./projection.js";
 import {
   boundedInspectionText,
+  projectInspectionRunDecisionView,
   projectInspectionRunView,
   projectInspectionTargetSummaryView,
   projectInspectionTargetTimelineView,
@@ -119,7 +120,7 @@ export async function* observeInspection(
       yield ok({ kind: "closed", reason: close, view: cycle.value.view });
       return;
     }
-    const changes = inspectionChanges(previous.view, cycle.value.view, cycle.value.events, cycle.value.run);
+    const changes = inspectionChanges(previous.changeView, cycle.value.changeView, cycle.value.events, cycle.value.run);
     const timeline = timelineChanges(previous.view, cycle.value.view, changes);
     if (changes.length > 0 || timeline?.length) {
       yield ok({
@@ -146,6 +147,7 @@ type CoherentPin = {
 
 type CoherentCycle = {
   view: InspectionView;
+  changeView: InspectionView;
   token: RunInspectionStoreRead["cursor"];
   run: NonNullable<RunInspectionStoreRead["run"]>;
   details?: ResolvedTargetState;
@@ -218,6 +220,9 @@ async function readCoherentCycle(
     }
     return ok({
       view: read.value,
+      changeView: read.value.kind === "run"
+        ? projectInspectionRunDecisionView({ ir: state.frozen.ir, run: state.run })
+        : read.value,
       token: state.read.cursor,
       run: state.run,
       events: afterEventSequence === undefined
@@ -551,31 +556,62 @@ export function inspectionChanges(
   run: NonNullable<RunInspectionStoreRead["run"]>,
 ): InspectionChange[] {
   if (previous.kind !== "run" || current.kind !== "run") {
-    if (previous.kind === "target" && current.kind === "target" && sameSubject(previous.subject, current.subject)
-      && JSON.stringify(targetComparable(previous)) === JSON.stringify(targetComparable(current))) return [];
     if (current.kind !== "target") return [];
-    const reason = inspectionReason(undefined, current.state.status, events, current.subject, run);
-    return [{
-      subject: current.subject,
-      state: current.state,
-      ...(reason ? { reason } : {}),
-    }];
+    const previousStatus = previous.kind === "target" ? previous.state.status : undefined;
+    const reason = inspectionReason(previousStatus, current.state.status, events, current.subject, run);
+    const change = targetInspectionChange(current, reason);
+    if (previous.kind === "target" && sameSubject(previous.subject, current.subject)
+      && sameDecisionChange(targetInspectionChange(previous), change) && !reason) return [];
+    return [change];
   }
   const before = flattenInspectionTree(previous.tree);
   const after = flattenInspectionTree(current.tree);
-  const changed = [...after.values()].filter(item => JSON.stringify(itemComparable(before.get(item.id))) !== JSON.stringify(itemComparable(item)));
+  const changed = [...after.values()].filter(item => {
+    const previousItem = before.get(item.id);
+    return !sameDecisionChange(previousItem && treeInspectionChange(previousItem), treeInspectionChange(item))
+      || inspectionReason(previousItem?.state.status, item.state.status, events, item.subject, run) !== undefined;
+  });
   const candidates = changed.filter(item => !progressOnlyAncestor(item, before.get(item.id), changed));
   return candidates
     .filter(item => !coveredByMeaningfulAncestor(item, candidates, before))
     .map(item => {
       const reason = inspectionReason(before.get(item.id)?.state.status, item.state.status, events, item.subject, run);
-      return {
-        subject: item.subject,
-        state: item.state,
-        ...(item.progress ? { progress: item.progress } : {}),
-        ...(reason ? { reason } : {}),
-      };
+      return treeInspectionChange(item, reason);
     });
+}
+
+function targetInspectionChange(
+  view: Extract<InspectionView, { kind: "target" }>,
+  reason?: InspectionVisibleReason,
+): InspectionChange {
+  return {
+    subject: view.subject,
+    state: view.state,
+    ...(view.detail === "summary" && view.occurrences ? { occurrences: view.occurrences } : {}),
+    ...(view.detail === "summary" && view.attention ? { attention: view.attention } : {}),
+    ...(view.visibility ? { visibility: view.visibility } : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function treeInspectionChange(
+  item: FlatInspectionTreeEntry,
+  reason?: InspectionVisibleReason,
+): InspectionChange {
+  return {
+    subject: item.subject,
+    state: item.state,
+    ...(item.progress ? { progress: item.progress } : {}),
+    ...(item.attention ? { attention: item.attention } : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function sameDecisionChange(left: InspectionChange | undefined, right: InspectionChange): boolean {
+  if (!left) return false;
+  const { subject: _leftSubject, reason: _leftReason, ...leftDecision } = left;
+  const { subject: _rightSubject, reason: _rightReason, ...rightDecision } = right;
+  return JSON.stringify(leftDecision) === JSON.stringify(rightDecision);
 }
 
 function inspectionReason(
@@ -686,7 +722,6 @@ type FlatInspectionTreeEntry = {
   subject: import("./types.js").InspectionSubject;
   state: import("./types.js").InspectionVisibleState;
   progress?: import("./types.js").InspectionProgress;
-  pulse?: import("./types.js").InspectionPulse;
   attention?: import("./types.js").InspectionAttention;
   ancestors: string[];
 };
@@ -704,7 +739,6 @@ function flattenInspectionTree(tree: readonly import("./types.js").InspectionTre
             subject: entry.subject,
             state: entry.state,
             ...(entry.progress ? { progress: entry.progress } : {}),
-            ...(entry.pulse ? { pulse: entry.pulse } : {}),
             ...(entry.attention ? { attention: entry.attention } : {}),
             ancestors,
           }
@@ -731,15 +765,6 @@ function flattenInspectionTree(tree: readonly import("./types.js").InspectionTre
   return result;
 }
 
-function itemComparable(item: FlatInspectionTreeEntry | undefined): unknown {
-  return item && {
-    state: item.state,
-    ...(item.progress ? { progress: item.progress } : {}),
-    ...(item.pulse ? { pulse: item.pulse } : {}),
-    ...(item.attention ? { attention: item.attention } : {}),
-  };
-}
-
 function progressOnlyAncestor(
   item: FlatInspectionTreeEntry,
   previous: FlatInspectionTreeEntry | undefined,
@@ -754,7 +779,6 @@ function progressOnlyAncestor(
 function nonProgressComparable(item: FlatInspectionTreeEntry): unknown {
   return {
     state: item.state,
-    ...(item.pulse ? { pulse: item.pulse } : {}),
     ...(item.attention ? { attention: item.attention } : {}),
   };
 }
@@ -780,17 +804,6 @@ function sameSemanticState(
   right: import("./types.js").InspectionVisibleState,
 ): boolean {
   return left.status === right.status && JSON.stringify(left.failure) === JSON.stringify(right.failure);
-}
-
-function targetComparable(view: Extract<InspectionView, { kind: "target" }>): unknown {
-  return {
-    state: view.state,
-    ...(view.detail === "summary" && view.pulse ? { pulse: view.pulse } : {}),
-    ...(view.detail === "summary" && view.attention ? { attention: view.attention } : {}),
-    ...(view.detail === "summary" && view.occurrences ? { occurrences: view.occurrences } : {}),
-    ...(view.visibility ? { visibility: view.visibility } : {}),
-    ...(view.detail === "timeline" && view.current ? { current: view.current } : {}),
-  };
 }
 
 function sameSubject(left: import("./types.js").InspectionSubject, right: import("./types.js").InspectionSubject): boolean {
