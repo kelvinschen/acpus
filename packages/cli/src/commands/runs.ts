@@ -178,7 +178,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .option("--project", "resolve replacement workflow name from the project catalog")
     .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
-    .option("--agents <json>", "override inherited agents for the fork")
+    .option("--agents <json|file.json>", "override inherited agents with inline JSON or a JSON file")
     .option("--target <source-occurrence>", "rewind: rerun this occurrence and later work; omit #attemptNo")
     .action(async (runId: string, options: ForkOptions) => {
       await mutateRun(ctx, runId, {
@@ -562,7 +562,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       })
     : undefined;
   const prepared = preparation?.prepared;
-  const agentOverrides = request.type === "fork" ? parseAgents(request.agents) : undefined;
+  const agentOverrides = request.type === "fork" ? await parseAgents(request.agents, ctx.cwd) : undefined;
   const forkInput = request.type === "fork" ? await maybeNormalizeForkInput(ctx, runId, replacementInput, prepared) : undefined;
   const base = { requestId: daemonControlRequestId(), runId };
   const requestedTarget = "target" in request ? request.target : undefined;

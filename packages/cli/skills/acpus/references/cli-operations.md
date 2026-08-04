@@ -4,7 +4,7 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ## Agent overrides
 
-`workflow run` and `runs fork` accept a JSON object keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, and `env`;
+`workflow check`, `workflow run`, and `runs fork` accept an inline JSON object or a `.json` file keyed by declared Agent name through `--agents`. Overrides allow `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, and `env`.
 
 ## Run and observe
 
@@ -24,7 +24,7 @@ WORKFLOW
 Prefer a file-backed `workflow.ts` only when you need to import task/helper modules or plan to edit or reuse the workflow: 
 
 ```sh
-acpus workflow run <workflow> [--input <json|file.json>] [--follow|--await-decision]
+acpus workflow run <workflow> [--input <json|file.json>] [--agents <json|file.json>] [--follow|--await-decision]
 ```
 
 ### Observe

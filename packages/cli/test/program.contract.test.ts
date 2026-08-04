@@ -374,6 +374,7 @@ describe("CLI program usage contracts", () => {
     expect(runStdout.text).toMatch(/external\s+decision boundary/u);
     expect(runStdout.text).toMatch(/Ctrl-C\s+detaches/u);
     expect(runStdout.text).toContain("--input <json|file.json>");
+    expect(runStdout.text).toContain("--agents <json|file.json>");
     expect(runStdout.text).toContain("- for stdin");
 
     const checkStdout = new CaptureStream();
@@ -382,6 +383,7 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: checkStdout, stderr: checkStderr,
     })).toBe(0);
     expect(checkStdout.text).toContain("--input <json|file.json>");
+    expect(checkStdout.text).toContain("--agents <json|file.json>");
     expect(checkStdout.text).toContain("- for stdin");
 
     const forkStdout = new CaptureStream();
@@ -390,6 +392,7 @@ describe("CLI program usage contracts", () => {
       cwd: process.cwd(), stdout: forkStdout, stderr: forkStderr,
     })).toBe(0);
     expect(forkStdout.text).toContain("--input <json|file.json>");
+    expect(forkStdout.text).toContain("--agents <json|file.json>");
     expect(forkStdout.text).toContain("path or - for");
     expect(forkStdout.text).toContain("stdin");
     expect(forkStdout.text).toContain("--project");
@@ -448,6 +451,34 @@ describe("CLI program usage contracts", () => {
       expect(exitCode).toBe(1);
       expect(stdout.text).toBe("");
       expect(stderr.text).not.toBe("");
+    });
+  });
+
+  it("resolves .json Agent override files before workflow preparation or runtime mutation", async () => {
+    await withPlainTestWorkspace("agent-files", async workspace => {
+      await writeFile(join(workspace, "empty.json"), "  \n");
+      await writeFile(join(workspace, "invalid.json"), "{\"reviewer\":}");
+      await writeFile(join(workspace, "array.json"), "[]");
+      await writeFile(join(workspace, "agents.json"), "{}");
+
+      const cases = [
+        { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["workflow", "run", "missing.workflow.ts", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["runs", "fork", "run_1", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "empty.json"], message: `--agents file '${join(workspace, "empty.json")}' is empty` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "invalid.json"], message: `--agents file '${join(workspace, "invalid.json")}' must be valid JSON` },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "array.json"], message: "--agents must be a JSON object" },
+        { argv: ["workflow", "check", "missing.workflow.ts", "--agents", '"agents.json"'], message: "--agents must be a JSON object" },
+      ];
+
+      for (const testCase of cases) {
+        const stdout = new CaptureStream();
+        const stderr = new CaptureStream();
+        const exitCode = await runCli(testCase.argv, { cwd: workspace, stdout, stderr });
+        expect(exitCode).toBe(2);
+        expect(stdout.text).toBe("");
+        expect(stderr.text).toContain(testCase.message);
+      }
     });
   });
 

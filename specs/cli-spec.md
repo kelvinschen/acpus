@@ -16,7 +16,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | Command | Options and behavior |
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
-| `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json>`, `--project` or `--global`. |
+| `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json\|file.json>`, `--project` or `--global`. |
 | `workflow run <workflow>` | Check workflow/input/catalog options plus mutually exclusive `--follow` or `--await-decision`; text-only. |
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
@@ -26,7 +26,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
-| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input`, `--agents`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
+| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input <json\|file.json>`, `--agents <json\|file.json>`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
 | `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`. |
 | `doctor` | Read-only runtime and authoring health; optional `--json`. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
@@ -92,9 +92,9 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 ### Preparation, Runtime, And Read Boundaries
 
 - `workflow check` MUST prepare without runtime admission or durable preflight artifacts; optional input and Agent overrides are normalized and validated without mutation.
-- `--input` values ending in `.json`, case-insensitively, MUST select a UTF-8 file resolved from CLI cwd; all other values are parsed as inline JSON without filesystem probing or fallback.
-- Input files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
-- `--agents` MUST parse as a JSON object before preparation or mutation.
+- `--input` and `--agents` values ending in `.json`, case-insensitively, MUST select a UTF-8 file resolved from CLI cwd; all other values are parsed as inline JSON without filesystem probing or fallback.
+- JSON option files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
+- `--agents` inline or file-backed values MUST parse as a JSON object before preparation or mutation.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
 - Every workflow run MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
 - The CLI MUST accept a live workspace daemon only when its status protocol version exactly equals the Runtime-exported current protocol version.
@@ -245,5 +245,5 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 ## Verification
 
-- `pnpm test:contract packages/cli`: covers text-only run/inspection grammar, candidate navigation, append-only transcript ordering, detach, and exits.
+- `pnpm test:unit packages/cli` and `pnpm test:contract packages/cli`: cover JSON option sources, text-only run/inspection grammar, candidate navigation, append-only transcript ordering, detach, and exits.
 - `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover Runtime adapter integration, read-only behavior, and one representative end-to-end workflow.

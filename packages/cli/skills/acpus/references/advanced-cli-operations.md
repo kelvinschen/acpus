@@ -12,10 +12,10 @@ If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
 Use `workflow check` only when validation without execution is the goal:
 
 ```sh
-acpus workflow check <workflow> [--input <json|file.json>]
+acpus workflow check <workflow> [--input <json|file.json>] [--agents <json|file.json>]
 ```
 
-Use the same selected path, catalog, or `-` stdin source as `workflow run`. `workflow check` typechecks, compiles, and validates in memory. `--input` accepts strict inline JSON or a `.json` file resolved from the CLI working directory; prefer files for realistic payloads.
+Use the same selected path, catalog, or `-` stdin source as `workflow run`. `workflow check` typechecks, compiles, and validates in memory. `--input` and `--agents` accepts strict inline JSON or a `.json` file resolved from the CLI working directory.
 
 ## Inspection details
 
@@ -79,7 +79,7 @@ Retry rejects completed/canceled blockers, incompatible composite state, and tar
 ```sh
 acpus runs fork <run-id> \
   [--workflow <workflow> [--project | --global]] [--input <json|file.json>] \
-  [--agents '<json>'] \
+  [--agents <json|file.json>] \
   [--target <source-target>]
 ```
 

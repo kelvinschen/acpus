@@ -81,7 +81,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .description("Standalone workflow validation without admitting or executing a run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin")
     .option("--input <json|file.json>", "validate inline JSON or a JSON file as the workflow input")
-    .option("--agents <json>", "validate submit-time agent overrides")
+    .option("--agents <json|file.json>", "validate inline JSON or a JSON file as submit-time agent overrides")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: CheckWorkflowOptions) => {
@@ -93,7 +93,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .description("Typecheck, compile, validate, and submit a workflow run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
-    .option("--agents <json>", "override declared agents for this run")
+    .option("--agents <json|file.json>", "override declared agents with inline JSON or a JSON file")
     .option("--follow", "wait until the admitted run becomes terminal; Ctrl-C detaches")
     .option("--await-decision", "wait until the admitted run reaches an external decision boundary; Ctrl-C detaches")
     .option("--project", "resolve workflow name from the project catalog")
@@ -192,7 +192,7 @@ function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope
 
 async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: CheckWorkflowOptions): Promise<void> {
   const input = options.input === undefined ? undefined : await parseInput(options.input, ctx.cwd);
-  const agentOverrides = parseAgents(options.agents);
+  const agentOverrides = await parseAgents(options.agents, ctx.cwd);
   const { prepared, catalog } = await prepareWorkflowForCli({
     workspaceDir: ctx.cwd,
     workflow,
@@ -219,7 +219,7 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
   if (options.follow && options.awaitDecision) throw usageError("--follow and --await-decision are mutually exclusive.");
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
-  const agentOverrides = parseAgents(options.agents);
+  const agentOverrides = await parseAgents(options.agents, ctx.cwd);
   const { prepared } = await prepareWorkflowForCli({
     workspaceDir: ctx.cwd,
     workflow,

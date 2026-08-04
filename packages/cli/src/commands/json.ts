@@ -9,26 +9,30 @@ type JsonOptionError =
   | { type: "invalid-json"; option: string; filePath?: string; message: string }
   | { type: "non-json-value"; option: string; filePath?: string };
 
-type InputOptionError = JsonOptionError
-  | { type: "input-file-read"; path: string; message: string }
-  | { type: "input-file-empty"; path: string };
+type JsonArgumentError = JsonOptionError
+  | { type: "json-file-read"; option: string; path: string; message: string }
+  | { type: "json-file-empty"; option: string; path: string };
 
 const parseJson = Result.fromThrowable(
   (raw: string) => JSON.parse(raw) as unknown,
   causeMessage,
 );
 
-export function parseAgents(raw: string | undefined): AgentOverrideMap | undefined {
+export async function parseAgents(raw: string | undefined, cwd: string): Promise<AgentOverrideMap | undefined> {
   if (raw === undefined) return undefined;
-  const value = parseJsonOption(raw, "--agents");
+  const value = await parseJsonArgument(raw, cwd, "--agents");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw usageError("--agents must be a JSON object.");
   return value as AgentOverrideMap;
 }
 
 export function parseInput(raw: string, cwd: string): Promise<JsonValue> {
-  return tryParseInput(raw, cwd).match(
+  return parseJsonArgument(raw, cwd, "--input");
+}
+
+function parseJsonArgument(raw: string, cwd: string, option: string): Promise<JsonValue> {
+  return tryParseJsonArgument(raw, cwd, option).match(
     value => value,
-    error => { throw usageError(inputErrorMessage(error)); },
+    error => { throw usageError(jsonArgumentErrorMessage(error)); },
   );
 }
 
@@ -40,22 +44,22 @@ export function parseRequiredPayload(raw: string | undefined): JsonValue {
 function parseJsonOption(raw: string, name: string): JsonValue {
   return tryParseJsonOption(raw, { option: name }).match(
     value => value,
-    error => { throw usageError(inputErrorMessage(error)); },
+    error => { throw usageError(jsonArgumentErrorMessage(error)); },
   );
 }
 
-function tryParseInput(raw: string, cwd: string): ResultAsync<JsonValue, InputOptionError> {
+function tryParseJsonArgument(raw: string, cwd: string, option: string): ResultAsync<JsonValue, JsonArgumentError> {
   if (!/\.json$/i.test(raw)) {
-    const parsed = tryParseJsonOption(raw, { option: "--input" });
+    const parsed = tryParseJsonOption(raw, { option });
     return parsed.isOk() ? okAsync(parsed.value) : errAsync(parsed.error);
   }
   const path = resolve(cwd, raw);
   return ResultAsync.fromPromise(
     readFile(path, "utf8"),
-    cause => ({ type: "input-file-read", path, message: causeMessage(cause) } as const),
+    cause => ({ type: "json-file-read", option, path, message: causeMessage(cause) } as const),
   ).andThen(content => {
-    if (/^[\t\n\r ]*$/.test(content)) return err({ type: "input-file-empty", path } as const);
-    return tryParseJsonOption(content, { option: "--input", filePath: path });
+    if (/^[\t\n\r ]*$/.test(content)) return err({ type: "json-file-empty", option, path } as const);
+    return tryParseJsonOption(content, { option, filePath: path });
   });
 }
 
@@ -70,9 +74,9 @@ function tryParseJsonOption(
       : err({ type: "non-json-value", ...source } as const));
 }
 
-function inputErrorMessage(error: InputOptionError): string {
-  if (error.type === "input-file-read") return `--input file '${error.path}' could not be read: ${error.message}`;
-  if (error.type === "input-file-empty") return `--input file '${error.path}' is empty.`;
+function jsonArgumentErrorMessage(error: JsonArgumentError): string {
+  if (error.type === "json-file-read") return `${error.option} file '${error.path}' could not be read: ${error.message}`;
+  if (error.type === "json-file-empty") return `${error.option} file '${error.path}' is empty.`;
   const source = error.filePath === undefined ? error.option : `${error.option} file '${error.filePath}'`;
   return error.type === "invalid-json"
     ? `${source} must be valid JSON: ${error.message}`
