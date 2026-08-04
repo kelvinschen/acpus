@@ -44,18 +44,25 @@ objects over freshly coined abstractions or figurative labels. Judge a heading s
 rhetorical function, not only by surface grammar: varied syntax still feels mechanical
 when every heading is a compressed claim or punchline. Open sections and paragraphs
 with their point before supporting detail. Keep corrections and uncertainty next to
-the conclusion they qualify. State each fact, caveat, and scope limit once. Do not turn
+the conclusion they qualify. When a cause is not established, say so plainly rather than
+supplying a plausible one. State each fact, caveat, and scope limit once. Do not turn
 source count into a claim of truth or completeness: describe what the corpus covers,
 what it misses, and how that changes the answer.
 
 Use tables for exact comparison, charts for quantities and trends, timelines for
 chronology, and diagrams for structure or flow only when they make a relationship
 easier to understand. Every value, label, axis, node, and edge must come from the
-evidence bundle or batch syntheses. Place each useful figure beside the passage it
+evidence bundle or batch syntheses. Label table columns and category rows with neutral
+nouns (问题, 现象, 影响, 结果) rather than judgments or slogans, and let a row simply
+record what happened when that is all the evidence shows; do not force every entry to
+end in a number or a conclusion. Place each useful figure beside the passage it
 explains with a specific title, caption, source note, and accessible fallback.
 
 Write plain, neutral analyst prose. Vary sentence length and structure so the rhythm
-does not settle into evenly matched clauses. Avoid em and en dashes, promotional
+does not settle into evenly matched clauses. Keep the metaphor, personification, and
+figurative labels barred from headings out of the body as well: name the actual object
+or process, and when a phrasing would make the reader infer what it refers to, state the
+referent directly. Keep colloquial and slang wording out of the prose. Avoid em and en dashes, promotional
 vocabulary (crucial, pivotal, vibrant, testament, tapestry, delve, showcase,
 underscore), tacked-on significance clauses, "not only X but Y", manufactured lists
 of three, and upbeat send-offs. Cite only locators recorded in the evidence bundle;
@@ -88,12 +95,32 @@ sufficient contrast, reduced-motion support, and a responsive viewport that
 collapses cleanly to one column.
 
 Give the report a restrained visual identity grounded in the subject and audience.
-Use a clear type scale, system font stacks, a body measure of roughly 60 to 80
-characters, comfortable line height, generous spacing, restrained borders, and one
-quiet subject-derived accent. Avoid generic AI styling: gradients, neon,
-glassmorphism, oversized pills, ornamental animation, repeated card grids, a
-near-black page with one acid accent, or a dense hairline-ruled broadsheet. Let
-structural devices encode something true about the information.
+Derive the palette from something concrete about this subject: the field's own visual
+conventions, the materials, environments, instruments, or artifacts it involves, or the
+register the evidence carries; a generic mood such as calm, trustworthy, or professional
+is not a subject and collapses every report onto one reflexive scheme. Use a clear type
+scale, system font stacks, a body measure of roughly 60 to 80 characters, comfortable
+line height, generous spacing, restrained borders, and a sparing accent. Choose the look
+yourself to fit this subject; the only constraint is restraint, so let different subjects
+arrive at genuinely different palettes and layouts. Avoid gradients, neon, glassmorphism,
+oversized pills, ornamental animation, and repeated card grids. Let structural devices
+encode something true about the information.
+
+Apply these concrete detail rules and verify each in the rendered layout. Give the type
+hierarchy real contrast (about a 1.25 ratio or more between steps) so headings never sit
+near body size, and build spacing from a small scale where tight gaps bind related items
+and larger gaps separate sections, with more space above a heading than below. Match
+nested corners concentrically (outer radius equals inner radius plus padding), keep card
+corners near 12 to 16px, and reserve full-pill rounding for tags and buttons. Use shadows
+for elevation and borders for structure, and never pair a hairline border with a wide soft
+shadow. Set body text in a solid near-foreground color rather than gray on a tint, hold
+line height around 1.5 to 1.7 at 14px or more, align it left rather than justified, and
+keep wide tracking to short uppercase labels only. Apply tabular-nums to figures in tables
+and metrics so columns align and updating values do not shift, add text-wrap balance to
+headings and pretty to body, set -webkit-font-smoothing antialiased on the root, and align
+icons optically when geometric centering looks off. If motion appears at all,
+ease it out rather than bounce or elastic, animate only transform and opacity, and add no
+decorative motion such as pulsing status dots, blinking cursors, or marquees.
 
 Keep coverage accounting, unit status, field completeness, and the source index in a
 clearly separated methods-and-evidence appendix. Inline SVG is allowed for original

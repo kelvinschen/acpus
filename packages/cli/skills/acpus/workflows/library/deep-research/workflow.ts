@@ -56,7 +56,9 @@ before relying on them, and connect sections with real transitions.
 
 Place corrections, counter-evidence, and uncertainty beside the conclusion they
 qualify rather than hiding them. Calibrate confidence to the lane reports; convey
-doubt through explicit confidence and limitations, not empty hedges. Treat the
+doubt through explicit confidence and limitations, not empty hedges. When a cause is
+not established, say so plainly rather than supplying a plausible one, and keep
+colloquial and slang wording out of the prose. Treat the
 skeptic notes as one advisory reviewer: weigh them, correct or soften claims they
 undermine, but do not let them become the report's structure or a gate on what may
 be said.
@@ -66,14 +68,19 @@ change, or a relationship more clearly than prose, and let the information choos
 form: tables for precise comparison, charts for quantities and trends, timelines for
 chronology, and diagrams for structure or flow. Derive every value, label, axis, node,
 and edge from the lane report datasets and findings; never invent or estimate data,
-and add figures for their explanatory value rather than decoration. Place each figure
+and add figures for their explanatory value rather than decoration. Label table columns
+and category rows with neutral nouns (问题, 现象, 影响, 结果) rather than judgments or
+slogans, and let a row simply record what happened when that is all the evidence shows;
+do not force every entry to end in a number or a conclusion. Place each figure
 next to the passage it explains with a specific title, caption, source note, and
 useful alt or fallback text.
 
 Write plain, neutral analyst prose, and vary both sentence length and structure so the
 rhythm never falls into evenly matched clauses. Ground abstract conclusions with a
-concrete example, scenario, or analogy when it aids understanding, drawing only on the
-lane reports. State each fact, caveat, or scope limit once, in the section where it fits
+concrete example or scenario when it aids understanding, drawing only on the lane
+reports. Keep the metaphor, personification, and figurative labels barred from headings
+out of the body as well: name the actual object or process, and when a phrasing would
+make the reader infer what it refers to, state the referent directly. State each fact, caveat, or scope limit once, in the section where it fits
 best, rather than repeating it across sections. Register a scope limit where it changes
 what the reader should conclude, not as a defensive tail (this is not proof of, cannot be
 equated with, does not represent) appended to most claims and every caption. A list of
@@ -119,18 +126,22 @@ sufficient contrast, reduced-motion support, and a responsive viewport that
 collapses cleanly to one column.
 
 Give the report a deliberate visual identity grounded in the subject and audience
-rather than a generic template, and carry it consistently. Set a clear type scale
-with distinct sizes and weights for the title, deck, section headings, body, and
+rather than a generic template, and carry it consistently. Derive the palette from
+something concrete about this subject: the field's own visual conventions, the
+materials, environments, instruments, or artifacts it involves, or the register the
+evidence actually carries; a generic mood such as calm, trustworthy, or professional is
+not a subject and collapses every report onto one reflexive scheme. Set a clear type
+scale with distinct sizes and weights for the title, deck, section headings, body, and
 captions, using system font stacks (a characterful serif or sans for display and a
 complementary body face), and hold body text to a readable measure of about 60 to 80
-characters with comfortable line height. Avoid the current AI-default looks unless the
-subject genuinely calls for one: a near-black background with one acid accent, or a hairline-ruled
-broadsheet of dense columns.
+characters with comfortable line height. Choose the look yourself to fit this subject;
+the only constraint is restraint, so let different subjects arrive at genuinely
+different palettes and layouts rather than one reflexive scheme.
 
 Let structural devices such as dividers, eyebrows, labels, and numbering encode
 something true about the content; number sections only when they form a real sequence
 or timeline. Earn trust through restraint and transparency rather than decoration:
-keep one quiet subject-derived accent and hold everything else calm, keep source
+use the accent sparingly and hold the neutrals restrained, keep source
 citations visible and traceable, and keep confirmed conclusions visually distinct from
 corrections and uncertainty. Inline SVG is encouraged for original charts and diagrams;
 keep labels legible, scales honest, units preserved, and never rely on color alone. Use
@@ -138,6 +149,22 @@ generous spacing and restrained borders; avoid gradients, neon, glassmorphism, o
 pills, ornamental animation, and repeated card grids. After writing, review the rendered
 layout once: the hierarchy should read at a glance, spacing should stay consistent, and
 any element that does not aid comprehension should be removed.
+
+Apply these concrete detail rules and verify each in the rendered layout. Give the type
+hierarchy real contrast (about a 1.25 ratio or more between steps) so headings never sit
+near body size, and build spacing from a small scale where tight gaps bind related items
+and larger gaps separate sections, with more space above a heading than below. Match
+nested corners concentrically (outer radius equals inner radius plus padding), keep card
+corners near 12 to 16px, and reserve full-pill rounding for tags and buttons. Use shadows
+for elevation and borders for structure, and never pair a hairline border with a wide soft
+shadow. Set body text in a solid near-foreground color rather than gray on a tint, hold
+line height around 1.5 to 1.7 at 14px or more, align it left rather than justified, and
+keep wide tracking to short uppercase labels only. Apply tabular-nums to figures in tables
+and metrics so columns align and updating values do not shift, add text-wrap balance to
+headings and pretty to body, set -webkit-font-smoothing antialiased on the root, and align
+icons optically when geometric centering looks off. If motion appears at all,
+ease it out rather than bounce or elastic, animate only transform and opacity, and add no
+decorative motion such as pulsing status dots, blinking cursors, or marquees.
 
 Keep the audit trail, per-lane confidence, and source index in a clearly separated
 methods appendix. Use inline CSS, optional inline JavaScript, inline SVG, and

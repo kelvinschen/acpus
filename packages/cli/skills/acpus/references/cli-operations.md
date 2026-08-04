@@ -10,7 +10,7 @@ Use this for the ordinary lifecycle: run, observe, interact, and stop, plus vali
 
 ### Run
 
-Run from the intended workspace. `workflow run` performs workflow check internally and submits the durable run *asynchronously*. 
+Run and inspect from the same workspace: Acpus selects its isolated run store from the CLI's canonical working directory, not the workflow path or an inferred project root. `workflow run` performs workflow check internally and submits the durable run *asynchronously*.
 
 Prefer HEREDOC for one-off workflow executions, as it avoids polluting the user workspace:
 
