@@ -6,7 +6,8 @@
  * workers cover far more ground than a single saturated context and run in
  * parallel. The lead reviews the gathered lane reports and may open follow-up
  * lanes. An optional skeptic pass adds advisory cross-check notes. A writer
- * then fuses every lane report into one reader-facing rich report.
+ * then answers the question for its reader from the lane reports, in the form
+ * the question calls for, rather than fusing every lane report into one report.
  *
  * Workers are ordinary tool-using agents: a lane may be answered from the
  * public web, from the local workspace (code, docs, tests), from shell
@@ -32,8 +33,12 @@ import {
 const READER_FIRST_DESIGN = `
 Answer or orient the reader on the first screen, then move from foundations into
 mechanisms, evidence, comparisons, disagreements, uncertainty, and implications.
-Infer who the likely reader is from the question and context, and calibrate how much
-to explain to their prior knowledge rather than over- or under-explaining. A title and
+Take the question's own wording as the ceiling on the reader's expertise: match
+that register and assume no more knowledge than the question itself shows. The
+specialized vocabulary in the lane reports reflects your sources, not your reader,
+so explain the terms your sources take for granted. When the plausible readers span
+a range of expertise, write for the less specialized end, the reader who must act on
+the answer rather than the specialist who could have produced it. A title and
 any standfirst or deck should orient with the subject, the intended reader, and the
 evidence scope or confidence boundary, not a recap of the report's own section taxonomy
 or of the research process that produced it (lanes, rounds, 多车道研究). Use an
@@ -73,7 +78,9 @@ and category rows with neutral nouns (问题, 现象, 影响, 结果) rather tha
 slogans, and let a row simply record what happened when that is all the evidence shows;
 do not force every entry to end in a number or a conclusion. Place each figure
 next to the passage it explains with a specific title, caption, source note, and
-useful alt or fallback text.
+useful alt or fallback text, each doing a different job: the title names the subject,
+the caption states what to read from it, the source note gives provenance, and the alt
+describes it for a reader who cannot see it. Do not restate one sentence across all four.
 
 Write plain, neutral analyst prose, and vary both sentence length and structure so the
 rhythm never falls into evenly matched clauses. Ground abstract conclusions with a
@@ -130,7 +137,9 @@ rather than a generic template, and carry it consistently. Derive the palette fr
 something concrete about this subject: the field's own visual conventions, the
 materials, environments, instruments, or artifacts it involves, or the register the
 evidence actually carries; a generic mood such as calm, trustworthy, or professional is
-not a subject and collapses every report onto one reflexive scheme. Set a clear type
+not a subject and collapses every report onto one reflexive scheme. Both a purple-blue
+gradient and a safe cream or beige background are such reflexes, opposite defaults that
+each signal an unconsidered palette; restraint is not the same as distinctiveness. Set a clear type
 scale with distinct sizes and weights for the title, deck, section headings, body, and
 captions, using system font stacks (a characterful serif or sans for display and a
 complementary body face), and hold body text to a readable measure of about 60 to 80
@@ -138,13 +147,16 @@ characters with comfortable line height. Choose the look yourself to fit this su
 the only constraint is restraint, so let different subjects arrive at genuinely
 different palettes and layouts rather than one reflexive scheme.
 
-Let structural devices such as dividers, eyebrows, labels, and numbering encode
+Let structural devices such as dividers, labels, and numbering encode
 something true about the content; number sections only when they form a real sequence
 or timeline. Earn trust through restraint and transparency rather than decoration:
 use the accent sparingly and hold the neutrals restrained, keep source
 citations visible and traceable, and keep confirmed conclusions visually distinct from
-corrections and uncertainty. Inline SVG is encouraged for original charts and diagrams;
-keep labels legible, scales honest, units preserved, and never rely on color alone. Use
+corrections and uncertainty. Inline SVG is encouraged for original charts and diagrams
+whose every mark is driven by the data; keep labels legible, scales honest, units
+preserved, and never rely on color alone. Do not hand-draw decorative illustrations,
+mascots, or scenes, or assemble figures from generic shapes; ship no illustration
+rather than a sketchy placeholder. Use
 generous spacing and restrained borders; avoid gradients, neon, glassmorphism, oversized
 pills, ornamental animation, and repeated card grids. After writing, review the rendered
 layout once: the hierarchy should read at a glance, spacing should stay consistent, and
@@ -157,7 +169,8 @@ and larger gaps separate sections, with more space above a heading than below. M
 nested corners concentrically (outer radius equals inner radius plus padding), keep card
 corners near 12 to 16px, and reserve full-pill rounding for tags and buttons. Use shadows
 for elevation and borders for structure, and never pair a hairline border with a wide soft
-shadow. Set body text in a solid near-foreground color rather than gray on a tint, hold
+shadow. Do not run a thick colored bar down one side of a card; carry emphasis through
+spacing, weight, or a full but restrained border. Set body text in a solid near-foreground color rather than gray on a tint, hold
 line height around 1.5 to 1.7 at 14px or more, align it left rather than justified, and
 keep wide tracking to short uppercase labels only. Apply tabular-nums to figures in tables
 and metrics so columns align and updating values do not shift, add text-wrap balance to
@@ -235,6 +248,7 @@ export default defineWorkflow({
 
       Planning rules
       - Write the research brief in the research question's language.
+      - In the brief, name what the question asks the final report to deliver and what form of answer it calls for (a recommendation, a comparison across the named alternatives, an explanation), then shape the lanes so they together gather the evidence those deliverables need.
       - Judge where the answer lives and shape lanes accordingly: public-web lanes for external facts and literature, local-workspace lanes for code, configuration, tests, and docs in ${meta.workspaceDir}, and mixed lanes when a question spans both. A single run may combine lane types.
       - Make lanes complementary and non-overlapping so parallel work does not duplicate effort; cover distinct sub-questions, perspectives, components, or evidence classes.
       - For each lane give a short title, a precise objective, an explicit boundary stating what it should and should not cover, and a concrete suggested approach naming the kind of sources or tools that fit.
@@ -493,7 +507,7 @@ export default defineWorkflow({
         cwd: delivery.output.draftDir,
         prompt: md`
           Role
-          You are the publication writer for a completed deep-research investigation. Turn the gathered lane reports into one readable rich article; do not conduct or revise the research.
+          You are the publication writer for a completed deep-research investigation. Answer the research question for its reader, in the form the question itself calls for: a recommendation for a should-we question, a comparison for a which-is-better question, a plain explanation for a tell-me-about question. Do not conduct or revise the research. The gathered lane reports are your only evidence, not your outline: select, reorder, and compress them to serve the answer, and leave out what does not, rather than fusing every report into one article.
 
           Research question
           ${request.output.question}
@@ -517,8 +531,9 @@ export default defineWorkflow({
 
           Method
           - Use the lane reports as the only content source. You may add connective, ordering, and interpretive sentences, but introduce no new fact and never overstate confidence.
+          - Deliver each thing the question explicitly asks for; where the evidence cannot support one, say so once where it belongs rather than dropping it silently or replacing it with diffuse qualification. Match the report's length and structure to the question and the answer it needs, so a narrow question yields a short report even when many lane reports are available.
           - Plan the reader journey, write the full article and its visuals, then re-read your own draft as a fresh reader, as an evidence editor, and once more only for machine-writing tells, and revise until no material problem remains.
-          - On the tells pass, read the headings as a set and simplify any that sound like slogans, miniature editorials, crafted contrasts, metaphors, personification, or punchlines; do not rewrite a plain heading merely to create variety. Break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's own method; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or the confidence treatment. Preserve every fact, source, and stated uncertainty while doing so.
+          - On the tells pass, read the headings as a set and simplify any that sound like slogans, miniature editorials, crafted contrasts, metaphors, personification, or punchlines; do not rewrite a plain heading merely to create variety. Break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's own method; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or the confidence treatment. Cut pervasive hedging: keep each scope limit once, where it changes what the reader should conclude, and strip the defensive tail (待验证, 待确认, 不代表, 不构成) from claims the evidence already supports. Preserve every fact, source, and stated uncertainty while doing so.
           - Write in the research question's language. After writing the file, respond with only: done
         `,
         timeout: "60m",

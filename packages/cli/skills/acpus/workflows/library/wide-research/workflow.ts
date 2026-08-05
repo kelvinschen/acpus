@@ -25,8 +25,11 @@ const MAX_CONCURRENT_AGENTS = 16;
 const REPORT_VOICE = `
 Answer or orient the reader on the first screen. Then develop the report around the
 patterns, comparisons, exceptions, uncertainty, and implications that emerge from
-the corpus. Infer the likely reader from the question and context and explain only
-what that reader needs. Do not organize the body around discovery lanes, Agent
+the corpus. Take the question's own wording as the ceiling on the reader's expertise: match that
+register and assume no more knowledge than the question itself shows. The specialized
+vocabulary in the corpus reflects your sources, not your reader, so explain the terms
+they take for granted. When the plausible readers span a range, write for the less
+specialized end. Do not organize the body around discovery lanes, Agent
 batches, or one repetitive section per coverage unit. The research process belongs
 in a compact methods appendix, not in the article's narrative.
 
@@ -56,7 +59,10 @@ evidence bundle or batch syntheses. Label table columns and category rows with n
 nouns (问题, 现象, 影响, 结果) rather than judgments or slogans, and let a row simply
 record what happened when that is all the evidence shows; do not force every entry to
 end in a number or a conclusion. Place each useful figure beside the passage it
-explains with a specific title, caption, source note, and accessible fallback.
+explains with a specific title, caption, source note, and accessible fallback, each
+doing a different job: the title names the subject, the caption states what to read from
+it, the source note gives provenance, and the fallback describes it for a reader who
+cannot see it. Do not restate one sentence across all four.
 
 Write plain, neutral analyst prose. Vary sentence length and structure so the rhythm
 does not settle into evenly matched clauses. Keep the metaphor, personification, and
@@ -98,7 +104,9 @@ Give the report a restrained visual identity grounded in the subject and audienc
 Derive the palette from something concrete about this subject: the field's own visual
 conventions, the materials, environments, instruments, or artifacts it involves, or the
 register the evidence carries; a generic mood such as calm, trustworthy, or professional
-is not a subject and collapses every report onto one reflexive scheme. Use a clear type
+is not a subject and collapses every report onto one reflexive scheme. Both a purple-blue
+gradient and a safe cream or beige background are such reflexes, opposite defaults that
+each signal an unconsidered palette; restraint is not the same as distinctiveness. Use a clear type
 scale, system font stacks, a body measure of roughly 60 to 80 characters, comfortable
 line height, generous spacing, restrained borders, and a sparing accent. Choose the look
 yourself to fit this subject; the only constraint is restraint, so let different subjects
@@ -113,7 +121,8 @@ and larger gaps separate sections, with more space above a heading than below. M
 nested corners concentrically (outer radius equals inner radius plus padding), keep card
 corners near 12 to 16px, and reserve full-pill rounding for tags and buttons. Use shadows
 for elevation and borders for structure, and never pair a hairline border with a wide soft
-shadow. Set body text in a solid near-foreground color rather than gray on a tint, hold
+shadow. Do not run a thick colored bar down one side of a card; carry emphasis through
+spacing, weight, or a full but restrained border. Set body text in a solid near-foreground color rather than gray on a tint, hold
 line height around 1.5 to 1.7 at 14px or more, align it left rather than justified, and
 keep wide tracking to short uppercase labels only. Apply tabular-nums to figures in tables
 and metrics so columns align and updating values do not shift, add text-wrap balance to
@@ -123,8 +132,10 @@ ease it out rather than bounce or elastic, animate only transform and opacity, a
 decorative motion such as pulsing status dots, blinking cursors, or marquees.
 
 Keep coverage accounting, unit status, field completeness, and the source index in a
-clearly separated methods-and-evidence appendix. Inline SVG is allowed for original
-figures. Use inline CSS, optional inline JavaScript, inline SVG, and data-URI images
+clearly separated methods-and-evidence appendix. Inline SVG is allowed for original figures
+whose every mark is driven by the evidence. Do not hand-draw decorative illustrations,
+mascots, or scenes, or assemble figures from generic shapes; ship no illustration rather
+than a sketchy placeholder. Use inline CSS, optional inline JavaScript, inline SVG, and data-URI images
 only: no external stylesheets, scripts, fonts, iframes, analytics, runtime network
 calls, or build step. Escape research text before placing it in HTML. Set the HTML
 lang attribute from the research question's language. The article must remain useful
@@ -194,6 +205,7 @@ export default defineWorkflow({
 
       Planning rules
       - Write the research brief, coverage-unit definition, rubric, and lane text in the research question's language.
+      - In the brief, name what the question asks the final report to deliver and what form of answer it calls for (a landscape, a comparison across the units, a recommendation), then shape the rubric and lanes so they gather the evidence that answer needs.
       - If the request names repeated objects such as companies, products, papers, people, files, or jurisdictions, one unit is one object. If it asks for broad evidence about one subject, one unit should be an independently inspectable source, case, dataset, institution, jurisdiction, or stakeholder record rather than another thematic viewpoint lane.
       - Preserve an explicit user-provided population. Do not silently replace named items with more convenient ones.
       - Make the rubric compact and common to every unit. Include only fields that materially help answer the question and can be supported by observable evidence.
@@ -536,7 +548,7 @@ export default defineWorkflow({
         cwd: delivery.output.draftDir,
         prompt: md`
           Role
-          You are the publication writer for a completed wide-research investigation. Turn its structured corpus and batch syntheses into one source-rich, reader-facing article. Do not conduct or revise the research.
+          You are the publication writer for a completed wide-research investigation. Answer the research question for its reader, in the form the question itself calls for: a landscape when it asks what exists, a comparison when it asks how the units differ, a recommendation when it asks which to choose. Do not conduct or revise the research. The corpus and batch syntheses are your evidence; organize them around that answer rather than walking the reader through the coverage units one by one.
 
           Research question
           ${input.question}
@@ -569,10 +581,11 @@ export default defineWorkflow({
           Method
           - Read the evidence bundle before drafting. It and the batch syntheses are the only factual sources. Use the batch syntheses as a map, then inspect records and the source index in the bundle before stating details, building comparisons, or citing a locator.
           - Lead with the answer or orientation the corpus can support. Make breadth visible through useful comparison and coverage accounting, not by narrating Agent activity or praising the number of sources.
+          - Deliver each thing the question explicitly asks for; where the corpus cannot support one, say so once where it belongs rather than dropping it silently or replacing it with diffuse qualification.
           - Include a compact methods-and-evidence appendix with requested, selected, researched, partial, and unresolved coverage; field completeness; and a traceable source index. Do not expose internal artifact or draft paths.
           - You may add connective, ordering, and interpretive sentences, but no new fact. Preserve disagreements, missing fields, and confidence limits rather than smoothing them into consensus.
           - Plan the reader journey, write the full article and useful visuals, then re-read it as a fresh reader, as an evidence editor, and once more only for machine-writing tells. Revise until no material problem remains.
-          - On the tells pass, read the headings as a set and simplify any that sound like slogans, miniature editorials, crafted contrasts, metaphors, personification, or punchlines; do not rewrite a plain heading merely to create variety. Break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's construction; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or confidence treatment. Preserve every fact, source, and stated uncertainty while doing so.
+          - On the tells pass, read the headings as a set and simplify any that sound like slogans, miniature editorials, crafted contrasts, metaphors, personification, or punchlines; do not rewrite a plain heading merely to create variety. Break even, matched-clause rhythm and any triple built for cadence rather than substance; delete narration of the report's construction; and remove evidence-grade or claim-type labels welded to the front of sentences, moving that signal into the wording or confidence treatment. Cut pervasive hedging: keep each scope limit once, where it changes what the reader should conclude, and strip the defensive tail (待验证, 待确认, 不代表, 不构成) from claims the evidence already supports. Preserve every fact, source, and stated uncertainty while doing so.
           - Write in the research question's language. After writing the file, respond with only: done
         `,
       });
