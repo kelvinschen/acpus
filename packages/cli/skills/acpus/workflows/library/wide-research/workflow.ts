@@ -104,9 +104,13 @@ Give the report a restrained visual identity grounded in the subject and audienc
 Derive the palette from something concrete about this subject: the field's own visual
 conventions, the materials, environments, instruments, or artifacts it involves, or the
 register the evidence carries; a generic mood such as calm, trustworthy, or professional
-is not a subject and collapses every report onto one reflexive scheme. Both a purple-blue
-gradient and a safe cream or beige background are such reflexes, opposite defaults that
-each signal an unconsidered palette; restraint is not the same as distinctiveness. Use a clear type
+is not a subject and collapses every report onto one reflexive scheme. Keep the page canvas
+a near-neutral surface (near-white, or near-black for a dark theme) and carry the derived
+palette in a sparing accent, the data marks, and structural detail, never one low-saturation
+tint washed across the whole background. A purple-blue gradient, a safe cream or beige, and a
+calm mint or sage green are one reflex: a full-page wash that substitutes a mood for a
+considered palette and makes every report look alike. Restraint is not the same as
+distinctiveness. Use a clear type
 scale, system font stacks, a body measure of roughly 60 to 80 characters, comfortable
 line height, generous spacing, restrained borders, and a sparing accent. Choose the look
 yourself to fit this subject; the only constraint is restraint, so let different subjects

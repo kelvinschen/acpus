@@ -137,9 +137,12 @@ rather than a generic template, and carry it consistently. Derive the palette fr
 something concrete about this subject: the field's own visual conventions, the
 materials, environments, instruments, or artifacts it involves, or the register the
 evidence actually carries; a generic mood such as calm, trustworthy, or professional is
-not a subject and collapses every report onto one reflexive scheme. Both a purple-blue
-gradient and a safe cream or beige background are such reflexes, opposite defaults that
-each signal an unconsidered palette; restraint is not the same as distinctiveness. Set a clear type
+not a subject and collapses every report onto one reflexive scheme. Keep the page canvas a near-neutral surface (near-white, or near-black
+for a dark theme) and carry the derived palette in a sparing accent, the data marks, and
+structural detail, never one low-saturation tint washed across the whole background. A
+purple-blue gradient, a safe cream or beige, and a calm mint or sage green are one reflex:
+a full-page wash that substitutes a mood for a considered palette and makes every report
+look alike. Restraint is not the same as distinctiveness. Set a clear type
 scale with distinct sizes and weights for the title, deck, section headings, body, and
 captions, using system font stacks (a characterful serif or sans for display and a
 complementary body face), and hold body text to a readable measure of about 60 to 80
