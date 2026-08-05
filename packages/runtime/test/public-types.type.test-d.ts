@@ -50,6 +50,7 @@ import type {
   InspectionChange,
   InspectionCounts,
   InspectionError,
+  InspectionForensicsView,
   InspectionObservation,
   InspectionRead,
   InspectionView,
@@ -58,9 +59,9 @@ import type {
   InspectNodeQuery,
   InspectTargetArtifactsQuery,
   ObserveInspectionQuery,
+  ObservableInspectionViewQuery,
   PreparedRunValidationFailure,
   PreparedRunWorkflow,
-  ReadInspectionQuery,
   RunDeleteFailure,
   RunDetails,
   RunDynamicAttempt,
@@ -112,7 +113,7 @@ import type { Result, ResultAsync } from "neverthrow";
 
 test("@acpus/runtime exposes one coherent inspection surface and narrow web reads", () => {
   expectTypeOf(readInspection).toEqualTypeOf<
-    (cwd: string, query: ReadInspectionQuery) => ResultAsync<InspectionRead, InspectionError>
+    (cwd: string, view: InspectionViewQuery) => ResultAsync<InspectionRead, InspectionError>
   >();
   expectTypeOf(observeInspection).toEqualTypeOf<
     (cwd: string, query: ObserveInspectionQuery) => AsyncIterable<Result<InspectionObservation, InspectionError>>
@@ -129,27 +130,24 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
 
   expectTypeOf<InspectionViewQuery>().toEqualTypeOf<
     | { kind: "run"; runId: string }
+    | { kind: "target"; runId: string; target: string; detail: "summary" | "timeline" | "forensics" }
+  >();
+  expectTypeOf<ObservableInspectionViewQuery>().toEqualTypeOf<
+    | { kind: "run"; runId: string }
     | { kind: "target"; runId: string; target: string; detail: "summary" | "timeline" }
   >();
-  expectTypeOf<ReadInspectionQuery>().toEqualTypeOf<{
-    view: InspectionViewQuery;
-    candidatePage?: number;
-  }>();
   expectTypeOf<ObserveInspectionQuery>().toEqualTypeOf<{
-    view: InspectionViewQuery;
+    view: ObservableInspectionViewQuery;
     until: "subject-terminal" | "decision-boundary";
     signal?: AbortSignal;
   }>();
   expectTypeOf<InspectionRead>().toEqualTypeOf<InspectionView | InspectionCandidates>();
-  expectTypeOf<InspectionCandidates>().toMatchTypeOf<{
+  expectTypeOf<InspectionCandidates>().toEqualTypeOf<{
     kind: "candidates";
+    run: { id: string; status: RunStatus };
     target: string;
     entries: Array<{ selector: string; status: RunInspectionStatus; breadcrumb: string }>;
-    page: number;
-    total: number;
-    nextPage?: number;
   }>();
-  expectTypeOf<"limit">().not.toMatchTypeOf<keyof InspectionCandidates>();
   expectTypeOf<Extract<InspectionView, { kind: "run" }>>().toMatchTypeOf<{
     run: { id: string; status: string };
     counts: { total: number };
@@ -162,6 +160,12 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     subject: { label: string; kind: string; selector?: string };
     recent: unknown[];
   }>();
+  expectTypeOf<Extract<InspectionView, { kind: "target"; detail: "forensics" }>>().toMatchTypeOf<{
+    definition: { kind: string };
+    invocation: { status: "resolved" | "unavailable" };
+    result: { status: "accepted" | "completed_without_output" | "pending" | "not_started" | "not_selected" | "failed" | "timed_out" | "cancelled" | "not_accepted" };
+  }>();
+  expectTypeOf<InspectionForensicsView>().toEqualTypeOf<Extract<InspectionView, { kind: "target"; detail: "forensics" }>>();
   expectTypeOf<Extract<InspectionObservation, { kind: "update" }>["changes"][number]>().toMatchTypeOf<{
     subject: { label: string; selector?: string };
     state: { status: RunInspectionStatus };

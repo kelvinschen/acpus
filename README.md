@@ -168,10 +168,13 @@ acpus runs inspect <run-id> --target <node-or-attempt> --timeline
 
 # An exact Agent attempt uses its public occurrence reference
 acpus runs inspect <run-id> --target @<ref>#<attemptNo> --timeline
+
+# Frozen definition, actual invocation, and scheduler-accepted result
+acpus runs inspect <run-id> --target <node-or-attempt> --forensics
 ```
 
 Use `--await-decision` to remain attached until an input, pause, or terminal boundary needs a decision; use `--follow` only to wait for terminal status.
-Inspection is a compact text interface. Timeline is bounded operational history; settled Agent turn artifacts can reference the run-local acpx session projection when deeper, low-frequency analysis is needed.
+Inspection is a compact text interface. Forensics is a one-shot, complete-value view and defaults to `root` when `--target` is omitted. Timeline is bounded operational history; settled Agent turn artifacts can reference the run-local acpx session projection when deeper, low-frequency analysis is needed.
 
 ### Ordinary Run Controls
 

@@ -19,6 +19,8 @@ acpus runs inspect <run-id> --target <resolved-target> --timeline
 
 For exact settled-turn prompt/response data and the run-local acpx session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
 
+Only when diagnosis requires comparing the frozen definition, actual invocation, and accepted result, read [Forensics](advanced-cli-operations.md#forensics). Do not use it for ordinary monitoring or proof of activity.
+
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
 
 ## Phase-based fixes

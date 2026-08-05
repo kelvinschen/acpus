@@ -261,7 +261,15 @@ describe("web API contract", () => {
         type: "target-ambiguous",
         runId: "run_1",
         target: "review",
-        candidateKeys: ["review~0", "review~1"],
+        candidates: {
+          kind: "candidates",
+          run: { id: "run_1", status: "running" },
+          target: "review",
+          entries: [
+            { selector: "@000000000001", status: "running", breadcrumb: "batch[0] › review" },
+            { selector: "@000000000002", status: "running", breadcrumb: "batch[1] › review" },
+          ],
+        },
         message: "Run target 'review' matches multiple occurrences.",
       }));
 

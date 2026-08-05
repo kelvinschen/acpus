@@ -352,10 +352,10 @@ describe("CLI program usage contracts", () => {
     expect(await runCli(["runs", "inspect", "--help"], {
       cwd: process.cwd(), stdout: inspectStdout, stderr: inspectStderr,
     })).toBe(0);
-    for (const option of ["--target", "--timeline", "--page", "--follow", "--await-decision"]) {
+    for (const option of ["--target", "--timeline", "--forensics", "--follow", "--await-decision"]) {
       expect(inspectStdout.text).toContain(option);
     }
-    for (const removed of ["--evidence", "--limit", "--all", "--controls", "--raw"]) {
+    for (const removed of ["--page", "--evidence", "--limit", "--all", "--controls", "--raw"]) {
       expect(inspectStdout.text).not.toContain(removed);
     }
     expect(inspectStdout.text).toContain("terminal");
@@ -486,12 +486,9 @@ describe("CLI program usage contracts", () => {
     const cases = [
       { argv: ["runs", "inspect", "run_1", "--target", "   "], message: "--target must be a non-empty string" },
       { argv: ["runs", "inspect", "run_1", "--timeline"], message: "--timeline requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--page", "2"], message: "--page requires --target" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "0"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "1.5"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "9007199254740992"], message: "--page must be a positive integer" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--follow"], message: "--page cannot be used with --follow or --await-decision" },
-      { argv: ["runs", "inspect", "run_1", "--target", "node", "--page", "2", "--await-decision"], message: "--page cannot be used with --follow or --await-decision" },
+      { argv: ["runs", "inspect", "run_1", "--timeline", "--forensics"], message: "--timeline and --forensics are mutually exclusive" },
+      { argv: ["runs", "inspect", "run_1", "--forensics", "--follow"], message: "--forensics cannot be used with --follow or --await-decision" },
+      { argv: ["runs", "inspect", "run_1", "--forensics", "--await-decision"], message: "--forensics cannot be used with --follow or --await-decision" },
       { argv: ["runs", "inspect", "run_1", "--follow", "--await-decision"], message: "--follow and --await-decision are mutually exclusive" },
       { argv: ["runs", "inspect", "run_1", "--before", "page"], message: "unknown option '--before'" },
       { argv: ["runs", "inspect", "run_1", "--interval", "1s"], message: "unknown option '--interval'" },

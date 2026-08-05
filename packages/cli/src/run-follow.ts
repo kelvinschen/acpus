@@ -4,6 +4,7 @@ import {
   type InspectionObservation,
   type InspectionView,
   type InspectionViewQuery,
+  type ObservableInspectionViewQuery,
 } from "@acpus/runtime";
 import type { Writable } from "node:stream";
 import {
@@ -40,6 +41,9 @@ export async function followRun(
   view: InspectionViewQuery,
   options: FollowOptions,
 ): Promise<RunFollowOutcome> {
+  if (!observableInspectionView(view)) {
+    return { kind: "error", error: { type: "invalid-query", message: "Forensics inspection cannot be observed." } };
+  }
   const controller = new AbortController();
   let detached = false;
   const onAbort = (): void => {
@@ -111,6 +115,10 @@ export async function followRun(
   };
   writeFollowError(failure, view, options.stderr);
   return { kind: "error", error: failure };
+}
+
+function observableInspectionView(view: InspectionViewQuery): view is ObservableInspectionViewQuery {
+  return view.kind === "run" || view.detail !== "forensics";
 }
 
 class InspectionTranscriptPresenter {

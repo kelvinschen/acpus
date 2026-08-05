@@ -76,7 +76,7 @@ type SteerOptions = {
 type InspectRunOptions = {
   target?: string;
   timeline?: boolean;
-  page?: string;
+  forensics?: boolean;
   follow?: boolean;
   awaitDecision?: boolean;
 };
@@ -111,7 +111,7 @@ export function createRunsCommand(ctx: RunsCommandContext): Command {
     .argument("[run-id]", "run id")
     .option("--target <run-target>", "inspect one authored target or @occurrence reference")
     .option("--timeline", "show current activity and recent semantic history for the target")
-    .option("--page <number>", "read a one-based ambiguous-target candidate page")
+    .option("--forensics", "show frozen definition, effective invocation, and accepted result")
     .option("--follow", "wait until the selected run or target becomes terminal; Ctrl-C detaches")
     .option("--await-decision", "wait until the next external decision boundary; Ctrl-C detaches")
     .action(async (runId: string | undefined, options: InspectRunOptions) => {
@@ -228,7 +228,7 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
 
   const document = await inspectionDocument(ctx.cwd, runId, options);
   ctx.stdout.write(document.kind === "candidates"
-    ? formatInspectionCandidates(document, { timeline: options.timeline === true })
+    ? formatInspectionCandidates(document, options.forensics ? "forensics" : options.timeline ? "timeline" : "summary")
     : formatInspectionView(document));
   ctx.setExitCode(0);
 }
@@ -254,21 +254,18 @@ async function inspectionDocument(
   runId: string,
   options: InspectRunOptions,
 ): Promise<InspectionRead> {
-  const inspected = await readInspection(cwd, {
-    view: inspectionViewQuery(runId, options),
-    ...(options.page === undefined ? {} : { candidatePage: Number(options.page) }),
-  });
+  const inspected = await readInspection(cwd, inspectionViewQuery(runId, options));
   if (inspected.isErr()) throw inspectionError(inspected.error);
   return inspected.value;
 }
 
 function inspectionViewQuery(runId: string, options: InspectRunOptions): InspectionViewQuery {
-  if (options.target !== undefined) {
+  if (options.target !== undefined || options.forensics) {
     return {
       kind: "target",
       runId,
-      target: options.target,
-      detail: options.timeline ? "timeline" : "summary",
+      target: options.target ?? "root",
+      detail: options.forensics ? "forensics" : options.timeline ? "timeline" : "summary",
     };
   }
   return { kind: "run", runId };
@@ -352,14 +349,11 @@ function validateInspectOptions(options: InspectRunOptions): void {
   if (options.target !== undefined && options.target.trim().length === 0) {
     throw usageError("--target must be a non-empty string.");
   }
+  if (options.timeline && options.forensics) throw usageError("--timeline and --forensics are mutually exclusive.");
   if (options.timeline && options.target === undefined) throw usageError("--timeline requires --target.");
-  if (options.page !== undefined && options.target === undefined) throw usageError("--page requires --target.");
-  if (options.page !== undefined && (!/^[1-9]\d*$/.test(options.page) || !Number.isSafeInteger(Number(options.page)))) {
-    throw usageError("--page must be a positive integer.");
-  }
   if (options.follow && options.awaitDecision) throw usageError("--follow and --await-decision are mutually exclusive.");
-  if (options.page !== undefined && (options.follow || options.awaitDecision)) {
-    throw usageError("--page cannot be used with --follow or --await-decision.");
+  if (options.forensics && (options.follow || options.awaitDecision)) {
+    throw usageError("--forensics cannot be used with --follow or --await-decision.");
   }
 }
 
@@ -722,9 +716,7 @@ async function controlCandidates(
   runId: string,
   target: string,
 ): Promise<InspectionCandidates | undefined> {
-  const inspected = await readInspection(cwd, {
-    view: { kind: "target", runId, target, detail: "summary" },
-  });
+  const inspected = await readInspection(cwd, { kind: "target", runId, target, detail: "summary" });
   return inspected.isOk() && inspected.value.kind === "candidates"
     ? inspected.value
     : undefined;

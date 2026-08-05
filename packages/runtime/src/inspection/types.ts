@@ -2,6 +2,7 @@ import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR } from "@acpus/core/ir
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type {
+  AgentOverrideMap,
   ArtifactRecord,
   RunDetails,
   RunForkInfo,
@@ -218,33 +219,6 @@ export type RunInspectionTarget = {
   kind: "static-node" | "dynamic-node" | "frame" | "attempt";
   id: string;
   ref?: string;
-};
-
-export type RunInspectionCandidate = {
-  ref: string;
-  status: RunInspectionStatus;
-  breadcrumb: string;
-  kind: "dynamic-node" | "frame";
-  nodeId?: string;
-};
-
-export type RunInspectionCandidatesDocument = {
-  schemaVersion: 2;
-  kind: "candidates";
-  run: {
-    id: string;
-    status: RunStatus;
-    updatedAt: string;
-  };
-  target: string;
-  candidates: {
-    entries: RunInspectionCandidate[];
-    page: number;
-    limit: number;
-    total: number;
-    hasMore: boolean;
-    nextPage?: number;
-  };
 };
 
 export type RunInspectionTargetSummary = {
@@ -556,16 +530,7 @@ export type RunInspectionTimelineDocument = {
   state: RunInspectionTargetState;
   visibility?: RunInspectionVisibility;
   current?: RunInspectionCurrentActivity;
-  recent: {
-    entries: RunInspectionTimelineEntry[];
-    page: number;
-    limit: number;
-    returned: number;
-    omittedBefore: number;
-    hasOlder: boolean;
-    olderPage?: number;
-    retentionOmittedBefore?: number;
-  };
+  recent: RunInspectionTimelineEntry[];
 };
 
 export type RunInspectionChange = {
@@ -607,6 +572,20 @@ export type RunInspectionChange = {
   };
 };
 
+export type InspectionCandidates = {
+  kind: "candidates";
+  run: {
+    id: string;
+    status: RunStatus;
+  };
+  target: string;
+  entries: Array<{
+    selector: string;
+    status: RunInspectionStatus;
+    breadcrumb: string;
+  }>;
+};
+
 export type RunInspectionError =
   | { type: "runtime-store-not-found"; message: string }
   | { type: "run-not-found"; runId: string; message: string }
@@ -615,7 +594,7 @@ export type RunInspectionError =
       type: "target-ambiguous";
       runId: string;
       target: string;
-      candidates: RunInspectionCandidatesDocument;
+      candidates: InspectionCandidates;
       message: string;
     }
   | { type: "target-ref-collision"; runId: string; target: string; candidateKeys: string[]; message: string }
@@ -629,11 +608,19 @@ export type RunInspectionError =
     }
   | { type: "inspection-read-failed"; runId: string; message: string; cause?: unknown };
 
-// The coherent inspection surface below is deliberately separate from the
-// narrow Inspector/Web documents above.  The latter have concrete consumers;
-// the former is the sole public CLI/LLM observation document.
+// The coherent view and observation documents below are the public CLI/LLM
+// surface. Narrow Inspector/Web documents above share only ambiguity results.
 
 export type InspectionViewQuery =
+  | { kind: "run"; runId: string }
+  | {
+      kind: "target";
+      runId: string;
+      target: string;
+      detail: "summary" | "timeline" | "forensics";
+    };
+
+export type ObservableInspectionViewQuery =
   | { kind: "run"; runId: string }
   | {
       kind: "target";
@@ -642,13 +629,8 @@ export type InspectionViewQuery =
       detail: "summary" | "timeline";
     };
 
-export type ReadInspectionQuery = {
-  view: InspectionViewQuery;
-  candidatePage?: number;
-};
-
 export type ObserveInspectionQuery = {
-  view: InspectionViewQuery;
+  view: ObservableInspectionViewQuery;
   until: "subject-terminal" | "decision-boundary";
   signal?: AbortSignal;
 };
@@ -721,6 +703,192 @@ export type InspectionSubject = {
   kind: string;
   selector?: string;
 };
+
+export type ForensicsAgentOverride = AgentOverrideMap[string];
+
+export type ForensicsScopeDefinition = {
+  nodes: string[];
+  output: string;
+};
+
+export type ForensicsDefinition =
+  | {
+      kind: "workflow";
+      name: string;
+      description?: string;
+      inputSchema?: SchemaIR;
+      agents: Record<string, {
+        profile: AgentDefinitionIR;
+        override?: ForensicsAgentOverride;
+      }>;
+      root: ForensicsScopeDefinition;
+    }
+  | {
+      kind: "agent";
+      agent: string;
+      profile: AgentDefinitionIR;
+      override?: ForensicsAgentOverride;
+      prompt: string;
+      permissionMode?: "approve-reads" | "approve-all" | "deny-all";
+      sessionKey?: string;
+      cwd?: string;
+      env?: Record<string, string>;
+      outputSchema?: SchemaIR;
+      timeout?: string;
+    }
+  | {
+      kind: "task";
+      input: string;
+      implementation:
+        | "inline"
+        | { kind: "module"; specifier: string; export: string };
+      cwd?: string;
+      env?: Record<string, string>;
+      defaultCommandTimeout?: string;
+      timeout?: string;
+    }
+  | {
+      kind: "signal";
+      prompt: string;
+      outputSchema?: SchemaIR;
+      timeout?: string;
+      onTimeoutMessage?: string;
+    }
+  | {
+      kind: "assert";
+      condition: string;
+      message?: string;
+    }
+  | {
+      kind: "if";
+      condition: string;
+      branches: {
+        then: ForensicsScopeDefinition;
+        else: ForensicsScopeDefinition;
+      };
+    }
+  | {
+      kind: "switch";
+      cases: Array<{ id: string; when: string; then: ForensicsScopeDefinition }>;
+      default: ForensicsScopeDefinition;
+    }
+  | {
+      kind: "parallel";
+      strategy: "all" | "race";
+      maxConcurrency?: string;
+      branches: Record<string, ForensicsScopeDefinition>;
+    }
+  | {
+      kind: "fanout";
+      over: string;
+      strategy: "all" | "quorum";
+      count?: string;
+      maxConcurrency?: string;
+      do: ForensicsScopeDefinition;
+    }
+  | {
+      kind: "loop";
+      state: string;
+      do: {
+        nodes: string[];
+        transition: { state: string; stop: string };
+      };
+    };
+
+export type ForensicsExecutionContext =
+  | {
+      kind: "branch";
+      nodeId: string;
+      ownerKind: "if" | "switch" | "parallel";
+      branchId: string;
+    }
+  | {
+      kind: "fanout";
+      nodeId: string;
+      itemIndex: number;
+      item: JsonValue;
+    }
+  | {
+      kind: "loop";
+      nodeId: string;
+      index: number;
+      round: number;
+      state?: JsonValue;
+    };
+
+type ForensicsResolvedInvocationBase = {
+  status: "resolved";
+  context?: ForensicsExecutionContext[];
+};
+
+export type ForensicsInvocation =
+  | {
+      status: "unavailable";
+      reason: "not_started" | "not_selected" | "not_yet_resolved" | "resolution_failed" | "not_recorded";
+      context?: ForensicsExecutionContext[];
+    }
+  | (ForensicsResolvedInvocationBase & {
+      kind: "workflow";
+      input: JsonValue;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "agent";
+      attempt: number;
+      promptOrigin: "authored" | "steering" | "continuation";
+      prompt: string;
+      cwd: string;
+      env: Record<string, string>;
+      model?: string;
+      permissionMode: "approve-reads" | "approve-all" | "deny-all";
+      sessionKey?: string;
+      config?: Record<string, string>;
+      deadlineAt?: string;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "task";
+      attempt: number;
+      input: JsonValue;
+      cwd: string;
+      env: Record<string, string>;
+      timeoutMs?: number;
+      defaultCommandTimeout?: string;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "signal";
+      prompt: string;
+      deadlineAt?: string;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "assert";
+      condition: boolean;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "if" | "switch";
+      selectedBranch: string;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "parallel";
+      maxConcurrency?: number;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "fanout";
+      items: JsonValue[];
+      quorumCount?: number;
+      maxConcurrency?: number;
+    })
+  | (ForensicsResolvedInvocationBase & {
+      kind: "loop";
+      index: number;
+      round: number;
+      state?: JsonValue;
+      transition?: JsonValue;
+    });
+
+export type ForensicsResult =
+  | { status: "accepted"; value: JsonValue }
+  | { status: "completed_without_output" }
+  | { status: "pending" | "not_started" | "not_selected" | "cancelled" | "not_accepted" }
+  | { status: "failed" | "timed_out"; code?: string; message: string };
 
 type InspectionTreeSubject = InspectionSubject;
 
@@ -830,6 +998,20 @@ export type InspectionTreeEntry =
       children: InspectionTreeEntry[];
     };
 
+export type InspectionForensicsView = {
+  kind: "target";
+  detail: "forensics";
+  run: InspectionRunRef;
+  subject: InspectionSubject;
+  state: {
+    status: RunInspectionStatus;
+    durationMs?: number;
+  };
+  definition: ForensicsDefinition;
+  invocation: ForensicsInvocation;
+  result: ForensicsResult;
+};
+
 export type InspectionView =
   | {
       kind: "run";
@@ -859,24 +1041,8 @@ export type InspectionView =
       visibility?: InspectionVisibility;
       current?: InspectionActivity;
       recent: TimelineEntry[];
-    };
-
-export type InspectionCandidates = {
-  kind: "candidates";
-  run: {
-    id: string;
-    status: RunStatus;
-  };
-  target: string;
-  entries: Array<{
-    selector: string;
-    status: InspectionStatus;
-    breadcrumb: string;
-  }>;
-  page: number;
-  total: number;
-  nextPage?: number;
-};
+    }
+  | InspectionForensicsView;
 
 export type InspectionRead = InspectionView | InspectionCandidates;
 

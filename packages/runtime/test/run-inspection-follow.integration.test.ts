@@ -11,6 +11,20 @@ import {
 import { admitRunForTest } from "./support/runtime-store.js";
 
 describe.concurrent("coherent inspection observation", () => {
+  it("rejects a forged Forensics observation before reading Runtime state", async () => {
+    const iterator = observeInspection("/missing-workspace", {
+      view: { kind: "target", runId: "run_1", target: "root", detail: "forensics" },
+      until: "subject-terminal",
+    } as never)[Symbol.asyncIterator]();
+
+    const result = await iterator.next();
+    expect(result.value?.isErr() ? result.value.error : undefined).toEqual({
+      type: "invalid-query",
+      message: "Forensics inspection is one-shot and cannot be observed.",
+    });
+    expect((await iterator.next()).done).toBe(true);
+  });
+
   it("returns one terminal run view when the subject has already completed", async () => {
     await withRuntimeWorkspace("inspection-observe-terminal-run", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, validWorkflow(), { ready: true });
@@ -93,7 +107,7 @@ describe.concurrent("coherent inspection observation", () => {
     await withRuntimeWorkspace("inspection-observe-root-signal", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, signalWorkflow());
       const root = await readInspection(workspace, {
-        view: { kind: "target", runId: admitted.run.id, target: "root", detail: "summary" },
+        kind: "target", runId: admitted.run.id, target: "root", detail: "summary",
       });
       expect(root.isOk() ? root.value : undefined).toMatchObject({
         attention: { kind: "awaiting-input" },
@@ -128,7 +142,7 @@ describe.concurrent("coherent inspection observation", () => {
       }
 
       const read = await readInspection(workspace, {
-        view: { kind: "target", runId: run.id, target: "root", detail: "summary" },
+        kind: "target", runId: run.id, target: "root", detail: "summary",
       });
       expect(read.isOk() ? read.value : undefined).toMatchObject({
         kind: "target",

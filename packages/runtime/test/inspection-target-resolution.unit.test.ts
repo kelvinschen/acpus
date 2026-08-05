@@ -41,7 +41,7 @@ describe("inspection occurrence targets", () => {
     });
   });
 
-  it("returns fixed-size deep candidates in occurrence-path order, then resolves a ref and exact attempt", () => {
+  it("returns deep candidates in occurrence-path order, then resolves a ref and exact attempt", () => {
     const run = repeatedRun();
     const candidates = resolveInspectionTarget({
       run,
@@ -50,23 +50,17 @@ describe("inspection occurrence targets", () => {
     });
     expect(candidates).toMatchObject({
       kind: "candidates",
-      document: {
+      candidates: {
         target: "verify",
-        candidates: {
-          total: 2,
-          page: 1,
-          limit: 12,
-          hasMore: false,
-          entries: [{
-            ref: "@6119a20210df",
-            status: "completed",
-            breadcrumb: "batch › batch[0] › verify",
-          }, {
-            ref: "@9d4669a0288d",
-            status: "running",
-            breadcrumb: "batch › batch[1] › loop › loop#2 › verify",
-          }],
-        },
+        entries: [{
+          selector: "@6119a20210df",
+          status: "completed",
+          breadcrumb: "batch › batch[0] › verify",
+        }, {
+          selector: "@9d4669a0288d",
+          status: "running",
+          breadcrumb: "batch › batch[1] › loop › loop#2 › verify",
+        }],
       },
     });
 
@@ -76,6 +70,24 @@ describe("inspection occurrence targets", () => {
       .toEqual({ kind: "resolved", target: "verify-attempt-2" });
     expect(resolveInspectionTarget({ run, staticNodes, target: "verify~item-0" }))
       .toEqual({ kind: "resolved", target: "verify~item-0" });
+  });
+
+  it("returns every occurrence and resolves the first, middle, and last candidate", () => {
+    const run = thirteenOccurrencesRun();
+    const resolution = resolveInspectionTarget({ run, staticNodes, target: "verify" });
+    if (resolution.kind !== "candidates") throw new Error("Expected ambiguous occurrence candidates.");
+
+    expect(resolution.candidates.entries).toHaveLength(13);
+    expect(resolution.candidates.entries.map(entry => entry.breadcrumb)).toEqual(
+      Array.from({ length: 13 }, (_, itemIndex) => `batch › batch[${itemIndex}] › verify`),
+    );
+    for (const itemIndex of [0, 6, 12]) {
+      expect(resolveInspectionTarget({
+        run,
+        staticNodes,
+        target: resolution.candidates.entries[itemIndex]!.selector,
+      })).toEqual({ kind: "resolved", target: `verify~item-${itemIndex}` });
+    }
   });
 
   it("resolves a composite context ref to its frame key", () => {
@@ -178,4 +190,25 @@ function repeatedRun(): RunDetails {
       progress: [],
     },
   };
+}
+
+function thirteenOccurrencesRun(): RunDetails {
+  const run = repeatedRun();
+  run.dynamic!.nodeInstances = Array.from({ length: 13 }, (_, offset) => {
+    const itemIndex = 12 - offset;
+    return {
+      nodeKey: `verify~item-${itemIndex}`,
+      nodeId: "verify",
+      instancePath: [
+        { kind: "node" as const, nodeId: "batch" },
+        { kind: "fanout" as const, nodeId: "batch", itemIndex },
+        { kind: "node" as const, nodeId: "verify" },
+      ],
+      status: "completed" as const,
+      createdAt: "2026-07-29T00:00:00.000Z",
+      updatedAt: "2026-07-29T00:00:01.000Z",
+    };
+  });
+  run.dynamic!.attempts = [];
+  return run;
 }

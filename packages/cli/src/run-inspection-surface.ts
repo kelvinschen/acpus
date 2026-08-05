@@ -9,11 +9,10 @@ import type {
 import { renderShellCommand } from "./shell-command.js";
 import { terminalTreeChildPrefix, terminalTreeConnector, type TerminalTreeEdge } from "./terminal-tree.js";
 
-export type InspectionCandidateView = { timeline?: boolean };
-
 type RunView = Extract<InspectionView, { kind: "run" }>;
 type TargetSummaryView = Extract<InspectionView, { kind: "target"; detail: "summary" }>;
 type TargetTimelineView = Extract<InspectionView, { kind: "target"; detail: "timeline" }>;
+type TargetForensicsView = Extract<InspectionView, { kind: "target"; detail: "forensics" }>;
 type Run = RunView["run"];
 type Counts = RunView["counts"];
 type TreeEntry = RunView["tree"][number];
@@ -29,28 +28,23 @@ export function formatInspectionView(
 ): string {
   const showAwait = options.showAwait !== false;
   if (view.kind === "run") return formatRunView(view, showAwait);
-  return view.detail === "summary"
-    ? formatTargetSummary(view, showAwait)
-    : formatTargetTimeline(view, showAwait);
+  if (view.detail === "summary") return formatTargetSummary(view, showAwait);
+  if (view.detail === "timeline") return formatTargetTimeline(view, showAwait);
+  return formatTargetForensics(view);
 }
 
 export function formatInspectionCandidates(
   document: InspectionCandidates,
-  view: InspectionCandidateView = {},
+  detail: "summary" | "timeline" | "forensics" = "summary",
 ): string {
-  const args = view.timeline ? ["--timeline"] : [];
+  const args = detail === "timeline" ? ["--timeline"] : detail === "forensics" ? ["--forensics"] : [];
   const lines = [
     `Run ${document.run.id}  ${document.run.status}`,
-    `Target ${document.target}  matches=${document.total}${document.page > 1 ? `  page=${document.page}` : ""}`,
-    ...(document.entries.length === 0
-      ? ["  (no occurrences on this page)"]
-      : document.entries.flatMap(entry => [
-        `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`,
-        `     Select: ${command("acpus", "runs", "inspect", document.run.id, "--target", entry.selector, ...args)}`,
-      ])),
-    ...(document.nextPage === undefined
-      ? []
-      : [`Next: ${command("acpus", "runs", "inspect", document.run.id, "--target", document.target, ...args, "--page", String(document.nextPage))}`]),
+    `Target ${document.target}  matches=${document.entries.length}`,
+    ...document.entries.flatMap(entry => [
+      `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`,
+      `     Select: ${command("acpus", "runs", "inspect", document.run.id, "--target", entry.selector, ...args)}`,
+    ]),
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -116,14 +110,15 @@ export function inspectionRecoveryCommand(view: InspectionViewQuery): string {
     view.runId,
     ...(view.kind === "target" ? ["--target", view.target] : []),
     ...(view.kind === "target" && view.detail === "timeline" ? ["--timeline"] : []),
+    ...(view.kind === "target" && view.detail === "forensics" ? ["--forensics"] : []),
   );
 }
 
 export function formatInspectionError(error: InspectionError, view: InspectionViewQuery): string {
   if (error.type === "invalid-query") return `${error.message}\n`;
   if (error.type === "target-ambiguous") {
-    const detail = view.kind === "target" && view.detail === "timeline";
-    return `${formatInspectionCandidates(error.candidates, { timeline: detail }).trimEnd()}\nCannot attach: ${error.message}\n`;
+    const detail = view.kind === "target" ? view.detail : "summary";
+    return `${formatInspectionCandidates(error.candidates, detail).trimEnd()}\nCannot attach: ${error.message}\n`;
   }
   return `Inspection failed: ${error.message}\nInspect: ${inspectionRecoveryCommand(view)}\n`;
 }
@@ -176,6 +171,24 @@ function formatTargetTimeline(view: TargetTimelineView, showAwait: boolean): str
       ? ["  (no recent activity)"]
       : formatTimelineEntries(view.recent, view.subject.selector).split("\n")),
     ...formatTimelineNavigation(view, showAwait),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function formatTargetForensics(view: TargetForensicsView): string {
+  const lines = [
+    `Run ${view.run.id}  ${view.run.status}`,
+    `Forensics ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
+    `State ${formatState(view.state)}`,
+    "",
+    "Definition:",
+    ...formatForensicsValue(view.definition, "  "),
+    "",
+    "Invocation:",
+    ...formatForensicsValue(view.invocation, "  "),
+    "",
+    "Result:",
+    ...formatForensicsValue(view.result, "  "),
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -479,6 +492,41 @@ export function formatDurationMs(value: number): string {
 function formatJson(value: unknown, prefix: string): string[] {
   const rendered = JSON.stringify(value, null, 2);
   return (rendered === undefined ? "null" : rendered).split("\n").map(line => `${prefix}${line}`);
+}
+
+function formatForensicsValue(value: unknown, prefix: string): string[] {
+  const blocks: Array<{ path: string; value: string }> = [];
+  const visit = (current: unknown, path: string): unknown => {
+    if (typeof current === "string" && current.includes("\n")) {
+      blocks.push({ path, value: current });
+      return `<multiline:${path}>`;
+    }
+    if (Array.isArray(current)) return current.map((item, index) => visit(item, `${path}[${index}]`));
+    if (current && typeof current === "object") {
+      return Object.fromEntries(Object.entries(current).map(([key, item]) => [key, visit(item, forensicsPropertyPath(path, key))]));
+    }
+    return current;
+  };
+  const rendered = JSON.stringify(visit(value, ""), null, 2) ?? "null";
+  const lines = rendered.split("\n").map(line => `${prefix}${escapeForensicsControls(line)}`);
+  for (const block of blocks) {
+    lines.push("", `${prefix}${escapeForensicsControls(block.path)}: |`, ...block.value.split("\n").map(line => `${prefix}  ${safeForensicsLine(line)}`));
+  }
+  return lines;
+}
+
+function forensicsPropertyPath(path: string, key: string): string {
+  if (/^[A-Za-z_$][\w$]*$/u.test(key)) return path ? `${path}.${key}` : key;
+  return `${path}[${JSON.stringify(key)}]`;
+}
+
+function safeForensicsLine(value: string): string {
+  return escapeForensicsControls(value.replaceAll("\\", "\\\\"));
+}
+
+function escapeForensicsControls(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/gu, character =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 function oneLine(value: string, limit = 240): string {

@@ -154,6 +154,13 @@ acpus runs inspect <run-id>
 
 `workflow check` 会执行类型检查、编译与验证，但不会创建 run。`workflow viz` 默认在终端输出紧凑的静态工作流树；`--out` 则生成一份自包含的 HTML 工作流图。`workflow run` 提交持久化 run，并给出 sparse inspect/follow 指南；`runs inspect` 从紧凑的持久化状态视图开始。
 
+需要核对冻结定义、实际调用值与 scheduler 接受结果时，使用一次性的 Forensics 视图；省略 `--target` 时默认检查 `root`：
+
+```sh
+acpus runs inspect <run-id> --forensics
+acpus runs inspect <run-id> --target <node-or-attempt> --forensics
+```
+
 需要在下一次输入、暂停或终态边界拿回决策权时使用 `--await-decision`；只有需要等待固定对象终态时才使用 `--follow`。
 
 ### 常用运行控制

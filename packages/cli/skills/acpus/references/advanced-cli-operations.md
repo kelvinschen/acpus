@@ -1,6 +1,6 @@
 # Advanced CLI Operations
 
-Read this only for inspection pagination/follow mechanics, detailed runtime
+Read this only for Forensics, inspection candidate-selection/follow mechanics, detailed runtime
 controls, catalogs, import, static visualization, WebUI, bundled-skill
 management, artifact lookup, run deletion, or CLI automation. Use
 `acpus <cmd> --help` for exact options.
@@ -20,10 +20,22 @@ Use the same selected path, catalog, or `-` stdin source as `workflow run`. `wor
 ## Inspection details
 
 Start with the Summary path in [CLI Operations](cli-operations.md).
-- For a repeated authored target, choose one candidate `@ref` before paging or following.
-- `--page` continues only a candidate view; Timeline always shows its fixed recent window.
+- A repeated authored target returns every occurrence in stable path order; choose one candidate `@ref` before following or inspecting its details.
+- Candidate Select commands preserve Timeline or Forensics detail. Timeline always shows its fixed recent window.
 - `--follow` waits until the fixed subject is terminal. `--await-decision` waits until that subject needs external input, is paused, or is terminal.
-- Inspection is text-only. It has no JSON/NDJSON, raw, topology, controls, or custom-limit surface. For settled turn artifacts or the run-local acpx session projection, see [Agent Records](agent-records.md).
+- For settled turn artifacts or the run-local acpx session projection, see [Agent Records](agent-records.md).
+
+### Forensics
+
+Use Forensics only when diagnosis depends on reconciling the run's frozen Definition, actual Invocation, and scheduler-accepted Result. It is not an ordinary monitoring or proof-of-progress view.
+
+```sh
+acpus runs inspect <run-id> [--target <nodeId|@ref|@ref#attemptNo>] --forensics
+```
+
+Omitting `--target` inspects `root`. Forensics is one-shot and cannot be combined with `--timeline`, `--follow`, or `--await-decision`. 
+
+Definition comes from the run's frozen effective workflow, Invocation reports values durably resolved for the selected occurrence or attempt, and Result contains only scheduler-accepted output or its explicit terminal state. Values are complete and may contain sensitive business data.
 
 ## Runtime control details
 

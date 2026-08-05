@@ -254,22 +254,98 @@ describe("inspection text surface", () => {
       recent: [],
     }];
 
-    for (const view of views) expect(formatInspectionView(view)).not.toContain("Await:");
+    for (const view of views) {
+      expect(formatInspectionView(view)).not.toContain("Await:");
+      expect(formatInspectionView(view)).not.toContain("--forensics");
+    }
   });
 
   it("makes every ambiguous candidate selection executable and preserves Timeline detail", () => {
-    const text = formatInspectionCandidates(candidates(), { timeline: true });
-
-    const next = formatInspectionCandidates({ ...candidates(), page: 2, nextPage: 3 }, { timeline: true });
+    const text = formatInspectionCandidates(candidates(), "timeline");
 
     expect(text).toContain("Target review  matches=13");
-    expect(text).not.toContain("page=1");
-    expect(next).toContain("Target review  matches=13  page=2");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @6f5e4d3c2b1a --timeline");
-    expect(text).toContain("Next: acpus runs inspect run_1 --target review --timeline --page 2");
+    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
+    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000007 --timeline");
+    expect(text).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(text).not.toContain("Next:");
+    expect(text).not.toContain("page=");
     expect(text).not.toContain("--follow");
     expect(text).not.toContain("--await-decision");
+  });
+
+  it("renders complete Forensics sections and preserves detail in candidate navigation", () => {
+    const prompt = "Review all facts.\nReturn the final answer.";
+    const value = "x".repeat(4_000);
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "forensics",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+      state: { status: "completed", durationMs: 25 },
+      definition: {
+        kind: "agent",
+        agent: "reviewer",
+        profile: { kind: "agent_definition", use: "codex" },
+        prompt: "input.prompt",
+      },
+      invocation: {
+        status: "resolved",
+        kind: "agent",
+        attempt: 2,
+        promptOrigin: "authored",
+        prompt,
+        cwd: "/workspace",
+        env: { MANAGED: value },
+        permissionMode: "approve-all",
+      },
+      result: { status: "accepted", value: { value } },
+    } satisfies InspectionView);
+    const candidatesText = formatInspectionCandidates(candidates(), "forensics");
+
+    expect(text).toContain("Forensics review  @1a2b3c4d5e6f#2 · agent");
+    expect(text).toContain("Definition:\n");
+    expect(text).toContain("Invocation:\n");
+    expect(text).toContain("Result:\n");
+    expect(text).toContain('"prompt": "<multiline:prompt>"');
+    expect(text).toContain("prompt: |\n    Review all facts.\n    Return the final answer.");
+    expect(text).toContain(value);
+    expect(text).not.toContain("Timeline:");
+    expect(text).not.toContain("Await:");
+    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
+    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
+    expect(candidatesText).not.toContain("Next:");
+  });
+
+  it("escapes terminal and bidirectional controls without losing their forensic representation", () => {
+    const prompt = "raw:\u001b[31m\u009b2J\u202e literal:\\u009b\nnext\rline";
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "forensics",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f" },
+      state: { status: "running" },
+      definition: {
+        kind: "agent",
+        agent: "reviewer",
+        profile: { kind: "agent_definition", use: "codex" },
+        prompt: "\"review\"",
+      },
+      invocation: {
+        status: "resolved",
+        kind: "agent",
+        attempt: 1,
+        promptOrigin: "authored",
+        prompt,
+        cwd: "/workspace",
+        env: {},
+        permissionMode: "approve-all",
+      },
+      result: { status: "pending" },
+    } satisfies InspectionView);
+
+    expect(text).not.toMatch(/[\u001b\u009b\u202e\r]/u);
+    expect(text).toContain("raw:\\u001b[31m\\u009b2J\\u202e literal:\\\\u009b");
+    expect(text).toContain("next\\u000dline");
   });
 
   it("omits only implied Timeline ordinals and transition statuses", () => {
@@ -458,6 +534,12 @@ describe("inspection text surface", () => {
       target: "@1a2b3c4d5e6f#2",
       detail: "timeline",
     })).toBe("acpus runs inspect run_1 --target '@1a2b3c4d5e6f#2' --timeline");
+    expect(inspectionRecoveryCommand({
+      kind: "target",
+      runId: "run_1",
+      target: "root",
+      detail: "forensics",
+    })).toBe("acpus runs inspect run_1 --target root --forensics");
   });
 });
 
@@ -581,17 +663,10 @@ function candidates(): InspectionCandidates {
     kind: "candidates",
     run: { id: "run_1", status: "running" },
     target: "review",
-    entries: [{
-      selector: "@1a2b3c4d5e6f",
-      status: "running",
-      breadcrumb: "batch[0] › review",
-    }, {
-      selector: "@6f5e4d3c2b1a",
-      status: "completed",
-      breadcrumb: "batch[1] › review",
-    }],
-    page: 1,
-    total: 13,
-    nextPage: 2,
+    entries: Array.from({ length: 13 }, (_, index) => ({
+      selector: `@${(index + 1).toString(16).padStart(12, "0")}`,
+      status: index === 12 ? "completed" : "running",
+      breadcrumb: `batch[${index}] › review`,
+    })),
   };
 }

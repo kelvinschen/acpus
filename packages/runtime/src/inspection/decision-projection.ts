@@ -29,8 +29,7 @@ import type { ResolvedTargetState } from "./resolved-target.js";
 
 const summaryHeadlineCharacters = 240;
 const attentionCharacters = 160;
-const timelineDefaultLimit = 12;
-const timelineMaximumLimit = 50;
+const timelineRecentLimit = 12;
 const timelineEntryBytes = 512;
 const currentIntentBytes = 768;
 const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
@@ -76,8 +75,6 @@ export function projectTargetSummary(input: {
 export function projectTimeline(input: {
   run: RunDetails;
   details: ResolvedTargetState;
-  page?: number;
-  limit?: number;
   events: readonly CommittedRuntimeEventRow[];
   observations: AgentObservationInspectionProjection;
 }): RunInspectionTimelineDocument {
@@ -86,14 +83,6 @@ export function projectTimeline(input: {
   const attempt = selectedAttempt(input.details);
   const current = currentActivity(input.details, input.run, input.observations, attempt);
   const entries = projectTimelineEntries(input);
-  const recent = timelinePage({
-    entries,
-    limit: input.limit ?? timelineDefaultLimit,
-    page: input.page ?? 1,
-    hasOlderSemanticEntries: input.observations.hasOlderEntries,
-    olderSemanticEntryCount: input.observations.olderEntryCount,
-    retentionOmittedBefore: input.observations.retentionOmittedBefore,
-  });
   const visibility = inspectionVisibility(input.details, input.observations);
   return {
     schemaVersion: 2,
@@ -103,11 +92,11 @@ export function projectTimeline(input: {
     state,
     ...(visibility ? { visibility } : {}),
     ...(current ? { current } : {}),
-    recent,
+    recent: entries.slice(-timelineRecentLimit),
   };
 }
 
-/** The complete retained semantic stream used by follow; ordinary reads page it. */
+/** The complete retained semantic stream used by follow and bounded one-shot reads. */
 function projectTimelineEntries(input: {
   run: RunDetails;
   details: ResolvedTargetState;
@@ -552,36 +541,6 @@ function schedulerTimelineEntries(
     });
   }
   return entries;
-}
-
-function timelinePage(input: {
-  entries: RunInspectionTimelineEntry[];
-  limit: number;
-  page: number;
-  hasOlderSemanticEntries: boolean;
-  olderSemanticEntryCount: number;
-  retentionOmittedBefore: number;
-}): RunInspectionTimelineDocument["recent"] {
-  const limit = Math.min(timelineMaximumLimit, Math.max(1, input.limit));
-  const page = Math.max(1, input.page);
-  const offset = (page - 1) * limit;
-  const end = Math.max(0, input.entries.length - offset);
-  const selected = input.entries.slice(Math.max(0, end - limit), end);
-  const omittedBefore = Math.max(0, input.entries.length - offset - selected.length) + input.olderSemanticEntryCount;
-  const retainedOlder = omittedBefore > 0 || input.hasOlderSemanticEntries;
-  const hasOlder = retainedOlder;
-  return {
-    entries: selected,
-    page,
-    limit,
-    returned: selected.length,
-    omittedBefore,
-    hasOlder,
-    ...(input.retentionOmittedBefore > 0
-      ? { retentionOmittedBefore: input.retentionOmittedBefore }
-      : {}),
-    ...(retainedOlder ? { olderPage: page + 1 } : {}),
-  };
 }
 
 function progressTools(progress: RunNodeProgress | undefined): {

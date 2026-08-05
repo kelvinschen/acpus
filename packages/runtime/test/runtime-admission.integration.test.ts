@@ -68,6 +68,17 @@ describe.concurrent("runtime admission use cases", () => {
       expect(workflowIr.toString("utf8")).toBe(prepared.irJson);
       expect(workflowLock.toString("utf8")).toBe(`${stableJson(prepared.lock)}\n`);
       expect(JSON.parse(workflowLock.toString("utf8"))).toEqual(prepared.lock);
+      const forensics = await readInspection(workspace, {
+        kind: "target", runId: admitted.run.id, target: "root", detail: "forensics",
+      });
+      expect(forensics.isOk() ? forensics.value : undefined).toMatchObject({
+        kind: "target",
+        detail: "forensics",
+        run: { id: admitted.run.id, status: "completed" },
+        definition: { kind: "workflow", name: "cli-valid" },
+        invocation: { status: "resolved", kind: "workflow", input: { ready: true } },
+        result: { status: "accepted", value: { ready: true } },
+      });
     });
   });
 
@@ -78,13 +89,21 @@ describe.concurrent("runtime admission use cases", () => {
       await writeFile(join(workspace, prepared.source.entry), "throw new Error('live source should not be read');\n");
 
       const inspected = await readInspection(workspace, {
-        view: { kind: "target", runId: admitted.run.id, target: "approve", detail: "summary" },
+        kind: "target", runId: admitted.run.id, target: "approve", detail: "summary",
       });
       expect(inspected.isOk() ? inspected.value : undefined).toMatchObject({
         kind: "target",
         detail: "summary",
         run: { id: admitted.run.id },
         subject: { label: "approve", kind: "signal" },
+      });
+      const forensics = await readInspection(workspace, {
+        kind: "target", runId: admitted.run.id, target: "approve", detail: "forensics",
+      });
+      expect(forensics.isOk() ? forensics.value : undefined).toMatchObject({
+        kind: "target",
+        detail: "forensics",
+        definition: { kind: "signal" },
       });
     });
   });
@@ -200,8 +219,25 @@ describe.concurrent("runtime admission use cases", () => {
           inputMode: "strict",
         },
       });
-      expect(run?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata).toMatchObject({
+      const invocation = run?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata;
+      expect(invocation).toMatchObject({
         defaultCommandTimeout: "5s",
+      });
+      expect(invocation).toHaveProperty("env", { RUNTIME_TASK_ENV: "from-run-env" });
+      const inspected = await readInspection(workspace, {
+        kind: "target", runId: admitted.run.id, target: "inspect_invocation", detail: "forensics",
+      });
+      expect(inspected.isOk() ? inspected.value : undefined).toMatchObject({
+        kind: "target",
+        detail: "forensics",
+        invocation: {
+          status: "resolved",
+          kind: "task",
+          attempt: 1,
+          cwd: workDir,
+          env: { RUNTIME_TASK_ENV: "from-run-env" },
+          defaultCommandTimeout: "5s",
+        },
       });
 
       const timedOut = await admitSyntheticWorkflow(workspace, taskInvocationOptionsWorkflow(), {
@@ -213,9 +249,11 @@ describe.concurrent("runtime admission use cases", () => {
       const timedOutRun = await getRun(workspace, timedOut.run.id);
       expect(timedOutRun?.dynamic?.nodeInstances.find(instance => instance.nodeId === "inspect_invocation")?.status).toBe("failed");
       expect(timedOutRun?.dynamic?.attempts.find(attempt => attempt.nodeId === "inspect_invocation")?.status).toBe("failed");
-      expect(timedOutRun?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata).toMatchObject({
+      const timedOutInvocation = timedOutRun?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata;
+      expect(timedOutInvocation).toMatchObject({
         defaultCommandTimeout: "100ms",
       });
+      expect(timedOutInvocation).toHaveProperty("env", { RUNTIME_TASK_ENV: "from-run-env" });
     });
   });
 

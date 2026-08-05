@@ -84,7 +84,7 @@ describe("coherent inspection observation boundaries", () => {
         const selector = deriveOccurrenceRef(review.instancePath);
 
         const summary = await readInspection(workspace, {
-          view: { kind: "target", runId: started.runId, target: selector, detail: "summary" },
+          kind: "target", runId: started.runId, target: selector, detail: "summary",
         });
         expect(summary.isOk() ? summary.value : undefined).toMatchObject({
           kind: "target",
@@ -97,11 +97,11 @@ describe("coherent inspection observation boundaries", () => {
         expect(summaryView?.acp?.silentForMs).toBeGreaterThanOrEqual(14 * 60_000);
 
         const timeline = await readInspection(workspace, {
-          view: { kind: "target", runId: started.runId, target: selector, detail: "timeline" },
+          kind: "target", runId: started.runId, target: selector, detail: "timeline",
         });
         expect(timeline.isOk() ? timeline.value : undefined).not.toHaveProperty("acp");
         const root = await readInspection(workspace, {
-          view: { kind: "target", runId: started.runId, target: "root", detail: "summary" },
+          kind: "target", runId: started.runId, target: "root", detail: "summary",
         });
         expect(root.isOk() ? root.value : undefined).not.toHaveProperty("acp");
       } finally {
@@ -203,7 +203,7 @@ describe("coherent inspection observation boundaries", () => {
         await Promise.resolve();
         expect(emitted).toBe(false);
 
-        const thoughtRead = await readInspection(workspace, { view: { kind: "run", runId: started.runId } });
+        const thoughtRead = await readInspection(workspace, { kind: "run", runId: started.runId });
         const thoughtView = thoughtRead.isOk() && thoughtRead.value.kind === "run" ? thoughtRead.value : undefined;
         expect(inspectionTreeItem(thoughtView?.tree ?? [], treeSelector)?.pulse).toEqual({
           phase: "reported-thought",
@@ -230,12 +230,12 @@ describe("coherent inspection observation boundaries", () => {
         controller.abort();
         await expect(iterator.next()).resolves.toMatchObject({ done: true });
 
-        const runRead = await readInspection(workspace, { view: { kind: "run", runId: started.runId } });
+        const runRead = await readInspection(workspace, { kind: "run", runId: started.runId });
         const runView = runRead.isOk() && runRead.value.kind === "run" ? runRead.value : undefined;
         expect(inspectionTreeItem(runView?.tree ?? [], treeSelector)).not.toHaveProperty("pulse");
 
         const summaryRead = await readInspection(workspace, {
-          view: { kind: "target", runId: started.runId, target: selector, detail: "summary" },
+          kind: "target", runId: started.runId, target: selector, detail: "summary",
         });
         const summaryView = summaryRead.isOk() && summaryRead.value.kind === "target" && summaryRead.value.detail === "summary"
           ? summaryRead.value
@@ -243,7 +243,7 @@ describe("coherent inspection observation boundaries", () => {
         expect(summaryView).not.toHaveProperty("pulse");
 
         const timelineRead = await readInspection(workspace, {
-          view: { kind: "target", runId: started.runId, target: selector, detail: "timeline" },
+          kind: "target", runId: started.runId, target: selector, detail: "timeline",
         });
         const timelineView = timelineRead.isOk() && timelineRead.value.kind === "target" && timelineRead.value.detail === "timeline"
           ? timelineRead.value
@@ -408,7 +408,7 @@ describe("coherent inspection observation boundaries", () => {
         awaitSignal(prepared.store, prepared.runId, prepared.claim, target.nodeKey, target.nodeId, `inspection-observation:${strategy}:awaiting`);
         const selector = deriveOccurrenceRef(target.instancePath);
         const runView = await readInspection(workspace, {
-          view: { kind: "run", runId: prepared.runId },
+          kind: "run", runId: prepared.runId,
         });
         const awaiting = runView.isOk() && runView.value.kind === "run"
           ? inspectionTreeItem(runView.value.tree, selector)
@@ -417,7 +417,7 @@ describe("coherent inspection observation boundaries", () => {
         expect(awaiting?.attention).toBeUndefined();
 
         const targetSummary = await readInspection(workspace, {
-          view: { kind: "target", runId: prepared.runId, target: selector, detail: "summary" },
+          kind: "target", runId: prepared.runId, target: selector, detail: "summary",
         });
         const summaryView = targetSummary.isOk() && targetSummary.value.kind === "target"
           ? targetSummary.value
@@ -426,7 +426,7 @@ describe("coherent inspection observation boundaries", () => {
         expect(summaryView?.detail === "summary" ? summaryView.attention : undefined).toBeUndefined();
 
         const targetTimeline = await readInspection(workspace, {
-          view: { kind: "target", runId: prepared.runId, target: selector, detail: "timeline" },
+          kind: "target", runId: prepared.runId, target: selector, detail: "timeline",
         });
         const timelineView = targetTimeline.isOk() && targetTimeline.value.kind === "target"
           ? targetTimeline.value

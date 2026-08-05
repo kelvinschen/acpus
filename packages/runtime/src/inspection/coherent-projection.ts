@@ -109,7 +109,6 @@ export function projectInspectionTargetTimelineView(input: {
     details: input.details,
     events: input.events,
     observations: input.observations,
-    limit: 12,
   });
   const subject = subjectFromDetails(input.details);
   return {
@@ -120,7 +119,7 @@ export function projectInspectionTargetTimelineView(input: {
     state: visibleState(document.state, input.details.summary.failure),
     ...(document.visibility ? { visibility: { ...document.visibility } } : {}),
     ...(document.current ? { current: activity(document.current, input.run, input.details, subject) } : {}),
-    recent: document.recent.entries.flatMap(entry => timelineEntry(entry)),
+    recent: document.recent.flatMap(entry => timelineEntry(entry)),
   };
 }
 

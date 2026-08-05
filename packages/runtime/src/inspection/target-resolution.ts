@@ -10,8 +10,7 @@ import type {
   RunDynamicSignalWait,
 } from "../store/store.js";
 import type {
-  RunInspectionCandidate,
-  RunInspectionCandidatesDocument,
+  InspectionCandidates,
   RunInspectionStaticNode,
   RunInspectionStatus,
 } from "./types.js";
@@ -29,7 +28,7 @@ type TargetableOccurrence = {
 
 export type InspectionTargetResolution =
   | { kind: "resolved"; target: string }
-  | { kind: "candidates"; document: RunInspectionCandidatesDocument }
+  | { kind: "candidates"; candidates: InspectionCandidates }
   | { kind: "not-found" }
   | { kind: "ref-collision"; candidateKeys: string[] };
 
@@ -37,7 +36,6 @@ export function resolveInspectionTarget(input: {
   run: RunDetails;
   staticNodes: readonly RunInspectionStaticNode[];
   target: string;
-  page?: { number?: number; limit?: number };
 }): InspectionTargetResolution {
   if (input.target === "root") return { kind: "resolved", target: "root" };
   const allOccurrences = targetableOccurrences(input.run);
@@ -78,7 +76,16 @@ export function resolveInspectionTarget(input: {
   if (matches.length === 1) return { kind: "resolved", target: matches[0]!.target };
   return {
     kind: "candidates",
-    document: candidateDocument(input.run, input.target, matches, input.page),
+    candidates: {
+      kind: "candidates",
+      run: { id: input.run.id, status: input.run.status },
+      target: input.target,
+      entries: [...matches].sort(compareOccurrence).map(value => ({
+        selector: value.ref,
+        status: value.status,
+        breadcrumb: breadcrumb(value.path),
+      })),
+    },
   };
 }
 
@@ -138,43 +145,6 @@ function frameOccurrence(
     path,
     status: normalizeStatus(frame.status),
     diagnosticKey: frame.frameKey,
-  };
-}
-
-function candidateDocument(
-  run: RunDetails,
-  target: string,
-  candidates: readonly TargetableOccurrence[],
-  page: { number?: number; limit?: number } | undefined,
-): RunInspectionCandidatesDocument {
-  const number = page?.number ?? 1;
-  const limit = 12;
-  const ordered = [...candidates].sort(compareOccurrence);
-  const start = (number - 1) * limit;
-  const entries = ordered.slice(start, start + limit).map(toCandidate);
-  return {
-    schemaVersion: 2,
-    kind: "candidates",
-    run: { id: run.id, status: run.status, updatedAt: run.updatedAt },
-    target,
-    candidates: {
-      entries,
-      page: number,
-      limit,
-      total: ordered.length,
-      hasMore: start + entries.length < ordered.length,
-      ...(start + entries.length < ordered.length ? { nextPage: number + 1 } : {}),
-    },
-  };
-}
-
-function toCandidate(value: TargetableOccurrence): RunInspectionCandidate {
-  return {
-    ref: value.ref,
-    status: value.status,
-    breadcrumb: breadcrumb(value.path),
-    kind: value.kind,
-    ...(value.nodeId === undefined ? {} : { nodeId: value.nodeId }),
   };
 }
 

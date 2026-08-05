@@ -3,6 +3,7 @@ import { projectAgentExecution } from "../src/inspection/agent-execution-project
 import { projectInspectionTargetTimelineView } from "../src/inspection/coherent-projection.js";
 import {
   inspectionExcerpt,
+  projectTimeline,
   projectTargetSummary,
 } from "../src/inspection/decision-projection.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
@@ -213,11 +214,25 @@ describe("inspection job projections", () => {
 
   it("projects one bounded timeline view without private journal metadata", () => {
     const details = agentDetails();
-    const projection = observations([], [
-      activity(1, "first"),
-      activity(2, "second"),
-      activity(3, "third"),
-    ]);
+    const projection = observations([], Array.from({ length: 13 }, (_, index) => {
+      const turn = index + 1;
+      return activity(
+        turn,
+        `entry-${turn}`,
+        "response",
+        `2026-07-25T00:00:${String(turn).padStart(2, "0")}.000Z`,
+      );
+    }));
+
+    const projected = projectTimeline({
+      run: agentRun(),
+      details,
+      events: [],
+      observations: projection,
+    });
+    expect(projected.recent.map(entry => entry.id))
+      .toEqual(Array.from({ length: 12 }, (_, index) => `activity-${index + 2}-response`));
+    expect(projected.recent).not.toHaveProperty("page");
 
     const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
@@ -226,15 +241,10 @@ describe("inspection job projections", () => {
       observations: projection,
     });
 
-    expect(timeline).toMatchObject({
-      kind: "target",
-      detail: "timeline",
-      recent: [
-        expect.objectContaining({ kind: "activity", summary: "first" }),
-        expect.objectContaining({ kind: "activity", summary: "second" }),
-        expect.objectContaining({ kind: "activity", summary: "third" }),
-      ],
-    });
+    expect(timeline.kind).toBe("target");
+    expect(timeline.detail).toBe("timeline");
+    expect(timeline.recent.map(entry => entry.kind === "activity" ? entry.summary : undefined))
+      .toEqual(Array.from({ length: 12 }, (_, index) => `entry-${index + 2}`));
     expect(timeline).not.toHaveProperty("evidence");
     expect(timeline).not.toHaveProperty("page");
   });

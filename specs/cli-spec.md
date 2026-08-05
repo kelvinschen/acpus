@@ -21,7 +21,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
-| `runs inspect [run-id]` | `--target`, `--timeline`, `--page`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
+| `runs inspect [run-id]` | `--target`, `--timeline`, `--forensics`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
 | `runs artifact <artifact-ref>` | Resolves one `artifact://<run-id>/<artifact-id>` to verified local source metadata; optional `--json`. |
 | `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
@@ -121,13 +121,18 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
 #### Inspection
 
-- `runs inspect` MUST be text-only, delegate target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--page`, `--follow`, and `--await-decision`.
-- `--timeline` requires `--target`; `--page` requires `--target`, is one-shot candidate paging only, and conflicts with blocking inspection. `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
-- A one-shot ambiguous target MUST render candidates successfully. A blocking ambiguous target MUST render its candidate handoff and fail without attaching.
-- Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, Select, and next candidate page. It MUST preserve Timeline detail for candidate selection and never recommend retry, fork, cancel, or steer.
+- `runs inspect` MUST be text-only, delegate target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--forensics`, `--follow`, and `--await-decision`.
+- `--forensics` MUST select one-shot target Forensics and default its omitted `--target` to `root`; explicit `--target root` is equivalent.
+- `--forensics` MUST conflict with `--timeline`, `--follow`, and `--await-decision`.
+- `--timeline` requires `--target`; `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
+- A one-shot ambiguous target MUST render every candidate successfully in Runtime order. A blocking ambiguous target MUST render the same complete candidate handoff and fail without attaching.
+- Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, and Select. It MUST preserve Timeline or Forensics detail for candidate selection and never recommend retry, fork, cancel, or steer.
 - Inspection text MUST distinguish activity labels from their detail and omit default or duplicate metadata that does not change the visible subject, lifecycle, or next executable action.
+- Forensics text MUST render stable `Definition`, `Invocation`, and `Result` sections in stable field order using indented JSON plus literal blocks for multiline strings without truncating Runtime values.
+- Forensics text MUST render terminal and bidirectional control characters as visible escapes rather than writing them raw.
+- Summary and Timeline text MUST NOT add Forensics navigation.
 - When Runtime includes an Agent Summary ACP silence duration, text inspection MUST render `ACP silent for <duration>` and MUST omit an inactivity threshold, failure countdown, and cleanup controls.
-- Empty targets and invalid pages MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
+- Empty targets MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
 - Ctrl-C MUST detach without canceling the run and print a one-shot recovery command that retains selected target and Timeline detail.
 - Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
@@ -246,5 +251,5 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 ## Verification
 
-- `pnpm test:unit packages/cli` and `pnpm test:contract packages/cli`: cover JSON option sources, text-only run/inspection grammar, candidate navigation, append-only transcript ordering, detach, and exits.
+- `pnpm test:unit packages/cli` and `pnpm test:contract packages/cli`: cover JSON option sources, text-only run/inspection/Forensics grammar, candidate navigation, append-only transcript ordering, detach, and exits.
 - `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover Runtime adapter integration, read-only behavior, and one representative end-to-end workflow.

@@ -272,9 +272,11 @@ describe("inspection observation transcript", () => {
         kind: "candidates",
         run: { id: "run_1", status: "running" },
         target: "review",
-        entries: [{ selector: "@1a2b3c4d5e6f", status: "running", breadcrumb: "batch[0] › review" }],
-        page: 1,
-        total: 1,
+        entries: Array.from({ length: 13 }, (_, index) => ({
+          selector: `@${(index + 1).toString(16).padStart(12, "0")}`,
+          status: "running",
+          breadcrumb: `batch[${index}] › review`,
+        })),
       },
       message: "Target is ambiguous.",
     };
@@ -295,7 +297,10 @@ describe("inspection observation transcript", () => {
 
     expect(outcome).toEqual({ kind: "error", error });
     expect(stdout.text).toBe("");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f");
+    expect(stderr.text).toContain("Target review  matches=13");
+    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @000000000001");
+    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(stderr.text).not.toContain("Next:");
     expect(stderr.text).toContain("Cannot attach: Target is ambiguous.");
   });
 

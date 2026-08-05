@@ -195,10 +195,18 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     if (cwd.isErr()) return finishFailure(resolutionFailure(cwd.error));
     const dynamic = dynamicEnv(node.run.env, scope);
     if (dynamic.isErr()) return finishFailure(resolutionFailure(dynamic.error));
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    const managedEnv = {
       ...staticEnv(definition.env),
       ...dynamic.value,
+    };
+    const invocationEnv = { ...managedEnv };
+    delete invocationEnv.ACPUS_RUNTIME_NODE_ID;
+    delete invocationEnv.ACPUS_RUNTIME_RUN_ID;
+    delete invocationEnv.ACPUS_RUNTIME_NODE_KEY;
+    delete invocationEnv.ACPUS_RUNTIME_ATTEMPT;
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...managedEnv,
     };
     applyRuntimeAgentEnv(env, node.id, options);
     const deadline = options.deadlineAt === undefined ? undefined : persistedDeadline(options.deadlineAt, node.id);
@@ -242,79 +250,92 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       onAcpActivity: observedAt => activeProgress?.recordAcpActivity(observedAt),
     }, async attempt => {
       for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
-      const remaining = remainingTimeout(deadline, node.id);
-      if (remaining.isErr()) return finishFailure(remaining.error);
-      activeProgress = progressContext
-        ? createAgentProgressTurn({ ...progressContext, turn: turn + 1 })
-        : undefined;
-      const request = {
-        ...turnBase,
-        prompt,
-        ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
-        ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
-        ...(activeProgress?.callbacks ?? {}),
-      } satisfies AgentTurnRequest;
-      const result = await executeObservedAgentTurn(
-        node,
-        options,
-        turn + 1,
-        turn === 0 ? initialPrompt.kind : "repair",
-        request,
-        attempt.runTurn,
-      );
-      activeProgress?.clearAcpActivity();
-      if (options.signal?.aborted) {
-        turns.push(agentTurnRecord(turn + 1, result));
-        return finishFailure(abortedTurnFailure(result));
-      }
-      let turnRecord: AgentTurnRecord;
-      try {
-        turnRecord = await writeAgentTurnArtifacts(
+        const remaining = remainingTimeout(deadline, node.id);
+        if (remaining.isErr()) return finishFailure(remaining.error);
+        if (turn === 0) {
+          writeAgentInvocationMetadata(node, options, {
+            prompt,
+            promptOrigin: initialPrompt.kind === "task" ? "authored" : initialPrompt.kind === "steer" ? "steering" : "continuation",
+            cwd: cwd.value,
+            env: invocationEnv,
+            permissionMode: turnBase.permissionMode,
+            ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+            ...(explicitSessionKey === undefined ? {} : { sessionKey: explicitSessionKey }),
+            ...(initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
+            ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+          });
+        }
+        activeProgress = progressContext
+          ? createAgentProgressTurn({ ...progressContext, turn: turn + 1 })
+          : undefined;
+        const request = {
+          ...turnBase,
+          prompt,
+          ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
+          ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
+          ...(activeProgress?.callbacks ?? {}),
+        } satisfies AgentTurnRequest;
+        const result = await executeObservedAgentTurn(
           node,
           options,
           turn + 1,
+          turn === 0 ? initialPrompt.kind : "repair",
           request,
-          result,
-          artifactRun,
+          attempt.runTurn,
         );
-      } catch (error) {
-        if (!isAttemptFenceError(error)) throw error;
-        turns.push(agentTurnRecord(turn + 1, result));
-        return finishFailure({ type: "cancelled", message: "Agent turn was fenced." });
-      }
-      turns.push(turnRecord);
-      if (options.signal?.aborted) return finishFailure(abortedTurnFailure(result));
-      if (result.status === "cancelled") {
-        return finishFailure({ type: "cancelled", message: result.message }, result);
-      }
-      if (result.status === "failed" && result.failure.kind === "timeout") {
-        const failure = agentNodeFailure(result.failure);
-        return finishFailure({ type: "timed_out", failure, message: failure.message }, result);
-      }
-      if (result.status === "failed") {
-        const failure = agentNodeFailure(result.failure);
-        return finishFailure({ type: "failed", failure, message: failure.message }, result);
-      }
-      if (!node.outputSchema) {
-        await writeTerminalState("completed", undefined, result);
-        return ok(result.finalResponse);
-      }
-      const conformed = conformAgentOutput(node.outputSchema, result.finalResponse, node.id);
-      const outputProcessing = conformed.isOk() ? conformed.value.outputProcessing : conformed.error.outputProcessing;
-      turns[turn] = { ...turns[turn]!, outputProcessing };
-      if (conformed.isOk()) {
-        await writeTerminalState("completed", undefined, result);
-        return ok(conformed.value.output);
-      }
-      const rejected = conformed.error;
-      turns[turn] = { ...turns[turn]!, failure: { kind: rejected.kind, message: rejected.message } };
-      if (turn === maxRepairTurns) {
-        const failure: AgentNodeFailure = { origin: "provider", code: rejected.kind, message: rejected.message };
-        return finishFailure({ type: "failed", failure, message: failure.message }, result);
-      }
-      const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
-      if (delayed.isErr()) return finishFailure(delayed.error);
-      prompt = buildAgentOutputRepairPrompt(node.outputSchema, rejected.phase);
+        activeProgress?.clearAcpActivity();
+        if (options.signal?.aborted) {
+          turns.push(agentTurnRecord(turn + 1, result));
+          return finishFailure(abortedTurnFailure(result));
+        }
+        let turnRecord: AgentTurnRecord;
+        try {
+          turnRecord = await writeAgentTurnArtifacts(
+            node,
+            options,
+            turn + 1,
+            request,
+            result,
+            artifactRun,
+          );
+        } catch (error) {
+          if (!isAttemptFenceError(error)) throw error;
+          turns.push(agentTurnRecord(turn + 1, result));
+          return finishFailure({ type: "cancelled", message: "Agent turn was fenced." });
+        }
+        turns.push(turnRecord);
+        if (options.signal?.aborted) return finishFailure(abortedTurnFailure(result));
+        if (result.status === "cancelled") {
+          return finishFailure({ type: "cancelled", message: result.message }, result);
+        }
+        if (result.status === "failed" && result.failure.kind === "timeout") {
+          const failure = agentNodeFailure(result.failure);
+          return finishFailure({ type: "timed_out", failure, message: failure.message }, result);
+        }
+        if (result.status === "failed") {
+          const failure = agentNodeFailure(result.failure);
+          return finishFailure({ type: "failed", failure, message: failure.message }, result);
+        }
+        if (!node.outputSchema) {
+          await writeTerminalState("completed", undefined, result);
+          return ok(result.finalResponse);
+        }
+        const conformed = conformAgentOutput(node.outputSchema, result.finalResponse, node.id);
+        const outputProcessing = conformed.isOk() ? conformed.value.outputProcessing : conformed.error.outputProcessing;
+        turns[turn] = { ...turns[turn]!, outputProcessing };
+        if (conformed.isOk()) {
+          await writeTerminalState("completed", undefined, result);
+          return ok(conformed.value.output);
+        }
+        const rejected = conformed.error;
+        turns[turn] = { ...turns[turn]!, failure: { kind: rejected.kind, message: rejected.message } };
+        if (turn === maxRepairTurns) {
+          const failure: AgentNodeFailure = { origin: "provider", code: rejected.kind, message: rejected.message };
+          return finishFailure({ type: "failed", failure, message: failure.message }, result);
+        }
+        const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
+        if (delayed.isErr()) return finishFailure(delayed.error);
+        prompt = buildAgentOutputRepairPrompt(node.outputSchema, rejected.phase);
       }
       throw new Error(`Agent node '${node.id}' exhausted response repair.`);
     });
@@ -601,6 +622,35 @@ function agentAttemptDirectory(attempt: number, attemptId: string): string {
     throw new Error(`Agent artifact storage requires a scheduler-issued attempt id, received '${attemptId}'.`);
   }
   return join(`attempt-${attempt}`, attemptId);
+}
+
+function writeAgentInvocationMetadata(
+  node: AgentNodeIR,
+  options: AgentExecutorOptions,
+  invocation: {
+    prompt: string;
+    promptOrigin: "authored" | "steering" | "continuation";
+    cwd: string;
+    env: Record<string, string>;
+    permissionMode: "approve-reads" | "approve-all" | "deny-all";
+    model?: string;
+    sessionKey?: string;
+    config?: Record<string, string>;
+    deadlineAt?: string;
+  },
+): void {
+  if (!options.store || !options.runId || !options.attemptId) return;
+  options.store.writeExecutionMetadata({
+    runId: options.runId,
+    attemptId: options.attemptId,
+    kind: "agent_invocation",
+    metadata: pruneUndefined({
+      nodeId: node.id,
+      nodeKey: options.nodeKey ?? node.id,
+      attemptNo: options.attemptNo ?? 1,
+      ...invocation,
+    }) as JsonValue,
+  });
 }
 
 async function writeAgentAttemptMetadata(

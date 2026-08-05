@@ -239,6 +239,7 @@ type PruneReport = {
 - Task cwd MUST default to workspace, resolve relative values from workspace, and be observed by process code, filesystem access, module initialization, and the default command wrapper without changing module resolution.
 - Task environment MUST start from host environment plus evaluated overrides and remain live for process code, task context, modules, and later command invocations.
 - Task input/cwd/env and default command timeout MUST resolve once before invocation and be recorded as effective attempt metadata where applicable.
+- Recorded Task attempt env MUST contain only evaluated Acpus-authored overrides; the process environment may additionally inherit host values.
 - Runtime MUST evaluate a Task's complete authored input expression once and normalize the result as one WorkflowData value before recording attempt metadata or starting the Task process.
 - Evaluated Task input MUST preserve its exact WorkflowData shape, including a top-level primitive, `null`, array, or object and every own object field such as `__proto__`, without changing an input object's ordinary prototype.
 - Task input artifact binding MUST recursively accept an `ArtifactRef` at the input root, in an object field, or in an array element.
@@ -277,6 +278,13 @@ type PruneReport = {
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
 - Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
+- After resolving an Agent attempt's initial prompt, cwd, Acpus-managed env, permission, session, model, config, and deadline, Runtime MUST persist one `agent_invocation` metadata record before the first provider request.
+- `agent_invocation` MUST contain the final prompt sent on that attempt's first request, including output-schema instructions.
+- `agent_invocation` MUST classify prompt origin as `authored`, `steering`, or `continuation`.
+- `agent_invocation` env MUST contain only frozen profile env plus resolved node env.
+- `agent_invocation` MUST NOT contain inherited host env or Runtime-injected `ACPUS_RUNTIME_*` values.
+- `agent_invocation` MUST omit internal session names, provider/acpx identity, later repair turns, partial responses, tools, usage, and artifacts.
+- Failure to persist `agent_invocation` MUST reject the execution boundary before provider dispatch.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
 - The effective acpx record id MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the canonical JSON identity `{ runId, key }` for an explicit session key or `{ runId, nodeKey }` otherwise.
@@ -533,12 +541,35 @@ type DaemonSteerControlResult = {
 
 Runtime owns generic inspection semantics and public shape.
 
-- Generic inspection MUST provide one coherent run, target Summary, target Timeline, or candidate view, and read-only observation of that selected view.
-- It exposes only views, candidates, observations, and public errors. It omits internal metadata and provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, and artifact reads remain separate.
+- Generic inspection MUST provide one coherent run, target Summary, target Timeline, target Forensics, or candidate view.
+- Read-only observation MUST accept only run, target Summary, and target Timeline queries; target Forensics is a one-shot read.
+- Summary and Timeline expose only views, candidates, observations, and public errors. They omit internal metadata and provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, artifact, and Forensics reads remain separate.
 - A target is `root`, an authored id, `@<12-lowercase-hex>`, or that reference with `#<positive-attempt-number>`. Malformed, absent, and colliding references MUST respectively return `invalid-query`, `target-not-found`, and a non-leaking `read-failed` result.
-- A one-shot ambiguous authored target MUST return public candidates, never select an occurrence; observation MUST reject it before attachment. Candidate pagination is one-based, bounded, only for one-shot ambiguous reads; each row contains selector, status, and breadcrumb.
+- A one-shot ambiguous authored target MUST return every public candidate in deterministic occurrence-path order and never select an occurrence; observation MUST reject it before attachment. Each row contains selector, status, and breadcrumb.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
 - A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
+- A target Forensics view MUST contain the selected subject and state alongside `definition`, `invocation`, and `result` projections.
+- Forensics Definition MUST come only from the run's frozen effective IR and frozen Agent overrides; it MUST NOT read current workflow source or evaluate an expression.
+- Forensics Definition MUST render frozen expressions in one stable, complete human-readable form.
+- Forensics Invocation MUST come only from durable scheduler decisions, persisted Signal state, or attempt-scoped `task_attempt`/`agent_invocation` metadata.
+- Forensics Result MUST expose output only from the scheduler-accepted occurrence or root output; it MUST NOT infer output from attempt metadata, provider response, progress, or expression evaluation.
+- Forensics Invocation's unavailable reason MUST be exactly `not_started`, `not_selected`, `not_yet_resolved`, `resolution_failed`, or `not_recorded`.
+- Forensics Result status MUST be exactly `accepted`, `completed_without_output`, `pending`, `not_started`, `not_selected`, `failed`, `timed_out`, `cancelled`, or `not_accepted`.
+- A failed or timed-out Forensics Result MUST contain only optional code plus message.
+- An occurrence Forensics read MUST use its latest attempt for Invocation while using only the occurrence's accepted durable output for Result; an exact attempt read MUST return `not_accepted` instead of that attempt's candidate output when the occurrence did not accept it.
+- A static frozen node without a materialized occurrence MUST still expose Definition, MUST omit target duration, and MUST report Invocation/Result as not started or not selected according to durable branch choice.
+- Forensics MUST project conditional branch choice, effective Parallel concurrency, materialized Fanout items/quorum/concurrency, and Loop index/round/state/transition from durable scheduler state without re-evaluating authored expressions; a Switch Definition's case ids MUST match its durable `selectedBranch` values.
+- A dynamic Forensics Invocation MAY include its ordered branch, Fanout item/index, and Loop index/round/state context stack.
+- Root Forensics Definition MUST include workflow metadata, complete input schema, root child ids/output expression, every frozen effective Agent profile, and its run override.
+- Root Forensics Invocation MUST contain the complete run input.
+- Agent Forensics Definition MUST include its complete effective profile, run override, node expressions, and output schema.
+- Agent Forensics Invocation MUST contain only the first actual request's prompt/origin, cwd, Acpus-managed env, model, permission, shared-session key when present, applied config, and deadline.
+- Task Forensics Definition MUST render an inline Task as `implementation: inline` without source, preview, or digest, or identify a module by specifier/export.
+- Task Forensics Invocation MUST contain its complete input, effective cwd, Acpus-managed env, and effective timeout values.
+- Signal Forensics Invocation MUST use its persisted rendered prompt and deadline.
+- Assert Forensics Invocation MUST use its durable assertion outcome; an assertion expression failure reports Invocation as unavailable, and a successful Assert Result MUST be `completed_without_output`.
+- Forensics input, output, prompt, config, and env values MUST remain complete and untruncated; config and Acpus-managed env values MUST NOT be redacted.
+- Missing historical invocation metadata MUST report `not_recorded` without fallback or reconstruction.
 - A run view MUST read Agent activity in one coherent bounded projection containing at most the latest Observation Turn per started attempt and no semantic Timeline entries.
 - Generic inspection MUST derive a running Agent's Tree pulse, Summary pulse, and Timeline current from the exact latest-turn Observation current.
 - Generic inspection MUST NOT infer Agent activity from scheduler progress, an older turn, or the absence of an exact latest-turn current.
@@ -555,7 +586,7 @@ Runtime owns generic inspection semantics and public shape.
 - Each update MUST expose the smallest coherent next-action delta that caused it; Agent pulse or current activity, time, liveness aging, usage, hooks, and silence MUST NOT emit alone.
 - Reasons MAY clarify transitions when state is insufficient; event-history gaps MUST NOT prevent a readable current view.
 - `subject-terminal` closes only when the fixed subject is terminal. `decision-boundary` closes for a terminal or paused run, actionable run Signal, or an actionable Signal required by the target. Evaluate boundaries after settlement; absorbed Race/Quorum failures and unrelated siblings do not close a target.
-- Timeline appends only newly visible durable closed entries to a bounded activity view; it preserves gaps, shares the observation stop policy, and never closes observation independently.
+- A one-shot Timeline MUST expose only the latest 12 durable closed entries. Timeline observation appends only newly visible durable closed entries to that bounded activity view; it preserves gaps, shares the observation stop policy, and never closes observation independently.
 
 - Read-only liveness MUST derive `active`, `inactive`, `stale`, `terminal`, or `unknown` from durable state plus local daemon/lease evidence without persisting that classification or performing recovery.
 - Daemon lifecycle MUST heartbeat every 1s, use a 5s observational stale threshold distinct from the 30s run-lease window, and idle-stop after 30s without active or locally continuable work.
@@ -572,7 +603,7 @@ Runtime owns generic inspection semantics and public shape.
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers fork reuse and rewind boundaries, selector resolution, candidate paging, semantic trees/folding, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable fork recovery, observation, pinning/replacement, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
+- `pnpm test:unit packages/runtime`: covers fork reuse and rewind boundaries, selector resolution, complete candidate selection, semantic trees/folding, Forensics definitions/invocations/results, visible-state diff/frontier selection, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers durable fork recovery, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

@@ -179,7 +179,5 @@ function candidates(): InspectionCandidates {
       status: "completed",
       breadcrumb: "batch[1] › review",
     }],
-    page: 1,
-    total: 2,
   };
 }

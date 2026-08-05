@@ -20,6 +20,7 @@ import type { HookRunner } from "../src/hooks/runner.js";
 import { agentSummary, agentTiming, completedAgentTurn, segmentedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
 import { rootFrameStarted } from "./support/scheduler.js";
+import { readInspection } from "../src/inspection/use-cases.js";
 
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -1575,6 +1576,13 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
             });
             expect(metadata).not.toHaveProperty("renderedPrompt");
+            expect(store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_invocation")?.metadata).toMatchObject({
+              prompt: turns[0]!.prompt,
+              promptOrigin: "authored",
+              env: {},
+              deadlineAt: new Date(now.getTime() + 5_000).toISOString(),
+            });
+            expect(turns[0]!.prompt).toContain("<ACPUS_OUTPUT>");
             const turnArtifact = store.listArtifacts(run.id).find(artifact => artifact.path.endsWith("/turn-001.json"));
             expect(turnArtifact).toBeDefined();
             expect(await readJsonFile(turnArtifact!.path)).toMatchObject({ prompt: turns[0]!.prompt });
@@ -1586,6 +1594,166 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             vi.useRealTimers();
             globalThis.__acpusPromptResolutionCount = undefined;
             globalThis.__acpusTimeoutResolutionCount = undefined;
+            store.close();
+          }
+        });
+      });
+
+    it("persists the complete managed Agent invocation before the provider returns and across reopen", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-invocation", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, forensicsInvocationAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const store = await openRuntimeStore(workspace);
+          const previousHostSecret = process.env.ACPUS_FORENSICS_HOST_SECRET;
+          process.env.ACPUS_FORENSICS_HOST_SECRET = "host-only";
+          let releaseProvider = () => {};
+          let execution: Promise<unknown> | undefined;
+          let runId = "";
+          try {
+            const run = await admitRunForTest(store, {
+              prepared,
+              input: { nodeEnv: "dynamic" },
+              cwd: workspace,
+            });
+            runId = run.id;
+            let providerEntered = () => {};
+            const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+            const blocked = new Promise<void>(resolve => { releaseProvider = resolve; });
+
+            execution = executeAgentNode(node, { input: { nodeEnv: "dynamic" } }, {
+              cwd: workspace,
+              runId,
+              nodeKey: "review.dynamic",
+              attemptId: "requested-attempt",
+              attemptNo: 1,
+              store,
+              agents: prepared.ir.agents,
+              executeTurn: async request => {
+                providerEntered();
+                expect(request.env.ACPUS_FORENSICS_HOST_SECRET).toBe("host-only");
+                expect(request.env.ACPUS_RUNTIME_RUN_ID).toBe(runId);
+                expect(request.env.ACPUS_RUNTIME_NODE_ID).toBe("review");
+                await blocked;
+                return completedAgentTurn("done");
+              },
+            });
+
+            await entered;
+            const invocation = store.getExecutionMetadata(runId)
+              .find(entry => entry.kind === "agent_invocation");
+            expect(invocation?.attemptId).toEqual(expect.any(String));
+            expect(invocation?.metadata).toEqual({
+              nodeId: "review",
+              nodeKey: "review.dynamic",
+              attemptNo: 1,
+              prompt: "Review dynamic",
+              promptOrigin: "authored",
+              cwd: workspace,
+              env: { PROFILE_ENV: "profile", NODE_ENV: "dynamic" },
+              permissionMode: "approve-reads",
+              model: "profile-model",
+              sessionKey: "shared-review",
+              config: { effort: "high" },
+            });
+            expect(JSON.stringify(invocation)).not.toContain("ACPUS_FORENSICS_HOST_SECRET");
+            expect(JSON.stringify(invocation)).not.toContain("ACPUS_RUNTIME_");
+            const inspected = await readInspection(workspace, {
+              kind: "target", runId, target: "review", detail: "forensics",
+            });
+            expect(inspected.isOk() ? inspected.value : undefined).toMatchObject({
+              kind: "target",
+              detail: "forensics",
+              invocation: {
+                status: "resolved",
+                kind: "agent",
+                attempt: 1,
+                prompt: "Review dynamic",
+                env: { PROFILE_ENV: "profile", NODE_ENV: "dynamic" },
+              },
+              result: { status: "pending" },
+            });
+
+            releaseProvider();
+            await expect(execution).resolves.toBe("done");
+          } finally {
+            releaseProvider();
+            await execution?.catch(() => undefined);
+            restoreEnv("ACPUS_FORENSICS_HOST_SECRET", previousHostSecret);
+            store.close();
+          }
+
+          const reopened = await openRuntimeStore(workspace);
+          try {
+            expect(reopened.getExecutionMetadata(runId).find(entry => entry.kind === "agent_invocation")?.metadata).toMatchObject({
+              prompt: "Review dynamic",
+              env: { PROFILE_ENV: "profile", NODE_ENV: "dynamic" },
+              config: { effort: "high" },
+            });
+          } finally {
+            reopened.close();
+          }
+        });
+      });
+
+    it("does not dispatch an Agent request when invocation persistence fails", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-invocation-failure", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, forensicsInvocationAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const store = await openRuntimeStore(workspace);
+          const provider = vi.fn(async () => completedAgentTurn("done"));
+          const persistenceFailure = new Error("invocation store unavailable");
+          try {
+            const run = await admitRunForTest(store, { prepared, input: { nodeEnv: "dynamic" }, cwd: workspace });
+            vi.spyOn(store, "writeExecutionMetadata").mockImplementation(input => {
+              if (input.kind === "agent_invocation") throw persistenceFailure;
+            });
+
+            await expect(executeAgentNode(node, { input: { nodeEnv: "dynamic" } }, {
+              cwd: workspace,
+              runId: run.id,
+              nodeKey: "review.dynamic",
+              attemptId: "requested-attempt",
+              attemptNo: 1,
+              store,
+              agents: prepared.ir.agents,
+              executeTurn: provider,
+            })).rejects.toBe(persistenceFailure);
+
+            expect(provider).not.toHaveBeenCalled();
+            expect(store.getExecutionMetadata(run.id)).toEqual([]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("does not record an Agent invocation when its deadline expires before dispatch", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-expired-before-dispatch", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, timeoutAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const store = await openRuntimeStore(workspace);
+          const provider = vi.fn(async () => completedAgentTurn(taggedAgentOutput("{\"ok\":true}")));
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+
+            await expect(executeAgentNode(node, {}, {
+              cwd: workspace,
+              runId: run.id,
+              nodeKey: "review.dynamic",
+              attemptId: "requested-attempt",
+              attemptNo: 1,
+              store,
+              agents: prepared.ir.agents,
+              deadlineAt: new Date(Date.now() - 1_000).toISOString(),
+              executeTurn: provider,
+            })).rejects.toThrow("Agent node 'review' timed out.");
+
+            expect(provider).not.toHaveBeenCalled();
+            expect(store.getExecutionMetadata(run.id).filter(entry => entry.kind === "agent_invocation")).toEqual([]);
+          } finally {
             store.close();
           }
         });
@@ -2301,6 +2469,31 @@ function dynamicAgentConfigWorkflow() {
              globalThis.__acpusPromptResolutionCount = (globalThis.__acpusPromptResolutionCount ?? 0) + 1;
              return value;
            }),
+    });
+    return {};
+  });
+}
+
+function forensicsInvocationAgentWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-agent-invocation",
+    inputSchema: z.object({ nodeEnv: z.string() }),
+    agents: {
+      reviewer: {
+        use: "codex",
+        model: "profile-model",
+        config: { effort: "high" },
+        permissionMode: "deny-all",
+        env: { PROFILE_ENV: "profile", ACPUS_RUNTIME_NODE_ID: "authored-but-overridden" },
+      },
+    },
+  }).build(({ input, agents, step }) => {
+    step("review").agent({
+      agent: agents.reviewer,
+      prompt: template`Review ${input.nodeEnv}`,
+      env: { NODE_ENV: input.nodeEnv },
+      permissionMode: "approve-reads",
+      sessionKey: "shared-review",
     });
     return {};
   });

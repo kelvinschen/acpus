@@ -37,12 +37,12 @@ import {
 import { resolveInspectionTarget } from "./target-resolution.js";
 import { deriveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { signalBlocksInspectionTarget } from "./signal-boundary.js";
+import { projectInspectionForensicsView } from "./forensics-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 import type {
   InspectAgentExecutionQuery,
   InspectNodeQuery,
   InspectTargetArtifactsQuery,
-  RunInspectionCandidatesDocument,
   RunInspectionAgentExecutionDocument,
   RunInspectionNodeDocument,
   RunInspectionTargetArtifactsDocument,
@@ -57,7 +57,6 @@ import type {
   InspectionView,
   InspectionViewQuery,
   ObserveInspectionQuery,
-  ReadInspectionQuery,
 } from "./types.js";
 
 const inspectionObserveReadDelayMs = 1_000;
@@ -67,11 +66,11 @@ const inspectionTimelineEventLimit = 48;
 /** Reads the one coherent public inspection document. */
 export function readInspection(
   cwd: string,
-  query: ReadInspectionQuery,
+  view: InspectionViewQuery,
 ): ResultAsync<InspectionRead, InspectionError> {
-  const invalid = validateReadInspectionQuery(query);
+  const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
   if (invalid) return invalidCoherentInspection(invalid);
-  return withCoherentInspectionRun(cwd, query.view.runId, state => readCoherentView(state, query.view, query.candidatePage));
+  return withCoherentInspectionRun(cwd, view.runId, state => readCoherentView(state, view));
 }
 
 /**
@@ -194,7 +193,7 @@ async function readCoherentCycle(
   afterEventSequence?: number,
 ): Promise<Result<CoherentCycle, InspectionError>> {
   return withCoherentInspectionRun(cwd, view.runId, async state => {
-    const read = await readCoherentView(state, view, undefined, pin);
+    const read = await readCoherentView(state, view, pin);
     if (read.isErr()) return err(read.error);
     if (read.value.kind === "candidates") {
       return err({
@@ -206,7 +205,7 @@ async function readCoherentCycle(
       });
     }
     const resolved = view.kind === "target"
-      ? resolveCoherentTarget(state, view.target, undefined, pin)
+      ? resolveCoherentTarget(state, view.target, pin)
       : undefined;
     if (resolved?.isErr()) return err(resolved.error);
     if (view.kind === "target" && resolved?.isOk() && resolved.value.kind === "candidates") {
@@ -244,7 +243,6 @@ async function readCoherentCycle(
 async function readCoherentView(
   state: CoherentInspectionRun,
   view: InspectionViewQuery,
-  candidatePage?: number,
   pin?: CoherentPin,
 ): Promise<Result<InspectionRead, InspectionError>> {
   if (view.kind === "run") {
@@ -255,7 +253,7 @@ async function readCoherentView(
       ...(observations ? { observations } : {}),
     }));
   }
-  const resolved = resolveCoherentTarget(state, view.target, candidatePage, pin);
+  const resolved = resolveCoherentTarget(state, view.target, pin);
   if (resolved.isErr()) return err(resolved.error);
   if (resolved.value.kind === "candidates") return ok(resolved.value.candidates);
   const details = resolved.value.details;
@@ -271,6 +269,13 @@ async function readCoherentView(
       ...projected,
       ...(acp === undefined ? {} : { acp }),
     }, requiredTargetSignal(state.run, details)));
+  }
+  if (view.detail === "forensics") {
+    return ok(projectInspectionForensicsView({
+      frozen: state.frozen,
+      run: state.run,
+      details,
+    }));
   }
   const observations = await readRecentTimelineObservations(
     state.store.observationLog,
@@ -306,7 +311,6 @@ function acpSilence(details: ResolvedTargetState): { silentForMs: number } | und
 function resolveCoherentTarget(
   state: CoherentInspectionRun,
   target: string,
-  candidatePage: number | undefined,
   pin?: CoherentPin,
 ): Result<CoherentTarget, InspectionError> {
   if (pin) {
@@ -336,7 +340,6 @@ function resolveCoherentTarget(
     run: state.run,
     staticNodes,
     target,
-    ...(candidatePage === undefined ? {} : { page: { number: candidatePage, limit: 12 } }),
   });
   if (resolution.kind === "not-found") {
     return err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
@@ -345,15 +348,7 @@ function resolveCoherentTarget(
     return err({ type: "read-failed", runId: state.run.id, message: `Occurrence reference '${target}' could not be resolved safely.` });
   }
   if (resolution.kind === "candidates") {
-    const candidates = coherentCandidates(resolution.document);
-    const pages = Math.ceil(candidates.total / 12);
-    if (candidatePage !== undefined && candidatePage > pages) {
-      return err({ type: "invalid-query", message: "Inspection page is beyond the final candidate page." });
-    }
-    return ok({ kind: "candidates", candidates });
-  }
-  if (candidatePage !== undefined) {
-    return err({ type: "invalid-query", message: "Inspection page applies only to an ambiguous target." });
+    return ok({ kind: "candidates", candidates: resolution.candidates });
   }
   const details = resolveInspectionDetails({
     ir: state.frozen.ir,
@@ -364,22 +359,6 @@ function resolveCoherentTarget(
   return details
     ? ok({ kind: "resolved", target: resolution.target, details })
     : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
-}
-
-function coherentCandidates(document: RunInspectionCandidatesDocument): InspectionCandidates {
-  return {
-    kind: "candidates",
-    run: { id: document.run.id, status: document.run.status },
-    target: document.target,
-    entries: document.candidates.entries.map(entry => ({
-      selector: entry.ref,
-      status: entry.status,
-      breadcrumb: entry.breadcrumb,
-    })),
-    page: document.candidates.page,
-    total: document.candidates.total,
-    ...(document.candidates.nextPage === undefined ? {} : { nextPage: document.candidates.nextPage }),
-  };
 }
 
 async function coherentTargetObservations(
@@ -497,7 +476,7 @@ function requiredTargetSignal(
   };
 }
 
-function withRequiredSignal<T extends Extract<InspectionView, { kind: "target" }>>(
+function withRequiredSignal<T extends Extract<InspectionView, { kind: "target"; detail: "summary" | "timeline" }>>(
   view: T,
   signal: RequiredTargetSignal | undefined,
 ): T {
@@ -589,7 +568,7 @@ function targetInspectionChange(
     state: view.state,
     ...(view.detail === "summary" && view.occurrences ? { occurrences: view.occurrences } : {}),
     ...(view.detail === "summary" && view.attention ? { attention: view.attention } : {}),
-    ...(view.visibility ? { visibility: view.visibility } : {}),
+    ...(view.detail !== "forensics" && view.visibility ? { visibility: view.visibility } : {}),
     ...(reason ? { reason } : {}),
   };
 }
@@ -810,19 +789,11 @@ function sameSubject(left: import("./types.js").InspectionSubject, right: import
   return left.label === right.label && left.selector === right.selector;
 }
 
-function validateReadInspectionQuery(query: ReadInspectionQuery): InspectionError | undefined {
-  const target = query.view.kind === "target" ? validateCoherentTarget(query.view.target) : undefined;
-  if (target) return target;
-  if (query.view.kind === "run" && query.candidatePage !== undefined) {
-    return { type: "invalid-query", message: "Inspection page requires a target." };
-  }
-  if (query.candidatePage !== undefined && (!Number.isSafeInteger(query.candidatePage) || query.candidatePage < 1)) {
-    return { type: "invalid-query", message: "Inspection page must be a positive safe integer." };
-  }
-  return undefined;
-}
-
 function validateObserveInspectionQuery(query: ObserveInspectionQuery): InspectionError | undefined {
+  const view = query.view as InspectionViewQuery;
+  if (view.kind === "target" && view.detail === "forensics") {
+    return { type: "invalid-query", message: "Forensics inspection is one-shot and cannot be observed." };
+  }
   return query.view.kind === "target" ? validateCoherentTarget(query.view.target) : undefined;
 }
 
@@ -845,9 +816,9 @@ export function inspectNode(cwd: string, query: InspectNodeQuery): ResultAsync<R
   const invalid = validateTargetQuery(query.target);
   if (invalid) return invalidInspection(invalid);
   return withInspectionRun(cwd, query.runId, state => {
-    const resolved = resolveTarget(state, query.target, undefined, true);
+    const resolved = resolveTarget(state, query.target, true);
     if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.document));
+    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
     const details = resolved.value.details;
     return ok({
       schemaVersion: 2,
@@ -870,7 +841,7 @@ export function inspectAgentExecution(
   return withInspectionRun(cwd, query.runId, async state => {
     const resolved = resolveTarget(state, query.target);
     if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.document));
+    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
     const attemptId = resolved.value.details.staticNode?.kind === "agent"
       ? targetAttemptId(resolved.value.details)
       : undefined;
@@ -899,7 +870,7 @@ export function inspectTargetArtifacts(
   return withInspectionRun(cwd, query.runId, state => {
     const resolved = resolveTarget(state, query.target);
     if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.document));
+    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
     const details = resolved.value.details;
     return ok({
       schemaVersion: 2,
@@ -922,7 +893,7 @@ type InspectionRun = {
 
 type ResolvedInspectionTarget =
   | { kind: "resolved"; target: string; details: ResolvedTargetState }
-  | { kind: "candidates"; document: RunInspectionCandidatesDocument };
+  | { kind: "candidates"; candidates: InspectionCandidates };
 
 function invalidInspection<T>(error: RunInspectionError): ResultAsync<T, RunInspectionError> {
   return new ResultAsync(Promise.resolve(err(error)));
@@ -979,14 +950,12 @@ function withInspectionRun<T>(
 function resolveTarget(
   state: InspectionRun,
   target: string,
-  page?: { number?: number; limit?: number },
   includeControls = false,
 ): Result<ResolvedInspectionTarget, RunInspectionError> {
   const resolution = resolveInspectionTarget({
     run: state.run,
     staticNodes: inspectionStaticNodes(state.frozen.ir),
     target,
-    ...(page === undefined ? {} : { page }),
   });
   if (resolution.kind === "not-found") return err(targetNotFound(state.run.id, target));
   if (resolution.kind === "ref-collision") {
@@ -998,7 +967,7 @@ function resolveTarget(
       message: `Occurrence reference '${target}' is not unique in this run; use one of: ${resolution.candidateKeys.join(", ")}.`,
     });
   }
-  if (resolution.kind === "candidates") return ok({ kind: "candidates", document: resolution.document });
+  if (resolution.kind === "candidates") return ok({ kind: "candidates", candidates: resolution.candidates });
   const base = resolveTargetState({
     ir: state.frozen.ir,
     run: state.run,
@@ -1023,7 +992,7 @@ function targetNotFound(runId: string, target: string): RunInspectionError {
 function targetAmbiguous(
   runId: string,
   target: string,
-  candidates: RunInspectionCandidatesDocument,
+  candidates: InspectionCandidates,
 ): RunInspectionError {
   return {
     type: "target-ambiguous",

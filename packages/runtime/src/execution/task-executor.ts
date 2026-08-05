@@ -68,6 +68,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
       attemptNo: visibleAttempt,
       input: input.value,
       cwd,
+      env: evaluatedEnv.value,
       ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
       ...(defaultCommandTimeout.value === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value.value }),
     },

@@ -30,25 +30,48 @@ describe("runs inspect observation grammar", () => {
     const result = await runCommand(["inspect", "run_1"]);
 
     expect(result.exitCode).toBe(0);
-    expect(runtime.readInspection).toHaveBeenCalledWith("/workspace", {
-      view: { kind: "run", runId: "run_1" },
-    });
+    expect(runtime.readInspection).toHaveBeenCalledWith("/workspace", { kind: "run", runId: "run_1" });
     expect(result.stdout).toContain("Tree:");
   });
 
-  it("reads a Timeline target and routes page only to candidatePage", async () => {
+  it("renders every ambiguous Timeline candidate and preserves detail", async () => {
     runtime.readInspection.mockResolvedValue(ok(candidates()));
 
-    const result = await runCommand([
-      "inspect", "run_1", "--target", "review", "--timeline", "--page", "2",
-    ]);
+    const result = await runCommand(["inspect", "run_1", "--target", "review", "--timeline"]);
 
     expect(result.exitCode).toBe(0);
     expect(runtime.readInspection).toHaveBeenCalledWith("/workspace", {
-      view: { kind: "target", runId: "run_1", target: "review", detail: "timeline" },
-      candidatePage: 2,
+      kind: "target", runId: "run_1", target: "review", detail: "timeline",
     });
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f --timeline");
+    expect(result.stdout).toContain("Target review  matches=13");
+    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
+    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(result.stdout).not.toContain("Next:");
+  });
+
+  it("defaults Forensics to root and preserves it through candidate selection", async () => {
+    await runCommand(["inspect", "run_1", "--forensics"]);
+    expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
+      kind: "target", runId: "run_1", target: "root", detail: "forensics",
+    });
+
+    await runCommand(["inspect", "run_1", "--target", "root", "--forensics"]);
+    expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
+      kind: "target", runId: "run_1", target: "root", detail: "forensics",
+    });
+
+    await runCommand(["inspect", "run_1", "--target", "@1a2b3c4d5e6f#2", "--forensics"]);
+    expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
+      kind: "target", runId: "run_1", target: "@1a2b3c4d5e6f#2", detail: "forensics",
+    });
+
+    runtime.readInspection.mockResolvedValueOnce(ok(candidates()));
+    const result = await runCommand(["inspect", "run_1", "--target", "review", "--forensics"]);
+    expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
+      kind: "target", runId: "run_1", target: "review", detail: "forensics",
+    });
+    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
+    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
   });
 
   it("maps terminal follow and decision waiting to distinct Runtime policies", async () => {
@@ -82,7 +105,13 @@ describe("runs inspect observation grammar", () => {
 
   it("keeps one-shot ambiguity successful while a Runtime query failure is operational", async () => {
     runtime.readInspection.mockResolvedValue(ok(candidates()));
-    expect((await runCommand(["inspect", "run_1", "--target", "review"])).exitCode).toBe(0);
+    const ambiguous = await runCommand(["inspect", "run_1", "--target", "review"]);
+    expect(ambiguous.exitCode).toBe(0);
+    expect(ambiguous.stdout).toContain("Target review  matches=13");
+    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001");
+    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(ambiguous.stdout).not.toContain("--timeline");
+    expect(ambiguous.stdout).not.toContain("--forensics");
 
     const error: InspectionError = { type: "run-not-found", runId: "missing", message: "Run missing was not found." };
     runtime.readInspection.mockResolvedValue(err(error));
@@ -122,10 +151,11 @@ function candidates(): InspectionCandidates {
     kind: "candidates",
     run: { id: "run_1", status: "running" },
     target: "review",
-    entries: [{ selector: "@1a2b3c4d5e6f", status: "running", breadcrumb: "batch[0] › review" }],
-    page: 2,
-    total: 13,
-    nextPage: 3,
+    entries: Array.from({ length: 13 }, (_, index) => ({
+      selector: `@${(index + 1).toString(16).padStart(12, "0")}`,
+      status: index === 12 ? "completed" : "running",
+      breadcrumb: `batch[${index}] › review`,
+    })),
   };
 }
 
