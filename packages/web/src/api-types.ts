@@ -31,11 +31,13 @@ export type WebControlCommand =
   | { type: "cancel"; target?: string }
   | { type: "signal"; target: string; payload: JsonValue };
 
+export type WorkflowContext = Pick<WorkflowIR, "name" | "description" | "agents">;
+
 export type WorkflowVisualizationResult =
   | {
     status: "ready";
     graph: WebGraph;
-    workflow: { name: string; description?: string; irVersion: number; nodeCount: number };
+    workflow: WorkflowContext & { irVersion: number; nodeCount: number };
     contract: {
       inputSchema?: WorkflowIR["inputSchema"];
       output: WorkflowIR["root"]["output"];
@@ -200,6 +202,7 @@ export type ServerConfig = {
 
 export type RunRuntimeSnapshot = {
   run: RunDetails;
+  workflow: WorkflowContext;
   graph: WebGraph;
   controls: RunRuntimeControls;
 };

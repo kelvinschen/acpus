@@ -116,6 +116,7 @@ function staticWorkflowVisualization(ir: WorkflowIR, sourceGraphDigest: string):
     workflow: {
       name: ir.name,
       ...(ir.description === undefined ? {} : { description: ir.description }),
+      agents: ir.agents,
       irVersion: ir.irVersion,
       nodeCount: Array.from(walkNodes(ir.root)).length,
     },

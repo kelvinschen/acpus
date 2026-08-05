@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { centerViewportAt, fitScale, fitView, fitViewportPadding, focusView, isLosslessZoom, keepBoxInViewport, layoutWorkflow, minZoomScale, projectBox, projectEdgePath, projectPoint, renderableEdges, toRenderModel, visualBoundsForLayout, wheelZoomScale } from "../src/graph-renderer.js";
+import { centerViewportAt, clampViewport, fitScale, fitView, fitViewportPadding, focusView, isLosslessZoom, keepBoxInViewport, layoutWorkflow, minZoomScale, projectBox, projectEdgePath, projectPoint, renderableEdges, toRenderModel, visualBoundsForLayout, wheelZoomScale } from "../src/graph-renderer.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 
 describe("workflow graph layout", () => {
@@ -182,12 +182,29 @@ describe("workflow graph layout", () => {
   });
 
   it("uses precise wheel zoom and preserves clamp boundaries", () => {
-    expect(wheelZoomScale(1, -100, 0.2, 2)).toBeGreaterThan(1);
-    expect(wheelZoomScale(1, -100, 0.2, 2)).toBeLessThan(1.1);
-    expect(wheelZoomScale(1, 100, 0.2, 2)).toBeLessThan(1);
-    expect(wheelZoomScale(1, 100, 0.2, 2)).toBeGreaterThan(0.9);
-    expect(wheelZoomScale(2, -1000, 0.2, 2)).toBe(2);
-    expect(wheelZoomScale(0.2, 1000, 0.2, 2)).toBe(0.2);
+    expect(wheelZoomScale(1, { deltaY: -100, ctrlKey: false }, 0.2, 2)).toBeGreaterThan(1);
+    expect(wheelZoomScale(1, { deltaY: -100, ctrlKey: false }, 0.2, 2)).toBeLessThan(1.1);
+    expect(wheelZoomScale(1, { deltaY: 100, ctrlKey: false }, 0.2, 2)).toBeLessThan(1);
+    expect(wheelZoomScale(1, { deltaY: 100, ctrlKey: false }, 0.2, 2)).toBeGreaterThan(0.9);
+    expect(wheelZoomScale(2, { deltaY: -1000, ctrlKey: false }, 0.2, 2)).toBe(2);
+    expect(wheelZoomScale(0.2, { deltaY: 1000, ctrlKey: false }, 0.2, 2)).toBe(0.2);
+  });
+
+  it("preserves the scale encoded by a trackpad pinch wheel delta", () => {
+    const gestureScale = 1.1;
+
+    expect(wheelZoomScale(
+      1,
+      { deltaY: -100 * Math.log(gestureScale), ctrlKey: true },
+      0.2,
+      2,
+    )).toBeCloseTo(gestureScale);
+    expect(wheelZoomScale(
+      1,
+      { deltaY: -100 * Math.log(1 / gestureScale), ctrlKey: true },
+      0.2,
+      2,
+    )).toBeCloseTo(1 / gestureScale);
   });
 
   it("keeps selected boxes visible without moving an already visible viewport", () => {
@@ -215,6 +232,41 @@ describe("workflow graph layout", () => {
       { width: 900, height: 600 },
       { x: 500, y: 300 },
     )).toEqual({ x: 12, y: 20, scale: 0 });
+  });
+
+  it("clamps a large graph to a finite viewport range", () => {
+    const layout = { width: 1000, height: 700 };
+    const rect = { width: 600, height: 400 };
+
+    expect(clampViewport({ x: 10_000, y: 10_000, scale: 1 }, layout, rect)).toEqual({
+      x: 104,
+      y: 104,
+      scale: 1,
+    });
+    expect(clampViewport({ x: -10_000, y: -10_000, scale: 1 }, layout, rect)).toEqual({
+      x: -504,
+      y: -404,
+      scale: 1,
+    });
+  });
+
+  it("locks a graph axis to center when its content is smaller than the viewport", () => {
+    expect(clampViewport(
+      { x: -10_000, y: 10_000, scale: 1 },
+      { width: 300, height: 100 },
+      { width: 600, height: 400 },
+    )).toEqual({ x: 150, y: 150, scale: 1 });
+  });
+
+  it("centers a real single-node layout instead of inheriting an artificial canvas minimum", () => {
+    const source = compositeGraph();
+    const node = source.nodes[0]!;
+    const layout = layoutWorkflow(toRenderModel({ ...source, nodes: [node], containers: [], edges: [] }));
+    const viewport = clampViewport({ x: 10_000, y: -10_000, scale: 1 }, layout, { width: 900, height: 600 });
+    const box = projectBox(layout.boxes.get(node.id)!, viewport);
+
+    expect(box.x + box.width / 2).toBe(450);
+    expect(box.y + box.height / 2).toBe(300);
   });
 
   it("expands visual fit bounds for labels, borders, shadows, and arrows", () => {

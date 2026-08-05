@@ -36,6 +36,7 @@ export default defineWorkflow({
       expect(result.value.workflow).toEqual({
         name: "web-integration",
         description: "Prepared through the Web compiler seam.",
+        agents: {},
         irVersion: 7,
         nodeCount: 1,
       });

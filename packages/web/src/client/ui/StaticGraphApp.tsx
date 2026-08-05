@@ -22,7 +22,7 @@ export function StaticGraphApp({ data }: { data: StaticGraphData }) {
         target={selectedTarget}
         onTargetChange={setSelectedTarget}
         heading={target => {
-          if (target.kind === "workflow") return { eyebrow: "Workflow", title: "Contract", subtitle: data.workflow.name };
+          if (target.kind === "workflow") return { eyebrow: "Workflow", title: data.workflow.name, subtitle: "Static definition" };
           const context = graphContextLabel(target.node.context);
           return { eyebrow: "Node", title: target.node.label, ...(context ? { subtitle: context } : {}) };
         }}
@@ -39,14 +39,14 @@ function StaticWorkflowInspector({ data }: { data: StaticGraphData }) {
   const workflow = data.workflow;
   return (
     <div className="inspector-stack">
-      <InspectorSection title="Workflow">
-        <KeyValue label="Name" value={workflow.name} />
+      <InspectorSection title="Overview">
         {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="IR version" value={String(workflow.irVersion)} />
         <KeyValue label="Node count" value={String(workflow.nodeCount)} />
         <KeyValue label="Output shape" value={formatOutputShape(data.contract.outputShape)} />
         <KeyValue label="Source digest" value={data.sourceGraphDigest} />
       </InspectorSection>
+      <JsonSection title="Agents" value={workflow.agents} expandNested />
       {data.contract.inputSchema ? (
         <JsonSection title="Input Contract" value={data.contract.inputSchema} />
       ) : (

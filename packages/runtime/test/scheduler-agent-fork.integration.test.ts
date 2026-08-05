@@ -12,6 +12,7 @@ import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./suppor
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
+import { getRunVisualizationSnapshot } from "../src/runs/use-cases.js";
 
 const executorMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
@@ -79,6 +80,20 @@ describe("scheduler agent overrides and forks", () => {
 
           expect(store.getRun(run.id)?.agentOverrides).toEqual({
             reviewer: { command: "custom-acp-server", permissionMode: "deny-all" },
+          });
+          await expect(getRunVisualizationSnapshot(workspace, run.id)).resolves.toMatchObject({
+            workflow: {
+              name: "scheduler-node-executor-agent-override",
+              description: "Review a change with configured agents.",
+              agents: {
+                reviewer: {
+                  kind: "agent_command",
+                  command: "custom-acp-server",
+                  permissionMode: "deny-all",
+                },
+                auditor: { kind: "agent_definition", use: "claude" },
+              },
+            },
           });
           expect(turns).toHaveLength(1);
           expect(turns[0]).toMatchObject({
@@ -566,6 +581,7 @@ describe("scheduler agent overrides and forks", () => {
 function overrideAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-override",
+    description: "Review a change with configured agents.",
     agents: {
       reviewer: {
         use: "codex",

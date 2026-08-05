@@ -145,6 +145,13 @@ describe("web API contract", () => {
             groupMembers: [{ groupKey: "group", memberKey: "member", memberKind: "branch", branchId: "main", status: "failed" }],
           },
         },
+        workflow: {
+          name: "test",
+          description: "Test the release workflow.",
+          agents: {
+            reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
+          },
+        },
         overlay: {
           workflow: { name: "test", runId: "run_1", status: "running", dynamicVersion: 7 },
           nodes: [{ nodeId: "step_1", target: "step_1", kind: "task", path: ["step_1"], instances: [], frames: [], attempts: [], signalWaits: [], status: "completed" }],
@@ -172,6 +179,13 @@ describe("web API contract", () => {
         createdAt: "2026-07-01T00:00:00.000Z",
         updatedAt: "2026-07-01T00:00:01.000Z",
         runtimeVersion: 7,
+      });
+      expect(body.workflow).toEqual({
+        name: "test",
+        description: "Test the release workflow.",
+        agents: {
+          reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
+        },
       });
       expect(body.graph).toBeDefined();
       expect(body.controls).toEqual({

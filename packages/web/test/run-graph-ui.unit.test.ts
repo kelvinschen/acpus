@@ -84,6 +84,38 @@ afterEach(async () => {
 });
 
 describe("RunGraph interaction semantics", () => {
+  it("gives a leaf node label its own row and combines kind icon with the kind badge", async () => {
+    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+
+    const leaf = [...container.querySelectorAll<HTMLElement>(".graph-box.node.task")]
+      .find(item => item.textContent?.includes("work"))!;
+    const meta = leaf.querySelector<HTMLElement>(".node-card-meta")!;
+    const badge = meta.querySelector<HTMLElement>(".type-badge")!;
+    const label = leaf.querySelector<HTMLElement>(".node-card-label")!;
+
+    expect(badge.textContent).toBe("TASK");
+    expect(badge.querySelector("svg")).not.toBeNull();
+    expect(meta.contains(label)).toBe(false);
+    expect(label.textContent).toBe("work");
+    expect(label.title).toBe("work");
+  });
+
+  it("labels the workflow-level inspector as Workflow", async () => {
+    const onSelectWorkflow = vi.fn();
+    await act(async () => root.render(React.createElement(RunGraph, {
+      graph,
+      onSelectNode: vi.fn(),
+      onSelectWorkflow,
+    })));
+
+    const workflow = container.querySelector<HTMLButtonElement>(".workflow-io")!;
+    expect(workflow.textContent).toBe("Workflow");
+    expect(workflow.title).toBe("Inspect workflow");
+    expect(workflow.getAttribute("aria-label")).toBe("Inspect workflow");
+    await act(async () => workflow.click());
+    expect(onSelectWorkflow).toHaveBeenCalledOnce();
+  });
+
   it("keeps structures non-interactive and returns an exact node occurrence target", async () => {
     const onSelectNode = vi.fn();
     await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode })));
@@ -189,7 +221,7 @@ describe("RunGraph interaction semantics", () => {
       expect(stamp.getAttribute("role")).toBe("img");
       expect(stamp.title).toBe("running");
       expect(stamp.querySelector("svg")?.getAttribute("width")).toBe("20");
-      expect(stamp.closest(".node-card-head, .composite-title")).toBeNull();
+      expect(stamp.closest(".node-card-meta, .composite-title")).toBeNull();
     }
     expect(container.querySelector(".graph-container .runtime-status-stamp")).toBeNull();
   });
@@ -219,7 +251,15 @@ describe("RunGraph interaction semantics", () => {
 
     expect(container.querySelector("nav[aria-label='Graph path']")?.textContent).toContain("item[0]");
     expect(container.querySelector("nav[aria-label='Graph path'] button")?.textContent).not.toBe("Workflow");
-    expect(container.querySelectorAll("[aria-label='Fit graph to view']")).toHaveLength(1);
+    const fitView = container.querySelector<HTMLButtonElement>("[aria-label='Fit graph to view']")!;
+    expect(fitView.querySelector("svg.lucide-shrink")).not.toBeNull();
+    expect(container.querySelector("[aria-label='Zoom graph out']")).toBeNull();
+    expect(container.querySelector("[aria-label='Zoom graph in']")).toBeNull();
+    const locateCurrent = container.querySelector<HTMLButtonElement>(".locate-active")!;
+    const focusSelected = container.querySelector<HTMLButtonElement>("[aria-label='Focus selected graph node']")!;
+    expect(locateCurrent.querySelector("svg.lucide-locate-fixed")).not.toBeNull();
+    expect(focusSelected.querySelector("svg.lucide-focus")).not.toBeNull();
+    expect(focusSelected.querySelector("svg.lucide-locate-fixed")).toBeNull();
     const minimap = container.querySelector<HTMLButtonElement>("[aria-label='Navigate graph overview']")!;
     expect(minimap).not.toBeNull();
 
@@ -256,11 +296,77 @@ describe("RunGraph interaction semantics", () => {
     }));
   });
 
+  it("preserves the scale encoded by a trackpad pinch wheel event", async () => {
+    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+
+    const shell = container.querySelector<HTMLElement>(".graph-flow-shell")!;
+    const work = [...container.querySelectorAll<HTMLElement>(".graph-box.node")]
+      .find(item => item.textContent?.includes("work"))!;
+    const initialWidth = Number.parseFloat(work.style.width);
+    const gestureScale = 1.1;
+    const pinch = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 450,
+      clientY: 300,
+      ctrlKey: true,
+      deltaY: -100 * Math.log(gestureScale),
+    });
+
+    await act(async () => shell.dispatchEvent(pinch));
+
+    expect(pinch.defaultPrevented).toBe(true);
+    expect(Number.parseFloat(work.style.width) / initialWidth).toBeCloseTo(gestureScale);
+  });
+
+  it("keeps graph content in range after an extreme pan gesture", async () => {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+
+    const shell = container.querySelector<HTMLElement>(".graph-flow-shell")!;
+    const pointer = (type: string, clientX: number) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 300 });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      return event;
+    };
+    const panPastBoundary = async () => act(async () => {
+      shell.dispatchEvent(pointer("pointerdown", 450));
+      shell.dispatchEvent(pointer("pointermove", 10_450));
+      shell.dispatchEvent(pointer("pointerup", 10_450));
+    });
+    const boxPositions = () => [...container.querySelectorAll<HTMLElement>(".graph-box.node")]
+      .map(box => `${box.style.left},${box.style.top}`);
+
+    await panPastBoundary();
+    const boundaryPositions = boxPositions();
+    await panPastBoundary();
+
+    expect(boxPositions()).toEqual(boundaryPositions);
+  });
+
   it("keeps structural container outlines out of the minimap", async () => {
     await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
 
     expect(container.querySelectorAll(".graph-minimap-item.container")).toHaveLength(0);
     expect(container.querySelectorAll(".graph-minimap-item.node").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the minimap viewport closed inside the graph overview", async () => {
+    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+
+    const svg = container.querySelector<SVGSVGElement>(".graph-minimap svg")!;
+    const viewport = svg.querySelector<SVGRectElement>(".graph-minimap-viewport")!;
+    const [, , graphWidth, graphHeight] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+    const x = Number(viewport.getAttribute("x"));
+    const y = Number(viewport.getAttribute("y"));
+    const width = Number(viewport.getAttribute("width"));
+    const height = Number(viewport.getAttribute("height"));
+
+    expect(x).toBeGreaterThanOrEqual(0);
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(x + width).toBeLessThanOrEqual(graphWidth!);
+    expect(y + height).toBeLessThanOrEqual(graphHeight!);
+    expect(svg.querySelector(".graph-minimap-viewport-shade")).not.toBeNull();
   });
 
   it("uses a filled, un-stroked marker for sequence arrows", async () => {

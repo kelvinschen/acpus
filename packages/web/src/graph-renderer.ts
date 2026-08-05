@@ -31,7 +31,10 @@ const fitPaddingFactor = 0.045;
 const minZoomFactor = 0.75;
 const maxScale = 2;
 const wheelZoomSensitivity = 0.0008;
+const pinchZoomSensitivity = 1 / 100;
 const selectedVisibilityMargin = 48;
+const maxViewportBoundaryPadding = 80;
+const viewportBoundaryPaddingFactor = 0.2;
 const graphItemZIndexBase = 1;
 const graphItemZIndexMax = 18;
 
@@ -476,8 +479,8 @@ export function layoutWorkflow(model: RenderModel): RenderLayout {
 
   placeChildren(model.rootIds, canvasPadding, canvasPadding, rootSize);
 
-  const width = Math.max(rootSize.width + canvasPadding * 2, 960);
-  const height = Math.max(rootSize.height + canvasPadding * 2, 540);
+  const width = rootSize.width + canvasPadding * 2;
+  const height = rootSize.height + canvasPadding * 2;
   return {
     boxes,
     edgePaths: buildEdgePaths(model.edges, boxes, model.parentOf, activeEdgeIds(model)),
@@ -602,6 +605,30 @@ export function fitView(
   };
 }
 
+export function clampViewport(
+  viewport: GraphViewport,
+  layout: Pick<RenderLayout, "width" | "height">,
+  rect: RectLike,
+): GraphViewport {
+  if (viewport.scale <= 0 || layout.width <= 0 || layout.height <= 0 || rect.width <= 0 || rect.height <= 0) return viewport;
+  const bounds = visualBoundsForLayout(layout);
+  const x = clampViewportAxis(viewport.x, viewport.scale, bounds.x, bounds.width, rect.width);
+  const y = clampViewportAxis(viewport.y, viewport.scale, bounds.y, bounds.height, rect.height);
+  return x === viewport.x && y === viewport.y ? viewport : { ...viewport, x, y };
+}
+
+function clampViewportAxis(offset: number, scale: number, start: number, size: number, viewportSize: number): number {
+  const contentSize = size * scale;
+  const projectedStart = start * scale;
+  const padding = Math.min(maxViewportBoundaryPadding, viewportSize * viewportBoundaryPaddingFactor);
+  if (contentSize + padding * 2 <= viewportSize) return (viewportSize - contentSize) / 2 - projectedStart;
+  return clamp(
+    offset,
+    viewportSize - padding - (start + size) * scale,
+    padding - projectedStart,
+  );
+}
+
 export function focusView(box: PlacedBox | undefined, rect: RectLike, padding = 56): GraphViewport | undefined {
   if (!box || box.width <= 0 || box.height <= 0 || rect.width <= 0 || rect.height <= 0) return undefined;
   const availableWidth = Math.max(1, rect.width - padding * 2);
@@ -643,8 +670,14 @@ export function minZoomScale(fitScaleValue: number): number {
   return fitScaleValue * minZoomFactor;
 }
 
-export function wheelZoomScale(currentScale: number, deltaY: number, minScale: number, maxScaleValue: number): number {
-  return clamp(currentScale * Math.exp(-deltaY * wheelZoomSensitivity), minScale, maxScaleValue);
+export function wheelZoomScale(
+  currentScale: number,
+  wheel: { deltaY: number; ctrlKey: boolean },
+  minScale: number,
+  maxScaleValue: number,
+): number {
+  const sensitivity = wheel.ctrlKey ? pinchZoomSensitivity : wheelZoomSensitivity;
+  return clamp(currentScale * Math.exp(-wheel.deltaY * sensitivity), minScale, maxScaleValue);
 }
 
 export function zoomViewport(viewport: GraphViewport, scale: number, px: number, py: number): GraphViewport {

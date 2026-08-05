@@ -1,32 +1,32 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Ban from "lucide-react/dist/esm/icons/ban.js";
 import Bot from "lucide-react/dist/esm/icons/bot.js";
-import Braces from "lucide-react/dist/esm/icons/braces.js";
 import CircleCheck from "lucide-react/dist/esm/icons/circle-check.js";
 import CircleDashed from "lucide-react/dist/esm/icons/circle-dashed.js";
 import CircleEllipsis from "lucide-react/dist/esm/icons/circle-ellipsis.js";
 import CirclePause from "lucide-react/dist/esm/icons/circle-pause.js";
 import CircleX from "lucide-react/dist/esm/icons/circle-x.js";
+import Focus from "lucide-react/dist/esm/icons/focus.js";
 import GitBranch from "lucide-react/dist/esm/icons/git-branch.js";
 import GitFork from "lucide-react/dist/esm/icons/git-fork.js";
 import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
 import LocateFixed from "lucide-react/dist/esm/icons/locate-fixed.js";
-import Minus from "lucide-react/dist/esm/icons/minus.js";
-import Plus from "lucide-react/dist/esm/icons/plus.js";
 import Radio from "lucide-react/dist/esm/icons/radio.js";
 import Repeat from "lucide-react/dist/esm/icons/repeat.js";
 import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
-import Scan from "lucide-react/dist/esm/icons/scan.js";
 import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.js";
+import Shrink from "lucide-react/dist/esm/icons/shrink.js";
 import SkipForward from "lucide-react/dist/esm/icons/skip-forward.js";
 import Split from "lucide-react/dist/esm/icons/split.js";
 import Terminal from "lucide-react/dist/esm/icons/terminal.js";
+import WorkflowIcon from "lucide-react/dist/esm/icons/workflow.js";
 import type { WebGraph } from "../api.js";
 import {
   activeFocus,
   activeEdgeIds,
   buildProjectedEdgePaths,
   canStartPan,
+  clampViewport,
   compositeBadge,
   compositeStrategy,
   depth,
@@ -198,11 +198,16 @@ export function RunGraph({
   const canvasWidth = losslessZoom ? Math.max(layout.width * viewport.scale + Math.abs(viewport.x) + graphCanvasPadding, 960) : layout.width;
   const canvasHeight = losslessZoom ? Math.max(layout.height * viewport.scale + Math.abs(viewport.y) + graphCanvasPadding, 540) : layout.height;
 
-  const setViewportWithOptionalAnimation = (next: GraphViewport, animate: boolean) => {
+  const setViewportWithOptionalAnimation = (next: GraphViewport, animate: boolean, targetLayout = layout) => {
     if (viewportAnimationTimerRef.current !== undefined) window.clearTimeout(viewportAnimationTimerRef.current);
-    setViewport(next);
-    viewportRef.current = next;
-    if (!animate) {
+    const shell = shellRef.current;
+    const constrained = shell ? clampViewport(next, targetLayout, shell.getBoundingClientRect()) : next;
+    const changed = constrained.x !== viewportRef.current.x
+      || constrained.y !== viewportRef.current.y
+      || constrained.scale !== viewportRef.current.scale;
+    if (changed) setViewport(constrained);
+    viewportRef.current = constrained;
+    if (!animate || !changed) {
       setViewportAnimating(false);
       return;
     }
@@ -242,7 +247,7 @@ export function RunGraph({
     const next = currentFocus.targetId
       ? focusView(runningLayout.boxes.get(currentFocus.targetId), shell.getBoundingClientRect())
       : fitView(runningLayout, shell.getBoundingClientRect());
-    if (next) setViewportWithOptionalAnimation(next, animate);
+    if (next) setViewportWithOptionalAnimation(next, animate, runningLayout);
   };
 
   const zoomLowerBound = () => {
@@ -266,12 +271,10 @@ export function RunGraph({
     const updateShell = () => {
       const rect = shell.getBoundingClientRect();
       setShellSize(current => current.width === rect.width && current.height === rect.height ? current : { width: rect.width, height: rect.height });
-      if (selectedRenderId) {
-        setViewportWithOptionalAnimation(
-          keepBoxInViewport(viewportRef.current, rect, layout.boxes.get(selectedRenderId), graphSelectedVisibilityMargin),
-          true,
-        );
-      }
+      const next = selectedRenderId
+        ? keepBoxInViewport(viewportRef.current, rect, layout.boxes.get(selectedRenderId), graphSelectedVisibilityMargin)
+        : viewportRef.current;
+      setViewportWithOptionalAnimation(next, Boolean(selectedRenderId));
     };
     const observer = new ResizeObserver(updateShell);
     observer.observe(shell);
@@ -303,7 +306,7 @@ export function RunGraph({
       event.preventDefault();
       const rect = shell.getBoundingClientRect();
       const current = viewportRef.current;
-      const scale = wheelZoomScale(current.scale, event.deltaY, zoomLowerBound(), graphMaxScale);
+      const scale = wheelZoomScale(current.scale, event, zoomLowerBound(), graphMaxScale);
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
       setViewportWithOptionalAnimation(zoomViewport(current, scale, px, py), false);
@@ -350,11 +353,11 @@ export function RunGraph({
         event.preventDefault();
         if (!drag.moved) event.currentTarget.setPointerCapture(event.pointerId);
         drag.moved = true;
-        setViewport({
+        setViewportWithOptionalAnimation({
           ...drag.viewport,
           x: drag.viewport.x + dx,
           y: drag.viewport.y + dy,
-        });
+        }, false);
       }}
       onPointerUp={event => {
         const drag = dragRef.current;
@@ -374,9 +377,9 @@ export function RunGraph({
       />
       <div className="graph-toolbar" onClick={event => event.stopPropagation()}>
         {onSelectWorkflow && (
-          <Button type="button" variant="tool" className="graph-tool-button workflow-io" title="Workflow data" aria-label="Open workflow input and output" onClick={onSelectWorkflow}>
-            <Braces size={14} />
-            <span>Workflow data</span>
+          <Button type="button" variant="tool" className="graph-tool-button workflow-io" title="Inspect workflow" aria-label="Inspect workflow" onClick={onSelectWorkflow}>
+            <WorkflowIcon size={14} />
+            <span>Workflow</span>
           </Button>
         )}
         <GraphNodeNavigator model={model} selectedRenderId={selectedRenderId} onNavigate={navigateGraph} />
@@ -395,37 +398,11 @@ export function RunGraph({
         )}
         {selectedRenderId && (
           <Button type="button" variant="tool" className="graph-tool-button" title="Focus selected node" aria-label="Focus selected graph node" onClick={() => focusRenderedItem(selectedRenderId)}>
-            <LocateFixed size={14} />
+            <Focus size={14} />
           </Button>
         )}
         <Button type="button" variant="tool" className="graph-tool-button" title="Fit view" aria-label="Fit graph to view" onClick={() => applyFit(true)}>
-          <Scan size={14} />
-        </Button>
-        <Button
-          type="button"
-          variant="tool"
-          className="graph-tool-button"
-          title="Zoom out"
-          aria-label="Zoom graph out"
-          onClick={() => {
-            const current = viewportRef.current;
-            setViewportWithOptionalAnimation({ ...current, scale: clamp(current.scale * 0.85, zoomLowerBound(), graphMaxScale) }, false);
-          }}
-        >
-          <Minus size={14} />
-        </Button>
-        <Button
-          type="button"
-          variant="tool"
-          className="graph-tool-button"
-          title="Zoom in"
-          aria-label="Zoom graph in"
-          onClick={() => {
-            const current = viewportRef.current;
-            setViewportWithOptionalAnimation({ ...current, scale: clamp(current.scale * 1.15, zoomLowerBound(), graphMaxScale) }, false);
-          }}
-        >
-          <Plus size={14} />
+          <Shrink size={14} />
         </Button>
       </div>
       <GraphMinimap
@@ -571,11 +548,13 @@ const GraphBox = memo(function GraphBox({
 function LeafContent({ item }: { item: RenderItem }) {
   return (
     <div className="node-card">
-      <div className="node-card-head">
-        <span className={`type-badge ${item.kind}`}>{item.kind.toUpperCase()}</span>
-        <KindIcon kind={item.kind} size={14} />
-        <strong>{item.label}</strong>
+      <div className="node-card-meta">
+        <span className={`type-badge ${item.kind}`}>
+          <KindIcon kind={item.kind} size={12} />
+          {item.kind.toUpperCase()}
+        </span>
       </div>
+      <strong className="node-card-label" title={item.label}>{item.label}</strong>
     </div>
   );
 }
@@ -653,8 +632,4 @@ function ContainerContent({ item }: { item: RenderItem }) {
       {item.children.length === 0 && <div className="empty-branch">{item.kind === "scope" ? "empty scope" : item.kind === "fanout-item" ? "not started" : "empty branch"}</div>}
     </>
   );
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }

@@ -50,6 +50,7 @@ import {
   type WorkflowFileEntry,
   type WorkflowVisualizationResult,
   type WorkflowVisualizationSource,
+  type WorkflowContext,
 } from "../api.js";
 import { InspectorSection, JsonBlock, JsonSection, KeyValue } from "./Inspector.js";
 import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
@@ -278,7 +279,7 @@ function RuntimePage({
         target={selectedTarget}
         onTargetChange={onSelectTarget}
         heading={target => {
-          if (target.kind === "workflow") return { eyebrow: "Workflow", title: "Input & output", subtitle: runId };
+          if (target.kind === "workflow") return { eyebrow: "Workflow", title: snapshot.data?.workflow.name ?? runDetails?.name ?? "Workflow", subtitle: runId };
           const context = graphContextLabel(target.node.context);
           return {
             eyebrow: "Node",
@@ -289,7 +290,7 @@ function RuntimePage({
         }}
       >
         {target => target.kind === "workflow" ? (
-          <RuntimeWorkflowInspector run={runDetails} />
+          <RuntimeWorkflowInspector run={runDetails} workflow={snapshot.data?.workflow} />
         ) : (
           <>
             <Inspector runId={runId} target={selectedNodeTarget} definition={selectedNode?.detail} inspection={inspection.data} loading={inspection.isLoading} />
@@ -655,14 +656,14 @@ function compactWorkflowPath(path: string): string {
   return path;
 }
 
-function RuntimeWorkflowInspector({ run }: { run: RunDetails | undefined }) {
-  if (!run) return <StateBlock tone="loading" title="Loading workflow I/O" />;
+function RuntimeWorkflowInspector({ run, workflow }: { run: RunDetails | undefined; workflow: WorkflowContext | undefined }) {
+  if (!run || !workflow) return <StateBlock tone="loading" title="Loading workflow" />;
   const hasOutput = run.output !== undefined;
   const terminal = isTerminalRunStatus(run.status);
   return (
     <div className="inspector-stack">
-      <InspectorSection title="Workflow">
-        <KeyValue label="Name" value={run.name} />
+      <InspectorSection title="Overview">
+        {workflow.description && <KeyValue label="Description" value={workflow.description} />}
         <KeyValue label="Run ID" value={run.id} />
         <KeyValue label="Status" value={runtimeStatusLabel(normalizeRuntimeStatus(run.status))} />
         {run.runtimeVersion !== undefined && <KeyValue label="Runtime version" value={String(run.runtimeVersion)} />}
@@ -670,6 +671,7 @@ function RuntimeWorkflowInspector({ run }: { run: RunDetails | undefined }) {
         <KeyValue label="Updated" value={formatDate(run.updatedAt)} />
         <KeyValue label="Duration" value={formatDuration(durationBetween(run.createdAt, run.updatedAt))} />
       </InspectorSection>
+      <JsonSection title="Agents" value={workflow.agents} expandNested />
       <JsonSection title="Input" value={run.input} />
       {hasOutput
         ? <JsonSection title="Output" value={run.output} />

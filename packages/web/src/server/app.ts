@@ -78,6 +78,7 @@ export function createWebApp(options: WebAppOptions): Hono {
     } satisfies RunDetails;
     const response = {
       run,
+      workflow: snapshot.workflow,
       graph: graphFromOverlay(snapshot.overlay, "runtime"),
       controls: {
         canCancelRun: snapshot.controls.canCancelRun,

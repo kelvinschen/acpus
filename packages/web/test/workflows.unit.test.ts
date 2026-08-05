@@ -95,6 +95,9 @@ describe("workflow visualization helpers", () => {
     expect(bundle.workflow).toEqual({
       name: hostileName,
       description: hostileDescription,
+      agents: {
+        reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
+      },
       irVersion: 7,
       nodeCount: 3,
     });
@@ -146,7 +149,9 @@ function workflowIr(): WorkflowIR {
     name: hostileName,
     description: hostileDescription,
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
-    agents: {},
+    agents: {
+      reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
+    },
     root: {
       output: {
         kind: "object",

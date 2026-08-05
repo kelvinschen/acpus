@@ -33,7 +33,8 @@ The Acpus WebUI design system defines the visual and interaction language for th
 - Raw source colors that do not meet the required contrast MUST NOT be used for body text, small icons, or critical borders; accessible lighter tones MUST be derived for those roles.
 - Product motion MUST communicate state changes, loading, panel docking, confirmation, or graph viewport movement. Motion MUST remain subtle, under 250ms for ordinary UI transitions, and MUST respect `prefers-reduced-motion`.
 - Interactive components MUST share a consistent vocabulary for default, hover, focus, active, disabled, and loading states.
-- The graph toolbar Navigate and current-work focus controls MUST use the same fixed-size icon-button geometry as fit and zoom controls, with their operation names disclosed on hover. Workflow-level Input/Output MAY retain its labeled entry point.
+- The graph toolbar Navigate, current-work focus, selected-node focus, and fit controls MUST use the same fixed-size icon-button geometry with their operation names disclosed on hover; current-work and selected-node focus MUST use distinct icons.
+- The workflow-level Inspector entry point MUST remain labeled `Workflow`.
 - The graph visual system MUST keep node kind, runtime status, and structural containment as separate visual layers.
 - Each leaf or composite graph node with a display status other than `not_started` MUST render exactly one semantic status stamp in a fixed top-right node slot. `not_started` nodes and branch, scope, and fanout item occurrence containers MUST NOT render a status stamp.
 - Status stamps MUST be visually independent of node-kind identity: completed uses green, failed and canceled use red, running uses orange, awaiting uses aqua, paused uses purple, and queued or skipped use neutral tones. Every stamp MUST retain a distinct status icon and hover label.
@@ -45,6 +46,7 @@ The Acpus WebUI design system defines the visual and interaction language for th
 - Reused Gruvbox hues MUST remain distinguishable by their visual layer: node-kind color appears only in keylines, icons, headers, and kind badges, while runtime semantics use status stamps, rings, glows, and edges.
 - Task, Agent, Signal, Assert, If, Switch, Parallel, Fanout, and Loop nodes MUST remain distinguishable through their combined leaf-border or composite-header highlight, icon shape, kind label, and badge treatment. Kind identity MUST NOT depend on hue alone.
 - Graph node kind MUST remain identifiable without color through its icon shape, kind label, and badge text.
+- A leaf node MUST render its identity on a dedicated single-line content row; its icon and kind label MUST share a compact metadata badge above that row.
 - Graph runtime status colors MUST follow the semantic status-stamp mapping above.
 - Runtime status stamps, rings, glows, and edges MUST remain a separate visual layer and MUST NOT overwrite node-kind surfaces, borders, icons, or badges.
 - Toasts MUST use status icons and full-surface tone. They MUST NOT use side-tab accent borders.

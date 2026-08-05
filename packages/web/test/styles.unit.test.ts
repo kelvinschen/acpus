@@ -110,6 +110,15 @@ describe("workflow graph visual contract", () => {
     expect(rule(".graph-selector.loop")).toContain("max-width: 82px;");
   });
 
+  it("reserves a dedicated full-width row for leaf node identity", () => {
+    expect(rule(".node-card")).toContain("padding: 8px 12px;");
+    expect(rule(".node-card-meta")).toContain("padding-inline-end: 28px;");
+    expect(rule(".node-card-label")).toContain("overflow: hidden;");
+    expect(rule(".node-card-label")).toContain("text-overflow: ellipsis;");
+    expect(rule(".node-card-label")).toContain("white-space: nowrap;");
+    expect(rule(".type-badge")).toContain("display: inline-flex;");
+  });
+
   it("uses a top-right semantic stamp for runtime status instead of node-kind color", () => {
     const stamp = rule(".runtime-status-stamp");
 
@@ -122,7 +131,7 @@ describe("workflow graph visual contract", () => {
     expect(stamp).toContain("color: var(--runtime-status-color);");
     expect(stamp).not.toContain("border:");
     expect(stamp).not.toContain("border-radius:");
-    expect(rule(".node-card")).toContain("padding: 10px 40px 10px 12px;");
+    expect(rule(".node-card-meta")).toContain("padding-inline-end: 28px;");
     expect(rule(".graph-box-header")).toContain("padding: 10px 42px 10px 12px;");
     expect(rule(".graph-box.runtime-status-completed")).toContain("--runtime-status-color: var(--ui-success-text);");
     expect(rule(".graph-box.runtime-status-failed")).toContain("--runtime-status-color: var(--ui-danger-text);");
@@ -139,6 +148,22 @@ describe("workflow graph visual contract", () => {
     expect(rule(".graph-toolbar")).toContain("gap: 2px;");
     expect(rule(".graph-tool-button")).toContain("width: 28px;");
     expect(rule(".graph-tool-button")).toContain("height: 28px;");
+  });
+
+  it("uses a restrained, readable minimap viewport treatment", () => {
+    expect(rule(".graph-minimap-viewport-shade")).toContain("fill: rgb(var(--theme-surface-rgb) / 0.42);");
+    expect(rule(".graph-minimap-viewport")).toContain("fill: transparent;");
+    expect(rule(".graph-minimap-viewport")).toContain("stroke-width: 2px;");
+    expect(rule(".graph-minimap-viewport")).toContain("vector-effect: non-scaling-stroke;");
+  });
+
+  it("lets the Run selector grow left while constraining long values inside its trigger", () => {
+    expect(rule(".run-select-wrap")).toContain("min-width: 0;");
+    expect(rule(".run-select-wrap > span")).toContain("flex: 0 0 auto;");
+    expect(rule(".run-select")).toContain("width: min(480px, 44vw);");
+    expect(rule(".select-trigger > span")).toContain("min-width: 0;");
+    expect(rule(".select-trigger > span")).toContain("overflow: hidden;");
+    expect(rule(".select-trigger > span")).toContain("text-overflow: ellipsis;");
   });
 
   it("uses opaque filled arrowheads that match the graph's quiet sequence strokes", () => {

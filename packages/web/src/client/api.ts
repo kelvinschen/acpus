@@ -17,6 +17,7 @@ import type {
   WorkflowFiles,
   WorkflowVisualizationResult,
   WorkflowVisualizationSource,
+  WorkflowContext,
 } from "../api-types.js";
 import type {
   NodeDetail,
@@ -39,6 +40,7 @@ export type {
   WorkflowFiles,
   WorkflowVisualizationResult,
   WorkflowVisualizationSource,
+  WorkflowContext,
 };
 export type {
   NodeDetail,
@@ -250,11 +252,12 @@ function decodeField<T>(
 }
 
 function decodeRuntimeSnapshot(body: JsonRecord): RunRuntimeSnapshot | InvalidPayload {
-  return hasOnlyKeys(body, ["ok", "run", "graph", "controls"])
+  return hasOnlyKeys(body, ["ok", "run", "workflow", "graph", "controls"])
     && isRunDetails(body.run)
+    && isWorkflowContext(body.workflow)
     && isWebGraph(body.graph)
     && isRunRuntimeControls(body.controls)
-    ? { run: body.run, graph: body.graph, controls: body.controls }
+    ? { run: body.run, workflow: body.workflow, graph: body.graph, controls: body.controls }
     : invalidPayload;
 }
 
@@ -541,12 +544,50 @@ function isWorkflowVisualizationResult(value: unknown): value is WorkflowVisuali
   return value.status === "ready"
     && isWebGraph(value.graph)
     && isRecord(value.workflow)
+    && hasOnlyKeys(value.workflow, ["name", "description", "agents", "irVersion", "nodeCount"])
     && typeof value.workflow.name === "string"
     && isOptionalString(value.workflow.description)
+    && isAgentDefinitions(value.workflow.agents)
     && isFiniteNumber(value.workflow.irVersion)
     && isFiniteNumber(value.workflow.nodeCount)
     && isWorkflowContract(value.contract)
     && typeof value.sourceGraphDigest === "string";
+}
+
+function isWorkflowContext(value: unknown): value is WorkflowContext {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["name", "description", "agents"])
+    && typeof value.name === "string"
+    && isOptionalString(value.description)
+    && isAgentDefinitions(value.agents);
+}
+
+function isAgentDefinitions(value: unknown): value is WorkflowContext["agents"] {
+  return isRecord(value) && Object.values(value).every(isAgentDefinition);
+}
+
+function isAgentDefinition(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const common = isOptionalString(value.model)
+    && (value.config === undefined || isStringRecord(value.config))
+    && (value.permissionMode === undefined
+      || value.permissionMode === "approve-reads"
+      || value.permissionMode === "approve-all"
+      || value.permissionMode === "deny-all")
+    && isOptionalString(value.cwd)
+    && (value.env === undefined || isStringRecord(value.env));
+  if (!common) return false;
+  if (value.kind === "agent_definition") {
+    return hasOnlyKeys(value, ["kind", "use", "model", "config", "permissionMode", "cwd", "env"])
+      && typeof value.use === "string";
+  }
+  return value.kind === "agent_command"
+    && hasOnlyKeys(value, ["kind", "command", "model", "config", "permissionMode", "cwd", "env"])
+    && typeof value.command === "string";
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every(item => typeof item === "string");
 }
 
 function isWorkflowPreparationPhase(value: unknown): boolean {

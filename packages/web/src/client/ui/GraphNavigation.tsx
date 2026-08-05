@@ -141,7 +141,10 @@ export function GraphMinimap({
   onNavigate(intent: GraphNavigationIntent): void;
 }) {
   const size = minimapSize(layout);
-  const visible = visibleGraphRect(viewport, shellSize);
+  const visible = visibleGraphRect(viewport, shellSize, layout, size);
+  const viewportShade = visible
+    ? `M 0 0 H ${layout.width} V ${layout.height} H 0 Z M ${visible.x} ${visible.y} H ${visible.x + visible.width} V ${visible.y + visible.height} H ${visible.x} Z`
+    : `M 0 0 H ${layout.width} V ${layout.height} H 0 Z`;
   const items = useMemo(
     () => [...layout.boxes.values()]
       .map(box => ({ box, item: model.items.get(box.id) }))
@@ -183,6 +186,7 @@ export function GraphMinimap({
             rx={item.type === "node" ? 4 : 0}
           />
         ))}
+        <path className="graph-minimap-viewport-shade" d={viewportShade} fillRule="evenodd" />
         {visible && <rect className="graph-minimap-viewport" x={visible.x} y={visible.y} width={visible.width} height={visible.height} />}
       </svg>
     </Button>
@@ -224,12 +228,24 @@ function minimapSize(layout: Pick<RenderLayout, "width" | "height">): { width: n
   };
 }
 
-function visibleGraphRect(viewport: GraphViewport, shellSize: ShellSize): { x: number; y: number; width: number; height: number } | undefined {
+function visibleGraphRect(
+  viewport: GraphViewport,
+  shellSize: ShellSize,
+  layout: Pick<RenderLayout, "width" | "height">,
+  minimap: { width: number; height: number },
+): { x: number; y: number; width: number; height: number } | undefined {
   if (viewport.scale <= 0 || shellSize.width <= 0 || shellSize.height <= 0) return undefined;
+  const left = Math.max(0, -viewport.x / viewport.scale);
+  const top = Math.max(0, -viewport.y / viewport.scale);
+  const right = Math.min(layout.width, (-viewport.x + shellSize.width) / viewport.scale);
+  const bottom = Math.min(layout.height, (-viewport.y + shellSize.height) / viewport.scale);
+  if (right <= left || bottom <= top) return undefined;
+  const insetX = Math.min(layout.width / minimap.width, (right - left) / 4);
+  const insetY = Math.min(layout.height / minimap.height, (bottom - top) / 4);
   return {
-    x: -viewport.x / viewport.scale,
-    y: -viewport.y / viewport.scale,
-    width: shellSize.width / viewport.scale,
-    height: shellSize.height / viewport.scale,
+    x: left + insetX,
+    y: top + insetY,
+    width: right - left - 2 * insetX,
+    height: bottom - top - 2 * insetY,
   };
 }

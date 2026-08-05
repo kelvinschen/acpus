@@ -79,7 +79,7 @@
 - The graph API MUST NOT persist, store, or return layout coordinates. The browser owns deterministic layout, viewport, zoom, pan, and local selector state.
 - The browser graph MUST expose local navigation through a searchable directory of rendered node occurrences, a selected-node containment breadcrumb, and a clickable minimap. These controls MUST update only local graph viewport or selection state.
 - A graph node directory entry for a repeated occurrence MUST include its exact fanout-item or loop-iteration context. Structural containers MAY appear in the containment breadcrumb as focus targets, but MUST NOT open node inspection.
-- The minimap MUST render actual node blocks and its viewport indicator, but MUST NOT render structural container outlines.
+- The minimap MUST render actual node blocks and a closed viewport indicator clipped inside the graph overview, MUST visually distinguish the visible region from the surrounding graph, and MUST NOT render structural container outlines.
 - The browser graph MUST use an Acpus-specific deterministic workflow renderer. It MUST NOT delegate canonical workflow layout to a general-purpose graph layout engine.
 - The browser graph MUST use the graph API containers and semantic edges directly and MUST NOT reconstruct branch containers from raw static paths.
 - The browser graph MUST render ordered sequential siblings left-to-right and sibling branch containers plus materialized fanout item occurrence lanes top-to-bottom inside their owning composite without wrapping.
@@ -105,7 +105,9 @@
 - The running-node focus action MUST be disabled when the graph has no running node occurrence.
 - Runtime polling after the first layout MUST preserve the current viewport and MUST NOT automatically reapply running-node focus.
 - The browser graph MUST support local pan and zoom without mutating runtime state or persisted graph data.
-- The browser graph wheel or trackpad zoom MUST use small continuous increments.
+- The browser graph MUST constrain every local viewport change to finite visual graph bounds with a restrained viewport-relative margin; an axis whose complete graph content fits inside the viewport MUST remain centered.
+- The browser graph wheel zoom MUST use small continuous increments.
+- The browser graph MUST apply the scale encoded by a trackpad pinch gesture reported as a control-modified wheel event.
 - The browser graph MUST consume wheel and trackpad pinch gestures over the graph shell, including when already at zoom bounds, so those gestures do not trigger browser page zoom.
 - Zoom-out controls MUST clamp scale to at least `0.75 * fitScale`, where `fitScale` is the scale that fits the complete workflow into the viewport.
 - The browser graph MUST avoid parent-level CSS `scale(...)` for zoom-in rendering at scale `>= 1`; zoom-in MUST render nodes and edges from projected screen-space coordinates so text is not blurred by ancestor transforms.
@@ -137,10 +139,13 @@
 - Opening or closing graph node inspection MUST cause the graph viewport to reflow within the remaining available space; closing MUST animate the inspector track and graph width together so the graph does not jump after the card disappears.
 - Inspector docking and undocking SHOULD animate as a short product UI transition and MUST respect reduced-motion preferences.
 - When a graph node is selected and the inspector opens or the graph viewport resizes, the selected node MUST remain visible in the graph viewport with reasonable margin.
-- Graph pages MUST expose a workflow-level Input/Output inspection target from the graph toolbar. Workflow inspection MUST be distinct from node inspection and MUST NOT be inferred from the root composite node.
+- Graph pages MUST expose a workflow-level inspection target labeled `Workflow` from the graph toolbar. Workflow inspection MUST be distinct from node inspection and MUST NOT be inferred from the root composite node.
+- The Workflow Inspector MUST identify the workflow by name.
+- Runtime workflow inspection MUST organize its context as Overview, Agents, Input, and Output.
+- Runtime workflow inspection MUST show the frozen description and effective Agent definitions from the same coherent runtime snapshot as the graph and run details.
 - Runtime workflow inspection MUST show actual `RunDetails.input` and final `RunDetails.output` when recorded. It MUST NOT derive partial workflow output from top-level node outputs while a run is active.
-- Static workflow inspection MUST show declared input schema, raw `output: ExprIR`, and `outputShape`, label the authored value `Output Expression`, and omit invented runtime values or output-mapping terminology.
-- Workflow-level Input/Output inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
+- Static workflow inspection MUST show the authored description and Agent definitions, declared input schema, raw `output: ExprIR`, and `outputShape`, label the authored value `Output Expression`, and omit invented runtime values or output-mapping terminology.
+- Workflow inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - A rendered materialized runtime node occurrence MUST expose its canonical Run-scoped `@ref` as the Inspector target. An authored static node that has no materialized occurrence MAY expose its authored id.
 - Fanout and loop context may remain graph-local state, but Inspector routes and queries MUST NOT accept or reconstruct a public `context` parameter. The selected canonical target alone identifies the deep occurrence.
 - The Web server MUST delegate target resolution, node data, Agent execution data, and control applicability to the [Runtime inspection contract](runtime-spec.md#inspection); it MUST NOT independently resolve dynamic contexts or infer a control from graph state.

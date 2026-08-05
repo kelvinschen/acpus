@@ -1,4 +1,5 @@
 import type { JsonValue } from "@acpus/expression/ir";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import {
@@ -40,8 +41,11 @@ export type RunVisualizationControls = {
   retryTargets: RunVisualizationControlTarget[];
 };
 
+export type RunVisualizationWorkflow = Pick<WorkflowIR, "name" | "description" | "agents">;
+
 export type RunVisualizationSnapshot = {
   run: RunDetails;
+  workflow: RunVisualizationWorkflow;
   overlay: WorkflowVisualizationOverlay;
   controls: RunVisualizationControls;
 };
@@ -190,6 +194,11 @@ export async function getRunVisualizationSnapshot(cwd: string, runId: string): P
       }).snapshot;
       return {
         run,
+        workflow: {
+          name: frozen.ir.name,
+          ...(frozen.ir.description === undefined ? {} : { description: frozen.ir.description }),
+          agents: frozen.ir.agents,
+        },
         overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
         controls: {
           canCancelRun: canCancelRun(scheduler),

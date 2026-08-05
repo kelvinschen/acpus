@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
 @theme {
-  --theme-surface: #282828;
+    --theme-surface: #282828;
+    --theme-surface-rgb: 40 40 40;
     --theme-surface-raised: #32302f;
     --theme-surface-muted: #3c3836;
     --theme-ink: #ebdbb2;
@@ -448,7 +449,8 @@ body {
 }
 
 .run-select-wrap {
-  min-width: 190px;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -457,13 +459,14 @@ body {
   font-weight: 700;
 }
 
-.run-select-wrap span {
+.run-select-wrap > span {
   flex: 0 0 auto;
 }
 
 .run-select {
   min-width: 0;
-  width: min(280px, 34vw);
+  width: min(480px, 44vw);
+  max-width: 100%;
   height: 32px;
   border-radius: 0;
   border: 1px solid var(--color-sera-outlineVariant);
@@ -2660,11 +2663,18 @@ body {
   stroke-width: 5;
 }
 
+.graph-minimap-viewport-shade {
+  fill: rgb(var(--theme-surface-rgb) / 0.42);
+  pointer-events: none;
+}
+
 .graph-minimap-viewport {
-  fill: rgb(var(--theme-ink-rgb) / 0.04);
-  stroke: rgb(var(--theme-ink-rgb) / 0.82);
-  stroke-width: 6;
+  fill: transparent;
+  stroke: var(--theme-ink);
+  stroke-width: 2px;
   vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+  pointer-events: none;
 }
 
 .graph-tool-button {
@@ -2868,23 +2878,23 @@ body {
 .node-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 40px 10px 12px;
+  gap: 5px;
+  padding: 8px 12px;
   height: 100%;
   justify-content: center;
   min-width: 0;
   box-sizing: border-box;
 }
 
-.node-card-head {
+.node-card-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--color-sera-text);
   min-width: 0;
+  padding-inline-end: 28px;
 }
 
-.node-card-head strong {
+.node-card-label {
+  display: block;
   font-size: 0.78rem;
   font-weight: 650;
   color: var(--color-sera-text);
@@ -2894,13 +2904,16 @@ body {
   white-space: nowrap;
 }
 
-.node-card-head svg,
+.node-card-meta svg,
 .composite-title svg {
   color: var(--graph-kind, var(--color-sera-muted));
   flex-shrink: 0;
 }
 
 .type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.55rem;
   font-weight: 650;
   letter-spacing: 0.06em;

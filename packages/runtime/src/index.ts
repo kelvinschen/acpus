@@ -52,6 +52,7 @@ export {
   type RunVisualizationControlTarget,
   type RunVisualizationControls,
   type RunVisualizationSnapshot,
+  type RunVisualizationWorkflow,
 } from "./runs/use-cases.js";
 export type {
   AgentTurnArtifact,

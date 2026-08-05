@@ -535,7 +535,7 @@ type DaemonSteerControlResult = {
 - That warning MUST use `Runtime storage version <observed> is older than the supported version <expected>. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`
 - `getRuntimeHealth` MUST retain a `store` failure for storage version zero, a newer storage version, a mismatched application id, and every other database-open failure.
 - `listRuns` MUST order by `updatedAt DESC, createdAt DESC`; `getRun` omits `dynamic` only when every dynamic collection is empty and fails visibly on decode/invariant errors.
-- `getRunVisualizationSnapshot` MUST return run details, visualization overlay, useful run-cancel applicability, and every exact planner-approved retry target, including targets accepted during a non-terminal failure-propagation window.
+- `getRunVisualizationSnapshot` MUST return run details, the frozen workflow name, description, and effective Agent definitions, visualization overlay, useful run-cancel applicability, and every exact planner-approved retry target, including targets accepted during a non-terminal failure-propagation window.
 - Visualization control targets MUST contain only exact target, node/frame kind, and optional authored node id; they MUST NOT contain display labels, scheduler Result values, or group-member identities.
 #### Inspection
 

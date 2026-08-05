@@ -238,6 +238,7 @@ function successCases() {
   const runs = [{ id: "run_1", name: "release", status: "running" }];
   const snapshot = {
     run: runDetails(),
+    workflow: workflowContext(),
     graph: runtimeGraph(),
     controls: {
       canCancelRun: false,
@@ -299,6 +300,30 @@ function malformedEndpointCases() {
           createdAt: run.createdAt,
           updatedAt: run.updatedAt,
           ...(run.runtimeVersion === undefined ? {} : { runtimeVersion: run.runtimeVersion }),
+        },
+        graph,
+        controls: { canCancelRun: false, retryTargets: [] },
+      },
+    },
+    {
+      name: "runtime snapshot without workflow context",
+      call: () => getRunRuntimeSnapshot("run_1"),
+      body: {
+        ok: true,
+        run,
+        graph,
+        controls: { canCancelRun: false, retryTargets: [] },
+      },
+    },
+    {
+      name: "runtime snapshot with a malformed effective agent definition",
+      call: () => getRunRuntimeSnapshot("run_1"),
+      body: {
+        ok: true,
+        run,
+        workflow: {
+          ...workflowContext(),
+          agents: { reviewer: { kind: "agent_definition", use: 42 } },
         },
         graph,
         controls: { canCancelRun: false, retryTargets: [] },
@@ -384,6 +409,19 @@ function malformedVisualizationCases() {
   const graph = runtimeGraph();
   const ready = readyVisualization();
   return [
+    {
+      name: "a malformed authored agent definition",
+      body: {
+        ok: true,
+        result: {
+          ...ready,
+          workflow: {
+            ...ready.workflow,
+            agents: { reviewer: { kind: "agent_command", command: 42 } },
+          },
+        },
+      },
+    },
     {
       name: "a graph node without an inspection target",
       body: {
@@ -655,6 +693,7 @@ function readyVisualization(): ReadyVisualization {
     workflow: {
       name: ir.name,
       ...(ir.description === undefined ? {} : { description: ir.description }),
+      agents: ir.agents,
       irVersion: ir.irVersion,
       nodeCount: graph.nodes.length,
     },
@@ -678,7 +717,15 @@ function producerWorkflow(): WorkflowIR {
       required: ["release"],
       additionalProperties: false,
     },
-    agents: {},
+    agents: {
+      reviewer: {
+        kind: "agent_definition",
+        use: "codex",
+        model: "gpt-5",
+        permissionMode: "approve-reads",
+        config: { effort: "high" },
+      },
+    },
     root: {
       output: {
         kind: "object",
@@ -718,6 +765,14 @@ function runDetails(): RunDetails {
     createdAt: "2026-07-27T00:00:00.000Z",
     updatedAt: "2026-07-27T00:00:01.000Z",
     runtimeVersion: 3,
+  };
+}
+
+function workflowContext() {
+  return {
+    name: "release",
+    description: "Release workflow",
+    agents: producerWorkflow().agents,
   };
 }
 
