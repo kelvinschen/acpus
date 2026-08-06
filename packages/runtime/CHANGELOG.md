@@ -1,5 +1,16 @@
 # @acpus/runtime
 
+## 0.15.0
+
+### Minor Changes
+
+- 44d4dad: Add one-shot run target Forensics inspection with frozen definitions, persisted effective invocations, and scheduler-accepted results. Inspection ambiguity now returns the complete occurrence list, and the paging option is removed.
+
+### Patch Changes
+
+- 039a328: Clarify Agent inspection activity hierarchy, omit implied inspection metadata, and visibly mark omitted Agent activity text.
+- bb26336: optimize the web ui for better ux
+
 ## 0.14.2
 
 ### Patch Changes

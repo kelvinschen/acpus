@@ -1,5 +1,15 @@
 # @acpus/web
 
+## 0.2.6
+
+### Patch Changes
+
+- bb26336: optimize the web ui for better ux
+- Updated dependencies [039a328]
+- Updated dependencies [bb26336]
+- Updated dependencies [44d4dad]
+  - @acpus/runtime@0.15.0
+
 ## 0.2.5
 
 ### Patch Changes
