@@ -35,6 +35,7 @@ const DiscoveryLane = z.object({
 
 /** The shared frame and discovery partition for one wide investigation. */
 export const LeadPlanOutput = z.object({
+  /** Markdown publication strategy carried opaquely between Agents. */
   researchBrief: z.string(),
   coverageUnit: z.string(),
   rubric: z.array(RubricField),

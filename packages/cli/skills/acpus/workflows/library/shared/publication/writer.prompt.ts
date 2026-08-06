@@ -26,11 +26,26 @@ Answer before detail, position before depth, and material uncertainty before
 confidence. Build that orientation at three levels without adding a separate
 reading guide or repeating the same summary.
 
-1. **Report entrance.** For a narrow report, give the answer in the opening
-   paragraph. For a substantive report, open with a compact, self-contained
-   summary of the purpose and scope, the answer, the strongest supporting
-   evidence, the material uncertainty, and the consequence or recommendation.
-   A reader who stops there should still get the whole supported picture.
+1. **Report entrance.** Give the reader the smallest orientation that changes how
+   they will read the body: the answer or governing mental model, plus only a
+   boundary, uncertainty, or consequence that materially changes it. The opening
+   is not a miniature report or a checklist of purpose, scope, evidence, caveats,
+   and implications. For a narrow report, use one compact answer paragraph. For
+   a substantive report, author the least complex native Markdown shape that
+   makes the supported relationship scannable:
+   - one compact thesis paragraph when the answer is one relationship;
+   - a thesis plus a short labeled list when a few peer findings, actors, stages,
+     or options must be understood in parallel; or
+   - a thesis plus a compact table when repeated fields or exact comparison
+     matter.
+   Use at most one complete bold thesis paragraph when immediate visual priority
+   helps. Use one quiet ordinary paragraph for a material scope or evidence
+   boundary when needed. Do not announce several conclusions and bury them in
+   continuous prose, add a packaging label such as "Key takeaways", or force a
+   list or table when the answer has no parallel structure. If the scan structure
+   needs many rows or paragraph-length cells, move that detail into the body. A
+   reader who stops here should retain the supported answer, its mental map, and
+   the consequential boundary—not the strongest evidence from every section.
 2. **Section entrance.** Give every major section one clear job. Its heading must
    identify the subject, question, or supported claim, and its first ordinary
    paragraph must state the section's point or the boundary needed to interpret
@@ -45,7 +60,31 @@ scope without adding a hook, slogan, numbered package, or ornamental subtitle.
 Prefer concrete, domain-standard heading phrases. Use a question or claim as a
 heading only when the section genuinely resolves it.
 
-## Select and order information
+## Build one explanatory spine
+
+Treat the supplied research brief as editorial intent, not factual evidence.
+Before outlining, privately recover its reader outcome, primary question,
+explanatory spine, evidence obligations, section arc, and intended ending. If it
+does not make the spine clear, or the gathered evidence cannot support the
+planned one without distortion, choose the one relationship that best answers
+the question from the available evidence: an object lifecycle or end-to-end
+trace, a causal chain, a decision process, a chronology, a user journey, or a
+rule-to-impact chain. Preserve the reader outcome and expose the evidence gap;
+do not print these planning labels.
+
+- Every main section must advance that same spine. Its entrance should connect
+  the understanding established so far to the next necessary question. If the
+  organizational axis changes, explain why the new view is needed and how it
+  builds on the prior model; do not make the reader reconstruct the connection.
+- Keep a stable anchor across sections: the same representative scenario,
+  decision criteria, causal question, user goal, or sequence of events. Explain
+  a common path once and describe variants as deltas from it instead of starting
+  a fresh inventory for each variant.
+- For a mixed-domain question, keep the primary outcome's spine and attach the
+  secondary domain as evidence at the relevant points. Do not concatenate
+  several report templates.
+
+## Select and pace information
 
 Classify material by its use to the reader before deciding the outline:
 
@@ -58,9 +97,11 @@ Classify material by its use to the reader before deciding the outline:
 
 Never move a prerequisite, material qualification, or decision-changing fact to
 an appendix. Choose an adaptive structure instead of one section per source,
-lane, batch, finding, or coverage unit. Use progressive disclosure in the main
-text: answer or orientation, necessary foundations, mechanisms and evidence,
-comparisons or disagreement, then implications and supported recommendations.
+lane, batch, finding, rubric field, or coverage unit. Use progressive disclosure
+in the main text: answer or orientation, necessary foundations, mechanisms and
+evidence, comparisons or disagreement, then implications and the ending the
+reader's purpose requires. Put inventories, exhaustive mappings, audit trails,
+and source-by-source detail in a reference section unless they change that path.
 
 ## Control terminology and sentence meaning
 
@@ -91,11 +132,17 @@ comparisons or disagreement, then implications and supported recommendations.
 - When the report gives a procedure or action sequence, put one action in each
   step and state a prerequisite before the action that depends on it. Do not bury
   an instruction, limit, or decision condition inside descriptive prose.
-- Give each ordinary paragraph one topic, claim, or evidence thread. Start with
-  its point, then add explanation, evidence, and the qualification that changes
-  the point. Split when the subject, evidence class, decision implication, or
-  qualification changes. Tables, code, and source-index entries may stay dense
-  when their structure carries the load.
+- Give each ordinary paragraph one understanding move, not merely one broad
+  topic. A paragraph may introduce one object, explain one relationship, follow
+  one transformation, compare one parallel set, or handle one material
+  qualification or exception. Start with its point, then add the evidence and
+  qualification that change that point. Split when the reader must perform a
+  second kind of reasoning. Tables, code, and source-index entries may stay
+  dense when their structure carries the load.
+- State the plain relationship before exact identifiers, paths, clauses, or
+  metrics. Explain the normal path before exceptions and history. When two or
+  more exact parallel mappings must be retained, use a table or aligned list
+  rather than packing them into prose. Prose is not a compression format.
 
 ## Keep evidence and reasoning inspectable
 
@@ -157,7 +204,8 @@ or open question.
 
 After drafting, perform one bounded check in this order:
 
-1. Reader: Does the opening give the supported whole picture at the right level?
+1. Reader: Does the opening give the supported answer and necessary mental map
+   in the smallest scannable shape, without becoming a compressed report?
 2. Structure: Is every main-text section necessary, logically ordered, and easy
    to retrieve by its heading?
 3. Language: Is each term stable, each reference unambiguous, and each paragraph

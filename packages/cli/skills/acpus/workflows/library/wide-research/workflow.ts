@@ -1,13 +1,15 @@
 /*
  * Wide research as a coverage-first orchestrator-worker system.
  *
- * A lead defines one comparable coverage unit and a shared rubric. Independent
- * scouts discover candidate units, a curator selects a diverse grounded corpus,
- * and one fresh researcher owns each unit. Bounded reducer Agents preserve
- * provenance while compressing the corpus before a reader-first writer produces
- * the publication draft. Markdown ships directly; for HTML, the same publication
- * Agent continues in a separate renderer step so its cached context survives
- * while presentation remains a distinct phase that cannot revise the article.
+ * A lead defines the reader outcome and one explanatory spine, then one
+ * comparable coverage unit and a shared rubric that supply its evidence.
+ * Independent scouts discover candidate units, a curator selects a diverse
+ * grounded corpus, and one fresh researcher owns each unit. Bounded reducer
+ * Agents preserve provenance while compressing the corpus before a reader-first
+ * writer produces the publication draft. Markdown ships directly; for HTML, the
+ * same publication Agent continues in a separate renderer step so its cached
+ * context survives while presentation remains a distinct phase that cannot
+ * revise the article.
  *
  * Agent judgment owns discovery, selection, research, reduction, writing, and
  * rendering. Tasks remain only at artifact and controlled-filesystem seams:
@@ -26,6 +28,7 @@ import {
   LeadPlanOutput,
 } from "./contracts.js";
 import { HTML_RENDERER_PROMPT } from "../shared/publication/renderer.prompt.js";
+import { PUBLICATION_STRATEGY_PROMPT } from "../shared/publication/strategy.prompt.js";
 import {
   HTML_DRAFT_DELIVERY_PROMPT,
   MARKDOWN_DELIVERY_PROMPT,
@@ -77,6 +80,9 @@ export default defineWorkflow({
       Role
       You lead a coverage-first wide-research investigation. Your job is to define comparable work, not to answer the question.
 
+      Publication-strategy standard
+      ${PUBLICATION_STRATEGY_PROMPT}
+
       Research question
       ${input.question}
 
@@ -90,8 +96,9 @@ export default defineWorkflow({
       Define what one coverage unit means, define a shared evidence rubric, and partition discovery into exactly ${discoveryLaneCount} complementary lanes.
 
       Planning rules
-      - Write the research brief, coverage-unit definition, rubric, and lane text in the research question's language.
-      - In the brief, name what the question asks the final report to deliver and what form of answer it calls for (a landscape, a comparison across the units, a recommendation), then shape the rubric and lanes so they gather the evidence that answer needs.
+      - Write researchBrief in the research question's language, following the Publication strategy headings. Keep it concise but concrete enough to guide discovery, per-unit research, reduction, and writing. It is a natural-language editorial and evidence plan, not a factual answer or a schema for runtime code.
+      - Select one primary explanatory spine for the final report. Shape the coverage unit and common rubric to supply comparable evidence for that spine, but do not make the report's future section order follow the units or rubric mechanically.
+      - Write the coverage-unit definition, rubric, and lane text in the research question's language.
       - If the request names repeated objects such as companies, products, papers, people, files, or jurisdictions, one unit is one object. If it asks for broad evidence about one subject, one unit should be an independently inspectable source, case, dataset, institution, jurisdiction, or stakeholder record rather than another thematic viewpoint lane.
       - Preserve an explicit user-provided population. Do not silently replace named items with more convenient ones.
       - Make the rubric compact and common to every unit. Include only fields that materially help answer the question and can be supported by observable evidence.
@@ -187,6 +194,7 @@ export default defineWorkflow({
 
       Curation rules
       - Select units that collectively maximize relevant coverage across the real dimensions of the question, not units that merely repeat a popular source ecosystem or conclusion.
+      - Select for the evidence obligations in the publication strategy, including meaningful contrary cases and the variation needed to support its ending. A full unit count does not compensate for a decisive evidence gap.
       - Preserve every explicit user-named unit up to the configured breadth. When the user requests all members of a supplied list, do not cherry-pick among them.
       - Resolve semantic duplicates, aliases, mirrors, and overlapping scopes. Prefer the most precise identifying locator, but do not invent one.
       - You may use read-only web or workspace tools to resolve identity, fill a material candidate gap, or establish a starting source. Do not conduct the full investigations.
@@ -345,7 +353,7 @@ export default defineWorkflow({
           ${item}
 
           Reduction rules
-          - Find only patterns, contrasts, and outliers supported by this batch. Do not browse, investigate, repair records, or import outside knowledge.
+          - Find only patterns, contrasts, and outliers supported by this batch and relevant to the publication strategy's explanatory spine or evidence obligations. Do not browse, investigate, repair records, or import outside knowledge.
           - Preserve meaningful disagreement and distinguish missing data from a negative finding.
           - For every synthesis point cite the exact supporting unit ids and source locators already present in the records. Never invent or normalize a locator.
           - Build a comparison table only from exact record values, keeping units and labels intact, and only when it clarifies rather than distorts the evidence.

@@ -37,6 +37,16 @@ deduplicated source index. Unit researchers use the same compact evidence-record
 standard as deep-research lane workers: terms stay stable within a record,
 observations remain distinct from inference, and each finding keeps its evidence,
 locator, confidence, and material caveat together for reduction.
+The lead also records a natural-language publication strategy in the research
+brief: the reader outcome, one primary explanatory spine, opening and section
+arc, evidence obligations, boundaries, and required ending. Coverage units and
+the common rubric supply comparable evidence for that strategy; they do not
+dictate the final report's section order. The writer opens with the smallest
+authored Markdown orientation structure that makes the answer scannable. HTML
+rendering preserves that structure with editorial emphasis, then chooses a
+density profile, a content-driven entrance, deliberate reading/medium/wide
+regions, legible evidence type, evidence-gated color roles, and a quiet treatment
+for recurring identifiers and source markers without adding a workflow step.
 
 
 ## Run

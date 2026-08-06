@@ -23,6 +23,13 @@ export const EVIDENCE_RECORD_PROMPT = String.raw`
 - Preserve exact values, units, definitions, populations, denominators, and time
   ranges. Compare only compatible definitions. Use a Markdown table only when
   it makes a real comparison easier to reuse, and keep units and labels intact.
+- When the record examines a codebase or technical mechanism, preserve the
+  explanatory building blocks the writer will need: the entry point, inputs,
+  transformations, state authority, outputs, side effects, failure conditions,
+  and meaningful branches. Trace an actual path at function level when the
+  evidence permits it, and distinguish what source code, configuration, runtime
+  observation, or inference separately establishes. Do not replace a trace with
+  a directory or identifier inventory.
 
 ## Stop when the evidence is usable
 

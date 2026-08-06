@@ -21,6 +21,7 @@ export const LaneSpec = z.object({
 export type LaneSpec = z.infer<typeof LaneSpec>;
 
 export const LeadPlanOutput = z.object({
+  /** Markdown publication strategy carried opaquely between Agents. */
   researchBrief: z.string(),
   lanes: z.array(LaneSpec),
 });

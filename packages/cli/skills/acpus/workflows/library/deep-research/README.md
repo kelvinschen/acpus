@@ -35,6 +35,17 @@ scope, coverage, detailed findings, sources, and cross-check notes when
 applicable. Lane workers write compact records for downstream synthesis: terms
 stay stable within a lane, observations remain distinct from inference, and each
 finding keeps its evidence, locator, confidence, and material caveat together.
+The lead also records a natural-language publication strategy in the research
+brief: the reader outcome, one primary explanatory spine, opening and section
+arc, evidence obligations, boundaries, and required ending. Lanes gather the
+evidence for that strategy; they do not become the report's outline. The writer
+uses one continuous reader path, opens with the smallest authored Markdown
+orientation structure that makes the answer scannable, and moves exhaustive
+reference detail out of the main narrative. HTML rendering preserves that
+structure with editorial emphasis, then chooses a density profile, a
+content-driven entrance, deliberate reading/medium/wide regions, legible
+evidence type, evidence-gated color roles, and a quiet treatment for recurring
+identifiers and source markers without adding a workflow step.
 
 
 ## Run
