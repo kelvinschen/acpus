@@ -32,11 +32,10 @@ independent items under one consistent rubric.
 
 Every run produces a format-neutral evidence bundle containing the research
 scope, coverage, detailed findings, sources, and cross-check notes when
-applicable.
+applicable. Lane workers write compact records for downstream synthesis: terms
+stay stable within a lane, observations remain distinct from inference, and each
+finding keeps its evidence, locator, confidence, and material caveat together.
 
-Unless `reportFormat` is `none`, the run also produces a reader-facing Markdown
-or self-contained HTML report. The report uses the language of the research
-question.
 
 ## Run
 

@@ -33,11 +33,11 @@ cross-checking, or developing one line of argument.
 
 Every run produces `wide-research-evidence-bundle.json` with the research scope,
 selected items, per-item findings, coverage statistics, unresolved gaps, and a
-deduplicated source index.
+deduplicated source index. Unit researchers use the same compact evidence-record
+standard as deep-research lane workers: terms stay stable within a record,
+observations remain distinct from inference, and each finding keeps its evidence,
+locator, confidence, and material caveat together for reduction.
 
-Unless `reportFormat` is `none`, the run also produces a reader-facing Markdown
-or self-contained HTML report. The report uses the language of the research
-question.
 
 ## Run
 
