@@ -1,19 +1,16 @@
 /** Shared publication-strategy instructions for bundled research planners. */
 export const PUBLICATION_STRATEGY_PROMPT = String.raw`
-# Publication strategy
-
-### Plan the reader's route, not a generic report
-
-Write the research brief as compact, structured Markdown with exactly these
-seven second-level sections: Reader outcome, Primary question, Explanatory
+Plan the reader's route, not a generic report. Write the research brief as
+compact, structured Markdown with exactly these
+seven third-level sections: Reader outcome, Primary question, Explanatory
 spine, Opening contract, Section arc, Evidence obligations, and Boundaries and
 ending. Translate the heading labels into the research question's language when
 needed, but preserve their meanings. The prose under each heading is a planning
 contract for downstream researchers and the writer, not an answer to the
-research question. Do not copy the later template-selection guidance into the
+research question. **NEVER** turn it into a factual answer. Do not copy the later template-selection guidance into the
 brief.
 
-## Reader outcome
+### Reader outcome
 
 Name the primary reader, the decision or understanding the report must enable,
 the knowledge the question permits you to assume, and, when material, the
@@ -21,23 +18,23 @@ practical consequence of getting the answer wrong. When several audiences are
 named, identify their shared main path and the specialist detail that belongs in
 reference material.
 
-## Primary question
+### Primary question
 
 State the one question the report must resolve and the answer operation it calls
 for: map, explain, compare, evaluate, diagnose, recommend, forecast, or provide a
 durable reference. Preserve explicit secondary questions, but do not let them
 compete with the primary one.
 
-## Explanatory spine
+### Explanatory spine
 
 Choose one stable relationship that will carry the reader from orientation to
 understanding and action. Suitable spines include an object lifecycle, an
 end-to-end trace, a causal chain, a decision process, a chronology, a user
 journey, or a rule-to-impact chain. Describe the sequence in plain language.
-Every main section must advance this spine; secondary lenses must attach to it
+**ALWAYS** make every main section advance this spine; secondary lenses must attach to it
 rather than starting a second report.
 
-## Opening contract
+### Opening contract
 
 Require the opening to establish the direct answer or governing mental model and
 only the scope boundary, uncertainty, or consequence that materially changes how
@@ -47,14 +44,14 @@ evidence is gathered. The writer may later choose a thesis alone, a thesis plus 
 short labeled list, or a compact comparison or mapping. The opening is the
 smallest useful orientation layer, not a checklist or a compressed report.
 
-## Section arc
+### Section arc
 
 Describe how the main sections progressively advance the explanatory spine.
 Order prerequisites before mechanisms, the common or normal path before
 exceptions, and explanation before action. Keep inventories, audit trails, and
 secondary context out of the main arc unless they change the answer.
 
-## Evidence obligations
+### Evidence obligations
 
 Name the evidence needed to support each decisive part of the arc, including
 meaningful contrary evidence. Distinguish evidence classes that cannot substitute
@@ -63,13 +60,13 @@ benchmark, primary publication, regulation, market data, interview, or supported
 inference. State where exact comparison, a worked trace, or a verification step
 is required.
 
-## Boundaries and ending
+### Boundaries and ending
 
 State what the report will not claim, what remains unknown, and the kind of
 ending the reader needs: a conditional decision, recommendation, implementation
 path, risk register, research gap, or durable operational reference.
 
-### Match the spine to the problem
+Match the spine to the problem:
 
 - **Codebase or implementation research:** establish repository and system
   boundaries, core objects and authority, then follow one representative task
@@ -110,5 +107,5 @@ path, risk register, research gap, or durable operational reference.
 
 For a mixed question, select the structure that best matches the reader's
 primary outcome. Embed the other domain as an evidence lens at the relevant
-points in that spine; never concatenate several report templates.
+points in that spine; **NEVER** concatenate several report templates.
 `;

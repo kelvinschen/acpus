@@ -9,6 +9,7 @@ import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type ScopeIR, ty
 import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
+import { parseArtifactUri } from "../artifacts/access.js";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
@@ -22,6 +23,7 @@ import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { planSteerControl } from "../scheduler/steer-plan.js";
 import { applySchedulerEvents, createSchedulerProjection, signalTimeoutEvents, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
+import { planForkReplay } from "../scheduler/fork-replay-plan.js";
 import type { SchedulerEvent } from "../scheduler/events.js";
 import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type RunOwnerClaim, type SchedulerCancelInput, type SchedulerCommit, type SchedulerSnapshot, type SchedulerStorePort, type AttemptStartInput, type AttemptStartResult, type AttemptCommitInput, type SignalConsumeInput, type SchedulerPauseInput, type SchedulerResumeInput, type SchedulerRetryInput, type SchedulerRunRetryInput, type SchedulerRecoveryInput, type SchedulerSteerInput, type SchedulerSteerResult, type SchedulerStoreError, type SchedulerStoreResult, type ReplayCandidate, type ReplayCommitInput, type ReplayCommitResult } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame, SchedulerProjection } from "../scheduler/types.js";
@@ -144,7 +146,7 @@ const DUE_SIGNAL_WAIT_WHERE = `
 `;
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 8;
+export const RUNTIME_STORAGE_VERSION = 9;
 
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
@@ -650,6 +652,7 @@ type ForkReplayFact = {
   sourceSequence: number;
   operationDigest: string;
   inputDigest: string;
+  sessionGroupDigest?: string;
   output?: JsonValue;
   artifacts: ForkReplayArtifact[];
 };
@@ -1483,44 +1486,102 @@ class SqliteRuntimeStore implements RuntimeStore {
     const now = new Date().toISOString();
     const checkpoint = resolveForkCheckpoint(this.db, sourceSnapshot.projection, runId, options.target);
     if (checkpoint.isErr()) return err(checkpoint.error);
-    const replayFacts = completedReplayFacts(
+    const sourceFrozen = this.getFrozenRun(runId);
+    if (!sourceFrozen) throw new Error(`Fork source run '${runId}' has no frozen workflow.`);
+    const sourceReplayFacts = completedReplayFacts(
       this.db,
       runId,
       sourceSnapshot.projection,
       checkpoint.value.replayBeforeSequence,
     );
-    const reachableArtifactIds = new Set<string>();
-    for (const fact of replayFacts) {
-      if (fact.output !== undefined) collectArtifactIds(fact.output, runId, reachableArtifactIds);
+    const sourceArtifactIdsByNode = new Map<string, string[]>();
+    const candidateArtifactIds = new Set<string>();
+    for (const fact of sourceReplayFacts) {
+      const ids = new Set<string>();
+      if (fact.output !== undefined) collectArtifactIds(fact.output, runId, ids);
+      const ordered = [...ids].sort();
+      sourceArtifactIdsByNode.set(fact.nodeKey, ordered);
+      for (const id of ordered) candidateArtifactIds.add(id);
     }
-    const artifacts = this.db.prepare(`
+    const artifactIdMap = Object.fromEntries([...candidateArtifactIds]
+      .sort()
+      .map(id => [id, `artifact_${randomUUID()}`]));
+    const artifactPathMap = Object.fromEntries(Object.entries(artifactIdMap).map(([id, childId]) => [
+      id,
+      join("artifacts", ".fork-replay", childId),
+    ]));
+    const candidateArtifacts = (this.db.prepare(`
       SELECT id, node_key, attempt, media_type, digest, size, relative_path
       FROM artifacts
       WHERE run_id = ?
-    `).all(runId).filter(artifact => reachableArtifactIds.has(String(artifact.id))) as ArtifactRow[];
-    const artifactIdMap = Object.fromEntries(artifacts.map(artifact => [
-      String(artifact.id),
-      `artifact_${randomUUID()}`,
-    ]));
-    const artifactPathMap = Object.fromEntries(artifacts.map(artifact => [
-      String(artifact.id),
-      join("artifacts", ".fork-replay", requireArtifactId(artifactIdMap, String(artifact.id))),
-    ]));
-    const rewrittenFacts: ForkReplayFact[] = [];
-    for (const fact of replayFacts) {
+    `).all(runId) as ArtifactRow[]).filter(artifact => candidateArtifactIds.has(String(artifact.id)));
+    const artifactById = new Map(candidateArtifacts.map(artifact => [String(artifact.id), artifact]));
+    const sourceIdByChildId = new Map(Object.entries(artifactIdMap).map(([sourceId, childId]) => [childId, sourceId]));
+    const stagedReplayFacts: ForkReplayFact[] = [];
+    for (const fact of sourceReplayFacts) {
       let output: JsonValue | undefined;
       if (fact.output !== undefined) {
         const rewritten = rewriteArtifactValue(fact.output, runId, forkId, artifactIdMap);
         if (rewritten.isErr()) return err(rewritten.error);
         output = rewritten.value;
       }
-      const factArtifactIds = new Set<string>();
-      if (fact.output !== undefined) collectArtifactIds(fact.output, runId, factArtifactIds);
-      rewrittenFacts.push({
+      stagedReplayFacts.push({
         ...fact,
         ...(output === undefined ? {} : { output }),
-        artifacts: artifacts
-          .filter(artifact => factArtifactIds.has(String(artifact.id)))
+      });
+    }
+    const replayPlan = planForkReplay({
+      source: {
+        frozen: sourceFrozen,
+        projection: sourceSnapshot.projection,
+        artifactDigest: uri => {
+          const parsed = parseArtifactUri(uri);
+          if (parsed.isErr() || parsed.value.runId !== runId) return undefined;
+          return this.getArtifact(runId, parsed.value.artifactId)?.digest;
+        },
+      },
+      child: {
+        runId: forkId,
+        frozen: {
+          ir: withAgentOverrides(forkIr, forkAgentOverrides),
+          input: JSON.parse(forkInputJson) as JsonValue,
+          meta: {
+            runId: forkId,
+            workflowPath: forkWorkflowEntry,
+            workflowName: forkName,
+            workspaceDir: resolve(this.cwd),
+          },
+        },
+        artifactDigest: uri => {
+          const parsed = parseArtifactUri(uri);
+          if (parsed.isErr() || parsed.value.runId !== forkId) return undefined;
+          const sourceId = sourceIdByChildId.get(parsed.value.artifactId);
+          const artifact = sourceId === undefined ? undefined : artifactById.get(sourceId);
+          return artifact === undefined ? undefined : String(artifact.digest);
+        },
+      },
+      facts: stagedReplayFacts,
+    });
+    const replayFacts = replayPlan.facts;
+    const reachableArtifactIds = new Set<string>();
+    for (const fact of replayFacts) {
+      for (const id of sourceArtifactIdsByNode.get(fact.nodeKey) ?? []) reachableArtifactIds.add(id);
+    }
+    const missingArtifactId = [...reachableArtifactIds].sort().find(id => !artifactById.has(id));
+    if (missingArtifactId !== undefined) {
+      return err({
+        type: "artifact-rewrite-failure",
+        artifactId: missingArtifactId,
+        message: `Missing source artifact metadata for '${missingArtifactId}'.`,
+      });
+    }
+    const artifacts = [...reachableArtifactIds].sort().map(id => artifactById.get(id)!);
+    const rewrittenFacts: ForkReplayFact[] = [];
+    for (const fact of replayFacts) {
+      rewrittenFacts.push({
+        ...fact,
+        artifacts: (sourceArtifactIdsByNode.get(fact.nodeKey) ?? [])
+          .map(id => artifactById.get(id)!)
           .map(artifact => ({
             id: requireArtifactId(artifactIdMap, String(artifact.id)),
             ...(artifact.node_key === null ? {} : { nodeKey: String(artifact.node_key) }),
@@ -1614,13 +1675,21 @@ class SqliteRuntimeStore implements RuntimeStore {
           VALUES (?, ?, ?, 'pending')
         `).run(forkId, nodeId, nodeId);
       }
+      for (const group of replayPlan.sessionGroups) {
+        this.db.prepare(`
+          INSERT INTO fork_replay_session_groups (
+            run_id, session_group_digest, member_count, replayed_count
+          )
+          VALUES (?, ?, ?, 0)
+        `).run(forkId, group.sessionGroupDigest, group.memberCount);
+      }
       for (const fact of rewrittenFacts) {
         this.db.prepare(`
           INSERT INTO fork_replay_facts (
             run_id, node_key, source_run_id, source_sequence,
-            operation_digest, input_digest, output_json, artifacts_json
+            operation_digest, input_digest, session_group_digest, output_json, artifacts_json
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           forkId,
           fact.nodeKey,
@@ -1628,6 +1697,7 @@ class SqliteRuntimeStore implements RuntimeStore {
           fact.sourceSequence,
           fact.operationDigest,
           fact.inputDigest,
+          fact.sessionGroupDigest ?? null,
           fact.output === undefined ? null : stableJsonLine(fact.output),
           stableJsonLine(fact.artifacts),
         );
@@ -2621,12 +2691,14 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   listReplayCandidates(runId: string): ReplayCandidate[] {
     return (this.db.prepare(`
-      SELECT node_key
+      SELECT node_key, source_sequence, session_group_digest
       FROM fork_replay_facts
       WHERE run_id = ?
       ORDER BY source_sequence, node_key
-    `).all(runId) as Array<Record<string, string>>).map(row => ({
+    `).all(runId) as Array<Record<string, string | null>>).map(row => ({
       nodeKey: String(row.node_key),
+      sourceSequence: Number(row.source_sequence),
+      ...(row.session_group_digest === null ? {} : { sessionGroupDigest: String(row.session_group_digest) }),
     }));
   }
 
@@ -2663,26 +2735,74 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         });
       }
       const fact = this.db.prepare(`
-        SELECT source_run_id, operation_digest, input_digest, output_json, artifacts_json
+        SELECT source_run_id, operation_digest, input_digest, session_group_digest, output_json, artifacts_json
         FROM fork_replay_facts
         WHERE run_id = ? AND node_key = ?
       `).get(input.runId, input.nodeKey) as Record<string, string | null> | undefined;
+      const factGroupDigest = fact?.session_group_digest === null || fact?.session_group_digest === undefined
+        ? undefined
+        : String(fact.session_group_digest);
+      const identity = input.replayIdentity;
       if (!fact
-        || fact.operation_digest !== input.replayIdentity.operationDigest
-        || fact.input_digest !== input.replayIdentity.inputDigest) {
+        || !identity
+        || fact.operation_digest !== identity.operationDigest
+        || fact.input_digest !== identity.inputDigest
+        || factGroupDigest !== identity.sessionGroupDigest
+        || (input.expectedSessionGroupDigest !== undefined && input.expectedSessionGroupDigest !== factGroupDigest)) {
+        const invalidated = this.invalidateUnstartedReplaySessionGroups(
+          input.runId,
+          [factGroupDigest, input.expectedSessionGroupDigest, identity?.sessionGroupDigest],
+          `mismatched at member '${input.nodeKey}'`,
+        );
+        if (factGroupDigest !== undefined && !invalidated.groupDigests.includes(factGroupDigest)) {
+          throw new Error(`Fork replay fact '${input.nodeKey}' references missing session group '${factGroupDigest}'.`);
+        }
         this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ? AND node_key = ?").run(input.runId, input.nodeKey);
+        const invalidatedNodeKeys = [...new Set([...invalidated.nodeKeys, input.nodeKey])];
         this.db.exec("COMMIT");
-        return { disposition: "mismatch", snapshot: current };
+        return { disposition: "mismatch", snapshot: current, invalidatedNodeKeys };
+      }
+      if (factGroupDigest !== undefined) {
+        const next = this.db.prepare(`
+          SELECT node_key
+          FROM fork_replay_facts
+          WHERE run_id = ? AND session_group_digest = ?
+          ORDER BY source_sequence, node_key
+          LIMIT 1
+        `).get(input.runId, factGroupDigest) as { node_key: string } | undefined;
+        if (!next) throw new Error(`Fork replay session group '${factGroupDigest}' has no remaining member.`);
+        if (String(next.node_key) !== input.nodeKey) {
+          const invalidated = this.invalidateUnstartedReplaySessionGroups(
+            input.runId,
+            [factGroupDigest],
+            `replayed member '${input.nodeKey}' out of source order`,
+          );
+          if (!invalidated.groupDigests.includes(factGroupDigest)) {
+            throw new Error(`Fork replay fact '${input.nodeKey}' references missing session group '${factGroupDigest}'.`);
+          }
+          this.db.exec("COMMIT");
+          return { disposition: "mismatch", snapshot: current, invalidatedNodeKeys: invalidated.nodeKeys };
+        }
       }
       const output = fact.output_json === null ? undefined : JSON.parse(String(fact.output_json)) as JsonValue;
       const artifacts = JSON.parse(String(fact.artifacts_json)) as ForkReplayArtifact[];
       this.activateReplayArtifacts(input.runId, artifacts);
+      if (factGroupDigest !== undefined) {
+        const incremented = this.db.prepare(`
+          UPDATE fork_replay_session_groups
+          SET replayed_count = replayed_count + 1
+          WHERE run_id = ? AND session_group_digest = ? AND replayed_count < member_count
+        `).run(input.runId, factGroupDigest);
+        if (incremented.changes !== 1) {
+          throw new Error(`Fork replay session group '${factGroupDigest}' cannot accept member '${input.nodeKey}'.`);
+        }
+      }
       const events: SchedulerEvent[] = [{
         type: "instance.completed",
         payload: {
           nodeKey: input.nodeKey,
           ...(output === undefined ? {} : { output }),
-          replayIdentity: input.replayIdentity,
+          replayIdentity: identity,
           reusedFrom: { runId: String(fact.source_run_id), nodeKey: input.nodeKey },
         },
       }];
@@ -2743,6 +2863,39 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         new Date().toISOString(),
       );
     }
+  }
+
+  private invalidateUnstartedReplaySessionGroups(
+    runId: string,
+    digests: readonly (string | undefined)[],
+    reason: string,
+  ): { nodeKeys: string[]; groupDigests: string[] } {
+    const groupDigests: string[] = [];
+    for (const sessionGroupDigest of new Set(digests.filter((value): value is string => value !== undefined))) {
+      const group = this.db.prepare(`
+        SELECT replayed_count
+        FROM fork_replay_session_groups
+        WHERE run_id = ? AND session_group_digest = ?
+      `).get(runId, sessionGroupDigest) as { replayed_count: number } | undefined;
+      if (!group) continue;
+      if (Number(group.replayed_count) > 0) {
+        throw new Error(
+          `Fork replay session group '${sessionGroupDigest}' ${reason} after ${Number(group.replayed_count)} member(s) were reused.`,
+        );
+      }
+      groupDigests.push(sessionGroupDigest);
+    }
+    const nodeKeys = groupDigests.flatMap(sessionGroupDigest => (this.db.prepare(`
+      SELECT node_key
+      FROM fork_replay_facts
+      WHERE run_id = ? AND session_group_digest = ?
+      ORDER BY source_sequence, node_key
+    `).all(runId, sessionGroupDigest) as Array<{ node_key: string }>).map(row => String(row.node_key)));
+    for (const sessionGroupDigest of groupDigests) {
+      this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ? AND session_group_digest = ?").run(runId, sessionGroupDigest);
+      this.db.prepare("DELETE FROM fork_replay_session_groups WHERE run_id = ? AND session_group_digest = ?").run(runId, sessionGroupDigest);
+    }
+    return { nodeKeys: [...new Set(nodeKeys)], groupDigests };
   }
 
   private startAttempt(input: AttemptStartInput): AttemptStartResult {
@@ -2810,6 +2963,19 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
           message: `Node instance '${input.nodeKey}' has ${blockedMember.status} ancestor member '${blockedMember.memberKey}'.`,
         });
       }
+      if (input.sessionGroupDigest !== undefined
+        && input.replayIdentity?.sessionGroupDigest !== undefined
+        && input.sessionGroupDigest !== input.replayIdentity.sessionGroupDigest) {
+        throw new Error(`Node instance '${input.nodeKey}' resolved inconsistent fork replay session groups.`);
+      }
+      const sessionGroupDigest = input.sessionGroupDigest ?? input.replayIdentity?.sessionGroupDigest;
+      const invalidatedSessionGroupDigest = sessionGroupDigest === undefined
+        ? undefined
+        : this.invalidateUnstartedReplaySessionGroups(
+          input.runId,
+          [sessionGroupDigest],
+          `attempted to execute member '${input.nodeKey}'`,
+        ).groupDigests[0];
       const row = this.db.prepare("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS count FROM node_attempts WHERE run_id = ? AND node_key = ?").get(input.runId, input.nodeKey) as CountRow | undefined;
       const attemptNo = row?.count ?? 1;
       const steer = instance.pendingSteerId === undefined
@@ -2858,6 +3024,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
         attemptNo,
         snapshot,
         disposition: "started",
+        ...(invalidatedSessionGroupDigest === undefined ? {} : { invalidatedSessionGroupDigest }),
         ...(steer === undefined ? {} : { steer: { steerId: steer.steerId, instruction: steer.instruction } }),
       };
     } catch (error) {
@@ -3421,6 +3588,21 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       throw new Error(`Run '${input.runId}' scheduler projection commit metadata does not match its event count.`);
     }
     const projection = applySchedulerEvents(input.current.projection, input.events);
+    if (projection.run.status === "completed") {
+      const partial = this.db.prepare(`
+        SELECT session_group_digest, replayed_count, member_count
+        FROM fork_replay_session_groups
+        WHERE run_id = ? AND replayed_count > 0 AND replayed_count < member_count
+        ORDER BY session_group_digest
+        LIMIT 1
+      `).get(input.runId) as { session_group_digest: string; replayed_count: number; member_count: number } | undefined;
+      if (partial) {
+        throw new Error(
+          `Run '${input.runId}' cannot complete after reusing ${Number(partial.replayed_count)} of `
+          + `${Number(partial.member_count)} members in fork replay session group '${String(partial.session_group_digest)}'.`,
+        );
+      }
+    }
     let sequence = input.current.version + 1;
     const insert = this.db.prepare(`
       INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
@@ -3443,6 +3625,7 @@ class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.syncPublicRunProjection(input.runId, input.now, input.current.projection, projection);
       if (projection.run.status === "completed" || projection.run.status === "canceled") {
         this.db.prepare("DELETE FROM fork_replay_facts WHERE run_id = ?").run(input.runId);
+        this.db.prepare("DELETE FROM fork_replay_session_groups WHERE run_id = ?").run(input.runId);
       }
     }
     const version = this.currentVersion(input.runId);
@@ -4905,6 +5088,14 @@ function initializeSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_artifacts_run_created
       ON artifacts(run_id, created_at, id);
 
+    CREATE TABLE IF NOT EXISTS fork_replay_session_groups (
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      session_group_digest TEXT NOT NULL,
+      member_count INTEGER NOT NULL CHECK (member_count > 0),
+      replayed_count INTEGER NOT NULL DEFAULT 0 CHECK (replayed_count >= 0 AND replayed_count <= member_count),
+      PRIMARY KEY (run_id, session_group_digest)
+    );
+
     CREATE TABLE IF NOT EXISTS fork_replay_facts (
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       node_key TEXT NOT NULL,
@@ -4912,9 +5103,12 @@ function initializeSchema(db: DatabaseSync): void {
       source_sequence INTEGER NOT NULL,
       operation_digest TEXT NOT NULL,
       input_digest TEXT NOT NULL,
+      session_group_digest TEXT,
       output_json TEXT,
       artifacts_json TEXT NOT NULL,
-      PRIMARY KEY (run_id, node_key)
+      PRIMARY KEY (run_id, node_key),
+      FOREIGN KEY (run_id, session_group_digest)
+        REFERENCES fork_replay_session_groups(run_id, session_group_digest)
     );
     CREATE INDEX IF NOT EXISTS idx_fork_replay_facts_order
       ON fork_replay_facts(run_id, source_sequence, node_key);
@@ -5950,12 +6144,15 @@ function completedReplayFacts(
     if (typeof identity !== "object" || identity === null || Array.isArray(identity)) continue;
     const operationDigest = (identity as Record<string, unknown>).operationDigest;
     const inputDigest = (identity as Record<string, unknown>).inputDigest;
+    const sessionGroupDigest = (identity as Record<string, unknown>).sessionGroupDigest;
     if (typeof operationDigest !== "string" || typeof inputDigest !== "string") continue;
+    if (sessionGroupDigest !== undefined && typeof sessionGroupDigest !== "string") continue;
     facts.push({
       nodeKey: row.node_key,
       sourceSequence: Number(row.sequence),
       operationDigest,
       inputDigest,
+      ...(sessionGroupDigest === undefined ? {} : { sessionGroupDigest }),
       ...(Object.prototype.hasOwnProperty.call(payload, "output") ? { output: payload.output as JsonValue } : {}),
       artifacts: [],
     });

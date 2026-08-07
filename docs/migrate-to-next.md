@@ -115,7 +115,7 @@ bindings.
 Signal, fork, and visualization. Those are retained product foundations, not
 capabilities that 0.6 invented. 0.6's main change is the typed authoring and
 runtime boundary: TypeScript graph construction, `Expr<T>` value flow, typed
-Tasks, current inspection surfaces, and leaf-by-leaf replacement fork replay.
+Tasks, current inspection surfaces, and compatibility-based replacement fork replay.
 
 ## Map the workflow definition
 
@@ -329,12 +329,11 @@ acpus runs fork <run-id> --workflow fixed.workflow.ts
 acpus runs fork <run-id> --agents '{"reviewer":{"use":"codex"}}'
 ```
 
-Fork reuse is direct-parent, leaf-by-leaf replay. Each child leaf reuses an
-accepted completion only when its exact dynamic occurrence, effective operation,
-and declared logical input values still match. A changed input field therefore
-reruns only leaves that read it; failed or in-progress work simply executes. Task
-side effects and ambient environment changes still require human review because
-they are intentionally outside replay identity.
+Fork reuse comes only from the direct parent. Compatible ordinary leaves replay
+by exact occurrence, operation, and resolved input. Leaves sharing an explicit
+`sessionKey` replay only as one complete source conversation or all rerun in a
+fresh child session. Ambient state and randomness remain outside replay identity,
+so review external side effects separately.
 
 Workspace-source reusable Tasks remain live module references. Snapshot
 admission durably captures supported local Task modules and dependencies.
@@ -523,8 +522,8 @@ an in-place package upgrade.
 - [ ] `acpus runs inspect <run-id>` exposes enough evidence for the team runbook.
 - [ ] Retry is reserved for the same frozen plan; fork is used for changed
       workflow/input/Agents.
-- [ ] Fork reuse is treated as direct-parent, exact leaf replay rather than
-      long-lived caching or unconditional memoization.
+- [ ] Fork reuse is direct-parent compatibility replay; explicit `sessionKey`
+      conversations are atomic.
 - [ ] No process depends on 0.5 run state, replay, TUI, hooks injectors, or
       YAML catalog behavior after cutover.
 

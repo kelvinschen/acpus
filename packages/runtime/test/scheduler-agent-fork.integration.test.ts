@@ -2,7 +2,7 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { readdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
-import { template } from "@acpus/expression";
+import { lift, template } from "@acpus/expression";
 import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -11,7 +11,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRows, runtimeRunsRoot, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
+import { agentSummary, agentTiming, observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 import { getRunVisualizationSnapshot } from "../src/runs/use-cases.js";
 
 const executorMocks = vi.hoisted(() => ({
@@ -394,6 +394,7 @@ describe("scheduler agent overrides and forks", () => {
 
           expect(turns).toHaveLength(1);
           expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
           expect(store.getRun(fork.id)?.dynamic?.nodeInstances).toEqual([
             expect.objectContaining({ reusedFromRunId: source.id, reusedFromNodeKey: expect.any(String) }),
           ]);
@@ -403,7 +404,7 @@ describe("scheduler agent overrides and forks", () => {
       });
     });
 
-  it("reruns explicit-session agents in a fresh child session", async () => {
+  it("replays an unchanged explicit session group without creating a child session", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-explicit-session", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
         const store = await openRuntimeStore(workspace);
@@ -417,13 +418,471 @@ describe("scheduler agent overrides and forks", () => {
           await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
 
           const fork = await forkRuntimeRun(store, source.id);
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, fork.id)).toEqual([{ member_count: 2, replayed_count: 0 }]);
           await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store, executeAgentTurn }))
-            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 2 });
+
+          expect(turns).toHaveLength(2);
+          expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+          expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
+          expect(store.getRun(fork.id)?.dynamic?.nodeInstances).toEqual([
+            expect.objectContaining({ nodeId: "first_review", reusedFromRunId: source.id }),
+            expect.objectContaining({ nodeId: "second_review", reusedFromRunId: source.id }),
+          ]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("continues an atomic session-group replay after the runtime store reopens", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-reopen", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
+        let store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
+          const fork = await forkRuntimeRun(store, source.id);
+
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: fork.id,
+            ownerId: "fork-owner-a",
+            store,
+            shouldStop: () => runtimeRows(workspace, `
+              SELECT replayed_count
+              FROM fork_replay_session_groups
+              WHERE run_id = ?
+            `, fork.id)[0]?.replayed_count === 1,
+          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 1 });
+          store.close();
+          store = await openRuntimeStore(workspace);
+
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner-b", store }))
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 1 });
+          expect(turns).toHaveLength(2);
+          expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("replays and enforces the source conversation order independently of child admission", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-source-order", async workspace => {
+        const sourcePrepared = await prepareSyntheticWorkflow(workspace, parallelSessionOrderWorkflow(1));
+        const childPrepared = await prepareSyntheticWorkflow(workspace, parallelSessionOrderWorkflow(3));
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared: sourcePrepared, input: { variant: 0 }, cwd: workspace });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 4, completed: 4 });
+          expect(runtimeRows(workspace, `
+            SELECT node_instances.node_id
+            FROM run_events
+            JOIN node_instances
+              ON node_instances.run_id = run_events.run_id AND node_instances.node_key = run_events.node_key
+            WHERE run_events.run_id = ?
+              AND run_events.type = 'instance.completed'
+              AND node_instances.node_id LIKE 'agent_%'
+            ORDER BY run_events.sequence
+          `, source.id).map(row => row.node_id)).toEqual(["agent_a", "agent_b", "agent_c"]);
+
+          const replayed = await forkRuntimeRun(store, source.id, { prepared: childPrepared, input: { variant: 1 } });
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, replayed.id)).toEqual([{ member_count: 3, replayed_count: 0 }]);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: replayed.id, ownerId: "replay-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 4 });
+          expect(turns).toHaveLength(3);
+          expect(runtimeRows(workspace, `
+            SELECT node_instances.node_id
+            FROM run_events
+            JOIN node_instances
+              ON node_instances.run_id = run_events.run_id AND node_instances.node_key = run_events.node_key
+            WHERE run_events.run_id = ?
+              AND run_events.type = 'instance.completed'
+              AND node_instances.node_id LIKE 'agent_%'
+            ORDER BY run_events.sequence
+          `, replayed.id).map(row => row.node_id)).toEqual(["agent_a", "agent_b", "agent_c"]);
+
+          const outOfOrder = await forkRuntimeRun(store, source.id, { prepared: childPrepared, input: { variant: 2 } });
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: outOfOrder.id,
+            ownerId: "bootstrap-order-owner",
+            store,
+            shouldStop: () => true,
+          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 0 });
+          const orderedCandidates = store.scheduler.listReplayCandidates(outOfOrder.id)
+            .filter(candidate => candidate.sessionGroupDigest !== undefined);
+          expect(orderedCandidates).toHaveLength(3);
+          const bootstrapProjection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(outOfOrder.id).projection;
+          expect(Object.values(bootstrapProjection.instances)
+            .filter(instance => instance.status === "ready")
+            .map(instance => instance.nodeId)).toEqual(expect.arrayContaining(["agent_b", "agent_c"]));
+          expect(Object.values(bootstrapProjection.instances)
+            .find(instance => instance.nodeId === "agent_a")?.status).not.toBe("ready");
+          const lateCandidate = orderedCandidates[2]!;
+          const lateFact = runtimeRows(workspace, `
+            SELECT operation_digest, input_digest, session_group_digest
+            FROM fork_replay_facts
+            WHERE run_id = ? AND node_key = ?
+          `, outOfOrder.id, lateCandidate.nodeKey)[0]!;
+          const orderClaim = store.scheduler.claimRun(outOfOrder.id, "direct-order-owner", 60_000);
+          if (!orderClaim) throw new Error("expected out-of-order run claim");
+          try {
+            const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(outOfOrder.id);
+            const committed = store.scheduler.tryCommitReplay({
+              runId: outOfOrder.id,
+              nodeKey: lateCandidate.nodeKey,
+              ownerEpoch: orderClaim.ownerEpoch,
+              expectedVersion: snapshot.version,
+              expectedSessionGroupDigest: String(lateFact.session_group_digest),
+              replayIdentity: {
+                operationDigest: String(lateFact.operation_digest),
+                inputDigest: String(lateFact.input_digest),
+                sessionGroupDigest: String(lateFact.session_group_digest),
+              },
+            });
+            if (committed.isErr()) throw new Error(committed.error.message);
+            expect(committed.value).toMatchObject({
+              disposition: "mismatch",
+              invalidatedNodeKeys: orderedCandidates.map(candidate => candidate.nodeKey),
+            });
+          } finally {
+            store.scheduler.releaseRun(orderClaim);
+          }
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", outOfOrder.id)).toEqual([]);
+          expect(runtimeRows(workspace, `
+            SELECT * FROM fork_replay_facts
+            WHERE run_id = ? AND session_group_digest IS NOT NULL
+          `, outOfOrder.id)).toEqual([]);
+
+          const partial = await forkRuntimeRun(store, source.id, { prepared: childPrepared, input: { variant: 3 } });
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: partial.id,
+            ownerId: "partial-order-owner",
+            store,
+            shouldStop: () => runtimeRows(workspace, `
+              SELECT replayed_count
+              FROM fork_replay_session_groups
+              WHERE run_id = ?
+            `, partial.id)[0]?.replayed_count === 1,
+          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 2 });
+          const remaining = store.scheduler.listReplayCandidates(partial.id)
+            .filter(candidate => candidate.sessionGroupDigest !== undefined);
+          expect(remaining).toHaveLength(2);
+          const skippedCandidate = remaining[1]!;
+          const skippedFact = runtimeRows(workspace, `
+            SELECT operation_digest, input_digest, session_group_digest
+            FROM fork_replay_facts
+            WHERE run_id = ? AND node_key = ?
+          `, partial.id, skippedCandidate.nodeKey)[0]!;
+          const partialClaim = store.scheduler.claimRun(partial.id, "direct-partial-order-owner", 60_000);
+          if (!partialClaim) throw new Error("expected partial-order run claim");
+          try {
+            const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(partial.id);
+            expect(() => store.scheduler.tryCommitReplay({
+              runId: partial.id,
+              nodeKey: skippedCandidate.nodeKey,
+              ownerEpoch: partialClaim.ownerEpoch,
+              expectedVersion: snapshot.version,
+              expectedSessionGroupDigest: String(skippedFact.session_group_digest),
+              replayIdentity: {
+                operationDigest: String(skippedFact.operation_digest),
+                inputDigest: String(skippedFact.input_digest),
+                sessionGroupDigest: String(skippedFact.session_group_digest),
+              },
+            })).toThrow(/out of source order.*after 1 member/);
+          } finally {
+            store.scheduler.releaseRun(partialClaim);
+          }
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, partial.id)).toEqual([{ member_count: 3, replayed_count: 1 }]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("applies session-group atomicity to targets inside and after the group", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-targets", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentCheckpointWorkflow(false));
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
+
+          const intersecting = await forkRuntimeRun(store, source.id, { target: "second_review" });
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", intersecting.id)).toEqual([]);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: intersecting.id, ownerId: "inside-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 3, completed: 3 });
 
           expect(turns).toHaveLength(4);
-          expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
-          expect(turns[3]!.sessionName).toBe(turns[2]!.sessionName);
+          expect(turns[0]!.sessionName).toBe(turns[1]!.sessionName);
+          expect(turns[2]!.sessionName).toBe(turns[3]!.sessionName);
           expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
+
+          const after = await forkRuntimeRun(store, source.id, { target: "after_group" });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: after.id, ownerId: "after-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 1, completed: 3 });
+
+          expect(turns).toHaveLength(4);
+          const attempts = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(after.id).projection.attempts);
+          expect(attempts.map(attempt => attempt.nodeId)).toEqual(["after_group"]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("reruns earlier members when a later same-session member is after the target", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-open-after-target", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentCheckpointWorkflow(true));
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
+
+          const fork = await forkRuntimeRun(store, source.id, { target: "after_group" });
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 4, completed: 4 });
+
+          expect(turns).toHaveLength(6);
+          expect(new Set(turns.slice(0, 3).map(turn => turn.sessionName)).size).toBe(1);
+          expect(new Set(turns.slice(3).map(turn => turn.sessionName)).size).toBe(1);
+          expect(turns[3]!.sessionName).not.toBe(turns[0]!.sessionName);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("replays every occurrence in a completed loop session group", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-loop-complete", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentLoopWorkflow());
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: source.id,
+            ownerId: "source-owner",
+            store,
+            executeAgentTurn: async request => {
+              turns.push(request);
+              const output = turns.length === 2
+                ? "{\"approved\":false,\"feedback\":\"revise\"}"
+                : turns.length === 4
+                  ? "{\"approved\":true,\"feedback\":\"done\"}"
+                  : "{\"ok\":true}";
+              return observedCompletedAgentTurn(request, taggedAgentOutput(output));
+            },
+          })).resolves.toMatchObject({ status: "completed", started: 4, completed: 4 });
+
+          const fork = await forkRuntimeRun(store, source.id);
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, fork.id)).toEqual([{ member_count: 2, replayed_count: 0 }]);
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .resolves.toMatchObject({ status: "completed", started: 0, completed: 4 });
+
+          expect(turns).toHaveLength(4);
+          expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("reruns every implementer occurrence after a later same-session occurrence fails", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-loop-failure", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentLoopWorkflow());
+        const store = await openRuntimeStore(workspace);
+        const sourceTurns: AgentTurnRequest[] = [];
+        const forkTurns: AgentTurnRequest[] = [];
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: source.id,
+            ownerId: "source-owner",
+            store,
+            executeAgentTurn: async request => {
+              sourceTurns.push(request);
+              if (sourceTurns.length === 1) return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+              if (sourceTurns.length === 2) return observedCompletedAgentTurn(request, taggedAgentOutput("{\"approved\":false,\"feedback\":\"revise\"}"));
+              return {
+                status: "failed",
+                failure: { kind: "provider_exit", message: "implementer crashed" },
+                responses: [],
+                stderr: "",
+                summary: agentSummary(0),
+                timing: agentTiming(),
+              };
+            },
+          })).resolves.toMatchObject({ status: "failed", started: 3, completed: 2, failed: 1 });
+
+          const fork = await forkRuntimeRun(store, source.id);
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
+          await expect(advanceFrozenRun({
+            cwd: workspace,
+            runId: fork.id,
+            ownerId: "fork-owner",
+            store,
+            executeAgentTurn: async request => {
+              forkTurns.push(request);
+              const output = forkTurns.length < 3 ? "{\"ok\":true}" : "{\"approved\":true,\"feedback\":\"done\"}";
+              return observedCompletedAgentTurn(request, taggedAgentOutput(output));
+            },
+          })).resolves.toMatchObject({ status: "completed", started: 3, completed: 4 });
+
+          const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection;
+          const implement0 = deriveInstanceKey(appendNode(appendLoopIteration([], "review_cycle", 0), "implement"));
+          const review0 = deriveInstanceKey(appendNode(appendLoopIteration([], "review_cycle", 0), "review"));
+          const implement1 = deriveInstanceKey(appendNode(appendLoopIteration([], "review_cycle", 1), "implement"));
+          expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === implement0)).toHaveLength(1);
+          expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === implement1)).toHaveLength(1);
+          expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === review0)).toHaveLength(0);
+          expect(forkTurns[0]!.sessionName).toBe(forkTurns[1]!.sessionName);
+          expect(forkTurns[0]!.sessionName).not.toBe(sourceTurns[0]!.sessionName);
+        } finally {
+          store.close();
+        }
+      });
+    });
+
+  it("fails visibly when optimistic topology diverges after partial group replay", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-divergence", async workspace => {
+        const globalKey = "__acpus_fork_session_topology_evaluations";
+        delete (globalThis as Record<string, unknown>)[globalKey];
+        const prepared = await prepareSyntheticWorkflow(workspace, divergentSessionTopologyWorkflow());
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await expect(advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+
+          const fork = await forkRuntimeRun(store, source.id);
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, fork.id)).toEqual([{ member_count: 2, replayed_count: 0 }]);
+
+          await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
+            .rejects.toThrow(/cannot complete after reusing 1 of 2 members/);
+          expect(turns).toHaveLength(2);
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, fork.id)).toEqual([{ member_count: 2, replayed_count: 1 }]);
+          expect(store.getRun(fork.id)?.status).not.toBe("completed");
+        } finally {
+          store.close();
+          delete (globalThis as Record<string, unknown>)[globalKey];
+        }
+      });
+    });
+
+  it("invalidates before replay and refuses a missing fact after replay starts", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-store-invariants", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
+        const store = await openRuntimeStore(workspace);
+        const turns: AgentTurnRequest[] = [];
+        const executeAgentTurn = async (request: AgentTurnRequest) => {
+          turns.push(request);
+          return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
+        };
+        try {
+          const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
+          const firstMismatch = await forkRuntimeRun(store, source.id);
+          executeRuntimeSql(workspace, `
+            UPDATE fork_replay_facts
+            SET operation_digest = 'sha256:mismatch'
+            WHERE run_id = ? AND source_sequence = (
+              SELECT MIN(source_sequence) FROM fork_replay_facts WHERE run_id = ?
+            )
+          `, firstMismatch.id, firstMismatch.id);
+
+          await expect(advanceFrozenRun({ cwd: workspace, runId: firstMismatch.id, ownerId: "mismatch-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+          expect(turns).toHaveLength(4);
+          expect(turns[2]!.sessionName).toBe(turns[3]!.sessionName);
+          expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
+
+          const missingBeforeReplay = await forkRuntimeRun(store, source.id, { input: {} });
+          executeRuntimeSql(workspace, `
+            DELETE FROM fork_replay_facts
+            WHERE run_id = ? AND source_sequence = (
+              SELECT MIN(source_sequence) FROM fork_replay_facts WHERE run_id = ?
+            )
+          `, missingBeforeReplay.id, missingBeforeReplay.id);
+
+          await expect(advanceFrozenRun({ cwd: workspace, runId: missingBeforeReplay.id, ownerId: "missing-owner", store, executeAgentTurn }))
+            .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
+          expect(turns).toHaveLength(6);
+          expect(turns[4]!.sessionName).toBe(turns[5]!.sessionName);
+          expect(turns[4]!.sessionName).not.toBe(turns[0]!.sessionName);
+
+          const partial = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
+          executeRuntimeSql(workspace, `
+            DELETE FROM fork_replay_facts
+            WHERE run_id = ? AND source_sequence = (
+              SELECT MAX(source_sequence) FROM fork_replay_facts WHERE run_id = ?
+            )
+          `, partial.id, partial.id);
+
+          await expect(advanceFrozenRun({ cwd: workspace, runId: partial.id, ownerId: "partial-owner", store, executeAgentTurn }))
+            .rejects.toThrow(/attempted to execute member.*after 1 member/);
+          expect(turns).toHaveLength(6);
+          expect(runtimeRows(workspace, `
+            SELECT member_count, replayed_count
+            FROM fork_replay_session_groups
+            WHERE run_id = ?
+          `, partial.id)).toEqual([{ member_count: 2, replayed_count: 1 }]);
         } finally {
           store.close();
         }
@@ -475,15 +934,55 @@ describe("scheduler agent overrides and forks", () => {
           nodeInstances: [],
           nodeStates: [],
           artifacts: [],
+          replayGroups: [],
           replayFacts: [],
         });
         await expect(readdir(runtimeRunsRoot(workspace)).then(entries => entries.sort())).resolves.toEqual(runDirsBefore);
       });
     });
 
-  it("re-executes completed fork runs when fork-time agent overrides change", async () => {
+  it("ignores unknown artifacts referenced only by a rejected session group", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-fork-rejected-artifact", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
+        const firstKey = deriveInstanceKey(appendNode([], "first_review"));
+        let sourceId = "";
+        const sourceStore = await openRuntimeStore(workspace);
+        try {
+          const source = await admitRunForTest(sourceStore, { prepared, input: {}, cwd: workspace });
+          sourceId = source.id;
+          await advanceFrozenRun({
+            cwd: workspace,
+            runId: source.id,
+            ownerId: "source-owner",
+            store: sourceStore,
+            executeAgentTurn: async request => observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}")),
+          });
+        } finally {
+          sourceStore.close();
+        }
+
+        replaceCompletedInstanceEventOutput(workspace, sourceId, firstKey, {
+          ok: true,
+          artifact: { kind: "artifact", uri: `artifact://${sourceId}/missing_artifact` },
+        });
+
+        const forkStore = await openRuntimeStore(workspace);
+        try {
+          const fork = await forkRuntimeRun(forkStore, sourceId, {
+            agentOverrides: { reviewer: { command: "custom-acp-server" } },
+          });
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_facts WHERE run_id = ?", fork.id)).toEqual([]);
+          expect(runtimeRows(workspace, "SELECT * FROM artifacts WHERE run_id = ?", fork.id)).toEqual([]);
+        } finally {
+          forkStore.close();
+        }
+      });
+    });
+
+  it("re-executes the whole session group when fork-time agent overrides change", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-override-reexecutes", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
+        const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
         const store = await openRuntimeStore(workspace);
         const sourceTurns: AgentTurnRequest[] = [];
         const forkTurns: AgentTurnRequest[] = [];
@@ -498,7 +997,7 @@ describe("scheduler agent overrides and forks", () => {
               sourceTurns.push(request);
               return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
             },
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
           expect(store.getRun(source.id)).toMatchObject({ status: "completed", output: {} });
 
           const fork = await forkRuntimeRun(store, source.id, {
@@ -507,6 +1006,7 @@ describe("scheduler agent overrides and forks", () => {
           const forkRun = store.getRun(fork.id);
           expect(forkRun).toMatchObject({ status: "pending" });
           expect(forkRun).not.toHaveProperty("output");
+          expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
 
           await expect(advanceFrozenRun({
             cwd: workspace,
@@ -517,11 +1017,14 @@ describe("scheduler agent overrides and forks", () => {
               forkTurns.push(request);
               return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
             },
-          })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
+          })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
-          expect(sourceTurns).toHaveLength(1);
-          expect(forkTurns).toHaveLength(1);
-          expect(forkTurns[0]!.agent).toEqual({ kind: "command", command: "custom-acp-server" });
+          expect(sourceTurns).toHaveLength(2);
+          expect(forkTurns).toHaveLength(2);
+          expect(forkTurns.map(turn => turn.agent)).toEqual([
+            { kind: "command", command: "custom-acp-server" },
+            { kind: "command", command: "custom-acp-server" },
+          ]);
         } finally {
           store.close();
         }
@@ -680,6 +1183,154 @@ function forkAgentWorkflow(sessionKey?: string) {
   });
 }
 
+function forkAgentCheckpointWorkflow(withLaterSessionMember: boolean) {
+  return defineWorkflow({
+    name: withLaterSessionMember
+      ? "scheduler-node-executor-fork-agent-open-session"
+      : "scheduler-node-executor-fork-agent-closed-session",
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, step }) => {
+    const first = step("first_review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      sessionKey: "shared-session",
+      prompt: "review",
+    });
+    const second = step("second_review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      sessionKey: "shared-session",
+      prompt: template`review again: ${first.output.ok}`,
+    });
+    const after = step("after_group").task({
+      input: second.output.ok,
+      exec: async ({ input }) => ({ ok: input }),
+    });
+    if (withLaterSessionMember) {
+      step("later_review").agent({
+        outputSchema: z.object({ ok: z.boolean() }),
+        agent: agents.reviewer,
+        sessionKey: "shared-session",
+        prompt: template`review after task: ${after.output.ok}`,
+      });
+    }
+    return {};
+  });
+}
+
+function parallelSessionOrderWorkflow(maxConcurrency: number) {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-agent-session-source-order",
+    inputSchema: z.object({ variant: z.number() }),
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, step }) => {
+    step("conversation").parallel({
+      maxConcurrency,
+      branches: {
+        a() {
+          const gate = step("gate").task({
+            input: null,
+            exec: async () => {
+              await new Promise(resolve => setTimeout(resolve, 20));
+              return { ok: true };
+            },
+          });
+          step("agent_a").agent({
+            outputSchema: z.object({ ok: z.boolean() }),
+            agent: agents.reviewer,
+            sessionKey: "ordered-session",
+            prompt: template`A ${gate.output.ok}`,
+          });
+          return {};
+        },
+        b() {
+          step("agent_b").agent({
+            outputSchema: z.object({ ok: z.boolean() }),
+            agent: agents.reviewer,
+            sessionKey: "ordered-session",
+            prompt: "B",
+          });
+          return {};
+        },
+        c() {
+          step("agent_c").agent({
+            outputSchema: z.object({ ok: z.boolean() }),
+            agent: agents.reviewer,
+            sessionKey: "ordered-session",
+            prompt: "C",
+          });
+          return {};
+        },
+      },
+    });
+    return {};
+  });
+}
+
+function forkAgentLoopWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-agent-session-loop",
+    agents: {
+      implementer: { use: "codex" },
+      reviewer: { use: "codex" },
+    },
+  }).build(({ agents, step }) => {
+    const cycle = step("review_cycle").loop({
+      state: { approved: false, feedback: "initial" },
+      do({ index, state }) {
+        const implement = step("implement").agent({
+          outputSchema: z.object({ ok: z.boolean() }),
+          agent: agents.implementer,
+          sessionKey: "loop-implementer",
+          prompt: template`implement round ${index}: ${state.feedback}`,
+        });
+        const review = step("review").agent({
+          outputSchema: z.object({ approved: z.boolean(), feedback: z.string() }),
+          agent: agents.reviewer,
+          prompt: template`review round ${index}: ${implement.output.ok}`,
+        });
+        return { state: review.output, stop: review.output.approved };
+      },
+    });
+    return { approved: cycle.output.approved };
+  });
+}
+
+function divergentSessionTopologyWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-agent-session-divergence",
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, meta, step }) => {
+    const first = step("first_review").agent({
+      outputSchema: z.object({ ok: z.boolean() }),
+      agent: agents.reviewer,
+      sessionKey: "shared-session",
+      prompt: "review",
+    });
+    step("unstable_route").if({
+      condition: lift({ ok: first.output.ok, runId: meta.runId }, ({ ok, runId }) => {
+        const key = "__acpus_fork_session_topology_evaluations";
+        const counts = (Reflect.get(globalThis, key) as Record<string, number> | undefined) ?? {};
+        const count = (counts[runId] ?? 0) + 1;
+        counts[runId] = count;
+        Reflect.set(globalThis, key, counts);
+        return ok && count === 1;
+      }),
+      then() {
+        step("second_review").agent({
+          outputSchema: z.object({ ok: z.boolean() }),
+          agent: agents.reviewer,
+          sessionKey: "shared-session",
+          prompt: "review again",
+        });
+        return { continued: true };
+      },
+      else() { return { continued: false }; },
+    });
+    return {};
+  });
+}
+
 function fieldInputForkWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-fork-field-input",
@@ -779,6 +1430,15 @@ function replaceCompletedInstanceEventOutput(workspace: string, runId: string, n
   }
 }
 
+function executeRuntimeSql(workspace: string, sql: string, ...params: string[]): void {
+  const db = new DatabaseSync(runtimeDatabasePath(workspace));
+  try {
+    db.prepare(sql).run(...params);
+  } finally {
+    db.close();
+  }
+}
+
 function forkAdmissionLeaks(workspace: string, knownRunIds: Set<string>) {
   const unknown = (rows: Array<Record<string, unknown>>) => rows.filter(row => !knownRunIds.has(String(row.run_id)));
   return {
@@ -789,6 +1449,7 @@ function forkAdmissionLeaks(workspace: string, knownRunIds: Set<string>) {
     nodeInstances: unknown(runtimeRows(workspace, "SELECT run_id, node_key, status FROM node_instances ORDER BY run_id, node_key")),
     nodeStates: unknown(runtimeRows(workspace, "SELECT run_id, node_key, status FROM node_states ORDER BY run_id, node_key")),
     artifacts: unknown(runtimeRows(workspace, "SELECT run_id, id FROM artifacts ORDER BY run_id, id")),
+    replayGroups: unknown(runtimeRows(workspace, "SELECT run_id, session_group_digest FROM fork_replay_session_groups ORDER BY run_id, session_group_digest")),
     replayFacts: unknown(runtimeRows(workspace, "SELECT run_id, node_key FROM fork_replay_facts ORDER BY run_id, node_key")),
   };
 }

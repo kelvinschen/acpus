@@ -92,10 +92,13 @@ export type AttemptStartInput = {
   deadlineAt?: string;
   idempotencyKey: string;
   replayIdentity?: ReplayIdentity;
+  sessionGroupDigest?: string;
 };
 
 export type ReplayCandidate = {
   nodeKey: string;
+  sourceSequence: number;
+  sessionGroupDigest?: string;
 };
 
 export type ReplayCommitInput = {
@@ -103,19 +106,20 @@ export type ReplayCommitInput = {
   nodeKey: string;
   ownerEpoch: number;
   expectedVersion: number;
-  replayIdentity: ReplayIdentity;
+  replayIdentity?: ReplayIdentity;
+  expectedSessionGroupDigest?: string;
 };
 
-export type ReplayCommitResult = {
-  disposition: "replayed" | "mismatch";
-  snapshot: SchedulerSnapshot;
-};
+export type ReplayCommitResult =
+  | { disposition: "replayed"; snapshot: SchedulerSnapshot }
+  | { disposition: "mismatch"; snapshot: SchedulerSnapshot; invalidatedNodeKeys: string[] };
 
 export type AttemptStartResult = {
   attemptId: string;
   attemptNo: number;
   snapshot: SchedulerSnapshot;
   disposition: "started" | "existing";
+  invalidatedSessionGroupDigest?: string;
   steer?: { steerId: string; instruction: string };
 };
 

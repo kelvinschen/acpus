@@ -3,51 +3,62 @@
 Only an explicit `/wf:wide-research` or `/workflow:wide-research` request runs
 this workflow.
 
-Use this workflow to research many comparable items under one consistent rubric
-and turn the findings into a sourced comparison. An item can be a product,
-company, paper, person, source, jurisdiction, dataset, file, case, or any other
+Use it to research many comparable items under one evidence rubric and publish
+a sourced landscape, comparison, or recommendation. An item can be a product,
+company, paper, person, source, jurisdiction, dataset, file, case, or another
 independently researchable unit.
 
 Wide research is a good fit when:
 
-- the goal is broad coverage rather than a deep investigation of a few
+- the goal is broad coverage rather than an adaptive investigation of a few
   interdependent questions;
-- every item should receive comparable attention;
-- the result should show coverage, missing evidence, and source provenance.
+- every item should receive comparable evidence treatment;
+- the result should expose missing evidence and source provenance.
 
-Use deep research instead when the work depends on adaptive follow-up,
+Use deep research instead when the work depends on iterative follow-up,
 cross-checking, or developing one line of argument.
 
 ## Inputs
 
 - `question` (required): the population to research and the comparison or survey
   goal.
-- `context` (optional): constraints such as audience, time range, required
-  fields, repositories, source preferences, or a precise definition of one item.
-- `breadth` (optional): coverage preset: `quick` (8 items), `wide` (16,
-  default), or `xwide` (64). The workflow may return fewer when evidence is
-  insufficient.
-- `reportFormat` (optional): `html` (default), `md`, or `none`.
+- `context` (optional): audience, time range, required fields, repositories,
+  source preferences, or a precise definition of one item.
+- `breadth` (optional): `quick` targets 8 items, `wide` targets 16 and is the
+  default, and `xwide` targets 64. The workflow may return fewer when grounded
+  evidence is insufficient.
+- `reportFormat` (optional): `html` (default and preferred), `md`, or `none`.
+
+## Execution
+
+The lead defines a shared evidence frame, canonical identity rule, and up to 16
+mutually exclusive coverage cells. Each Cell Worker discovers, selects,
+researches, semantically reconciles, and locally compresses its own units in one
+context. The publication writer owns cross-cell identities, conflicts, gaps,
+and final coverage interpretation. A comparison matrix, ranking, or time series
+that needs one definition and observation window stays inside one source-local
+cell rather than being split by rows or periods.
+
+The workflow keeps at most 16 Cell Workers ready at once. `quick` maps 8 cells,
+`wide` maps 16, and `xwide` maps 16 cells with an average quota of 4 units each.
+There is no audit or repair Task, global reducer, or serial coverage-manager
+Agent. The writer receives a compact cell index and reads independent prose
+records plus structured source and dataset attachments from the evidence bundle.
 
 ## Outputs
 
-Every run produces `wide-research-evidence-bundle.json` with the research scope,
-selected items, per-item findings, coverage statistics, unresolved gaps, and a
-deduplicated source index. Unit researchers use the same compact evidence-record
-standard as deep-research lane workers: terms stay stable within a record,
-observations remain distinct from inference, and each finding keeps its evidence,
-locator, confidence, and material caveat together for reduction.
-The lead also records a natural-language publication strategy in the research
-brief: the reader outcome, one primary explanatory spine, opening and section
-arc, evidence obligations, boundaries, and required ending. Coverage units and
-the common rubric supply comparable evidence for that strategy; they do not
-dictate the final report's section order. The writer opens with the smallest
-authored Markdown orientation structure that makes the answer scannable. HTML
-rendering preserves that structure with editorial emphasis, then chooses a
-density profile, a content-driven entrance, deliberate reading/medium/wide
-regions, legible evidence type, evidence-gated color roles, and a quiet treatment
-for recurring identifiers and source markers without adding a workflow step.
+Every run produces `wide-research-evidence-bundle.json`. It contains the
+research plan, prepared cells, independent Cell Worker outputs,
+their coverage notes, exact source records, and reusable datasets. Semantic
+findings remain Agent-authored prose rather than machine-normalized claims.
+`reportFormat: none` returns only this evidence artifact.
 
+Markdown uses one publication writer. HTML starts a fresh renderer Agent from
+that completed draft so presentation cannot inherit the research context or
+revise the evidence. HTML runs publish both the authoritative Markdown draft and
+the final HTML artifact. `report.artifact` identifies the requested final format;
+`report.editorialArtifact` identifies the Markdown source and equals it in
+Markdown mode.
 
 ## Run
 

@@ -1,16 +1,12 @@
 /**
  * Data contracts for the bundled deep-research workflow.
  *
- * A contract earns structure only where deterministic code (a task, lift, or
- * fanout) reads a field. Everything that merely travels from one agent to the
- * next is prose: deterministic code never interprets the lane reports, the
- * skeptic's review, or the writer's publication draft, so forcing them into
- * nested arrays would tax the agent for no runtime benefit and invite long-array
- * and deep-nesting failures. The only structured fields below are the joints
- * code actually destructures: lane titles for deduplication and fanout, and the
- * gap loop's stop signal.
+ * Semantic findings, skeptic review, and publication drafts remain prose.
+ * Structure is limited to graph-control joints and exact source/dataset
+ * attachments that both research workflows hand to publication.
  */
 import { z } from "acpus/core";
+import { EvidenceAttachments } from "../shared/research/evidence-attachments.js";
 
 /** One independent investigation lane a single worker owns end to end. */
 export const LaneSpec = z.object({
@@ -33,13 +29,12 @@ export const GapPlanOutput = z.object({
 });
 
 /**
- * One worker's self-contained investigation of a single lane. `laneTitle` is
- * the only structured joint (code deduplicates on it); `report` is the entire
- * compact evidence record as prose, keeping each finding, its evidence,
- * inference, confidence, and material caveat together while carrying figure
- * candidates and sources in whatever shape the lane calls for.
+ * One worker's self-contained investigation of a single lane. Code deduplicates
+ * on `laneTitle`; `report` keeps each semantic finding, inference, confidence,
+ * and caveat together, while reusable sources and datasets use the shared
+ * acquisition-data shape.
  */
-export const LaneReport = z.object({
+export const LaneReport = EvidenceAttachments.extend({
   laneTitle: z.string(),
   report: z.string(),
 });

@@ -1,11 +1,47 @@
 import { createHash } from "node:crypto";
 import type { AgentDefinitionIR, AgentNodeIR, ExprIR, NodeIR, SignalNodeIR, TaskNodeIR } from "@acpus/core/ir";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
+import { resolveAgentSessionGroupDigest } from "../execution/agent-session.js";
 import { stableJson } from "../stable-json.js";
 import type { ReplayIdentity } from "./types.js";
 
 type ReplayLeaf = AgentNodeIR | TaskNodeIR | SignalNodeIR;
 const missingArtifact = Symbol("missingArtifact");
+
+export type ReplayEvaluation = {
+  replayIdentity?: ReplayIdentity;
+  sessionGroupDigest?: string;
+};
+
+export function replayEvaluation(
+  node: ReplayLeaf,
+  scope: EvaluationScope,
+  agent: AgentDefinitionIR | undefined,
+  artifactDigest: (uri: string) => string | undefined,
+): ReplayEvaluation {
+  const sessionGroupDigest = node.kind === "agent"
+    ? resolveAgentSessionGroupDigest(node, scope).unwrapOr(undefined)
+    : undefined;
+  const group = sessionGroupDigest === undefined ? {} : { sessionGroupDigest };
+  if (node.kind === "agent" && node.run.sessionKey !== undefined && sessionGroupDigest === undefined) return {};
+
+  const dependencies = declaredRefs(node).map(path => {
+    const value = tryEvaluateExpr({ kind: "ref", path }, scope);
+    if (value.isErr()) return undefined;
+    const canonical = canonicalValue(value.value, artifactDigest);
+    return canonical === missingArtifact ? undefined : [path, canonical];
+  });
+  if (dependencies.some(value => value === undefined)) return group;
+  const operation = node.kind === "agent" ? { node, agent } : { node };
+  return {
+    ...group,
+    replayIdentity: {
+      operationDigest: digest(operation),
+      inputDigest: digest(dependencies),
+      ...group,
+    },
+  };
+}
 
 export function replayIdentity(
   node: ReplayLeaf,
@@ -13,24 +49,12 @@ export function replayIdentity(
   agent: AgentDefinitionIR | undefined,
   artifactDigest: (uri: string) => string | undefined,
 ): ReplayIdentity | undefined {
-  if (node.kind === "agent" && node.run.sessionKey !== undefined) return undefined;
-  const dependencies = declaredRefs(node).map(path => {
-    const value = tryEvaluateExpr({ kind: "ref", path }, scope);
-    if (value.isErr()) return undefined;
-    const canonical = canonicalValue(value.value, artifactDigest);
-    return canonical === missingArtifact ? undefined : [path, canonical];
-  });
-  if (dependencies.some(value => value === undefined)) return undefined;
-  const operation = node.kind === "agent" ? { node, agent } : { node };
-  return {
-    operationDigest: digest(operation),
-    inputDigest: digest(dependencies),
-  };
+  return replayEvaluation(node, scope, agent, artifactDigest).replayIdentity;
 }
 
 function declaredRefs(node: ReplayLeaf): string[][] {
   const expressions = node.kind === "agent"
-    ? [node.run.prompt, node.run.cwd, ...Object.values(node.run.env ?? {}), node.timeout]
+    ? [node.run.prompt, node.run.sessionKey, node.run.cwd, ...Object.values(node.run.env ?? {}), node.timeout]
     : node.kind === "task"
       ? [node.run.input, node.run.cwd, ...Object.values(node.run.env ?? {}), node.run.execution?.defaultCommandTimeout, node.timeout]
       : [node.run.prompt, node.timeout, node.onTimeout?.message];

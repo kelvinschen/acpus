@@ -9,6 +9,8 @@ export type AgentSessionIdentity = {
   explicitSessionKey?: string;
 };
 
+const SESSION_GROUP_DOMAIN = "acpus:session-group:v1\0";
+
 export function resolveAgentSessionIdentity(
   node: AgentNodeIR,
   scope: EvaluationScope,
@@ -29,6 +31,15 @@ export function resolveAgentSessionIdentity(
     sessionName: `acpus-${digest}`,
     ...(explicitSessionKey.value === undefined ? {} : { explicitSessionKey: explicitSessionKey.value }),
   });
+}
+
+export function resolveAgentSessionGroupDigest(
+  node: AgentNodeIR,
+  scope: EvaluationScope,
+): Result<string | undefined, ResolutionError> {
+  return renderSessionKey(node, scope).map(sessionKey => sessionKey === undefined
+    ? undefined
+    : `sha256:${createHash("sha256").update(SESSION_GROUP_DOMAIN).update(sessionKey).digest("hex")}`);
 }
 
 function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result<string | undefined, ResolutionError> {

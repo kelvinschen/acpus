@@ -69,6 +69,7 @@ export type NodeInstance = {
 export type ReplayIdentity = {
   operationDigest: string;
   inputDigest: string;
+  sessionGroupDigest?: string;
 };
 
 type NodeAttempt = {

@@ -92,6 +92,7 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 > Basic Rules
 > - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`
 > - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+> - Give an Agent an `outputSchema` only when deterministic workflow code reads its fields; keep Agent-to-Agent handoffs as prose.
 > - No `outputSchema` in task and composites.
 
 Leaf nodes use the enclosing `step` dispatcher:

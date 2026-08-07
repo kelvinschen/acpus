@@ -53,8 +53,6 @@
         "skills/acpus/workflows/**/*.ts!"
       ],
       "vitest": false,
-      // printf is supplied by the shell used for self-contained inline Tasks.
-      "ignoreBinaries": ["printf"],
       "ignoreIssues": {
         // tsx is used only by the workspace source-mode daemon branch.
         "src/commands/daemon.ts": ["unlisted"],

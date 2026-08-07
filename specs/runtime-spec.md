@@ -48,7 +48,7 @@
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 8` as the current storage version.
+- The active database MUST use SQLite `user_version = 9` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index bounded Agent semantic observation through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -510,17 +510,17 @@ type DaemonSteerControlResult = {
 - A fork child MUST execute its selected workflow from initial run state rather than continue the source execution state.
 - Fork reuse MUST consider only accepted completed Agent, Task, and Signal results from the direct source run.
 - A source result MUST be reusable only for the same child occurrence when its effective Agent, Task, or Signal definition and every resolved workflow value it reads are unchanged.
-- Ambient host files, network state, wall-clock state, and Provider behavior MUST NOT change reuse eligibility.
-- A reusable result MUST complete the child occurrence without executing or waiting for it again.
-- An occurrence without a reusable result MUST execute normally.
-- A changed predecessor MUST NOT invalidate a later result when the later occurrence's own definition and resolved input values remain unchanged.
-- An Agent occurrence with an explicit `sessionKey` MUST NOT be reused.
+- Ambient host files, network state, wall-clock state, Provider behavior, random values, and authored callback purity MUST NOT affect reuse eligibility.
+- Runtime MUST complete a reusable child occurrence from its source result without execution and execute every non-reusable occurrence normally.
+- Outside an explicit-session group, a changed predecessor MUST NOT invalidate a later result when the later occurrence's own definition and resolved input values remain unchanged.
+- Materialized direct-source Agent occurrences resolving the same explicit `sessionKey` MUST form one replay group, eligible only when every member satisfies ordinary reuse and checkpoint rules and the child can reproduce exactly the same closed occurrence set.
+- A session group MUST either replay every member in direct-source accepted order without a child Agent attempt or ACP session, or execute every member in one fresh child session; fresh-child admission order does not affect that choice.
+- If child execution reveals different group membership, Runtime MUST rerun the whole group if no member has replayed and otherwise fail before executing a member or completing a partial replay.
 - Source-run artifacts inherited by the child MUST be exactly those referenced by reused results, with unchanged content.
-- Without a fork target, every otherwise reusable direct-source result MUST remain eligible.
+- Without a fork target, every otherwise reusable direct-source result or complete session group MUST remain eligible.
 - A fork target MUST resolve before child creation to one materialized source Agent, Task, or Signal occurrence.
-- A fork target with an attempt suffix MUST fail without creating a child run.
+- A missing, ambiguous, non-materialized, or attempt-suffixed fork target MUST fail without creating a child run.
 - A targeted fork MUST NOT reuse the selected occurrence or source work completed after that occurrence first became eligible to run.
-- A missing, ambiguous, or non-materialized fork target MUST fail without creating a child run.
 - Generic inspection MUST identify only the direct source run for a fork child.
 - Signal control MUST target one open dynamic wait by exact node key, occurrence reference without an attempt suffix, or unambiguous authored alias, normalize payload, consume idempotently, and resume the recovered session from persisted state.
 - `shutdown()` MUST stop only without active sessions, otherwise return `CONTROL_CONFLICT`; shutdown/idle-stop never mutates runs and no force-shutdown control exists.
@@ -603,7 +603,7 @@ Runtime owns generic inspection semantics and public shape.
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers fork reuse and rewind boundaries, selector resolution, complete candidate selection, semantic trees/folding, Forensics definitions/invocations/results, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable fork recovery, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
+- `pnpm test:unit packages/runtime`: covers fork compatibility and atomic explicit-session reuse, rewind boundaries, selector resolution, semantic trees/folding, Forensics projections, visible-state diff/frontier selection, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers durable fork replay and session-group failure/recovery boundaries, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

@@ -1,6 +1,6 @@
 import type { AgentDefinitionIR, AgentNodeIR, TaskNodeIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
-import { replayIdentity } from "../src/scheduler/fork-replay.js";
+import { replayEvaluation, replayIdentity } from "../src/scheduler/fork-replay.js";
 
 const noArtifact = () => undefined;
 
@@ -65,14 +65,34 @@ describe("fork replay identity", () => {
     expect(fork?.inputDigest).not.toBe(source?.inputDigest);
   });
 
-  it("never reuses an agent with an explicit session key", () => {
+  it("assigns explicit-session agents a run-independent session group", () => {
     const definition: AgentDefinitionIR = { kind: "agent_definition", use: "codex" };
-    expect(replayIdentity(agent({ kind: "literal", value: "shared" }), {}, definition, noArtifact)).toBeUndefined();
+    const first = replayIdentity(agent({ kind: "literal", value: "shared" }), {}, definition, noArtifact);
+    const same = replayIdentity(agent({ kind: "literal", value: "shared" }), {}, definition, noArtifact);
+    const different = replayIdentity(agent({ kind: "literal", value: "other" }), {}, definition, noArtifact);
+
+    expect(first?.sessionGroupDigest).toMatch(/^sha256:/);
+    expect(same?.sessionGroupDigest).toBe(first?.sessionGroupDigest);
+    expect(different?.sessionGroupDigest).not.toBe(first?.sessionGroupDigest);
 
     const reusable = replayIdentity(agent(), {}, definition, noArtifact);
     const changedDefinition = replayIdentity(agent(), {}, { ...definition, model: "different" }, noArtifact);
     expect(reusable).toBeDefined();
+    expect(reusable?.sessionGroupDigest).toBeUndefined();
     expect(changedDefinition?.operationDigest).not.toBe(reusable?.operationDigest);
+  });
+
+  it("resolves the session-group guard when another dependency prevents a full identity", () => {
+    const definition: AgentDefinitionIR = { kind: "agent_definition", use: "codex" };
+    const node = agent({ kind: "literal", value: "shared" });
+    node.run.prompt = { kind: "ref", path: ["input", "payload"] };
+
+    const replay = replayEvaluation(node, {
+      input: { payload: { nested: { kind: "artifact", uri: "artifact://missing/a" } } },
+    }, definition, noArtifact);
+
+    expect(replay.replayIdentity).toBeUndefined();
+    expect(replay.sessionGroupDigest).toMatch(/^sha256:/);
   });
 });
 

@@ -97,9 +97,9 @@ acpus runs fork <run-id> \
 
 Use fork when the workflow, input, Agent mapping, or Task definition must change. It creates a child run, leaves the source unchanged, and inherits every option you do not replace. Continue inspection on the child id from the receipt.
 
-Use `--target` for a restart point; omit it for compatibility-based reuse. It is a replay checkpoint, not a reuse override: the target and work completed after it became ready rerun; earlier results remain reusable only if their definitions and resolved inputs are unchanged.
+Use `--target` for a restart point; omit it for compatibility-based reuse. It is a replay checkpoint, not a reuse override: the target and work completed after it became ready rerun, as does any explicit `sessionKey` conversation intersecting the checkpoint. Earlier compatible results remain reusable when their definitions and resolved inputs are unchanged.
 
-Without `--target`, Acpus reuses every compatible result. Input or step changes rerun work whose own definition or resolved inputs change; later work can still be reused. New Agent conversations rerun work using `sessionKey`; artifacts follow reused results.
+Without `--target`, Acpus reuses compatible ordinary results by occurrence, operation, and resolved workflow values; ambient state and randomness are outside that comparison, and an earlier change does not invalidate a later match. Occurrences sharing an explicit `sessionKey` are one atomic conversation: Acpus reuses its complete closed source history in source order or reruns it entirely in a fresh child session. Artifacts follow reused results.
 
 To rewind, such as re-asking a consumed Signal, copy its `@ref` (without `#1`) from source inspection.
 

@@ -1,14 +1,34 @@
 /*
- * Pattern: Develop one reader-facing design through a resident Designer and three scoped resident challenge conversations sharing a run-scoped text blackboard, then publish the design with final review state.
+ * Pattern: Develop one reader-facing design through a resident Designer and three scoped resident challenge conversations sharing a durable artifact-backed text blackboard, then publish the design with final review state.
  * Scale: at most maxRounds × (1 designer + 3 challengers); peak ready Agents: 3.
  * Nodes: agent, task, if, parallel, loop
  */
 import { defineWorkflow, z } from "acpus/core";
 import { and, gte, md, or } from "acpus/expression";
 
-const Completion = z.object({
-  done: z.boolean(),
+const DesignDraft = z.object({
+  design: z.string(),
 });
+
+const ChallengeReview = z.object({
+  done: z.boolean(),
+  review: z.string(),
+});
+
+const PENDING_REVIEW = [
+  "# Status",
+  "",
+  "pending",
+  "",
+  "# Active Blockers",
+  "",
+  "None recorded yet.",
+  "",
+  "# Accepted Constraints",
+  "",
+  "None recorded yet.",
+  "",
+].join("\n");
 
 export default defineWorkflow({
   name: "design-forge",
@@ -27,39 +47,11 @@ export default defineWorkflow({
   },
 }).build(({ input, agents, meta, step }) => {
   const blackboard = step("seed_blackboard").task({
-    input: {
-      brief: input.brief,
-      runId: meta.runId,
-    },
-    exec: async ({ input, $ }) => {
-      const root = `/tmp/acpus-design-forge/${input.runId}`;
-      const writeOnce = async (path: string, content: string): Promise<void> => {
-        const existing = await $`test -e ${path}`.nothrow();
-        if (existing.exitCode !== 0) await $`printf %s ${content} > ${path}`;
-      };
-      const pendingReview = [
-        "# Status",
-        "",
-        "pending",
-        "",
-        "# Active Blockers",
-        "",
-        "None recorded yet.",
-        "",
-        "# Accepted Constraints",
-        "",
-        "None recorded yet.",
-        "",
-      ].join("\n");
-
-      await $`mkdir -p ${`${root}/reviews`}`;
-      await $`chmod 700 ${root}`;
-      await writeOnce(`${root}/brief.txt`, `${input.brief}\n`);
-      await writeOnce(`${root}/design.md`, "No design has been written yet.\n");
-      await writeOnce(`${root}/reviews/fitness.txt`, pendingReview);
-      await writeOnce(`${root}/reviews/failure.txt`, pendingReview);
-      await writeOnce(`${root}/reviews/simplicity.txt`, pendingReview);
-      return { root };
+    input: { brief: input.brief },
+    exec: async ({ input, artifact }) => {
+      const brief = await artifact.write("brief.txt", `${input.brief}\n`, { mediaType: "text/plain" });
+      const design = await artifact.write("design.md", "No design has been written yet.\n", { mediaType: "text/markdown" });
+      return { brief, design };
     },
   });
 
@@ -68,22 +60,32 @@ export default defineWorkflow({
       fitnessDone: false,
       failureDone: false,
       simplicityDone: false,
+      design: blackboard.output.design,
+      fitnessReview: PENDING_REVIEW,
+      failureReview: PENDING_REVIEW,
+      simplicityReview: PENDING_REVIEW,
       rounds: 0,
     },
     do({ state, round }) {
-      step("design_board").agent({
+      const designed = step("design_board").agent({
+        outputSchema: DesignDraft,
         agent: agents.designer,
-        cwd: blackboard.output.root,
+        cwd: meta.workspaceDir,
         sessionKey: "design-forge:designer",
         prompt: md`
           You own both the design and the document that communicates it.
 
-          Read brief.txt, design.md, and the three files under reviews/. brief.txt
-          contains the design problem, audience, goals, constraints, success
-          criteria, and starting context. The source workspace is
-          ${meta.workspaceDir}. Modify only design.md.
+          Read the brief and current design artifacts, plus the three current
+          reviews below. The source workspace is ${meta.workspaceDir}; inspect it
+          and public sources as needed, but do not modify source files or artifacts.
 
-          design.md is the reader-facing Markdown deliverable, not a scratchpad
+          Brief: ${blackboard.output.brief}
+          Current design: ${state.design}
+          Fitness review: ${state.fitnessReview}
+          Failure review: ${state.failureReview}
+          Simplicity review: ${state.simplicityReview}
+
+          The design is the reader-facing Markdown deliverable, not a scratchpad
           or review transcript. If no design has been written, inspect the source
           workspace and public sources as needed, then write the strongest useful
           proposal you can. Otherwise, treat Active Blockers as the authoritative
@@ -127,26 +129,36 @@ export default defineWorkflow({
             onto design judgments or common background knowledge.
           - Keep the final document self-contained.
 
-          Update design.md, then reply with a very short completion note.
+          Return only JSON matching the schema, with design containing the entire
+          replacement Markdown document.
         `,
+      });
+
+      const design = step("save_design").task({
+        input: { content: designed.output.design },
+        exec: async ({ input, artifact }) => ({
+          artifact: await artifact.write("design.md", input.content, { mediaType: "text/markdown" }),
+        }),
       });
 
       const challengePrompt = (
         lens: string,
         focus: string,
-        notebook: string,
+        previousReview: typeof state.fitnessReview,
       ) => md`
         You are the ${lens} challenger.
         Focus: ${focus}
 
-        Read brief.txt, design.md, and ${notebook}. brief.txt contains the design
-        problem, audience, goals, constraints, success criteria, and starting
-        context. Do not read another challenger's notebook.
+        Read the brief and current design artifacts, then review the previous
+        text below. Do not read another challenger's review.
+        Brief: ${blackboard.output.brief}
+        Current design: ${design.output.artifact}
+        Previous review: ${previousReview}
+
         The source workspace is ${meta.workspaceDir}. Inspect it or relevant public
         sources only as needed to establish or adjudicate a blocker.
-        Write only to that notebook; never edit design.md or another challenger's
-        notebook.
-        Write your notebook in the task language used by brief.txt. Preserve code,
+        Do not modify source files or any artifact. Write the review in the task
+        language used by the brief. Preserve code,
         identifiers, and source quotations in their original language when that
         improves precision.
 
@@ -165,14 +177,15 @@ export default defineWorkflow({
         existing Active Blockers. Add a blocker only for a regression introduced by
         the latest design pass; ignore newly noticed pre-existing concerns.
 
-        Replace the entire notebook in every review; never append review history.
+        Replace the entire review in every response; never append review history.
         Keep exactly these compact sections:
         - Status: replace the initial pending value with open or accepted.
         - Active Blockers: only unresolved blockers, or "None."
         - Accepted Constraints: concise decisions future edits must preserve.
 
         Return done=true exactly when Status is accepted and Active Blockers is
-        empty. Return done=false exactly when Status is open.
+        empty. Return done=false exactly when Status is open. Return only JSON
+        matching the schema, with review containing the complete replacement text.
       `;
 
       const challenges = step("challenge_panel").parallel({
@@ -180,48 +193,57 @@ export default defineWorkflow({
         branches: {
           fitness: () => step("fitness_gate").if({
             condition: state.fitnessDone,
-            then: () => ({ done: true }),
-            else: () => step("challenge_fitness").agent({
-              agent: agents.challenger,
-              cwd: blackboard.output.root,
-              sessionKey: "design-forge:challenger:fitness",
-              outputSchema: Completion,
-              prompt: challengePrompt(
-                "fitness",
-                "Fit to the brief, audience, goals, constraints, success criteria, important alternatives, and strength of the recommendation and supporting evidence.",
-                "reviews/fitness.txt",
-              ),
-            }).output,
+            then: () => ({ done: true, review: state.fitnessReview }),
+            else() {
+              const result = step("challenge_fitness").agent({
+                agent: agents.challenger,
+                cwd: meta.workspaceDir,
+                sessionKey: "design-forge:challenger:fitness",
+                outputSchema: ChallengeReview,
+                prompt: challengePrompt(
+                  "fitness",
+                  "Fit to the brief, audience, goals, constraints, success criteria, important alternatives, and strength of the recommendation and supporting evidence.",
+                  state.fitnessReview,
+                ),
+              });
+              return result.output;
+            },
           }).output,
           failure: () => step("failure_gate").if({
             condition: state.failureDone,
-            then: () => ({ done: true }),
-            else: () => step("challenge_failure").agent({
-              agent: agents.challenger,
-              cwd: blackboard.output.root,
-              sessionKey: "design-forge:challenger:failure",
-              outputSchema: Completion,
-              prompt: challengePrompt(
-                "failure",
-                "Counterexamples, edge cases, recovery, concurrency, security, privacy, compatibility, rollout, observability, and operational failure.",
-                "reviews/failure.txt",
-              ),
-            }).output,
+            then: () => ({ done: true, review: state.failureReview }),
+            else() {
+              const result = step("challenge_failure").agent({
+                agent: agents.challenger,
+                cwd: meta.workspaceDir,
+                sessionKey: "design-forge:challenger:failure",
+                outputSchema: ChallengeReview,
+                prompt: challengePrompt(
+                  "failure",
+                  "Counterexamples, edge cases, recovery, concurrency, security, privacy, compatibility, rollout, observability, and operational failure.",
+                  state.failureReview,
+                ),
+              });
+              return result.output;
+            },
           }).output,
           simplicity: () => step("simplicity_gate").if({
             condition: state.simplicityDone,
-            then: () => ({ done: true }),
-            else: () => step("challenge_simplicity").agent({
-              agent: agents.challenger,
-              cwd: blackboard.output.root,
-              sessionKey: "design-forge:challenger:simplicity",
-              outputSchema: Completion,
-              prompt: challengePrompt(
-                "simplicity",
-                "Unnecessary complexity, coupling, cheaper approaches, testability, operability, document hierarchy, terminology, duplication, and whether every table or diagram earns its cognitive cost.",
-                "reviews/simplicity.txt",
-              ),
-            }).output,
+            then: () => ({ done: true, review: state.simplicityReview }),
+            else() {
+              const result = step("challenge_simplicity").agent({
+                agent: agents.challenger,
+                cwd: meta.workspaceDir,
+                sessionKey: "design-forge:challenger:simplicity",
+                outputSchema: ChallengeReview,
+                prompt: challengePrompt(
+                  "simplicity",
+                  "Unnecessary complexity, coupling, cheaper approaches, testability, operability, document hierarchy, terminology, duplication, and whether every table or diagram earns its cognitive cost.",
+                  state.simplicityReview,
+                ),
+              });
+              return result.output;
+            },
           }).output,
         },
       });
@@ -236,6 +258,10 @@ export default defineWorkflow({
           fitnessDone: challenges.output.fitness.done,
           failureDone: challenges.output.failure.done,
           simplicityDone: challenges.output.simplicity.done,
+          design: design.output.artifact,
+          fitnessReview: challenges.output.fitness.review,
+          failureReview: challenges.output.failure.review,
+          simplicityReview: challenges.output.simplicity.review,
           rounds: round,
         },
         stop: or(settled, gte(round, input.maxRounds)),
@@ -249,17 +275,22 @@ export default defineWorkflow({
     cycle.output.simplicityDone,
   );
   const published = step("publish_blackboard").task({
-    cwd: blackboard.output.root,
     input: {
+      brief: blackboard.output.brief,
+      design: cycle.output.design,
+      fitness: cycle.output.fitnessReview,
+      failure: cycle.output.failureReview,
+      simplicity: cycle.output.simplicityReview,
       rounds: cycle.output.rounds,
       settled,
     },
-    exec: async ({ input, $, artifact }) => {
-      const brief = await $`cat brief.txt`.text();
-      const design = await $`cat design.md`.text();
-      const fitness = await $`cat reviews/fitness.txt`.text();
-      const failure = await $`cat reviews/failure.txt`.text();
-      const simplicity = await $`cat reviews/simplicity.txt`.text();
+    exec: async ({ input, artifact }) => {
+      const { readFile } = await import("node:fs/promises");
+      const [brief, design] = await Promise.all([
+        readFile(artifact.path(input.brief), "utf8"),
+        readFile(artifact.path(input.design), "utf8"),
+      ]);
+      const { fitness, failure, simplicity } = input;
       const outcome = input.settled ? "consensus" : "round limit";
       const reviewState = [
         "DESIGN FORGE FINAL REVIEW STATE",
@@ -285,12 +316,12 @@ export default defineWorkflow({
         `${design.trimEnd()}\n`,
         { mediaType: "text/markdown" },
       );
-      await artifact.write(
+      const reviewStateArtifact = await artifact.write(
         "design-forge-review-state.txt",
         reviewState,
         { mediaType: "text/plain" },
       );
-      return { blackboard };
+      return { blackboard, reviewState: reviewStateArtifact };
     },
   });
 

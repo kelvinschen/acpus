@@ -88,7 +88,7 @@ test("a late termination signal cannot turn into a successful check", {
     const originalSpawn = childProcess.spawn;
     childProcess.spawn = (_file, _args, options) => {
       const child = originalSpawn(process.execPath, ["--eval", ""], options);
-      child.once("close", () => process.kill(process.pid, "SIGTERM"));
+      child.once("close", () => process.emit("SIGTERM"));
       return child;
     };
     syncBuiltinESMExports();

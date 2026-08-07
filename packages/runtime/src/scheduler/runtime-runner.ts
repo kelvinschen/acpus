@@ -19,7 +19,7 @@ import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
 import { parseArtifactUri, readVerifiedArtifact } from "../artifacts/access.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
-import { isReplayLeaf, replayIdentity } from "./fork-replay.js";
+import { isReplayLeaf, replayEvaluation } from "./fork-replay.js";
 import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 
 export type AdvanceFrozenRunInput = {
@@ -164,10 +164,10 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
         .map(identity => identity.sessionName)
         .unwrapOr(undefined);
     },
-    replayIdentityFor: (instance, projection) => {
+    replayEvaluationFor: (instance, projection) => {
       const node = nodes.get(instance.nodeId);
-      if (!node || !isReplayLeaf(node)) return undefined;
-      return replayIdentity(
+      if (!node || !isReplayLeaf(node)) return {};
+      return replayEvaluation(
         node,
         scopeForNodeAttempt(scope, projection, instance.nodeKey),
         node.kind === "agent" ? frozen.ir.agents[node.run.agent] : undefined,

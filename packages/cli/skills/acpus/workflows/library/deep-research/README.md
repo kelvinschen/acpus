@@ -17,6 +17,9 @@ Deep research is a good fit when:
 Use wide research instead when the main goal is to survey or compare dozens of
 independent items under one consistent rubric.
 
+Select between the workflows before invocation. Deep and wide research do not
+nest or switch into one another.
+
 ## Inputs
 
 - `question` (required): the question to investigate.
@@ -26,15 +29,18 @@ independent items under one consistent rubric.
   focused first pass, `deep` for a thorough investigation with follow-up and
   cross-checking, and `xdeep` for broad, high-stakes, or especially uncertain
   questions.
-- `reportFormat` (optional): `html` (default), `md`, or `none`.
+- `reportFormat` (optional): `html` (default, preferred), `md`, or `none`.
 
 ## Outputs
 
-Every run produces a format-neutral evidence bundle containing the research
-scope, coverage, detailed findings, sources, and cross-check notes when
-applicable. Lane workers write compact records for downstream synthesis: terms
+Every run produces `evidence-bundle.json`, containing the research scope,
+coverage, detailed findings, sources, and cross-check notes when
+applicable. Compatible research remains eligible for fork reuse when only the
+presentation changes. Lane workers write compact records for synthesis: terms
 stay stable within a lane, observations remain distinct from inference, and each
 finding keeps its evidence, locator, confidence, and material caveat together.
+Exact source metadata and reusable datasets travel as structured attachments;
+semantic findings remain prose.
 The lead also records a natural-language publication strategy in the research
 brief: the reader outcome, one primary explanatory spine, opening and section
 arc, evidence obligations, boundaries, and required ending. Lanes gather the
@@ -45,7 +51,11 @@ reference detail out of the main narrative. HTML rendering preserves that
 structure with editorial emphasis, then chooses a density profile, a
 content-driven entrance, deliberate reading/medium/wide regions, legible
 evidence type, evidence-gated color roles, and a quiet treatment for recurring
-identifiers and source markers without adding a workflow step.
+identifiers and source markers without adding a workflow step. The writer and
+renderer use independent Agent sessions, and HTML runs retain the authoritative
+Markdown as a sibling artifact of the final page. `report.artifact` identifies
+the requested final format; `report.editorialArtifact` identifies the Markdown
+source and equals it in Markdown mode.
 
 
 ## Run

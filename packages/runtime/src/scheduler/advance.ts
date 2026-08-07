@@ -15,6 +15,7 @@ import {
 import { nextSchedulerTransitionEvents } from "./settle.js";
 import type { NodeInstance, SchedulerProjection } from "./types.js";
 import { createVersionedWakeup, type VersionedWakeup } from "./wakeup.js";
+import type { ReplayEvaluation } from "./fork-replay.js";
 
 export type NodeAttemptContext = {
   runId: string;
@@ -56,7 +57,7 @@ export type AdvanceRunInput = {
   maxLeafConcurrency?: number;
   signalNodeIds?: ReadonlySet<string>;
   executorResourceFor?: (instance: NodeInstance, projection: SchedulerProjection) => string | undefined;
-  replayIdentityFor?: (instance: NodeInstance, projection: SchedulerProjection) => NodeInstance["replayIdentity"];
+  replayEvaluationFor?: (instance: NodeInstance, projection: SchedulerProjection) => ReplayEvaluation;
   replayCandidates?: ReturnType<SchedulerStorePort["listReplayCandidates"]>;
   tryCommitReplay?: SchedulerStorePort["tryCommitReplay"];
   deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
@@ -250,7 +251,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
         signalNodeIds: input.signalNodeIds ?? new Set(),
       });
       if (admission?.kind === "signal") {
-        const replayIdentity = input.replayIdentityFor?.(admission.instance, snapshot.projection);
+        const replayIdentity = input.replayEvaluationFor?.(admission.instance, snapshot.projection).replayIdentity;
         const events = (input.awaitableEventsFor?.(admission.instance, snapshot.projection, now()) ?? []).map(event =>
           event.type === "instance.awaiting" && replayIdentity !== undefined
             ? { ...event, payload: { ...event.payload, replayIdentity } }
@@ -278,7 +279,8 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
       }
 
       if (admission?.kind === "executor") {
-        const replayIdentity = input.replayIdentityFor?.(admission.instance, snapshot.projection);
+        const replay = input.replayEvaluationFor?.(admission.instance, snapshot.projection);
+        const replayIdentity = replay?.replayIdentity;
         const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now()) ?? ok(undefined);
         const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
         const executorResource = input.executorResourceFor?.(admission.instance, snapshot.projection);
@@ -290,6 +292,7 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
           expectedVersion: snapshot.version,
           ...(deadlineAt === undefined ? {} : { deadlineAt }),
           ...(replayIdentity === undefined ? {} : { replayIdentity }),
+          ...(replay?.sessionGroupDigest === undefined ? {} : { sessionGroupDigest: replay.sessionGroupDigest }),
           idempotencyKey: `scheduler:start:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
         });
         if (started.isErr()) {
@@ -300,6 +303,11 @@ export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSumm
           }
           unwrapStoreResult(started);
         } else {
+          if (started.value.invalidatedSessionGroupDigest !== undefined) {
+            for (const [nodeKey, candidate] of replayCandidates) {
+              if (candidate.sessionGroupDigest === started.value.invalidatedSessionGroupDigest) replayCandidates.delete(nodeKey);
+            }
+          }
           if (started.value.disposition === "existing") continue;
           counters.started += 1;
           if (deadline.isErr()) {
@@ -373,21 +381,30 @@ function replayReadyInstance(
   snapshot: SchedulerSnapshot,
   candidates: Map<string, NonNullable<AdvanceRunInput["replayCandidates"]>[number]>,
 ): SchedulerSnapshot | "lease_lost" | undefined {
-  if (!input.replayIdentityFor || !input.tryCommitReplay) return undefined;
+  if (!input.replayEvaluationFor || !input.tryCommitReplay) return undefined;
+  const firstByGroup = new Map<string, NonNullable<AdvanceRunInput["replayCandidates"]>[number]>();
   for (const candidate of candidates.values()) {
+    if (candidate.sessionGroupDigest === undefined) continue;
+    const first = firstByGroup.get(candidate.sessionGroupDigest);
+    if (!first
+      || candidate.sourceSequence < first.sourceSequence
+      || (candidate.sourceSequence === first.sourceSequence && candidate.nodeKey.localeCompare(first.nodeKey) < 0)) {
+      firstByGroup.set(candidate.sessionGroupDigest, candidate);
+    }
+  }
+  for (const candidate of candidates.values()) {
+    if (candidate.sessionGroupDigest !== undefined
+      && firstByGroup.get(candidate.sessionGroupDigest)?.nodeKey !== candidate.nodeKey) continue;
     const instance = snapshot.projection.instances[candidate.nodeKey];
     if (instance?.status !== "ready") continue;
-    const replayIdentity = input.replayIdentityFor(instance, snapshot.projection);
-    if (!replayIdentity) {
-      candidates.delete(candidate.nodeKey);
-      continue;
-    }
+    const replayIdentity = input.replayEvaluationFor(instance, snapshot.projection).replayIdentity;
     const replayed = input.tryCommitReplay({
       runId: input.runId,
       nodeKey: instance.nodeKey,
       ownerEpoch: claim.ownerEpoch,
       expectedVersion: snapshot.version,
-      replayIdentity,
+      ...(replayIdentity === undefined ? {} : { replayIdentity }),
+      ...(candidate.sessionGroupDigest === undefined ? {} : { expectedSessionGroupDigest: candidate.sessionGroupDigest }),
     });
     if (replayed.isErr()) {
       if (isVersionMismatchError(replayed.error) || isInstanceNotReadyError(replayed.error) || isPausedError(replayed.error)) return undefined;
@@ -395,8 +412,11 @@ function replayReadyInstance(
       unwrapStoreResult(replayed);
       continue;
     }
-    candidates.delete(candidate.nodeKey);
-    if (replayed.value.disposition === "replayed") return replayed.value.snapshot;
+    if (replayed.value.disposition === "replayed") {
+      candidates.delete(candidate.nodeKey);
+      return replayed.value.snapshot;
+    }
+    for (const nodeKey of replayed.value.invalidatedNodeKeys) candidates.delete(nodeKey);
   }
   return undefined;
 }

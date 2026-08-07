@@ -53,6 +53,31 @@ describe("scheduler store format", () => {
     }
   });
 
+  it("stores fork session groups separately from their replay facts", () => {
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
+    try {
+      expect(tableColumns(db, "fork_replay_session_groups")).toEqual([
+        "run_id",
+        "session_group_digest",
+        "member_count",
+        "replayed_count",
+      ]);
+      expect(tableColumns(db, "fork_replay_facts")).toEqual([
+        "run_id",
+        "node_key",
+        "source_run_id",
+        "source_sequence",
+        "operation_digest",
+        "input_digest",
+        "session_group_digest",
+        "output_json",
+        "artifacts_json",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("owns bounded SQLite-only Agent observations in current storage", () => {
     const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
     try {
