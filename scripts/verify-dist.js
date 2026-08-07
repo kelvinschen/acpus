@@ -230,65 +230,18 @@ async function verifyPackedCli(packages) {
       assert.equal(existsSync(authority.typesPath), true);
     }
 
-    const examplesRoot = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "workflows", "examples");
-    const workflowSmoke = join(consumerDirectory, "skill-workflows-smoke.mjs");
-    await writeFile(workflowSmoke, `import assert from "node:assert/strict";
-import { existsSync, realpathSync } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+    const workflowSource = `import { defineWorkflow } from "acpus/core";
 
-const acpusRoot = resolve("node_modules/acpus");
-const acpusRequire = createRequire(realpathSync(join(acpusRoot, "package.json")));
-const compilerEntry = acpusRequire.resolve("@acpus/workflow-compiler");
-const coreIrEntry = acpusRequire.resolve("@acpus/core/ir");
-const { prepareWorkflow } = await import(pathToFileURL(compilerEntry));
-const { walkNodes } = await import(pathToFileURL(coreIrEntry));
-
-const examplesRoot = join(acpusRoot, "skills/acpus/workflows/examples");
-const examples = (await readdir(examplesRoot, { withFileTypes: true }))
-  .filter(entry => entry.isDirectory() && existsSync(join(examplesRoot, entry.name, "workflow.ts")))
-  .map(entry => ({ name: entry.name, workflow: join(examplesRoot, entry.name, "workflow.ts") }))
-  .sort((left, right) => left.name.localeCompare(right.name));
-assert.ok(examples.length > 0, "packed CLI contains no official workflow examples");
-
-const coveredNodeKinds = new Set();
-for (const example of examples) {
-  const prepared = await prepareWorkflow({
-    workspaceDir: process.cwd(),
-    source: { kind: "path", entry: example.workflow },
+export default defineWorkflow({ name: "packed-cli-smoke" }).build(({ step }) => {
+  const result = step("produce").task({
+    input: null,
+    exec: async () => ({ ok: true }),
   });
-  assert.deepEqual(prepared.ir.diagnostics, [], \`packed skill example failed: \${example.name}\`);
-  for (const { node } of walkNodes(prepared.ir.root)) coveredNodeKinds.add(node.kind);
-}
-assert.deepEqual([...coveredNodeKinds].sort(), [
-  "agent",
-  "assert",
-  "fanout",
-  "if",
-  "loop",
-  "parallel",
-  "signal",
-  "switch",
-  "task",
-], "packed official examples do not cover every workflow node kind");
-
-const deepResearch = await prepareWorkflow({
-  workspaceDir: process.cwd(),
-  source: {
-    kind: "path",
-    entry: join(acpusRoot, "skills/acpus/workflows/library/deep-research/workflow.ts"),
-  },
+  return { ok: result.output.ok };
 });
-assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow failed");
-`);
-    await execFileAsync(process.execPath, [workflowSmoke], {
-      cwd: consumerDirectory,
-      env: smokeEnvironment(),
-    });
-
-    const representativeWorkflow = join(examplesRoot, "typed-loop-state", "workflow.ts");
+`;
+    const representativeWorkflow = join(consumerDirectory, "packed-cli.workflow.ts");
+    await writeFile(representativeWorkflow, workflowSource);
     const checked = await runCli(["workflow", "check", representativeWorkflow]);
     assert.match(checked.stdout, /WorkflowIR\s+0 errors/u, "packed CLI workflow check failed");
 
@@ -307,7 +260,8 @@ assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow
       }, null, 2)}\n`),
       writeFile(join(externalWorkspace, "unrelated.ts"), "const value: string = 1;\n"),
     ]);
-    const externalWorkflow = join(externalPackageRoot, "skills/acpus/workflows/library/deep-research/workflow.ts");
+    const externalWorkflow = join(externalPackageRoot, "packed-cli.workflow.ts");
+    await writeFile(externalWorkflow, workflowSource);
     const externalChecked = await runCli(["workflow", "check", externalWorkflow], externalWorkspace);
     assert.match(
       externalChecked.stdout,
@@ -324,10 +278,10 @@ assert.deepEqual(deepResearch.ir.diagnostics, [], "packed deep-research workflow
     const bundleJsonEnd = visualizationHtml.indexOf(";\n</script>", bundleJsonStart);
     assert.ok(bundleStart >= 0 && bundleJsonEnd >= 0, "packed CLI HTML visualization has no embedded bundle");
     const visualization = JSON.parse(visualizationHtml.slice(bundleJsonStart, bundleJsonEnd));
-    assert.equal(visualization.workflow.name, "typed-loop-state");
+    assert.equal(visualization.workflow.name, "packed-cli-smoke");
     assert.equal(visualization.graph.mode, "static");
     assert.ok(
-      visualization.graph.nodes.some(node => node.id === "collect" && node.kind === "loop"),
+      visualization.graph.nodes.some(node => node.id === "produce" && node.kind === "task"),
       "packed CLI HTML visualization omitted the workflow graph",
     );
     assert.match(visualization.sourceGraphDigest, /^sha256:[a-f0-9]{64}$/u);
@@ -505,11 +459,6 @@ async function verifyPackage(packageDirectory, manifest, files) {
   if (name === "acpus") {
     for (const path of [
       "skills/acpus/SKILL.md",
-      "skills/acpus/hooks/examples.json",
-      "skills/acpus/workflows/examples/typed-loop-state/workflow.ts",
-      "skills/acpus/workflows/library/deep-research/README.md",
-      "skills/acpus/workflows/library/deep-research/contracts.ts",
-      "skills/acpus/workflows/library/deep-research/workflow.ts",
       "dist/commands/skill.js",
       "dist/commands/skill.d.ts",
       "dist/update-awareness-worker.js",

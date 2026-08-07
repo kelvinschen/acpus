@@ -193,13 +193,6 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Skill install/uninstall MUST install or remove only identifiable copies of the bundled `acpus` skill and MUST preserve unrelated user content.
 - Skill updates MUST publish through a same-parent staging directory and MUST preserve the previous target at a reported recovery path when restoration cannot complete.
 - Skill uninstall MUST NOT create skills roots; an absent target reports `missing`, while unrelated content reports `skipped` and makes the command fail.
-- The bundled skill MUST separate compact authoring examples under `workflows/examples/` from complete directly runnable workflow packages under `workflows/library/`.
-- Bundled authoring guidance MUST NOT route authoring requests to workflow-library implementation files.
-- `SKILL.md` MUST expose a compact workflow-library inventory and read a marked match's README before its implementation.
-- The bundled skill MUST reserve library/catalog lookup and reuse for explicit user `/wf:<hint>` and `/workflow:<hint>` requests.
-- For unmarked requests, the bundled skill MUST NOT look up or reuse library/catalog workflows; it MAY read a user-named workflow to explain, modify, or diagnose it.
-- Bundled workflow-library guidance MUST use direct absolute workflow paths without requiring catalog import.
-- Bundled guidance MUST distinguish graph control, predicates, `lift` value computation, and string rendering; it explains static step ids, dynamic `nodeKey`, and durable `null` absence.
 - Hook commands MUST delegate configuration semantics to the [Runtime Hooks Spec](hooks-spec.md); validation reports configuration errors, while unscoped listing groups project/global entries and includes each configuration path.
 
 ### Update Awareness

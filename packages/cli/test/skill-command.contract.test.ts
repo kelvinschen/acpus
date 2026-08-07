@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
-import { bundledAcpusSkillLocation, parseAcpusSkillMetadata } from "../src/skill-content.js";
+import { parseAcpusSkillMetadata } from "../src/skill-content.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
@@ -34,13 +34,11 @@ describe("skill CLI contracts", () => {
     osMocks.homedir.mockReset();
   });
 
-  it("does not prompt when a TTY reads either a file or directory", async () => {
+  it("does not prompt when a TTY reads the bundled entry", async () => {
     await withPlainTestWorkspace("skill-content-tty", async workspace => {
-      const file = await runCommand(workspace, ["skill", "read", "references/authoring.md"], true);
-      const directory = await runCommand(workspace, ["skill", "read", "references"], true);
+      const file = await runCommand(workspace, ["skill", "read"], true);
 
       expect(file.exitCode).toBe(0);
-      expect(directory.exitCode).toBe(0);
       expect(promptMocks.select).not.toHaveBeenCalled();
       expect(promptMocks.multiselect).not.toHaveBeenCalled();
     });
@@ -187,15 +185,8 @@ describe("skill CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout.text).toContain(`installed\tuniversal\t${universal}\ninstalled\tclaude\t${claude}`);
-      const bundled = bundledAcpusSkillLocation();
-      for (const relativePath of [
-        "SKILL.md",
-        join("workflows", "library", "deep-research", "workflow.ts"),
-        join("workflows", "library", "wide-research", "workflow.ts"),
-      ]) {
-        await expect(readFile(join(universal, relativePath)))
-          .resolves.toEqual(await readFile(join(bundled, relativePath)));
-      }
+      expect(parseAcpusSkillMetadata(await readFile(join(universal, "SKILL.md"), "utf8")).version)
+        .toBe(getCliPackageInfo().version);
     });
   });
 

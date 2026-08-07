@@ -27,17 +27,11 @@ One short paragraph describing the current feature boundary.
 - `{narrow verification command}`: verifies {contract risk}.
 ```
 
-## Maintenance Rules
+## Maintenance
 
-- A requirement MUST state current observable behavior, a public interface, a persistence or safety invariant, or a cross-component boundary owned by this spec.
-- Each behavior MUST have one canonical spec owner. Consumer specs MUST link to that owner and describe only their adapter or presentation behavior.
-- Requirements MUST be atomic and use RFC 2119/BCP 14 terms deliberately. Prefer one normative term per bullet; split independent obligations.
-- Public wire shapes and closed enums SHOULD use compact tables or type-like notation instead of prose that duplicates every field across consumers. Prose MAY remain only when the contract cannot be expressed clearly by the canonical type or table.
-- Replace or delete superseded requirements in the same change. A refactor with no contract change SHOULD add no requirements; it MAY update stale ownership, links, or verification routing.
-- Implementation algorithms, test-case inventories, validation records, historical decisions, and handoff notes MUST NOT be preserved as current requirements.
-- Negative requirements SHOULD remain only for a current closed shape, safety boundary, or unsupported input. They MUST NOT serve only as tombstones for removed behavior.
-- Verification SHOULD name the narrow commands and high-value risks, not repeat the Requirements section as an exhaustive test matrix. Manual inspection MAY replace an automated command only when the risk has no practical deterministic oracle.
-- Cross-spec dependencies MUST use Markdown links so maintainers and agents can find the canonical contract directly.
+Before changing a spec, read the authoritative
+[Specification Maintenance Guide](../docs/specification-maintenance.md)
+completely.
 
 ## Specs
 
@@ -55,9 +49,3 @@ One short paragraph describing the current feature boundary.
 | [CLI](cli-spec.md) | `acpus` | Leaf command grammar and text/structured presentation | [Compiler](workflow-compiler-spec.md), [Runtime](runtime-spec.md), [Hooks](hooks-spec.md) | `pnpm --filter acpus typecheck`, `pnpm test:type packages/cli`, `pnpm test:e2e packages/cli`, `pnpm test:contract packages/cli` |
 | [WebUI](webui-spec.md) | `@acpus/web` | Browser APIs and operator interactions | [Core](core-spec.md), [Workflow Compiler](workflow-compiler-spec.md), [Runtime](runtime-spec.md), [WebUI Design](webui-design-spec.md) | `pnpm --filter @acpus/web typecheck`, `pnpm test:unit packages/web`, `pnpm test:contract packages/web`, `pnpm test:integration packages/web` |
 | [WebUI Design](webui-design-spec.md) | `@acpus/web` | Visual and interaction language | [WebUI](webui-spec.md) | `pnpm --filter @acpus/web typecheck`, `pnpm test:unit packages/web`, `pnpm test:contract packages/web` |
-
-## Scope Rules
-
-- Current product and design truth MUST live in `specs/`.
-- Planned work, backlog, and capability gaps MUST live in `docs/roadmap/`.
-- A spec SHOULD describe the package or feature that owns the behavior. Cross-package workflows MAY appear only as linked delegation boundaries.

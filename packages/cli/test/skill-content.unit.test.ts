@@ -8,19 +8,17 @@ import {
   type SkillResourceFailure,
 } from "../src/skill-content.js";
 
-describe("bundled skill content", () => {
+describe("skill resource reader", () => {
   it("does not alter default-entry bytes or expand the resource tree below direct children", async () => {
     await withSkillRoot(async root => {
       const body = Buffer.from("# Skill\n\nπ without trailing newline", "utf8");
       await writeFile(join(root, "SKILL.md"), body);
-      await mkdir(join(root, "workflows", "library", "deep-research"), { recursive: true });
-      await mkdir(join(root, "workflows", "examples", "nested"), { recursive: true });
-      await mkdir(join(root, "references"), { recursive: true });
-      await mkdir(join(root, "hooks"), { recursive: true });
-      await writeFile(join(root, "references", "z-last.md"), "z");
-      await writeFile(join(root, "references", "authoring.md"), "a");
-      await writeFile(join(root, "hooks", "examples.json"), "{}");
-      await writeFile(join(root, "workflows", "examples", "nested", "workflow.ts"), "deep");
+      await mkdir(join(root, "assets", "nested"), { recursive: true });
+      await mkdir(join(root, "guides"), { recursive: true });
+      await writeFile(join(root, "assets", "entry.json"), "{}");
+      await writeFile(join(root, "assets", "nested", "deep.txt"), "deep");
+      await writeFile(join(root, "guides", "z-last.md"), "z");
+      await writeFile(join(root, "guides", "a-first.md"), "a");
       await writeFile(join(root, "ROOT.txt"), "not part of the entry tree");
 
       const result = await readAcpusSkillResource(root);
@@ -34,23 +32,18 @@ describe("bundled skill content", () => {
       expect(result.value.tree).toEqual([
         {
           kind: "directory",
-          path: "hooks",
-          children: [{ kind: "file", path: "hooks/examples.json" }],
-        },
-        {
-          kind: "directory",
-          path: "references",
+          path: "assets",
           children: [
-            { kind: "file", path: "references/authoring.md" },
-            { kind: "file", path: "references/z-last.md" },
+            { kind: "file", path: "assets/entry.json" },
+            { kind: "directory", path: "assets/nested" },
           ],
         },
         {
           kind: "directory",
-          path: "workflows",
+          path: "guides",
           children: [
-            { kind: "directory", path: "workflows/examples" },
-            { kind: "directory", path: "workflows/library" },
+            { kind: "file", path: "guides/a-first.md" },
+            { kind: "file", path: "guides/z-last.md" },
           ],
         },
       ]);
@@ -60,22 +53,22 @@ describe("bundled skill content", () => {
   it("does not recurse, reorder, or lose directory identity when reading a directory", async () => {
     await withSkillRoot(async root => {
       await writeFile(join(root, "SKILL.md"), "entry");
-      await mkdir(join(root, "references", "nested"), { recursive: true });
-      await writeFile(join(root, "references", "z.md"), "z");
-      await writeFile(join(root, "references", "a.md"), "a");
-      await writeFile(join(root, "references", "nested", "deep.md"), "deep");
+      await mkdir(join(root, "guides", "nested"), { recursive: true });
+      await writeFile(join(root, "guides", "z.md"), "z");
+      await writeFile(join(root, "guides", "a.md"), "a");
+      await writeFile(join(root, "guides", "nested", "deep.md"), "deep");
       await mkdir(join(root, "empty"));
 
-      const references = await readAcpusSkillResource(root, "references");
+      const guides = await readAcpusSkillResource(root, "guides");
       const empty = await readAcpusSkillResource(root, "empty");
 
-      expect(references._unsafeUnwrap()).toEqual({
+      expect(guides._unsafeUnwrap()).toEqual({
         kind: "directory",
-        absolutePath: await realpath(join(root, "references")),
+        absolutePath: await realpath(join(root, "guides")),
         entries: [
-          { kind: "file", path: "references/a.md" },
-          { kind: "directory", path: "references/nested" },
-          { kind: "file", path: "references/z.md" },
+          { kind: "file", path: "guides/a.md" },
+          { kind: "directory", path: "guides/nested" },
+          { kind: "file", path: "guides/z.md" },
         ],
       });
       expect(empty._unsafeUnwrap()).toEqual({
@@ -89,15 +82,15 @@ describe("bundled skill content", () => {
   it("does not attach the root tree to an explicit read or alter the file bytes", async () => {
     await withSkillRoot(async root => {
       await writeFile(join(root, "SKILL.md"), "entry");
-      await mkdir(join(root, "references"));
+      await mkdir(join(root, "guides"));
       const body = Buffer.from("具体内容", "utf8");
-      await writeFile(join(root, "references", "authoring.md"), body);
+      await writeFile(join(root, "guides", "usage.md"), body);
 
-      const result = await readAcpusSkillResource(root, "references/authoring.md");
+      const result = await readAcpusSkillResource(root, "guides/usage.md");
 
       expect(result._unsafeUnwrap()).toEqual({
         kind: "file",
-        absolutePath: await realpath(join(root, "references", "authoring.md")),
+        absolutePath: await realpath(join(root, "guides", "usage.md")),
         content: body,
       });
     });
@@ -111,15 +104,15 @@ describe("bundled skill content", () => {
         "/absolute",
         "C:/absolute",
         "\\\\server\\share",
-        "references\\authoring.md",
-        "references/\0authoring.md",
+        "guides\\usage.md",
+        "guides/\0usage.md",
         ".",
         "..",
         "../outside.txt",
-        "references/./authoring.md",
-        "references/../SKILL.md",
-        "references//authoring.md",
-        "references/",
+        "guides/./usage.md",
+        "guides/../SKILL.md",
+        "guides//usage.md",
+        "guides/",
       ];
 
       for (const path of invalidPaths) {
