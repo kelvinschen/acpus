@@ -1,6 +1,6 @@
 ---
 acpus: patch
-@acpus/runtime: patch
+"@acpus/runtime": patch
 ---
 
 - Refine SessionGroup reuse to be atomic for each explicit `sessionKey`: members are now reused only as a whole and either fully replayed together or fully re-executed together. Mixed history+fresh execution for the same group is no longer allowed in a forked child run.
