@@ -25,8 +25,8 @@ from the reader's question and the relationships that answer it.
 
 ### Make orientation scannable
 
-**ALWAYS** use a compact title that carries only the governing claim; move
-scope, dates, and qualifications into the thesis.
+**ALWAYS** use a self-contained title naming the subject and reader purpose; put
+context-dependent claims in the thesis.
 
 Between the title and first H2, write one compact thesis paragraph of at most two
 sentences: the governing answer and at most one material boundary. Add at most
@@ -35,10 +35,11 @@ alert—only when it materially reduces orientation cost. **NEVER** create it fo
 decoration or place interactive content in the opening; otherwise stop after the
 thesis. Keep the opening an orientation rather than a miniature report.
 
-Give every major section one clear job. After every H2, **ALWAYS** write one
-short section deck: one sentence, or two only for an indispensable boundary,
-stating what the section establishes before supplying detail. It must advance,
-not repeat, the heading. Use H2 only for the major stages that form the
+Give every major section one clear job. After an H2, add a short deck only when
+it states a decisive finding, relationship, comparison frame, or action the
+heading cannot. Otherwise begin with evidence or internal structure. **NEVER**
+use a deck to preview content, inventory confirmed versus unconfirmed evidence,
+or repeat a generic limitation. Use H2 only for the major stages that form the
 article's route. **ALWAYS** give a complex H2 internal structure: when two or
 more sibling submechanisms, cases, or evidence layers each need sustained
 explanation, group them under concise, descriptive H3s; use a labeled list when
@@ -58,13 +59,12 @@ only for rare, substantial subdivisions. Keep terminology stable.
 - State the plain relationship before identifiers, paths, clauses, or metrics.
   When several exact parallel mappings matter, use a table or aligned list.
 - Use a vertical list only for a real parallel set or sequence. Give items short
-  bold labels when those labels improve scanning. Otherwise bold only a short
-  conclusion, condition, contrast, actor, or action. Keep sentence- and
-  paragraph-length prose in regular weight so emphasis remains sparse.
-- Use contrast, parallelism, and emphasis when they expose a material
-  distinction, sequence, or evidence boundary. Use “not X but Y” /
-  “不是 X，而是 Y” when X is a plausible reading the evidence must reject;
-  otherwise state Y directly. Let real categories determine item count.
+  bold labels when they improve scanning; otherwise bold only a short
+  conclusion, condition, contrast, actor, or action. **NEVER** bold a complete
+  section deck, sentence, or paragraph.
+- Use contrast only for a material distinction. Use “not X but Y” /
+  “不是 X，而是 Y” only to reject a plausible reading; otherwise state Y
+  directly. Let real categories determine item count.
 - Do not restage one claim in the title, thesis, section deck, rich-block
   takeaway, and conclusion. Each recurrence must add evidence, scope,
   consequence, or action. Follow the report language's natural syntax; in
