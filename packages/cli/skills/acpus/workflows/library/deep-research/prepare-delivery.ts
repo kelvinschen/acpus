@@ -1,13 +1,12 @@
 import { task, z } from "acpus/core";
 
 const PublicationDeliveryInput = z.object({
-  format: z.enum(["md", "html"]),
   runId: z.string(),
 });
 
 type PublicationDeliveryInput = z.infer<typeof PublicationDeliveryInput>;
 
-type PublicationDelivery = {
+type PreparedPublicationDelivery = {
   draftDir: string;
   editorialPath: string;
   htmlPath: string;
@@ -15,7 +14,7 @@ type PublicationDelivery = {
 
 export const preparePublicationDelivery = task.define({
   inputSchema: PublicationDeliveryInput,
-  exec: async ({ input }): Promise<PublicationDelivery> => {
+  exec: async ({ input }): Promise<PreparedPublicationDelivery> => {
     const { chmod, lstat, mkdir } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { isAbsolute, relative, resolve, sep } = await import("node:path");
@@ -44,7 +43,7 @@ export const preparePublicationDelivery = task.define({
     }
     return {
       draftDir,
-      editorialPath: resolve(draftDir, input.format === "html" ? "publication-draft.md" : "report.md"),
+      editorialPath: resolve(draftDir, "publication-draft.md"),
       htmlPath: resolve(draftDir, "index.html"),
     };
   },

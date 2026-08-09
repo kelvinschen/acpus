@@ -3,21 +3,19 @@ import { task, z, type ArtifactRef } from "acpus/core";
 const PublishPublicationInput = z.object({
   completed: z.boolean(),
   draftDir: z.string(),
-  draftPath: z.string(),
   editorialPath: z.string(),
-  format: z.enum(["md", "html"]),
+  htmlPath: z.string(),
   reportStem: z.string(),
 });
 
 type PublishPublicationInput = z.infer<typeof PublishPublicationInput>;
 
 type PublishedPublication = {
-  format: PublishPublicationInput["format"];
   artifact: ArtifactRef;
   editorialArtifact: ArtifactRef;
 };
 
-/** Publishes the final format and retains its authoritative Markdown source. */
+/** Publishes the final HTML and retains its authoritative Markdown source. */
 export const publishPublicationDelivery = task.define({
   inputSchema: PublishPublicationInput,
   exec: async ({ input, artifact }): Promise<PublishedPublication> => {
@@ -33,15 +31,13 @@ export const publishPublicationDelivery = task.define({
       editorialContent,
       { mediaType: "text/markdown" },
     );
-    const report = input.format === "md"
-      ? editorialArtifact
-      : await artifact.write(
-        `${input.reportStem}.html`,
-        await readFile(input.draftPath, "utf8"),
-        { mediaType: "text/html" },
-      );
+    const report = await artifact.write(
+      `${input.reportStem}.html`,
+      await readFile(input.htmlPath, "utf8"),
+      { mediaType: "text/html" },
+    );
 
     await rm(input.draftDir, { recursive: true, force: true }).catch(() => { });
-    return { format: input.format, artifact: report, editorialArtifact };
+    return { artifact: report, editorialArtifact };
   },
 });
