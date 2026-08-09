@@ -156,3 +156,13 @@ export {
 } from "./store/store.js";
 export { prepareRuntimeForNewRun } from "./storage/maintenance.js";
 export { pruneRuns, type PruneReport } from "./runs/prune.js";
+export {
+  listKnownWorkspaces,
+  resolveKnownWorkspace,
+  type KnownWorkspace,
+  type KnownWorkspaceListing,
+  type WorkspaceKeyInvalid,
+  type WorkspaceNotFound,
+  type WorkspaceResolutionFailure,
+  type WorkspaceUnavailable,
+} from "./workspaces.js";

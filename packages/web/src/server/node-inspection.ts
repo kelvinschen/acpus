@@ -1,14 +1,109 @@
 import type {
+  ForensicsInvocation,
+  InspectionForensicsView,
   RunInspectionAgentExecutionDocument,
   RunInspectionNodeDocument,
+  RunInspectionStatus,
 } from "@acpus/runtime";
+import type { JsonValue } from "@acpus/expression/ir";
 import type {
   NodeExecutionInspection,
   NodeInspection,
   NodeInspectionFailure,
+  NodeRuntimeValues,
 } from "../api-types.js";
 
 type LoadJsonArtifact = (artifactRef: unknown) => Promise<unknown | undefined>;
+
+export function projectNodeRuntimeValues(view: InspectionForensicsView): NodeRuntimeValues {
+  const definition = view.definition;
+  if (!isRuntimeValuesKind(definition.kind)) return { available: false, reason: "not-composite" };
+  const invocation = view.invocation;
+  if (invocation.status === "unavailable") return { available: false, reason: invocation.reason };
+
+  switch (definition.kind) {
+    case "assert":
+      return { available: true, values: { condition: invocationOfKind(invocation, "assert").condition } };
+    case "if": {
+      const selectedBranch = invocationOfKind(invocation, "if").selectedBranch;
+      if (selectedBranch !== "then" && selectedBranch !== "else") {
+        throw new Error("If invocation selected an unknown branch.");
+      }
+      return { available: true, values: { condition: selectedBranch === "then", selectedBranch } };
+    }
+    case "switch": {
+      const selectedBranch = invocationOfKind(invocation, "switch").selectedBranch;
+      return {
+        available: true,
+        values: {
+          cases: switchCaseValues(definition.cases.map(candidate => candidate.id), selectedBranch),
+          selectedBranch,
+        },
+      };
+    }
+    case "parallel": {
+      const resolved = invocationOfKind(invocation, "parallel");
+      return {
+        available: true,
+        values: resolved.maxConcurrency === undefined ? {} : { maxConcurrency: resolved.maxConcurrency },
+      };
+    }
+    case "fanout": {
+      const resolved = invocationOfKind(invocation, "fanout");
+      return {
+        available: true,
+        values: {
+          over: resolved.items,
+          ...(resolved.quorumCount === undefined ? {} : { count: resolved.quorumCount }),
+          ...(resolved.maxConcurrency === undefined ? {} : { maxConcurrency: resolved.maxConcurrency }),
+        },
+      };
+    }
+    case "loop": {
+      const resolved = invocationOfKind(invocation, "loop");
+      return {
+        available: true,
+        values: {
+          index: resolved.index,
+          round: resolved.round,
+          ...(resolved.state === undefined ? {} : { state: resolved.state }),
+          ...(resolved.transition === undefined ? {} : { transition: resolved.transition }),
+        },
+      };
+    }
+  }
+}
+
+type RuntimeValuesKind = "assert" | "if" | "switch" | "parallel" | "fanout" | "loop";
+type ResolvedInvocation = Exclude<ForensicsInvocation, { status: "unavailable" }>;
+
+function isRuntimeValuesKind(kind: string): kind is RuntimeValuesKind {
+  return kind === "assert"
+    || kind === "if"
+    || kind === "switch"
+    || kind === "parallel"
+    || kind === "fanout"
+    || kind === "loop";
+}
+
+function invocationOfKind<Kind extends RuntimeValuesKind>(
+  invocation: ResolvedInvocation,
+  kind: Kind,
+): ResolvedInvocation & { kind: Kind } {
+  if (invocation.kind !== kind) throw new Error("Forensics definition and invocation kinds do not match.");
+  return invocation as ResolvedInvocation & { kind: Kind };
+}
+
+function switchCaseValues(caseIds: string[], selectedBranch: string): JsonValue[] {
+  if (selectedBranch === "default") {
+    return caseIds.map(id => ({ id, state: "resolved", value: false }));
+  }
+  const selectedIndex = caseIds.indexOf(selectedBranch);
+  if (selectedIndex < 0) throw new Error("Switch invocation selected an unknown branch.");
+  return caseIds.map((id, index) => index <= selectedIndex
+    ? { id, state: "resolved", value: index === selectedIndex }
+    : { id, state: "not_evaluated" });
+}
 
 export async function projectNodeInspection(
   inspection: RunInspectionNodeDocument,
@@ -35,8 +130,13 @@ export async function projectNodeInspection(
     ...(summary.frameKey === undefined ? {} : { frameKey: summary.frameKey }),
     ...(cancelTarget === undefined ? {} : { cancelTarget }),
     ...(summary.staticKind === undefined ? {} : { staticKind: summary.staticKind }),
-    runStartedAt: summary.runStartedAt,
-    ...(summary.runDurationMs === undefined ? {} : { runDurationMs: summary.runDurationMs }),
+    ...(inspection.state.startedAt === undefined ? {} : {
+      timing: {
+        startedAt: inspection.state.startedAt,
+        ...(inspection.state.finishedAt === undefined ? {} : { finishedAt: inspection.state.finishedAt }),
+        ...(inspection.state.durationMs === undefined ? {} : { durationMs: inspection.state.durationMs }),
+      },
+    }),
     ...(summary.latestAttempt === undefined ? {} : {
       latestAttempt: {
         attemptNo: summary.latestAttempt.attemptNo,
@@ -47,7 +147,9 @@ export async function projectNodeInspection(
       agent: {
         key: summary.agent.key,
         ...(summary.agent.model === undefined ? {} : { model: summary.agent.model }),
-        ...(summary.agent.lastObservedAt === undefined ? {} : { lastObservedAt: summary.agent.lastObservedAt }),
+        ...(summary.agent.lastObservedAt === undefined || !isLiveAgentStatus(inspection.state.status)
+          ? {}
+          : { lastObservedAt: summary.agent.lastObservedAt }),
       },
     }),
     ...(summary.input === undefined ? {} : {
@@ -133,7 +235,9 @@ export function projectNodeExecution(
       ...(execution.summary.turnCount === undefined ? {} : { turnCount: execution.summary.turnCount }),
       ...(execution.summary.message === undefined ? {} : { message: execution.summary.message }),
     },
-    ...(execution.lastObservedAt === undefined ? {} : { lastObservedAt: execution.lastObservedAt }),
+    ...(execution.lastObservedAt === undefined || !isLiveAgentStatus(execution.summary.status)
+      ? {}
+      : { lastObservedAt: execution.lastObservedAt }),
     ...(execution.contextWindow === undefined ? {} : {
       contextWindow: {
         ...(execution.contextWindow.used === undefined ? {} : { used: execution.contextWindow.used }),
@@ -175,4 +279,12 @@ export function projectNodeExecution(
         : "No agent execution metadata exists for the selected scope.",
       ...projection,
     };
+}
+
+function isLiveAgentStatus(status: RunInspectionStatus): boolean {
+  return status === "pending"
+    || status === "starting"
+    || status === "ready"
+    || status === "running"
+    || status === "awaiting";
 }

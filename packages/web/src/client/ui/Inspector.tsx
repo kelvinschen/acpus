@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useEffect, useState } from "react";
-import { collapseAllNested, darkStyles, JsonView } from "react-json-view-lite";
+import { collapseAllNested, defaultStyles, JsonView } from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
 import Copy from "lucide-react/dist/esm/icons/copy.js";
 import XCircle from "lucide-react/dist/esm/icons/circle-x.js";
@@ -17,7 +17,7 @@ export function InspectorPanel({
   children,
 }: {
   title: string;
-  eyebrow?: string;
+  eyebrow?: React.ReactNode;
   subtitle?: string;
   status?: React.ReactNode;
   exiting?: boolean;
@@ -34,22 +34,22 @@ export function InspectorPanel({
 
   return (
     <Card asChild className={`inspector-card ${exiting ? "exiting" : ""}`}>
-      <aside role="dialog" aria-label={title}>
+      <div role="dialog" aria-label={title}>
         <div className="inspector-card-head">
           <div className="inspector-card-title">
-            <span className="inspector-card-eyebrow">{eyebrow}</span>
             <div className="inspector-card-title-line">
-              <strong>{title}</strong>
+              <strong title={title}>{title}</strong>
+              <div className="inspector-card-eyebrow">{eyebrow}</div>
               {status && <div className="inspector-card-status">{status}</div>}
             </div>
-            {subtitle && <small>{subtitle}</small>}
+            {subtitle && <small title={subtitle}>{subtitle}</small>}
           </div>
           <Button variant="ghost" className="close-button" onClick={onClose} aria-label="Close inspector">
             <XCircle size={16} />
           </Button>
         </div>
         <div className="inspector-card-body">{children}</div>
-      </aside>
+      </div>
     </Card>
   );
 }
@@ -109,20 +109,20 @@ export function JsonBlock({ value, expandNested = false }: { value: unknown; exp
 const expandAllNodes = () => true;
 
 const inkJsonStyles = {
-  ...darkStyles,
-  container: `${darkStyles.container} json-ink-container`,
-  label: `${darkStyles.label} json-ink-label`,
-  clickableLabel: `${darkStyles.clickableLabel} json-ink-label`,
-  nullValue: `${darkStyles.nullValue} json-ink-null`,
-  undefinedValue: `${darkStyles.undefinedValue} json-ink-null`,
-  stringValue: `${darkStyles.stringValue} json-ink-string`,
-  numberValue: `${darkStyles.numberValue} json-ink-number`,
-  booleanValue: `${darkStyles.booleanValue} json-ink-boolean`,
-  otherValue: `${darkStyles.otherValue} json-ink-other`,
-  punctuation: `${darkStyles.punctuation} json-ink-punctuation`,
-  collapseIcon: `${darkStyles.collapseIcon} json-ink-expander`,
-  expandIcon: `${darkStyles.expandIcon} json-ink-expander`,
-  collapsedContent: `${darkStyles.collapsedContent} json-ink-punctuation`,
+  ...defaultStyles,
+  container: `${defaultStyles.container} json-ink-container`,
+  label: `${defaultStyles.label} json-ink-label`,
+  clickableLabel: `${defaultStyles.clickableLabel} json-ink-label`,
+  nullValue: `${defaultStyles.nullValue} json-ink-null`,
+  undefinedValue: `${defaultStyles.undefinedValue} json-ink-null`,
+  stringValue: `${defaultStyles.stringValue} json-ink-string`,
+  numberValue: `${defaultStyles.numberValue} json-ink-number`,
+  booleanValue: `${defaultStyles.booleanValue} json-ink-boolean`,
+  otherValue: `${defaultStyles.otherValue} json-ink-other`,
+  punctuation: `${defaultStyles.punctuation} json-ink-punctuation`,
+  collapseIcon: `${defaultStyles.collapseIcon} json-ink-expander`,
+  expandIcon: `${defaultStyles.expandIcon} json-ink-expander`,
+  collapsedContent: `${defaultStyles.collapsedContent} json-ink-punctuation`,
 };
 
 function jsonViewData(value: unknown): object | unknown[] {
@@ -131,7 +131,7 @@ function jsonViewData(value: unknown): object | unknown[] {
 
 export function KeyValue({ label, value }: { label: string; value: string }) {
   return (
-    <div className="key-value" tabIndex={0} title={`${label}: ${value}`} aria-label={`${label}: ${value}`}>
+    <div className="key-value" role="group" tabIndex={0} title={`${label}: ${value}`} aria-label={`${label}: ${value}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

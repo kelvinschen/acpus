@@ -11,6 +11,7 @@ function packageChunk(id: string): string | null {
   if (matchesPackage(path, ["@tanstack/react-query", "@tanstack/query-core"])) return "vendor-query";
   if (matchesPackage(path, ["lucide-react"])) return "vendor-icons";
   if (matchesPackage(path, ["react-json-view-lite"])) return "vendor-json-view";
+  if (matchesPackage(path, ["@vercel/beautiful-mermaid", "@dagrejs/dagre"])) return "feature-mermaid";
   return "vendor";
 }
 

@@ -18,6 +18,7 @@ import {
 } from "../scheduler/store-port.js";
 import {
   inspectionSubject,
+  inspectionTargetState,
   targetAttemptId,
 } from "./decision-projection.js";
 import { projectAgentExecution } from "./agent-execution-projection.js";
@@ -825,6 +826,7 @@ export function inspectNode(cwd: string, query: InspectNodeQuery): ResultAsync<R
       kind: "node",
       run: details.run,
       subject: inspectionSubject(details),
+      state: inspectionTargetState(details),
       summary: details.summary,
       availableControls: details.availableControls,
       artifacts: details.artifacts,

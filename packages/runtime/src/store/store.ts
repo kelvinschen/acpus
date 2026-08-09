@@ -148,6 +148,11 @@ const DUE_SIGNAL_WAIT_WHERE = `
 export const RUNTIME_APPLICATION_ID = 0x41435055;
 export const RUNTIME_STORAGE_VERSION = 9;
 
+export type RunStoreSummary = {
+  runCount: number;
+  lastRunUpdatedAt?: string;
+};
+
 export type RuntimeStore = {
   scheduler: SchedulerStorePort;
   observationLog: AgentObservationLog;
@@ -184,6 +189,7 @@ export type RuntimeStore = {
   writeNodeProgress(input: WriteNodeProgressInput): void;
   getRun(runId: string): RunDetails | undefined;
   listRuns(): RunRecord[];
+  getRunStoreSummary(): RunStoreSummary;
   listWorkflowSources(): WorkflowSourceRef[];
   getRuntimeDiagnostics(): RuntimeDiagnostics;
 };
@@ -2409,6 +2415,21 @@ class SqliteRuntimeStore implements RuntimeStore {
       FROM runs
       ORDER BY updated_at DESC, created_at DESC
     `).all().map(toRunRecord);
+  }
+
+  getRunStoreSummary(): RunStoreSummary {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS run_count, MAX(updated_at) AS last_run_updated_at
+      FROM runs
+    `).get() as { run_count: number; last_run_updated_at: string | null };
+    if (!Number.isSafeInteger(row.run_count) || row.run_count < 0
+      || (row.last_run_updated_at !== null && typeof row.last_run_updated_at !== "string")) {
+      throw new Error("Runtime run summary is corrupt.");
+    }
+    return {
+      runCount: row.run_count,
+      ...(row.last_run_updated_at === null ? {} : { lastRunUpdatedAt: row.last_run_updated_at }),
+    };
   }
 
   listWorkflowSources(): WorkflowSourceRef[] {

@@ -368,8 +368,8 @@ describe("graph viewport interaction helpers", () => {
   }));
   const layout = {
     boxes: new Map([
-      ["task", { id: "task", x: 56, y: 150, width: 488, height: 100 }],
-      ["scope", { id: "scope", x: 106, y: 56, width: 488, height: 288 }],
+      ["task", { id: "task", x: 56, y: 150, width: 488, height: 100, flowY: 50 }],
+      ["scope", { id: "scope", x: 106, y: 56, width: 488, height: 288, flowY: 144 }],
     ]),
   };
   const viewport = { x: 7, y: 9, scale: 0.5 };
@@ -378,6 +378,7 @@ describe("graph viewport interaction helpers", () => {
     renderId: "task",
     target: "task",
     nodeId: "task",
+    kind: "task",
     label: "task",
     context: [],
     displayStatus: "running",

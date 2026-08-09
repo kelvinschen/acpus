@@ -11,9 +11,11 @@ import {
   inspectNode,
   inspectTargetArtifacts,
   listArtifacts,
+  listKnownWorkspaces,
   listRuns,
   observeInspection,
   resolveArtifact,
+  resolveKnownWorkspace,
   readInspection,
   requestDaemonAdmitRun,
   requestDaemonControl,
@@ -56,6 +58,8 @@ import type {
   InspectionView,
   InspectionViewQuery,
   InspectionVisibility,
+  KnownWorkspace,
+  KnownWorkspaceListing,
   InspectNodeQuery,
   InspectTargetArtifactsQuery,
   ObserveInspectionQuery,
@@ -97,6 +101,7 @@ import type {
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
+  WorkspaceResolutionFailure,
 } from "@acpus/runtime";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
@@ -195,6 +200,29 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
 });
 
 test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
+  expectTypeOf(listKnownWorkspaces).toEqualTypeOf<(cwd: string) => Promise<KnownWorkspaceListing>>();
+  expectTypeOf(resolveKnownWorkspace).toEqualTypeOf<
+    (cwd: string, workspaceKey: string) => ResultAsync<
+      { workspaceKey: string; canonicalPath: string },
+      WorkspaceResolutionFailure
+    >
+  >();
+  expectTypeOf<KnownWorkspace>().toEqualTypeOf<{
+    workspaceKey: string;
+    canonicalPath: string;
+    runCount: number;
+    lastRunUpdatedAt?: string;
+  }>();
+  expectTypeOf<KnownWorkspaceListing>().toEqualTypeOf<{
+    currentWorkspaceKey: string;
+    workspaces: KnownWorkspace[];
+    failures: Array<{ workspaceKey: string; message: string }>;
+  }>();
+  expectTypeOf<WorkspaceResolutionFailure>().toEqualTypeOf<
+    | { type: "workspace-key-invalid"; workspaceKey: string; message: string }
+    | { type: "workspace-not-found"; workspaceKey: string; message: string }
+    | { type: "workspace-unavailable"; workspaceKey: string; message: string }
+  >();
   expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
   expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
   expectTypeOf(resolveArtifact).toEqualTypeOf<

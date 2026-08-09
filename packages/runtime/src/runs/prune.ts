@@ -3,7 +3,6 @@ import { basename, join } from "node:path";
 import {
   ensureRuntimeLayout,
   resolveRuntimeLayout,
-  runtimeLayoutFromManifest,
   validateRuntimeLayoutBoundary,
   validateWorkspaceManifest,
   type RuntimeLayout,
@@ -29,6 +28,7 @@ import {
   inspectRuntimeGeneration,
   PartialRuntimeGenerationError,
 } from "../storage/generation.js";
+import { discoverWorkspaceShards } from "../workspace-discovery.js";
 
 export type PruneReport = {
   dryRun: boolean;
@@ -79,7 +79,7 @@ export async function pruneRuns(
     failures: [],
   };
   const targets: PruneTargetResult[] = options.allWorkspaces
-    ? await discoverWorkspaceLayouts(current.home)
+    ? await discoverPruneTargets(current.home)
     : await currentWorkspaceLayout(current);
   for (const target of targets) {
     if ("failure" in target) {
@@ -374,63 +374,18 @@ async function recoverGenerationWithoutManifest(
   return false;
 }
 
-async function discoverWorkspaceLayouts(
+async function discoverPruneTargets(
   home: string,
 ): Promise<PruneTargetResult[]> {
-  const root = join(home, "workspaces");
-  let entries;
-  try {
-    await assertOwnedDirectory(home, "Acpus home");
-    entries = await readOwnedDirectory(root, "Workspace shards root");
-  } catch (error) {
-    if (isMissing(error)) return [];
-    throw error;
-  }
-  const layouts: PruneTargetResult[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.isSymbolicLink()) {
-      layouts.push({
-        failure: {
-          workspaceKey: entry.name,
-          message: `Workspace shard '${join(root, entry.name)}' is a symbolic link.`,
-        },
-      });
+  const targets: PruneTargetResult[] = [];
+  for (const discovery of await discoverWorkspaceShards(home)) {
+    if ("failure" in discovery) {
+      targets.push(discovery);
       continue;
     }
-    if (!entry.isDirectory()) continue;
-    const workspaceRoot = join(root, entry.name);
-    try {
-      const { layout, manifest } = await readLayout(home, workspaceRoot);
-      if (basename(workspaceRoot) !== layout.workspaceKey) {
-        throw new Error(`Workspace shard '${workspaceRoot}' does not match manifest key '${layout.workspaceKey}'.`);
-      }
-      layouts.push(await discoveredWorkspaceTarget(layout, manifest));
-    } catch (error) {
-      layouts.push({
-        failure: {
-          workspaceKey: entry.name,
-          message: error instanceof Error ? error.message : String(error),
-        },
-      });
-    }
+    targets.push(await discoveredWorkspaceTarget(discovery.layout, discovery.manifest));
   }
-  return layouts;
-}
-
-async function readLayout(
-  home: string,
-  workspaceRoot: string,
-): Promise<{ layout: RuntimeLayout; manifest: WorkspaceManifest }> {
-  const manifestPath = join(workspaceRoot, "workspace.json");
-  const info = await lstat(manifestPath);
-  if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error(`Workspace manifest '${manifestPath}' is not a regular file.`);
-  }
-  const manifest = parseManifest(JSON.parse(await readFile(manifestPath, "utf8")) as unknown);
-  const layout = runtimeLayoutFromManifest(home, workspaceRoot, manifest);
-  const validated = validateWorkspaceManifest(manifest, layout);
-  if (validated.isErr()) throw new Error(validated.error.message);
-  return { layout, manifest };
+  return targets;
 }
 
 async function discoveredWorkspaceTarget(

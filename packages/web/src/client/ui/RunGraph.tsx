@@ -1,24 +1,17 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentType, SVGProps } from "react";
 import Ban from "lucide-react/dist/esm/icons/ban.js";
-import Bot from "lucide-react/dist/esm/icons/bot.js";
 import CircleCheck from "lucide-react/dist/esm/icons/circle-check.js";
 import CircleDashed from "lucide-react/dist/esm/icons/circle-dashed.js";
 import CircleEllipsis from "lucide-react/dist/esm/icons/circle-ellipsis.js";
 import CirclePause from "lucide-react/dist/esm/icons/circle-pause.js";
 import CircleX from "lucide-react/dist/esm/icons/circle-x.js";
 import Focus from "lucide-react/dist/esm/icons/focus.js";
-import GitBranch from "lucide-react/dist/esm/icons/git-branch.js";
-import GitFork from "lucide-react/dist/esm/icons/git-fork.js";
 import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
 import LocateFixed from "lucide-react/dist/esm/icons/locate-fixed.js";
-import Radio from "lucide-react/dist/esm/icons/radio.js";
-import Repeat from "lucide-react/dist/esm/icons/repeat.js";
 import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
-import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.js";
 import Shrink from "lucide-react/dist/esm/icons/shrink.js";
 import SkipForward from "lucide-react/dist/esm/icons/skip-forward.js";
-import Split from "lucide-react/dist/esm/icons/split.js";
-import Terminal from "lucide-react/dist/esm/icons/terminal.js";
 import WorkflowIcon from "lucide-react/dist/esm/icons/workflow.js";
 import type { WebGraph } from "../api.js";
 import {
@@ -64,6 +57,7 @@ import {
 } from "../../graph-renderer.js";
 import { normalizeRuntimeStatus, runtimeStatusLabel } from "../../runtime-status.js";
 import { GraphMinimap, GraphNodeNavigator, GraphPathBreadcrumb } from "./GraphNavigation.js";
+import { NodeKindBadge, NodeKindIcon } from "./NodeKind.js";
 import { Button } from "./shadcn/button.js";
 import {
   Select,
@@ -73,29 +67,12 @@ import {
   SelectValue,
 } from "./shadcn/select.js";
 
-type LucideIcon = React.ComponentType<React.SVGProps<SVGSVGElement> & {
+type LucideIcon = ComponentType<SVGProps<SVGSVGElement> & {
   size?: number | string;
   strokeWidth?: number | string;
 }>;
 
 type DragState = { pointerId: number; startX: number; startY: number; viewport: GraphViewport; moved: boolean; selectRenderId?: string };
-
-const KIND_ICONS: Record<string, LucideIcon> = {
-  task: Terminal,
-  agent: Bot,
-  signal: Radio,
-  assert: ShieldCheck,
-  if: GitFork,
-  switch: GitBranch,
-  parallel: Rows3,
-  fanout: Split,
-  loop: Repeat,
-};
-
-function KindIcon({ kind, size }: { kind: string; size: number }) {
-  const Icon = KIND_ICONS[kind] ?? Terminal;
-  return <Icon size={size} strokeWidth={1.75} />;
-}
 
 const STATUS_ICONS: Record<string, LucideIcon> = {
   queued: CircleDashed,
@@ -473,7 +450,7 @@ function GraphEdgeLayer({
         </marker>
       </defs>
       {edgePaths.map(edge => (
-        <path key={edge.id} className={`graph-edge ${edge.kind} ${edge.active ? "active" : ""}`} d={edge.d} markerEnd={edge.kind === "loop" ? undefined : `url(#${markerId})`} />
+        <path key={edge.id} className={`graph-edge ${edge.kind} ${edge.active ? "active" : ""}`} d={edge.d} markerEnd={`url(#${markerId})`} />
       ))}
     </svg>
   );
@@ -549,10 +526,7 @@ function LeafContent({ item }: { item: RenderItem }) {
   return (
     <div className="node-card">
       <div className="node-card-meta">
-        <span className={`type-badge ${item.kind}`}>
-          <KindIcon kind={item.kind} size={12} />
-          {item.kind.toUpperCase()}
-        </span>
+        <NodeKindBadge kind={item.kind} />
       </div>
       <strong className="node-card-label" title={item.label}>{item.label}</strong>
     </div>
@@ -573,7 +547,7 @@ function CompositeContent({
   const strategy = compositeStrategy(item.node?.detail);
   const title = (
     <>
-      <KindIcon kind={item.kind} size={14} />
+      <NodeKindIcon kind={item.kind} size={14} />
       <strong>{item.label}</strong>
       <span className={`type-badge ${item.kind}`}>{compositeBadge(item.kind)}</span>
       {strategy && <span className="strategy-badge">{strategy}</span>}

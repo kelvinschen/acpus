@@ -11,7 +11,7 @@ export type GraphInspectionTarget =
 
 export type InspectorHeading = {
   title: string;
-  eyebrow?: string;
+  eyebrow?: ReactNode;
   subtitle?: string;
   status?: ReactNode;
 };

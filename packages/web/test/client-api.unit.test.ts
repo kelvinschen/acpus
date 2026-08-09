@@ -2,20 +2,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExprIR, StaticExprShape } from "@acpus/expression/ir";
 import type { SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import {
-  getArtifactPreview,
+  getArtifactContent as requestArtifactContent,
+  getArtifactPreview as requestArtifactPreview,
   getConfig,
   getHealth,
-  getNodeExecutionInspection,
-  getNodeInspection,
-  getRunRuntimeSnapshot,
-  listRuns,
+  getNodeExecutionInspection as requestNodeExecutionInspection,
+  getNodeInspection as requestNodeInspection,
+  getNodeRuntimeValues as requestNodeRuntimeValues,
+  getRunRuntimeSnapshot as requestRunRuntimeSnapshot,
+  listRuns as requestRuns,
+  listWorkspaces,
   listWorkflowCatalog,
   listWorkflowFiles,
-  submitRunCommand,
+  submitRunCommand as requestRunCommand,
   visualizeWorkflow,
   WebApiError,
   type NodeExecutionInspection,
   type NodeInspection,
+  type NodeRuntimeValues,
   type RunDetails,
   type WorkflowVisualizationResult,
 } from "../src/client/api.js";
@@ -23,6 +27,18 @@ import type { WebGraph } from "../src/graph-types.js";
 import { workflowIrToWebGraph } from "../src/server/graph.js";
 
 type ReadyVisualization = Extract<WorkflowVisualizationResult, { status: "ready" }>;
+const workspaceKey = "workspace one";
+
+const listRuns = () => requestRuns(workspaceKey);
+const getRunRuntimeSnapshot = (runId: string) => requestRunRuntimeSnapshot(workspaceKey, runId);
+const getNodeInspection = (runId: string, target: string) => requestNodeInspection(workspaceKey, runId, target);
+const getNodeRuntimeValues = (runId: string, target: string) => requestNodeRuntimeValues(workspaceKey, runId, target);
+const getNodeExecutionInspection = (runId: string, target: string) => requestNodeExecutionInspection(workspaceKey, runId, target);
+const getArtifactPreview = (runId: string, artifactId: string) => requestArtifactPreview(workspaceKey, runId, artifactId);
+const getArtifactContent = (runId: string, artifactId: string, signal?: AbortSignal) =>
+  requestArtifactContent(workspaceKey, runId, artifactId, signal);
+const submitRunCommand = (runId: string, command: Parameters<typeof requestRunCommand>[2]) =>
+  requestRunCommand(workspaceKey, runId, command);
 
 describe("Web API transport", () => {
   afterEach(() => {
@@ -74,7 +90,22 @@ describe("Web API transport", () => {
     await getNodeInspection("run 1", "@1a2b3c4d5e6f");
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/runs/run%201/nodes/%401a2b3c4d5e6f",
+      "/api/workspaces/workspace%20one/runs/run%201/nodes/%401a2b3c4d5e6f",
+      undefined,
+    );
+  });
+
+  it("uses the canonical target in node-runtime-values URLs", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      runtimeValues: nodeRuntimeValues(),
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await getNodeRuntimeValues("run 1", "@1a2b3c4d5e6f");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/workspaces/workspace%20one/runs/run%201/nodes/%401a2b3c4d5e6f/runtime-values",
       undefined,
     );
   });
@@ -219,6 +250,96 @@ describe("Web API transport", () => {
     });
   });
 
+  it("decodes artifact preview metadata and verifies the complete preview body", async () => {
+    const bytes = new TextEncoder().encode("# Report\n");
+    const fetch = vi.fn().mockResolvedValue(new Response(bytes, {
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        "x-acpus-artifact-size": String(bytes.byteLength),
+        "x-acpus-artifact-truncated": "false",
+      },
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(getArtifactPreview("run 1", "artifact 1")).resolves.toEqual({
+      text: "# Report\n",
+      mediaType: "text/markdown; charset=utf-8",
+      size: bytes.byteLength,
+      truncated: false,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/workspaces/workspace%20one/runs/run%201/artifacts/artifact%201/preview",
+      undefined,
+    );
+  });
+
+  it("rejects artifact previews whose body and truncation metadata disagree", async () => {
+    const bytes = new TextEncoder().encode("short");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(bytes, {
+      headers: {
+        "content-type": "text/plain",
+        "x-acpus-artifact-size": "10",
+        "x-acpus-artifact-truncated": "false",
+      },
+    })));
+
+    await expect(getArtifactPreview("run_1", "artifact_1")).rejects.toMatchObject({
+      failure: { type: "response-invalid-envelope", status: 200 },
+    });
+  });
+
+  it("returns exact artifact content bytes and forwards cancellation", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 255]);
+    const controller = new AbortController();
+    const fetch = vi.fn().mockResolvedValue(new Response(bytes, {
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-acpus-artifact-size": String(bytes.byteLength),
+        "x-acpus-artifact-name": "output%20data.bin",
+      },
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    const content = await getArtifactContent("run 1", "artifact 1", controller.signal);
+
+    expect(content).toEqual({
+      bytes,
+      mediaType: "application/octet-stream",
+      size: bytes.byteLength,
+      fileName: "output data.bin",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/workspaces/workspace%20one/runs/run%201/artifacts/artifact%201/content",
+      { signal: controller.signal },
+    );
+  });
+
+  it.each([
+    { name: "missing size", headers: { "content-type": "text/plain", "x-acpus-artifact-name": "output.txt" } },
+    { name: "non-integer size", headers: { "content-type": "text/plain", "x-acpus-artifact-size": "1.5", "x-acpus-artifact-name": "output.txt" } },
+    { name: "unsafe filename", headers: { "content-type": "text/plain", "x-acpus-artifact-size": "0", "x-acpus-artifact-name": "..%2Fsecret" } },
+  ])("rejects artifact content with $name metadata", async ({ headers }) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new Uint8Array(), { headers })));
+
+    await expect(getArtifactContent("run_1", "artifact_1")).rejects.toMatchObject({
+      failure: { type: "response-invalid-envelope", status: 200 },
+    });
+  });
+
+  it("rejects artifact content whose byte length differs from its declared size", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new Uint8Array([1]), {
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-acpus-artifact-size": "2",
+        "x-acpus-artifact-name": "output.bin",
+      },
+    })));
+
+    await expect(getArtifactContent("run_1", "artifact_1")).rejects.toMatchObject({
+      failure: { type: "response-invalid-envelope", status: 200 },
+    });
+  });
+
   it("preserves the server error envelope for artifact previews", async () => {
     respondJson({
       ok: false,
@@ -235,7 +356,23 @@ function successCases() {
   const health = {
     checks: [{ area: "daemon", status: "ok" as const, message: "ready" }],
   };
-  const runs = [{ id: "run_1", name: "release", status: "running" }];
+  const runs = [{
+    id: "run_1",
+    name: "release",
+    status: "running",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:01.000Z",
+  }];
+  const workspaces = {
+    currentWorkspaceKey: "current",
+    workspaces: [{
+      key: "current",
+      name: "workspace",
+      path: "/workspace",
+      runCount: 1,
+      lastRunUpdatedAt: "2026-07-01T00:00:01.000Z",
+    }],
+  };
   const snapshot = {
     run: runDetails(),
     workflow: workflowContext(),
@@ -246,6 +383,7 @@ function successCases() {
     },
   };
   const inspection = nodeInspection();
+  const runtimeValues = nodeRuntimeValues();
   const execution = nodeExecution();
   const catalog = [{ name: "release", entryPath: "/workspace/release/workflow.ts" }];
   const files = {
@@ -260,9 +398,12 @@ function successCases() {
 
   return [
     { name: "health", call: () => getHealth(), body: { ok: true, health }, expected: health },
+    { name: "workspace catalog", call: () => listWorkspaces(), body: { ok: true, catalog: workspaces }, expected: workspaces },
     { name: "run list", call: () => listRuns(), body: { ok: true, runs }, expected: runs },
     { name: "runtime snapshot", call: () => getRunRuntimeSnapshot("run_1"), body: { ok: true, ...snapshot }, expected: snapshot },
     { name: "node inspection", call: () => getNodeInspection("run_1", "review"), body: { ok: true, inspection }, expected: inspection },
+    { name: "node runtime values", call: () => getNodeRuntimeValues("run_1", "review"), body: { ok: true, runtimeValues }, expected: runtimeValues },
+    { name: "unavailable node runtime values", call: () => getNodeRuntimeValues("run_1", "review"), body: { ok: true, runtimeValues: { available: false, reason: "not_selected" } }, expected: { available: false, reason: "not_selected" } },
     { name: "node execution", call: () => getNodeExecutionInspection("run_1", "review"), body: { ok: true, execution }, expected: execution },
     { name: "control acknowledgement", call: () => submitRunCommand("run_1", { type: "pause" }), body: { ok: true }, expected: undefined },
     { name: "workflow catalog", call: () => listWorkflowCatalog(), body: { ok: true, catalog }, expected: catalog },
@@ -274,6 +415,13 @@ function successCases() {
 
 function malformedEndpointCases() {
   const run = runDetails();
+  const runRecord = {
+    id: run.id,
+    name: run.name,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
   const graph = runtimeGraph();
   const inspection = nodeInspection();
   const execution = nodeExecution();
@@ -284,9 +432,67 @@ function malformedEndpointCases() {
       body: { ok: true, health: { checks: [{ area: "daemon", status: "unknown", message: "?" }] } },
     },
     {
+      name: "workspace catalog without current key",
+      call: () => listWorkspaces(),
+      body: { ok: true, catalog: { workspaces: [] } },
+    },
+    {
+      name: "workspace catalog with a negative run count",
+      call: () => listWorkspaces(),
+      body: {
+        ok: true,
+        catalog: {
+          currentWorkspaceKey: "current",
+          workspaces: [{ key: "current", name: "workspace", path: "/workspace", runCount: -1 }],
+        },
+      },
+    },
+    {
+      name: "workspace catalog with an extra workspace field",
+      call: () => listWorkspaces(),
+      body: {
+        ok: true,
+        catalog: {
+          currentWorkspaceKey: "current",
+          workspaces: [{ key: "current", name: "workspace", path: "/workspace", runCount: 0, private: true }],
+        },
+      },
+    },
+    {
+      name: "workspace catalog with a non-string last update",
+      call: () => listWorkspaces(),
+      body: {
+        ok: true,
+        catalog: {
+          currentWorkspaceKey: "current",
+          workspaces: [{ key: "current", name: "workspace", path: "/workspace", runCount: 0, lastRunUpdatedAt: 42 }],
+        },
+      },
+    },
+    {
       name: "run-list status leaf",
       call: () => listRuns(),
-      body: { ok: true, runs: [{ id: "run_1", name: "release", status: 42 }] },
+      body: { ok: true, runs: [{ ...runRecord, status: 42 }] },
+    },
+    {
+      name: "run-list without createdAt",
+      call: () => listRuns(),
+      body: { ok: true, runs: [{ ...runRecord, createdAt: undefined }] },
+    },
+    {
+      name: "run-list without updatedAt",
+      call: () => listRuns(),
+      body: { ok: true, runs: [{ ...runRecord, updatedAt: undefined }] },
+    },
+    {
+      name: "run-list non-string createdAt",
+      call: () => listRuns(),
+      body: { ok: true, runs: [{ ...runRecord, createdAt: 42 }] },
+    },
+    {
+      name: "run-list non-string updatedAt",
+      call: () => listRuns(),
+      body: { ok: true, runs: [{ ...runRecord, updatedAt: 42 }] },
     },
     {
       name: "runtime snapshot without required run input",
@@ -365,6 +571,21 @@ function malformedEndpointCases() {
           artifacts: [{ ...inspection.artifacts[0], path: 42 }],
         },
       },
+    },
+    {
+      name: "node-runtime-values array payload",
+      call: () => getNodeRuntimeValues("run_1", "review"),
+      body: { ok: true, runtimeValues: { available: true, values: [] } },
+    },
+    {
+      name: "node-runtime-values unknown unavailable reason",
+      call: () => getNodeRuntimeValues("run_1", "review"),
+      body: { ok: true, runtimeValues: { available: false, reason: "unknown" } },
+    },
+    {
+      name: "node-runtime-values conflicting branches",
+      call: () => getNodeRuntimeValues("run_1", "review"),
+      body: { ok: true, runtimeValues: { available: false, reason: "not_started", values: {} } },
     },
     {
       name: "node-execution tool-call turn",
@@ -544,6 +765,20 @@ function malformedInspectionCases() {
       inspection: {
         ...inspection,
         agent: { key: "reviewer", model: 42 },
+      },
+    },
+    {
+      name: "node timing without a start boundary",
+      inspection: {
+        ...inspection,
+        timing: { durationMs: 1_000 },
+      },
+    },
+    {
+      name: "a negative node duration",
+      inspection: {
+        ...inspection,
+        timing: { ...inspection.timing, durationMs: -1 },
       },
     },
     {
@@ -783,8 +1018,11 @@ function nodeInspection(): NodeInspection {
     frameKey: "review#frame",
     cancelTarget: "review#node",
     staticKind: "agent",
-    runStartedAt: "2026-07-27T00:00:00.000Z",
-    runDurationMs: 1_000,
+    timing: {
+      startedAt: "2026-07-27T00:00:00.000Z",
+      finishedAt: "2026-07-27T00:00:01.000Z",
+      durationMs: 1_000,
+    },
     latestAttempt: { attemptNo: 1, status: "running" },
     agent: {
       key: "reviewer",
@@ -823,6 +1061,16 @@ function nodeInspection(): NodeInspection {
     awaitingSignal: {
       target: "approval#node",
       prompt: "Approve?",
+    },
+  };
+}
+
+function nodeRuntimeValues(): NodeRuntimeValues {
+  return {
+    available: true,
+    values: {
+      over: [{ id: 1 }, { id: 2 }],
+      maxConcurrency: 2,
     },
   };
 }

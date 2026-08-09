@@ -1,16 +1,83 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  ForensicsDefinition,
+  ForensicsInvocation,
+  InspectionForensicsView,
   RunInspectionAgentExecutionDocument,
   RunInspectionNodeDocument,
 } from "@acpus/runtime";
 import {
   projectNodeExecution,
   projectNodeInspection,
+  projectNodeRuntimeValues,
 } from "../src/server/node-inspection.js";
 
 const noTurnArtifact = async () => undefined;
 
 describe("node inspection projection", () => {
+  it.each(["pending", "starting", "ready", "running", "awaiting"] as const)(
+    "keeps Agent observation for a live %s target",
+    async status => {
+      const result = await projectNodeInspection(nodeInspection({
+        state: { status },
+        summary: {
+          agent: {
+            key: "observer",
+            availability: { context: "available", tokenUsage: "available" },
+            lastObservedAt: "2026-07-01T00:00:04.000Z",
+          },
+        },
+      }), noTurnArtifact);
+
+      expect(result.agent).toEqual({
+        key: "observer",
+        lastObservedAt: "2026-07-01T00:00:04.000Z",
+      });
+    },
+  );
+
+  it.each(["not_started", "not_selected", "completed", "failed", "timed_out", "cancelled", "mixed"] as const)(
+    "omits Agent observation for a non-live %s target",
+    async status => {
+      const result = await projectNodeInspection(nodeInspection({
+        state: { status },
+        summary: {
+          agent: {
+            key: "observer",
+            availability: { context: "available", tokenUsage: "available" },
+            lastObservedAt: "2026-07-01T00:00:04.000Z",
+          },
+        },
+      }), noTurnArtifact);
+
+      expect(result.agent).toEqual({ key: "observer" });
+    },
+  );
+
+  it("projects selected-target timing instead of run timing", async () => {
+    const inspection = nodeInspection({
+      summary: { runDurationMs: 60_000 },
+      state: {
+        status: "completed",
+        startedAt: "2026-07-01T00:00:01.000Z",
+        finishedAt: "2026-07-01T00:00:03.000Z",
+        durationMs: 2_000,
+      },
+    });
+
+    const result = await projectNodeInspection(inspection, noTurnArtifact);
+
+    expect(result).toMatchObject({
+      timing: {
+        startedAt: "2026-07-01T00:00:01.000Z",
+        finishedAt: "2026-07-01T00:00:03.000Z",
+        durationMs: 2_000,
+      },
+    });
+    expect(result).not.toHaveProperty("runStartedAt");
+    expect(result).not.toHaveProperty("runDurationMs");
+  });
+
   it("returns only the Web-owned fields after hydrating the verified prompt", async () => {
     const artifact = {
       id: "turn-1",
@@ -25,6 +92,10 @@ describe("node inspection projection", () => {
     };
     const inspection = nodeInspection({
       artifacts: [artifact],
+      state: {
+        status: "awaiting",
+        startedAt: "2026-07-01T00:00:01.000Z",
+      },
       summary: {
         runDurationMs: 4_000,
         latestAttempt: {
@@ -98,8 +169,7 @@ describe("node inspection projection", () => {
       nodeKey: "review~abc",
       cancelTarget: "review~abc",
       staticKind: "agent",
-      runStartedAt: "2026-07-01T00:00:00.000Z",
-      runDurationMs: 4_000,
+      timing: { startedAt: "2026-07-01T00:00:01.000Z" },
       latestAttempt: { attemptNo: 1, status: "started" },
       agent: {
         key: "observer",
@@ -161,7 +231,6 @@ describe("node inspection projection", () => {
       nodeId: "review",
       nodeKey: "review~abc",
       staticKind: "agent",
-      runStartedAt: "2026-07-01T00:00:00.000Z",
       artifacts: [],
     });
   });
@@ -198,7 +267,136 @@ describe("node inspection projection", () => {
   });
 });
 
+describe("node runtime values projection", () => {
+  it("projects the durable Assert outcome", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "assert", condition: "input.ok" },
+      { status: "resolved", kind: "assert", condition: true },
+    ))).toEqual({ available: true, values: { condition: true } });
+  });
+
+  it("projects the If condition from its durable selected branch", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "if", condition: "input.ok", branches: { then: emptyScope, else: emptyScope } },
+      { status: "resolved", kind: "if", selectedBranch: "else" },
+    ))).toEqual({ available: true, values: { condition: false, selectedBranch: "else" } });
+  });
+
+  it("projects evaluated and short-circuited Switch cases", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      {
+        kind: "switch",
+        cases: [
+          { id: "case:0", when: "input.mode === 'a'", then: emptyScope },
+          { id: "case:1", when: "input.mode === 'b'", then: emptyScope },
+          { id: "case:2", when: "input.mode === 'c'", then: emptyScope },
+        ],
+        default: emptyScope,
+      },
+      { status: "resolved", kind: "switch", selectedBranch: "case:1" },
+    ))).toEqual({
+      available: true,
+      values: {
+        cases: [
+          { id: "case:0", state: "resolved", value: false },
+          { id: "case:1", state: "resolved", value: true },
+          { id: "case:2", state: "not_evaluated" },
+        ],
+        selectedBranch: "case:1",
+      },
+    });
+  });
+
+  it("projects effective Parallel concurrency", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "parallel", strategy: "all", maxConcurrency: "input.limit", branches: { work: emptyScope } },
+      { status: "resolved", kind: "parallel", maxConcurrency: 3 },
+    ))).toEqual({ available: true, values: { maxConcurrency: 3 } });
+  });
+
+  it("projects the complete materialized Fanout input", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "fanout", over: "input.items", strategy: "quorum", count: "2", maxConcurrency: "3", do: emptyScope },
+      {
+        status: "resolved",
+        kind: "fanout",
+        items: [{ id: 1 }, { id: 2 }],
+        quorumCount: 2,
+        maxConcurrency: 3,
+      },
+    ))).toEqual({
+      available: true,
+      values: { over: [{ id: 1 }, { id: 2 }], count: 2, maxConcurrency: 3 },
+    });
+  });
+
+  it("projects durable Loop progress values", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "loop", state: "input.state", do: { nodes: [], transition: { state: "do.state", stop: "do.stop" } } },
+      { status: "resolved", kind: "loop", index: 2, round: 3, state: { count: 3 }, transition: { stop: true } },
+    ))).toEqual({
+      available: true,
+      values: { index: 2, round: 3, state: { count: 3 }, transition: { stop: true } },
+    });
+  });
+
+  it("preserves a composite invocation's unavailable reason", () => {
+    expect(projectNodeRuntimeValues(forensicsView(
+      { kind: "fanout", over: "input.items", strategy: "all", do: emptyScope },
+      { status: "unavailable", reason: "not_yet_resolved" },
+    ))).toEqual({ available: false, reason: "not_yet_resolved" });
+  });
+
+  it("does not expose leaf invocation fields", () => {
+    const projected = projectNodeRuntimeValues(forensicsView(
+      {
+        kind: "agent",
+        agent: "worker",
+        profile: { kind: "agent_definition", use: "codex" },
+        prompt: "private authored prompt",
+      },
+      {
+        status: "resolved",
+        kind: "agent",
+        attempt: 1,
+        promptOrigin: "authored",
+        prompt: "private runtime prompt",
+        cwd: "/private/workspace",
+        env: { TOKEN: "private" },
+        permissionMode: "deny-all",
+      },
+    ));
+
+    expect(projected).toEqual({ available: false, reason: "not-composite" });
+    expect(JSON.stringify(projected)).not.toContain("private");
+  });
+});
+
 describe("node execution inspection", () => {
+  it.each(["pending", "starting", "ready", "running", "awaiting"] as const)(
+    "keeps Agent execution observation for a live %s target",
+    status => {
+      const result = projectNodeExecution({
+        ...executionInspection(),
+        summary: { status },
+      });
+
+      expect(result).toHaveProperty("lastObservedAt", "2026-07-01T00:00:02.000Z");
+    },
+  );
+
+  it.each(["not_started", "not_selected", "completed", "failed", "timed_out", "cancelled", "mixed"] as const)(
+    "omits Agent execution observation for a non-live %s target",
+    status => {
+      const result = projectNodeExecution({
+        ...executionInspection(),
+        summary: { status },
+      });
+
+      expect(result).not.toHaveProperty("lastObservedAt");
+    },
+  );
+
   it("maps only the closed Web execution fields", () => {
     const execution = {
       ...executionInspection(),
@@ -311,6 +509,7 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
 }
 
 function nodeInspection(overrides: {
+  state?: RunInspectionNodeDocument["state"];
   summary?: Partial<RunInspectionNodeDocument["summary"]>;
   artifacts?: RunInspectionNodeDocument["artifacts"];
   availableControls?: RunInspectionNodeDocument["availableControls"];
@@ -336,6 +535,7 @@ function nodeInspection(overrides: {
       kind: "agent",
       nodeId: "review",
     },
+    state: overrides.state ?? { status: "running" },
     summary: {
       targetKind: "dynamic-node",
       targetId: "review~abc",
@@ -351,5 +551,23 @@ function nodeInspection(overrides: {
     },
     artifacts,
     availableControls: overrides.availableControls ?? [{ type: "cancel", target: "review~abc" }],
+  };
+}
+
+const emptyScope = { nodes: [], output: "null" };
+
+function forensicsView(
+  definition: ForensicsDefinition,
+  invocation: ForensicsInvocation,
+): InspectionForensicsView {
+  return {
+    kind: "target",
+    detail: "forensics",
+    run: { id: "run_1", status: "running" },
+    subject: { label: "target", kind: definition.kind, selector: "@1a2b3c4d5e6f" },
+    state: { status: "running" },
+    definition,
+    invocation,
+    result: { status: "pending" },
   };
 }

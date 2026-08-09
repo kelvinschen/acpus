@@ -5,6 +5,7 @@ import type {
   NodeExecutionInspection,
   NodeInspection,
   NodeInspectionFailure,
+  NodeRuntimeValues,
   ProjectWorkflowCatalogEntry,
   RunControlTarget,
   RunDetails,
@@ -13,6 +14,8 @@ import type {
   RunRuntimeSnapshot,
   ServerConfig,
   WebControlCommand,
+  WorkspaceCatalog,
+  WorkspaceSummary,
   WorkflowFileEntry,
   WorkflowFiles,
   WorkflowVisualizationResult,
@@ -29,6 +32,7 @@ export type {
   NodeExecutionInspection,
   NodeInspection,
   NodeInspectionFailure,
+  NodeRuntimeValues,
   ProjectWorkflowCatalogEntry,
   RunControlTarget,
   RunDetails,
@@ -36,6 +40,8 @@ export type {
   RunRuntimeSnapshot,
   ServerConfig,
   WebControlCommand,
+  WorkspaceCatalog,
+  WorkspaceSummary,
   WorkflowFileEntry,
   WorkflowFiles,
   WorkflowVisualizationResult,
@@ -51,6 +57,15 @@ export type {
 export type ArtifactPreview = {
   text: string;
   mediaType: string;
+  size: number;
+  truncated: boolean;
+};
+
+export type ArtifactContent = {
+  bytes: Uint8Array;
+  mediaType: string;
+  size: number;
+  fileName: string;
 };
 
 export type WebApiFailure =
@@ -139,83 +154,195 @@ export async function getHealth(): Promise<HealthReport> {
   return queryPromise(requestJson("/api/health", undefined, decodeField("health", isHealthReport)));
 }
 
-export async function listRuns(): Promise<RunRecord[]> {
-  return queryPromise(requestJson("/api/runs", undefined, decodeField("runs", isRunRecords)));
+export async function listWorkspaces(): Promise<WorkspaceCatalog> {
+  return queryPromise(requestJson(
+    "/api/workspaces",
+    undefined,
+    decodeField("catalog", isWorkspaceCatalog),
+  ));
 }
 
-export async function getRunRuntimeSnapshot(runId: string): Promise<RunRuntimeSnapshot> {
+export async function listRuns(workspaceKey: string): Promise<RunRecord[]> {
   return queryPromise(requestJson(
-    `/api/runs/${encodeURIComponent(runId)}/runtime-snapshot`,
+    workspaceRunsUrl(workspaceKey),
+    undefined,
+    decodeField("runs", isRunRecords),
+  ));
+}
+
+export async function getRunRuntimeSnapshot(workspaceKey: string, runId: string): Promise<RunRuntimeSnapshot> {
+  return queryPromise(requestJson(
+    `${workspaceRunUrl(workspaceKey, runId)}/runtime-snapshot`,
     undefined,
     decodeRuntimeSnapshot,
   ));
 }
 
-export async function getNodeInspection(runId: string, target: string): Promise<NodeInspection> {
+export async function getNodeInspection(workspaceKey: string, runId: string, target: string): Promise<NodeInspection> {
   return queryPromise(requestJson(
-    nodeInspectionUrl(runId, target),
+    nodeInspectionUrl(workspaceKey, runId, target),
     undefined,
     decodeField("inspection", isNodeInspection),
   ));
 }
 
-export async function getNodeExecutionInspection(runId: string, target: string): Promise<NodeExecutionInspection> {
+export async function getNodeRuntimeValues(workspaceKey: string, runId: string, target: string): Promise<NodeRuntimeValues> {
   return queryPromise(requestJson(
-    nodeInspectionUrl(runId, target, "/execution"),
+    nodeInspectionUrl(workspaceKey, runId, target, "/runtime-values"),
+    undefined,
+    decodeField("runtimeValues", isNodeRuntimeValues),
+  ));
+}
+
+export async function getNodeExecutionInspection(workspaceKey: string, runId: string, target: string): Promise<NodeExecutionInspection> {
+  return queryPromise(requestJson(
+    nodeInspectionUrl(workspaceKey, runId, target, "/execution"),
     undefined,
     decodeField("execution", isNodeExecutionInspection),
   ));
 }
 
-function nodeInspectionUrl(runId: string, target: string, suffix = ""): string {
-  return `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(target)}${suffix}`;
+function nodeInspectionUrl(workspaceKey: string, runId: string, target: string, suffix = ""): string {
+  return `${workspaceRunUrl(workspaceKey, runId)}/nodes/${encodeURIComponent(target)}${suffix}`;
 }
 
-export async function getArtifactPreview(runId: string, artifactId: string): Promise<ArtifactPreview> {
-  const url = `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/preview`;
-  return queryPromise(new ResultAsync((async (): Promise<Result<ArtifactPreview, WebApiFailure>> => {
-    let response: Response;
-    try {
-      response = await fetch(url);
-    } catch (cause) {
-      return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview request failed.") });
-    }
-    if (!response.ok) {
-      let text: string;
-      try {
-        text = await response.text();
-      } catch (cause) {
-        return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview error body could not be read.") });
+export async function getArtifactPreview(workspaceKey: string, runId: string, artifactId: string): Promise<ArtifactPreview> {
+  const url = `${workspaceRunUrl(workspaceKey, runId)}/artifacts/${encodeURIComponent(artifactId)}/preview`;
+  const result: ResultAsync<ArtifactPreview, WebApiFailure> = requestArtifactResponse(url).andThen(response => {
+    const metadata = parseArtifactMetadata(response, true);
+    if (metadata.isErr()) return err(metadata.error);
+    return ResultAsync.fromPromise(response.arrayBuffer(), cause => ({
+      type: "network-failed" as const,
+      message: errorMessage(cause, "Artifact preview body could not be read."),
+    })).andThen(buffer => {
+      const expectedLength = Math.min(metadata.value.size, 128 * 1024);
+      if (buffer.byteLength !== expectedLength || metadata.value.truncated !== (metadata.value.size > expectedLength)) {
+        return invalidArtifactMetadata<ArtifactPreview>(response, "Artifact preview body did not match its metadata.");
       }
+      return ok({ text: new TextDecoder().decode(buffer), ...metadata.value });
+    });
+  });
+  return queryPromise(result);
+}
+
+export async function getArtifactContent(
+  workspaceKey: string,
+  runId: string,
+  artifactId: string,
+  signal?: AbortSignal,
+): Promise<ArtifactContent> {
+  const url = `${workspaceRunUrl(workspaceKey, runId)}/artifacts/${encodeURIComponent(artifactId)}/content`;
+  const result: ResultAsync<ArtifactContent, WebApiFailure> = requestArtifactResponse(url, signal).andThen(response => {
+    const metadata = parseArtifactMetadata(response, false);
+    if (metadata.isErr()) return err(metadata.error);
+    return ResultAsync.fromPromise(response.arrayBuffer(), cause => ({
+      type: "network-failed" as const,
+      message: errorMessage(cause, "Artifact content body could not be read."),
+    })).andThen(buffer => buffer.byteLength === metadata.value.size
+      ? ok({ bytes: new Uint8Array(buffer), ...metadata.value })
+      : invalidArtifactMetadata<ArtifactContent>(response, "Artifact content byte length did not match its metadata."));
+  });
+  return queryPromise(result);
+}
+
+function requestArtifactResponse(url: string, signal?: AbortSignal): ResultAsync<Response, WebApiFailure> {
+  return ResultAsync.fromPromise(fetch(url, signal === undefined ? undefined : { signal }), cause => ({
+    type: "network-failed" as const,
+    message: errorMessage(cause, "Artifact request failed."),
+  })).andThen(response => {
+    if (response.ok) return ok(response);
+    return ResultAsync.fromPromise(response.text(), cause => ({
+      type: "network-failed" as const,
+      message: errorMessage(cause, "Artifact error body could not be read."),
+    })).andThen(text => {
       let body: unknown;
       try {
         body = JSON.parse(text) as unknown;
       } catch {
-        return err({ type: "response-invalid-json", status: response.status, message: "Artifact preview error response was not valid JSON." });
+        return err({
+          type: "response-invalid-json" as const,
+          status: response.status,
+          message: "Artifact error response was not valid JSON.",
+        });
       }
       const failure = isRecord(body) && body.ok === false && isRecord(body.error) ? body.error : undefined;
-      if (typeof failure?.code === "string" && typeof failure.message === "string") {
-        return err({ type: "request-failed", status: response.status, code: failure.code, message: failure.message });
-      }
-      return err({ type: "response-invalid-envelope", status: response.status, message: "Artifact preview error response did not contain a valid error envelope." });
+      return typeof failure?.code === "string" && typeof failure.message === "string"
+        ? err({ type: "request-failed" as const, status: response.status, code: failure.code, message: failure.message })
+        : err({
+            type: "response-invalid-envelope" as const,
+            status: response.status,
+            message: "Artifact error response did not contain a valid error envelope.",
+          });
+    });
+  });
+}
+
+function parseArtifactMetadata(
+  response: Response,
+  preview: true,
+): Result<Omit<ArtifactPreview, "text">, WebApiFailure>;
+function parseArtifactMetadata(
+  response: Response,
+  preview: false,
+): Result<Omit<ArtifactContent, "bytes">, WebApiFailure>;
+function parseArtifactMetadata(
+  response: Response,
+  preview: boolean,
+): Result<Omit<ArtifactPreview, "text"> | Omit<ArtifactContent, "bytes">, WebApiFailure> {
+  const mediaType = response.headers.get("content-type");
+  const sizeText = response.headers.get("x-acpus-artifact-size");
+  if (!mediaType?.trim() || sizeText === null || !/^(0|[1-9]\d*)$/.test(sizeText)) {
+    return invalidArtifactMetadata(response, "Artifact response metadata was invalid.");
+  }
+  const size = Number(sizeText);
+  if (!Number.isSafeInteger(size)) {
+    return invalidArtifactMetadata(response, "Artifact response metadata was invalid.");
+  }
+  if (preview) {
+    const truncated = response.headers.get("x-acpus-artifact-truncated");
+    if (truncated !== "true" && truncated !== "false") {
+      return invalidArtifactMetadata(response, "Artifact preview truncation metadata was invalid.");
     }
-    try {
-      return ok({ text: await response.text(), mediaType: response.headers.get("content-type") ?? "text/plain" });
-    } catch (cause) {
-      return err({ type: "network-failed", message: errorMessage(cause, "Artifact preview body could not be read.") });
-    }
-  })()));
+    return ok({ mediaType, size, truncated: truncated === "true" });
+  }
+  const encodedName = response.headers.get("x-acpus-artifact-name");
+  if (encodedName === null) {
+    return invalidArtifactMetadata(response, "Artifact content filename metadata was invalid.");
+  }
+  let fileName: string;
+  try {
+    fileName = decodeURIComponent(encodedName);
+  } catch {
+    return invalidArtifactMetadata(response, "Artifact content filename metadata was invalid.");
+  }
+  if (!fileName || fileName === "." || fileName === ".." || /[\\/\u0000-\u001f\u007f]/.test(fileName)) {
+    return invalidArtifactMetadata(response, "Artifact content filename metadata was invalid.");
+  }
+  return ok({ mediaType, size, fileName });
+}
+
+function invalidArtifactMetadata<T>(response: Response, message: string): Result<T, WebApiFailure> {
+  return err({ type: "response-invalid-envelope", status: response.status, message });
 }
 
 export async function submitRunCommand(
+  workspaceKey: string,
   runId: string,
   command: WebControlCommand,
 ): Promise<void> {
-  await queryPromise(requestJson<void>(`/api/runs/${encodeURIComponent(runId)}/controls`, {
+  await queryPromise(requestJson<void>(`${workspaceRunUrl(workspaceKey, runId)}/controls`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(command),
   }, body => Object.keys(body).length === 1 ? undefined : invalidPayload));
+}
+
+function workspaceRunsUrl(workspaceKey: string): string {
+  return `/api/workspaces/${encodeURIComponent(workspaceKey)}/runs`;
+}
+
+function workspaceRunUrl(workspaceKey: string, runId: string): string {
+  return `${workspaceRunsUrl(workspaceKey)}/${encodeURIComponent(runId)}`;
 }
 
 export async function listWorkflowCatalog(): Promise<ProjectWorkflowCatalogEntry[]> {
@@ -270,15 +397,36 @@ function isHealthReport(value: unknown): value is HealthReport {
       && typeof check.message === "string");
 }
 
+function isWorkspaceCatalog(value: unknown): value is WorkspaceCatalog {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["currentWorkspaceKey", "workspaces"])
+    && typeof value.currentWorkspaceKey === "string"
+    && Array.isArray(value.workspaces)
+    && value.workspaces.every(isWorkspaceSummary);
+}
+
+function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["key", "name", "path", "runCount", "lastRunUpdatedAt"])
+    && typeof value.key === "string"
+    && typeof value.name === "string"
+    && typeof value.path === "string"
+    && isNonNegativeInteger(value.runCount)
+    && isOptionalString(value.lastRunUpdatedAt);
+}
+
 function isRunRecords(value: unknown): value is RunRecord[] {
   return Array.isArray(value) && value.every(isRunRecord);
 }
 
 function isRunRecord(value: unknown): value is RunRecord {
   return isRecord(value)
+    && hasOnlyKeys(value, ["id", "name", "status", "createdAt", "updatedAt"])
     && typeof value.id === "string"
     && typeof value.name === "string"
-    && typeof value.status === "string";
+    && typeof value.status === "string"
+    && typeof value.createdAt === "string"
+    && typeof value.updatedAt === "string";
 }
 
 function isRunDetails(value: unknown): value is RunDetails {
@@ -326,8 +474,7 @@ function isNodeInspection(value: unknown): value is NodeInspection {
       "frameKey",
       "cancelTarget",
       "staticKind",
-      "runStartedAt",
-      "runDurationMs",
+      "timing",
       "latestAttempt",
       "agent",
       "input",
@@ -338,13 +485,12 @@ function isNodeInspection(value: unknown): value is NodeInspection {
       "artifacts",
       "awaitingSignal",
     ])
-    && typeof value.runStartedAt === "string"
     && isOptionalString(value.nodeId)
     && isOptionalString(value.nodeKey)
     && isOptionalString(value.frameKey)
     && (value.cancelTarget === undefined || isControlTarget(value.cancelTarget))
     && isOptionalString(value.staticKind)
-    && isOptionalNumber(value.runDurationMs)
+    && (value.timing === undefined || isNodeTiming(value.timing))
     && (value.latestAttempt === undefined || isRecord(value.latestAttempt)
       && hasOnlyKeys(value.latestAttempt, ["attemptNo", "status"])
       && isNonNegativeInteger(value.latestAttempt.attemptNo)
@@ -372,6 +518,29 @@ function isNodeInspection(value: unknown): value is NodeInspection {
       && hasOnlyKeys(value.awaitingSignal, ["target", "prompt"])
       && isControlTarget(value.awaitingSignal.target)
       && isOptionalString(value.awaitingSignal.prompt));
+}
+
+function isNodeRuntimeValues(value: unknown): value is NodeRuntimeValues {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["available", "values", "reason"])) return false;
+  if (value.available === true) {
+    return value.reason === undefined && isRecord(value.values) && isJsonValue(value.values);
+  }
+  return value.available === false
+    && value.values === undefined
+    && (value.reason === "not-composite"
+      || value.reason === "not_started"
+      || value.reason === "not_selected"
+      || value.reason === "not_yet_resolved"
+      || value.reason === "resolution_failed"
+      || value.reason === "not_recorded");
+}
+
+function isNodeTiming(value: unknown): value is NonNullable<NodeInspection["timing"]> {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["startedAt", "finishedAt", "durationMs"])
+    && typeof value.startedAt === "string"
+    && isOptionalString(value.finishedAt)
+    && isOptionalNonNegativeNumber(value.durationMs);
 }
 
 function isLoopProgress(value: unknown): value is NonNullable<NodeInspection["loopProgress"]> {

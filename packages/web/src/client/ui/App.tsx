@@ -1,10 +1,9 @@
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import Activity from "lucide-react/dist/esm/icons/activity.js";
-import Ban from "lucide-react/dist/esm/icons/ban.js";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.js";
 import Boxes from "lucide-react/dist/esm/icons/boxes.js";
 import CheckCircle2 from "lucide-react/dist/esm/icons/circle-check-big.js";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
@@ -16,10 +15,10 @@ import FileSearch from "lucide-react/dist/esm/icons/file-search.js";
 import FileText from "lucide-react/dist/esm/icons/file-text.js";
 import Folder from "lucide-react/dist/esm/icons/folder.js";
 import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
+import Maximize2 from "lucide-react/dist/esm/icons/maximize-2.js";
 import Package from "lucide-react/dist/esm/icons/package.js";
 import Pause from "lucide-react/dist/esm/icons/pause.js";
 import Play from "lucide-react/dist/esm/icons/play.js";
-import Radio from "lucide-react/dist/esm/icons/radio.js";
 import RotateCcw from "lucide-react/dist/esm/icons/rotate-ccw.js";
 import Search from "lucide-react/dist/esm/icons/search.js";
 import Square from "lucide-react/dist/esm/icons/square.js";
@@ -30,7 +29,9 @@ import {
   getHealth,
   getNodeExecutionInspection,
   getNodeInspection,
+  getNodeRuntimeValues,
   getRunRuntimeSnapshot,
+  listWorkspaces,
   listWorkflowCatalog,
   listWorkflowFiles,
   listRuns,
@@ -47,15 +48,23 @@ import {
   type RunRecord,
   type ServerConfig,
   type WebControlCommand,
+  type WorkspaceSummary,
   type WorkflowFileEntry,
   type WorkflowVisualizationResult,
   type WorkflowVisualizationSource,
   type WorkflowContext,
 } from "../api.js";
 import { InspectorSection, JsonBlock, JsonSection, KeyValue } from "./Inspector.js";
+import { ArtifactViewer } from "./ArtifactViewer.js";
 import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
+import { MarkdownDocument } from "./MarkdownDocument.js";
+import { NodeDefinitionSection } from "./NodeDefinition.js";
+import { NodeKindBadge } from "./NodeKind.js";
+import { RunsPage } from "./RunsPage.js";
+import { isTerminalRunStatus, RunStatusIndicator, RuntimeStatusIcon } from "./RunStatus.js";
 import { StaticGraphApp } from "./StaticGraphApp.js";
 import { ToastViewport, useToasts } from "./Toast.js";
+import { durationBetween, formatDate, formatDuration, formatRelativeAge } from "./display-format.js";
 import { Button } from "./shadcn/button.js";
 import { Alert } from "./shadcn/alert.js";
 import { Badge } from "./shadcn/badge.js";
@@ -99,16 +108,42 @@ import { graphContextLabel } from "../../graph-renderer.js";
 
 const logoLockupUrl = new URL("../assets/logo-lockup.svg", import.meta.url).href;
 
+type AppView =
+  | { page: "runs" }
+  | { page: "run-monitor"; workspaceKey: string; runId: string }
+  | { page: "workflows" };
+
+type RunViewTransition = {
+  finished: Promise<unknown>;
+  skipTransition(): void;
+};
+
+type RunViewTransitionDocument = Document & {
+  startViewTransition?(update: () => void): RunViewTransition;
+};
+
 export function App() {
-  const [page, setPage] = useState("runtime");
-  const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
+  const [view, setView] = useState<AppView>({ page: "runs" });
+  const [selectedRunsWorkspaceKey, setSelectedRunsWorkspaceKey] = useState<string | undefined>();
   const [graphTarget, setGraphTarget] = useState<GraphInspectionTarget | undefined>();
   const [statusOpen, setStatusOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const activeRunViewTransition = useRef<RunViewTransition | undefined>(undefined);
+  const runViewTransitionSequence = useRef(0);
+  const { toasts, push, dismiss } = useToasts();
 
+  const workspaces = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: listWorkspaces,
+    refetchInterval: 30_000,
+  });
+  const selectedWorkspaceKey = selectedRunsWorkspaceKey ?? workspaces.data?.currentWorkspaceKey;
+  const selectedWorkspaceAvailable = workspaces.data === undefined
+    || workspaces.data.workspaces.some(workspace => workspace.key === selectedWorkspaceKey);
   const runs = useQuery({
-    queryKey: ["runs"],
-    queryFn: listRuns,
+    queryKey: ["runs", selectedWorkspaceKey],
+    queryFn: () => listRuns(selectedWorkspaceKey!),
+    enabled: Boolean(selectedWorkspaceKey && selectedWorkspaceAvailable),
     refetchInterval: 4_000,
   });
   const health = useQuery({
@@ -121,9 +156,53 @@ export function App() {
     queryFn: getConfig,
   });
 
+  useEffect(() => () => {
+    runViewTransitionSequence.current += 1;
+    activeRunViewTransition.current?.skipTransition();
+    delete document.documentElement.dataset.runTransition;
+  }, []);
+
   useEffect(() => {
-    if (!selectedRunId && runs.data?.[0]) setSelectedRunId(runs.data[0].id);
-  }, [runs.data, selectedRunId]);
+    if (view.page !== "runs" || !selectedRunsWorkspaceKey || !workspaces.data) return;
+    if (workspaces.data.workspaces.some(workspace => workspace.key === selectedRunsWorkspaceKey)) return;
+    setSelectedRunsWorkspaceKey(workspaces.data.currentWorkspaceKey);
+    setGraphTarget(undefined);
+    push({
+      tone: "error",
+      title: "Workspace unavailable",
+      detail: "The selected workspace is no longer available. Returned to the current workspace.",
+    });
+  }, [push, selectedRunsWorkspaceKey, view.page, workspaces.data]);
+
+  const changeView = (nextView: AppView, direction?: "forward" | "back") => {
+    const sequence = runViewTransitionSequence.current + 1;
+    runViewTransitionSequence.current = sequence;
+    const update = () => {
+      if (runViewTransitionSequence.current !== sequence) return;
+      setView(nextView);
+      setGraphTarget(undefined);
+    };
+    const viewTransitionDocument = document as RunViewTransitionDocument;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (!direction || !viewTransitionDocument.startViewTransition || reducedMotion) {
+      activeRunViewTransition.current?.skipTransition();
+      activeRunViewTransition.current = undefined;
+      delete document.documentElement.dataset.runTransition;
+      update();
+      return;
+    }
+
+    activeRunViewTransition.current?.skipTransition();
+    document.documentElement.dataset.runTransition = direction;
+    const transition = viewTransitionDocument.startViewTransition(() => flushSync(update));
+    activeRunViewTransition.current = transition;
+    const clearTransition = () => {
+      if (activeRunViewTransition.current !== transition) return;
+      activeRunViewTransition.current = undefined;
+      delete document.documentElement.dataset.runTransition;
+    };
+    void transition.finished.then(clearTransition, clearTransition);
+  };
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -144,8 +223,13 @@ export function App() {
           </Button>
         </div>
         <nav className="nav-list">
-          <NavButton icon={<Activity size={17} />} label="Runtime" active={page === "runtime"} onClick={() => setPage("runtime")} />
-          <NavButton icon={<FileSearch size={17} />} label="Workflows" active={page === "workflows"} onClick={() => setPage("workflows")} />
+          <NavButton
+            icon={<Activity size={17} />}
+            label="Runs"
+            active={view.page === "runs" || view.page === "run-monitor"}
+            onClick={() => changeView({ page: "runs" }, view.page === "run-monitor" ? "back" : undefined)}
+          />
+          <NavButton icon={<FileSearch size={17} />} label="Workflows" active={view.page === "workflows"} onClick={() => changeView({ page: "workflows" })} />
         </nav>
         <Popover open={statusOpen} onOpenChange={setStatusOpen}>
           <PopoverTrigger asChild>
@@ -156,51 +240,85 @@ export function App() {
       </aside>
 
       <section className="workspace">
-        {page === "runtime" && (
-          <RuntimePage
-            runId={selectedRunId}
+        {view.page === "runs" && (
+          <RunsPage
+            key={selectedWorkspaceKey}
+            runs={selectedWorkspaceAvailable ? runs.data : undefined}
+            loading={workspaces.isPending || runs.isPending || !selectedWorkspaceAvailable}
+            error={workspaces.error ?? runs.error}
+            workspaceCatalog={workspaces.data}
+            selectedWorkspaceKey={selectedWorkspaceKey}
+            onRetry={() => void Promise.all([
+              workspaces.refetch(),
+              ...(selectedWorkspaceKey ? [runs.refetch()] : []),
+            ])}
+            onSelectWorkspace={workspaceKey => {
+              setSelectedRunsWorkspaceKey(workspaceKey);
+              setGraphTarget(undefined);
+            }}
+            onOpenRun={runId => selectedWorkspaceKey && changeView({ page: "run-monitor", workspaceKey: selectedWorkspaceKey, runId }, "forward")}
+          />
+        )}
+        {view.page === "run-monitor" && (
+          <RunMonitorPage
+            workspaceKey={view.workspaceKey}
+            workspace={workspaces.data?.workspaces.find(workspace => workspace.key === view.workspaceKey)}
+            currentWorkspaceKey={workspaces.data?.currentWorkspaceKey}
+            runId={view.runId}
             runs={runs.data ?? []}
             selectedTarget={graphTarget}
             onSelectRun={id => {
-              setSelectedRunId(id);
+              setView({ page: "run-monitor", workspaceKey: view.workspaceKey, runId: id });
               setGraphTarget(undefined);
             }}
             onSelectTarget={setGraphTarget}
+            onBack={() => changeView({ page: "runs" }, "back")}
           />
         )}
-        {page === "workflows" && <WorkflowsPage />}
+        {view.page === "workflows" && <WorkflowsPage />}
       </section>
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </main>
   );
 }
 
-function RuntimePage({
+function RunMonitorPage({
+  workspaceKey,
+  workspace,
+  currentWorkspaceKey,
   runId,
   runs,
   selectedTarget,
   onSelectRun,
   onSelectTarget,
+  onBack,
 }: {
-  runId: string | undefined;
+  workspaceKey: string;
+  workspace: WorkspaceSummary | undefined;
+  currentWorkspaceKey: string | undefined;
+  runId: string;
   runs: RunRecord[];
   selectedTarget: GraphInspectionTarget | undefined;
   onSelectRun(id: string): void;
   onSelectTarget(target: GraphInspectionTarget | undefined): void;
+  onBack(): void;
 }) {
   const queryClient = useQueryClient();
   const { toasts, push, dismiss } = useToasts();
   const selectedNode = selectedTarget?.kind === "node" ? selectedTarget.node : undefined;
   const selectedNodeTarget = selectedNode?.target;
+  const readOnly = workspaceKey !== currentWorkspaceKey;
+  const workspaceAvailable = workspace !== undefined;
   const snapshot = useQuery({
-    queryKey: ["run-runtime-snapshot", runId],
-    queryFn: () => getRunRuntimeSnapshot(runId!),
-    enabled: Boolean(runId),
+    queryKey: ["run-runtime-snapshot", workspaceKey, runId],
+    queryFn: () => getRunRuntimeSnapshot(workspaceKey, runId),
+    enabled: Boolean(workspaceAvailable && runId),
     refetchInterval: query => isTerminalRunStatus((query.state.data as RunRuntimeSnapshot | undefined)?.run.status) ? false : 1_000,
   });
   const inspection = useQuery({
-    queryKey: ["node-inspection", runId, selectedNodeTarget],
-    queryFn: () => getNodeInspection(runId!, selectedNodeTarget!),
-    enabled: Boolean(runId && selectedNodeTarget),
+    queryKey: ["node-inspection", workspaceKey, runId, selectedNodeTarget],
+    queryFn: () => getNodeInspection(workspaceKey, runId, selectedNodeTarget!),
+    enabled: Boolean(workspaceAvailable && runId && selectedNodeTarget),
     refetchInterval: nodeInspectionRefetchInterval(snapshot.data?.run.status),
   });
   const selectedCancelTarget = selectedNode
@@ -210,12 +328,12 @@ function RuntimePage({
     ? [selectedNode.label, graphContextLabel(selectedNode.context)].filter(Boolean).join(" · ")
     : undefined;
   const command = useMutation({
-    mutationFn: (input: WebControlCommand) => submitRunCommand(runId!, input),
+    mutationFn: (input: WebControlCommand) => submitRunCommand(workspaceKey, runId, input),
     onSuccess: async (_data, variables) => {
       push({ tone: "success", title: `${commandLabel(variables)} accepted` });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["run-runtime-snapshot", runId] }),
-        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["run-runtime-snapshot", workspaceKey, runId] }),
+        queryClient.invalidateQueries({ queryKey: ["runs", workspaceKey] }),
       ]);
     },
     onError: (error, variables) => {
@@ -224,6 +342,9 @@ function RuntimePage({
   });
 
   const runDetails = snapshot.data?.run;
+  const selectedAgentProfile = selectedNode?.detail?.kind === "agent"
+    ? snapshot.data?.workflow.agents[selectedNode.detail.agent]
+    : undefined;
   const signalWait = selectedTarget?.kind === "node"
     ? inspection.data?.awaitingSignal
     : undefined;
@@ -236,45 +357,69 @@ function RuntimePage({
     setRetryTarget(current => current && values.has(current) ? current : retryTargets[0]?.value);
   }, [retryTargetSignature]);
 
-  if (!runId) return <EmptyState title="No Run Selected" detail="Use the run selector to choose a durable run." />;
-  const headerState = runHeaderViewState(runDetails, snapshot.error);
+  const headerState = runHeaderViewState(
+    workspaceAvailable ? runDetails : undefined,
+    workspaceAvailable ? snapshot.error : new Error("This workspace is no longer available."),
+  );
 
   return (
-    <div className="runtime-grid">
+    <div className="run-monitor-grid" aria-label="Run Monitor">
       <header className="topbar">
-        <div className="run-titlebar">
-          {headerState.kind === "ready" ? (
-            <>
-              <h2>{headerState.run.name}</h2>
-              <div className="run-meta">
-                <RunStatusIndicator status={headerState.run.status} />
-                <span>{runId}</span>
-                {headerState.run.updatedAt && <span>{formatDate(headerState.run.updatedAt)}</span>}
-              </div>
-            </>
-          ) : headerState.kind === "error" ? (
-            <RunHeaderError message={headerState.message} />
-          ) : (
-            <RunHeaderSkeleton />
-          )}
+        <div className="run-heading-group">
+          <Button type="button" variant="ghost" className="run-back-button" aria-label="Back to Runs" title="Back to Runs" onClick={onBack}>
+            <ArrowLeft size={16} strokeWidth={2} aria-hidden="true" />
+            <span>Runs</span>
+          </Button>
+          <div className="run-titlebar">
+            {headerState.kind === "ready" ? (
+              <>
+                <h2>{headerState.run.name}</h2>
+                <div className="run-meta">
+                  <RunStatusIndicator status={headerState.run.status} />
+                  <span>{runId}</span>
+                  {headerState.run.updatedAt && <span>{formatDate(headerState.run.updatedAt)}</span>}
+                </div>
+              </>
+            ) : headerState.kind === "error" ? (
+              <RunHeaderError message={headerState.message} />
+            ) : (
+              <RunHeaderSkeleton />
+            )}
+            <WorkspaceIdentity workspaceKey={workspaceKey} workspace={workspace} current={!readOnly} />
+          </div>
         </div>
         <div className="run-header-actions">
-          <RunSelector runs={runs} selectedRunId={runId} onSelectRun={onSelectRun} />
-          <RunControls
-            disabled={!runDetails || command.isPending}
-            status={runDetails?.status}
-            selectedCancelTarget={selectedCancelTarget}
-            selectedCancelLabel={selectedCancelLabel}
-            canCancelRun={snapshot.data?.controls.canCancelRun ?? false}
-            retryTargets={retryTargets}
-            selectedRetryTarget={retryTarget}
-            onSelectRetryTarget={setRetryTarget}
-            onCommand={input => command.mutate(input)}
-          />
+          {workspaceAvailable && <RunSelector runs={runs} selectedRunId={runId} onSelectRun={onSelectRun} />}
+          {!workspaceAvailable || readOnly ? (
+            <div className="workspace-access-state" role="status" title={workspace?.path ?? workspaceKey}>
+              <span className={`workspace-scope-badge ${workspaceAvailable ? "read-only" : "unavailable"}`}>
+                {workspaceAvailable ? "Read only" : "Unavailable"}
+              </span>
+              <span>Controls unavailable</span>
+            </div>
+          ) : (
+            <RunControls
+              disabled={!runDetails || command.isPending}
+              status={runDetails?.status}
+              selectedCancelTarget={selectedCancelTarget}
+              selectedCancelLabel={selectedCancelLabel}
+              canCancelRun={snapshot.data?.controls.canCancelRun ?? false}
+              retryTargets={retryTargets}
+              selectedRetryTarget={retryTarget}
+              onSelectRetryTarget={setRetryTarget}
+              onCommand={input => command.mutate(input)}
+            />
+          )}
         </div>
       </header>
 
-      <GraphWorkspace
+      {!workspaceAvailable ? (
+        <section className="workspace-unavailable-state" role="alert">
+          <CircleAlert size={24} strokeWidth={2} aria-hidden="true" />
+          <h2>Workspace unavailable</h2>
+          <p>This workspace is no longer available. Return to Runs to choose another workspace.</p>
+        </section>
+      ) : <GraphWorkspace
         graph={snapshot.data?.graph}
         target={selectedTarget}
         onTargetChange={onSelectTarget}
@@ -282,7 +427,7 @@ function RuntimePage({
           if (target.kind === "workflow") return { eyebrow: "Workflow", title: snapshot.data?.workflow.name ?? runDetails?.name ?? "Workflow", subtitle: runId };
           const context = graphContextLabel(target.node.context);
           return {
-            eyebrow: "Node",
+            eyebrow: <NodeKindBadge kind={target.node.kind} />,
             title: inspection.data?.nodeId ?? target.node.label,
             status: <StatusPill status={target.node.displayStatus} />,
             ...(context ? { subtitle: context } : {}),
@@ -293,8 +438,16 @@ function RuntimePage({
           <RuntimeWorkflowInspector run={runDetails} workflow={snapshot.data?.workflow} />
         ) : (
           <>
-            <Inspector runId={runId} target={selectedNodeTarget} definition={selectedNode?.detail} inspection={inspection.data} loading={inspection.isLoading} />
-            {signalWait && (
+            <Inspector
+              workspaceKey={workspaceKey}
+              runId={runId}
+              target={selectedNodeTarget}
+              definition={selectedNode?.detail}
+              agentProfile={selectedAgentProfile}
+              inspection={inspection.data}
+              loading={inspection.isLoading}
+            />
+            {!readOnly && signalWait && (
               <SignalBox
                 wait={signalWait}
                 onSubmit={payload => command.mutate({ type: "signal", target: signalWait.target, payload })}
@@ -302,7 +455,7 @@ function RuntimePage({
             )}
           </>
         )}
-      </GraphWorkspace>
+      </GraphWorkspace>}
 
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
@@ -334,6 +487,32 @@ function RunHeaderError({ message }: { message: string }) {
     <div className="run-header-error" role="alert">
       <strong>Run details unavailable</strong>
       <span>{message}</span>
+    </div>
+  );
+}
+
+function WorkspaceIdentity({
+  workspaceKey,
+  workspace,
+  current,
+}: {
+  workspaceKey: string;
+  workspace: WorkspaceSummary | undefined;
+  current: boolean;
+}) {
+  const name = workspace?.name ?? workspaceKey;
+  const path = workspace?.path ?? "Workspace path unavailable";
+  const scope = !workspace ? "Unavailable" : current ? "Current" : "Read only";
+  return (
+    <div
+      className="run-workspace-identity"
+      title={path}
+      aria-label={`Workspace ${name}, ${scope.toLowerCase()}, ${path}`}
+    >
+      <span>{name}</span>
+      <span className={`workspace-scope-badge ${!workspace ? "unavailable" : current ? "current" : "read-only"}`}>
+        {scope}
+      </span>
     </div>
   );
 }
@@ -507,7 +686,7 @@ function WorkflowCatalogList({
     return <StateBlock tone="empty" title="No catalog workflows" detail="Use Files to choose a workflow module from this workspace." />;
   }
   return (
-    <List className="workflow-source-table" aria-label="Project catalog workflows">
+    <List className="workflow-source-table" role="group" aria-label="Project catalog workflows">
       {entries.map(entry => {
         const active = selected?.kind === "catalog" && selected.name === entry.name;
         return (
@@ -574,7 +753,7 @@ function WorkflowFileSelector({
       ) : visibleEntries.length === 0 ? (
         <StateBlock tone="empty" title="No workflow files here" detail={filter ? "Clear the filter or open another directory." : "Open a directory that contains .workflow.ts or .workflow.tsx files."} />
       ) : (
-        <List className="workflow-source-table" aria-label="Workspace workflow files">
+        <List className="workflow-source-table" role="group" aria-label="Workspace workflow files">
           {visibleEntries.map(entry => {
             const active = selected?.kind === "file" && selected.path === entry.path;
             const directory = entry.kind === "directory";
@@ -777,17 +956,31 @@ function RunSelector({
   selectedRunId: string | undefined;
   onSelectRun(id: string): void;
 }) {
+  const selectedRun = runs.find(run => run.id === selectedRunId);
   return (
     <label className="run-select-wrap">
       <span>Run</span>
       <Select {...(selectedRunId ? { value: selectedRunId } : {})} disabled={runs.length === 0} onValueChange={onSelectRun}>
         <SelectTrigger className="run-select" aria-label="Select run">
-          <SelectValue placeholder="No runs" />
+          <SelectValue placeholder="No runs">
+            {selectedRun ? `${selectedRun.name} · ${runtimeStatusLabel(normalizeRuntimeStatus(selectedRun.status))}` : undefined}
+          </SelectValue>
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className="run-select-content">
           {runs.map(run => (
-            <SelectItem key={run.id} value={run.id}>
-              {run.name} · {runtimeStatusLabel(normalizeRuntimeStatus(run.status))}
+            <SelectItem
+              key={run.id}
+              value={run.id}
+              aria-label={`${run.name}, ${runtimeStatusLabel(normalizeRuntimeStatus(run.status))}, run ${run.id}, started ${formatDate(run.createdAt)}`}
+            >
+              <span className="run-select-option">
+                <span className="run-select-option-title">
+                  {run.name} · {runtimeStatusLabel(normalizeRuntimeStatus(run.status))}
+                </span>
+                <span className="run-select-option-meta" title={run.id}>
+                  {formatDate(run.createdAt)} · {run.id}
+                </span>
+              </span>
             </SelectItem>
           ))}
         </SelectContent>
@@ -981,16 +1174,20 @@ function ConfirmDialog({
   );
 }
 
-function Inspector({
+export function Inspector({
+  workspaceKey,
   runId,
   target,
   definition,
+  agentProfile,
   inspection,
   loading,
 }: {
+  workspaceKey: string;
   runId: string | undefined;
   target: string | undefined;
   definition: NodeDetail | undefined;
+  agentProfile: WorkflowContext["agents"][string] | undefined;
   inspection: NodeInspection | undefined;
   loading: boolean;
 }) {
@@ -1010,24 +1207,22 @@ function Inspector({
   const hasArtifacts = inspection.artifacts.length > 0;
   const hasExecution = inspection.staticKind === "agent";
   return (
-    <div className="inspector-stack">
-      {(inspection.runStartedAt || inspection.runDurationMs !== undefined) && (
-        <div className="inspector-runtime-meta" aria-label="Run metadata">
-          {inspection.runStartedAt && (
-            <div className="inspector-runtime-meta-item">
-              <span>Run start</span>
-              <strong>{formatDate(inspection.runStartedAt)}</strong>
-            </div>
-          )}
-          {inspection.runDurationMs !== undefined && (
+    <div className="inspector-stack tabbed">
+      {inspection.timing && (
+        <div className="inspector-runtime-meta" role="group" aria-label="Node timing">
+          <div className="inspector-runtime-meta-item">
+            <span>Node start</span>
+            <strong>{formatDate(inspection.timing.startedAt)}</strong>
+          </div>
+          {inspection.timing.durationMs !== undefined && (
             <div className="inspector-runtime-meta-item duration">
-              <span>Run duration</span>
-              <strong>{formatDuration(inspection.runDurationMs)}</strong>
+              <span>Node duration</span>
+              <strong>{formatDuration(inspection.timing.durationMs)}</strong>
             </div>
           )}
         </div>
       )}
-      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as InspectorTabId)}>
+      <Tabs className="inspector-tab-shell" value={activeTab} onValueChange={value => setActiveTab(value as InspectorTabId)}>
         <TabsList className="inspector-tabs" aria-label="Inspector sections">
           <InspectorTab id="overview">Overview</InspectorTab>
           {hasArtifacts && <InspectorTab id="artifacts">Artifacts <Badge variant="tabCount">{inspection.artifacts.length}</Badge></InspectorTab>}
@@ -1036,16 +1231,24 @@ function Inspector({
 
         <InspectorTabPanel id="overview">
           <>
-          {inspection.agent && <AgentOverview agent={inspection.agent} />}
-
           <InspectorSection title="Runtime target">
             {inspection.nodeKey && <KeyValue label="Node Key" value={inspection.nodeKey} />}
             {inspection.frameKey && <KeyValue label="Frame Key" value={inspection.frameKey} />}
-            {inspection.staticKind && <KeyValue label="Kind" value={inspection.staticKind} />}
             {inspection.latestAttempt && <KeyValue label="Latest attempt" value={`${inspection.latestAttempt.attemptNo} · ${inspection.latestAttempt.status}`} />}
           </InspectorSection>
 
-          {definition && <JsonSection title="Definition" value={definition} expandNested />}
+          {definition && (
+            <NodeDefinitionSection
+              detail={definition}
+              agentProfile={agentProfile}
+              runtimeModel={inspection.agent?.model}
+              lastObserved={inspection.agent?.lastObservedAt ? formatRelativeAge(inspection.agent.lastObservedAt) : undefined}
+            />
+          )}
+
+          {definition && runId && target && supportsRuntimeValues(definition) && (
+            <RuntimeValuesSection workspaceKey={workspaceKey} runId={runId} target={target} />
+          )}
 
           {inspection.input && (
             <JsonSection title={inspection.input.kind === "runtime" ? "Input" : "Authored Input"} value={inspection.input.value} />
@@ -1053,7 +1256,7 @@ function Inspector({
 
           {inspection.prompt && (
             <InspectorSection title="Prompt">
-              <PromptContent runId={runId} prompt={inspection.prompt} />
+              <PromptContent workspaceKey={workspaceKey} runId={runId} prompt={inspection.prompt} />
             </InspectorSection>
           )}
 
@@ -1083,14 +1286,14 @@ function Inspector({
         </InspectorTabPanel>
 
         {hasArtifacts && (
-        <InspectorTabPanel id="artifacts">
-          <ArtifactList runId={runId} artifacts={inspection.artifacts} />
+        <InspectorTabPanel id="artifacts" className="artifacts-panel">
+          <ArtifactList workspaceKey={workspaceKey} runId={runId} artifacts={inspection.artifacts} />
         </InspectorTabPanel>
         )}
 
         {hasExecution && (
         <InspectorTabPanel id="execution">
-          {runId && target && <AgentExecutionTab runId={runId} target={target} active={activeTab === "execution"} />}
+          {runId && target && <AgentExecutionTab workspaceKey={workspaceKey} runId={runId} target={target} active={activeTab === "execution"} />}
         </InspectorTabPanel>
         )}
       </Tabs>
@@ -1098,14 +1301,62 @@ function Inspector({
   );
 }
 
-export function AgentOverview({ agent }: { agent: NonNullable<NodeInspection["agent"]> }) {
-  return (
-    <InspectorSection title="Agent State">
-      <KeyValue label="Agent" value={agent.key} />
-      {agent.model && <KeyValue label="Model" value={agent.model} />}
-      {agent.lastObservedAt && <KeyValue label="Last observed" value={formatRelativeAge(agent.lastObservedAt)} />}
-    </InspectorSection>
-  );
+function RuntimeValuesSection({ workspaceKey, runId, target }: { workspaceKey: string; runId: string; target: string }) {
+  const runtimeValues = useQuery({
+    queryKey: ["node-runtime-values", workspaceKey, runId, target],
+    queryFn: () => getNodeRuntimeValues(workspaceKey, runId, target),
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  if (runtimeValues.isLoading) {
+    return (
+      <InspectorSection title="Runtime Values">
+        <StateBlock tone="loading" title="Loading runtime values" />
+      </InspectorSection>
+    );
+  }
+  if (runtimeValues.error) {
+    return (
+      <InspectorSection title="Runtime Values">
+        <StateBlock
+          tone="error"
+          title="Runtime values unavailable"
+          detail={runtimeValues.error instanceof Error ? runtimeValues.error.message : String(runtimeValues.error)}
+        />
+      </InspectorSection>
+    );
+  }
+  if (!runtimeValues.data?.available) {
+    return (
+      <InspectorSection title="Runtime Values">
+        <StateBlock
+          tone={runtimeValues.data?.reason === "resolution_failed" ? "error" : "empty"}
+          title="Runtime values unavailable"
+          detail={runtimeValuesUnavailableDetail(runtimeValues.data?.reason)}
+        />
+      </InspectorSection>
+    );
+  }
+  return <JsonSection title="Runtime Values" value={runtimeValues.data.values} />;
+}
+
+function supportsRuntimeValues(definition: NodeDetail): boolean {
+  if (definition.kind === "parallel") return definition.maxConcurrency !== undefined;
+  return definition.kind === "assert"
+    || definition.kind === "if"
+    || definition.kind === "switch"
+    || definition.kind === "fanout"
+    || definition.kind === "loop";
+}
+
+function runtimeValuesUnavailableDetail(reason: string | undefined): string {
+  if (reason === "not_started") return "This node has not started.";
+  if (reason === "not_selected") return "This node was not selected for execution.";
+  if (reason === "not_yet_resolved") return "The runtime has not resolved these values yet.";
+  if (reason === "resolution_failed") return "The runtime could not resolve these values.";
+  if (reason === "not_recorded") return "No durable runtime values were recorded.";
+  return "Runtime values are not available for this node.";
 }
 
 type InspectorTabId = "overview" | "artifacts" | "execution";
@@ -1123,75 +1374,114 @@ function InspectorTab({ id, children }: { id: InspectorTabId; children: React.Re
   );
 }
 
-function InspectorTabPanel({ id, children }: { id: InspectorTabId; children: React.ReactNode }) {
+function InspectorTabPanel({ id, className, children }: { id: InspectorTabId; className?: string; children: React.ReactNode }) {
   return (
-    <TabsContent value={id} id={`inspector-panel-${id}`} className="inspector-tab-panel" aria-labelledby={`inspector-tab-${id}`}>
+    <TabsContent
+      value={id}
+      id={`inspector-panel-${id}`}
+      className={`inspector-tab-panel${className ? ` ${className}` : ""}`}
+      aria-labelledby={`inspector-tab-${id}`}
+    >
       {children}
     </TabsContent>
   );
 }
 
-function PromptContent({ runId, prompt }: { runId: string | undefined; prompt: NonNullable<NodeInspection["prompt"]> }) {
+function PromptContent({ workspaceKey, runId, prompt }: { workspaceKey: string; runId: string | undefined; prompt: NonNullable<NodeInspection["prompt"]> }) {
   if (prompt.text) return <MarkdownBlock value={prompt.text} />;
   if (!runId || !prompt.artifactId) return <StateBlock tone="empty" title="Prompt unavailable" detail="No prompt artifact or inline prompt was recorded for this scope." />;
-  return <ArtifactPreviewBlock runId={runId} artifactId={prompt.artifactId} {...(prompt.mediaType ? { mediaType: prompt.mediaType } : {})} />;
+  return <ArtifactPreviewBlock workspaceKey={workspaceKey} runId={runId} artifactId={prompt.artifactId} {...(prompt.mediaType ? { mediaType: prompt.mediaType } : {})} />;
 }
 
-function ArtifactList({ runId, artifacts }: { runId: string | undefined; artifacts: NodeInspection["artifacts"] }) {
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>();
-  const selected = artifacts.find(artifact => artifact.id === selectedArtifactId);
+function ArtifactList({ workspaceKey, runId, artifacts }: { workspaceKey: string; runId: string | undefined; artifacts: NodeInspection["artifacts"] }) {
+  const [viewerArtifactId, setViewerArtifactId] = useState<string | undefined>();
+  const viewerTrigger = useRef<HTMLButtonElement | null>(null);
+  const viewerArtifact = artifacts.find(artifact => artifact.id === viewerArtifactId);
   return (
     <div className="artifact-stack">
       <div className="artifact-list">
         {artifacts.map(artifact => (
           <Button
-            variant="ghost"
             key={artifact.id}
-            className={`artifact-row ${artifact.id === selectedArtifactId ? "selected" : ""}`}
-            title={artifact.path}
-            aria-label={`Artifact ${artifact.path}`}
-            onClick={() => setSelectedArtifactId(current => current === artifact.id ? undefined : artifact.id)}
+            type="button"
+            variant="ghost"
+            className="artifact-row"
+            aria-label={`View artifact ${artifact.path}, ${artifact.mediaType ?? "unknown type"}, ${formatSize(artifact.size)}`}
+            aria-haspopup="dialog"
+            title={runId ? artifact.path : "Run unavailable"}
+            disabled={!runId}
+            onClick={event => {
+              viewerTrigger.current = event.currentTarget;
+              setViewerArtifactId(artifact.id);
+            }}
           >
             <span className="artifact-title mono" title={artifact.path}>{artifact.path}</span>
-            <span>{artifact.mediaType ?? "unknown"}</span>
-            <span>{formatSize(artifact.size)}</span>
+            <span className="artifact-media">{artifact.mediaType ?? "unknown"}</span>
+            <span className="artifact-size mono">{formatSize(artifact.size)}</span>
+            <span className="artifact-view-cue" aria-hidden="true">
+              <Maximize2 size={15} strokeWidth={2} />
+              <span>View</span>
+            </span>
           </Button>
         ))}
       </div>
-      {runId && selected && <ArtifactPreviewBlock runId={runId} artifactId={selected.id} {...(selected.mediaType ? { mediaType: selected.mediaType } : {})} />}
+      {runId && viewerArtifact && (
+        <ArtifactViewer
+          key={viewerArtifact.id}
+          workspaceKey={workspaceKey}
+          runId={runId}
+          artifact={viewerArtifact}
+          {...(viewerTrigger.current ? { restoreFocus: viewerTrigger.current } : {})}
+          onClose={() => setViewerArtifactId(current => current === viewerArtifact.id ? undefined : current)}
+        />
+      )}
     </div>
   );
 }
 
-function ArtifactPreviewBlock({ runId, artifactId, mediaType }: { runId: string; artifactId: string; mediaType?: string }) {
+function ArtifactPreviewBlock({ workspaceKey, runId, artifactId, mediaType }: { workspaceKey: string; runId: string; artifactId: string; mediaType?: string }) {
   const preview = useQuery({
-    queryKey: ["artifact-preview", runId, artifactId],
-    queryFn: () => getArtifactPreview(runId, artifactId),
+    queryKey: ["artifact-preview", workspaceKey, runId, artifactId],
+    queryFn: () => getArtifactPreview(workspaceKey, runId, artifactId),
   });
   if (preview.isLoading) return <StateBlock tone="loading" title="Loading artifact" />;
   if (preview.error) return <StateBlock tone="error" title="Artifact preview failed" detail={preview.error instanceof Error ? preview.error.message : String(preview.error)} />;
   const loaded = preview.data;
   if (!loaded) return null;
   const effectiveMediaType = mediaType ?? loaded.mediaType;
+  let body: React.ReactNode;
   if (isJsonMedia(effectiveMediaType)) {
     const value = tryParseJsonPreview(loaded.text);
-    return value.ok ? (
+    body = value.ok ? (
       <div className="json-standalone">
         <JsonBlock value={value.value} />
       </div>
     ) : (
       <TextArtifactPreview value={loaded.text} label="Raw JSON text" />
     );
+  } else if (isMarkdownMedia(effectiveMediaType)) {
+    body = <MarkdownBlock value={loaded.text} />;
+  } else if (isTextMedia(effectiveMediaType)) {
+    body = <TextArtifactPreview value={loaded.text} />;
+  } else {
+    body = <StateBlock tone="empty" title="Preview unavailable" detail={`Preview is not available for ${effectiveMediaType}.`} />;
   }
-  if (isMarkdownMedia(effectiveMediaType)) return <MarkdownBlock value={loaded.text} />;
-  if (isTextMedia(effectiveMediaType)) return <TextArtifactPreview value={loaded.text} />;
-  return <StateBlock tone="empty" title="Preview unavailable" detail={`Preview is not available for ${effectiveMediaType}.`} />;
+  return (
+    <div className="artifact-preview-stack">
+      {loaded.truncated && (
+        <div className="artifact-preview-notice" role="status">
+          Showing first 128 KiB of {formatSize(loaded.size)}.
+        </div>
+      )}
+      <div className="artifact-preview-body">{body}</div>
+    </div>
+  );
 }
 
-export function AgentExecutionTab({ runId, target, active }: { runId: string; target: string; active: boolean }) {
+export function AgentExecutionTab({ workspaceKey, runId, target, active }: { workspaceKey: string; runId: string; target: string; active: boolean }) {
   const execution = useQuery({
-    queryKey: ["node-execution", runId, target],
-    queryFn: () => getNodeExecutionInspection(runId, target),
+    queryKey: ["node-execution", workspaceKey, runId, target],
+    queryFn: () => getNodeExecutionInspection(workspaceKey, runId, target),
     enabled: active,
     refetchInterval: query => agentExecutionRefetchInterval(
       active,
@@ -1300,18 +1590,14 @@ function ToolCallStatus({ status }: { status: string }) {
   const display = normalizeRuntimeStatus(status);
   return (
     <span className={`tool-call-status ${display}`}>
-      {runStatusIcon(display)}
+      <RuntimeStatusIcon status={display} />
       <span>{runtimeStatusLabel(display)}</span>
     </span>
   );
 }
 
 function MarkdownBlock({ value }: { value: string }) {
-  return (
-    <div className="markdown-viewer">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
-    </div>
-  );
+  return <MarkdownDocument value={value} variant="compact" />;
 }
 
 function TextArtifactPreview({ value, label }: { value: string; label?: string }) {
@@ -1499,22 +1785,6 @@ function StatusPill({ status }: { status: string }) {
   return <Badge variant="status" className={status}>{status}</Badge>;
 }
 
-function RunStatusIndicator({ status }: { status: string }) {
-  const display = normalizeRuntimeStatus(status);
-  const active = display === "running" || display === "awaiting";
-  return (
-    <span className={`run-status-indicator ${display} ${active ? "live" : ""}`} aria-label={`Run status ${runtimeStatusLabel(display)}`}>
-      <span className="run-status-icon">{runStatusIcon(display)}</span>
-      <span className="run-status-label">{runtimeStatusLabel(display)}</span>
-    </span>
-  );
-}
-
-function isTerminalRunStatus(status: string | undefined): boolean {
-  const display = normalizeRuntimeStatus(status);
-  return display === "completed" || display === "failed" || display === "canceled";
-}
-
 export function nodeInspectionRefetchInterval(status: string | undefined): 1_000 | false {
   return isTerminalRunStatus(status) ? false : 1_000;
 }
@@ -1529,16 +1799,6 @@ export function agentExecutionRefetchInterval(
     || status === "running"
     || status === "awaiting"
   ) ? 2_500 : false;
-}
-
-function runStatusIcon(status: string) {
-  if (status === "running") return <LoaderCircle size={13} strokeWidth={2} />;
-  if (status === "awaiting") return <Radio size={13} strokeWidth={2} />;
-  if (status === "paused") return <Pause size={13} strokeWidth={2} />;
-  if (status === "completed") return <CheckCircle2 size={13} strokeWidth={2} />;
-  if (status === "failed") return <XCircle size={13} strokeWidth={2} />;
-  if (status === "canceled") return <Ban size={13} strokeWidth={2} />;
-  return <Clock size={13} strokeWidth={2} />;
 }
 
 function EmptyState({ title, detail }: { title: string; detail: string }) {
@@ -1576,33 +1836,6 @@ function StateBlock({ tone, title, detail }: { tone: "loading" | "empty" | "erro
       </div>
     </Alert>
   );
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatRelativeAge(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  const ageMs = Math.max(0, Date.now() - timestamp);
-  return ageMs < 1_000 ? "<1s ago" : `${formatDuration(ageMs)} ago`;
-}
-
-function durationBetween(start: string, end: string): number {
-  return Math.max(0, Date.parse(end) - Date.parse(start));
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
 }
 
 function formatSize(bytes: number): string {

@@ -4,6 +4,8 @@ import type { WebGraph, WorkflowVisualizationResult } from "../api.js";
 import { graphContextLabel } from "../../graph-renderer.js";
 import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
 import { InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
+import { NodeDefinitionSection } from "./NodeDefinition.js";
+import { NodeKindBadge } from "./NodeKind.js";
 
 export type StaticGraphData = {
   graph: WebGraph;
@@ -24,12 +26,12 @@ export function StaticGraphApp({ data }: { data: StaticGraphData }) {
         heading={target => {
           if (target.kind === "workflow") return { eyebrow: "Workflow", title: data.workflow.name, subtitle: "Static definition" };
           const context = graphContextLabel(target.node.context);
-          return { eyebrow: "Node", title: target.node.label, ...(context ? { subtitle: context } : {}) };
+          return { eyebrow: <NodeKindBadge kind={target.node.kind} />, title: target.node.label, ...(context ? { subtitle: context } : {}) };
         }}
       >
         {target => target.kind === "workflow"
           ? <StaticWorkflowInspector data={data} />
-          : <StaticGraphInspector graph={data.graph} target={target.node.nodeId} />}
+          : <StaticGraphInspector graph={data.graph} agents={data.workflow.agents} target={target.node.nodeId} />}
       </GraphWorkspace>
     </div>
   );
@@ -64,7 +66,15 @@ function formatOutputShape(shape: StaticGraphData["contract"]["outputShape"]): s
   return `object (${shape.possibleKeys.length ? shape.possibleKeys.join(", ") : "no possible keys"})`;
 }
 
-function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; target: string | undefined }) {
+function StaticGraphInspector({
+  graph,
+  agents,
+  target,
+}: {
+  graph: WebGraph | undefined;
+  agents: StaticGraphData["workflow"]["agents"];
+  target: string | undefined;
+}) {
   if (!graph || !target) return <StateBlock title="Select a graph node" detail="Node details appear here after selection." />;
   const node = graph.nodes.find(item => item.id === target);
   const container = graph.containers.find(item => item.id === target);
@@ -72,11 +82,17 @@ function StaticGraphInspector({ graph, target }: { graph: WebGraph | undefined; 
   return (
     <div className="inspector-stack">
       <InspectorSection title="Node">
-        <KeyValue label="Kind" value={node?.kind ?? container?.kind ?? "unknown"} />
         <KeyValue label="Node ID" value={node?.nodeId ?? container?.nodeId ?? target} />
         <KeyValue label="Path" value={(node?.path ?? container?.path ?? []).join(" / ")} />
       </InspectorSection>
-      {node?.detail && <JsonSection title="Definition" value={node.detail} expandNested />}
+      {node?.detail && (
+        <NodeDefinitionSection
+          detail={node.detail}
+          agentProfile={node.detail.kind === "agent" ? agents[node.detail.agent] : undefined}
+          runtimeModel={undefined}
+          lastObserved={undefined}
+        />
+      )}
     </div>
   );
 }

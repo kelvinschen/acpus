@@ -3,7 +3,7 @@ import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
 import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
 import Search from "lucide-react/dist/esm/icons/search.js";
 import type { GraphNavigationIntent, GraphViewport, PlacedBox, RenderLayout, RenderModel, RenderItem } from "../../graph-renderer.js";
-import { graphContextLabel } from "../../graph-renderer.js";
+import { graphContextLabel, isCompositeKind } from "../../graph-renderer.js";
 import { Breadcrumb, BreadcrumbButton, BreadcrumbItem, BreadcrumbList, BreadcrumbSeparator } from "./shadcn/breadcrumb.js";
 import { Button } from "./shadcn/button.js";
 import { Input } from "./shadcn/input.js";
@@ -142,15 +142,31 @@ export function GraphMinimap({
 }) {
   const size = minimapSize(layout);
   const visible = visibleGraphRect(viewport, shellSize, layout, size);
-  const viewportShade = visible
-    ? `M 0 0 H ${layout.width} V ${layout.height} H 0 Z M ${visible.x} ${visible.y} H ${visible.x + visible.width} V ${visible.y + visible.height} H ${visible.x} Z`
-    : `M 0 0 H ${layout.width} V ${layout.height} H 0 Z`;
+  const viewportVisible = visible && !visible.coversGraph ? visible : undefined;
+  const viewportShade = viewportVisible
+    ? `M 0 0 H ${layout.width} V ${layout.height} H 0 Z M ${viewportVisible.x} ${viewportVisible.y} H ${viewportVisible.x + viewportVisible.width} V ${viewportVisible.y + viewportVisible.height} H ${viewportVisible.x} Z`
+    : undefined;
   const items = useMemo(
     () => [...layout.boxes.values()]
       .map(box => ({ box, item: model.items.get(box.id) }))
       .filter((entry): entry is { box: PlacedBox; item: RenderItem & { type: "node" } } => entry.item?.type === "node"),
     [layout.boxes, model],
   );
+  const selected = items.find(({ item }) => item.id === selectedRenderId);
+  const renderItem = ({ box, item }: (typeof items)[number]) => {
+    const composite = isCompositeKind(item.kind);
+    return (
+      <rect
+        key={box.id}
+        className={`graph-minimap-item ${item.type} ${composite ? "composite" : "leaf"} ${item.kind} ${item.active ? "active" : ""}`}
+        x={box.x}
+        y={box.y}
+        width={box.width}
+        height={box.height}
+        rx={composite ? 0 : 4}
+      />
+    );
+  };
 
   return (
     <Button
@@ -162,7 +178,7 @@ export function GraphMinimap({
       style={size}
       onClick={event => {
         event.stopPropagation();
-        const rect = event.currentTarget.getBoundingClientRect();
+        const rect = event.currentTarget.querySelector("svg")!.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
         onNavigate({
           type: "recenter",
@@ -175,19 +191,27 @@ export function GraphMinimap({
     >
       <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden="true">
         <rect className="graph-minimap-surface" x="0" y="0" width={layout.width} height={layout.height} />
-        {items.map(({ box, item }) => (
-          <rect
-            key={box.id}
-            className={`graph-minimap-item ${item.type} ${item.active ? "active" : ""} ${item.id === selectedRenderId ? "selected" : ""}`}
-            x={box.x}
-            y={box.y}
-            width={box.width}
-            height={box.height}
-            rx={item.type === "node" ? 4 : 0}
+        {items.filter(({ item }) => isCompositeKind(item.kind)).map(renderItem)}
+        {layout.edgePaths.map(edge => (
+          <path
+            key={edge.id}
+            className={`graph-minimap-edge ${edge.kind} ${edge.active ? "active" : ""}`}
+            d={edge.d}
           />
         ))}
-        <path className="graph-minimap-viewport-shade" d={viewportShade} fillRule="evenodd" />
-        {visible && <rect className="graph-minimap-viewport" x={visible.x} y={visible.y} width={visible.width} height={visible.height} />}
+        {items.filter(({ item }) => !isCompositeKind(item.kind)).map(renderItem)}
+        {viewportShade && <path className="graph-minimap-viewport-shade" d={viewportShade} fillRule="evenodd" />}
+        {selected && (
+          <rect
+            className="graph-minimap-selection"
+            x={selected.box.x}
+            y={selected.box.y}
+            width={selected.box.width}
+            height={selected.box.height}
+            rx={isCompositeKind(selected.item.kind) ? 0 : 4}
+          />
+        )}
+        {viewportVisible && <rect className="graph-minimap-viewport" x={viewportVisible.x} y={viewportVisible.y} width={viewportVisible.width} height={viewportVisible.height} />}
       </svg>
     </Button>
   );
@@ -233,7 +257,7 @@ function visibleGraphRect(
   shellSize: ShellSize,
   layout: Pick<RenderLayout, "width" | "height">,
   minimap: { width: number; height: number },
-): { x: number; y: number; width: number; height: number } | undefined {
+): { x: number; y: number; width: number; height: number; coversGraph: boolean } | undefined {
   if (viewport.scale <= 0 || shellSize.width <= 0 || shellSize.height <= 0) return undefined;
   const left = Math.max(0, -viewport.x / viewport.scale);
   const top = Math.max(0, -viewport.y / viewport.scale);
@@ -242,10 +266,15 @@ function visibleGraphRect(
   if (right <= left || bottom <= top) return undefined;
   const insetX = Math.min(layout.width / minimap.width, (right - left) / 4);
   const insetY = Math.min(layout.height / minimap.height, (bottom - top) / 4);
+  const leftInset = left === 0 ? insetX : 0;
+  const rightInset = right === layout.width ? insetX : 0;
+  const topInset = top === 0 ? insetY : 0;
+  const bottomInset = bottom === layout.height ? insetY : 0;
   return {
-    x: left + insetX,
-    y: top + insetY,
-    width: right - left - 2 * insetX,
-    height: bottom - top - 2 * insetY,
+    x: left + leftInset,
+    y: top + topInset,
+    width: right - left - leftInset - rightInset,
+    height: bottom - top - topInset - bottomInset,
+    coversGraph: left === 0 && top === 0 && right === layout.width && bottom === layout.height,
   };
 }

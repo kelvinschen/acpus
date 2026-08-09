@@ -47,6 +47,12 @@
 - An existing manifest whose key, canonical path, platform, or available filesystem identity disagrees with the current workspace MUST fail visibly instead of being adopted or rewritten.
 - A read-only open MUST locate only the current workspace shard.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
+- `listKnownWorkspaces(cwd)` MUST derive the current workspace key and enumerate only direct `$HOME/.acpus/workspaces/<workspace-key>/workspace.json` manifests beneath the same Acpus home; it MUST NOT scan arbitrary filesystem paths.
+- Known-workspace discovery MUST validate each candidate directory name, manifest shape, platform, canonical path, filesystem availability, and available filesystem identity with the same safety rules as all-workspace pruning. Invalid, unavailable, identity-mismatched, corrupt, or storage-incompatible candidates MUST be omitted from `workspaces`, reported independently in `failures`, and MUST NOT prevent valid candidates from being listed.
+- The current workspace MUST appear in `listKnownWorkspaces(cwd).workspaces` even when its shard, manifest, or database has not been initialized. Its entry MUST use the current canonical path, derived workspace key, zero runs, and no last-update time in that case.
+- Each known-workspace entry MUST expose only its workspace key, canonical path, durable run count, and optional maximum durable `runs.updated_at`. A missing active database means zero runs and no last-update time; a present database MUST be opened read-only and validated before its aggregate is returned.
+- Known-workspace discovery MUST NOT create or mutate a shard, open a writable store, start a daemon, or recover, migrate, archive, prune, or otherwise repair storage.
+- `resolveKnownWorkspace(cwd, workspaceKey)` MUST accept only the canonical lowercase workspace-key shape, resolve the current workspace directly or validate the exact requested manifest and path, and return only the validated workspace key and canonical path. It MUST return a tagged `WorkspaceKeyInvalid`, `WorkspaceNotFound`, or `WorkspaceUnavailable` result for recoverable resolution failures and MUST NOT accept a browser-supplied path.
 - The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
 - The active database MUST use SQLite `user_version = 9` as the current storage version.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
@@ -113,7 +119,7 @@
 - Runtime MAY receive an internal canonical `selectionCutoff` from the CLI to fence a confirmed prune; when present it MUST replace the runtime-computed selection boundary without changing whether `PruneReport.cutoff` is exposed.
 - Pruning MUST default to the current workspace shard.
 - `allWorkspaces: true` MUST enumerate workspace shards beneath the same Acpus home.
-- Ordinary read APIs MUST NOT expose runs from another workspace shard.
+- Ordinary read APIs MUST remain scoped to the canonical workspace passed by their trusted server-side caller. Known-workspace catalog metadata MUST NOT expose run records, and an explicit resolved workspace path is required before reading another shard's runs.
 - `dryRun: true` MUST perform selection and size accounting without changing databases or files.
 - Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery and include those candidates in a failing dry-run report.
 - An unbounded dry run MUST select a complete active generation with the current `application_id` and a positive `user_version` below the current storage version as one archive candidate without mutating it.
@@ -548,6 +554,7 @@ Runtime owns generic inspection semantics and public shape.
 - A one-shot ambiguous authored target MUST return every public candidate in deterministic occurrence-path order and never select an occurrence; observation MUST reject it before attachment. Each row contains selector, status, and breadcrumb.
 - Before attachment, observation MUST resolve and pin its subject. An authored id or occurrence reference follows replacement within its occurrence; an exact attempt closes when fenced, superseded, or terminal and never retargets.
 - A run view includes run context, counts, semantic tree, and present terminal output. A target view includes its resolved subject and state plus relevant Summary/Timeline attention or activity. Counts include materialized occurrences even when folded.
+- A narrow node read MUST expose the same resolved-target state timing as a generic target view and MUST omit target duration when the selected target has no completed materialized boundary.
 - A target Forensics view MUST contain the selected subject and state alongside `definition`, `invocation`, and `result` projections.
 - Forensics Definition MUST come only from the run's frozen effective IR and frozen Agent overrides; it MUST NOT read current workflow source or evaluate an expression.
 - Forensics Definition MUST render frozen expressions in one stable, complete human-readable form.
@@ -604,6 +611,6 @@ Runtime owns generic inspection semantics and public shape.
 ## Verification
 
 - `pnpm test:unit packages/runtime`: covers fork compatibility and atomic explicit-session reuse, rewind boundaries, selector resolution, semantic trees/folding, Forensics projections, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable fork replay and session-group failure/recovery boundaries, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, and read-only inspection.
+- `pnpm test:integration packages/runtime`: covers durable fork replay and session-group failure/recovery boundaries, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, read-only inspection, and safe known-workspace metadata discovery and resolution.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

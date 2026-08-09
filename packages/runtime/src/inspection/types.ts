@@ -281,6 +281,7 @@ export type RunInspectionNodeDocument = {
   kind: "node";
   run: RunInspectionRunSummary;
   subject: RunInspectionSubject;
+  state: RunInspectionTargetState;
   summary: RunInspectionTargetSummary;
   availableControls: RunInspectionControl[];
   artifacts: ArtifactRecord[];

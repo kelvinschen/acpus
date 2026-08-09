@@ -1,5 +1,5 @@
 import type { WorkflowIR } from "@acpus/core/ir";
-import type { JsonValue, StaticExprShape } from "@acpus/expression/ir";
+import type { JsonObject, JsonValue, StaticExprShape } from "@acpus/expression/ir";
 import type { RunInspectionStatus } from "@acpus/runtime";
 import type { WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import type { WebGraph } from "./graph-types.js";
@@ -76,8 +76,11 @@ export type NodeInspection = {
   frameKey?: string;
   cancelTarget?: string;
   staticKind?: string;
-  runStartedAt: string;
-  runDurationMs?: number;
+  timing?: {
+    startedAt: string;
+    finishedAt?: string;
+    durationMs?: number;
+  };
   latestAttempt?: {
     attemptNo: number;
     status: string;
@@ -120,6 +123,19 @@ export type NodeInspection = {
     prompt?: string;
   };
 };
+
+export type NodeRuntimeValues =
+  | { available: true; values: JsonObject }
+  | {
+    available: false;
+    reason:
+      | "not-composite"
+      | "not_started"
+      | "not_selected"
+      | "not_yet_resolved"
+      | "resolution_failed"
+      | "not_recorded";
+  };
 
 export type NodeExecutionInspection = ({
   available: true;
@@ -166,13 +182,26 @@ export type RunRecord = {
   id: string;
   name: string;
   status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkspaceSummary = {
+  key: string;
+  name: string;
+  path: string;
+  runCount: number;
+  lastRunUpdatedAt?: string;
+};
+
+export type WorkspaceCatalog = {
+  currentWorkspaceKey: string;
+  workspaces: WorkspaceSummary[];
 };
 
 export type RunDetails = RunRecord & {
   input: unknown;
   output?: unknown;
-  createdAt: string;
-  updatedAt: string;
   runtimeVersion?: number;
 };
 

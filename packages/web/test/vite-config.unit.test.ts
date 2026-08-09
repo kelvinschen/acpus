@@ -19,6 +19,8 @@ describe("web Vite configuration", () => {
     ["TanStack Query", "/repo/node_modules/@tanstack/react-query/index.js", "vendor-query"],
     ["icons", "/repo/node_modules/lucide-react/index.js", "vendor-icons"],
     ["JSON viewer", "/repo/node_modules/react-json-view-lite/index.js", "vendor-json-view"],
+    ["Mermaid renderer", "/repo/node_modules/@vercel/beautiful-mermaid/dist/index.js", "feature-mermaid"],
+    ["pnpm Mermaid layout", "/repo/node_modules/.pnpm/@dagrejs+dagre@1.1.8/node_modules/@dagrejs/dagre/index.js", "feature-mermaid"],
     ["other dependency", "/repo/node_modules/other/index.js", "vendor"],
     ["application source", "/repo/src/client/app.tsx", null],
   ])("assigns %s modules to the intended chunk", (_label, id, expected) => {

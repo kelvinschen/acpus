@@ -40,7 +40,11 @@ describe("startWebServer access policy", () => {
     try {
       const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning });
       try {
-        const response = await fetch(`${server.url}/api/runs/run_1/controls`, {
+        const catalogResponse = await fetch(`${server.url}/api/workspaces`);
+        const catalog = await catalogResponse.json() as {
+          catalog: { currentWorkspaceKey: string };
+        };
+        const response = await fetch(`${server.url}/api/workspaces/${catalog.catalog.currentWorkspaceKey}/runs/run_1/controls`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ type: "pause" }),

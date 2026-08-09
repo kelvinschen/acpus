@@ -69,6 +69,17 @@ beforeEach(() => {
     height: 600,
     toJSON: () => ({}),
   });
+  vi.spyOn(SVGSVGElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 176,
+    bottom: 56,
+    left: 0,
+    width: 176,
+    height: 56,
+    toJSON: () => ({}),
+  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -144,6 +155,7 @@ describe("RunGraph interaction semantics", () => {
     expect(onSelectNode).toHaveBeenLastCalledWith(expect.objectContaining({
       nodeId: "work",
       target: "@1a2b3c4d5e6f",
+      kind: "task",
       label: "work",
       context,
       displayStatus: "running",
@@ -344,17 +356,50 @@ describe("RunGraph interaction semantics", () => {
     expect(boxPositions()).toEqual(boundaryPositions);
   });
 
-  it("keeps structural container outlines out of the minimap", async () => {
-    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+  it("renders topology, composite outlines, and leaf nodes without structural containers", async () => {
+    const topologyGraph: WebGraph = {
+      ...graph,
+      nodes: [
+        { id: "prepare", nodeId: "prepare", target: "prepare", kind: "task", label: "prepare", path: ["root", "prepare"], detail: { kind: "task", input: "input", target: "inline" }, status: "completed" },
+        ...graph.nodes,
+      ],
+      edges: [{ id: "prepare->jobs", source: "prepare", target: "jobs", kind: "sequence" }],
+    };
+    await act(async () => root.render(React.createElement(RunGraph, {
+      graph: topologyGraph,
+      onSelectNode: vi.fn(),
+    })));
 
     expect(container.querySelectorAll(".graph-minimap-item.container")).toHaveLength(0);
-    expect(container.querySelectorAll(".graph-minimap-item.node").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".graph-minimap-edge").length).toBeGreaterThan(0);
+    const composite = container.querySelector<SVGRectElement>(".graph-minimap-item.node.composite.fanout")!;
+    const leaf = container.querySelector<SVGRectElement>(".graph-minimap-item.node.leaf.task")!;
+    expect(composite).not.toBeNull();
+    expect(composite.getAttribute("rx")).toBe("0");
+    expect(leaf).not.toBeNull();
+    expect(leaf.getAttribute("rx")).toBe("4");
+    expect(composite.compareDocumentPosition(leaf) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
-  it("keeps the minimap viewport closed inside the graph overview", async () => {
-    await act(async () => root.render(React.createElement(RunGraph, { graph, onSelectNode: vi.fn() })));
+  it("omits the duplicate fit frame and keeps a partial viewport closed inside the minimap", async () => {
+    const fitGraph: WebGraph = { ...graph, mode: "static", runtimeStates: [], fanoutOccurrences: [] };
+    await act(async () => root.render(React.createElement(RunGraph, { graph: fitGraph, onSelectNode: vi.fn() })));
 
     const svg = container.querySelector<SVGSVGElement>(".graph-minimap svg")!;
+    expect(svg.querySelector(".graph-minimap-viewport")).toBeNull();
+    expect(svg.querySelector(".graph-minimap-viewport-shade")).toBeNull();
+
+    const shell = container.querySelector<HTMLElement>(".graph-flow-shell")!;
+    const zoom = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 450,
+      clientY: 300,
+      ctrlKey: true,
+      deltaY: -100 * Math.log(2),
+    });
+    await act(async () => shell.dispatchEvent(zoom));
+
     const viewport = svg.querySelector<SVGRectElement>(".graph-minimap-viewport")!;
     const [, , graphWidth, graphHeight] = svg.getAttribute("viewBox")!.split(" ").map(Number);
     const x = Number(viewport.getAttribute("x"));
@@ -375,6 +420,34 @@ describe("RunGraph interaction semantics", () => {
     const arrow = container.querySelector("marker#graph-arrow path");
     expect(arrow?.getAttribute("fill")).toBe("currentColor");
     expect(arrow?.getAttribute("stroke")).toBe("none");
+  });
+
+  it("renders a directional arrowhead on Loop return edges", async () => {
+    const loopGraph: WebGraph = {
+      workflow: { name: "loop-return" },
+      mode: "static",
+      nodes: [
+        { id: "repeat", nodeId: "repeat", target: "repeat", kind: "loop", label: "repeat", path: ["root", "repeat"], detail: { kind: "loop", state: "state" }, status: "not_started" },
+        { id: "first", nodeId: "first", target: "first", kind: "task", label: "first", path: ["root", "repeat", "do", "first"], parentId: "repeat::do", status: "not_started" },
+        { id: "last", nodeId: "last", target: "last", kind: "task", label: "last", path: ["root", "repeat", "do", "last"], parentId: "repeat::do", status: "not_started" },
+      ],
+      containers: [
+        { id: "repeat::do", nodeId: "repeat", kind: "scope", label: "do", path: ["root", "repeat", "do"], parentId: "repeat", status: "not_started" },
+      ],
+      edges: [
+        { id: "first->last", source: "first", target: "last", kind: "sequence" },
+        { id: "last->first", source: "last", target: "first", kind: "loop" },
+      ],
+      fanoutOccurrences: [],
+      selectors: [],
+      runtimeStates: [],
+    };
+
+    await act(async () => root.render(React.createElement(RunGraph, { graph: loopGraph, onSelectNode: vi.fn() })));
+
+    const marker = container.querySelector<SVGPathElement>(".graph-edge.loop")?.getAttribute("marker-end");
+    expect(marker).not.toBeNull();
+    expect(marker).toMatch(/^url\(#graph-arrow/);
   });
 
   it("layers a fanout item's pipeline edge above its structural background", async () => {

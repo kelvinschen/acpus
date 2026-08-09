@@ -104,16 +104,34 @@ describe("workflow graph layout", () => {
     expect(layout.boxes.get("repair_loop")?.width).toBeGreaterThanOrEqual(340);
   });
 
-  it("gives fanout do scopes enough structural padding around wide nested composites", () => {
+  it("aligns external leaves with direct Loop do leaves without descending into nested composites", () => {
+    const model = toRenderModel(loopScopeAlignmentGraph());
+    const layout = layoutWorkflow(model);
+    const prerequisite = layout.boxes.get("require_initial_assignments")!;
+    const loop = layout.boxes.get("research_rounds")!;
+    const fanout = layout.boxes.get("investigate_groups")!;
+    const nestedLeaf = layout.boxes.get("investigate_group")!;
+    const dossier = layout.boxes.get("write_round_dossier")!;
+
+    expect(centerY(prerequisite)).toBeCloseTo(centerY(dossier));
+    expect(centerY(fanout)).toBeCloseTo(centerY(dossier));
+    expect(centerY(nestedLeaf)).not.toBeCloseTo(centerY(dossier));
+    expect(layout.edgePaths.find(edge => edge.id === "require->rounds")?.d)
+      .toBe(`M ${prerequisite.x + prerequisite.width} ${centerY(prerequisite)} H ${loop.x - 1}`);
+    expect(layout.edgePaths.find(edge => edge.id === "investigate->dossier")?.d)
+      .toBe(`M ${fanout.x + fanout.width} ${centerY(fanout)} H ${dossier.x - 1}`);
+  });
+
+  it("keeps fanout do scope padding compact around wide nested composites", () => {
     const model = toRenderModel(wideFanoutSwitchGraph());
     const layout = layoutWorkflow(model);
     const scope = layout.boxes.get("candidate_matrix::do")!;
     const route = layout.boxes.get("route_candidate")!;
 
-    expect(route.x).toBeGreaterThanOrEqual(scope.x + 56);
-    expect(route.x + route.width).toBeLessThanOrEqual(scope.x + scope.width - 56);
-    expect(route.y).toBeGreaterThan(scope.y);
-    expect(route.y + route.height).toBeLessThan(scope.y + scope.height);
+    expect(route.x - scope.x).toBe(48);
+    expect(scope.x + scope.width - (route.x + route.width)).toBe(48);
+    expect(route.y - scope.y).toBe(94);
+    expect(scope.y + scope.height - (route.y + route.height)).toBe(48);
 
     for (const item of model.items.values()) {
       if (!item.parentId) continue;
@@ -172,7 +190,7 @@ describe("workflow graph layout", () => {
 
   it("centers a running target at a readable scale", () => {
     const focused = focusView(
-      { id: "running", x: 100, y: 80, width: 200, height: 72 },
+      { id: "running", x: 100, y: 80, width: 200, height: 72, flowY: 36 },
       { width: 800, height: 600 },
     )!;
     expect(focused.scale).toBe(1.15);
@@ -210,10 +228,10 @@ describe("workflow graph layout", () => {
   it("keeps selected boxes visible without moving an already visible viewport", () => {
     const viewport = { x: 0, y: 0, scale: 1 };
     const rect = { width: 500, height: 300 };
-    const visible = { id: "a", x: 100, y: 80, width: 120, height: 80 };
+    const visible = { id: "a", x: 100, y: 80, width: 120, height: 80, flowY: 40 };
     expect(keepBoxInViewport(viewport, rect, visible, 48)).toEqual(viewport);
 
-    const clipped = { id: "b", x: 430, y: 250, width: 120, height: 80 };
+    const clipped = { id: "b", x: 430, y: 250, width: 120, height: 80, flowY: 40 };
     expect(keepBoxInViewport(viewport, rect, clipped, 48)).toEqual({
       x: -98,
       y: -78,
@@ -280,18 +298,25 @@ describe("workflow graph layout", () => {
 
   it("projects boxes and edge paths for lossless zoom-in", () => {
     const viewport = { x: 10, y: 20, scale: 1.5 };
-    const box = { id: "a", x: 100, y: 80, width: 200, height: 72 };
+    const box = { id: "a", x: 100, y: 80, width: 200, height: 72, flowY: 36 };
     const boxes = new Map([
       ["a", box],
-      ["b", { id: "b", x: 380, y: 80, width: 200, height: 72 }],
+      ["b", { id: "b", x: 380, y: 80, width: 200, height: 72, flowY: 36 }],
     ]);
 
     expect(isLosslessZoom(0.99)).toBe(false);
     expect(isLosslessZoom(1)).toBe(true);
     expect(projectPoint({ x: 20, y: 30 }, viewport)).toEqual({ x: 40, y: 65 });
-    expect(projectBox(box, viewport)).toEqual({ id: "a", x: 160, y: 140, width: 300, height: 108 });
+    expect(projectBox(box, viewport)).toEqual({ id: "a", x: 160, y: 140, width: 300, height: 108, flowY: 54 });
     expect(projectEdgePath({ id: "a->b", source: "a", target: "b", kind: "sequence" }, boxes, viewport)?.d)
       .toBe("M 460 194 H 579");
+
+    const alignedFlow = new Map([
+      ["a", { id: "a", x: 100, y: 60, width: 200, height: 200, flowY: 150 }],
+      ["b", { id: "b", x: 380, y: 160, width: 200, height: 100, flowY: 50 }],
+    ]);
+    expect(projectEdgePath({ id: "a->b", source: "a", target: "b", kind: "sequence" }, alignedFlow, viewport)?.d)
+      .toBe("M 460 335 H 579");
   });
 });
 
@@ -362,6 +387,31 @@ function fanoutItemsGraph(): WebGraph {
         { id: "jobs.1", itemIndex: 1, label: "item[1]", status: "running", context: itemContext(1) },
       ],
     }],
+    selectors: [],
+    runtimeStates: [],
+  };
+}
+
+function loopScopeAlignmentGraph(): WebGraph {
+  return {
+    workflow: { name: "loop-scope-alignment" },
+    mode: "static",
+    nodes: [
+      node({ id: "require_initial_assignments", kind: "assert", detail: { kind: "assert", condition: "input.ready" } }),
+      node({ id: "research_rounds", kind: "loop", detail: { kind: "loop", state: "state" } }),
+      node({ id: "investigate_groups", kind: "fanout", parentId: "research_rounds::do", path: ["root", "research_rounds", "do", "investigate_groups"], detail: { kind: "fanout", over: "state.groups", strategy: "all" } }),
+      node({ id: "investigate_group", parentId: "investigate_groups::do", path: ["root", "research_rounds", "do", "investigate_groups", "do", "investigate_group"] }),
+      node({ id: "write_round_dossier", parentId: "research_rounds::do", path: ["root", "research_rounds", "do", "write_round_dossier"] }),
+    ],
+    containers: [
+      { id: "research_rounds::do", nodeId: "research_rounds", kind: "scope", label: "do", path: ["root", "research_rounds", "do"], parentId: "research_rounds", status: "completed" },
+      { id: "investigate_groups::do", nodeId: "investigate_groups", kind: "scope", label: "do", path: ["root", "research_rounds", "do", "investigate_groups", "do"], parentId: "investigate_groups", status: "completed" },
+    ],
+    edges: [
+      { id: "require->rounds", source: "require_initial_assignments", target: "research_rounds", kind: "sequence" },
+      { id: "investigate->dossier", source: "investigate_groups", target: "write_round_dossier", kind: "sequence" },
+    ],
+    fanoutOccurrences: [],
     selectors: [],
     runtimeStates: [],
   };
