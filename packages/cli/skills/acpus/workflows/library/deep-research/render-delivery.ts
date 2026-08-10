@@ -552,6 +552,84 @@ function linkCitationMarkers() {
       citation.addEventListener("click", () => { backlink.href = "#" + citation.id; });
     }
   }
+  installCitationPreviews(citations, sourceItems);
+}
+
+function installCitationPreviews(citations, sourceItems) {
+  for (const refs of citations.values()) {
+    for (const citation of refs) {
+      const target = (citation.getAttribute("href") || "").slice(1);
+      const item = sourceItems.get(target);
+      if (!item) continue;
+
+      const copy = item.cloneNode(true);
+      copy.removeAttribute("id");
+      copy.removeAttribute("tabindex");
+      for (const element of copy.querySelectorAll("[id], [tabindex]")) {
+        element.removeAttribute("id");
+        element.removeAttribute("tabindex");
+      }
+      for (const backlink of copy.querySelectorAll(".citation-backlink")) backlink.remove();
+
+      const host = document.createElement("span");
+      host.className = "citation-preview-host";
+      const preview = document.createElement("span");
+      preview.className = "citation-preview";
+      preview.id = citation.id + "-preview";
+      preview.setAttribute("role", "note");
+      preview.setAttribute("aria-label", citation.getAttribute("aria-label") || citation.textContent || "Source");
+      citation.setAttribute("aria-describedby", preview.id);
+      const content = document.createElement("span");
+      content.className = "citation-preview-content";
+      for (const child of [...copy.childNodes]) {
+        if (child.nodeType === Node.ELEMENT_NODE && child.matches("p")) {
+          if (content.childNodes.length > 0) content.append(document.createElement("br"));
+          content.append(...child.childNodes);
+        } else {
+          content.append(child);
+        }
+      }
+      preview.append(content);
+      citation.before(host);
+      host.append(citation, preview);
+
+      const position = () => {
+        const citationBox = citation.getBoundingClientRect();
+        const previewBox = preview.getBoundingClientRect();
+        const margin = 12;
+        const below = citationBox.bottom;
+        const preferredTop = below + previewBox.height <= window.innerHeight - margin
+          ? below
+          : citationBox.top - previewBox.height;
+        const top = Math.min(
+          Math.max(margin, preferredTop),
+          Math.max(margin, window.innerHeight - previewBox.height - margin),
+        );
+        const left = Math.min(
+          Math.max(margin, citationBox.left),
+          Math.max(margin, window.innerWidth - previewBox.width - margin),
+        );
+        preview.style.inset = top + "px auto auto " + left + "px";
+      };
+
+      host.addEventListener("pointerenter", () => {
+        host.classList.remove("is-preview-dismissed");
+        position();
+      });
+      host.addEventListener("pointerleave", () => host.classList.remove("is-preview-dismissed"));
+      host.addEventListener("focusin", position);
+      host.addEventListener("focusout", event => {
+        if (!host.contains(event.relatedTarget)) host.classList.remove("is-preview-dismissed");
+      });
+      host.addEventListener("keydown", event => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (preview.contains(document.activeElement)) citation.focus();
+        host.classList.add("is-preview-dismissed");
+      });
+    }
+  }
 }
 
 function stripLegacySourceAnchor(item) {

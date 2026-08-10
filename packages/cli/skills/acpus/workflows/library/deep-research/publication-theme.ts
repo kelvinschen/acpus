@@ -166,7 +166,61 @@ h3:focus-visible,
   white-space: nowrap;
   transition: background-color var(--dur-fast) var(--ease-out);
 }
-.citation + .citation { margin-inline-start: var(--space-3xs); }
+.citation-preview-host {
+  position: relative;
+  display: inline-block;
+}
+.citation-preview-host + .citation-preview-host { margin-inline-start: var(--space-3xs); }
+.citation-preview {
+  position: fixed;
+  z-index: 20;
+  visibility: hidden;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: min(22rem, calc(100dvh - 2rem));
+  padding: var(--space-sm) var(--space-md);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: var(--rule-hair) solid var(--color-line);
+  border-radius: .75rem;
+  background: var(--color-paper);
+  box-shadow:
+    0 .125rem .5rem oklch(17% .014 255 / .04),
+    0 .75rem 2.5rem oklch(17% .014 255 / .07);
+  color: var(--color-source-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+}
+.citation-preview-host:not(.is-preview-dismissed):focus-within > .citation-preview {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.citation-preview-host:not(.is-preview-dismissed):focus-within > .citation {
+  background-color: var(--color-accent-soft);
+}
+.citation-preview a { font-weight: 650; }
+@media (hover: hover) and (pointer: fine) {
+  .citation-preview-host:not(.is-preview-dismissed):hover > .citation-preview {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .citation-preview-host:not(.is-preview-dismissed):hover > .citation {
+    background-color: var(--color-accent-soft);
+  }
+  .publication:has(.citation-preview-host:hover) .citation-preview-host:not(:hover):focus-within > .citation-preview {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .publication:has(.citation-preview-host:hover) .citation-preview-host:not(:hover):focus-within > .citation {
+    background-color: transparent;
+  }
+}
 .citation-backlink {
   position: relative;
   display: inline-grid;
@@ -963,6 +1017,7 @@ img {
 @media print {
   .article-nav,
   .mermaid-dialog,
-  .interactive-figure { display: none !important; }
+  .interactive-figure,
+  .citation-preview { display: none !important; }
 }
 `;
