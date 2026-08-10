@@ -38,7 +38,7 @@ describe("update awareness", () => {
     expect(isUpdateAwarenessEligible(input)).toBe(true);
     expect(isUpdateAwarenessEligible({ ...input, argv: ["workflow", "catalog", "--help"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor"] })).toBe(true);
-    expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor", "--json"] })).toBe(false);
+    expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "runs", argv: ["runs", "artifact", "artifact://run_1/a", "--json"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { CI: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { NO_UPDATE_NOTIFIER: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, stdout: new CaptureStream() })).toBe(false);

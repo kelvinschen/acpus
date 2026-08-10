@@ -10,7 +10,7 @@ import {
   startDaemonLoop,
   type DaemonClientFailure,
 } from "../src/index.js";
-import { prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { initializeRuntimeStoreForTest, prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
   return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
@@ -31,6 +31,7 @@ describe("daemon execution owner epochs", () => {
       const markerPath = join(workspace, "pause-resume.marker");
       const releasePath = join(workspace, "pause-resume.release");
       const prepared = await prepareSyntheticWorkflow(workspace, pausableTaskWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, { heartbeatMs: 10, packageVersion: "0.0.0-test" });
       try {
         const admitted = await requestDaemonAdmitRun(workspace, { prepared, input: { markerPath, releasePath } });
@@ -60,6 +61,7 @@ describe("daemon execution owner epochs", () => {
     await withRuntimeWorkspace("daemon-retry-owner-epoch", async workspace => {
       const firstFailurePath = join(workspace, "retry-first-failure.marker");
       const prepared = await prepareSyntheticWorkflow(workspace, failOnceRetryWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, { heartbeatMs: 10, packageVersion: "0.0.0-test" });
       try {
         const admitted = await requestDaemonAdmitRun(workspace, { prepared, input: { firstFailurePath } });

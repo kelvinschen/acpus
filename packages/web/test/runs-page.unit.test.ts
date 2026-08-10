@@ -178,6 +178,25 @@ describe("Runs page", () => {
     expect(metadata.textContent).toBe("1 run · Updated 15m ago");
   });
 
+  it("surfaces safe catalog state when a workspace run count is unavailable", async () => {
+    await render({
+      runs: [],
+      workspaceCatalog: {
+        currentWorkspaceKey: "ws_current",
+        workspaces: [{
+          key: "ws_current",
+          name: "acpus",
+          path: "/workspace/acpus",
+        }],
+      },
+    });
+
+    expect(container.querySelector(".workspace-select-meta")?.textContent)
+      .toBe("Run count unavailable");
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label^="Workspace:"]')?.getAttribute("aria-label"))
+      .toContain("last updated Unavailable");
+  });
+
   it("returns the actual Runs scroll container to the top when workspace scope changes", async () => {
     const catalog = {
       currentWorkspaceKey: "ws_current",

@@ -199,7 +199,7 @@ Only after applying the rules above, choose the closest compact teaching example
 
 Only look up declaration when the above rules and examples don't already answer the exact usage, since lookups consume context.
 
-1. Run `acpus doctor --json | jq ".authoring.imports"` with the active CLI.
+1. Run `acpus doctor` with the active CLI and find the package in its `Types:` block.
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
 ## Advance

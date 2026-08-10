@@ -1,5 +1,6 @@
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { resolveRuntimeLayout, type RuntimeLayout } from "./runtime-layout.js";
+import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, type RuntimeLayout } from "./runtime-layout.js";
+import { inspectRuntimeStore } from "./runtime-store-lifecycle.js";
 import {
   openExistingRuntimeStoreAtLayout,
   type RunStoreSummary,
@@ -15,7 +16,7 @@ import {
 export type KnownWorkspace = {
   workspaceKey: string;
   canonicalPath: string;
-  runCount: number;
+  runCount?: number;
   lastRunUpdatedAt?: string;
 };
 
@@ -49,7 +50,7 @@ export type WorkspaceResolutionFailure =
   | WorkspaceUnavailable;
 
 export async function listKnownWorkspaces(cwd: string): Promise<KnownWorkspaceListing> {
-  const current = resolveRuntimeLayout(cwd);
+  const current = resolveRuntimeWorkspaceLayout(cwd);
   const discoveries = await discoverWorkspaceShards(current.home);
   const workspaces: KnownWorkspace[] = [];
   const failures: KnownWorkspaceListing["failures"] = [];
@@ -64,7 +65,7 @@ export async function listKnownWorkspaces(cwd: string): Promise<KnownWorkspaceLi
     if (discovery.layout.workspaceKey === current.workspaceKey) currentShardFound = true;
     try {
       const layout = await resolveAvailableWorkspaceLayout(discovery);
-      workspaces.push(toKnownWorkspace(layout, await readRunStoreSummary(layout)));
+      workspaces.push(await toKnownWorkspace(layout));
     } catch (error) {
       failures.push({
         workspaceKey: discovery.layout.workspaceKey,
@@ -73,12 +74,19 @@ export async function listKnownWorkspaces(cwd: string): Promise<KnownWorkspaceLi
     }
   }
 
-  if (!currentShardFound) {
-    workspaces.push({
-      workspaceKey: current.workspaceKey,
-      canonicalPath: current.canonicalPath,
-      runCount: 0,
-    });
+  if (!workspaces.some(workspace => workspace.workspaceKey === current.workspaceKey)) {
+    try {
+      workspaces.push(await toKnownWorkspace(current));
+    } catch (error) {
+      workspaces.push({
+        workspaceKey: current.workspaceKey,
+        canonicalPath: current.canonicalPath,
+      });
+      if (!currentShardFound) failures.push({
+        workspaceKey: current.workspaceKey,
+        message: errorMessage(error),
+      });
+    }
   }
   workspaces.sort((left, right) => left.workspaceKey === current.workspaceKey
     ? -1
@@ -111,7 +119,7 @@ async function resolveKnownWorkspaceResult(
     });
   }
 
-  const current = resolveRuntimeLayout(cwd);
+  const current = resolveRuntimeWorkspaceLayout(cwd);
   const matching = await readWorkspaceShardByKey(current.home, workspaceKey);
   if (!matching) {
     if (workspaceKey === current.workspaceKey) return ok(workspaceResolution(current));
@@ -122,6 +130,7 @@ async function resolveKnownWorkspaceResult(
     });
   }
   if ("failure" in matching) {
+    if (workspaceKey === current.workspaceKey) return ok(workspaceResolution(current));
     return err({
       type: "workspace-unavailable",
       workspaceKey,
@@ -140,11 +149,12 @@ async function resolveKnownWorkspaceResult(
   }
 }
 
-async function readRunStoreSummary(layout: RuntimeLayout): Promise<RunStoreSummary> {
+async function readRunStoreSummary(layout: RuntimeLayout): Promise<RunStoreSummary | undefined> {
+  layout = resolveRuntimeLayout(layout.canonicalPath);
   const generation = await inspectRuntimeGeneration(layout);
-  if (generation !== "complete") return { runCount: 0 };
+  if (generation !== "complete") return undefined;
   const store = await openExistingRuntimeStoreAtLayout(layout, true, { immutable: true });
-  if (!store) return { runCount: 0 };
+  if (!store) return undefined;
   try {
     return store.getRunStoreSummary();
   } finally {
@@ -152,12 +162,17 @@ async function readRunStoreSummary(layout: RuntimeLayout): Promise<RunStoreSumma
   }
 }
 
-function toKnownWorkspace(layout: RuntimeLayout, summary: RunStoreSummary): KnownWorkspace {
+async function toKnownWorkspace(layout: RuntimeLayout): Promise<KnownWorkspace> {
+  const status = await inspectRuntimeStore(layout.canonicalPath);
+  if (status.isErr()) throw new Error(status.error.message);
+  const summary = status.value.state === "ready"
+    ? await readRunStoreSummary(layout) ?? { runCount: 0 }
+    : undefined;
   return {
     workspaceKey: layout.workspaceKey,
     canonicalPath: layout.canonicalPath,
-    runCount: summary.runCount,
-    ...(summary.lastRunUpdatedAt === undefined ? {} : { lastRunUpdatedAt: summary.lastRunUpdatedAt }),
+    ...(summary === undefined ? {} : { runCount: summary.runCount }),
+    ...(summary?.lastRunUpdatedAt === undefined ? {} : { lastRunUpdatedAt: summary.lastRunUpdatedAt }),
   };
 }
 

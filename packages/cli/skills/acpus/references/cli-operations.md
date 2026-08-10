@@ -72,4 +72,4 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 
 ## Doctor
 
-Run `acpus doctor` when acpus health is uncertain.
+Run `acpus doctor` for health checks.

@@ -5,13 +5,13 @@ import {
   runtimeLayoutFromManifest,
   validateRuntimeLayoutBoundary,
   validateWorkspaceManifest,
+  type AnyWorkspaceManifest,
   type RuntimeLayout,
-  type WorkspaceManifest,
 } from "./runtime-layout.js";
 
 export type DiscoveredWorkspaceShard = {
   layout: RuntimeLayout;
-  manifest: WorkspaceManifest;
+  manifest: AnyWorkspaceManifest;
 };
 
 export type WorkspaceShardDiscovery =
@@ -149,18 +149,18 @@ async function readWorkspaceShard(
   return { layout, manifest };
 }
 
-function parseWorkspaceManifest(value: unknown): WorkspaceManifest {
+function parseWorkspaceManifest(value: unknown): AnyWorkspaceManifest {
   if (!isRecord(value)
-    || value.manifestVersion !== 1
+    || (value.manifestVersion !== 1 && value.manifestVersion !== 2)
     || typeof value.workspaceKey !== "string"
     || !isWorkspaceKey(value.workspaceKey)
     || typeof value.canonicalPath !== "string"
     || !isNodePlatform(value.platform)
     || typeof value.createdAt !== "string"
     || (value.filesystemIdentity !== undefined && typeof value.filesystemIdentity !== "string")) {
-    throw new Error("Workspace manifest does not match version 1.");
+    throw new Error("Workspace manifest does not match a supported layout version.");
   }
-  return value as WorkspaceManifest;
+  return value as AnyWorkspaceManifest;
 }
 
 async function readOwnedDirectory(root: string, label: string) {

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const mockGetRuntimeHealth = vi.fn();
+const mockInspectRuntimeStore = vi.fn();
+const mockRepairRuntimeStore = vi.fn();
 const mockListKnownWorkspaces = vi.fn();
 const mockResolveKnownWorkspace = vi.fn();
 const mockListRuns = vi.fn();
@@ -19,6 +21,8 @@ const mockTryVisualizeWorkflowSource = vi.fn();
 
 vi.mock("@acpus/runtime", () => ({
   getRuntimeHealth: (...args: unknown[]) => mockGetRuntimeHealth(...args),
+  inspectRuntimeStore: (...args: unknown[]) => mockInspectRuntimeStore(...args),
+  repairRuntimeStore: (...args: unknown[]) => mockRepairRuntimeStore(...args),
   listKnownWorkspaces: (...args: unknown[]) => mockListKnownWorkspaces(...args),
   resolveKnownWorkspace: (...args: unknown[]) => mockResolveKnownWorkspace(...args),
   listRuns: (...args: unknown[]) => mockListRuns(...args),
@@ -65,6 +69,9 @@ describe("web API contract", () => {
           ? okAsync({ workspaceKey, canonicalPath: "/tmp/acpus-web-other" })
           : errAsync({ type: "workspace-not-found", workspaceKey, message: "Workspace not found." }),
     );
+    mockInspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
+    mockRepairRuntimeStore.mockReturnValue(okAsync({ changed: true }));
+    mockListRuns.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -90,6 +97,73 @@ describe("web API contract", () => {
     });
   });
 
+  describe("runtime store", () => {
+    it.each([
+      [{ state: "ready" }, { state: "ready" }],
+      [
+        { state: "repairable", message: "Runtime data needs an update." },
+        { state: "needs-fix", message: "Runtime data needs an update." },
+      ],
+      [
+        { state: "unsupported", message: "Use a compatible Acpus version." },
+        { state: "unavailable", message: "Use a compatible Acpus version." },
+      ],
+    ] as const)("projects %s to the small Web status", async (status, expected) => {
+      mockInspectRuntimeStore.mockReturnValue(okAsync(status));
+
+      const res = await app.request("/api/runtime-store");
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, runtimeStore: expected });
+      expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
+    });
+
+    it("repairs the launch workspace without a request body or daemon startup", async () => {
+      const res = await app.request("/api/runtime-store", { method: "POST" });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(mockRepairRuntimeStore).toHaveBeenCalledWith("/tmp/acpus-web-test");
+      expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
+    });
+
+    it("protects status and repair with the configured token", async () => {
+      const protectedApp = createWebApp({
+        cwd: "/tmp/acpus-web-test",
+        access: createAccessPolicy({ enabled: true }),
+        ensureDaemonRunning: mockEnsureDaemonRunning,
+      });
+
+      expect((await protectedApp.request("/api/runtime-store")).status).toBe(401);
+      expect((await protectedApp.request("/api/runtime-store", { method: "POST" })).status).toBe(401);
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
+      expect(mockRepairRuntimeStore).not.toHaveBeenCalled();
+    });
+
+    it("blocks stale active reads before opening the store or starting the daemon", async () => {
+      mockInspectRuntimeStore.mockReturnValue(okAsync({
+        state: "repairable",
+        message: "Fix the Runtime store to continue.",
+      }));
+
+      const read = await app.request(runApi());
+      const control = await app.request(runApi("/run_1/controls"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "pause" }),
+      });
+
+      expect(read.status).toBe(409);
+      expect(await read.json()).toEqual({
+        ok: false,
+        error: { code: "runtime_store_fix_required", message: "Fix the Runtime store to continue." },
+      });
+      expect(control.status).toBe(409);
+      expect(mockListRuns).not.toHaveBeenCalled();
+      expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
+      expect(mockRequestDaemonControl).not.toHaveBeenCalled();
+    });
+  });
   it("sanitizes unexpected server failures", async () => {
     mockListRuns.mockRejectedValue(new Error("/secret/runtime.db EACCES"));
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);

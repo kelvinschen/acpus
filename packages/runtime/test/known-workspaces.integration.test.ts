@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
@@ -7,7 +7,6 @@ import {
   ensureRuntimeLayout,
   resolveRuntimeLayout,
   setRuntimeHomeForTest,
-  type WorkspaceManifest,
 } from "../src/runtime-layout.js";
 import {
   openRuntimeStore,
@@ -83,7 +82,7 @@ describe("known runtime workspaces", () => {
     });
   });
 
-  it("filters incompatible storage while keeping path resolution independent from run metadata", async () => {
+  it("catalogs incompatible storage while keeping path resolution independent from run metadata", async () => {
     await withSharedStorageHome("known-workspaces-failures", async ({ home, first, second }) => {
       await initializeWorkspace(first, [{ id: "run-first", updatedAt: "2026-08-09T11:00:00.000Z" }]);
       await initializeWorkspace(second, [{ id: "run-second", updatedAt: "2026-08-09T12:00:00.000Z" }]);
@@ -97,16 +96,21 @@ describe("known runtime workspaces", () => {
 
       const listing = await listKnownWorkspaces(first);
 
-      expect(listing.workspaces).toEqual([{
-        workspaceKey: firstLayout.workspaceKey,
-        canonicalPath: firstLayout.canonicalPath,
-        runCount: 1,
-        lastRunUpdatedAt: "2026-08-09T11:00:00.000Z",
-      }]);
-      expect(listing.failures).toEqual(expect.arrayContaining([
-        expect.objectContaining({ workspaceKey: secondLayout.workspaceKey }),
+      expect(listing.workspaces).toEqual([
+        {
+          workspaceKey: firstLayout.workspaceKey,
+          canonicalPath: firstLayout.canonicalPath,
+          runCount: 1,
+          lastRunUpdatedAt: "2026-08-09T11:00:00.000Z",
+        },
+        {
+          workspaceKey: secondLayout.workspaceKey,
+          canonicalPath: secondLayout.canonicalPath,
+        },
+      ]);
+      expect(listing.failures).toEqual([
         expect.objectContaining({ workspaceKey: malformedKey }),
-      ]));
+      ]);
       const incompatible = await resolveKnownWorkspace(first, secondLayout.workspaceKey);
       expect(incompatible.isOk() && incompatible.value).toEqual({
         workspaceKey: secondLayout.workspaceKey,
@@ -155,26 +159,18 @@ describe("known runtime workspaces", () => {
     });
   });
 
-  it("keeps a zero-run workspace while isolating platform and filesystem identity drift", async () => {
+  it("keeps a zero-run workspace while isolating platform drift", async () => {
     await withSharedStorageHome("known-workspaces-validation", async ({ home, first, second }) => {
       await initializeWorkspace(first, [{ id: "run-first", updatedAt: "2026-08-09T11:00:00.000Z" }]);
       await initializeWorkspace(second, []);
       const firstLayout = resolveRuntimeLayout(first);
       const secondLayout = resolveRuntimeLayout(second);
       const platformWorkspace = await mkdtemp(join(dirname(first), "known-workspaces-platform-"));
-      const identityWorkspace = await mkdtemp(join(dirname(first), "known-workspaces-identity-"));
       const restorePlatformHome = setRuntimeHomeForTest(platformWorkspace, home);
-      const restoreIdentityHome = setRuntimeHomeForTest(identityWorkspace, home);
       try {
         const platform = process.platform === "linux" ? "darwin" : "linux";
         const platformLayout = await ensureRuntimeLayout(platformWorkspace, { platform });
         if (platformLayout.isErr()) throw new Error(platformLayout.error.message);
-        const identityLayout = await ensureRuntimeLayout(identityWorkspace);
-        if (identityLayout.isErr()) throw new Error(identityLayout.error.message);
-        const manifest = JSON.parse(await readFile(identityLayout.value.manifestPath, "utf8")) as WorkspaceManifest;
-        manifest.filesystemIdentity = differentFilesystemIdentity(identityLayout.value.filesystemIdentity);
-        await writeFile(identityLayout.value.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-
         const listing = await listKnownWorkspaces(first);
 
         expect(listing.workspaces).toEqual([
@@ -192,14 +188,11 @@ describe("known runtime workspaces", () => {
         ]);
         expect(listing.failures).toEqual(expect.arrayContaining([
           expect.objectContaining({ workspaceKey: platformLayout.value.workspaceKey }),
-          expect.objectContaining({ workspaceKey: identityLayout.value.workspaceKey }),
         ]));
       } finally {
-        restoreIdentityHome();
         restorePlatformHome();
         await Promise.all([
           rm(platformWorkspace, { recursive: true, force: true }),
-          rm(identityWorkspace, { recursive: true, force: true }),
         ]);
       }
     });
@@ -259,10 +252,4 @@ function unusedWorkspaceKey(used: string[]): string {
     if (!used.includes(candidate)) return candidate;
   }
   throw new Error("Could not create an unused workspace key.");
-}
-
-function differentFilesystemIdentity(identity: string | undefined): string {
-  if (!identity) return "1:1";
-  const [device, inode] = identity.split(":");
-  return `${device}:${BigInt(inode!) + 1n}`;
 }

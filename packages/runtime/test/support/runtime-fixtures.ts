@@ -56,6 +56,11 @@ export async function withRuntimeWorkspace<T>(
   }
 }
 
+export async function initializeRuntimeStoreForTest(workspace: string): Promise<void> {
+  const store = await openRuntimeStore(workspace);
+  store.close();
+}
+
 async function writeWorkspaceTsconfig(workspace: string): Promise<void> {
   await writeFile(join(workspace, "tsconfig.json"), `${JSON.stringify({
     compilerOptions: {

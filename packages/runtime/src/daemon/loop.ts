@@ -1,4 +1,8 @@
-import { isRuntimeStoreBusyError, openRuntimeStore } from "../store/store.js";
+import {
+  isRuntimeStoreBusyError,
+  openRuntimeStoreAtLayout,
+  type RuntimeStore,
+} from "../store/store.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
 import { tryLoadRuntimeConfiguration } from "../configuration.js";
@@ -8,7 +12,18 @@ import { DAEMON_PROTOCOL_VERSION, startDaemonServer, type DaemonControlIntent, t
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
 import { createManagedAcpExecutor, recoverAcpOwnership, type ManagedAcpExecutor } from "@acpus/agent-executor";
-import { resolveRuntimeLayout, runAcpStateRoot } from "../runtime-layout.js";
+import {
+  resolveRuntimeLayout,
+  resolveRuntimeWorkspaceLayout,
+  runAcpStateRoot,
+  runtimeLayoutForGeneration,
+} from "../runtime-layout.js";
+import {
+  initializeRuntimeStoreIfAbsent,
+  inspectRuntimeStoreInternal,
+  type RuntimeStoreAssessment,
+} from "../runtime-store-lifecycle.js";
+import { acquireRuntimeSharedLock } from "../runtime-lock.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
@@ -24,13 +39,24 @@ export type DaemonLoopHandle = {
   shutdown(): Promise<void>;
 };
 
+type DaemonRuntimeStoreReadinessFailure =
+  | { type: "repair-required"; command: "acpus doctor --fix"; message: string }
+  | { type: "unsupported" | "failed"; message: string };
+
+class DaemonRuntimeStoreReadinessError extends Error {
+  constructor(readonly failure: DaemonRuntimeStoreReadinessFailure) {
+    super(failure.message);
+    this.name = "DaemonRuntimeStoreReadinessError";
+  }
+}
+
 export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): Promise<DaemonLoopHandle> {
   const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
   if (runtimeConfiguration.isErr()) throw new Error(runtimeConfiguration.error.message);
   const heartbeatMs = options.heartbeatMs ?? 1_000;
   const idleStopMs = options.idleStopMs ?? 30_000;
   let leaseGeneration: number | undefined;
-  const store = await openRuntimeStore(cwd);
+  const store = await openReadyDaemonRuntimeStore(cwd);
   const hooksConfig = await loadHooksConfig(cwd);
   if (hooksConfig.isErr()) {
     store.close();
@@ -244,6 +270,71 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
 
   startTick();
   return { shutdown };
+}
+
+async function openReadyDaemonRuntimeStore(cwd: string): Promise<RuntimeStore> {
+  const first = await inspectRuntimeStoreInternal(cwd);
+  if (first.isErr()) throw readinessError(first.error);
+  if (first.value.current.state === "absent") await initializeRuntimeStoreIfAbsent(cwd);
+  else if (first.value.current.state !== "ready") throw assessmentReadinessError(first.value);
+
+  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+  let lock;
+  try {
+    lock = await acquireRuntimeSharedLock(workspace);
+  } catch (error) {
+    throw readinessError(error);
+  }
+
+  let adopted = false;
+  try {
+    const checked = await inspectRuntimeStoreInternal(cwd);
+    if (checked.isErr()) throw readinessError(checked.error);
+    if (checked.value.current.state !== "ready") throw assessmentReadinessError(checked.value);
+    const layout = runtimeLayoutForGeneration(workspace, checked.value.current.generationId);
+    adopted = true;
+    return await openRuntimeStoreAtLayout(layout, {
+      lock,
+      prevalidated: true,
+    });
+  } catch (error) {
+    if (!adopted) lock.release();
+    if (error instanceof DaemonRuntimeStoreReadinessError) throw error;
+    throw readinessError(error);
+  }
+}
+
+function assessmentReadinessError(source: RuntimeStoreAssessment): DaemonRuntimeStoreReadinessError {
+  if (source.current.state === "unsupported") {
+    return new DaemonRuntimeStoreReadinessError({
+      type: "unsupported",
+      message: source.current.detail,
+    });
+  }
+  return new DaemonRuntimeStoreReadinessError({
+    type: "repair-required",
+    command: "acpus doctor --fix",
+    message: "Runtime store repair is required before daemon startup. Run 'acpus doctor --fix'.",
+  });
+}
+
+function readinessError(source: { type: "inspect-failed"; message: string } | unknown): DaemonRuntimeStoreReadinessError {
+  const message = isInspectFailure(source)
+    ? source.message
+    : source instanceof Error ? source.message : String(source);
+  return new DaemonRuntimeStoreReadinessError({
+    type: "failed",
+    message: `Runtime store readiness could not be established: ${message}`,
+  });
+}
+
+function isInspectFailure(value: unknown): value is { type: "inspect-failed"; message: string } {
+  return typeof value === "object"
+    && value !== null
+    && "type" in value
+    && (value as { type?: unknown }).type === "inspect-failed"
+    && "message" in value
+    && typeof (value as { message?: unknown }).message === "string";
 }
 
 async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {

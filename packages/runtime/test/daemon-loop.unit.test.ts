@@ -1,11 +1,13 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonEndpoint } from "../src/daemon/socket.js";
 import type { DaemonTickResult } from "../src/daemon/tick.js";
-import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
+import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
+import { openRuntimeStore } from "../src/store/store.js";
+import { treeFingerprint } from "./support/tree-fingerprint.js";
 
 const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
 const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
@@ -13,34 +15,38 @@ const startupRecovery = vi.hoisted(() => ({
   claimed: false,
   claimedAtRecovery: false,
   calls: 0,
+  openedGenerationIds: [] as string[],
   failure: undefined as Error | undefined,
 }));
 
 vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
 vi.mock("../src/store/store.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/store/store.js")>();
+  const instrument = (store: Awaited<ReturnType<typeof actual.openRuntimeStoreAtLayout>>) => {
+    const claimDaemon = store.claimDaemon.bind(store);
+    store.claimDaemon = input => {
+      const lease = claimDaemon(input);
+      startupRecovery.claimed = true;
+      return lease;
+    };
+    const recover = store.observationLog.reconcileTerminalTurns.bind(store.observationLog);
+    store.observationLog.reconcileTerminalTurns = async () => {
+      startupRecovery.calls += 1;
+      startupRecovery.claimedAtRecovery = startupRecovery.claimed;
+      if (startupRecovery.failure !== undefined) throw startupRecovery.failure;
+      await recover();
+    };
+    const cleanup = store.cleanupStagedRunDirectories.bind(store);
+    store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
+      ? cleanup()
+      : Promise.reject(startupCleanup.failure);
+    return store;
+  };
   return {
     ...actual,
-    openRuntimeStore: async (cwd: string) => {
-      const store = await actual.openRuntimeStore(cwd);
-      const claimDaemon = store.claimDaemon.bind(store);
-      store.claimDaemon = input => {
-        const lease = claimDaemon(input);
-        startupRecovery.claimed = true;
-        return lease;
-      };
-      const recover = store.observationLog.reconcileTerminalTurns.bind(store.observationLog);
-      store.observationLog.reconcileTerminalTurns = async () => {
-        startupRecovery.calls += 1;
-        startupRecovery.claimedAtRecovery = startupRecovery.claimed;
-        if (startupRecovery.failure !== undefined) throw startupRecovery.failure;
-        await recover();
-      };
-      const cleanup = store.cleanupStagedRunDirectories.bind(store);
-      store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
-        ? cleanup()
-        : Promise.reject(startupCleanup.failure);
-      return store;
+    openRuntimeStoreAtLayout: async (...args: Parameters<typeof actual.openRuntimeStoreAtLayout>) => {
+      if (args[0].generationId) startupRecovery.openedGenerationIds.push(args[0].generationId);
+      return instrument(await actual.openRuntimeStoreAtLayout(...args));
     },
   };
 });
@@ -63,6 +69,7 @@ beforeEach(async () => {
   startupRecovery.claimed = false;
   startupRecovery.claimedAtRecovery = false;
   startupRecovery.calls = 0;
+  startupRecovery.openedGenerationIds = [];
   startupRecovery.failure = undefined;
   runDaemonTick.mockReset();
 });
@@ -78,6 +85,46 @@ afterEach(async () => {
 });
 
 describe("daemon loop", () => {
+  it("initializes a fresh store and leaves an outdated store unchanged", async () => {
+    const absent = await treeFingerprint(runtimeHome);
+    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 50,
+      idleStopMs: 1_000,
+      packageVersion: "test",
+    });
+    await loop.shutdown();
+    expect(await treeFingerprint(runtimeHome)).not.toBe(absent);
+
+    await convertReadyStoreToLegacyV8();
+    const outdated = await treeFingerprint(runtimeHome);
+    await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toMatchObject({
+      name: "DaemonRuntimeStoreReadinessError",
+      failure: {
+        type: "repair-required",
+        command: "acpus doctor --fix",
+      },
+    });
+    expect(await treeFingerprint(runtimeHome)).toBe(outdated);
+  });
+
+  it("adopts one active generation when fresh daemon starts race", async () => {
+    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+
+    const starts = await Promise.allSettled([
+      startDaemonLoop(dir, { heartbeatMs: 50, idleStopMs: 1_000, packageVersion: "test" }),
+      startDaemonLoop(dir, { heartbeatMs: 50, idleStopMs: 1_000, packageVersion: "test" }),
+    ]);
+    const loops = starts.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+    try {
+      expect(loops.length).toBeGreaterThan(0);
+      const active = resolveRuntimeLayout(dir).generationId;
+      expect(new Set(startupRecovery.openedGenerationIds)).toEqual(new Set([active]));
+    } finally {
+      await Promise.allSettled(loops.map(loop => loop.shutdown()));
+    }
+  });
+
   it("rejects invalid run leaf concurrency before creating runtime state", async () => {
     process.env.ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY = "0";
 
@@ -88,13 +135,14 @@ describe("daemon loop", () => {
   });
 
   it("releases its lease and closes the server when startup cleanup fails", async () => {
-    const layout = resolveRuntimeLayout(dir);
+    await initializeReadyStore();
     startupCleanup.failure = new Error("startup cleanup failed");
 
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
       "startup cleanup failed",
     );
 
+    const layout = resolveRuntimeLayout(dir);
     const db = new DatabaseSync(layout.databasePath, { readOnly: true });
     try {
       expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
@@ -105,6 +153,7 @@ describe("daemon loop", () => {
   });
 
   it("recovers terminal observations only after claiming daemon ownership", async () => {
+    await initializeReadyStore();
     runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
 
     const loop = await startDaemonLoop(dir, {
@@ -122,13 +171,14 @@ describe("daemon loop", () => {
   });
 
   it("releases its lease and closes the server when terminal observation recovery fails", async () => {
-    const layout = resolveRuntimeLayout(dir);
+    await initializeReadyStore();
     startupRecovery.failure = new Error("startup observation recovery failed");
 
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toThrow(
       "startup observation recovery failed",
     );
 
+    const layout = resolveRuntimeLayout(dir);
     const db = new DatabaseSync(layout.databasePath, { readOnly: true });
     try {
       expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
@@ -139,6 +189,7 @@ describe("daemon loop", () => {
   });
 
   it("continues heartbeating while a work tick is still running", async () => {
+    await initializeReadyStore();
     let finishTick!: () => void;
     runDaemonTick.mockImplementationOnce(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
@@ -161,6 +212,7 @@ describe("daemon loop", () => {
   });
 
   it("waits for an active work tick before closing the store", async () => {
+    await initializeReadyStore();
     let finishTick!: () => void;
     runDaemonTick.mockImplementationOnce(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
@@ -186,6 +238,7 @@ describe("daemon loop", () => {
   });
 
   it("retries transient store-busy tick failures", async () => {
+    await initializeReadyStore();
     runDaemonTick
       .mockRejectedValueOnce(Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }))
       .mockResolvedValue({ runs: 1, idleBlockers: 0 });
@@ -205,6 +258,7 @@ describe("daemon loop", () => {
   });
 
   it("notifies automatic shutdown even when lease release fails", async () => {
+    await initializeReadyStore();
     runDaemonTick.mockResolvedValue({ runs: 1, idleBlockers: 0 });
     let notify!: () => void;
     const notified = new Promise<void>(resolve => { notify = resolve; });
@@ -224,6 +278,33 @@ describe("daemon loop", () => {
     await expect(loop.shutdown()).rejects.toThrow("no such table: daemon_lease");
   });
 });
+
+async function initializeReadyStore(): Promise<void> {
+  const store = await openRuntimeStore(dir);
+  store.close();
+}
+
+async function convertReadyStoreToLegacyV8(): Promise<void> {
+  const current = resolveRuntimeLayout(dir);
+  const workspace = resolveRuntimeWorkspaceLayout(dir);
+  const manifest = JSON.parse(await readFile(current.manifestPath, "utf8")) as Record<string, unknown>;
+  await rm(current.generationMetadataPath);
+  await rename(current.runtimeRoot, workspace.legacyRuntimeRoot);
+  await rm(workspace.generationsRoot, { recursive: true, force: true });
+  await writeFile(workspace.manifestPath, `${JSON.stringify({
+    manifestVersion: 1,
+    workspaceKey: manifest.workspaceKey,
+    canonicalPath: manifest.canonicalPath,
+    platform: manifest.platform,
+    createdAt: manifest.createdAt,
+  }, null, 2)}\n`);
+  const db = new DatabaseSync(workspace.databasePath);
+  try {
+    db.exec("PRAGMA user_version = 8");
+  } finally {
+    db.close();
+  }
+}
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

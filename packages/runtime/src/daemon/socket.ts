@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { probeProcessLiveness } from "../process-liveness.js";
-import { ensureRuntimeLayout, resolveRuntimeLayout } from "../runtime-layout.js";
+import { resolveRuntimeWorkspaceLayout } from "../runtime-layout.js";
 import {
   isPreparedRunWorkflow,
   openExistingRuntimeStore,
@@ -97,13 +97,11 @@ export type DaemonServerHandle = {
 };
 
 export function daemonEndpoint(cwd: string): string {
-  return resolveRuntimeLayout(cwd).daemonEndpoint;
+  return resolveRuntimeWorkspaceLayout(cwd).daemonEndpoint;
 }
 
 export async function startDaemonServer(cwd: string, handlers: DaemonHandlers): Promise<DaemonServerHandle> {
-  const layout = await ensureRuntimeLayout(cwd);
-  if (layout.isErr()) throw new Error(layout.error.message);
-  const endpoint = layout.value.daemonEndpoint;
+  const endpoint = resolveRuntimeWorkspaceLayout(cwd).daemonEndpoint;
   if (isFilesystemSocket(endpoint)) {
     await ensurePrivateSocketParent(endpoint);
     await rejectSocketSymlink(endpoint);

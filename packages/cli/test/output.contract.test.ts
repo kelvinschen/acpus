@@ -229,6 +229,11 @@ describe("CLI result output contracts", () => {
       phase: "doctor",
       message: "Doctor checks passed with warnings.",
       persistence: { path: "/home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef" },
+      authoringTypes: [
+        { specifier: "acpus/core", typesPath: "/types/core.d.ts" },
+        { specifier: "acpus/expression", typesPath: "/types/expression.d.ts" },
+        { specifier: "acpus/tasks/git", typesPath: "/types/git.d.ts" },
+      ],
       checks: [
         { status: "ok", area: "workspace", message: "Workspace resolved." },
         { status: "warn", area: "store", message: "Runtime store needs attention." },
@@ -238,6 +243,10 @@ describe("CLI result output contracts", () => {
     expect(stdout.text).toBe([
       "Doctor checks passed with warnings.",
       "Persistence: /home/alice/.acpus/workspaces/0123456789abcdef0123456789abcdef",
+      "Types:",
+      "  acpus/core        /types/core.d.ts",
+      "  acpus/expression  /types/expression.d.ts",
+      "  acpus/tasks/git   /types/git.d.ts",
       "ok    workspace  Workspace resolved.",
       "warn  store      Runtime store needs attention.",
       "",

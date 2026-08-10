@@ -10,10 +10,12 @@ import {
   getNodeInspection as requestNodeInspection,
   getNodeRuntimeValues as requestNodeRuntimeValues,
   getRunRuntimeSnapshot as requestRunRuntimeSnapshot,
+  getRuntimeStore,
   listRuns as requestRuns,
   listWorkspaces,
   listWorkflowCatalog,
   listWorkflowFiles,
+  repairRuntimeStore as requestRuntimeStoreRepair,
   submitRunCommand as requestRunCommand,
   visualizeWorkflow,
   WebApiError,
@@ -30,6 +32,7 @@ type ReadyVisualization = Extract<WorkflowVisualizationResult, { status: "ready"
 const workspaceKey = "workspace one";
 
 const listRuns = () => requestRuns(workspaceKey);
+const repairRuntimeStore = () => requestRuntimeStoreRepair();
 const getRunRuntimeSnapshot = (runId: string) => requestRunRuntimeSnapshot(workspaceKey, runId);
 const getNodeInspection = (runId: string, target: string) => requestNodeInspection(workspaceKey, runId, target);
 const getNodeRuntimeValues = (runId: string, target: string) => requestNodeRuntimeValues(workspaceKey, runId, target);
@@ -108,6 +111,17 @@ describe("Web API transport", () => {
       "/api/workspaces/workspace%20one/runs/run%201/nodes/%401a2b3c4d5e6f/runtime-values",
       undefined,
     );
+  });
+
+  it("repairs the runtime store without a request body", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await repairRuntimeStore();
+
+    expect(fetch).toHaveBeenCalledWith("/api/runtime-store", {
+      method: "POST",
+    });
   });
 
   it.each(successCases())("decodes the canonical $name result", async ({ call, body, expected }) => {
@@ -371,6 +385,10 @@ function successCases() {
       path: "/workspace",
       runCount: 1,
       lastRunUpdatedAt: "2026-07-01T00:00:01.000Z",
+    }, {
+      key: "unavailable",
+      name: "unavailable",
+      path: "/workspace/unavailable",
     }],
   };
   const snapshot = {
@@ -398,6 +416,10 @@ function successCases() {
 
   return [
     { name: "health", call: () => getHealth(), body: { ok: true, health }, expected: health },
+    { name: "ready runtime store", call: () => getRuntimeStore(), body: { ok: true, runtimeStore: { state: "ready" } }, expected: { state: "ready" } },
+    { name: "repairable runtime store", call: () => getRuntimeStore(), body: { ok: true, runtimeStore: { state: "needs-fix", message: "Runtime data needs an update." } }, expected: { state: "needs-fix", message: "Runtime data needs an update." } },
+    { name: "unavailable runtime store", call: () => getRuntimeStore(), body: { ok: true, runtimeStore: { state: "unavailable", message: "Use a compatible Acpus version." } }, expected: { state: "unavailable", message: "Use a compatible Acpus version." } },
+    { name: "runtime store repair acknowledgement", call: () => repairRuntimeStore(), body: { ok: true }, expected: undefined },
     { name: "workspace catalog", call: () => listWorkspaces(), body: { ok: true, catalog: workspaces }, expected: workspaces },
     { name: "run list", call: () => listRuns(), body: { ok: true, runs }, expected: runs },
     { name: "runtime snapshot", call: () => getRunRuntimeSnapshot("run_1"), body: { ok: true, ...snapshot }, expected: snapshot },
@@ -468,6 +490,26 @@ function malformedEndpointCases() {
           workspaces: [{ key: "current", name: "workspace", path: "/workspace", runCount: 0, lastRunUpdatedAt: 42 }],
         },
       },
+    },
+    {
+      name: "runtime store with an unknown state",
+      call: () => getRuntimeStore(),
+      body: { ok: true, runtimeStore: { state: "migrating" } },
+    },
+    {
+      name: "ready runtime store with a message",
+      call: () => getRuntimeStore(),
+      body: { ok: true, runtimeStore: { state: "ready", message: "unexpected" } },
+    },
+    {
+      name: "repairable runtime store without a message",
+      call: () => getRuntimeStore(),
+      body: { ok: true, runtimeStore: { state: "needs-fix" } },
+    },
+    {
+      name: "runtime repair acknowledgement with an extra field",
+      call: () => repairRuntimeStore(),
+      body: { ok: true, result: "unexpected" },
     },
     {
       name: "run-list status leaf",

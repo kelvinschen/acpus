@@ -25,10 +25,10 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `runs artifact <artifact-ref>` | Resolves one `artifact://<run-id>/<artifact-id>` to verified local source metadata; optional `--json`. |
 | `runs artifacts <run-id>` | Optional `--target` and `--json`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
-| `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`. |
+| `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`; selection includes eligible terminal runs and preserved history. |
 | `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input <json\|file.json>`, `--agents <json\|file.json>`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
 | `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`. |
-| `doctor` | Read-only runtime and authoring health; optional `--json`. |
+| `doctor` | Read-only Runtime and authoring health; optional `--fix` repairs a repairable Runtime store and rechecks it. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
 | `skill install` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
 | `skill uninstall` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
@@ -36,7 +36,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned only by the `doctor`, `runs artifact`, and `runs artifacts` executable leaves.
+- `--json` MUST be owned only by `runs artifact` and `runs artifacts`.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST display the CLI package version before usage.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
@@ -99,9 +99,8 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Every workflow run MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
 - The CLI MUST accept a live workspace daemon only when its status protocol version exactly equals the Runtime-exported current protocol version.
 - A daemon protocol mismatch MUST fail actionably without killing, replacing, or spawning around that daemon.
-- Admission MUST probe daemon status before writable storage preparation.
-- A compatible live daemon MUST skip writable storage preparation.
-- An absent or refused daemon MUST prepare current storage before ensure/spawn so fresh and older-storage archival behavior remains Runtime-owned.
+- Admission MUST probe daemon status before inspecting the Runtime store. A compatible live daemon MUST skip repair.
+- With no live daemon, admission MUST inspect the store, silently apply a repair reported as safe by Runtime, then ensure the daemon. Unsupported storage MUST fail actionably and direct the user to `acpus doctor`; any repair failure MUST preserve Runtime's actionable message.
 - `workflow run` MUST return after daemon acceptance by default.
 - Blocking `workflow run` MUST delegate observation semantics to [Runtime inspection](runtime-spec.md#inspection).
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
@@ -113,15 +112,29 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifact lookup, artifact listing, `runs prune --dry-run`, catalog reads, hook reads, Doctor, and skill read.
+- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifact lookup, artifact listing, `runs prune --dry-run`, catalog reads, hook reads, Doctor without `--fix`, and skill read.
 - Runtime-backed read-only commands MUST use Runtime read APIs.
+- `web` MUST start only the Web server and MUST NOT ensure, start, or wake the workspace daemon during launch.
 - Artifact lookup MUST delegate `ArtifactRef` parsing and path safety to Runtime `resolveArtifact`.
 - Artifact lookup MUST present the verified absolute path and registered media type, size, digest, node key, and attempt without reading the file body.
 - Artifact listing MUST present Runtime-owned registry records, including each absolute public path, without reading bodies.
 - An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
+
+#### Runtime Store Repair
+
+- `doctor` is the only CLI lifecycle surface for the Runtime store; the CLI MUST NOT expose a `runtime` command namespace.
+- Doctor without `--fix` MUST remain read-only and report a repairable or unsupported store with the next valid command.
+- `doctor --fix` MUST call Runtime repair only when inspection reports `repairable`, MUST NOT prompt, and MUST re-run health checks after the attempt. A ready or absent store MUST receive no write.
+- A successful repair MUST state that existing runs were preserved. Unsupported storage and repair failures MUST remain failures with Runtime's actionable message.
+
 #### Inspection
 
-- `runs inspect` MUST be text-only, delegate target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--forensics`, `--follow`, and `--await-decision`.
+- `runs inspect` MUST be text-only, delegate current target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--forensics`, `--follow`, and `--await-decision`.
+- `runs inspect <run-id>` MUST automatically render Runtime's preserved archived summary when no active run matches. The summary contains only `id`, `name`, `status`, `createdAt`, and `updatedAt` and exposes no history identifier.
+- Target, Timeline, Forensics, follow, or await-decision against an archived run MUST fail with `ARCHIVED_RUN_DETAIL_UNAVAILABLE` and direct the user to its plain summary command.
+- If preserved history cannot prove whether a run exists, inspection MUST fail with `ARCHIVED_RUN_LOOKUP_UNAVAILABLE` rather than report `RUN_NOT_FOUND`; the CLI MUST NOT open an archived SQLite database.
+- A repairable current store MUST fail with public code `RUNTIME_STORE_REPAIR_REQUIRED` and direct the user to `acpus doctor --fix`; it MUST NOT degrade to `READ_FAILED`.
+- Unsupported storage MUST fail with public code `RUNTIME_STORE_UNSUPPORTED`, preserve Runtime's guidance, and direct the user to `acpus doctor`; it MUST NOT suggest repair or degrade to `READ_FAILED`.
 - `--forensics` MUST select one-shot target Forensics and default its omitted `--target` to `root`; explicit `--target root` is equivalent.
 - `--forensics` MUST conflict with `--timeline`, `--follow`, and `--await-decision`.
 - `--timeline` requires `--target`; `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
@@ -134,18 +147,18 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - When Runtime includes an Agent Summary ACP silence duration, text inspection MUST render `ACP silent for <duration>` and MUST omit an inactivity threshold, failure countdown, and cleanup controls.
 - Empty targets MUST fail as usage before Runtime reads state. The CLI MUST not expose observation cadence or heartbeat controls.
 - Ctrl-C MUST detach without canceling the run and print a one-shot recovery command that retains selected target and Timeline detail.
-- Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; picker and confirmation UI writes to stderr, while command output remains on stdout.
+- Omitted run ids MUST be allowed only for interactive text-mode inspect/delete; the inspect picker lists active runs only, and picker and confirmation UI writes to stderr while command output remains on stdout.
 - Delete MUST use Runtime hard deletion, reject active live runs, and support confirmed multi-select/all-deletable interactive deletion without daemon startup.
-- `runs prune` MUST delegate eligible-run, archive, source, trash, and empty-shard semantics to the [Runtime](runtime-spec.md#pruning) without starting the daemon.
+- `runs prune` MUST delegate eligible-run, archived-history, source, trash, and empty-shard semantics to the [Runtime](runtime-spec.md#pruning) without starting the daemon or repairing storage.
 - `runs prune --older-than` MUST accept a Core duration.
 - An invalid prune duration MUST fail as usage before reading runtime state.
-- Omitting `--older-than` MUST select every Runtime-eligible terminal run and archive in scope.
+- Omitting `--older-than` MUST select every Runtime-eligible terminal run and history item in scope.
 - `runs prune` MUST default to the current workspace; `--all-workspaces` explicitly broadens maintenance to every known workspace shard.
 - `runs prune --dry-run` MUST emit the Runtime selection report without prompting or deleting.
 - Real pruning in a non-interactive terminal MUST require `--yes` before reading runtime state.
 - Real interactive text pruning without `--yes` MUST show one aggregate dry-run preview and require one confirmation before deletion.
-- Preview and deletion MUST use the same absolute selection cutoff so a run or archive that becomes eligible while confirmation is pending is not deleted without appearing in the preview.
-- With `--yes`, a zero-run/zero-archive preview MUST still execute the writable Runtime pass so orphan sources and an already-empty shard can be collected; an interactive invocation without `--yes` MAY return success without that maintenance pass.
+- Preview and deletion MUST use the same absolute selection cutoff so an item that becomes eligible while confirmation is pending is not deleted without appearing in the preview.
+- With `--yes`, an empty preview MUST still execute the writable Runtime pass so orphan sources and an already-empty shard can be collected; an interactive invocation without `--yes` MAY return success without that maintenance pass.
 - A prune report containing any shard failure MUST use phase `delete`, set `ok: false`, and exit 1 while preserving the complete Runtime report.
 
 ### Controls, Doctor, Skills, And Hooks
@@ -154,6 +167,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Fork replacement workflow resolution MUST have check/run/viz path, catalog-scope, and stdin parity.
 - The daemon MUST NOT import fork replacement source.
 - Mutating controls MUST start or wake the daemon, dispatch one closed intent, and wait up to 30 seconds for the requested effect to be applied or fail.
+- A mutating control that encounters a repairable store before daemon readiness MUST return public code `RUNTIME_STORE_REPAIR_REQUIRED` and `acpus doctor --fix` as the next command; it MUST NOT repair storage implicitly.
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
 - Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; fork results MUST identify source and child separately.
 - A control receipt MUST include a target only when the operator requested one, and that target MUST repeat the requested selector rather than a resolved internal occurrence key.
@@ -163,16 +177,16 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Text steer receipts MUST NOT echo the instruction.
 - Successful text steer output MUST point `Next` to `--await-decision` inspection using the exact target requested by the operator and MUST NOT replace an occurrence selector with an internal dynamic key.
 - Control timeout MUST report unconfirmed application with the run summary, return nonzero, and create no runtime command state.
-- Doctor MUST combine read-only Runtime health with the Loader-owned authoring authority and create no state in an uninitialized workspace.
+- Doctor MUST combine Runtime health with the Loader-owned authoring authority. Without `--fix` it MUST create no state in an uninitialized workspace.
 - Doctor MUST render an ACP ownership warning only when Runtime reports degraded or orphaned ownership evidence; Doctor MUST not recover or clean ACP workers.
 - Text Doctor output MUST show the Runtime-owned workspace shard root as `Persistence: <absolute-path>` before its health checks.
 - On a color-capable terminal, Doctor MUST render the `Persistence:` label cyan and its path bold; non-TTY and `NO_COLOR` output MUST remain plain text.
-- JSON Doctor output MUST expose that workspace shard root as `persistence.path`.
 - Doctor MUST succeed when its combined Runtime and authoring checks contain no failure, including when one or more checks warn.
 - A successful Doctor report with one or more warnings MUST use `Doctor checks passed with warnings.` as its message.
 - Doctor MUST fail when any combined Runtime or authoring check fails.
-- Doctor MUST fail for a missing/mismatched bundled skill or published authoring dependency; stale or conflicting installed copies warn with remediation `acpus skill install --<scope> --agent <agent>`, while a simply missing installed copy remains structured `missing` without a warning.
-- Doctor installed-skill records MUST inspect only existing fixed skills roots and identify the target with `agent: "universal" | "claude"`.
+- Doctor store warnings that require repair MUST name `acpus doctor --fix` and MUST NOT claim that `web` will repair storage.
+- Doctor MUST fail for a mismatched published authoring dependency. It MUST warn for an actually stale installed Acpus skill with remediation `acpus skill install --<scope> --agent <agent>` and MUST emit no Skill row for aligned, absent, unversioned, conflicting, or unreadable installed targets.
+- Text Doctor output MUST show a fixed-order `Types:` block for `acpus/core`, `acpus/expression`, and `acpus/tasks/git`, pairing each specifier with its absolute declaration path.
 - Skill read MUST resolve resources only from the `acpus` skill bundled in the running CLI package.
 - `skill read` MUST select `SKILL.md` when `path` is omitted and otherwise select the exact directory or regular UTF-8 file named by the skill-root-relative path.
 - Skill read text MUST identify the resource's canonical absolute path and kind before its payload; file payloads preserve the original content, while the default read also includes a two-level resource tree.
@@ -207,15 +221,15 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - After a successful eligible command's ordinary output, the CLI MUST write an available-release reminder only to stderr at most four times for each installed CLI version, with at least 2 hours between reminders; a newer cached target release MUST use the remaining reminder budget, while a changed running CLI version resets it. Network and cache failures MUST NOT change the command output or exit code.
 - Every available-release reminder MUST include `Refresh skill: acpus skill install`; update-awareness MUST NOT inspect installed Skill roots or independently remind users about Skill status.
 - Update-awareness text MUST use ANSI emphasis only when stderr is a TTY and `NO_COLOR` is unset.
-- An eligible Doctor invocation MUST use the same available-release reminder, including its Skill-refresh command; Doctor's own target-specific Skill diagnostics remain unchanged.
+- An eligible Doctor invocation MUST use the same available-release reminder, including its Skill-refresh command; Doctor's stale installed-skill warning remains separate.
 
 ### Output And Exit Codes
 
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
 - Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
 - Structured CLI result records MUST retain `schemaVersion: 1`.
-- Except when `-h`/`--help` terminates parsing, Doctor, artifact lookup, and artifact listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
-- Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY and JSON output MUST remain free of ANSI styling.
+- Except when `-h`/`--help` terminates parsing, artifact lookup and listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
+- Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY output MUST remain free of ANSI styling.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
 - Text workflow preparation diagnostics MUST retain compiler ordering after the stage summary and MUST NOT repeat an aggregate diagnostics count; compile and package-lock failures without diagnostics MUST retain their failure message.
@@ -244,5 +258,5 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 ## Verification
 
-- `pnpm test:unit packages/cli` and `pnpm test:contract packages/cli`: cover JSON option sources, text-only run/inspection/Forensics grammar, candidate navigation, append-only transcript ordering, detach, and exits.
-- `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover Runtime adapter integration, read-only behavior, and one representative end-to-end workflow.
+- `pnpm test:unit packages/cli` and `pnpm test:contract packages/cli`: cover read-only Doctor, explicit repair, automatic archived summaries, text-only current inspection/Forensics grammar, navigation, detach, and exits.
+- `pnpm test:type packages/cli` and `pnpm test:e2e packages/cli`: cover Runtime Interface integration, repair guidance, and one representative end-to-end workflow.

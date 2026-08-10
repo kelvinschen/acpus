@@ -9,6 +9,7 @@ import {
   getRunVisualizationSnapshot,
   inspectAgentExecution,
   inspectNode,
+  inspectRuntimeStore,
   inspectTargetArtifacts,
   listArtifacts,
   listKnownWorkspaces,
@@ -17,6 +18,7 @@ import {
   resolveArtifact,
   resolveKnownWorkspace,
   readInspection,
+  repairRuntimeStore,
   requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonShutdown,
@@ -37,6 +39,7 @@ import type {
   AgentTurnArtifact,
   ArtifactResolutionFailure,
   ArtifactRecord,
+  ArchivedRunInspection,
   DaemonAdmitRunInput,
   DaemonClientFailure,
   DaemonControlIntent,
@@ -92,6 +95,8 @@ import type {
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimePersistence,
+  RuntimeStoreFailure,
+  RuntimeStoreStatus,
   ResolvedArtifact,
   SchemaNormalizationFailure,
   Sha256Digest,
@@ -146,7 +151,7 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     until: "subject-terminal" | "decision-boundary";
     signal?: AbortSignal;
   }>();
-  expectTypeOf<InspectionRead>().toEqualTypeOf<InspectionView | InspectionCandidates>();
+  expectTypeOf<InspectionRead>().toEqualTypeOf<InspectionView | InspectionCandidates | ArchivedRunInspection>();
   expectTypeOf<InspectionCandidates>().toEqualTypeOf<{
     kind: "candidates";
     run: { id: string; status: RunStatus };
@@ -191,6 +196,19 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
   }>();
   expectTypeOf<InspectionError>().toEqualTypeOf<
     | { type: "runtime-store-not-found"; message: string }
+    | {
+        type: "runtime-store-repair-required";
+        runId: string;
+        command: "acpus doctor --fix";
+        message: string;
+      }
+    | {
+        type: "runtime-store-unsupported";
+        runId: string;
+        message: string;
+      }
+    | { type: "archived-run-detail-unavailable"; runId: string; command: string; message: string }
+    | { type: "archived-run-lookup-unavailable"; runId: string; message: string }
     | { type: "run-not-found"; runId: string; message: string }
     | { type: "target-not-found"; runId: string; target: string; message: string }
     | { type: "target-ambiguous"; runId: string; target: string; candidates: InspectionCandidates; message: string }
@@ -210,7 +228,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<KnownWorkspace>().toEqualTypeOf<{
     workspaceKey: string;
     canonicalPath: string;
-    runCount: number;
+    runCount?: number;
     lastRunUpdatedAt?: string;
   }>();
   expectTypeOf<KnownWorkspaceListing>().toEqualTypeOf<{
@@ -453,5 +471,23 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     origin: string;
     message: string;
     upstream?: { source: "acpx"; data?: JsonValue };
+  }>();
+});
+
+test("@acpus/runtime exposes a minimal Runtime store repair interface", () => {
+  expectTypeOf(inspectRuntimeStore).toEqualTypeOf<
+    (cwd: string) => ResultAsync<RuntimeStoreStatus, RuntimeStoreFailure>
+  >();
+  expectTypeOf(repairRuntimeStore).toEqualTypeOf<
+    (cwd: string) => ResultAsync<{ changed: boolean }, RuntimeStoreFailure>
+  >();
+  expectTypeOf<RuntimeStoreStatus>().toEqualTypeOf<
+    | { state: "ready" }
+    | { state: "repairable"; message: string }
+    | { state: "unsupported"; message: string }
+  >();
+  expectTypeOf<RuntimeStoreFailure>().toEqualTypeOf<{
+    type: "busy" | "unsupported" | "failed";
+    message: string;
   }>();
 });

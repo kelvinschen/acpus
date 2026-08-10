@@ -6,7 +6,8 @@ const mock = vi.hoisted(() => ({
   spawn: vi.fn(),
   unref: vi.fn(),
   getRun: vi.fn(),
-  prepareRuntimeForNewRun: vi.fn(),
+  inspectRuntimeStore: vi.fn(),
+  repairRuntimeStore: vi.fn(),
   requestDaemonAdmitRun: vi.fn(),
   requestDaemonControl: vi.fn(),
   requestDaemonStatus: vi.fn(),
@@ -17,7 +18,8 @@ vi.mock("node:child_process", () => ({ spawn: mock.spawn }));
 vi.mock("@acpus/runtime", () => ({
   DAEMON_PROTOCOL_VERSION: 3,
   getRun: mock.getRun,
-  prepareRuntimeForNewRun: mock.prepareRuntimeForNewRun,
+  inspectRuntimeStore: mock.inspectRuntimeStore,
+  repairRuntimeStore: mock.repairRuntimeStore,
   requestDaemonAdmitRun: mock.requestDaemonAdmitRun,
   requestDaemonControl: mock.requestDaemonControl,
   requestDaemonStatus: mock.requestDaemonStatus,
@@ -31,6 +33,8 @@ describe("CLI daemon client", () => {
     vi.clearAllMocks();
     const child = Object.assign(new EventEmitter(), { unref: mock.unref });
     mock.spawn.mockReturnValue(child);
+    mock.inspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
+    mock.repairRuntimeStore.mockReturnValue(okAsync({ changed: false }));
     mock.tryLoadRuntimeConfiguration.mockReturnValue(ok({}));
   });
 
@@ -196,6 +200,27 @@ describe("CLI daemon client", () => {
     if (result.isOk()) expect(result.value).toBe(value);
   });
 
+  it("directs a stale control to Doctor repair without starting the daemon", async () => {
+    mock.inspectRuntimeStore.mockReturnValueOnce(okAsync({
+      state: "repairable",
+      message: "Runtime store repair is required.",
+    }));
+    mock.getRun.mockResolvedValue(undefined);
+
+    const result = await sendDaemonControl("/workspace", { requestId: "cli:stale", type: "pause", runId: "run_1" });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error).toMatchObject({
+        code: "RUNTIME_STORE_REPAIR_REQUIRED",
+        cause: { type: "runtime-store-repair-required" },
+      });
+      expect(result.error.message).toContain("acpus doctor --fix");
+    }
+    expect(mock.requestDaemonStatus).not.toHaveBeenCalled();
+    expect(mock.spawn).not.toHaveBeenCalled();
+  });
+
   it("dispatches admission directly through an already-compatible daemon", async () => {
     const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
     const run = { id: "run_1", status: "pending" };
@@ -205,12 +230,13 @@ describe("CLI daemon client", () => {
     const result = await sendDaemonAdmitRun("/workspace", input);
     expect(result.isOk()).toBe(true);
     if (result.isOk()) expect(result.value).toBe(run);
-    expect(mock.prepareRuntimeForNewRun).not.toHaveBeenCalled();
+    expect(mock.inspectRuntimeStore).not.toHaveBeenCalled();
+    expect(mock.repairRuntimeStore).not.toHaveBeenCalled();
     expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
     expect(mock.requestDaemonAdmitRun).toHaveBeenCalledWith("/workspace", input);
   });
 
-  it("prepares storage before spawning a missing daemon for admission", async () => {
+  it("checks a ready store before spawning a missing daemon for admission", async () => {
     const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
     mock.requestDaemonStatus
       .mockReturnValueOnce(errAsync(transportFailure("not-found", "socket missing")))
@@ -220,9 +246,48 @@ describe("CLI daemon client", () => {
     const result = await sendDaemonAdmitRun("/workspace", input);
 
     expect(result.isOk()).toBe(true);
-    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledOnce();
-    expect(mock.prepareRuntimeForNewRun).toHaveBeenCalledWith("/workspace");
+    expect(mock.inspectRuntimeStore).toHaveBeenCalledWith("/workspace");
+    expect(mock.repairRuntimeStore).not.toHaveBeenCalled();
     expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
+  });
+
+  it("silently repairs a repairable store before spawning for admission", async () => {
+    const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
+    mock.requestDaemonStatus
+      .mockReturnValueOnce(errAsync(transportFailure("not-found", "socket missing")))
+      .mockReturnValueOnce(okAsync({ status: "ok", generation: 8, protocolVersion: 3 }));
+    mock.inspectRuntimeStore.mockReturnValueOnce(okAsync({
+      state: "repairable",
+      message: "Runtime store repair is required.",
+    }));
+    mock.repairRuntimeStore.mockReturnValueOnce(okAsync({ changed: true }));
+    mock.requestDaemonAdmitRun.mockReturnValue(okAsync({ id: "run_1", status: "pending" }));
+
+    const result = await sendDaemonAdmitRun("/workspace", input);
+
+    expect(result.isOk()).toBe(true);
+    expect(mock.repairRuntimeStore).toHaveBeenCalledWith("/workspace");
+    expect(mock.requestDaemonAdmitRun).toHaveBeenCalledOnce();
+  });
+
+  it("directs unsupported admission storage to Doctor", async () => {
+    const input = { prepared: {}, input: {} } as Parameters<typeof sendDaemonAdmitRun>[1];
+    mock.requestDaemonStatus.mockReturnValueOnce(errAsync(transportFailure("not-found", "socket missing")));
+    mock.inspectRuntimeStore.mockReturnValueOnce(okAsync({
+      state: "unsupported",
+      message: "Use an Acpus version compatible with this Runtime store.",
+    }));
+
+    const result = await sendDaemonAdmitRun("/workspace", input);
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.type).toBe("runtime-store-unsupported");
+      expect(result.error.message).toContain("acpus doctor");
+      expect(result.error.message).not.toContain("--fix");
+    }
+    expect(mock.repairRuntimeStore).not.toHaveBeenCalled();
+    expect(mock.spawn).not.toHaveBeenCalled();
   });
 
   it("rejects an incompatible live daemon before storage preparation or admission", async () => {
@@ -233,7 +298,8 @@ describe("CLI daemon client", () => {
 
     expect(result.isErr()).toBe(true);
     if (result.isErr()) expect(result.error.type).toBe("daemon-protocol-mismatch");
-    expect(mock.prepareRuntimeForNewRun).not.toHaveBeenCalled();
+    expect(mock.inspectRuntimeStore).not.toHaveBeenCalled();
+    expect(mock.repairRuntimeStore).not.toHaveBeenCalled();
     expect(mock.requestDaemonAdmitRun).not.toHaveBeenCalled();
     expect(mock.spawn).not.toHaveBeenCalled();
   });

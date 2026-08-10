@@ -28,7 +28,7 @@ import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import { applySchedulerEvents, cancellationEventsForNode, nextGroupCompletionBatchEvents } from "../src/scheduler/transitions.js";
 import { openRuntimeStore } from "../src/store/store.js";
-import { admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, preparedWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { initializeRuntimeStoreForTest, admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, preparedWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
@@ -57,6 +57,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("admits runs only after registering daemon-owned execution", async () => {
     await withRuntimeWorkspace("runtime-daemon-admit-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -95,6 +96,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("rejects daemon admission when prepared IR and IR JSON diverge", async () => {
     await withRuntimeWorkspace("runtime-daemon-admit-ir-mismatch", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -129,6 +131,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("rejects malformed prepared workflow locks at the daemon socket boundary", async () => {
     await withRuntimeWorkspace("runtime-daemon-admit-malformed-lock", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -179,6 +182,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const otherDigest: Sha256Digest = `sha256:${"a".repeat(64)}`;
       const thirdDigest: Sha256Digest = `sha256:${"b".repeat(64)}`;
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -231,6 +235,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("rejects an inconsistent replacement fork lock before creating the fork", async () => {
     await withRuntimeWorkspace("runtime-daemon-fork-inconsistent-lock", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -304,6 +309,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
   it("rejects manual shutdown while another client request is active", async () => {
     await withRuntimeWorkspace("runtime-daemon-shutdown-active-connection", async workspace => {
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 60_000,
         idleStopMs: 60_000,
@@ -331,6 +337,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const shutdown = new Promise<void>(resolve => {
         resolveShutdown = resolve;
       });
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
         idleStopMs: 10,
@@ -383,6 +390,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
   it("persists daemon idle state in runtime diagnostics", async () => {
     await withRuntimeWorkspace("runtime-daemon-idle-diagnostics", async workspace => {
+      await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 5,
         idleStopMs: 60_000,

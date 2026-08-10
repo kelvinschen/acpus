@@ -29,6 +29,7 @@
 - Each Runs card MUST expose the run name, status, id, start time, elapsed or terminal duration, and updated or finished time. Non-terminal elapsed time MUST advance from the run start against the current wall clock; terminal duration MUST remain fixed between the recorded start and terminal update.
 - The React WebUI client MUST use shadcn/Radix primitives for standard interactive controls where a matching component exists, including dialogs, popovers, selects, tabs, buttons, and textareas. Hand-written interaction logic MAY remain only for Acpus-specific graph viewport gestures and renderer internals.
 - Runtime status information for daemon, server access, workspace, and health MUST be available from the sidebar footer through a compact status affordance that opens an animated dialog-semantics popover.
+- The launch workspace's Runtime store state MUST appear as a compact notice above the current page only when it needs attention. A repairable state MUST offer one `Fix` action without confirmation; an unavailable state MUST explain the next action without offering an ineffective mutation.
 - The WebUI shell MUST keep the sidebar fixed to the viewport height while page content scrolls inside the workspace area.
 - The Workflows page MUST use the full available workspace width, with workflow source selection and graph visualization laid out as sibling columns on desktop viewports.
 - The Workflows page MUST list project catalog entries without importing workflow modules, and catalog entries MUST be presented as a structured source list with workspace-relative path text.
@@ -40,6 +41,7 @@
 - Static workflow visualization failures MUST preserve compiler-owned `source`, `check`, `compile`, `lock`, and `validate` phases.
 - The `@acpus/web` package root MUST expose only the runtime values `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
 - `startWebServer` MUST return a tagged `listen-failed` Result when the requested listener cannot be established.
+- `startWebServer` MUST NOT ensure, start, or wake the Runtime daemon; daemon readiness remains lazy and action-specific after the listener is available.
 - Self-contained workflow visualization HTML MUST use the same WebUI static graph React component as the browser Workflows graph. It MUST remain a single offline HTML bundle without live WebUI API calls, and it MUST embed only the static graph runtime needed for graph rendering, static inspection, and workflow I/O.
 - `renderWorkflowVizHtml` MUST receive canonical [Core](core-spec.md) `WorkflowIR` and source graph digest and MUST derive workflow metadata, workflow contract, and Web graph data internally. Its document title MUST use the workflow name.
 - Self-contained workflow visualization HTML MUST embed the same graph and static Inspector styling as the browser Workflows graph.
@@ -70,7 +72,10 @@
 - A runtime state MUST contain only `targetId`, canonical `target`, `status`, and exact occurrence `context`. A materialized `target` MUST be its Run-scoped `@ref`; an unmaterialized static node MAY retain its authored id.
 - Runtime run graph data MUST be served through a workspace-scoped run runtime snapshot API that returns run details, graph data, and run-level control applicability from one Runtime read snapshot. WebUI MUST NOT fetch run details and run graph through separate polling loops for the same Run Monitor.
 - The public Run APIs MUST be rooted at `/api/workspaces/:workspaceKey/runs`; list, runtime-snapshot, node, runtime-values, execution, artifact-preview, artifact-content, and control routes MUST resolve the submitted workspace key to a validated canonical path on the server. The WebUI MUST NOT submit or accept a workspace path as authorization input, and the former unscoped `/api/runs` routes MUST NOT remain available.
-- `GET /api/workspaces` MUST return the strict `WorkspaceCatalog` projection: `currentWorkspaceKey` and workspace entries containing only `key`, basename `name`, canonical `path`, `runCount`, and optional `lastRunUpdatedAt`. Runtime discovery failures MUST remain server-private.
+- `GET /api/workspaces` MUST return the strict `WorkspaceCatalog` projection: `currentWorkspaceKey` and workspace entries containing only `key`, basename `name`, canonical `path`, optional `runCount`, and optional `lastRunUpdatedAt`. Runtime discovery failures MUST remain server-private, and an unknown run count MUST be omitted rather than represented as zero.
+- `GET /api/runtime-store` MUST return exactly one launch-workspace Web state: `{ state: "ready" }`, `{ state: "needs-fix", message }`, or `{ state: "unavailable", message }`.
+- `POST /api/runtime-store` MUST accept no application body, repair only the launch workspace through Runtime, and return `{ ok: true }` after success. Web MUST NOT expose additional Runtime store fields.
+- A repairable store on an active Run route MUST map to HTTP 409 `runtime_store_fix_required`; an unsupported store MUST map to HTTP 422 `runtime_store_unavailable`. Both MUST preserve Runtime's actionable message without serializing Result wrappers.
 - An invalid, unknown, or no-longer-available workspace key MUST return HTTP 404 `workspace_not_found`. A control request for a workspace other than the launch workspace MUST return HTTP 403 `workspace_read_only` before daemon readiness or control submission is attempted.
 - Every client cache and query identity for run lists, snapshots, node inspection, runtime values, execution, artifact previews, and artifact content MUST include the workspace key so equal run ids in separate workspaces cannot share data.
 - Run lists MUST project each run only to `id`, `name`, `status`, `createdAt`, and `updatedAt`. A runtime snapshot run MUST project only `id`, `name`, `status`, `input`, optional `output`, `createdAt`, `updatedAt`, and optional `runtimeVersion`.
@@ -185,12 +190,13 @@
 - Inspector key/value rows MUST expose full values on hover and keyboard focus. They MUST NOT rely on copy buttons as the primary way to read truncated values.
 - Signal prompt information MUST appear only for signal nodes or selected signal waits, and artifacts MUST appear only when leaf-node artifacts exist.
 - Runtime health responses MUST project checks to `area`, `status`, and `message`. Server config responses MUST contain only `cwd` and `access`.
+- After a successful Runtime repair, the client MUST invalidate Runtime store, workspace catalog, active run, and health queries and announce completion without retaining stale run cards.
 - WebUI access MUST be open by default for all bind hosts, including network hosts.
 - Token access MUST be explicit opt-in through the launcher/CLI and MUST NOT be inferred from `--host`.
 - When token access is enabled, the launcher MUST generate a temporary token for that server start and the API MUST require it through the existing bearer/query/cookie token middleware.
 
 ## Verification
 
-- `pnpm test:unit packages/web`: covers browser projections/decoders, artifact response metadata and byte validation, workspace-scoped client state and selector behavior, Inspector rendering, optional Observation telemetry, controls, and graph interaction.
-- `pnpm test:contract packages/web`: covers workspace catalog and scoped Run routes, verified preview/full artifact responses, read-only authorization, canonical deep `@ref` routes, Runtime delegation, private-data boundaries, control/error mapping, and access behavior.
+- `pnpm test:unit packages/web`: covers the compact Runtime status and repair action, browser projections/decoders, artifact response metadata and byte validation, workspace-scoped client state and selector behavior, Inspector rendering, optional Observation telemetry, controls, and graph interaction.
+- `pnpm test:contract packages/web`: covers Runtime store status and repair, stale-store gates, workspace catalog and scoped Run routes, verified preview/full artifact responses, read-only authorization, canonical deep `@ref` routes, Runtime delegation, private-data boundaries, control/error mapping, and access behavior.
 - `pnpm test:integration packages/web`: covers source preparation and static visualization through the Web seam.

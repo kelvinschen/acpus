@@ -1,24 +1,34 @@
-import { createHash } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
-import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { chmod, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
-const manifestVersion = 1;
-const privateDirectoryMode = 0o700;
-const privateFileMode = 0o600;
+export const RUNTIME_LAYOUT_VERSION = 2;
 
-export type WorkspaceManifest = {
-  manifestVersion: typeof manifestVersion;
+type LegacyWorkspaceManifest = {
+  manifestVersion: 1;
   workspaceKey: string;
   canonicalPath: string;
   platform: NodeJS.Platform;
-  filesystemIdentity?: string;
   createdAt: string;
+  filesystemIdentity?: string;
 };
 
+export type WorkspaceManifest = {
+  manifestVersion: typeof RUNTIME_LAYOUT_VERSION;
+  workspaceKey: string;
+  canonicalPath: string;
+  platform: NodeJS.Platform;
+  createdAt: string;
+  activeGenerationId: string;
+};
+
+export type AnyWorkspaceManifest = LegacyWorkspaceManifest | WorkspaceManifest;
+
 export type RuntimeLayout = {
+  layoutVersion: 1 | typeof RUNTIME_LAYOUT_VERSION;
   canonicalPath: string;
   key: string;
   workspaceKey: string;
@@ -26,6 +36,14 @@ export type RuntimeLayout = {
   home: string;
   workspaceRoot: string;
   manifestPath: string;
+  generationsRoot: string;
+  transitionJournalPath: string;
+  legacyRuntimeRoot: string;
+  legacyArchivesRoot: string;
+  generationId?: string;
+  generationRoot?: string;
+  generationMetadataPath: string;
+  runIndexPath: string;
   runtimeRoot: string;
   databasePath: string;
   runsRoot: string;
@@ -33,42 +51,39 @@ export type RuntimeLayout = {
   trashRoot: string;
   acpRoot: string;
   acpWorkersRoot: string;
-  archivesRoot: string;
   daemonSocketPath: string;
   daemonEndpoint: string;
-  filesystemIdentity?: string;
 };
 
 export type WorkspaceManifestFailure =
+  | { type: "manifest-invalid"; path: string; message: string }
   | {
-    type: "manifest-invalid";
-    path: string;
-    message: string;
-  }
-  | {
-    type: "manifest-mismatch";
-    path: string;
-    field: "workspaceKey" | "canonicalPath" | "platform" | "filesystemIdentity";
-    expected: string;
-    actual: string;
-    message: string;
-  };
+      type: "manifest-mismatch";
+      path: string;
+      field: "workspaceKey" | "canonicalPath" | "platform";
+      expected: string;
+      actual: string;
+      message: string;
+    };
 
 export type RuntimeLayoutFailure =
   | WorkspaceManifestFailure
   | {
-    type: "filesystem";
-    operation: "resolve-workspace" | "create-directory" | "read-manifest" | "write-manifest" | "set-permissions";
-    path: string;
-    message: string;
-  };
+      type: "layout-update-required";
+      path: string;
+      observedLayoutVersion: 1;
+      targetLayoutVersion: typeof RUNTIME_LAYOUT_VERSION;
+      message: string;
+    }
+  | { type: "generation-invalid"; path: string; message: string }
+  | {
+      type: "filesystem";
+      operation: "resolve-workspace" | "create-directory" | "read-manifest" | "write-manifest" | "set-permissions";
+      path: string;
+      message: string;
+    };
 
-type WorkspaceStats = {
-  dev: bigint | number;
-  ino: bigint | number;
-  birthtimeMs?: bigint | number;
-  isDirectory(): boolean;
-};
+type WorkspaceStats = { isDirectory(): boolean };
 
 export type RuntimeLayoutDependencies = {
   homedir(): string;
@@ -84,13 +99,26 @@ const defaultDependencies: RuntimeLayoutDependencies = {
   tmpdir,
   platform: process.platform,
   realpath: realpathSync,
-  stat: path => statSync(path, { bigint: true }),
+  stat: path => statSync(path),
   now: () => new Date(),
 };
 
 const runtimeHomeOverrides = new Map<string, Array<{ token: symbol; home: string }>>();
+const privateDirectoryMode = 0o700;
+const privateFileMode = 0o600;
 
 export function resolveRuntimeLayout(
+  cwd: string,
+  overrides: Partial<RuntimeLayoutDependencies> = {},
+): RuntimeLayout {
+  const workspace = resolveRuntimeWorkspaceLayout(cwd, overrides);
+  const manifest = readWorkspaceManifestSync(workspace.manifestPath);
+  return manifest?.manifestVersion === RUNTIME_LAYOUT_VERSION
+    ? runtimeLayoutForGeneration(workspace, manifest.activeGenerationId)
+    : workspace;
+}
+
+export function resolveRuntimeWorkspaceLayout(
   cwd: string,
   overrides: Partial<RuntimeLayoutDependencies> = {},
 ): RuntimeLayout {
@@ -98,66 +126,56 @@ export function resolveRuntimeLayout(
   const canonicalPath = dependencies.realpath(resolve(cwd));
   const stats = dependencies.stat(canonicalPath);
   if (!stats.isDirectory()) throw new Error(`Runtime workspace '${canonicalPath}' is not a directory.`);
-
   const key = workspaceKey(canonicalPath, dependencies.platform);
-  const home = runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home
-    ?? join(dependencies.homedir(), ".acpus");
-  const workspaceRoot = join(home, "workspaces", key);
-  const runtimeRoot = join(workspaceRoot, "runtime");
-  const daemonSocketPath = join(workspaceRoot, "daemon.sock");
-  const identity = filesystemIdentity(stats);
-  return {
+  const home = runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home ?? join(dependencies.homedir(), ".acpus");
+  return workspaceLayout({
     canonicalPath,
     key,
     workspaceKey: key,
     platform: dependencies.platform,
     home,
-    workspaceRoot,
-    manifestPath: join(workspaceRoot, "workspace.json"),
-    runtimeRoot,
-    databasePath: join(runtimeRoot, "runtime.db"),
-    runsRoot: join(runtimeRoot, "runs"),
-    sourcesRoot: join(runtimeRoot, "sources"),
-    trashRoot: join(runtimeRoot, "trash"),
-    acpRoot: join(runtimeRoot, "acp"),
-    acpWorkersRoot: join(runtimeRoot, "acp", "workers"),
-    archivesRoot: join(workspaceRoot, "archives"),
-    daemonSocketPath,
-    daemonEndpoint: resolveDaemonEndpoint(daemonSocketPath, key, home, dependencies),
-    ...(identity === undefined ? {} : { filesystemIdentity: identity }),
-  };
+    workspaceRoot: join(home, "workspaces", key),
+  }, dependencies);
 }
 
 export function runtimeLayoutFromManifest(
   home: string,
   workspaceRoot: string,
-  manifest: WorkspaceManifest,
+  manifest: AnyWorkspaceManifest,
   overrides: Pick<Partial<RuntimeLayoutDependencies>, "tmpdir"> = {},
 ): RuntimeLayout {
   const dependencies = { ...defaultDependencies, ...overrides, platform: manifest.platform };
   const key = workspaceKey(manifest.canonicalPath, manifest.platform);
-  const runtimeRoot = join(workspaceRoot, "runtime");
-  const daemonSocketPath = join(workspaceRoot, "daemon.sock");
-  return {
+  const workspace = workspaceLayout({
     canonicalPath: manifest.canonicalPath,
     key,
     workspaceKey: key,
     platform: manifest.platform,
     home,
     workspaceRoot,
-    manifestPath: join(workspaceRoot, "workspace.json"),
-    runtimeRoot,
-    databasePath: join(runtimeRoot, "runtime.db"),
-    runsRoot: join(runtimeRoot, "runs"),
-    sourcesRoot: join(runtimeRoot, "sources"),
-    trashRoot: join(runtimeRoot, "trash"),
-    acpRoot: join(runtimeRoot, "acp"),
-    acpWorkersRoot: join(runtimeRoot, "acp", "workers"),
-    archivesRoot: join(workspaceRoot, "archives"),
-    daemonSocketPath,
-    daemonEndpoint: resolveDaemonEndpoint(daemonSocketPath, key, home, dependencies),
-    ...(manifest.filesystemIdentity === undefined ? {} : { filesystemIdentity: manifest.filesystemIdentity }),
+  }, dependencies);
+  return manifest.manifestVersion === RUNTIME_LAYOUT_VERSION
+    ? runtimeLayoutForGeneration(workspace, manifest.activeGenerationId)
+    : workspace;
+}
+
+export function runtimeLayoutForGeneration(layout: RuntimeLayout, generationId: string): RuntimeLayout {
+  if (!isGenerationId(generationId)) throw new Error(`Runtime generation id '${generationId}' is invalid.`);
+  const generationRoot = join(layout.generationsRoot, generationId);
+  const runtimeRoot = join(generationRoot, "store");
+  return {
+    ...layout,
+    layoutVersion: RUNTIME_LAYOUT_VERSION,
+    generationId,
+    generationRoot,
+    generationMetadataPath: join(generationRoot, "generation.json"),
+    runIndexPath: join(generationRoot, "run-index.json"),
+    ...storePaths(runtimeRoot),
   };
+}
+
+export function isGenerationId(value: string): boolean {
+  return /^gen_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
 
 export function ensureRuntimeLayout(
@@ -180,63 +198,50 @@ export async function validateRuntimeLayoutBoundary(layout: RuntimeLayout): Prom
     try {
       info = await lstat(path);
     } catch (error) {
-      if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTDIR")) return;
+      if (isMissing(error)) return;
       throw error;
     }
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error(`${label} '${path}' is not a regular directory.`);
-    }
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${label} '${path}' is not a regular directory.`);
   }
 }
 
 export function validateWorkspaceManifest(
   value: unknown,
   layout: RuntimeLayout,
-): Result<WorkspaceManifest, WorkspaceManifestFailure> {
+): Result<AnyWorkspaceManifest, WorkspaceManifestFailure> {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, [
-      "manifestVersion",
-      "workspaceKey",
-      "canonicalPath",
-      "platform",
-      "createdAt",
-    ], ["filesystemIdentity"])
-    || value.manifestVersion !== manifestVersion
+    || (value.manifestVersion !== 1 && value.manifestVersion !== RUNTIME_LAYOUT_VERSION)
     || typeof value.workspaceKey !== "string"
     || !/^[a-f0-9]{32}$/.test(value.workspaceKey)
     || typeof value.canonicalPath !== "string"
     || !isNodePlatform(value.platform)
-    || (value.filesystemIdentity !== undefined && !isFilesystemIdentity(value.filesystemIdentity))
     || typeof value.createdAt !== "string"
-    || !isCanonicalTimestamp(value.createdAt)) {
+    || !isCanonicalTimestamp(value.createdAt)
+    || (value.manifestVersion === RUNTIME_LAYOUT_VERSION
+      ? !hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt", "activeGenerationId"])
+        || typeof value.activeGenerationId !== "string"
+        || !isGenerationId(value.activeGenerationId)
+      : !hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt"], ["filesystemIdentity"]))) {
     return err({
       type: "manifest-invalid",
       path: layout.manifestPath,
       message: `Workspace manifest '${layout.manifestPath}' does not match the current format.`,
     });
   }
-
-  const manifest = value as WorkspaceManifest;
-  const mismatches: Array<{
-    field: Extract<WorkspaceManifestFailure, { type: "manifest-mismatch" }>["field"];
-    expected: string;
-    actual: string;
-  }> = [
-    { field: "workspaceKey", expected: layout.key, actual: manifest.workspaceKey },
-    { field: "canonicalPath", expected: layout.canonicalPath, actual: manifest.canonicalPath },
-    { field: "platform", expected: layout.platform, actual: manifest.platform },
-  ];
-  const mismatch = mismatches.find(candidate => candidate.expected !== candidate.actual)
-    ?? filesystemIdentityMismatch(manifest.filesystemIdentity, layout.filesystemIdentity);
-  if (mismatch) {
-    return err({
+  const manifest = value as unknown as AnyWorkspaceManifest;
+  const mismatch = [
+    { field: "workspaceKey" as const, expected: layout.key, actual: manifest.workspaceKey },
+    { field: "canonicalPath" as const, expected: layout.canonicalPath, actual: manifest.canonicalPath },
+    { field: "platform" as const, expected: layout.platform, actual: manifest.platform },
+  ].find(candidate => candidate.expected !== candidate.actual);
+  return mismatch
+    ? err({
       type: "manifest-mismatch",
       path: layout.manifestPath,
       ...mismatch,
       message: `Workspace manifest '${layout.manifestPath}' has ${mismatch.field} '${mismatch.actual}', expected '${mismatch.expected}'.`,
-    });
-  }
-  return ok(manifest);
+    })
+    : ok(manifest);
 }
 
 /** Test-only workspace-scoped home override. It is deliberately absent from the package root. */
@@ -263,118 +268,174 @@ async function ensureRuntimeLayoutValue(
   cwd: string,
   overrides: Partial<RuntimeLayoutDependencies>,
 ): Promise<RuntimeLayout> {
-  let layout: RuntimeLayout;
+  let workspace: RuntimeLayout;
   try {
-    layout = resolveRuntimeLayout(cwd, overrides);
+    workspace = resolveRuntimeWorkspaceLayout(cwd, overrides);
   } catch (error) {
     throw operationFailure("resolve-workspace", resolve(cwd), error);
   }
-
-  for (const path of [layout.home, join(layout.home, "workspaces"), layout.workspaceRoot]) {
-    await ensurePrivateDirectory(path, layout.platform);
+  for (const path of [workspace.home, join(workspace.home, "workspaces"), workspace.workspaceRoot]) {
+    await ensurePrivateDirectory(path, workspace.platform);
   }
-  await ensureWorkspaceManifest(layout, overrides);
+  const read = await readWorkspaceManifest(workspace.manifestPath);
+  let layout: RuntimeLayout;
+  if (read === undefined) {
+    layout = await initializeFreshLayout(workspace, { ...defaultDependencies, ...overrides });
+  } else {
+    const validated = validateWorkspaceManifest(read, workspace);
+    if (validated.isErr()) throw manifestFailure(validated.error);
+    if (validated.value.manifestVersion === 1) {
+      throw layoutFailure({
+        type: "layout-update-required",
+        path: workspace.manifestPath,
+        observedLayoutVersion: 1,
+        targetLayoutVersion: RUNTIME_LAYOUT_VERSION,
+        message: `Runtime store layout v1 requires repair to layout v${RUNTIME_LAYOUT_VERSION}.`,
+      });
+    }
+    layout = runtimeLayoutForGeneration(workspace, validated.value.activeGenerationId);
+  }
+  await ensureGenerationDirectories(layout);
+  return layout;
+}
+
+async function initializeFreshLayout(
+  workspace: RuntimeLayout,
+  dependencies: RuntimeLayoutDependencies,
+): Promise<RuntimeLayout> {
+  await ensurePrivateDirectory(workspace.generationsRoot, workspace.platform);
+  const generationId = `gen_${randomUUID()}`;
+  const layout = runtimeLayoutForGeneration(workspace, generationId);
+  await ensureGenerationDirectories(layout);
+  await writeFile(layout.generationMetadataPath, `${JSON.stringify({
+    schemaVersion: 1,
+    id: generationId,
+    storageVersion: 9,
+    createdAt: dependencies.now().toISOString(),
+  }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: privateFileMode });
+  await writeManifestAtomically(workspace.manifestPath, {
+    manifestVersion: RUNTIME_LAYOUT_VERSION,
+    workspaceKey: workspace.workspaceKey,
+    canonicalPath: workspace.canonicalPath,
+    platform: workspace.platform,
+    createdAt: dependencies.now().toISOString(),
+    activeGenerationId: generationId,
+  });
+  return layout;
+}
+
+async function ensureGenerationDirectories(layout: RuntimeLayout): Promise<void> {
+  if (!layout.generationRoot) throw new Error("Runtime generation root is unavailable.");
   for (const path of [
+    layout.generationRoot,
     layout.runtimeRoot,
     layout.runsRoot,
     layout.sourcesRoot,
     layout.trashRoot,
     layout.acpRoot,
     layout.acpWorkersRoot,
-    layout.archivesRoot,
-  ]) {
-    await ensurePrivateDirectory(path, layout.platform);
-  }
-  return layout;
-}
-
-async function ensureWorkspaceManifest(
-  layout: RuntimeLayout,
-  overrides: Partial<RuntimeLayoutDependencies>,
-): Promise<void> {
-  const dependencies = { ...defaultDependencies, ...overrides };
-  const expected: WorkspaceManifest = {
-    manifestVersion,
-    workspaceKey: layout.key,
-    canonicalPath: layout.canonicalPath,
-    platform: layout.platform,
-    ...(layout.filesystemIdentity === undefined ? {} : { filesystemIdentity: layout.filesystemIdentity }),
-    createdAt: dependencies.now().toISOString(),
-  };
-
-  let value: unknown;
-  try {
-    await writeFile(layout.manifestPath, `${JSON.stringify(expected, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: privateFileMode,
-    });
-    value = expected;
-  } catch (error) {
-    if (!hasErrorCode(error, "EEXIST")) throw operationFailure("write-manifest", layout.manifestPath, error);
-    try {
-      const info = await lstat(layout.manifestPath);
-      if (info.isSymbolicLink() || !info.isFile()) {
-        throw new Error("manifest path is not a regular file");
-      }
-    } catch (manifestError) {
-      throw operationFailure("read-manifest", layout.manifestPath, manifestError);
-    }
-    let raw: string;
-    try {
-      raw = await readFile(layout.manifestPath, "utf8");
-    } catch (readError) {
-      throw operationFailure("read-manifest", layout.manifestPath, readError);
-    }
-    try {
-      value = JSON.parse(raw) as unknown;
-    } catch {
-      throw manifestFailure({
-        type: "manifest-invalid",
-        path: layout.manifestPath,
-        message: `Workspace manifest '${layout.manifestPath}' is not valid JSON.`,
-      });
-    }
-  }
-
-  const validation = validateWorkspaceManifest(value, layout);
-  if (validation.isErr()) throw manifestFailure(validation.error);
-  if (layout.platform !== "win32") {
-    try {
-      await chmod(layout.manifestPath, privateFileMode);
-    } catch (error) {
-      throw operationFailure("set-permissions", layout.manifestPath, error);
-    }
-  }
+  ]) await ensurePrivateDirectory(path, layout.platform);
 }
 
 async function ensurePrivateDirectory(path: string, platform: NodeJS.Platform): Promise<void> {
   try {
     await mkdir(path, { recursive: true, mode: privateDirectoryMode });
-  } catch (error) {
-    throw operationFailure("create-directory", path, error);
-  }
-  try {
     const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error("path is not a regular directory");
-    }
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("path is not a regular directory");
+    if (platform !== "win32") await chmod(path, privateDirectoryMode);
   } catch (error) {
     throw operationFailure("create-directory", path, error);
   }
-  if (platform === "win32") return;
+}
+
+function workspaceLayout(
+  base: Pick<RuntimeLayout, "canonicalPath" | "key" | "workspaceKey" | "platform" | "home" | "workspaceRoot">,
+  dependencies: RuntimeLayoutDependencies,
+): RuntimeLayout {
+  const daemonSocketPath = join(base.workspaceRoot, "daemon.sock");
+  const legacyRuntimeRoot = join(base.workspaceRoot, "runtime");
+  return {
+    ...base,
+    layoutVersion: 1,
+    manifestPath: join(base.workspaceRoot, "workspace.json"),
+    generationsRoot: join(base.workspaceRoot, "generations"),
+    transitionJournalPath: join(base.workspaceRoot, "runtime-store-transition.json"),
+    legacyRuntimeRoot,
+    legacyArchivesRoot: join(base.workspaceRoot, "archives"),
+    generationMetadataPath: join(base.workspaceRoot, "generation.json"),
+    runIndexPath: join(base.workspaceRoot, "run-index.json"),
+    ...storePaths(legacyRuntimeRoot),
+    daemonSocketPath,
+    daemonEndpoint: resolveDaemonEndpoint(daemonSocketPath, base.key, base.home, dependencies),
+  };
+}
+
+function storePaths(runtimeRoot: string) {
+  return {
+    runtimeRoot,
+    databasePath: join(runtimeRoot, "runtime.db"),
+    runsRoot: join(runtimeRoot, "runs"),
+    sourcesRoot: join(runtimeRoot, "sources"),
+    trashRoot: join(runtimeRoot, "trash"),
+    acpRoot: join(runtimeRoot, "acp"),
+    acpWorkersRoot: join(runtimeRoot, "acp", "workers"),
+  };
+}
+
+function readWorkspaceManifestSync(path: string): AnyWorkspaceManifest | undefined {
+  let info;
   try {
-    await chmod(path, privateDirectoryMode);
+    info = lstatSync(path);
   } catch (error) {
-    throw operationFailure("set-permissions", path, error);
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Workspace manifest '${path}' is not a regular file.`);
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch {
+    throw new Error(`Workspace manifest '${path}' is not valid JSON.`);
+  }
+  if (!isPlainRecord(value) || (value.manifestVersion !== 1 && value.manifestVersion !== RUNTIME_LAYOUT_VERSION)) {
+    throw new Error(`Workspace manifest '${path}' does not match a supported layout.`);
+  }
+  if (value.manifestVersion === RUNTIME_LAYOUT_VERSION
+    && (typeof value.activeGenerationId !== "string" || !isGenerationId(value.activeGenerationId))) {
+    throw new Error(`Workspace manifest '${path}' has no valid active generation.`);
+  }
+  return value as unknown as AnyWorkspaceManifest;
+}
+
+async function readWorkspaceManifest(path: string): Promise<unknown | undefined> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw operationFailure("read-manifest", path, error);
+  }
+  if (info.isSymbolicLink() || !info.isFile()) throw operationFailure("read-manifest", path, new Error("manifest path is not a regular file"));
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    throw manifestFailure({ type: "manifest-invalid", path, message: `Workspace manifest '${path}' is not valid JSON.` });
+  }
+}
+
+async function writeManifestAtomically(path: string, manifest: WorkspaceManifest): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: privateFileMode });
+    await rename(temporary, path);
+    if (process.platform !== "win32") await chmod(path, privateFileMode);
+  } catch (error) {
+    throw operationFailure("write-manifest", path, error);
   }
 }
 
 function workspaceKey(canonicalPath: string, platform: NodeJS.Platform): string {
-  return createHash("sha256")
-    .update(`acpus-workspace-v1\0${platform}\0${canonicalPath}`)
-    .digest("hex")
-    .slice(0, 32);
+  return createHash("sha256").update(`acpus-workspace-v1\0${platform}\0${canonicalPath}`).digest("hex").slice(0, 32);
 }
 
 function resolveDaemonEndpoint(
@@ -383,70 +444,23 @@ function resolveDaemonEndpoint(
   home: string,
   dependencies: RuntimeLayoutDependencies,
 ): string {
-  const scope = createHash("sha256")
-    .update(`acpus-daemon-home-v1\0${resolve(home)}`)
-    .digest("hex")
-    .slice(0, 32);
+  const scope = createHash("sha256").update(`acpus-daemon-home-v1\0${resolve(home)}`).digest("hex").slice(0, 32);
   const name = `acpus-daemon-${scope}-${key}`;
   if (dependencies.platform === "win32") return `\\\\.\\pipe\\${name}`;
   if (Buffer.byteLength(daemonSocketPath) < 100) return daemonSocketPath;
   if (dependencies.platform === "linux") return `\0${name}`;
   const temporaryEndpoint = join(dependencies.tmpdir(), `acpus-daemon-${scope}`, `${key}.sock`);
-  return Buffer.byteLength(temporaryEndpoint) < 100
-    ? temporaryEndpoint
-    : join("/tmp", `acpus-daemon-${scope}`, `${key}.sock`);
-}
-
-function filesystemIdentity(stats: WorkspaceStats): string | undefined {
-  const inode = String(stats.ino);
-  if (inode === "0") return undefined;
-  const birthtimeMs = stats.birthtimeMs === undefined ? undefined : String(stats.birthtimeMs);
-  return `${String(stats.dev)}:${inode}${birthtimeMs === undefined || birthtimeMs === "0" ? "" : `:${birthtimeMs}`}`;
-}
-
-function filesystemIdentityMismatch(
-  actual: string | undefined,
-  expected: string | undefined,
-): {
-  field: "filesystemIdentity";
-  expected: string;
-  actual: string;
-} | undefined {
-  if (actual === undefined || expected === undefined) return undefined;
-  const [actualDevice, actualInode, actualBirthtime] = actual.split(":");
-  const [expectedDevice, expectedInode, expectedBirthtime] = expected.split(":");
-  return actualDevice === expectedDevice
-    && actualInode === expectedInode
-    && (actualBirthtime === undefined || expectedBirthtime === undefined || actualBirthtime === expectedBirthtime)
-    ? undefined
-    : {
-      field: "filesystemIdentity",
-      expected,
-      actual,
-    };
-}
-
-function isFilesystemIdentity(value: unknown): value is string {
-  return typeof value === "string" && /^\d+:[1-9]\d*(?::[1-9]\d*)?$/.test(value);
+  return Buffer.byteLength(temporaryEndpoint) < 100 ? temporaryEndpoint : join("/tmp", `acpus-daemon-${scope}`, `${key}.sock`);
 }
 
 function isNodePlatform(value: unknown): value is NodeJS.Platform {
   return typeof value === "string" && [
-    "aix",
-    "android",
-    "darwin",
-    "freebsd",
-    "haiku",
-    "linux",
-    "netbsd",
-    "openbsd",
-    "sunos",
-    "win32",
-    "cygwin",
+    "aix", "android", "darwin", "freebsd", "haiku", "linux", "netbsd", "openbsd", "sunos", "win32", "cygwin",
   ].includes(value);
 }
 
-function isCanonicalTimestamp(value: string): boolean {
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
@@ -459,8 +473,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function hasExactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
   const allowed = new Set([...required, ...optional]);
-  return required.every(key => Object.hasOwn(value, key))
-    && Object.keys(value).every(key => allowed.has(key));
+  return required.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => allowed.has(key));
 }
 
 class RuntimeLayoutOperationError extends Error {
@@ -487,6 +500,10 @@ function manifestFailure(failure: WorkspaceManifestFailure): RuntimeLayoutOperat
   return new RuntimeLayoutOperationError(failure);
 }
 
+function layoutFailure(failure: RuntimeLayoutFailure): RuntimeLayoutOperationError {
+  return new RuntimeLayoutOperationError(failure);
+}
+
 function runtimeLayoutFailure(error: unknown, cwd: string): RuntimeLayoutFailure {
   if (error instanceof RuntimeLayoutOperationError) return error.failure;
   const detail = error instanceof Error ? error.message : String(error);
@@ -498,9 +515,7 @@ function runtimeLayoutFailure(error: unknown, cwd: string): RuntimeLayoutFailure
   };
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error as { code?: unknown }).code === code;
+function isMissing(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "ENOTDIR");
 }

@@ -16,10 +16,12 @@ const api = vi.hoisted(() => ({
   getNodeInspection: vi.fn(),
   getNodeRuntimeValues: vi.fn(),
   getRunRuntimeSnapshot: vi.fn(),
+  getRuntimeStore: vi.fn(),
   listRuns: vi.fn(),
   listWorkspaces: vi.fn(),
   listWorkflowCatalog: vi.fn(),
   listWorkflowFiles: vi.fn(),
+  repairRuntimeStore: vi.fn(),
   submitRunCommand: vi.fn(),
   visualizeWorkflow: vi.fn(),
 }));
@@ -124,6 +126,8 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false }, mutations: { retry: false } } });
 
   api.listWorkspaces.mockReset().mockResolvedValue(workspaceCatalog);
+  api.getRuntimeStore.mockReset().mockResolvedValue({ state: "ready" });
+  api.repairRuntimeStore.mockReset().mockResolvedValue(undefined);
   api.listRuns.mockReset().mockResolvedValue(runs);
   api.getHealth.mockReset().mockResolvedValue({ checks: [] });
   api.getConfig.mockReset().mockResolvedValue({ cwd: "/workspace", access: "open" });
@@ -255,6 +259,25 @@ function restoreProperty(target: object, key: PropertyKey, descriptor: PropertyD
 }
 
 describe("App run navigation", () => {
+  it("fixes a repairable Runtime store with one action", async () => {
+    api.getRuntimeStore
+      .mockResolvedValueOnce({ state: "needs-fix", message: "Runtime data needs an update." })
+      .mockResolvedValue({ state: "ready" });
+
+    await renderApp();
+    await waitForReact(() => expect(buttonByText("Fix")).toBeDefined());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => buttonByText("Fix")!.click());
+
+    await waitForReact(() => expect(api.repairRuntimeStore).toHaveBeenCalledOnce());
+    await waitForReact(() => expect(container.textContent).toContain("Runtime fixed"));
+    expect(api.getRuntimeStore.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.listWorkspaces.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.listRuns.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.getHealth.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("opens on Runs without selecting a run, then enters and leaves Run Monitor", async () => {
     await renderApp();
     await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());

@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import {
   DAEMON_PROTOCOL_VERSION,
   getRun,
-  prepareRuntimeForNewRun,
+  inspectRuntimeStore,
+  repairRuntimeStore,
   requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonStatus,
@@ -23,6 +24,8 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 export type CliDaemonFailure =
   | { type: "runtime-configuration-invalid"; message: string }
   | { type: "runtime-preparation-failed"; message: string }
+  | { type: "runtime-store-repair-required"; message: string }
+  | { type: "runtime-store-unsupported"; message: string }
   | { type: "daemon-protocol-mismatch"; expectedProtocolVersion: number; actualProtocolVersion: number; message: string }
   | { type: "daemon-status-failed"; failure: DaemonClientFailure; message: string }
   | { type: "daemon-spawn-failed"; errno?: string; message: string }
@@ -32,7 +35,7 @@ export type CliDaemonFailure =
 
 export type DaemonControlFailure = {
   type: "control-failed";
-  code: DaemonErrorCode;
+  code: DaemonErrorCode | "RUNTIME_STORE_REPAIR_REQUIRED" | "RUNTIME_STORE_UNSUPPORTED";
   controlType: DaemonControlIntent["type"];
   runId: string;
   run: RunDetails | undefined;
@@ -109,6 +112,25 @@ export function sendDaemonControl(cwd: string, intent: DaemonControlIntent): Res
 }
 
 async function sendDaemonControlResult(cwd: string, intent: DaemonControlIntent): Promise<Result<DaemonControlResult, DaemonControlFailure>> {
+  const assessment = await inspectRuntimeStore(cwd);
+  if (assessment.isErr()) {
+    return err(await controlFailure(cwd, intent, "EXECUTION_UNAVAILABLE", {
+      type: "runtime-preparation-failed",
+      message: assessment.error.message,
+    }));
+  }
+  if (assessment.value.state === "unsupported") {
+    return err(await controlFailure(cwd, intent, "RUNTIME_STORE_UNSUPPORTED", {
+      type: "runtime-store-unsupported",
+      message: `${assessment.value.message} Run 'acpus doctor'.`,
+    }));
+  }
+  if (assessment.value.state === "repairable") {
+    return err(await controlFailure(cwd, intent, "RUNTIME_STORE_REPAIR_REQUIRED", {
+      type: "runtime-store-repair-required",
+      message: `${assessment.value.message} Run 'acpus doctor --fix'.`,
+    }));
+  }
   const ready = await ensureDaemonRunning(cwd);
   if (ready.isErr()) return err(await controlFailure(cwd, intent, "EXECUTION_UNAVAILABLE", ready.error));
   const controlled = await requestDaemonControl(cwd, intent);
@@ -127,14 +149,8 @@ export function sendDaemonAdmitRun(
     if (status.isOk()) {
       ready = daemonProtocolResult(status.value.protocolVersion);
     } else if (isStartupConnectionFailure(status.error)) {
-      try {
-        await prepareRuntimeForNewRun(cwd);
-      } catch (error) {
-        return err({
-          type: "runtime-preparation-failed" as const,
-          message: errorMessage(error, "Runtime storage could not be prepared for a new run."),
-        });
-      }
+      const prepared = await prepareRuntimeStore(cwd);
+      if (prepared.isErr()) return err(prepared.error);
       ready = await ensureDaemonRunning(cwd);
     } else if (isInitializingFailure(status.error)) {
       ready = await ensureDaemonRunning(cwd);
@@ -149,6 +165,32 @@ export function sendDaemonAdmitRun(
       message: failure.message,
     }));
   })());
+}
+
+async function prepareRuntimeStore(cwd: string): Promise<Result<void, CliDaemonFailure>> {
+  const inspected = await inspectRuntimeStore(cwd);
+  if (inspected.isErr()) {
+    return err({ type: "runtime-preparation-failed", message: inspected.error.message });
+  }
+  if (inspected.value.state === "unsupported") {
+    return err({
+      type: "runtime-store-unsupported",
+      message: `${inspected.value.message} Run 'acpus doctor'.`,
+    });
+  }
+  if (inspected.value.state === "repairable") {
+    const repaired = await repairRuntimeStore(cwd);
+    if (repaired.isErr()) {
+      if (repaired.error.type === "unsupported") {
+        return err({
+          type: "runtime-store-unsupported",
+          message: `${repaired.error.message} Run 'acpus doctor'.`,
+        });
+      }
+      return err({ type: "runtime-preparation-failed", message: repaired.error.message });
+    }
+  }
+  return ok(undefined);
 }
 
 export function daemonControlRequestId(): string {
@@ -185,7 +227,7 @@ function daemonProtocolResult(actualProtocolVersion: number): Result<void, CliDa
 async function controlFailure(
   cwd: string,
   intent: DaemonControlIntent,
-  code: DaemonErrorCode,
+  code: DaemonControlFailure["code"],
   cause: CliDaemonFailure | DaemonClientFailure,
 ): Promise<DaemonControlFailure> {
   let run: RunDetails | undefined;
@@ -205,7 +247,7 @@ async function controlFailure(
   };
 }
 
-function controlFailureMessage(code: DaemonErrorCode, controlType: string, runId: string, run: RunDetails | undefined, cause: CliDaemonFailure | DaemonClientFailure): string {
+function controlFailureMessage(code: DaemonControlFailure["code"], controlType: string, runId: string, run: RunDetails | undefined, cause: CliDaemonFailure | DaemonClientFailure): string {
   const current = run ? ` Current run: ${run.id} ${run.name} ${run.status} updated ${run.updatedAt}.` : " Current run: unavailable.";
   return `Control '${controlType}' for run '${runId}' failed with ${code}: ${cause.message}.${current}`;
 }

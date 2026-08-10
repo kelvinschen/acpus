@@ -55,7 +55,7 @@ export type SkillResourceRead =
       entries: SkillResourceEntry[];
     };
 
-export function bundledAcpusSkillLocation(): string {
+function bundledAcpusSkillLocation(): string {
   return fileURLToPath(new URL("../skills/acpus", import.meta.url));
 }
 

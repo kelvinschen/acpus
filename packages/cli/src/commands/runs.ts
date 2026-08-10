@@ -6,6 +6,7 @@ import {
   deleteRun as deleteRuntimeRun,
   getRun,
   inspectTargetArtifacts,
+  inspectRuntimeStore,
   listArtifacts,
   listRuns,
   pruneRuns as pruneRuntimeRuns,
@@ -18,7 +19,6 @@ import {
   type DaemonControlResult,
   type InspectionCandidates,
   type InspectionError,
-  type InspectionRead,
   type InspectionViewQuery,
   type PreparedRunWorkflow,
   type PruneReport,
@@ -226,7 +226,10 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
     return;
   }
 
-  const document = await inspectionDocument(ctx.cwd, runId, options);
+  const inspected = await readInspection(ctx.cwd, inspectionViewQuery(runId, options));
+  if (inspected.isErr()) throw inspectionError(inspected.error);
+  const document = inspected.value;
+  if (document.kind === "archived-run") return renderArchivedRun(ctx, document.run);
   ctx.stdout.write(document.kind === "candidates"
     ? formatInspectionCandidates(document, options.forensics ? "forensics" : options.timeline ? "timeline" : "summary")
     : formatInspectionView(document));
@@ -241,22 +244,36 @@ async function inspectRunCommand(ctx: RunsCommandContext, runId: string | undefi
   }
   if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
+  const status = await inspectRuntimeStore(ctx.cwd);
+  if (status.isErr()) throw notFoundError(status.error.message, { errorCode: "RUNTIME_STORE_INSPECT_FAILED" });
+  if (status.value.state === "unsupported") {
+    throw notFoundError(`${status.value.message}\nRun: acpus doctor`, { errorCode: "RUNTIME_STORE_UNSUPPORTED" });
+  }
+  if (status.value.state === "repairable") {
+    throw notFoundError(`${status.value.message}\nRun: acpus doctor --fix`, { errorCode: "RUNTIME_STORE_REPAIR_REQUIRED" });
+  }
+
   const runs = await listRuns(ctx.cwd);
-  if (runs.length === 0) throw notFoundError("No runs found.");
+  if (runs.length === 0) throw notFoundError("No active runs found. Inspect archived runs by id.");
 
   const selectedRunId = await pickRunId(runs, ctx);
   if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
   await inspectRun(ctx, selectedRunId, options);
 }
 
-async function inspectionDocument(
-  cwd: string,
-  runId: string,
-  options: InspectRunOptions,
-): Promise<InspectionRead> {
-  const inspected = await readInspection(cwd, inspectionViewQuery(runId, options));
-  if (inspected.isErr()) throw inspectionError(inspected.error);
-  return inspected.value;
+function renderArchivedRun(
+  ctx: RunsCommandContext,
+  run: { id: string; name: string; status: string; createdAt: string; updatedAt: string },
+): void {
+  ctx.stdout.write([
+    `Archived run ${run.id}`,
+    `Name: ${run.name}`,
+    `Status: ${run.status}`,
+    `Created: ${run.createdAt}`,
+    `Updated: ${run.updatedAt}`,
+    "",
+  ].join("\n"));
+  ctx.setExitCode(0);
 }
 
 function inspectionViewQuery(runId: string, options: InspectRunOptions): InspectionViewQuery {
@@ -275,7 +292,10 @@ function inspectionError(
   error: InspectionError,
 ): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
   if (error.type === "invalid-query") return usageError(error.message);
-  return notFoundError(error.message, {
+  const message = error.type === "runtime-store-unsupported"
+    ? `${error.message}\nRun: acpus doctor`
+    : error.message;
+  return notFoundError(message, {
     errorCode: error.type.replaceAll("-", "_").toUpperCase(),
     inspectionError: error,
   });

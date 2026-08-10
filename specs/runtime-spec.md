@@ -6,55 +6,50 @@
 
 ## Requirements
 
-### Workspace Shards, Admission, And Store
+### Workspace Shards, Store Repair, And Archived Summaries
 
-- Runtime MUST canonicalize the workspace through its real path before deriving runtime storage.
-- Runtime MUST resolve the Acpus home as `.acpus` beneath the running user's operating-system home directory without an environment-variable override.
-- A workspace key MUST be the first 32 lowercase hexadecimal characters of `sha256("acpus-workspace-v1\0" + platform + "\0" + canonicalRealpath)`.
-- Runtime MUST store a workspace shard at `$HOME/.acpus/workspaces/<workspace-key>/`.
+- Runtime MUST canonicalize the workspace through its real path, derive the workspace key as the first 32 lowercase hexadecimal characters of `sha256("acpus-workspace-v1\0" + platform + "\0" + canonicalRealpath)`, and store the shard at `$HOME/.acpus/workspaces/<workspace-key>/`.
 - Runtime MUST NOT create, read, migrate, or delete workspace-local `.acpus/.local` runtime state.
-- The active shard MUST use the following closed layout.
+- A layout-v2 shard MUST use this layout.
 
 | Coordinate | Shard-relative path |
 | --- | --- |
 | Manifest | `workspace.json` |
 | Daemon socket when the platform path fits | `daemon.sock` |
-| Active database | `runtime/runtime.db` |
-| ACP ownership evidence | `runtime/acp/workers/` |
-| Run capsule | `runtime/runs/<run-id>/` |
-| Run-local ACP sessions | `runtime/runs/<run-id>/acp/sessions/` |
-| Durable workflow snapshot | `runtime/sources/snapshots/<sha256-hex>/manifest.json` and `files/` |
-| Interrupted deletion | `runtime/trash/` |
-| Archived storage generation | `archives/<utc>-v<storage-version>/` |
+| Repair intent while repair is incomplete | `runtime-store-transition.json` |
+| Store metadata | `generations/<id>/generation.json` |
+| Optional archived-run index | `generations/<id>/run-index.json` |
+| Mutable store root | `generations/<id>/store/` |
+| Database | `generations/<id>/store/runtime.db` |
+| Run capsule | `generations/<id>/store/runs/<run-id>/` |
+| Workflow snapshots | `generations/<id>/store/sources/snapshots/` |
+| Interrupted deletion | `generations/<id>/store/trash/` |
 
-- Runtime MUST coordinate destructive shard maintenance through a workspace-keyed lock beneath `$HOME/.acpus/tmp/runtime-locks/` that survives active-generation replacement.
-- Concurrent maintenance owners MUST serialize for a bounded maintenance wait; a live shared Runtime user MUST remain a distinct blocker, and new-run preparation MAY reuse a compatible generation completed by the competing owner.
-- Platform-global daemon endpoints (Windows named pipes, Linux abstract sockets, and temporary-directory Unix-socket fallbacks) MUST combine the fixed workspace key with a stable Acpus-home scope so different users or injected test homes cannot share an endpoint.
-- A temporary-directory Unix-socket fallback MUST live beneath a user-scoped private directory; every filesystem socket parent MUST reject symbolic-link or non-directory substitution and use mode `0700`, and the bound Unix socket MUST reject symbolic-link substitution and use mode `0600`.
-- Workspace-shard path and layout helpers MUST remain internal to Runtime rather than be exported from its package root.
-- The workspace manifest MUST have exactly `manifestVersion: 1`, `workspaceKey`, `canonicalPath`, `platform`, `createdAt`, and optional `filesystemIdentity`.
-- Manifest `createdAt` MUST be a canonical UTC ISO timestamp.
-- Manifest `filesystemIdentity`, when available, MUST be the decimal `device:inode` identity with an optional decimal birth-time component.
-- A writable open MUST create a missing shard and manifest with private user-only permissions where the platform supports POSIX modes.
-- Fresh database initialization MUST accept only an absent generation or a generation whose existing runtime directories are all empty.
-- A generation with `runtime.db` but a missing runtime child, or with durable run/source/trash state but no `runtime.db`, MUST fail as incomplete storage instead of being repaired in place.
-- A missing manifest beside a non-empty active generation MUST NOT cause that generation to be adopted under a newly written manifest.
-- Only new-run preparation and real pruning MAY archive an incomplete generation as one unit and rebuild current storage; read/control access and dry-run pruning MUST leave it unchanged.
-- Runtime-owned layout roots, manifests, databases, run capsules, sources, trash, and archives MUST reject symbolic-link substitution instead of following it.
-- An opened Runtime store MUST bind its runs, sources, and trash roots, and every accessed run capsule, to the device/inode identity with a nonzero inode, resolved location, and available birth time observed by that store. Whenever one of those paths is accessed again, any observable identity or resolved-location mismatch MUST fail visibly rather than be followed or adopted.
-- Long-lived Runtime-owned artifact writes MUST bind created files to the same observable identity. Runtime MUST revalidate the relevant bound run, parent, and file identities at checkpoints surrounding publication, registration, and cleanup, and any observable mismatch MUST fail visibly.
-- Opening a Runtime-owned root, run capsule, or long-lived file that does not expose a device/inode identity with a nonzero inode MUST fail visibly instead of degrading to path-only verification. Identity fencing detects only changes distinguishable through values reported by the host filesystem; those values may be recycled, so equality is not proof of uninterrupted path ownership.
-- An existing manifest whose key, canonical path, platform, or available filesystem identity disagrees with the current workspace MUST fail visibly instead of being adopted or rewritten.
-- A read-only open MUST locate only the current workspace shard.
-- A read-only open MUST NOT create the Acpus home, shard, manifest, database, or runtime directories.
-- `listKnownWorkspaces(cwd)` MUST derive the current workspace key and enumerate only direct `$HOME/.acpus/workspaces/<workspace-key>/workspace.json` manifests beneath the same Acpus home; it MUST NOT scan arbitrary filesystem paths.
-- Known-workspace discovery MUST validate each candidate directory name, manifest shape, platform, canonical path, filesystem availability, and available filesystem identity with the same safety rules as all-workspace pruning. Invalid, unavailable, identity-mismatched, corrupt, or storage-incompatible candidates MUST be omitted from `workspaces`, reported independently in `failures`, and MUST NOT prevent valid candidates from being listed.
-- The current workspace MUST appear in `listKnownWorkspaces(cwd).workspaces` even when its shard, manifest, or database has not been initialized. Its entry MUST use the current canonical path, derived workspace key, zero runs, and no last-update time in that case.
-- Each known-workspace entry MUST expose only its workspace key, canonical path, durable run count, and optional maximum durable `runs.updated_at`. A missing active database means zero runs and no last-update time; a present database MUST be opened read-only and validated before its aggregate is returned.
-- Known-workspace discovery MUST NOT create or mutate a shard, open a writable store, start a daemon, or recover, migrate, archive, prune, or otherwise repair storage.
-- `resolveKnownWorkspace(cwd, workspaceKey)` MUST accept only the canonical lowercase workspace-key shape, resolve the current workspace directly or validate the exact requested manifest and path, and return only the validated workspace key and canonical path. It MUST return a tagged `WorkspaceKeyInvalid`, `WorkspaceNotFound`, or `WorkspaceUnavailable` result for recoverable resolution failures and MUST NOT accept a browser-supplied path.
-- The active database MUST use a fixed nonzero Acpus SQLite `application_id`.
-- The active database MUST use SQLite `user_version = 9` as the current storage version.
+- `workspace.json` MUST be the closed record `{ manifestVersion: 2, workspaceKey, canonicalPath, platform, createdAt, activeGenerationId }`; `activeGenerationId` is the sole authority for current-store access.
+- A store id MUST be `gen_<randomUUID()>`. `generation.json` MUST contain only `schemaVersion: 1`, matching `id`, nullable non-negative `storageVersion`, canonical `createdAt`, and optional canonical `archivedAt`.
+- Every complete store other than `activeGenerationId` is archived and immutable except for whole-store pruning.
+- `run-index.json`, when present, MUST be the closed `{ schemaVersion: 1, runs }` record; each run summary contains exactly `id`, `name`, `status`, `createdAt`, and `updatedAt`, ordered by `updatedAt DESC`, `createdAt DESC`, then `id ASC`.
+- The active database MUST use the Acpus SQLite `application_id` and `user_version = 9`.
+- Runtime-owned roots, manifests, databases, run capsules, sources, and trash MUST reject symbolic-link substitution. Existing run/file identity fencing remains scoped to opened store data and MUST fail visibly on an observable replacement.
+- A read-only open MUST NOT create the Acpus home, shard, manifest, database, or store directories.
+- Platform-global daemon endpoints MUST combine the workspace key with a stable Acpus-home scope; filesystem socket parents and sockets MUST remain private and reject unsafe substitution.
+- `listKnownWorkspaces(cwd)` MUST enumerate only direct shard manifests beneath the same Acpus home and MUST always include the current workspace. Entries expose only workspace key, canonical path, optional run count, and optional latest run update; a fresh workspace reports `runCount: 0`, while an unreadable store omits run metadata.
+- Invalid or unavailable shards MUST be omitted from `workspaces`, reported independently in `failures`, and MUST NOT prevent valid candidates from being listed.
+- `resolveKnownWorkspace(cwd, workspaceKey)` MUST accept only a canonical key and return a tagged invalid, not-found, or unavailable result without accepting a browser-supplied path.
+
+#### Store Inspection And Repair
+
+- The Runtime package root MUST expose only `inspectRuntimeStore(cwd)` and `repairRuntimeStore(cwd)` for store lifecycle work.
+- `inspectRuntimeStore` MUST be read-only and return exactly `ready`, `repairable` with a user-facing message, or `unsupported` with a user-facing message. A missing store is `ready` because ordinary first use initializes it.
+- `repairRuntimeStore` MUST return only `{ changed: boolean }` or a `busy | unsupported | failed` error. It MUST be a no-op for a missing or already-ready store.
+- Repair MUST request graceful daemon shutdown, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v9 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
+- A durable repair intent MUST contain only the information needed to resume. Repeating repair after interruption MUST converge without caller-supplied planning state.
+- Concurrent first use MUST serialize initialization, re-inspect, and adopt the one store named by the manifest before acquiring normal shared-store ownership.
+- Format inspection and storage-v9 summary export MUST observe committed WAL contents without mutating the inspected source. A newer format, foreign SQLite application, or unrecognized database remains unsupported and unchanged.
+- Repairing layout v1 MUST preserve its `runtime/` and complete `archives/` entries as archived stores. Valid storage v9 receives a portable run index; storage v1 through v8 remains catalog-only and Runtime MUST NOT add old-schema row readers.
+- Archived history is an internal run-oriented lookup, not a public store catalog. Generic run inspection MAY return one closed archived-run summary; detail and observation queries return `archived-run-detail-unavailable`, and catalog-only uncertainty returns `archived-run-lookup-unavailable` rather than `run-not-found`.
+- Store status, repair messages, Doctor, Web, inspection, and prune output MUST NOT expose store ids, repair-journal mechanics, or archived-store layout as user concepts.
+- Health, control, inspection, and pruning adapters encountering repairable storage MUST remain read-only and direct the user to `acpus doctor --fix`.
 - Each run row MUST maintain a monotonically increasing `observation_version` and optional `observation_updated_at`.
 - The active schema MUST index bounded Agent semantic observation through `agent_observation_attempts`, keyed by `(run_id, attempt_id)`, `agent_observation_turns`, keyed by `(run_id, attempt_id, turn_no)`, and `agent_observation_entries`, keyed by `(run_id, attempt_id, entry_id)`.
 - A non-null observation fence event sequence MUST be unique within its run.
@@ -63,15 +58,14 @@
 - An observation-entry row MUST store turn identity, deterministic entry id, observation version, source sequence, event time, semantic kind, bounded JSON payload, and exact payload byte count.
 - Observation rows MUST NOT store an exact prompt, steering instruction, final response, or raw provider frame.
 - Each durable turn start, coalesced current checkpoint, semantic-entry batch, fence, gap, terminal, or reconciliation mutation MUST increment the run observation version exactly once.
-- A first writable open MUST initialize the complete current schema.
+- Activation of a fresh generation MUST initialize the complete current schema.
 - Reopening a current-version database MUST preserve its rows.
-- New-run preparation and real pruning of an incompatible active database MUST archive every child of `runtime/` under one new `archives/<utc>-v<observed-storage-version>/` generation before creating an empty current database.
-- Control and single-delete access to an incompatible active database MUST fail without archiving or rebuilding it.
-- Runtime MUST NOT migrate or read rows from an archived incompatible storage generation.
-- A read-only open of an incompatible active database MUST fail visibly without archiving or rebuilding it.
+- Control, inspection, and pruning adapters that encounter repairable storage MUST remain read-only and return repair-required guidance.
+- Current-store access MUST NOT migrate or read rows from a sealed incompatible generation.
 - Runtime-triggered loading of `node:sqlite` MUST NOT emit Node.js's SQLite experimental warning.
 - Runtime-triggered loading of `node:sqlite` MUST leave every other process warning observable.
 - An existing-store open MUST return absence only for `ENOENT` or `ENOTDIR`; permission, symlink-loop, I/O, and SQLite failures MUST remain system failures.
+- Every repair activity probe and SQLite open MUST reject symbolic-link or non-file database, WAL, and shared-memory paths before reading them.
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
 - `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, and `AgentOverrideValidationFailure`; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
@@ -87,23 +81,23 @@
 - Runtime MUST recompute the snapshot source graph as `sha256(stableJsonLine({ kind: "acpus_workflow_source_graph", version: 1, entry, files: [{ path, digest: sha256(utf8Content) }] }))`; it MUST equal both the source reference digest and prepared `sourceGraphDigest`.
 - Runtime MUST verify the lock entry digest against the corresponding bundle file for snapshots and the live regular non-symbolic-link workspace entry for workspace sources.
 - A source bundle is admission-only: Runtime MUST NOT persist it in SQLite, run capsules, locks, events, fork fingerprints, or public run metadata.
-- Admission MUST publish a verified snapshot through a private staging directory, `0700` directories, `0600` files, and atomic rename to `runtime/sources/snapshots/<sha256-hex>/`; an existing digest path MUST have its private modes, manifest, inventory, and contents fully verified before reuse on POSIX platforms.
+- Admission MUST publish a verified snapshot through a private staging directory, `0700` directories, `0600` files, and atomic rename beneath the current store's `store/sources/snapshots/<sha256-hex>/`; an existing digest path MUST have its private modes, manifest, inventory, and contents fully verified before reuse on POSIX platforms.
 - A durable snapshot manifest MUST use a closed versioned shape containing the entry, source-graph digest, and ordered file digest inventory; recovery MUST verify its canonical bytes, private modes on POSIX platforms, exact file inventory, and file contents before resolving reusable-task source from `files/`.
 - Recovery MUST reject persisted source metadata unless `source_json` agrees with the run workflow entry, source-graph digest, and digest-verified preparation lock source, source-graph, and IR metadata.
 - Runtime execution MUST use the run workspace as cwd and fallback dependency authority for bare imports originating in a frozen snapshot.
 - `packageLockDigest`, when present, is environment metadata only and MUST NOT contribute to source-graph or fork identity.
-- Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath `runtime/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
+- Admission MUST persist exact `workflow.ir.json` and `lock.json` bytes beneath the current store's `store/runs/<run-id>/`, with run-relative file coordinates and `sha256:<hex>` byte digests.
 - Admission MUST initially materialize only `workflow.ir.json` and `lock.json` in a committed run directory.
 - Runtime-owned top-level run-directory entries MUST be limited to `workflow.ir.json`, `lock.json`, the optional `artifacts/` tree, and the optional private `acp/` tree.
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
-- Frozen files and registered artifacts MUST be regular non-symlinks beneath the current shard's non-symlinked runtime runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
+- Frozen files and registered artifacts MUST be regular non-symlinks beneath the current store's non-symlinked runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
 - Admission MUST atomically persist `run.admitted`, run/public node projections, scheduler bootstrap state, and separately stored Agent overrides before daemon-owned advancement.
 - Execution MUST use frozen IR instead of live workflow source and MUST NOT copy reusable task source or dependencies into the run directory; snapshot reusable source lives only in the Runtime source store.
 - Completed runs MUST persist normalized root output and `run.completed`; runtime failures after admission persist failed state and `run.failed`.
 - A run row without its required frozen input/files MUST fail as durable corruption rather than appear absent.
 - `deleteRun` MUST return `ResultAsync<RunRecord | undefined, RunDeleteFailure>`, with `undefined` for an absent store/run and `run-delete-active` as its only recoverable error.
-- Run deletion MUST move the run capsule into `runtime/trash/` before deleting its database rows in the same transaction as the active-lease check.
+- Run deletion MUST move the run capsule into the current store's `store/trash/` before deleting its database rows in the same transaction as the active-lease check.
 - Run deletion MUST reject an unexpired unreleased lease even when the run projection is already terminal.
 - A successful run-deletion commit MUST remove its trashed capsule.
 - A failed run-deletion transaction MUST restore its trashed capsule before returning or rejecting.
@@ -113,28 +107,23 @@
 
 ### Pruning
 
-- `pruneRuns(cwd, options)` MUST select only runs whose status is `completed`, `failed`, or `canceled`.
-- With `olderThanMs`, pruning MUST select terminal runs whose `updatedAt` and archives whose creation time are strictly earlier than the runtime-computed cutoff.
-- Without `olderThanMs`, pruning MUST select every terminal run and every archive in scope.
+- `pruneRuns(cwd, options)` MUST select only current-store runs whose status is `completed`, `failed`, or `canceled`, and complete archived stores that are not current.
+- With `olderThanMs`, pruning MUST select terminal runs whose `updatedAt` and archived stores whose `archivedAt`, or `createdAt` when absent, are strictly earlier than the runtime-computed cutoff.
+- Without `olderThanMs`, pruning MUST select every eligible terminal run and archived store in scope.
 - Runtime MAY receive an internal canonical `selectionCutoff` from the CLI to fence a confirmed prune; when present it MUST replace the runtime-computed selection boundary without changing whether `PruneReport.cutoff` is exposed.
-- Pruning MUST default to the current workspace shard.
-- `allWorkspaces: true` MUST enumerate workspace shards beneath the same Acpus home.
+- Pruning MUST default to the current workspace shard. `allWorkspaces: true` MUST enumerate workspace shards beneath the same Acpus home.
 - Ordinary read APIs MUST remain scoped to the canonical workspace passed by their trusted server-side caller. Known-workspace catalog metadata MUST NOT expose run records, and an explicit resolved workspace path is required before reading another shard's runs.
-- `dryRun: true` MUST perform selection and size accounting without changing databases or files.
-- Pruning MUST snapshot pre-existing archive candidates before generation validation or recovery and include those candidates in a failing dry-run report.
-- An unbounded dry run MUST select a complete active generation with the current `application_id` and a positive `user_version` below the current storage version as one archive candidate without mutating it.
-- Real unbounded pruning MUST archive and delete a selected older active generation during the same invocation.
-- Pruning with `olderThanMs` MUST NOT select an archive created by recovery during that same invocation.
-- Real pruning MUST delete selected runs through the Runtime-owned trash protocol.
-- Real pruning and generation archival MUST fail while another process holds the workspace runtime for writable use.
-- Generation archival MUST fail while the workspace retains ACP ownership evidence.
-- After selected run deletion, Runtime MUST delete only workflow snapshots whose digest no remaining run references.
+- `dryRun: true` MUST perform selection and size accounting without changing databases, manifests, or files.
+- Pruning MUST validate and snapshot its candidates before confirmation. It MUST NOT repair, rebuild, or select the current store.
+- Real pruning MUST delete selected current-store runs through the Runtime-owned trash protocol and delete a selected archive only as one whole directory.
+- Real pruning MUST serialize through the workspace maintenance lock and MUST fail while another process holds the selected state for writable use.
+- After acquiring that lock, real pruning MUST revalidate every previewed run against the same absolute cutoff and terminal-status rule. A run that disappeared, became active, or was updated beyond the cutoff after preview MUST be skipped and MUST NOT contribute to deleted counts or bytes.
+- After selected run deletion, Runtime MUST delete only current-store workflow snapshots whose digest no remaining run references.
 - A shard MUST be removed only when it has no runs, archives, workflow snapshots, unresolved trash, or live daemon.
 - Empty-shard removal MUST reject a `daemon.sock` entry unless the active layout uses that path and the entry is a Unix socket.
-- Removing an empty shard MUST remove its empty active database, manifest, and workspace-shard directory.
+- Removing an empty shard MUST remove its empty current store, manifest, stores root, and workspace-shard directory.
 - One malformed or failed shard MUST NOT prevent pruning of other selected shards.
 - A prune failure after one or more successful deletions MUST retain those completed counts and bytes in the final report.
-- For the current workspace, real pruning MAY archive and rebuild a generation whose available filesystem identity proves that the workspace path was recreated; dry-run MUST report that mismatch without mutation.
 - `PruneReport` MUST use the following closed shape.
 
 ```ts
@@ -171,6 +160,8 @@ type PruneReport = {
 - Recoverable store operations MUST return tagged `SchedulerStoreError` results; invariant or store failures may throw from `advanceRun(input): Promise<AdvanceRunSummary>`.
 - `applySchedulerControlIntent` MUST return a tagged Result and report ambiguous retry/cancel aliases with deterministic `candidateKeys`; unknown store, frozen-data, and invariant failures MUST propagate.
 - The daemon MUST capture `ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY` at startup, default it to 32, and reject non-canonical positive safe integers before creating store or socket state.
+- Daemon startup MUST initialize a missing store through exclusive, lock-scoped first-use initialization. It MUST then inspect again under its shared Runtime lock and open exactly the current store named by the manifest.
+- Daemon startup MUST reject repairable or unsupported storage without repairing it. Daemon endpoint resolution MUST depend only on workspace identity so status and graceful shutdown remain available when storage metadata is malformed.
 - A Parallel or Fanout local concurrency cap MUST count distinct direct active members by `(groupKey, memberKey)` identity.
 - Multiple ready or running descendant leaves of one direct member MUST consume one local slot in that member's group.
 - Each nested Parallel or Fanout group MUST apply its local concurrency cap independently of every ancestor and descendant group.
@@ -531,15 +522,14 @@ type DaemonSteerControlResult = {
 - Signal control MUST target one open dynamic wait by exact node key, occurrence reference without an attempt suffix, or unambiguous authored alias, normalize payload, consume idempotently, and resume the recovered session from persisted state.
 - `shutdown()` MUST stop only without active sessions, otherwise return `CONTROL_CONFLICT`; shutdown/idle-stop never mutates runs and no force-shutdown control exists.
 
-### Read APIs And Daemon Lifecycle
+### Read APIs And Daemon Operation
 
 - `listRuns`, `getRun`, `resolveArtifact`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
 - Read-only inspection MUST validate persisted frozen IR, lock, and source metadata without resolving or hashing a workflow snapshot; execution and explicit frozen-run source resolution MUST fully verify the snapshot before returning its source root.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
 - `getRuntimeHealth` MUST inspect ACP ownership read-only and add an `acp` warning only when degraded or orphaned ownership evidence exists.
-- When an active database has the Acpus application id and a positive storage version older than the current version, `getRuntimeHealth` MUST return `ok: true`, `state: "unreadable"`, and a `store` warning.
-- That warning MUST use `Runtime storage version <observed> is older than the supported version <expected>. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`
-- `getRuntimeHealth` MUST retain a `store` failure for storage version zero, a newer storage version, a mismatched application id, and every other database-open failure.
+- `getRuntimeHealth` MUST derive store health from `inspectRuntimeStore` without repair. A repairable state MUST remain a warning and name `acpus doctor --fix` as the next command.
+- `getRuntimeHealth` MUST retain a `store` failure for unsupported storage, an unreadable layout, and every other database-open failure.
 - `listRuns` MUST order by `updatedAt DESC, createdAt DESC`; `getRun` omits `dynamic` only when every dynamic collection is empty and fails visibly on decode/invariant errors.
 - `getRunVisualizationSnapshot` MUST return run details, the frozen workflow name, description, and effective Agent definitions, visualization overlay, useful run-cancel applicability, and every exact planner-approved retry target, including targets accepted during a non-terminal failure-propagation window.
 - Visualization control targets MUST contain only exact target, node/frame kind, and optional authored node id; they MUST NOT contain display labels, scheduler Result values, or group-member identities.
@@ -548,6 +538,8 @@ type DaemonSteerControlResult = {
 Runtime owns generic inspection semantics and public shape.
 
 - Generic inspection MUST provide one coherent run, target Summary, target Timeline, target Forensics, or candidate view.
+- Generic current-store inspection when store inspection reports `repairable` MUST fail without repair using `runtime-store-repair-required` and `acpus doctor --fix`.
+- Generic current-store inspection when store inspection reports `unsupported` MUST fail without opening the database using `runtime-store-unsupported`; one-shot and observation paths MUST NOT collapse it into a generic read failure.
 - Read-only observation MUST accept only run, target Summary, and target Timeline queries; target Forensics is a one-shot read.
 - Summary and Timeline expose only views, candidates, observations, and public errors. They omit internal metadata and provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, artifact, and Forensics reads remain separate.
 - A target is `root`, an authored id, `@<12-lowercase-hex>`, or that reference with `#<positive-attempt-number>`. Malformed, absent, and colliding references MUST respectively return `invalid-query`, `target-not-found`, and a non-leaking `read-failed` result.
@@ -610,7 +602,7 @@ Runtime owns generic inspection semantics and public shape.
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers fork compatibility and atomic explicit-session reuse, rewind boundaries, selector resolution, semantic trees/folding, Forensics projections, visible-state diff/frontier selection, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers durable fork replay and session-group failure/recovery boundaries, observation, pinning/replacement, invocation persistence, settled composite outcomes, Signal/pause boundaries, Timeline gaps, reconciliation, read-only inspection, and safe known-workspace metadata discovery and resolution.
+- `pnpm test:unit packages/runtime`: covers read-only store inspection, prune selection, fork compatibility, selector resolution, semantic trees/folding, Forensics projections, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers layout-v2 publication, serialized repair and first use, repair resumption, archived summaries, WAL-visible preservation, durable execution/recovery, read-only inspection, and safe known-workspace discovery.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
 - `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.

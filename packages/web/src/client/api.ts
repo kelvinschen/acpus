@@ -12,6 +12,7 @@ import type {
   RunRecord,
   RunRuntimeControls,
   RunRuntimeSnapshot,
+  RuntimeStoreStatus,
   ServerConfig,
   WebControlCommand,
   WorkspaceCatalog,
@@ -38,6 +39,7 @@ export type {
   RunDetails,
   RunRecord,
   RunRuntimeSnapshot,
+  RuntimeStoreStatus,
   ServerConfig,
   WebControlCommand,
   WorkspaceCatalog,
@@ -152,6 +154,20 @@ function queryPromise<T>(result: ResultAsync<T, WebApiFailure>): Promise<T> {
 
 export async function getHealth(): Promise<HealthReport> {
   return queryPromise(requestJson("/api/health", undefined, decodeField("health", isHealthReport)));
+}
+
+export async function getRuntimeStore(): Promise<RuntimeStoreStatus> {
+  return queryPromise(requestJson(
+    "/api/runtime-store",
+    undefined,
+    decodeField("runtimeStore", isRuntimeStoreStatus),
+  ));
+}
+
+export async function repairRuntimeStore(): Promise<void> {
+  return queryPromise(requestJson<void>("/api/runtime-store", {
+    method: "POST",
+  }, body => Object.keys(body).length === 1 ? undefined : invalidPayload));
 }
 
 export async function listWorkspaces(): Promise<WorkspaceCatalog> {
@@ -397,6 +413,14 @@ function isHealthReport(value: unknown): value is HealthReport {
       && typeof check.message === "string");
 }
 
+function isRuntimeStoreStatus(value: unknown): value is RuntimeStoreStatus {
+  if (!isRecord(value)) return false;
+  if (value.state === "ready") return hasOnlyKeys(value, ["state"]);
+  return (value.state === "needs-fix" || value.state === "unavailable")
+    && hasOnlyKeys(value, ["state", "message"])
+    && typeof value.message === "string";
+}
+
 function isWorkspaceCatalog(value: unknown): value is WorkspaceCatalog {
   return isRecord(value)
     && hasOnlyKeys(value, ["currentWorkspaceKey", "workspaces"])
@@ -411,7 +435,7 @@ function isWorkspaceSummary(value: unknown): value is WorkspaceSummary {
     && typeof value.key === "string"
     && typeof value.name === "string"
     && typeof value.path === "string"
-    && isNonNegativeInteger(value.runCount)
+    && isOptionalNonNegativeInteger(value.runCount)
     && isOptionalString(value.lastRunUpdatedAt);
 }
 

@@ -31,10 +31,12 @@ import {
   getNodeInspection,
   getNodeRuntimeValues,
   getRunRuntimeSnapshot,
+  getRuntimeStore,
+  listRuns,
   listWorkspaces,
   listWorkflowCatalog,
   listWorkflowFiles,
-  listRuns,
+  repairRuntimeStore,
   submitRunCommand,
   visualizeWorkflow,
   type HealthReport,
@@ -61,6 +63,7 @@ import { MarkdownDocument } from "./MarkdownDocument.js";
 import { NodeDefinitionSection } from "./NodeDefinition.js";
 import { NodeKindBadge } from "./NodeKind.js";
 import { RunsPage } from "./RunsPage.js";
+import { RuntimeStoreNotice } from "./RuntimeStoreNotice.js";
 import { isTerminalRunStatus, RunStatusIndicator, RuntimeStatusIcon } from "./RunStatus.js";
 import { StaticGraphApp } from "./StaticGraphApp.js";
 import { ToastViewport, useToasts } from "./Toast.js";
@@ -123,6 +126,7 @@ type RunViewTransitionDocument = Document & {
 };
 
 export function App() {
+  const queryClient = useQueryClient();
   const [view, setView] = useState<AppView>({ page: "runs" });
   const [selectedRunsWorkspaceKey, setSelectedRunsWorkspaceKey] = useState<string | undefined>();
   const [graphTarget, setGraphTarget] = useState<GraphInspectionTarget | undefined>();
@@ -132,6 +136,12 @@ export function App() {
   const runViewTransitionSequence = useRef(0);
   const { toasts, push, dismiss } = useToasts();
 
+  const runtimeStore = useQuery({
+    queryKey: ["runtime-store"],
+    queryFn: getRuntimeStore,
+    retry: false,
+  });
+
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: listWorkspaces,
@@ -140,10 +150,12 @@ export function App() {
   const selectedWorkspaceKey = selectedRunsWorkspaceKey ?? workspaces.data?.currentWorkspaceKey;
   const selectedWorkspaceAvailable = workspaces.data === undefined
     || workspaces.data.workspaces.some(workspace => workspace.key === selectedWorkspaceKey);
+  const selectedWorkspace = workspaces.data?.workspaces.find(workspace => workspace.key === selectedWorkspaceKey);
+  const selectedWorkspaceReadable = selectedWorkspace?.runCount !== undefined;
   const runs = useQuery({
     queryKey: ["runs", selectedWorkspaceKey],
     queryFn: () => listRuns(selectedWorkspaceKey!),
-    enabled: Boolean(selectedWorkspaceKey && selectedWorkspaceAvailable),
+    enabled: Boolean(selectedWorkspaceKey && selectedWorkspaceAvailable && selectedWorkspaceReadable),
     refetchInterval: 4_000,
   });
   const health = useQuery({
@@ -154,6 +166,19 @@ export function App() {
   const config = useQuery({
     queryKey: ["config"],
     queryFn: getConfig,
+  });
+  const runtimeRepair = useMutation({
+    mutationFn: repairRuntimeStore,
+    retry: false,
+    onSuccess: async () => {
+      push({ tone: "success", title: "Runtime fixed" });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["runtime-store"] }),
+        queryClient.invalidateQueries({ queryKey: ["workspaces"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["health"] }),
+      ]);
+    },
   });
 
   useEffect(() => () => {
@@ -240,42 +265,57 @@ export function App() {
       </aside>
 
       <section className="workspace">
-        {view.page === "runs" && (
-          <RunsPage
-            key={selectedWorkspaceKey}
-            runs={selectedWorkspaceAvailable ? runs.data : undefined}
-            loading={workspaces.isPending || runs.isPending || !selectedWorkspaceAvailable}
-            error={workspaces.error ?? runs.error}
-            workspaceCatalog={workspaces.data}
-            selectedWorkspaceKey={selectedWorkspaceKey}
-            onRetry={() => void Promise.all([
-              workspaces.refetch(),
-              ...(selectedWorkspaceKey ? [runs.refetch()] : []),
-            ])}
-            onSelectWorkspace={workspaceKey => {
-              setSelectedRunsWorkspaceKey(workspaceKey);
-              setGraphTarget(undefined);
+        <div className="workspace-shell">
+          <RuntimeStoreNotice
+            status={runtimeStore.data}
+            loadError={runtimeStore.error}
+            repairError={runtimeRepair.error}
+            repairing={runtimeRepair.isPending}
+            onFix={() => {
+              runtimeRepair.reset();
+              runtimeRepair.mutate();
             }}
-            onOpenRun={runId => selectedWorkspaceKey && changeView({ page: "run-monitor", workspaceKey: selectedWorkspaceKey, runId }, "forward")}
+            onRetry={() => void runtimeStore.refetch()}
           />
-        )}
-        {view.page === "run-monitor" && (
-          <RunMonitorPage
-            workspaceKey={view.workspaceKey}
-            workspace={workspaces.data?.workspaces.find(workspace => workspace.key === view.workspaceKey)}
-            currentWorkspaceKey={workspaces.data?.currentWorkspaceKey}
-            runId={view.runId}
-            runs={runs.data ?? []}
-            selectedTarget={graphTarget}
-            onSelectRun={id => {
-              setView({ page: "run-monitor", workspaceKey: view.workspaceKey, runId: id });
-              setGraphTarget(undefined);
-            }}
-            onSelectTarget={setGraphTarget}
-            onBack={() => changeView({ page: "runs" }, "back")}
-          />
-        )}
-        {view.page === "workflows" && <WorkflowsPage />}
+          <div className="workspace-view">
+            {view.page === "runs" && (
+              <RunsPage
+                key={selectedWorkspaceKey}
+                runs={selectedWorkspaceAvailable ? runs.data : undefined}
+                loading={workspaces.isPending || (selectedWorkspaceReadable && runs.isPending) || !selectedWorkspaceAvailable}
+                error={workspaces.error ?? runs.error}
+                workspaceCatalog={workspaces.data}
+                selectedWorkspaceKey={selectedWorkspaceKey}
+                onRetry={() => void Promise.all([
+                  workspaces.refetch(),
+                  ...(selectedWorkspaceReadable ? [runs.refetch()] : []),
+                ])}
+                onSelectWorkspace={workspaceKey => {
+                  setSelectedRunsWorkspaceKey(workspaceKey);
+                  setGraphTarget(undefined);
+                }}
+                onOpenRun={runId => selectedWorkspaceKey && changeView({ page: "run-monitor", workspaceKey: selectedWorkspaceKey, runId }, "forward")}
+              />
+            )}
+            {view.page === "run-monitor" && (
+              <RunMonitorPage
+                workspaceKey={view.workspaceKey}
+                workspace={workspaces.data?.workspaces.find(workspace => workspace.key === view.workspaceKey)}
+                currentWorkspaceKey={workspaces.data?.currentWorkspaceKey}
+                runId={view.runId}
+                runs={runs.data ?? []}
+                selectedTarget={graphTarget}
+                onSelectRun={id => {
+                  setView({ page: "run-monitor", workspaceKey: view.workspaceKey, runId: id });
+                  setGraphTarget(undefined);
+                }}
+                onSelectTarget={setGraphTarget}
+                onBack={() => changeView({ page: "runs" }, "back")}
+              />
+            )}
+            {view.page === "workflows" && <WorkflowsPage />}
+          </div>
+        </div>
       </section>
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </main>

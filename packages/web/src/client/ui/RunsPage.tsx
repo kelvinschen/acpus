@@ -41,6 +41,8 @@ export function RunsPage({
   const countLabel = runs === undefined
     ? "Durable run history"
     : `${runs.length} ${runs.length === 1 ? "run" : "runs"}`;
+  const selectedWorkspace = workspaceCatalog?.workspaces.find(workspace => workspace.key === selectedWorkspaceKey);
+  const workspaceUnavailable = selectedWorkspace !== undefined && selectedWorkspace.runCount === undefined;
 
   return (
     <div className="runs-page">
@@ -67,7 +69,9 @@ export function RunsPage({
       </header>
 
       <div ref={contentRef} className="runs-page-content">
-        {error && !runs ? (
+        {workspaceUnavailable ? (
+          <RunsUnavailableState />
+        ) : error && !runs ? (
           <RunsErrorState error={error} onRetry={onRetry} />
         ) : loading && !runs ? (
           <RunsLoadingState />
@@ -118,6 +122,16 @@ function RunCard({ run, now, onOpen }: { run: RunRecord; now: number; onOpen(): 
         </span>
       </button>
     </Card>
+  );
+}
+
+function RunsUnavailableState() {
+  return (
+    <div className="runs-page-state empty" role="status">
+      <Boxes size={22} strokeWidth={2} aria-hidden="true" />
+      <h2>Runs unavailable</h2>
+      <p>This workspace is not ready to show runs.</p>
+    </div>
   );
 }
 

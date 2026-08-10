@@ -31,7 +31,9 @@ export function WorkspaceSelector({
   if (!selected) return null;
   const current = selected.key === catalog.currentWorkspaceKey;
   const metadata = workspaceMetadata(selected, now);
-  const absoluteUpdatedAt = selected.lastRunUpdatedAt ? formatDate(selected.lastRunUpdatedAt) : "No runs";
+  const absoluteUpdatedAt = selected.lastRunUpdatedAt
+    ? formatDate(selected.lastRunUpdatedAt)
+    : selected.runCount === 0 ? "No runs" : "Unavailable";
   const title = `${selected.path}\n${metadata}\nLast updated: ${absoluteUpdatedAt}`;
 
   return (
@@ -68,7 +70,7 @@ export function WorkspaceSelector({
               <SelectItem
                 key={workspace.key}
                 value={workspace.key}
-                aria-label={`${workspace.name}, ${isCurrent ? "current" : "read only"}, ${workspace.path}, ${optionMetadata}, last updated ${workspace.lastRunUpdatedAt ? formatDate(workspace.lastRunUpdatedAt) : "no runs"}`}
+                aria-label={`${workspace.name}, ${isCurrent ? "current" : "read only"}, ${workspace.path}, ${optionMetadata}, last updated ${workspace.lastRunUpdatedAt ? formatDate(workspace.lastRunUpdatedAt) : workspace.runCount === 0 ? "no runs" : "unavailable"}`}
                 title={optionTitle}
               >
                 <span className="workspace-select-option">
@@ -109,7 +111,9 @@ function workspaceTimestamp(value: string | undefined): number {
 }
 
 function workspaceMetadata(workspace: WorkspaceSummary, now: number): string {
-  const count = `${workspace.runCount} ${workspace.runCount === 1 ? "run" : "runs"}`;
+  const count = workspace.runCount === undefined
+    ? "Run count unavailable"
+    : `${workspace.runCount} ${workspace.runCount === 1 ? "run" : "runs"}`;
   if (!workspace.lastRunUpdatedAt) return count;
   const timestamp = Date.parse(workspace.lastRunUpdatedAt);
   if (!Number.isFinite(timestamp)) return `${count} · Updated ${workspace.lastRunUpdatedAt}`;

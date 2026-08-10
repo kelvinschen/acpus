@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { okAsync } from "neverthrow";
+
 import { startWebServer, type WebServerStartFailure } from "../src/index.js";
+
+vi.mock("@acpus/runtime", async importOriginal => ({
+  ...await importOriginal<typeof import("@acpus/runtime")>(),
+  inspectRuntimeStore: () => okAsync({ state: "ready" as const }),
+}));
 
 const daemonReady = () => {};
 
@@ -29,6 +36,19 @@ describe("startWebServer access policy", () => {
 
     await Promise.all([server.close(), server.close(), server.close()]);
     await server.close();
+  });
+
+  it("starts and serves read-only routes without touching the daemon", async () => {
+    const ensureDaemonRunning = vi.fn();
+    const server = await startedServer({ cwd: process.cwd(), ensureDaemonRunning });
+    try {
+      expect(ensureDaemonRunning).not.toHaveBeenCalled();
+      const response = await fetch(`${server.url}/api/config`);
+      expect(response.status).toBe(200);
+      expect(ensureDaemonRunning).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
   });
 
   it("forwards asynchronous daemon readiness failures through the server error boundary", async () => {

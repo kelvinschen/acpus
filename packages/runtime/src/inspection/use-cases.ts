@@ -6,6 +6,8 @@ import {
   type RuntimeStore,
   type RunInspectionStoreRead,
 } from "../store/store.js";
+import { inspectRuntimeStore } from "../runtime-store-lifecycle.js";
+import { findArchivedRun } from "../runtime-history.js";
 import {
   planCancelControl,
   planRetryControl,
@@ -53,6 +55,8 @@ import type {
   InspectionView,
   InspectionViewQuery,
   ObserveInspectionQuery,
+  RuntimeStoreRepairRequiredInspectionError,
+  RuntimeStoreUnsupportedInspectionError,
 } from "./types.js";
 
 const inspectionObserveReadDelayMs = 1_000;
@@ -66,7 +70,11 @@ export function readInspection(
 ): ResultAsync<InspectionRead, InspectionError> {
   const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
   if (invalid) return invalidCoherentInspection(invalid);
-  return withCoherentInspectionRun(cwd, view.runId, state => readCoherentView(state, view));
+  return new ResultAsync((async () => {
+    const active = await withCoherentInspectionRun(cwd, view.runId, state => readCoherentView(state, view));
+    if (active.isOk() || active.error.type !== "run-not-found") return active;
+    return archivedInspection(cwd, view);
+  })());
 }
 
 /**
@@ -85,6 +93,17 @@ export async function* observeInspection(
   }
   let cycle = await readCoherentCycle(cwd, query.view);
   if (cycle.isErr()) {
+    if (cycle.error.type === "run-not-found") {
+      const archived = await archivedInspection(cwd, query.view);
+      if (archived.isOk() && archived.value.kind === "archived-run") {
+        yield err(archivedDetailUnavailable(query.view.runId));
+        return;
+      }
+      if (archived.isErr()) {
+        yield err(archived.error);
+        return;
+      }
+    }
     yield err(cycle.error);
     return;
   }
@@ -152,6 +171,42 @@ function invalidCoherentInspection<T>(error: InspectionError): ResultAsync<T, In
   return new ResultAsync(Promise.resolve(err(error)));
 }
 
+async function archivedInspection(
+  cwd: string,
+  view: InspectionViewQuery,
+): Promise<Result<InspectionRead, InspectionError>> {
+  try {
+    const lookup = await findArchivedRun(cwd, view.runId);
+    if (lookup.kind === "not-found") {
+      return err({ type: "run-not-found", runId: view.runId, message: `Run '${view.runId}' was not found.` });
+    }
+    if (lookup.kind === "unavailable") {
+      return err({
+        type: "archived-run-lookup-unavailable",
+        runId: view.runId,
+        message: lookup.message,
+      });
+    }
+    if (view.kind !== "run") return err(archivedDetailUnavailable(view.runId));
+    return ok({ kind: "archived-run", run: lookup.run });
+  } catch (error) {
+    return err({
+      type: "read-failed",
+      runId: view.runId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function archivedDetailUnavailable(runId: string): Extract<InspectionError, { type: "archived-run-detail-unavailable" }> {
+  return {
+    type: "archived-run-detail-unavailable",
+    runId,
+    command: `acpus runs inspect ${runId}`,
+    message: `Archived run '${runId}' only has a summary. Run 'acpus runs inspect ${runId}'.`,
+  };
+}
+
 function withCoherentInspectionRun<T>(
   cwd: string,
   runId: string,
@@ -160,6 +215,8 @@ function withCoherentInspectionRun<T>(
   return new ResultAsync((async () => {
     let store: RuntimeStore | undefined;
     try {
+      const readiness = await runtimeStoreReadiness(cwd, runId);
+      if (readiness) return err(readiness);
       store = await openExistingRuntimeStore(cwd);
       if (!store) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
       return await withRunInspectionSnapshot(store, async () => {
@@ -194,6 +251,7 @@ async function readCoherentCycle(
         message: "A blocking inspection needs one exact target selector.",
       });
     }
+    if (read.value.kind === "archived-run") throw new Error("Archived runs are not observable.");
     const resolved = view.kind === "target"
       ? resolveCoherentTarget(state, view.target, pinnedTarget)
       : undefined;
@@ -384,6 +442,8 @@ async function readCoherentToken(
 ): Promise<Result<RunInspectionStoreRead["cursor"], InspectionError>> {
   let store: RuntimeStore | undefined;
   try {
+    const readiness = await runtimeStoreReadiness(cwd, runId);
+    if (readiness) return err(readiness);
     store = await openExistingRuntimeStore(cwd);
     if (!store) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
     const token = store.readRunInspectionToken(runId);
@@ -810,6 +870,8 @@ function withInspectionRun<T>(
   return new ResultAsync((async () => {
     let store: RuntimeStore | undefined;
     try {
+      const readiness = await runtimeStoreReadiness(cwd, runId);
+      if (readiness) return err(readiness);
       const runtimeStore = await openExistingRuntimeStore(cwd);
       if (!runtimeStore) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
       store = runtimeStore;
@@ -1034,6 +1096,27 @@ function inspectionError(runId: string, error: unknown): RunInspectionError {
     runId,
     message,
     cause: error,
+  };
+}
+
+async function runtimeStoreReadiness(
+  cwd: string,
+  runId: string,
+): Promise<RuntimeStoreRepairRequiredInspectionError | RuntimeStoreUnsupportedInspectionError | undefined> {
+  const status = await inspectRuntimeStore(cwd);
+  if (status.isErr() || status.value.state === "ready") return undefined;
+  if (status.value.state === "unsupported") {
+    return {
+      type: "runtime-store-unsupported",
+      runId,
+      message: status.value.message,
+    };
+  }
+  return {
+    type: "runtime-store-repair-required",
+    runId,
+    command: "acpus doctor --fix",
+    message: `${status.value.message} Run 'acpus doctor --fix'.`,
   };
 }
 

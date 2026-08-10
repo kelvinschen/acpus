@@ -16,14 +16,12 @@ import {
 } from "../scheduler/control-plan.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
-import { resolveRuntimeLayout } from "../runtime-layout.js";
+import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../runtime-layout.js";
+import { inspectRuntimeStore } from "../runtime-store-lifecycle.js";
 import { inspectAcpOwnership } from "@acpus/agent-executor";
 import {
-  IncompatibleRuntimeDatabaseError,
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
-  RUNTIME_APPLICATION_ID,
-  RUNTIME_STORAGE_VERSION,
   withRunInspectionSnapshot,
   type PreparedRunWorkflow,
   type RuntimeDiagnostics,
@@ -229,7 +227,7 @@ export function tryNormalizeForkInput(cwd: string, runId: string, input: JsonVal
 export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport> {
   let persistence: RuntimePersistence;
   try {
-    persistence = { path: resolveRuntimeLayout(cwd).workspaceRoot };
+    persistence = { path: resolveRuntimeWorkspaceLayout(cwd).workspaceRoot };
   } catch (error) {
     return {
       ok: false,
@@ -243,38 +241,32 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
     };
   }
 
-  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
-  try {
-    store = await openExistingRuntimeStore(cwd);
-  } catch (error) {
-    if (error instanceof IncompatibleRuntimeDatabaseError
-      && error.applicationId === RUNTIME_APPLICATION_ID
-      && error.userVersion >= 1
-      && error.userVersion < RUNTIME_STORAGE_VERSION) {
-      return {
-        ok: true,
-        phase: "doctor",
-        state: "unreadable",
-        persistence,
-        checks: [{
-          area: "store",
-          status: "warn",
-          message: `Runtime storage version ${error.userVersion} is older than the supported version ${RUNTIME_STORAGE_VERSION}. `
-            + "Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.",
-        }],
-      };
-    }
+  const status = await inspectRuntimeStore(cwd);
+  if (status.isErr()) {
+    return lifecycleHealthFailure(persistence, status.error.message);
+  }
+  if (status.value.state === "repairable") {
     return {
-      ok: false,
+      ok: true,
       phase: "doctor",
       state: "unreadable",
       persistence,
       checks: [{
         area: "store",
-        status: "fail",
-        message: error instanceof Error ? error.message : String(error),
+        status: "warn",
+        message: `${status.value.message} Run 'acpus doctor --fix'.`,
       }],
     };
+  }
+  if (status.value.state === "unsupported") {
+    return lifecycleHealthFailure(persistence, status.value.message);
+  }
+
+  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
+  try {
+    store = await openExistingRuntimeStore(cwd);
+  } catch (error) {
+    return lifecycleHealthFailure(persistence, error instanceof Error ? error.message : String(error));
   }
   if (!store) {
     const acp = await acpOwnershipCheck(cwd);
@@ -340,6 +332,16 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
   } finally {
     store.close();
   }
+}
+
+function lifecycleHealthFailure(persistence: RuntimePersistence, message: string): RuntimeHealthReport {
+  return {
+    ok: false,
+    phase: "doctor",
+    state: "unreadable",
+    persistence,
+    checks: [{ area: "store", status: "fail", message }],
+  };
 }
 
 async function acpOwnershipCheck(cwd: string, daemon?: DaemonDiagnostics): Promise<RuntimeHealthCheck | undefined> {

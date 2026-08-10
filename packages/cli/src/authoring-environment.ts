@@ -1,52 +1,32 @@
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { officialAuthoringEnvironment } from "@acpus/loader";
-import type { JsonValue } from "@acpus/expression/ir";
 import { getCliPackageInfo } from "./package-info.js";
-import { bundledAcpusSkillLocation, bundledAcpusSkillPath, readAcpusSkillMetadata } from "./skill-content.js";
+import { readAcpusSkillMetadata } from "./skill-content.js";
 import { existingSkillRootTargets, type SkillAgent, type SkillScope } from "./skill-installation.js";
 
 type HealthStatus = "ok" | "warn" | "fail";
+const authoringSpecifiers = ["acpus/core", "acpus/expression", "acpus/tasks/git"] as const;
 
 export type AuthoringHealthCheck = {
   area: "authoring" | "skill";
   status: HealthStatus;
   message: string;
-  details?: Record<string, JsonValue>;
 };
-
-type SkillStatus = "aligned" | "stale" | "unversioned" | "invalid";
-type InstalledSkillStatus = "aligned" | "stale" | "unversioned" | "missing" | "conflict" | "unreadable";
 
 type InstalledAcpusSkill = {
   scope: SkillScope;
   agent: SkillAgent;
-  path: string;
-  version?: string;
-  status: InstalledSkillStatus;
 };
 
-export type AuthoringEnvironment = {
-  cli: {
-    version: string;
-    entry: string;
-    packageRoot: string;
-  };
-  imports: ReturnType<typeof officialAuthoringEnvironment>["imports"];
-  skills: {
-    bundled: {
-      path: string;
-      version?: string;
-      status: SkillStatus;
-    };
-    installed: Array<InstalledAcpusSkill & { remediation?: string }>;
-  };
+export type AuthoringTypeLocation = {
+  specifier: keyof ReturnType<typeof officialAuthoringEnvironment>["imports"];
+  typesPath: string;
 };
 
-export type AuthoringHealth = {
-  ok: boolean;
-  environment: AuthoringEnvironment;
+type AuthoringHealth = {
   checks: AuthoringHealthCheck[];
+  types: AuthoringTypeLocation[];
 };
 
 export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> {
@@ -54,117 +34,61 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
   const authority = officialAuthoringEnvironment();
   const checks: AuthoringHealthCheck[] = [];
   const manifest = JSON.parse(await readFile(`${cli.packageRoot}/package.json`, "utf8")) as { dependencies?: Record<string, string> };
-  const mismatches = Object.values(authority.imports).flatMap(info => {
+  const versionsAligned = Object.values(authority.imports).every(info => {
     const expected = manifest.dependencies?.[info.package];
-    return expected && !expected.startsWith("workspace:") && expected !== info.version
-      ? [{ package: info.package, expected, actual: info.version }]
-      : [];
+    return expected === undefined || expected.startsWith("workspace:") || expected === info.version;
   });
-  checks.push(mismatches.length === 0
+  checks.push(versionsAligned
     ? { area: "authoring", status: "ok", message: "Authoring packages resolved." }
     : {
         area: "authoring",
         status: "fail",
         message: "Resolved authoring package versions do not match the acpus package manifest.",
-        details: { mismatches },
       });
 
-  const bundled = await bundledSkill(cli.version);
-  checks.push({
-    area: "skill",
-    status: bundled.status === "aligned" ? "ok" : "fail",
-    message: bundled.status === "aligned"
-      ? `Bundled Acpus skill ${cli.version} is aligned.`
-      : `Bundled Acpus skill is ${bundled.status}; expected ${cli.version}.`,
-    details: { path: bundled.path, status: bundled.status, ...(bundled.version ? { version: bundled.version } : {}) },
-  });
-
-  const installed = await inspectInstalledAcpusSkills(cwd, homedir(), cli.version);
-  const doctorInstalled = installed.map(installedSkill => {
+  const installed = await staleInstalledAcpusSkills(cwd, homedir(), cli.version);
+  for (const installedSkill of installed) {
     const remediation = `acpus skill install --${installedSkill.scope} --agent ${installedSkill.agent}`;
-    const needsRepair = installedSkill.status !== "aligned" && installedSkill.status !== "missing";
-    if (needsRepair) {
-      checks.push({
-        area: "skill",
-        status: "warn",
-        message: `Installed ${installedSkill.agent} Acpus skill is ${installedSkill.status}; run '${remediation}'.`,
-        details: {
-          path: installedSkill.path,
-          scope: installedSkill.scope,
-          agent: installedSkill.agent,
-          status: installedSkill.status,
-          remediation,
-        },
-      });
-    }
-    return {
-      ...installedSkill,
-      ...(needsRepair ? { remediation } : {}),
-    };
-  });
+    checks.push({
+      area: "skill",
+      status: "warn",
+      message: `Installed ${installedSkill.agent} Acpus skill is stale; run '${remediation}'.`,
+    });
+  }
 
   return {
-    ok: checks.every(check => check.status !== "fail"),
-    environment: {
-      cli: { version: cli.version, entry: cli.entry, packageRoot: cli.packageRoot },
-      imports: authority.imports,
-      skills: { bundled, installed: doctorInstalled },
-    },
     checks,
+    types: authoringSpecifiers.map(specifier => ({
+      specifier,
+      typesPath: authority.imports[specifier].typesPath,
+    })),
   };
 }
 
-async function inspectInstalledAcpusSkills(
+async function staleInstalledAcpusSkills(
   cwd: string,
   home: string,
   expectedVersion: string,
 ): Promise<InstalledAcpusSkill[]> {
   const targets = await existingSkillRootTargets(cwd, home, ["project", "global"]);
-  return Promise.all(targets.map(async target => ({
-    scope: target.scope,
-    agent: target.agent,
-    path: target.targetPath,
-    ...(await installedSkill(target.targetPath, expectedVersion)),
+  const stale = await Promise.all(targets.map(async target => ({
+    target,
+    stale: await installedSkillIsStale(target.targetPath, expectedVersion),
   })));
+  return stale.flatMap(({ target, stale }) => stale
+    ? [{ scope: target.scope, agent: target.agent }]
+    : []);
 }
 
-async function bundledSkill(expectedVersion: string): Promise<AuthoringEnvironment["skills"]["bundled"]> {
-  const verified = await bundledAcpusSkillPath(expectedVersion);
-  if (verified.isOk()) return { path: verified.value, version: expectedVersion, status: "aligned" };
-  const path = bundledAcpusSkillLocation();
-  try {
-    const metadata = await readAcpusSkillMetadata(path);
-    const status: SkillStatus = metadata.name !== "acpus"
-      ? "invalid"
-      : metadata.version === undefined
-        ? "unversioned"
-        : metadata.version === expectedVersion
-          ? "aligned"
-          : "stale";
-    return { path, ...(metadata.version ? { version: metadata.version } : {}), status };
-  } catch {
-    return { path, status: "invalid" };
-  }
-}
-
-async function installedSkill(path: string, expectedVersion: string): Promise<{ version?: string; status: InstalledSkillStatus }> {
+async function installedSkillIsStale(path: string, expectedVersion: string): Promise<boolean> {
   try {
     const stats = await lstat(path);
-    if (!stats.isDirectory() && !stats.isSymbolicLink()) return { status: "conflict" };
-  } catch (error) {
-    return isNotFound(error) ? { status: "missing" } : { status: "unreadable" };
-  }
-  try {
+    if (!stats.isDirectory() && !stats.isSymbolicLink()) return false;
     const metadata = await readAcpusSkillMetadata(path);
-    if (metadata.name !== "acpus") return { status: "conflict" };
-    if (metadata.version === undefined) return { status: "unversioned" };
-    return { version: metadata.version, status: metadata.version === expectedVersion ? "aligned" : "stale" };
+    return metadata.name === "acpus"
+      && metadata.version !== undefined
+      && metadata.version !== expectedVersion;
   } catch {
-    return { status: "unreadable" };
+    return false;
   }
-}
-
-function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error
-    && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

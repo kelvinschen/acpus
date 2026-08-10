@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { planPruneSelection } from "../src/runs/prune.js";
 
 describe("run prune selection", () => {
-  it("selects every terminal run and archive when no age is requested", () => {
+  it("selects every terminal run and sealed generation when no age is requested", () => {
     const selected = planPruneSelection({
       runs: [
         run("completed"),
@@ -12,19 +12,19 @@ describe("run prune selection", () => {
         run("paused"),
         run("awaiting"),
       ],
-      archives: [
-        { name: "20260723T120000.000Z-v1" },
-        { name: "20260724T120000.000Z-v1" },
+      generations: [
+        { id: "gen_old", createdAt: "2026-07-23T12:00:00.000Z" },
+        { id: "gen_new", createdAt: "2026-07-24T12:00:00.000Z" },
       ],
     });
 
     expect(selected).toEqual({
       runIds: ["completed", "failed", "canceled"],
-      archiveNames: ["20260723T120000.000Z-v1", "20260724T120000.000Z-v1"],
+      generationIds: ["gen_old", "gen_new"],
     });
   });
 
-  it("uses one strict cutoff for run updates and archive creation", () => {
+  it("uses one strict cutoff for run updates and generation sealing", () => {
     const selected = planPruneSelection({
       cutoff: "2026-07-24T12:00:00.000Z",
       runs: [
@@ -33,16 +33,25 @@ describe("run prune selection", () => {
         run("canceled", "2026-07-24T12:00:00.001Z", "after"),
         run("running", "2026-07-01T00:00:00.000Z", "active"),
       ],
-      archives: [
-        { name: "20260724T115959.999Z-v1" },
-        { name: "20260724T120000.000Z-v1" },
-        { name: "20260724T120000.001Z-v1" },
+      generations: [
+        {
+          id: "sealed-before",
+          createdAt: "2026-08-01T00:00:00.000Z",
+          sealedAt: "2026-07-24T11:59:59.999Z",
+        },
+        {
+          id: "sealed-equal",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          sealedAt: "2026-07-24T12:00:00.000Z",
+        },
+        { id: "created-before", createdAt: "2026-07-24T11:59:59.999Z" },
+        { id: "created-after", createdAt: "2026-07-24T12:00:00.001Z" },
       ],
     });
 
     expect(selected).toEqual({
       runIds: ["before"],
-      archiveNames: ["20260724T115959.999Z-v1"],
+      generationIds: ["sealed-before", "created-before"],
     });
   });
 });

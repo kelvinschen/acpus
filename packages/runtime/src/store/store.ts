@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -699,18 +699,22 @@ export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
 
 export async function openRuntimeStoreAtLayout(
   layout: RuntimeLayout,
-  options: { lock?: boolean; prevalidated?: boolean } = {},
+  options: { lock?: boolean | RuntimeSharedLock; prevalidated?: boolean; unpublished?: boolean } = {},
 ): Promise<RuntimeStore> {
   if (!options.prevalidated) {
     await inspectRuntimeGeneration(layout);
     await assertDatabasePath(layout.databasePath);
     await validateDatabaseFileIfPresent(layout.databasePath);
   }
-  const lock = options.lock === false ? undefined : await acquireRuntimeSharedLock(layout);
+  const lock = options.lock === false
+    ? undefined
+    : typeof options.lock === "object"
+      ? options.lock
+      : await acquireRuntimeSharedLock(layout);
   let db: DatabaseSync | undefined;
   try {
     await inspectRuntimeGeneration(layout);
-    await validateExistingLayout(layout);
+    if (!options.unpublished) await validateExistingLayout(layout);
     await assertDatabasePath(layout.databasePath);
     db = openDatabase(layout.databasePath);
     await setPrivateFileMode(layout.databasePath, layout.platform);
@@ -783,7 +787,7 @@ export async function openExistingRuntimeStoreAtLayout(
   }
 }
 
-export async function assertRuntimeArchiveSafe(layout: RuntimeLayout): Promise<void> {
+export async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<void> {
   await assertAcpOwnershipClear(layout);
   try {
     await access(layout.databasePath);
@@ -804,7 +808,7 @@ export async function assertRuntimeArchiveSafe(layout: RuntimeLayout): Promise<v
         FROM run_leases
         WHERE released_at IS NULL AND lease_expires_at > ?
       `).get(new Date().toISOString()) as CountRow;
-      if (active.count > 0) throw new RuntimeArchiveActiveError(layout.runtimeRoot, "run lease");
+      if (active.count > 0) throw new RuntimeGenerationActiveError(layout.runtimeRoot, "run lease");
     }
     if (tables.has("daemon_lease")) {
       const daemon = db.prepare(`
@@ -814,24 +818,24 @@ export async function assertRuntimeArchiveSafe(layout: RuntimeLayout): Promise<v
         LIMIT 1
       `).get() as { pid: number | null; heartbeat_at: string | null } | undefined;
       if (daemon?.pid && probeProcessLiveness(daemon.pid) !== "dead") {
-        throw new RuntimeArchiveActiveError(layout.runtimeRoot, "daemon");
+        throw new RuntimeGenerationActiveError(layout.runtimeRoot, "daemon");
       }
     }
   } catch (error) {
-    if (error instanceof RuntimeArchiveActiveError) throw error;
+    if (error instanceof RuntimeGenerationActiveError) throw error;
     throw new Error(`Runtime generation '${layout.runtimeRoot}' cannot be proven inactive: ${causeMessage(error)}.`);
   } finally {
     db.close();
   }
 }
 
-export class RuntimeArchiveActiveError extends Error {
+export class RuntimeGenerationActiveError extends Error {
   constructor(
     readonly path: string,
     readonly blocker: "run lease" | "daemon" | "ACP ownership",
   ) {
-    super(`Runtime generation '${path}' has an active ${blocker} and cannot be archived.`);
-    this.name = "RuntimeArchiveActiveError";
+    super(`Runtime generation '${path}' has an active ${blocker} and cannot be sealed.`);
+    this.name = "RuntimeGenerationActiveError";
   }
 }
 
@@ -847,11 +851,11 @@ async function assertAcpOwnershipClear(layout: RuntimeLayout): Promise<void> {
     throw new Error(`ACP ownership directory '${layout.acpWorkersRoot}' is not a regular directory.`);
   }
   if ((await readdir(layout.acpWorkersRoot)).length > 0) {
-    throw new RuntimeArchiveActiveError(layout.runtimeRoot, "ACP ownership");
+    throw new RuntimeGenerationActiveError(layout.runtimeRoot, "ACP ownership");
   }
 }
 
-export class IncompatibleRuntimeDatabaseError extends Error {
+class IncompatibleRuntimeDatabaseError extends Error {
   constructor(
     readonly path: string,
     readonly applicationId: number,
@@ -865,7 +869,16 @@ export class IncompatibleRuntimeDatabaseError extends Error {
   }
 }
 
-export async function readRuntimeStorageVersion(layout: RuntimeLayout): Promise<number | undefined> {
+export class UnrecognizedRuntimeDatabaseError extends Error {
+  constructor(readonly path: string) {
+    super(`Runtime database '${path}' does not have a valid SQLite header.`);
+    this.name = "UnrecognizedRuntimeDatabaseError";
+  }
+}
+
+export async function readRuntimeDatabaseFormat(
+  layout: RuntimeLayout,
+): Promise<{ applicationId: number; userVersion: number } | undefined> {
   try {
     await access(layout.databasePath);
   } catch (error) {
@@ -873,11 +886,19 @@ export async function readRuntimeStorageVersion(layout: RuntimeLayout): Promise<
     throw error;
   }
   await assertDatabasePath(layout.databasePath);
-  const db = openDatabase(layout.databasePath, true);
+  const file = await open(layout.databasePath, "r");
   try {
-    return databaseFormat(db).userVersion;
+    const header = Buffer.alloc(100);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (bytesRead < header.length || header.subarray(0, 16).toString("binary") !== "SQLite format 3\0") {
+      throw new UnrecognizedRuntimeDatabaseError(layout.databasePath);
+    }
+    return {
+      userVersion: header.readUInt32BE(60),
+      applicationId: header.readUInt32BE(68),
+    };
   } finally {
-    db.close();
+    await file.close();
   }
 }
 
@@ -896,7 +917,7 @@ async function validateExistingLayout(layout: RuntimeLayout): Promise<void> {
     [layout.runsRoot, "Runtime runs root"],
     [layout.sourcesRoot, "Runtime sources root"],
     [layout.trashRoot, "Runtime trash root"],
-    [layout.archivesRoot, "Runtime archives root"],
+    [layout.layoutVersion === 1 ? layout.legacyArchivesRoot : layout.generationsRoot, "Runtime generations root"],
   ] as const) {
     let info;
     try {
@@ -946,6 +967,21 @@ async function assertDatabasePath(path: string): Promise<void> {
   } catch (error) {
     if (isMissingPathError(error)) return;
     throw error;
+  }
+  await assertDatabaseSidecarPaths(path);
+}
+
+async function assertDatabaseSidecarPaths(path: string): Promise<void> {
+  for (const [suffix, label] of [["-wal", "WAL"], ["-shm", "shared memory"]] as const) {
+    const sidecar = `${path}${suffix}`;
+    try {
+      const info = await lstat(sidecar);
+      if (info.isSymbolicLink() || !info.isFile()) {
+        throw new Error(`Runtime database ${label} '${sidecar}' is not a regular file.`);
+      }
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
   }
 }
 
@@ -4708,7 +4744,11 @@ function openDatabase(path: string, readOnly = false, immutable = false): Databa
 
 async function hasNoPendingWriteAheadLog(path: string): Promise<boolean> {
   try {
-    return (await stat(`${path}-wal`)).size === 0;
+    const info = await lstat(`${path}-wal`);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new Error(`Runtime database WAL '${path}-wal' is not a regular file.`);
+    }
+    return info.size === 0;
   } catch (error) {
     if (isMissingPathError(error)) return true;
     throw error;
@@ -4744,6 +4784,7 @@ function initializeDatabase(db: DatabaseSync, path: string): void {
     `);
     db.exec("COMMIT");
     transactionStarted = false;
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
   } catch (error) {
     throw rollbackAfterFailure(db, transactionStarted, error);
   }

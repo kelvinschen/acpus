@@ -4,12 +4,14 @@ import { basename, extname } from "node:path";
 import {
   getRunVisualizationSnapshot,
   getRuntimeHealth,
+  inspectRuntimeStore,
   inspectAgentExecution,
   listKnownWorkspaces,
   inspectNode,
   listRuns,
   readArtifact,
   readInspection,
+  repairRuntimeStore,
   requestDaemonControl,
   resolveKnownWorkspace,
   type DaemonControlIntent,
@@ -25,6 +27,7 @@ import type {
   RunDetails,
   RunRecord,
   RunRuntimeSnapshot,
+  RuntimeStoreStatus,
   ServerConfig,
   WebControlCommand,
   WorkspaceCatalog,
@@ -71,6 +74,18 @@ export function createWebApp(options: WebAppOptions): Hono {
     });
   });
 
+  app.get("/api/runtime-store", async (context) => {
+    const inspected = await inspectRuntimeStore(options.cwd);
+    if (inspected.isErr()) apiError(500, "runtime_store_unavailable", inspected.error.message);
+    return context.json({ ok: true, runtimeStore: publicRuntimeStoreStatus(inspected.value) });
+  });
+
+  app.post("/api/runtime-store", async (context) => {
+    const repaired = await repairRuntimeStore(options.cwd);
+    if (repaired.isErr()) runtimeStoreRepairError(repaired.error);
+    return context.json({ ok: true });
+  });
+
   app.get("/api/workspaces", async (context) => {
     const listing = await getWorkspaceListing();
     const catalog = {
@@ -79,7 +94,7 @@ export function createWebApp(options: WebAppOptions): Hono {
         key: workspace.workspaceKey,
         name: basename(workspace.canonicalPath) || workspace.canonicalPath,
         path: workspace.canonicalPath,
-        runCount: workspace.runCount,
+        ...(workspace.runCount === undefined ? {} : { runCount: workspace.runCount }),
         ...(workspace.lastRunUpdatedAt === undefined
           ? {}
           : { lastRunUpdatedAt: workspace.lastRunUpdatedAt }),
@@ -90,6 +105,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const runs = await listRuns(workspace.canonicalPath);
     return context.json({
       ok: true,
@@ -105,6 +121,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/runtime-snapshot", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const snapshot = await getRunVisualizationSnapshot(workspace.canonicalPath, context.req.param("id"));
     if (!snapshot) apiError(404, "run_not_found", `Run '${context.req.param("id")}' was not found.`);
     const run = {
@@ -140,6 +157,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target/execution", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
     const execution = await readNodeExecution(
       workspace.canonicalPath,
@@ -154,6 +172,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target/runtime-values", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const view = await readNodeRuntimeValues(
       workspace.canonicalPath,
       context.req.param("id"),
@@ -167,6 +186,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const inspection = await readNodeInspection(
       workspace.canonicalPath,
       context.req.param("id"),
@@ -196,6 +216,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/artifacts/:artifactId/preview", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
     const verified = await readArtifact(workspace.canonicalPath, runId, artifactId);
@@ -210,6 +231,7 @@ export function createWebApp(options: WebAppOptions): Hono {
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/artifacts/:artifactId/content", async (context) => {
     const workspace = await resolveRequestWorkspace(options.cwd, context.req.param("workspaceKey"));
+    await requireRuntimeStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
     const verified = await readArtifact(workspace.canonicalPath, runId, artifactId);
@@ -279,6 +301,30 @@ export function createWebApp(options: WebAppOptions): Hono {
   return app;
 }
 
+function publicRuntimeStoreStatus(
+  status: { state: "ready" } | { state: "repairable" | "unsupported"; message: string },
+): RuntimeStoreStatus {
+  if (status.state === "ready") return { state: "ready" };
+  return status.state === "repairable"
+    ? { state: "needs-fix", message: status.message }
+    : { state: "unavailable", message: status.message };
+}
+
+function runtimeStoreRepairError(error: { type: "busy" | "unsupported" | "failed"; message: string }): never {
+  apiError(error.type === "failed" ? 500 : error.type === "unsupported" ? 422 : 409, "runtime_store_fix_failed", error.message);
+}
+
+async function requireRuntimeStoreReady(cwd: string): Promise<void> {
+  const inspected = await inspectRuntimeStore(cwd);
+  if (inspected.isErr()) apiError(500, "runtime_store_unavailable", inspected.error.message);
+  if (inspected.value.state === "ready") return;
+  apiError(
+    inspected.value.state === "unsupported" ? 422 : 409,
+    inspected.value.state === "unsupported" ? "runtime_store_unavailable" : "runtime_store_fix_required",
+    inspected.value.message,
+  );
+}
+
 async function submitControl(
   options: WebAppOptions,
   cwd: string,
@@ -286,6 +332,7 @@ async function submitControl(
   body: JsonValue,
 ) {
   const command = parseControlBody(body);
+  await requireRuntimeStoreReady(cwd);
   await options.ensureDaemonRunning(cwd);
   const base = { requestId: `web:${randomUUID()}`, runId };
   const intent: DaemonControlIntent = command.type === "signal"

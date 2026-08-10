@@ -85,6 +85,15 @@ describe("Paper Relay visual contract", () => {
     expect(rule(".run-select-option-meta")).toContain("font-variant-numeric: tabular-nums;");
   });
 
+  it("keeps Runtime repair guidance compact across viewport sizes", () => {
+    expect(rule(".workspace-shell")).toContain("flex-direction: column;");
+    expect(rule(".workspace-view")).toContain("flex: 1 1 auto;");
+    expect(rule(".runtime-store-notice")).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
+
+    const narrow = styles.slice(styles.indexOf("@media (max-width: 760px)"));
+    expect(narrow).toContain(".runtime-store-notice-actions");
+  });
+
   it("uses a short directional Runs to Monitor workspace transition", () => {
     expect(rule(".workspace")).not.toContain("view-transition-name:");
     expect(rule("html[data-run-transition]")).toContain("view-transition-name: none;");

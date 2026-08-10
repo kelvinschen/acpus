@@ -3,13 +3,23 @@ import type { WorkflowIR } from "@acpus/core/ir";
 import type { ExprIR } from "@acpus/expression/ir";
 import type { RunInspectionDetailedFailure } from "@acpus/runtime";
 import { renderWorkflowVizHtml } from "@acpus/web";
-import { getArtifactContent, getNodeInspection, getNodeRuntimeValues, listRuns, listWorkspaces, submitRunCommand } from "../src/client/api.js";
+import {
+  getArtifactContent,
+  getNodeInspection,
+  getNodeRuntimeValues,
+  getRuntimeStore,
+  listRuns,
+  listWorkspaces,
+  repairRuntimeStore,
+  submitRunCommand,
+} from "../src/client/api.js";
 import type {
   ArtifactContent,
   NodeInspection,
   NodeInspectionFailure,
   NodeRuntimeValues,
   RunRecord,
+  RuntimeStoreStatus,
   WebControlCommand,
   WorkspaceCatalog,
   WorkspaceSummary,
@@ -23,6 +33,7 @@ test("Web transport contracts preserve their semantic shapes", () => {
   expectTypeOf<FailedResult["phase"]>().toEqualTypeOf<"source" | "check" | "compile" | "lock" | "validate">();
   expectTypeOf<Parameters<typeof submitRunCommand>>().toEqualTypeOf<[workspaceKey: string, runId: string, command: WebControlCommand]>();
   expectTypeOf<Parameters<typeof listRuns>>().toEqualTypeOf<[workspaceKey: string]>();
+  expectTypeOf<Parameters<typeof repairRuntimeStore>>().toEqualTypeOf<[]>();
   expectTypeOf<Parameters<typeof getNodeInspection>>().toEqualTypeOf<[workspaceKey: string, runId: string, target: string]>();
   expectTypeOf(getArtifactContent).parameter(0).toEqualTypeOf<string>();
   expectTypeOf(getArtifactContent).parameter(1).toEqualTypeOf<string>();
@@ -32,6 +43,8 @@ test("Web transport contracts preserve their semantic shapes", () => {
   expectTypeOf<Awaited<ReturnType<typeof getNodeInspection>>>().toEqualTypeOf<NodeInspection>();
   expectTypeOf<Awaited<ReturnType<typeof getNodeRuntimeValues>>>().toEqualTypeOf<NodeRuntimeValues>();
   expectTypeOf<Awaited<ReturnType<typeof listRuns>>>().toEqualTypeOf<RunRecord[]>();
+  expectTypeOf<Awaited<ReturnType<typeof getRuntimeStore>>>().toEqualTypeOf<RuntimeStoreStatus>();
+  expectTypeOf<Awaited<ReturnType<typeof repairRuntimeStore>>>().toEqualTypeOf<void>();
   expectTypeOf<Awaited<ReturnType<typeof listWorkspaces>>>().toEqualTypeOf<WorkspaceCatalog>();
   expectTypeOf<RunRecord>().toEqualTypeOf<{
     id: string;
@@ -44,7 +57,7 @@ test("Web transport contracts preserve their semantic shapes", () => {
     key: string;
     name: string;
     path: string;
-    runCount: number;
+    runCount?: number;
     lastRunUpdatedAt?: string;
   }>();
   expectTypeOf<NodeInspectionFailure>().toExtend<RunInspectionDetailedFailure>();

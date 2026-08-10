@@ -1,6 +1,6 @@
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
@@ -161,7 +161,7 @@ describe("scheduler store format", () => {
       checks: [{
         area: "store",
         status: "warn",
-        message: `Runtime storage version 6 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
+        message: "The Runtime store needs repair for this version of Acpus. Run 'acpus doctor --fix'.",
       }],
     });
     expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeDoctor);
@@ -197,7 +197,7 @@ describe("scheduler store format", () => {
       checks: [{
         area: "store",
         status: "fail",
-        message: `Runtime database '${layout.databasePath}' uses application_id ${applicationId} and user_version ${userVersion}; expected ${RUNTIME_APPLICATION_ID} and ${RUNTIME_STORAGE_VERSION}.`,
+        message: `Runtime database uses application_id ${applicationId} and storage v${userVersion}.`,
       }],
     });
   });
@@ -243,7 +243,7 @@ describe("scheduler store format", () => {
     await expect(openExistingRuntimeStore(dir)).resolves.toBeUndefined();
 
     await rm(runtimeRoot);
-    await symlink("runtime", runtimeRoot);
+    await symlink(basename(runtimeRoot), runtimeRoot);
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({ code: "ELOOP" });
   });
 });

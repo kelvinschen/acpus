@@ -48,7 +48,15 @@ export function classifyRuntimeGeneration(
   runtimeRoot: string,
   entries: RuntimeGenerationEntry[],
 ): Exclude<RuntimeGenerationState, "absent"> {
-  const allowed = new Set(["runtime.db", "runtime.db-shm", "runtime.db-wal", "runs", "sources", "trash", "acp"]);
+  const allowed = new Set([
+    "runtime.db",
+    "runtime.db-shm",
+    "runtime.db-wal",
+    "runs",
+    "sources",
+    "trash",
+    "acp",
+  ]);
   const unexpected = entries.find(entry => !allowed.has(entry.name));
   if (unexpected) {
     throw new PartialRuntimeGenerationError(runtimeRoot, `unexpected entry '${unexpected.name}'`);

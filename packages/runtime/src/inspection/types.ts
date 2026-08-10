@@ -518,6 +518,8 @@ export type InspectionCandidates = {
 
 export type RunInspectionError =
   | { type: "runtime-store-not-found"; message: string }
+  | RuntimeStoreRepairRequiredInspectionError
+  | RuntimeStoreUnsupportedInspectionError
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "target-not-found"; runId: string; target: string; message: string }
   | {
@@ -974,7 +976,18 @@ export type InspectionView =
     }
   | InspectionForensicsView;
 
-export type InspectionRead = InspectionView | InspectionCandidates;
+export type ArchivedRunInspection = {
+  kind: "archived-run";
+  run: {
+    id: string;
+    name: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+};
+
+export type InspectionRead = InspectionView | InspectionCandidates | ArchivedRunInspection;
 
 export type InspectionChange = {
   subject: {
@@ -1000,6 +1013,10 @@ export type InspectionObservation =
 
 export type InspectionError =
   | { type: "runtime-store-not-found"; message: string }
+  | RuntimeStoreRepairRequiredInspectionError
+  | RuntimeStoreUnsupportedInspectionError
+  | { type: "archived-run-detail-unavailable"; runId: string; command: string; message: string }
+  | { type: "archived-run-lookup-unavailable"; runId: string; message: string }
   | { type: "run-not-found"; runId: string; message: string }
   | { type: "target-not-found"; runId: string; target: string; message: string }
   | {
@@ -1011,3 +1028,16 @@ export type InspectionError =
     }
   | { type: "invalid-query"; message: string }
   | { type: "read-failed"; runId: string; message: string };
+
+export type RuntimeStoreRepairRequiredInspectionError = {
+  type: "runtime-store-repair-required";
+  runId: string;
+  command: "acpus doctor --fix";
+  message: string;
+};
+
+export type RuntimeStoreUnsupportedInspectionError = {
+  type: "runtime-store-unsupported";
+  runId: string;
+  message: string;
+};

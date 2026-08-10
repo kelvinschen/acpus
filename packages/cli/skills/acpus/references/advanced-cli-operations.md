@@ -143,7 +143,7 @@ With no `--out`, it prints a compact semantic tree to stdout; `--out` writes sel
 acpus web [--host <host>] [--port <port>] [--token]
 ```
 
-The command ensures the workspace daemon is running, binds to localhost and a random port by default, and stops on `Ctrl-C`. Use `--token` when access needs protection.
+The command starts the Web server without starting the workspace daemon, binds to localhost and a random port by default, and stops on `Ctrl-C`. Runtime actions start the daemon only when needed. Use `--token` when access needs protection.
 
 ## Bundled skill and version
 

@@ -1,10 +1,12 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { InspectionCandidates, InspectionError, InspectionRead, InspectionView } from "@acpus/runtime";
+import type { InspectionCandidates, InspectionError, InspectionView } from "@acpus/runtime";
 import { createRunsCommand } from "../src/commands/runs.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
-const runtime = vi.hoisted(() => ({ readInspection: vi.fn() }));
+const runtime = vi.hoisted(() => ({
+  readInspection: vi.fn(),
+}));
 const follow = vi.hoisted(() => ({ followRun: vi.fn() }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
@@ -159,7 +161,7 @@ function candidates(): InspectionCandidates {
   };
 }
 
-function ok(value: InspectionRead): { isErr(): false; value: InspectionRead } {
+function ok<T>(value: T): { isErr(): false; value: T } {
   return { isErr: () => false, value };
 }
 

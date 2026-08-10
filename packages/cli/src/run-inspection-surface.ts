@@ -116,6 +116,18 @@ export function inspectionRecoveryCommand(view: InspectionViewQuery): string {
 
 export function formatInspectionError(error: InspectionError, view: InspectionViewQuery): string {
   if (error.type === "invalid-query") return `${error.message}\n`;
+  if (error.type === "runtime-store-repair-required") {
+    return `${error.message}\nError code: RUNTIME_STORE_REPAIR_REQUIRED\n`;
+  }
+  if (error.type === "runtime-store-unsupported") {
+    return `${error.message}\nRun: acpus doctor\nError code: RUNTIME_STORE_UNSUPPORTED\n`;
+  }
+  if (error.type === "archived-run-detail-unavailable") {
+    return `${error.message}\nError code: ARCHIVED_RUN_DETAIL_UNAVAILABLE\n`;
+  }
+  if (error.type === "archived-run-lookup-unavailable") {
+    return `${error.message}\nError code: ARCHIVED_RUN_LOOKUP_UNAVAILABLE\n`;
+  }
   if (error.type === "target-ambiguous") {
     const detail = view.kind === "target" ? view.detail : "summary";
     return `${formatInspectionCandidates(error.candidates, detail).trimEnd()}\nCannot attach: ${error.message}\n`;

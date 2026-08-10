@@ -94,7 +94,7 @@ describe("runs prune", () => {
     expect(result.stderr).toBe("");
   });
 
-  it("executes requested writable maintenance with --yes when the preview has no run or archive candidates", async () => {
+  it("executes requested writable maintenance with --yes when the preview is empty", async () => {
     const empty: PruneReport = {
       ...preview,
       selected: { workspaces: 0, runs: 0, archives: 0, bytes: 0 },

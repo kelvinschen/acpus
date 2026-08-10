@@ -15,6 +15,7 @@ import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { waitForTerminalRun, waitUntil } from "./support/daemon-lease-fixture.js";
 import {
+  initializeRuntimeStoreForTest,
   prepareSyntheticWorkflow,
   runtimeDatabasePath,
   runtimeRow,
@@ -231,6 +232,7 @@ describe("runtime workflow snapshots", () => {
         ]));
         expect(prepared.sourceBundle!.files.some(file => file.content.includes(sourceOnlyMarker))).toBe(true);
 
+        await initializeRuntimeStoreForTest(workspace);
         const firstDaemon = await startDaemonLoop(workspace, {
           heartbeatMs: 10,
           idleStopMs: 60_000,

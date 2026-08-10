@@ -68,6 +68,7 @@ export {
 } from "./inspection/use-cases.js";
 export type {
   InspectionCandidates,
+  ArchivedRunInspection,
   InspectionChange,
   InspectionAttention,
   InspectionCounts,
@@ -95,6 +96,8 @@ export type {
   RunInspectionDetailedFailure,
   RunInspectionError,
   RunInspectionStatus,
+  RuntimeStoreRepairRequiredInspectionError,
+  RuntimeStoreUnsupportedInspectionError,
 } from "./inspection/types.js";
 export {
   hookEvents,
@@ -154,7 +157,12 @@ export {
   type WorkflowSourceFile,
   type WorkflowSourceRef,
 } from "./store/store.js";
-export { prepareRuntimeForNewRun } from "./storage/maintenance.js";
+export {
+  inspectRuntimeStore,
+  repairRuntimeStore,
+  type RuntimeStoreFailure,
+  type RuntimeStoreStatus,
+} from "./runtime-store-lifecycle.js";
 export { pruneRuns, type PruneReport } from "./runs/prune.js";
 export {
   listKnownWorkspaces,

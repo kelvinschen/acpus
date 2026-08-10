@@ -12,7 +12,7 @@ import type {
   RuntimePersistence,
 } from "@acpus/runtime";
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "./catalog.js";
-import type { AuthoringEnvironment, AuthoringHealthCheck } from "./authoring-environment.js";
+import type { AuthoringHealthCheck, AuthoringTypeLocation } from "./authoring-environment.js";
 import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "./skill-installation.js";
 import { renderShellCommand } from "./shell-command.js";
 import { ansi, supportsColor } from "./terminal-style.js";
@@ -69,7 +69,7 @@ type CliResultFields = {
   catalogEntries?: WorkflowCatalogEntry[];
   followRunId?: string;
   checks?: Array<RuntimeHealthCheck | AuthoringHealthCheck>;
-  authoring?: AuthoringEnvironment;
+  authoringTypes?: AuthoringTypeLocation[];
   errorCode?: string;
   inspectionError?: PublicRunInspectionError;
   control?: CliControl;
@@ -157,7 +157,7 @@ export type CliResult =
   | ResultRecord<"delete", true, "message" | "run" | "deletedRuns" | "skippedRuns", "message" | "deletedRuns" | "skippedRuns">
   | ResultRecord<"delete", true, "message" | "prune", "message" | "prune">
   | ResultRecord<"delete", false, "message" | "run" | "errorCode" | "prune", "message">
-  | ResultRecord<"doctor", boolean, "message" | "persistence" | "checks" | "authoring", "message" | "checks">
+  | ResultRecord<"doctor", boolean, "message" | "persistence" | "checks" | "authoringTypes", "message" | "checks">
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "visualization", "message" | "workflow" | "visualization">
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
   | ResultRecord<"viz", false, "message", "message">
@@ -224,6 +224,7 @@ export function writeResult(
     const path = ansi(result.persistence.path, 1, doctorColor);
     stream.write(`${label} ${path}\n`);
   }
+  if (result.authoringTypes) writeAuthoringTypes(stream, result.authoringTypes);
   if (result.workflow) {
     stream.write(`Workflow: ${result.workflow.name}\n`);
     if (result.workflow.description) stream.write(`Description: ${result.workflow.description}\n`);
@@ -284,6 +285,12 @@ export function writeResult(
     }
   }
   return exitCode;
+}
+
+function writeAuthoringTypes(stream: Writable, types: AuthoringTypeLocation[]): void {
+  const width = types.reduce((current, entry) => Math.max(current, entry.specifier.length), 0);
+  stream.write("Types:\n");
+  for (const entry of types) stream.write(`  ${entry.specifier.padEnd(width)}  ${entry.typesPath}\n`);
 }
 
 function writeRunSubmissionReceipt(result: CliResult, stream: Writable, cwd: string | undefined): boolean {

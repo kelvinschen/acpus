@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { resolveRuntimeLayout } from "../../runtime/src/runtime-layout.js";
-import { openRuntimeStore, RUNTIME_STORAGE_VERSION } from "../../runtime/src/store/store.js";
+import { isAbsolute, join } from "node:path";
 import { getCliPackageInfo } from "../src/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -83,6 +80,7 @@ describe("CLI program usage contracts", () => {
     );
     expect(start).toBeGreaterThanOrEqual(0);
     expect(start).toBeLessThan(rootStdout.text.indexOf("Commands:"));
+    expect(rootStdout.text).not.toMatch(/^\s+runtime(?:\s|$)/mu);
     expect(rootStderr.text).toBe("");
   });
 
@@ -100,42 +98,30 @@ describe("CLI program usage contracts", () => {
     expect(skillStderr.text).toBe("");
   });
 
-  it("reports absolute authoring authority without initializing runtime state", async () => {
+  it("reports fixed-order absolute type paths without initializing Runtime state", async () => {
     await withPlainTestWorkspace("doctor-authoring", async (workspace, home) => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
       process.env.HOME = home;
-      process.env.USERPROFILE = process.env.HOME;
+      process.env.USERPROFILE = home;
       try {
         const stdout = new CaptureStream();
         const stderr = new CaptureStream();
-        const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
-        const result = JSON.parse(stdout.text);
+        expect(await runCli(["doctor"], { cwd: workspace, stdout, stderr })).toBe(0);
 
-        expect(exitCode).toBe(0);
-        expect(result).toMatchObject({
-          ok: true,
-          phase: "doctor",
-          message: "Doctor checks passed.",
-          persistence: { path: expect.any(String) },
-          authoring: {
-            cli: { version: getCliPackageInfo().version },
-            skills: { bundled: { version: getCliPackageInfo().version, status: "aligned" }, installed: [] },
-          },
-        });
-        expect(dirname(result.persistence.path)).toBe(join(home, ".acpus", "workspaces"));
-        expect(basename(result.persistence.path)).toMatch(/^[a-f0-9]{32}$/);
-        expect(isAbsolute(result.authoring.cli.entry)).toBe(true);
-        expect(isAbsolute(result.authoring.cli.packageRoot)).toBe(true);
-        for (const authority of Object.values(result.authoring.imports) as Array<{ packageRoot: string; typesPath: string }>) {
-          expect(isAbsolute(authority.packageRoot)).toBe(true);
-          expect(isAbsolute(authority.typesPath)).toBe(true);
+        const typeLines = stdout.text.split("\n").filter(line => line.startsWith("  acpus/"));
+        expect(typeLines.map(line => line.trim().split(/\s{2,}/u)[0])).toEqual([
+          "acpus/core",
+          "acpus/expression",
+          "acpus/tasks/git",
+        ]);
+        for (const line of typeLines) {
+          const typesPath = line.trim().split(/\s{2,}/u)[1];
+          expect(typesPath && isAbsolute(typesPath)).toBe(true);
         }
+        expect(stdout.text).toContain("Types:\n");
         await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
         await expect(lstat(join(home, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(lstat(join(home, ".acpus", "cache", "update-awareness"))).rejects.toMatchObject({ code: "ENOENT" });
-        expect(stdout.text.endsWith("\n")).toBe(true);
-        expect(stdout.text.trimEnd()).not.toContain("\n");
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -146,82 +132,7 @@ describe("CLI program usage contracts", () => {
     });
   });
 
-  it("treats older Runtime storage as a recoverable Doctor warning", async () => {
-    await withPlainTestWorkspace("doctor-older-storage", async workspace => {
-      const store = await openRuntimeStore(workspace);
-      store.close();
-      const databasePath = resolveRuntimeLayout(workspace).databasePath;
-      const db = new DatabaseSync(databasePath);
-      try {
-        db.exec("PRAGMA user_version = 1");
-      } finally {
-        db.close();
-      }
-
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-      const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
-      const result = JSON.parse(stdout.text);
-      const storeCheck = result.checks.find((check: { area: string }) => check.area === "store");
-
-      expect(exitCode).toBe(0);
-      expect(result).toMatchObject({
-        ok: true,
-        phase: "doctor",
-        message: "Doctor checks passed with warnings.",
-      });
-      expect(storeCheck).toEqual({
-        area: "store",
-        status: "warn",
-        message: `Runtime storage version 1 is older than the supported version ${RUNTIME_STORAGE_VERSION}. Doctor made no changes. This workspace remains usable; starting a new workflow run will prepare compatible storage automatically.`,
-      });
-      expect(storeCheck).not.toHaveProperty("details");
-      expect(stderr.text).toBe("");
-
-      const unchanged = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        expect(unchanged.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
-      } finally {
-        unchanged.close();
-      }
-    });
-  });
-
-  it("retains ACP ownership details in compact Doctor JSON", async () => {
-    await withPlainTestWorkspace("doctor-acp-ownership", async workspace => {
-      const store = await openRuntimeStore(workspace);
-      store.close();
-      const layout = resolveRuntimeLayout(workspace);
-      await mkdir(layout.acpWorkersRoot, { recursive: true });
-      await writeFile(join(layout.acpWorkersRoot, "acp_worker_dea0.json"), JSON.stringify({
-        schemaVersion: 1,
-        workerId: "acp_worker_dea0",
-        runId: "run_1",
-        attemptId: "attempt_1",
-        sessionName: "session",
-        daemon: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" },
-        worker: { pid: 99_999_999, startToken: "pid:99999999" },
-        state: "degraded",
-        createdAt: "2026-07-30T00:00:00.000Z",
-      }));
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-
-      expect(await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr })).toBe(0);
-      const result = JSON.parse(stdout.text);
-
-      expect(result.checks.find((check: { area: string }) => check.area === "acp").details).toMatchObject({
-        degraded: 1,
-        orphaned: 0,
-        manifests: [expect.objectContaining({ workerId: "acp_worker_dea0", state: "degraded" })],
-      });
-      expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
-      expect(stdout.text.trimEnd()).not.toContain("\n");
-      expect(stderr.text).toBe("");
-    });
-  });
-
-  it("warns for repairable installed skills but treats missing skills as neutral", async () => {
+  it("warns only for an actually stale installed skill", async () => {
     await withPlainTestWorkspace("doctor-installed-skills", async workspace => {
       const previousHome = process.env.HOME;
       const previousUserProfile = process.env.USERPROFILE;
@@ -234,28 +145,21 @@ describe("CLI program usage contracts", () => {
         const globalAgents = join(home, ".agents", "skills");
         await mkdir(join(projectAgents, "acpus"), { recursive: true });
         await mkdir(join(projectClaude, "acpus"), { recursive: true });
-        await mkdir(globalAgents, { recursive: true });
+        await mkdir(join(globalAgents, "acpus"), { recursive: true });
         await writeFile(join(projectAgents, "acpus", "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
         await writeFile(join(projectClaude, "acpus", "SKILL.md"), "---\nname: acpus\n---\n");
+        await writeFile(join(globalAgents, "acpus", "SKILL.md"), `---\nname: acpus\nmetadata:\n  acpus-version: ${getCliPackageInfo().version}\n---\n`);
 
         const stdout = new CaptureStream();
         const stderr = new CaptureStream();
-        const exitCode = await runCli(["doctor", "--json"], { cwd: workspace, stdout, stderr });
-        const result = JSON.parse(stdout.text);
-
-        expect(exitCode).toBe(0);
-        expect(result.ok).toBe(true);
-        expect(result.message).toBe("Doctor checks passed with warnings.");
-        expect(result.authoring.skills.installed).toEqual(expect.arrayContaining([
-          expect.objectContaining({ scope: "project", agent: "universal", status: "stale", remediation: "acpus skill install --project --agent universal" }),
-          expect.objectContaining({ scope: "project", agent: "claude", status: "unversioned", remediation: "acpus skill install --project --agent claude" }),
-          expect.objectContaining({ scope: "global", agent: "universal", status: "missing" }),
-        ]));
-        const warnings = result.checks.filter((check: { area: string; status: string }) => check.area === "skill" && check.status === "warn");
-        expect(warnings).toHaveLength(2);
-        expect(warnings.some((check: { details?: { status?: string } }) => check.details?.status === "missing")).toBe(false);
-        const missing = result.authoring.skills.installed.find((skill: { scope: string; agent: string }) => skill.scope === "global" && skill.agent === "universal");
-        expect(missing).not.toHaveProperty("remediation");
+        expect(await runCli(["doctor"], { cwd: workspace, stdout, stderr })).toBe(0);
+        expect(stdout.text).toContain("Doctor checks passed with warnings.");
+        expect(stdout.text).toContain("Installed universal Acpus skill is stale");
+        expect(stdout.text).toContain("acpus skill install --project --agent universal");
+        expect(stdout.text).not.toContain("claude Acpus skill");
+        expect(stdout.text).not.toContain("--global --agent universal");
+        expect(stdout.text).not.toMatch(/skill.*missing|missing.*skill/iu);
+        expect(stdout.text.split("\n").filter(line => /\s+skill\s+/u.test(line))).toHaveLength(1);
         expect(stderr.text).toBe("");
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
@@ -322,28 +226,31 @@ describe("CLI program usage contracts", () => {
       }
     });
   });
-  it("documents JSON on the structured-output leaves", async () => {
-    for (const argv of [["doctor", "--help"], ["runs", "artifact", "--help"], ["runs", "artifacts", "--help"]]) {
+  it("keeps JSON on artifact leaves and Doctor text-only", async () => {
+    for (const argv of [["runs", "artifact", "--help"], ["runs", "artifacts", "--help"]]) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
       expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);
       expect(stdout.text).toContain("--json");
       expect(stderr.text).toBe("");
     }
-  });
 
-  it("uses the Doctor JSON envelope for usage failures", async () => {
-    const jsonStdout = new CaptureStream();
-    const jsonStderr = new CaptureStream();
-    expect(await runCli(["doctor", "--json", "--bogus"], {
-      cwd: process.cwd(), stdout: jsonStdout, stderr: jsonStderr,
+    const helpStdout = new CaptureStream();
+    const helpStderr = new CaptureStream();
+    expect(await runCli(["doctor", "--help"], {
+      cwd: process.cwd(), stdout: helpStdout, stderr: helpStderr,
+    })).toBe(0);
+    expect(helpStdout.text).toContain("--fix");
+    expect(helpStdout.text).not.toContain("--json");
+    expect(helpStderr.text).toBe("");
+
+    const invalidStdout = new CaptureStream();
+    const invalidStderr = new CaptureStream();
+    expect(await runCli(["doctor", "--json"], {
+      cwd: process.cwd(), stdout: invalidStdout, stderr: invalidStderr,
     })).toBe(2);
-    expect(JSON.parse(jsonStdout.text)).toMatchObject({
-      schemaVersion: 1,
-      ok: false,
-      phase: "usage",
-    });
-    expect(jsonStderr.text).toBe("");
+    expect(invalidStdout.text).toBe("");
+    expect(invalidStderr.text).toContain("unknown option '--json'");
   });
 
   it("documents compact text-only inspection and explicit blocking intents", async () => {
@@ -355,7 +262,7 @@ describe("CLI program usage contracts", () => {
     for (const option of ["--target", "--timeline", "--forensics", "--follow", "--await-decision"]) {
       expect(inspectStdout.text).toContain(option);
     }
-    for (const removed of ["--page", "--evidence", "--limit", "--all", "--controls", "--raw"]) {
+    for (const removed of ["--generation", "--page", "--evidence", "--limit", "--all", "--controls", "--raw"]) {
       expect(inspectStdout.text).not.toContain(removed);
     }
     expect(inspectStdout.text).toContain("terminal");
@@ -485,7 +392,6 @@ describe("CLI program usage contracts", () => {
   it("rejects invalid run and inspection queries before reading runtime state", async () => {
     const cases = [
       { argv: ["runs", "inspect", "run_1", "--target", "   "], message: "--target must be a non-empty string" },
-      { argv: ["runs", "inspect", "run_1", "--timeline"], message: "--timeline requires --target" },
       { argv: ["runs", "inspect", "run_1", "--timeline", "--forensics"], message: "--timeline and --forensics are mutually exclusive" },
       { argv: ["runs", "inspect", "run_1", "--forensics", "--follow"], message: "--forensics cannot be used with --follow or --await-decision" },
       { argv: ["runs", "inspect", "run_1", "--forensics", "--await-decision"], message: "--forensics cannot be used with --follow or --await-decision" },

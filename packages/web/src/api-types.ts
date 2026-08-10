@@ -186,11 +186,16 @@ export type RunRecord = {
   updatedAt: string;
 };
 
+export type RuntimeStoreStatus =
+  | { state: "ready" }
+  | { state: "needs-fix"; message: string }
+  | { state: "unavailable"; message: string };
+
 export type WorkspaceSummary = {
   key: string;
   name: string;
   path: string;
-  runCount: number;
+  runCount?: number;
   lastRunUpdatedAt?: string;
 };
 
