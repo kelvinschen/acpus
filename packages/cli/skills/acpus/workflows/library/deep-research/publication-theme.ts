@@ -1,8 +1,8 @@
 export const PUBLICATION_STYLE = String.raw`
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 /* Hallmark · genre: editorial · macrostructure: Long Document · theme: Newsprint · nav: document contents rail · enrichment: deterministic rich evidence */
-/* Hallmark · vibe: "near-white cool paper, graphite ink, restrained carmine" · paper: oklch(99.2% .002 250) · accent: oklch(44% .175 19) */
-/* Hallmark · headlines: system serif · reading: system sans · code: JetBrains Mono · axes: light / editorial / cool · context: explicit */
+/* Hallmark · vibe: "near-white warm paper, graphite ink, restrained carmine" · paper: oklch(99.35% .0035 88) · accent: oklch(44% .175 19) */
+/* Hallmark · headlines: system serif · reading: system sans · code: JetBrains Mono · axes: light / editorial / warm · context: explicit */
 /* Hallmark · contrast: pass (40–41) · honest: pass (46) · chrome: pass (47) · tokens: pass (48) · mobile: pass (34, 50–57) */
 :root {
   color-scheme: light;
@@ -43,14 +43,14 @@ export const PUBLICATION_STYLE = String.raw`
   --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
 
-  --color-page: oklch(99.2% .002 250);
-  --color-paper: oklch(99.65% .001 250);
-  --color-ink: oklch(24% .012 255);
-  --color-ink-strong: oklch(17% .014 255);
-  --color-muted: oklch(48% .012 250);
-  --color-line: oklch(85% .008 245);
-  --color-line-strong: oklch(58% .012 245);
-  --color-soft: oklch(96.5% .006 245);
+  --color-page: oklch(99.35% .0035 88);
+  --color-paper: oklch(99.8% .0015 88);
+  --color-ink: oklch(24% .009 72);
+  --color-ink-strong: oklch(17% .009 72);
+  --color-muted: oklch(48% .007 75);
+  --color-line: oklch(85% .008 82);
+  --color-line-strong: oklch(58% .008 78);
+  --color-soft: oklch(96.7% .0065 88);
   --color-accent: oklch(44% .175 19);
   --color-accent-soft: oklch(97% .012 20);
   --color-focus: oklch(48% .2 19);
@@ -60,13 +60,13 @@ export const PUBLICATION_STYLE = String.raw`
   --color-danger-soft: oklch(97% .012 20);
   --color-tip: oklch(45% .085 190);
   --color-tip-soft: oklch(97% .012 195);
-  --color-source: oklch(96.3% .006 245);
-  --color-source-ink: oklch(23% .016 255);
-  --color-inline-code: oklch(93.8% .009 245);
-  --color-inline-code-ink: oklch(25% .028 250);
-  --color-code: oklch(96.7% .006 245);
-  --color-code-ink: oklch(24% .018 255);
-  --color-code-muted: oklch(45% .014 245);
+  --color-source: oklch(96.5% .006 86);
+  --color-source-ink: oklch(23% .01 72);
+  --color-inline-code: oklch(94% .008 86);
+  --color-inline-code-ink: oklch(25% .018 72);
+  --color-code: oklch(96.9% .006 86);
+  --color-code-ink: oklch(24% .012 72);
+  --color-code-muted: oklch(45% .012 78);
   --color-code-keyword: oklch(42% .15 19);
   --color-code-title: oklch(41% .085 255);
   --color-code-string: oklch(39% .08 190);

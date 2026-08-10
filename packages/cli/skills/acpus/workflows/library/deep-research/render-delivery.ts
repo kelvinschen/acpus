@@ -1523,7 +1523,7 @@ function documentHtml(markdown: string): string {
 <body class="is-loading"><!--
   DIRECTION CONTRACT
   THESIS: One deterministic editorial renderer keeps attention on the research instead of theme selection.
-  OWN-WORLD: Near-white cool paper, system-sans reading, system-serif headlines, JetBrains Mono evidence, restrained carmine, and only structural rulework; no paper texture, decorative lines, black gridwork, generic cards, or renderer-authored claims.
+  OWN-WORLD: Near-white warm paper, system-sans reading, system-serif headlines, JetBrains Mono evidence, restrained carmine, and only structural rulework; no paper texture, decorative lines, black gridwork, generic cards, or renderer-authored claims.
   STORY: Orient the reader, expose the governing relationship, then make evidence easy to inspect.
   FIRST VIEWPORT: Title, short thesis, and the first useful structural cue—not a decorative hero.
   FORM: A continuous single-column long document with a wrapping contents rail, aligned prose and callouts, and wider evidence surfaces.
