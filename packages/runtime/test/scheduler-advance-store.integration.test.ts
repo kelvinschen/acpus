@@ -388,16 +388,25 @@ describe("durable scheduler advance with store", () => {
     });
   });
 
-  it("renews a short lease while draining multiple derived transition batches", async () => {
+  it("renews ownership before each derived transition batch", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-derived-heartbeat", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
+      const originalHeartbeat = store.scheduler.heartbeatRun.bind(store.scheduler);
       const originalAppend = store.scheduler.tryAppendSchedulerEvents.bind(store.scheduler);
+      let renewedSinceAppend = false;
+      const derivedBatchRenewals: boolean[] = [];
+      store.scheduler.heartbeatRun = (...args) => {
+        const renewed = originalHeartbeat(...args);
+        renewedSinceAppend ||= renewed;
+        return renewed;
+      };
       store.scheduler.tryAppendSchedulerEvents = input => {
-        const result = originalAppend(input);
-        const until = performance.now() + 40;
-        while (performance.now() < until) {}
-        return result;
+        if (input.idempotencyKey.startsWith("scheduler:derived:")) {
+          derivedBatchRenewals.push(renewedSinceAppend);
+          renewedSinceAppend = false;
+        }
+        return originalAppend(input);
       };
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -405,7 +414,7 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner",
           store: store.scheduler,
-          leaseMs: 70,
+          leaseMs: 60_000,
           executor: { execute: () => Promise.reject(new Error("derived-only run must not execute a leaf")) },
           bootstrap: snapshot => snapshot.projection.frames.root ? [] : [{
             type: "frame.started",
@@ -422,6 +431,7 @@ describe("durable scheduler advance with store", () => {
             return [];
           },
         })).resolves.toMatchObject({ status: "completed" });
+        expect(derivedBatchRenewals).toEqual([true, true, true]);
       } finally {
         store.close();
       }
