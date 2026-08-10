@@ -1,5 +1,8 @@
+import { isAbsolute } from "node:path";
+import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { observeInspection, readInspection } from "@acpus/runtime";
+import { inspectTargetArtifacts, observeInspection, readInspection } from "@acpus/runtime";
+import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
@@ -167,6 +170,42 @@ describe.concurrent("coherent inspection observation", () => {
       expect((await iterator.next()).done).toBe(true);
     });
   });
+
+  it("returns artifacts only for the selected repeated occurrence with absolute paths", async () => {
+    await withRuntimeWorkspace("inspection-target-artifacts", async workspace => {
+      const admitted = await admitSyntheticWorkflow(workspace, repeatedArtifactWorkflow(), {
+        items: ["first", "second"],
+      });
+      expect(admitted.status).toBe("completed");
+      const occurrences = admitted.run.dynamic?.nodeInstances
+        .filter(instance => instance.nodeId === "write")
+        .sort((left, right) => {
+          const leftIndex = left.instancePath?.find(segment => segment.kind === "fanout")?.itemIndex ?? -1;
+          const rightIndex = right.instancePath?.find(segment => segment.kind === "fanout")?.itemIndex ?? -1;
+          return leftIndex - rightIndex;
+        }) ?? [];
+      expect(occurrences).toHaveLength(2);
+
+      const selected = occurrences[0]!;
+      const selector = deriveOccurrenceRef(selected.instancePath!);
+      const inspected = await inspectTargetArtifacts(workspace, {
+        runId: admitted.run.id,
+        target: selector,
+      });
+      if (inspected.isErr()) throw new Error(inspected.error.message);
+
+      expect(inspected.value.subject.ref).toBe(selector);
+      expect(inspected.value.artifacts).toEqual([
+        expect.objectContaining({
+          runId: admitted.run.id,
+          nodeKey: selected.nodeKey,
+          attempt: 1,
+        }),
+      ]);
+      expect(isAbsolute(inspected.value.artifacts[0]!.path)).toBe(true);
+      expect(inspected.value.artifacts.some(artifact => artifact.nodeKey === occurrences[1]!.nodeKey)).toBe(false);
+    });
+  });
 });
 
 async function collect<T, E>(iterable: AsyncIterable<import("neverthrow").Result<T, E>>): Promise<T[]> {
@@ -176,4 +215,26 @@ async function collect<T, E>(iterable: AsyncIterable<import("neverthrow").Result
     observations.push(result.value);
   }
   return observations;
+}
+
+function repeatedArtifactWorkflow() {
+  return defineWorkflow({
+    name: "inspection-target-artifacts",
+    inputSchema: z.object({ items: z.array(z.string()) }),
+  }).build(({ input, step }) => {
+    const outputs = step("batch").fanout({
+      over: input.items,
+      do({ item, itemIndex }) {
+        const result = step("write").task({
+          input: { item, itemIndex },
+          exec: async ({ input, artifact }) => ({
+            item: input.item,
+            artifact: await artifact.write("result.txt", `${input.item}\n`),
+          }),
+        });
+        return { item: result.output.item, artifact: result.output.artifact };
+      },
+    });
+    return { outputs: outputs.output };
+  });
 }

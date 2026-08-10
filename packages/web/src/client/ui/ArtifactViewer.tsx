@@ -116,11 +116,12 @@ export function ArtifactViewer({
     }}>
       <DialogContent
         className="artifact-viewer"
-        overlayClassName="artifact-viewer-overlay"
+        showOverlay={false}
         onCloseAutoFocus={event => {
           event.preventDefault();
           restoreFocus?.focus();
         }}
+        onPointerDownOutside={event => event.preventDefault()}
         onEscapeKeyDown={event => {
           event.preventDefault();
           event.stopPropagation();

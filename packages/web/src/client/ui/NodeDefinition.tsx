@@ -28,7 +28,7 @@ export function NodeDefinitionSection({
   return <JsonSection title="Definition" value={definitionFields(detail)} expandNested />;
 }
 
-export function AgentDefinitionSection({
+function AgentDefinitionSection({
   detail,
   agentProfile,
   runtimeModel,

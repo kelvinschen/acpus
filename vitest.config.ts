@@ -13,6 +13,7 @@ export default defineConfig({
     conditions: ["development", "node", "import", "default"]
   },
   test: {
+    slowTestThreshold: 1_000,
     coverage: {
       reporter: ["text", "html"]
     },

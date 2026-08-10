@@ -31,8 +31,6 @@ export type RunInspectionRunSummary = {
   };
 };
 
-type RunInspectionDecisionRunSummary = Omit<RunInspectionRunSummary, "agentUsage">;
-
 export type RunInspectionStatus =
   | "not_started"
   | "not_selected"
@@ -174,20 +172,6 @@ export type RunInspectionItem<AgentState extends { key: string } = AgentDecision
   };
 };
 
-export type RunInspectionOverviewAction =
-  | { kind: "signal"; target: string; itemKey: string; schemaSummary?: string }
-  | { kind: "retry"; target: string; itemKey: string }
-  | { kind: "cancel"; target?: string; itemKey?: string }
-  | { kind: "steer"; target: string; itemKey: string };
-
-type RunInspectionAction =
-  | { kind: "inspect-timeline"; target: string }
-  | { kind: "follow-target"; target: string }
-  | { kind: "steer"; target: string }
-  | { kind: "signal"; target: string; schemaSummary?: string }
-  | { kind: "retry"; target?: string }
-  | { kind: "cancel"; target?: string };
-
 export type RunInspectionStaticNode = {
   nodeId: string;
   kind: NodeIR["kind"];
@@ -198,21 +182,6 @@ export type RunInspectionStaticNode = {
   outputSchema?: SchemaIR;
   agent?: string;
   agentDefinition?: AgentDefinitionIR;
-};
-
-export type RunInspectionSnapshot = {
-  schemaVersion: 2;
-  kind: "snapshot";
-  run: RunInspectionDecisionRunSummary;
-  counts: RunInspectionStatusCounts;
-  items: RunInspectionItem[];
-  availableActions: RunInspectionOverviewAction[];
-  hooks?: RunDetails["hooks"];
-  output?: JsonValue;
-  all?: true;
-  scope?: {
-    ref: string;
-  };
 };
 
 export type RunInspectionTarget = {
@@ -378,36 +347,11 @@ export type RunInspectionPulse = {
   updatedAt: string;
 };
 
-export type RunInspectionAttention = {
-  code: "terminal_failure" | "timed_out" | "awaiting_input";
-  summary: string;
-};
-
 export type RunInspectionVisibility = {
   state: "degraded";
   reason:
     | "observation-gap"
     | "unrecognized-provider-activity";
-};
-
-export type RunInspectionTargetSummaryDocument = {
-  schemaVersion: 2;
-  kind: "target";
-  run: {
-    id: string;
-    status: RunStatus;
-    updatedAt: string;
-  };
-  subject: RunInspectionSubject;
-  state: RunInspectionTargetState;
-  pulse?: RunInspectionPulse;
-  attention?: RunInspectionAttention;
-  visibility?: RunInspectionVisibility;
-  availableActions: RunInspectionAction[];
-  occurrence?: {
-    total: number;
-    counts: RunInspectionStatusCounts;
-  };
 };
 
 export type RunInspectionExcerpt = {
@@ -518,21 +462,6 @@ export type RunInspectionTimelineEntry =
       dropped: number;
       reason: string;
     };
-
-export type RunInspectionTimelineDocument = {
-  schemaVersion: 2;
-  kind: "timeline";
-  run: {
-    id: string;
-    status: RunStatus;
-    updatedAt: string;
-  };
-  subject: RunInspectionSubject;
-  state: RunInspectionTargetState;
-  visibility?: RunInspectionVisibility;
-  current?: RunInspectionCurrentActivity;
-  recent: RunInspectionTimelineEntry[];
-};
 
 export type RunInspectionChange = {
   sequence?: number;

@@ -48,8 +48,8 @@ function runProject(vitestCli, project) {
     let spawnError;
 
     activeChildren.add(child);
-    child.stdout.on("data", chunk => output.push(chunk));
-    child.stderr.on("data", chunk => output.push(chunk));
+    child.stdout.on("data", chunk => output.push({ stream: process.stdout, chunk }));
+    child.stderr.on("data", chunk => output.push({ stream: process.stderr, chunk }));
     child.once("error", error => {
       spawnError = error;
     });
@@ -97,6 +97,6 @@ function killChild(child, signal) {
 function printResult(name, output, code, signal, spawnError) {
   const status = interrupted ? "INTERRUPTED" : code === 0 ? "PASS" : `FAIL${signal ? ` (${signal})` : ""}`;
   process.stdout.write(`\n[test:${name}] ${status}\n`);
-  if (output.length > 0) process.stdout.write(Buffer.concat(output));
-  if (spawnError) process.stdout.write(`${spawnError.stack ?? spawnError.message}\n`);
+  for (const { stream, chunk } of output) stream.write(chunk);
+  if (spawnError) process.stderr.write(`${spawnError.stack ?? spawnError.message}\n`);
 }

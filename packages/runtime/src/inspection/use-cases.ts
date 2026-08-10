@@ -19,25 +19,20 @@ import {
 import {
   inspectionSubject,
   inspectionTargetState,
+  projectInspectionTargetSummaryView,
+  projectInspectionTargetTimelineView,
   targetAttemptId,
 } from "./decision-projection.js";
 import { projectAgentExecution } from "./agent-execution-projection.js";
 import {
   inspectionStaticNodes,
+  projectInspectionRunDecisionView,
+  projectInspectionRunView,
   resolveTargetState,
   terminalRun,
 } from "./projection.js";
-import {
-  boundedInspectionText,
-  projectInspectionRunDecisionView,
-  projectInspectionRunView,
-  projectInspectionTargetSummaryView,
-  projectInspectionTargetTimelineView,
-  resolveInspectionDetails,
-} from "./coherent-projection.js";
 import { resolveInspectionTarget } from "./target-resolution.js";
 import { deriveOccurrenceRef } from "../scheduler/occurrence-ref.js";
-import { signalBlocksInspectionTarget } from "./signal-boundary.js";
 import { projectInspectionForensicsView } from "./forensics-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 import type {
@@ -110,7 +105,7 @@ export async function* observeInspection(
       return;
     }
     if (sameInspectionToken(previous.token, token.value)) continue;
-    cycle = await readCoherentCycle(cwd, query.view, previous.pin, previous.token.eventSequence);
+    cycle = await readCoherentCycle(cwd, query.view, previous.pinnedTarget, previous.token.eventSequence);
     if (cycle.isErr()) {
       yield err(cycle.error);
       return;
@@ -140,18 +135,12 @@ type CoherentInspectionRun = {
   frozen: NonNullable<RunInspectionStoreRead["frozen"]>;
 };
 
-type CoherentPin = {
-  target: string;
-  exactAttempt: boolean;
-};
-
 type CoherentCycle = {
   view: InspectionView;
   changeView: InspectionView;
   token: RunInspectionStoreRead["cursor"];
   run: NonNullable<RunInspectionStoreRead["run"]>;
-  details?: ResolvedTargetState;
-  pin?: CoherentPin;
+  pinnedTarget?: string;
   events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>;
 };
 
@@ -190,11 +179,11 @@ function withCoherentInspectionRun<T>(
 async function readCoherentCycle(
   cwd: string,
   view: InspectionViewQuery,
-  pin?: CoherentPin,
+  pinnedTarget?: string,
   afterEventSequence?: number,
 ): Promise<Result<CoherentCycle, InspectionError>> {
   return withCoherentInspectionRun(cwd, view.runId, async state => {
-    const read = await readCoherentView(state, view, pin);
+    const read = await readCoherentView(state, view, pinnedTarget);
     if (read.isErr()) return err(read.error);
     if (read.value.kind === "candidates") {
       return err({
@@ -206,7 +195,7 @@ async function readCoherentCycle(
       });
     }
     const resolved = view.kind === "target"
-      ? resolveCoherentTarget(state, view.target, pin)
+      ? resolveCoherentTarget(state, view.target, pinnedTarget)
       : undefined;
     if (resolved?.isErr()) return err(resolved.error);
     if (view.kind === "target" && resolved?.isOk() && resolved.value.kind === "candidates") {
@@ -229,13 +218,7 @@ async function readCoherentCycle(
         ? []
         : state.store.getCommittedRuntimeEventsAfter(state.run.id, afterEventSequence),
       ...(resolved?.isOk() && resolved.value.kind === "resolved"
-        ? {
-            details: resolved.value.details,
-            pin: {
-              target: resolved.value.target,
-              exactAttempt: resolved.value.details.target.kind === "attempt",
-            },
-          }
+        ? { pinnedTarget: resolved.value.target }
         : {}),
     });
   });
@@ -244,7 +227,7 @@ async function readCoherentCycle(
 async function readCoherentView(
   state: CoherentInspectionRun,
   view: InspectionViewQuery,
-  pin?: CoherentPin,
+  pinnedTarget?: string,
 ): Promise<Result<InspectionRead, InspectionError>> {
   if (view.kind === "run") {
     const observations = await coherentRunObservations(state);
@@ -254,7 +237,7 @@ async function readCoherentView(
       ...(observations ? { observations } : {}),
     }));
   }
-  const resolved = resolveCoherentTarget(state, view.target, pin);
+  const resolved = resolveCoherentTarget(state, view.target, pinnedTarget);
   if (resolved.isErr()) return err(resolved.error);
   if (resolved.value.kind === "candidates") return ok(resolved.value.candidates);
   const details = resolved.value.details;
@@ -266,10 +249,10 @@ async function readCoherentView(
       ...(observations ? { observations } : {}),
     });
     const acp = acpSilence(details);
-    return ok(withRequiredSignal({
+    return ok({
       ...projected,
       ...(acp === undefined ? {} : { acp }),
-    }, requiredTargetSignal(state.run, details)));
+    });
   }
   if (view.detail === "forensics") {
     return ok(projectInspectionForensicsView({
@@ -293,7 +276,7 @@ async function readCoherentView(
     ),
     observations,
   });
-  return ok(withRequiredSignal(projected, requiredTargetSignal(state.run, details)));
+  return ok(projected);
 }
 
 function acpSilence(details: ResolvedTargetState): { silentForMs: number } | undefined {
@@ -312,17 +295,17 @@ function acpSilence(details: ResolvedTargetState): { silentForMs: number } | und
 function resolveCoherentTarget(
   state: CoherentInspectionRun,
   target: string,
-  pin?: CoherentPin,
+  pinnedTarget?: string,
 ): Result<CoherentTarget, InspectionError> {
-  if (pin) {
-    const details = resolveInspectionDetails({
+  if (pinnedTarget) {
+    const details = resolveTargetState({
       ir: state.frozen.ir,
       run: state.run,
       artifacts: state.read.artifacts,
-      target: pin.target,
+      target: pinnedTarget,
     });
     return details
-      ? ok({ kind: "resolved", target: pin.target, details })
+      ? ok({ kind: "resolved", target: pinnedTarget, details })
       : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
   }
   const staticNodes = inspectionStaticNodes(state.frozen.ir);
@@ -351,7 +334,7 @@ function resolveCoherentTarget(
   if (resolution.kind === "candidates") {
     return ok({ kind: "candidates", candidates: resolution.candidates });
   }
-  const details = resolveInspectionDetails({
+  const details = resolveTargetState({
     ir: state.frozen.ir,
     run: state.run,
     artifacts: state.read.artifacts,
@@ -425,108 +408,26 @@ function observationCloseReason(
   until: ObserveInspectionQuery["until"],
 ): Extract<InspectionObservation, { kind: "closed" }>["reason"] | undefined {
   if (cycle.view.kind === "run") {
-    if (terminalRun(cycle.run.status)) return "subject-terminal";
-    if (until === "decision-boundary" && cycle.run.status === "paused") return "paused";
-    if (until === "decision-boundary" && cycle.run.dynamic?.signalWaits.some(wait => wait.status === "awaiting"
-      && signalBlocksInspectionTarget(cycle.run, wait.nodeKey))) return "awaiting-input";
+    if (terminalRun(cycle.view.run.status)) return "subject-terminal";
+    if (until === "decision-boundary" && cycle.view.run.status === "paused") return "paused";
+    if (until === "decision-boundary" && treeAwaitsInput(cycle.view.tree)) return "awaiting-input";
     return undefined;
   }
   if (terminalInspectionState(cycle.view.state.status)) return "subject-terminal";
   if (until === "subject-terminal") return undefined;
   if (cycle.run.status === "paused") return "paused";
-  return cycle.details && targetHasRequiredSignal(cycle.run, cycle.details) ? "awaiting-input" : undefined;
+  if (cycle.view.detail === "summary" && cycle.view.attention?.kind === "awaiting-input") return "awaiting-input";
+  if (cycle.view.detail === "timeline" && cycle.view.current?.kind === "signal") return "awaiting-input";
+  return undefined;
+}
+
+function treeAwaitsInput(tree: Extract<InspectionView, { kind: "run" }>["tree"]): boolean {
+  return tree.some(entry => (entry.type === "item" && entry.attention?.kind === "awaiting-input")
+    || treeAwaitsInput(entry.children));
 }
 
 function terminalInspectionState(status: string): boolean {
   return status === "completed" || status === "failed" || status === "timed_out" || status === "cancelled" || status === "not_selected";
-}
-
-function targetHasRequiredSignal(run: NonNullable<RunInspectionStoreRead["run"]>, details: ResolvedTargetState): boolean {
-  return requiredTargetSignal(run, details) !== undefined;
-}
-
-type RequiredTargetSignal = {
-  selector: string;
-  prompt?: string;
-  expected?: string;
-};
-
-function requiredTargetSignal(
-  run: NonNullable<RunInspectionStoreRead["run"]>,
-  details: ResolvedTargetState,
-): RequiredTargetSignal | undefined {
-  const rootTarget = details.target.kind === "frame" && details.target.id === "root";
-  const targetPath = targetInstancePath(run, details);
-  const wait = (run.dynamic?.signalWaits ?? []).find(candidate => {
-    if (candidate.status !== "awaiting") return false;
-    if (rootTarget) return signalBlocksInspectionTarget(run, candidate.nodeKey);
-    const path = run.dynamic?.nodeInstances.find(instance => instance.nodeKey === candidate.nodeKey)?.instancePath;
-    if (!targetPath) {
-      return details.signalWaits.some(selected => selected.nodeKey === candidate.nodeKey)
-        && signalBlocksInspectionTarget(run, candidate.nodeKey);
-    }
-    return path !== undefined && path.length >= targetPath.length
-      && signalBlocksInspectionTarget(run, candidate.nodeKey)
-      && targetPath.every((segment, index) => samePathSegment(segment, path[index]!));
-  });
-  if (!wait) return undefined;
-  const instance = run.dynamic?.nodeInstances.find(candidate => candidate.nodeKey === wait.nodeKey);
-  return {
-    selector: instance?.instancePath ? deriveOccurrenceRef(instance.instancePath) : details.target.ref ?? details.target.id,
-    ...(wait.renderedPrompt ? { prompt: wait.renderedPrompt } : {}),
-  };
-}
-
-function withRequiredSignal<T extends Extract<InspectionView, { kind: "target"; detail: "summary" | "timeline" }>>(
-  view: T,
-  signal: RequiredTargetSignal | undefined,
-): T {
-  if (view.detail === "summary") {
-    if (!signal) {
-      if (view.attention?.kind !== "awaiting-input") return view;
-      const { attention: _attention, ...withoutAttention } = view;
-      return withoutAttention as T;
-    }
-    return {
-      ...view,
-      attention: {
-        kind: "awaiting-input",
-        summary: boundedInspectionText(signal.prompt ?? "Input is required."),
-        signal: signal.selector,
-        ...(signal.prompt ? { prompt: boundedInspectionText(signal.prompt) } : {}),
-        ...(signal.expected ? { expected: boundedInspectionText(signal.expected) } : {}),
-      },
-    } as T;
-  }
-  if (!signal) {
-    if (view.current?.kind !== "signal") return view;
-    const { current: _current, ...withoutCurrent } = view;
-    return withoutCurrent as T;
-  }
-  return {
-    ...view,
-    current: {
-      kind: "signal",
-      phase: "awaiting",
-      signal: signal.selector,
-      ...(signal.prompt ? { prompt: boundedInspectionText(signal.prompt) } : {}),
-      ...(signal.expected ? { expected: boundedInspectionText(signal.expected) } : {}),
-    },
-  } as T;
-}
-
-function targetInstancePath(run: NonNullable<RunInspectionStoreRead["run"]>, details: ResolvedTargetState) {
-  const nodeKey = details.summary.nodeKey
-    ?? details.attempts.find(attempt => attempt.attemptId === details.target.id)?.nodeKey
-    ?? details.frames.find(frame => frame.frameKey === details.target.id)?.nodeKey;
-  return nodeKey === undefined
-    ? details.frames.find(frame => frame.frameKey === details.target.id)?.instancePath
-    : run.dynamic?.nodeInstances.find(instance => instance.nodeKey === nodeKey)?.instancePath
-      ?? run.dynamic?.frames.find(frame => frame.nodeKey === nodeKey)?.instancePath;
-}
-
-function samePathSegment(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function inspectionChanges(

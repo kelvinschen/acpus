@@ -3035,48 +3035,25 @@ html[data-run-transition="back"]::view-transition-new(acpus-run-surface) {
 }
 
 @keyframes artifact-viewer-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes artifact-viewer-out {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(8px); }
-}
-
-@keyframes artifact-viewer-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-@keyframes artifact-viewer-overlay-out {
+@keyframes artifact-viewer-out {
   from { opacity: 1; }
   to { opacity: 0; }
 }
 
-.artifact-viewer-overlay {
-  padding: 0;
-  background: rgb(var(--ui-ink-rgb) / 0.28);
-}
-
-.artifact-viewer-overlay[data-state="open"] {
-  animation: artifact-viewer-overlay-in 160ms var(--ease-out-strong) both;
-}
-
-.artifact-viewer-overlay[data-state="closed"] {
-  animation: artifact-viewer-overlay-out 120ms var(--ease-out-strong) both;
-}
-
 .artifact-viewer.dialog-content {
-  inset: 20px 24px;
-  width: auto;
-  height: auto;
+  inset: 0;
+  width: 100dvw;
+  height: 100dvh;
   box-sizing: border-box;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  border: 2px solid var(--ui-ink);
+  border: 0;
   background: var(--ui-surface-raised);
-  box-shadow: var(--ui-shadow-card);
+  box-shadow: none;
   transform: none;
   overflow: hidden;
 }
@@ -3404,14 +3381,6 @@ html[data-run-transition="back"]::view-transition-new(acpus-run-surface) {
 
   .artifact-title {
     grid-column: 1 / -1;
-  }
-
-  .artifact-viewer.dialog-content {
-    inset: 0;
-    width: 100dvw;
-    height: 100dvh;
-    border: 0;
-    box-shadow: none;
   }
 
   .artifact-viewer-header {
@@ -4959,7 +4928,6 @@ button.composite-title:focus-visible {
 	  .state-skeleton-line {
 	    animation: none;
 	  }
-  .artifact-viewer-overlay,
   .artifact-viewer.dialog-content,
   .artifact-viewer-state.loading > svg {
     animation: none;

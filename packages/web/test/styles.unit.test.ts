@@ -155,10 +155,13 @@ describe("workflow graph visual contract", () => {
 
   it("uses a context-preserving full-screen Artifact reading surface", () => {
     const viewer = rule(".artifact-viewer.dialog-content");
-    expect(viewer).toContain("inset: 20px 24px;");
+    expect(viewer).toContain("inset: 0;");
+    expect(viewer).toContain("width: 100dvw;");
+    expect(viewer).toContain("height: 100dvh;");
     expect(viewer).toContain("grid-template-rows: auto minmax(0, 1fr);");
-    expect(viewer).toContain("border: 2px solid var(--ui-ink);");
-    expect(viewer).toContain("box-shadow: var(--ui-shadow-card);");
+    expect(viewer).toContain("border: 0;");
+    expect(viewer).toContain("box-shadow: none;");
+    expect(styles).not.toContain(".artifact-viewer-overlay");
     expect(rule(".artifact-viewer-body")).toContain("overflow: hidden;");
     expect(rule(".artifact-viewer-document")).toContain("overflow: auto;");
     expect(rule(".markdown-document.reading")).toContain("width: min(100%, 72ch);");
@@ -168,10 +171,6 @@ describe("workflow graph visual contract", () => {
 
     const narrowStart = styles.indexOf("@media (max-width: 640px)");
     const narrow = styles.slice(narrowStart, styles.indexOf("@media", narrowStart + 1));
-    expect(narrow).toContain(".artifact-viewer.dialog-content");
-    expect(narrow).toContain("inset: 0;");
-    expect(narrow).toContain("width: 100dvw;");
-    expect(narrow).toContain("height: 100dvh;");
     expect(narrow).toContain(".artifact-viewer-action-strip");
     expect(narrow).toContain("overflow-x: auto;");
   });
@@ -209,11 +208,6 @@ describe("workflow graph visual contract", () => {
       .toContain("animation: artifact-viewer-in 160ms var(--ease-out-strong) both;");
     expect(rule('.artifact-viewer.dialog-content[data-state="closed"]'))
       .toContain("animation: artifact-viewer-out 120ms var(--ease-out-strong) both;");
-    expect(rule('.artifact-viewer-overlay[data-state="open"]'))
-      .toContain("animation: artifact-viewer-overlay-in 160ms var(--ease-out-strong) both;");
-    expect(rule('.artifact-viewer-overlay[data-state="closed"]'))
-      .toContain("animation: artifact-viewer-overlay-out 120ms var(--ease-out-strong) both;");
-
     const reducedMotion = styles.slice(styles.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(reducedMotion).toContain(".artifact-viewer.dialog-content,");
     expect(reducedMotion).toContain("animation: none;");

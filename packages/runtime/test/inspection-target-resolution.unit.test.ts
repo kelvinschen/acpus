@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { WorkflowIR } from "@acpus/core/ir";
+import { resolveTargetState } from "../src/inspection/projection.js";
 import {
   deriveOccurrenceRef,
   resolveOccurrenceRefCandidate,
@@ -103,6 +105,135 @@ describe("inspection occurrence targets", () => {
     delete run.dynamic!.nodeInstances[0]!.instancePath;
     expect(() => resolveInspectionTarget({ run, staticNodes, target: "verify" }))
       .toThrow("Materialized occurrence 'verify~item-0' has no instance path.");
+  });
+});
+
+describe("resolved inspection target state", () => {
+  it("prefers the selected attempt's runtime Task input and orders attempts by attempt number", () => {
+    const ir = taskWorkflow();
+    const run = singleNodeRun("work", "work~1");
+
+    expect(resolvedState(ir, run, "work").summary.input).toEqual({
+      kind: "authored",
+      value: "\"authored\"",
+    });
+
+    run.dynamic!.attempts = [{
+      attemptId: "attempt-1",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 1,
+      status: "failed",
+      startedAt: "2026-07-29T00:00:03.000Z",
+      finishedAt: "2026-07-29T00:00:04.000Z",
+    }, {
+      attemptId: "attempt-2",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 2,
+      status: "started",
+      startedAt: "2026-07-29T00:00:01.000Z",
+    }];
+    run.dynamic!.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-2",
+      kind: "task_attempt",
+      metadata: { input: ["runtime", 2] },
+      createdAt: "2026-07-29T00:00:02.000Z",
+    }];
+
+    const details = resolvedState(ir, run, "work");
+
+    expect(details.summary).toMatchObject({
+      input: { kind: "runtime", value: ["runtime", 2] },
+      latestAttempt: {
+        attemptId: "attempt-2",
+        attemptNo: 2,
+      },
+    });
+  });
+
+  it("projects the effective Agent model and terminal metadata fallback", () => {
+    const ir = agentWorkflow();
+    const run = singleNodeRun("review", "review~1");
+    run.dynamic!.nodeInstances[0]!.status = "completed";
+    run.dynamic!.attempts = [{
+      attemptId: "attempt-1",
+      nodeKey: "review~1",
+      nodeId: "review",
+      attemptNo: 1,
+      status: "completed",
+      startedAt: "2026-07-29T00:00:01.000Z",
+      finishedAt: "2026-07-29T00:00:04.000Z",
+    }];
+    run.dynamic!.executionMetadata = [{
+      id: 1,
+      attemptId: "attempt-1",
+      kind: "agent_attempt",
+      metadata: {
+        turnCount: 2,
+        turns: [{
+          turn: 2,
+          summary: {
+            stopReason: "end_turn",
+            context: { used: 4_000, size: 20_000, updatedAt: "2026-07-29T00:00:05.000Z" },
+            tokenUsage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 },
+          },
+        }],
+      },
+      createdAt: "2026-07-29T00:00:04.000Z",
+    }];
+
+    const details = resolvedState(ir, run, "review");
+
+    expect(details.summary.agent).toMatchObject({
+      key: "reviewer",
+      backend: { kind: "use", name: "claude" },
+      model: "opus",
+      turnCount: 2,
+      lastObservedAt: "2026-07-29T00:00:05.000Z",
+      context: { used: 4_000, size: 20_000 },
+      tokenUsage: { inputTokens: 300, outputTokens: 40, totalTokens: 340 },
+      stopReason: "end_turn",
+    });
+  });
+
+  it("retains complete acpx failure evidence for the narrow node read", () => {
+    const ir = agentWorkflow();
+    const run = singleNodeRun("review", "review~1");
+    run.dynamic!.nodeInstances[0]!.status = "failed";
+    run.dynamic!.nodeInstances[0]!.statusReason = "provider_exit";
+    run.dynamic!.nodeInstances[0]!.error = {
+      origin: "provider",
+      code: "provider_exit",
+      message: "Provider configuration failed.",
+      upstream: {
+        source: "acpx",
+        operation: "sessions.ensure",
+        exitCode: 1,
+        code: "RUNTIME",
+        origin: "cli",
+        protocol: { name: "json-rpc", code: -32603, message: "Internal error" },
+        data: { details: "credential helper failed", nested: { preserved: true } },
+      },
+    };
+
+    const details = resolvedState(ir, run, "review");
+
+    expect(details.summary.failure).toEqual({
+      origin: "provider",
+      code: "provider_exit",
+      message: "Provider configuration failed.",
+      upstream: {
+        source: "acpx",
+        operation: "sessions.ensure",
+        exitCode: 1,
+        code: "RUNTIME",
+        origin: "cli",
+        protocol: { name: "json-rpc", code: -32603, message: "Internal error" },
+        data: { details: "credential helper failed", nested: { preserved: true } },
+      },
+    });
   });
 });
 
@@ -211,4 +342,91 @@ function thirteenOccurrencesRun(): RunDetails {
   });
   run.dynamic!.attempts = [];
   return run;
+}
+
+function taskWorkflow(): WorkflowIR {
+  return {
+    irVersion: 7,
+    name: "resolved-task",
+    agents: {},
+    root: {
+      output: { kind: "object", fields: {} },
+      nodes: [{
+        id: "work",
+        kind: "task",
+        run: {
+          input: { kind: "literal", value: "authored" },
+          target: { kind: "inline", source: "async function task() {}" },
+        },
+      }],
+    },
+    diagnostics: [],
+  };
+}
+
+function agentWorkflow(): WorkflowIR {
+  return {
+    irVersion: 7,
+    name: "resolved-agent",
+    agents: {
+      reviewer: {
+        kind: "agent_definition",
+        use: "claude",
+        model: "sonnet",
+        config: { model: "opus" },
+      },
+    },
+    root: {
+      output: { kind: "object", fields: {} },
+      nodes: [{
+        id: "review",
+        kind: "agent",
+        run: { agent: "reviewer", prompt: { kind: "literal", value: "Review" } },
+      }],
+    },
+    diagnostics: [],
+  };
+}
+
+function singleNodeRun(nodeId: string, nodeKey: string): RunDetails {
+  return {
+    id: "run-resolved",
+    name: "resolved-target",
+    status: "running",
+    workflowEntry: "workflow.ts",
+    sourceGraphDigest: "digest",
+    progressVersion: 0,
+    input: {},
+    createdAt: "2026-07-29T00:00:00.000Z",
+    updatedAt: "2026-07-29T00:00:05.000Z",
+    eventCount: 0,
+    nodeCount: 1,
+    hooks: [],
+    execution: { state: "active", lastStatus: "running" },
+    dynamic: {
+      version: 1,
+      progressVersion: 0,
+      frames: [],
+      nodeInstances: [{
+        nodeKey,
+        nodeId,
+        instancePath: [{ kind: "node", nodeId }],
+        status: "running",
+        createdAt: "2026-07-29T00:00:01.000Z",
+        updatedAt: "2026-07-29T00:00:05.000Z",
+      }],
+      attempts: [],
+      groups: [],
+      groupMembers: [],
+      signalWaits: [],
+      executionMetadata: [],
+      progress: [],
+    },
+  };
+}
+
+function resolvedState(ir: WorkflowIR, run: RunDetails, target: string) {
+  const details = resolveTargetState({ ir, run, target, artifacts: [] });
+  if (!details) throw new Error(`Expected target '${target}' to resolve.`);
+  return details;
 }

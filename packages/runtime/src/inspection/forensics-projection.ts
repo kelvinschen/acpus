@@ -9,7 +9,7 @@ import type {
   RunDynamicFrame,
   RunDynamicNodeInstance,
 } from "../store/store.js";
-import { inspectionSubject } from "./decision-projection.js";
+import { inspectionViewSubject } from "./decision-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 import type {
   ForensicsDefinition,
@@ -17,7 +17,6 @@ import type {
   ForensicsInvocation,
   ForensicsResult,
   ForensicsScopeDefinition,
-  InspectionSubject,
   InspectionView,
   RunInspectionStatus,
 } from "./types.js";
@@ -34,11 +33,12 @@ export function projectInspectionForensicsView(input: {
   const context = executionContext(input.frozen.ir, input.run, selected.path);
   const status = targetStatus(input.frozen.ir, input.run, input.details, selected, node);
   const durationMs = targetDurationMs(input.run, selected, root);
+  const subject = inspectionViewSubject(input.details);
   return {
     kind: "target",
     detail: "forensics",
     run: { id: input.run.id, status: input.run.status },
-    subject: coherentSubject(input.details),
+    subject: root ? { ...subject, selector: "root" } : subject,
     state: {
       status,
       ...(durationMs === undefined ? {} : { durationMs }),
@@ -95,18 +95,6 @@ function targetNode(ir: WorkflowIR, details: ResolvedTargetState): NodeIR | unde
     ?? details.frames.find(candidate => candidate.frameKey === details.target.id)?.nodeId;
   if (!nodeId) return undefined;
   return Array.from(walkNodes(ir.root), visit => visit.node).find(node => node.id === nodeId);
-}
-
-function coherentSubject(details: ResolvedTargetState): InspectionSubject {
-  const subject = inspectionSubject(details);
-  const selector = details.target.id === "root"
-    ? "root"
-    : subject.ref ?? (details.target.kind === "static-node" ? details.target.id : undefined);
-  return {
-    label: subject.label,
-    kind: subject.kind,
-    ...(selector === undefined ? {} : { selector }),
-  };
 }
 
 function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefinition {

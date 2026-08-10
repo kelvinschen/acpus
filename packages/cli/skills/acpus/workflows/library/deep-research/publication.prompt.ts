@@ -61,7 +61,8 @@ only for rare, substantial subdivisions. Keep terminology stable.
 - Use a vertical list only for a real parallel set or sequence. Give items short
   bold labels when they improve scanning; otherwise bold only a short
   conclusion, condition, contrast, actor, or action. **NEVER** bold a complete
-  section deck, sentence, or paragraph.
+  section deck, sentence, or paragraph. For CJK labels, put trailing punctuation
+  outside bold markers: **标签**：正文.
 - Use contrast only for a material distinction. Use “not X but Y” /
   “不是 X，而是 Y” only to reject a plausible reading; otherwise state Y
   directly. Let real categories determine item count.
@@ -127,6 +128,16 @@ prose and rich form reinforce each other.
   risk: start with > [!TYPE] and an optional title, prefix every content line
   with >, and choose NOTE, TIP, IMPORTANT, WARNING, or CAUTION. Do not repeat
   adjacent prose.
+- Use an interactive fence when reader-controlled input or state makes a
+  relationship materially clearer than Markdown, Mermaid, or ECharts. Put one
+  self-contained HTML document or fragment with all needed CSS and JavaScript in
+  it; HTTPS CDN resources are allowed. **NEVER** use it for decoration or to
+  rebuild ordinary prose, alerts, tables, diagrams, or charts.
+- For structure, state, sequence, or flow whose relationships are costly to
+  reconstruct, use a Mermaid fence. Beautiful Mermaid 1.1.3 accepts flowchart,
+  stateDiagram-v2, sequenceDiagram, classDiagram, and erDiagram; use ECharts
+  for quantitative charts. **ALWAYS** put the declaration alone on the first
+  line; use TB or TD for a long chain.
 - Use a short language-tagged code block when a decisive interface, guard
   sequence, algorithm, state transition, data shape, or representative execution
   path is easier to verify in code than prose. State its question and retained
@@ -136,11 +147,6 @@ prose and rich form reinforce each other.
   **NEVER** use \(...\), \[...\], or plain parentheses as math delimiters.
   Define symbols, units, and assumptions nearby, keep citations outside, and
   interpret the result in words.
-- For structure, state, sequence, or flow whose relationships are costly to
-  reconstruct, use a Mermaid fence. Beautiful Mermaid 1.1.3 accepts flowchart,
-  stateDiagram-v2, sequenceDiagram, classDiagram, and erDiagram; use ECharts
-  for quantitative charts. **ALWAYS** put the declaration alone on the first
-  line; use TB or TD for a long chain.
 - Use a quantitative chart when comparison, magnitude, trend, distribution,
   composition, or progress is easier to perceive visually. Choose a table when
   exact lookup, mixed units, or dense labels dominate. An echarts fence contains
@@ -148,11 +154,6 @@ prose and rich form reinforce each other.
   change, scatter for distribution or correlation, and gauge for a bounded
   target. Put auditable labels and values in dataset.source when the form permits
   it so CDN failure retains a readable data table.
-- Use an interactive fence when reader-controlled input or state makes a
-  relationship materially clearer than Markdown, Mermaid, or ECharts. Put one
-  self-contained HTML document or fragment with all needed CSS and JavaScript in
-  it; HTTPS CDN resources are allowed. **NEVER** use it for decoration or to
-  rebuild ordinary prose, alerts, tables, diagrams, or charts.
 
 Minimal valid fence forms; use these exact lowercase special fence names:
 

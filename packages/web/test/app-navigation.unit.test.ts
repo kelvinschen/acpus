@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/client/ui/App.js";
-import { installReactActEnvironment } from "./support/react-act-environment.js";
+import { installReactActEnvironment, waitForReact } from "./support/react-act-environment.js";
 
 const api = vi.hoisted(() => ({
   getArtifactPreview: vi.fn(),
@@ -257,7 +257,7 @@ function restoreProperty(target: object, key: PropertyKey, descriptor: PropertyD
 describe("App run navigation", () => {
   it("opens on Runs without selecting a run, then enters and leaves Run Monitor", async () => {
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
 
     expect(container.querySelector(".runs-page-header h2")?.textContent).toBe("Runs");
     expect(container.querySelector('.nav-button[aria-label="Runs"]')?.getAttribute("aria-current")).toBe("page");
@@ -288,7 +288,7 @@ describe("App run navigation", () => {
   it("switches runs from Run Monitor without keeping the old graph selection", async () => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     await act(async () => {
       runCard("run_alpha")!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -316,13 +316,13 @@ describe("App run navigation", () => {
 
     expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_current", "run_beta");
     expect(container.querySelector('[data-testid="graph-target"]')?.textContent).toBe("none");
-    await vi.waitFor(() => expect(container.querySelector(".run-meta")?.textContent).toContain("run_beta"));
+    await waitForReact(() => expect(container.querySelector(".run-meta")?.textContent).toContain("run_beta"));
   });
 
   it("animates forward and back while safely interrupting the prior transition", async () => {
     const viewTransitions = installViewTransitions();
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     expect(viewTransitions.start).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -349,7 +349,7 @@ describe("App run navigation", () => {
   it("switches immediately without the animation API when reduced motion is requested", async () => {
     const viewTransitions = installViewTransitions({ reducedMotion: true });
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
 
     await act(async () => runCard("run_alpha")!.click());
     expect(container.querySelector('[aria-label="Run Monitor"]')).not.toBeNull();
@@ -361,7 +361,7 @@ describe("App run navigation", () => {
   it("ignores a superseded transition update callback", async () => {
     const viewTransitions = installViewTransitions({ updateImmediately: false });
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
 
     await act(async () => runCard("run_alpha")!.click());
     expect(viewTransitions.transitions).toHaveLength(1);
@@ -393,10 +393,10 @@ describe("App run navigation", () => {
     });
 
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     await selectWorkspace("reports");
 
-    await vi.waitFor(() => expect(runCard(remoteRun.id)).not.toBeNull());
+    await waitForReact(() => expect(runCard(remoteRun.id)).not.toBeNull());
     expect(runCard("run_alpha")).toBeNull();
     expect(api.listRuns).toHaveBeenCalledWith("ws_remote");
     expect(viewTransitions.start).not.toHaveBeenCalled();
@@ -405,7 +405,7 @@ describe("App run navigation", () => {
       runCard(remoteRun.id)!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
-    await vi.waitFor(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_remote", remoteRun.id));
+    await waitForReact(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_remote", remoteRun.id));
     expect(container.querySelector(".run-workspace-identity")?.textContent).toContain("reports");
     expect(container.querySelector(".workspace-access-state")?.textContent).toContain("Read only");
     expect(container.querySelector(".control-strip")).toBeNull();
@@ -427,21 +427,21 @@ describe("App run navigation", () => {
     });
 
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     await selectWorkspace("reports");
-    await vi.waitFor(() => expect(runCard(remoteRun.id)).not.toBeNull());
+    await waitForReact(() => expect(runCard(remoteRun.id)).not.toBeNull());
     await act(async () => {
       runCard(remoteRun.id)!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
-    await vi.waitFor(() => expect(container.querySelector('[aria-label="Run Monitor"]')).not.toBeNull());
+    await waitForReact(() => expect(container.querySelector('[aria-label="Run Monitor"]')).not.toBeNull());
 
     api.listWorkspaces.mockResolvedValue(workspaceCatalog);
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     });
 
-    await vi.waitFor(() => expect(container.querySelector(".workspace-unavailable-state")).not.toBeNull());
+    await waitForReact(() => expect(container.querySelector(".workspace-unavailable-state")).not.toBeNull());
     expect(container.querySelector(".workspace-unavailable-state")?.textContent).toContain("Workspace unavailable");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back to Runs"]')).not.toBeNull();
     expect(container.querySelector(".workspace-access-state")?.textContent).toContain("Unavailable");
@@ -454,16 +454,16 @@ describe("App run navigation", () => {
     api.listWorkspaces.mockResolvedValue(multiWorkspaceCatalog);
     api.listRuns.mockImplementation(async (workspaceKey: string) => workspaceKey === "ws_remote" ? [remoteRun] : runs);
     await renderApp();
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     await selectWorkspace("reports");
-    await vi.waitFor(() => expect(runCard(remoteRun.id)).not.toBeNull());
+    await waitForReact(() => expect(runCard(remoteRun.id)).not.toBeNull());
 
     api.listWorkspaces.mockResolvedValue(workspaceCatalog);
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     });
 
-    await vi.waitFor(() => expect(runCard("run_alpha")).not.toBeNull());
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Returned to the current workspace");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label^="Workspace:"]')?.getAttribute("aria-label")).toContain("workspace");
   });
@@ -474,7 +474,7 @@ describe("App run navigation", () => {
       .mockResolvedValueOnce(workspaceCatalog);
 
     await renderApp();
-    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("catalog unavailable"));
+    await waitForReact(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("catalog unavailable"));
     expect(api.listRuns).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -482,7 +482,7 @@ describe("App run navigation", () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    await vi.waitFor(() => expect(api.listRuns).toHaveBeenCalledWith("ws_current"));
+    await waitForReact(() => expect(api.listRuns).toHaveBeenCalledWith("ws_current"));
     expect(api.listRuns).not.toHaveBeenCalledWith(undefined);
   });
 });

@@ -8,22 +8,29 @@ import type {
   RunNodeProgress,
 } from "../store/store.js";
 import {
+  boundedInspectionText,
+  inspectionCounts,
   normalizeInspectionStatus,
   semanticChanges,
+  visibleInspectionState,
 } from "./projection.js";
 import { createAgentActivityProjector } from "./agent-activity-projection.js";
-import { occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
+import { deriveOccurrenceRef, occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
+import { signalBlocksInspectionTarget } from "./signal-boundary.js";
 import type {
-  RunInspectionAttention,
+  InspectionActivity,
+  InspectionAttention,
+  InspectionPulse,
+  InspectionSubject,
+  InspectionView,
   RunInspectionCurrentActivity,
   RunInspectionExcerpt,
   RunInspectionPulse,
   RunInspectionSubject,
   RunInspectionTargetState,
-  RunInspectionTargetSummaryDocument,
-  RunInspectionTimelineDocument,
   RunInspectionTimelineEntry,
   RunInspectionVisibility,
+  TimelineEntry,
 } from "./types.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 
@@ -34,14 +41,12 @@ const timelineEntryBytes = 512;
 const currentIntentBytes = 768;
 const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
 
-export function projectTargetSummary(input: {
+export function projectInspectionTargetSummaryView(input: {
   run: RunDetails;
   details: ResolvedTargetState;
-  includeControls?: true;
   observations?: AgentObservationInspectionProjection;
-}): RunInspectionTargetSummaryDocument {
+}): Extract<InspectionView, { kind: "target"; detail: "summary" }> {
   const aggregate = staticAggregate(input.details);
-  const subject = inspectionSubject(input.details);
   const state = inspectionTargetState(input.details);
   const progress = aggregate || input.details.staticNode?.kind === "agent"
     ? undefined
@@ -55,44 +60,51 @@ export function projectTargetSummary(input: {
   const visibility = input.observations
     ? inspectionVisibility(input.details, input.observations)
     : undefined;
-  const document: RunInspectionTargetSummaryDocument = {
-    schemaVersion: 2,
+  const subject = inspectionViewSubject(input.details);
+  const requiredSignal = requiredTargetSignal(input.run, input.details);
+  const visibleAttention = requiredSignal ? signalAttention(requiredSignal) : attention;
+  return {
     kind: "target",
-    run: { id: input.run.id, status: input.run.status, updatedAt: input.run.updatedAt },
+    detail: "summary",
+    run: { id: input.run.id, status: input.run.status },
     subject,
-    state,
-    ...(pulse ? { pulse } : {}),
-    ...(attention ? { attention } : {}),
-    ...(visibility ? { visibility } : {}),
-    availableActions: aggregate ? [] : targetActions(input.details, state, input.includeControls === true),
+    state: visibleInspectionState(state, input.details.summary.failure),
+    ...(pulse ? { pulse: inspectionPulse(pulse) } : {}),
+    ...(visibleAttention ? { attention: visibleAttention } : {}),
+    ...(visibility ? { visibility: { ...visibility } } : {}),
     ...(input.details.summary.counts
-      ? { occurrence: { total: input.details.summary.counts.total, counts: input.details.summary.counts } }
+      ? { occurrences: inspectionCounts(input.details.summary.counts) }
       : {}),
   };
-  return document;
 }
 
-export function projectTimeline(input: {
+export function projectInspectionTargetTimelineView(input: {
   run: RunDetails;
   details: ResolvedTargetState;
   events: readonly CommittedRuntimeEventRow[];
   observations: AgentObservationInspectionProjection;
-}): RunInspectionTimelineDocument {
-  const subject = inspectionSubject(input.details);
+}): Extract<InspectionView, { kind: "target"; detail: "timeline" }> {
+  const subject = inspectionViewSubject(input.details);
   const state = inspectionTargetState(input.details);
   const attempt = selectedAttempt(input.details);
   const current = currentActivity(input.details, input.run, input.observations, attempt);
   const entries = projectTimelineEntries(input);
   const visibility = inspectionVisibility(input.details, input.observations);
+  const requiredSignal = requiredTargetSignal(input.run, input.details);
+  const visibleCurrent = requiredSignal
+    ? signalActivity(requiredSignal)
+    : current?.kind === "signal" || current === undefined
+      ? undefined
+      : inspectionActivity(current);
   return {
-    schemaVersion: 2,
-    kind: "timeline",
-    run: { id: input.run.id, status: input.run.status, updatedAt: input.run.updatedAt },
+    kind: "target",
+    detail: "timeline",
+    run: { id: input.run.id, status: input.run.status },
     subject,
-    state,
-    ...(visibility ? { visibility } : {}),
-    ...(current ? { current } : {}),
-    recent: entries.slice(-timelineRecentLimit),
+    state: visibleInspectionState(state, input.details.summary.failure),
+    ...(visibility ? { visibility: { ...visibility } } : {}),
+    ...(visibleCurrent ? { current: visibleCurrent } : {}),
+    recent: entries.slice(-timelineRecentLimit).flatMap(entry => timelineEntry(entry)),
   };
 }
 
@@ -158,6 +170,154 @@ export function inspectionTargetState(details: ResolvedTargetState): RunInspecti
     ...(finishedAt ? { finishedAt } : {}),
     ...(attempt?.deadlineAt ? { deadlineAt: attempt.deadlineAt } : {}),
     ...(startedAt && finishedAt ? { durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)) } : {}),
+  };
+}
+
+export function inspectionViewSubject(details: ResolvedTargetState): InspectionSubject {
+  const subject = inspectionSubject(details);
+  const selector = subject.ref ?? (details.target.kind === "static-node" ? details.target.id : undefined);
+  return {
+    label: subject.label,
+    kind: subject.kind,
+    ...(selector === undefined ? {} : { selector }),
+  };
+}
+
+type RequiredTargetSignal = {
+  selector: string;
+  prompt?: string;
+};
+
+function requiredTargetSignal(run: RunDetails, details: ResolvedTargetState): RequiredTargetSignal | undefined {
+  const rootTarget = details.target.kind === "frame" && details.target.id === "root";
+  const targetPath = targetInstancePath(run, details);
+  const wait = (run.dynamic?.signalWaits ?? []).find(candidate => {
+    if (candidate.status !== "awaiting") return false;
+    if (rootTarget) return signalBlocksInspectionTarget(run, candidate.nodeKey);
+    const path = run.dynamic?.nodeInstances.find(instance => instance.nodeKey === candidate.nodeKey)?.instancePath;
+    if (!targetPath) {
+      return details.signalWaits.some(selected => selected.nodeKey === candidate.nodeKey)
+        && signalBlocksInspectionTarget(run, candidate.nodeKey);
+    }
+    return path !== undefined && path.length >= targetPath.length
+      && signalBlocksInspectionTarget(run, candidate.nodeKey)
+      && targetPath.every((segment, index) => JSON.stringify(segment) === JSON.stringify(path[index]));
+  });
+  if (!wait) return undefined;
+  const instance = run.dynamic?.nodeInstances.find(candidate => candidate.nodeKey === wait.nodeKey);
+  return {
+    selector: instance?.instancePath ? deriveOccurrenceRef(instance.instancePath) : details.target.ref ?? details.target.id,
+    ...(wait.renderedPrompt ? { prompt: wait.renderedPrompt } : {}),
+  };
+}
+
+function targetInstancePath(run: RunDetails, details: ResolvedTargetState) {
+  const nodeKey = details.summary.nodeKey
+    ?? details.attempts.find(attempt => attempt.attemptId === details.target.id)?.nodeKey
+    ?? details.frames.find(frame => frame.frameKey === details.target.id)?.nodeKey;
+  return nodeKey === undefined
+    ? details.frames.find(frame => frame.frameKey === details.target.id)?.instancePath
+    : run.dynamic?.nodeInstances.find(instance => instance.nodeKey === nodeKey)?.instancePath
+      ?? run.dynamic?.frames.find(frame => frame.nodeKey === nodeKey)?.instancePath;
+}
+
+function signalAttention(signal: RequiredTargetSignal): InspectionAttention {
+  return {
+    kind: "awaiting-input",
+    summary: boundedInspectionText(signal.prompt ?? "Input is required."),
+    signal: signal.selector,
+    ...(signal.prompt ? { prompt: boundedInspectionText(signal.prompt) } : {}),
+  };
+}
+
+function signalActivity(signal: RequiredTargetSignal): InspectionActivity {
+  return {
+    kind: "signal",
+    phase: "awaiting",
+    signal: signal.selector,
+    ...(signal.prompt ? { prompt: boundedInspectionText(signal.prompt) } : {}),
+  };
+}
+
+function inspectionActivity(current: Exclude<RunInspectionCurrentActivity, { kind: "signal" }>): InspectionActivity {
+  if (current.kind === "agent") {
+    const tool = current.tools?.active.at(-1);
+    const excerpt = current.intent?.excerpt ?? current.response;
+    const headline = tool?.name
+      ?? (excerpt ? visibleTailInspectionExcerpt(excerpt, 240) : undefined);
+    return {
+      kind: "agent",
+      phase: current.phase,
+      ...(current.turn === undefined ? {} : { turn: current.turn }),
+      ...(headline ? { headline: tool ? boundedInspectionText(headline) : headline } : {}),
+    };
+  }
+  return {
+    kind: current.kind,
+    phase: current.phase,
+    ...(current.message ? { headline: boundedInspectionText(current.message) } : {}),
+  };
+}
+
+function timelineEntry(entry: RunInspectionTimelineEntry): TimelineEntry[] {
+  if (entry.kind === "activity") return [{
+    kind: "activity",
+    at: entry.at,
+    channel: entry.channel,
+    ...(entry.attemptNo === undefined ? {} : { attempt: entry.attemptNo }),
+    ...(entry.turn === undefined ? {} : { turn: entry.turn }),
+    summary: entry.tool
+      ? boundedInspectionText(entry.tool.name)
+      : visibleTailInspectionExcerpt(entry.summary, 240),
+  }];
+  if (entry.kind === "gap") return [{ kind: "gap", at: entry.at, dropped: entry.dropped, reason: entry.reason }];
+  if (entry.kind === "visibility") return [{
+    kind: "visibility",
+    at: entry.at,
+    state: entry.state,
+    ...(entry.reason ? { reason: entry.reason } : {}),
+  }];
+  if (entry.kind === "phase") return [{
+    kind: "phase",
+    at: entry.at,
+    phase: entry.phase,
+    ...(entry.attemptNo === undefined ? {} : { attempt: entry.attemptNo }),
+    ...(entry.turn === undefined ? {} : { turn: entry.turn }),
+  }];
+  if (entry.kind === "control") return [{
+    kind: "control",
+    at: entry.at,
+    action: entry.action,
+    ...(entry.attemptNo === undefined ? {} : { attempt: entry.attemptNo }),
+  }];
+  const action = transitionAction(entry.action);
+  return action === undefined ? [] : [{
+    kind: "transition",
+    at: entry.at,
+    action,
+    ...(entry.status === undefined ? {} : { status: entry.status }),
+    ...(entry.attemptNo === undefined ? {} : { attempt: entry.attemptNo }),
+    ...(entry.summary ? { summary: boundedInspectionText(entry.summary.text) } : {}),
+  }];
+}
+
+function transitionAction(
+  action: import("./types.js").RunInspectionChange["action"],
+): Extract<TimelineEntry, { kind: "transition" }>["action"] | undefined {
+  if (action === "started" || action === "awaiting" || action === "completed" || action === "failed" || action === "timed_out" || action === "cancelled") {
+    return action === "timed_out" ? "timed-out" : action;
+  }
+  if (action === "retrying") return "retry";
+  if (action === "steered") return "steer";
+  if (action === "resumed") return "resumed";
+  return undefined;
+}
+
+function inspectionPulse(value: RunInspectionPulse): InspectionPulse {
+  return {
+    phase: value.phase,
+    ...(value.turn === undefined ? {} : { turn: value.turn }),
+    ...(value.headline ? { headline: boundedInspectionText(value.headline) } : {}),
   };
 }
 
@@ -304,83 +464,20 @@ function progressIntent(progress: RunNodeProgress | undefined): {
 function targetAttention(
   state: RunInspectionTargetState,
   details: ResolvedTargetState,
-): RunInspectionAttention | undefined {
+): InspectionAttention | undefined {
   if (state.status === "failed") {
     return {
-      code: "terminal_failure",
+      kind: "failure",
       summary: visibleSummary(details.summary.failure?.message ?? state.reason ?? "Target failed.", attentionCharacters),
     };
   }
   if (state.status === "timed_out") {
     return {
-      code: "timed_out",
+      kind: "timed-out",
       summary: visibleSummary(details.summary.failure?.message ?? state.reason ?? "Target timed out.", attentionCharacters),
     };
   }
-  if (state.status === "awaiting") {
-    return {
-      code: "awaiting_input",
-      summary: visibleSummary(details.summary.signal?.promptPreview ?? "Input is required.", attentionCharacters),
-    };
-  }
   return undefined;
-}
-
-function targetActions(
-  details: ResolvedTargetState,
-  state: RunInspectionTargetState,
-  includeControls: boolean,
-): RunInspectionTargetSummaryDocument["availableActions"] {
-  const selector = details.target.ref;
-  const attempt = selectedAttempt(details);
-  const exactAttemptSelector = selector && attempt
-    ? occurrenceRefSelector(selector as `@${string}`, attempt.attemptNo)
-    : undefined;
-  const navigationTarget = selector ?? details.target.id;
-  const controls = includeControls
-    ? targetControlActions(details, selector, exactAttemptSelector)
-    : [];
-  if (state.status === "failed" || state.status === "timed_out") {
-    return [{ kind: "inspect-timeline", target: navigationTarget }, ...controls];
-  }
-  if (state.status === "awaiting" && details.summary.signal) {
-    return [
-      {
-        kind: "signal",
-        target: selector ?? details.summary.signal.target,
-        ...(details.summary.signal.schemaSummary ? { schemaSummary: details.summary.signal.schemaSummary } : {}),
-      },
-      { kind: "inspect-timeline", target: navigationTarget },
-      ...controls,
-    ];
-  }
-  if (details.staticNode?.kind === "agent" && attempt?.status === "started") {
-    const target = exactAttemptSelector ?? attempt.attemptId;
-    return [{ kind: "inspect-timeline", target }, ...controls];
-  }
-  if ((state.status === "running" || state.status === "starting")
-    && (details.staticNode?.kind === "task" || compositeKind(details.staticNode?.kind))) {
-    return [{ kind: "inspect-timeline", target: navigationTarget }, { kind: "follow-target", target: navigationTarget }, ...controls];
-  }
-  return controls;
-}
-
-function targetControlActions(
-  details: ResolvedTargetState,
-  selector: string | undefined,
-  exactAttemptSelector: string | undefined,
-): RunInspectionTargetSummaryDocument["availableActions"] {
-  const actions: RunInspectionTargetSummaryDocument["availableActions"] = [];
-  if (selector && details.availableControls.some(control => control.type === "retry")) {
-    actions.push({ kind: "retry", target: selector });
-  }
-  if (details.availableControls.some(control => control.type === "cancel")) {
-    actions.push({ kind: "cancel", ...(selector ? { target: selector } : {}) });
-  }
-  if (exactAttemptSelector && details.availableControls.some(control => control.type === "steer")) {
-    actions.push({ kind: "steer", target: exactAttemptSelector });
-  }
-  return actions;
 }
 
 function missingSteerObservation(
@@ -570,7 +667,7 @@ export function inspectionExcerpt(value: string, limit: number, direction: "head
   return excerpt(value, limit, direction);
 }
 
-export function visibleTailInspectionExcerpt(value: RunInspectionExcerpt, limit: number): string {
+function visibleTailInspectionExcerpt(value: RunInspectionExcerpt, limit: number): string {
   if (limit <= 0) return "";
   const normalized = normalizeSummary(value.text);
   const characters = Array.from(normalized);

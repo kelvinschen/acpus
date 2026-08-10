@@ -12,7 +12,7 @@ import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/
 import { NodeDefinitionSection } from "../src/client/ui/NodeDefinition.js";
 import { NodeKindBadge } from "../src/client/ui/NodeKind.js";
 import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
-import { installReactActEnvironment } from "./support/react-act-environment.js";
+import { installReactActEnvironment, waitForReact } from "./support/react-act-environment.js";
 
 const api = vi.hoisted(() => ({
   getArtifactContent: vi.fn(),
@@ -295,8 +295,8 @@ describe("Inspector primitives", () => {
         loading: false,
       }),
     ));
-    await vi.waitFor(() => expect(api.getNodeRuntimeValues).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect([...container.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual([
+    await waitForReact(() => expect(api.getNodeRuntimeValues).toHaveBeenCalledOnce());
+    await waitForReact(() => expect([...container.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual([
       "Runtime target",
       "Definition",
       "Runtime Values",
@@ -350,7 +350,7 @@ describe("Inspector primitives", () => {
 
     const artifactsTab = container.querySelector<HTMLButtonElement>("#inspector-tab-artifacts")!;
     await act(async () => artifactsTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
-    await vi.waitFor(() => expect(container.querySelector(".artifact-row")).not.toBeNull());
+    await waitForReact(() => expect(container.querySelector(".artifact-row")).not.toBeNull());
     const artifactRow = container.querySelector<HTMLButtonElement>(".artifact-row")!;
     expect(artifactRow.tagName).toBe("BUTTON");
     expect(artifactRow.getAttribute("aria-haspopup")).toBe("dialog");
@@ -362,7 +362,7 @@ describe("Inspector primitives", () => {
     expect(container.querySelector(".artifact-full-view")).toBeNull();
 
     await act(async () => artifactRow.click());
-    await vi.waitFor(() => expect(api.getArtifactContent).toHaveBeenCalledWith(
+    await waitForReact(() => expect(api.getArtifactContent).toHaveBeenCalledWith(
       "ws_current",
       "run_1",
       "artifact_1",
@@ -370,6 +370,7 @@ describe("Inspector primitives", () => {
     ));
     expect(api.getArtifactPreview).not.toHaveBeenCalled();
     expect(document.querySelector(".artifact-viewer")).not.toBeNull();
+    expect(document.querySelector(".dialog-overlay")).toBeNull();
   });
 
   it("opens View with a scoped abortable query and preserves Inspector context on close", async () => {
@@ -403,12 +404,12 @@ describe("Inspector primitives", () => {
     trigger.focus();
     await act(async () => trigger.click());
 
-    await vi.waitFor(() => expect(api.getArtifactContent).toHaveBeenCalledOnce());
+    await waitForReact(() => expect(api.getArtifactContent).toHaveBeenCalledOnce());
     expect(api.getArtifactContent).toHaveBeenCalledWith("ws_archive", "run_1", "artifact_1", expect.any(AbortSignal));
     expect(queryClient!.getQueryState(["artifact-content", "ws_archive", "run_1", "artifact_1"])).toBeDefined();
     await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 
-    await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    await waitForReact(() => expect(requestSignal?.aborted).toBe(true));
     expect(queryClient!.getQueryData(["artifact-content", "ws_archive", "run_1", "artifact_1"])).toBeUndefined();
     expect(artifactsTab.getAttribute("data-state")).toBe("active");
     expect(document.activeElement).toBe(trigger);
@@ -429,7 +430,7 @@ describe("Inspector primitives", () => {
       "application/json",
     );
 
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-tree")).not.toBeNull());
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-tree")).not.toBeNull());
     expect(pressedMode()).toBe("Tree");
     expect(document.querySelector(".artifact-viewer-tree")?.textContent).toContain("nested");
     await clickViewerButton("Raw");
@@ -458,7 +459,7 @@ describe("Inspector primitives", () => {
       "application/x-ndjson",
     );
 
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-tree")?.textContent).toContain("[{},{}]"));
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-tree")?.textContent).toContain("[{},{}]"));
     expect(pressedMode()).toBe("Tree");
     await clickViewerButton("Raw");
     expect(document.querySelector(".artifact-viewer-source")?.textContent).toBe(source);
@@ -472,7 +473,7 @@ describe("Inspector primitives", () => {
       "application/json",
     );
 
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-source")).not.toBeNull());
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-source")).not.toBeNull());
     expect(document.querySelector(".artifact-viewer-notice")?.textContent).toContain("JSON parsing failed");
     expect(document.querySelector(".artifact-viewer-source")?.textContent).toBe(source);
     expect([...document.querySelectorAll(".artifact-viewer-mode")].map(button => button.textContent)).toEqual([]);
@@ -486,7 +487,7 @@ describe("Inspector primitives", () => {
       "text/markdown",
     );
 
-    await vi.waitFor(() => expect(document.querySelector(".markdown-document.reading h1")?.textContent).toBe("Report"));
+    await waitForReact(() => expect(document.querySelector(".markdown-document.reading h1")?.textContent).toBe("Report"));
     const link = document.querySelector<HTMLAnchorElement>(".markdown-document.reading a")!;
     expect(link.target).toBe("_blank");
     expect(link.rel).toBe("noopener noreferrer");
@@ -503,7 +504,7 @@ describe("Inspector primitives", () => {
       "text/html",
     );
 
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-frame")).not.toBeNull());
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-frame")).not.toBeNull());
     const frame = document.querySelector<HTMLIFrameElement>(".artifact-viewer-frame")!;
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
@@ -543,9 +544,9 @@ describe("Inspector primitives", () => {
       }),
     ));
 
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-state.error")?.textContent).toContain("registry unavailable"));
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-state.error")?.textContent).toContain("registry unavailable"));
     await clickViewerButton("Retry");
-    await vi.waitFor(() => expect(document.querySelector(".artifact-viewer-state.empty")?.textContent).toContain("not a supported text format"));
+    await waitForReact(() => expect(document.querySelector(".artifact-viewer-state.empty")?.textContent).toContain("not a supported text format"));
     expect(api.getArtifactContent).toHaveBeenCalledTimes(2);
     expect(document.querySelector<HTMLButtonElement>(".artifact-viewer-action")?.textContent).toContain("Download");
     expect(document.querySelector(".artifact-viewer-source")).toBeNull();
@@ -562,7 +563,7 @@ describe("Inspector primitives", () => {
       { client: queryClient! },
       React.createElement(AgentExecutionTab, { workspaceKey: "ws_current", runId: "run_1", target: "@1a2b3c4d5e6f", active: true }),
     ));
-    await vi.waitFor(() => expect(container.querySelectorAll("h3")).toHaveLength(2));
+    await waitForReact(() => expect(container.querySelectorAll("h3")).toHaveLength(2));
 
     expect([...container.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual([
       "Summary",

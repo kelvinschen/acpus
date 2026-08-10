@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { projectAgentExecution } from "../src/inspection/agent-execution-projection.js";
-import { projectInspectionTargetTimelineView } from "../src/inspection/coherent-projection.js";
 import {
   inspectionExcerpt,
-  projectTimeline,
-  projectTargetSummary,
+  projectInspectionTargetSummaryView,
+  projectInspectionTargetTimelineView,
 } from "../src/inspection/decision-projection.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
 import type {
@@ -12,22 +11,23 @@ import type {
   AgentObservationTurn,
 } from "../src/observations/log.js";
 import type { RunDetails } from "../src/store/store.js";
+import type { CommittedRuntimeEventRow } from "../src/hooks/events.js";
 
-describe("inspection job projections", () => {
+describe("inspection target projections", () => {
   it("keeps ordinary target summaries free of private journal details", () => {
-    const document = projectTargetSummary({
+    const document = projectInspectionTargetSummaryView({
       run: agentRun(),
       details: agentDetails(),
       observations: observations([turn(1, { state: "settled", providerStatus: "completed" })]),
     });
 
     expect(document).toMatchObject({
-      schemaVersion: 2,
       kind: "target",
-      subject: { ref: "@1a2b3c4d5e6f#1" },
-      availableActions: [{ kind: "inspect-timeline", target: "@1a2b3c4d5e6f#1" }],
+      detail: "summary",
+      subject: { selector: "@1a2b3c4d5e6f#1" },
     });
     expect(document).not.toHaveProperty("journal");
+    expect(document).not.toHaveProperty("availableActions");
   });
 
   it("omits current activity between a completed tool and the next semantic segment", () => {
@@ -73,7 +73,7 @@ describe("inspection job projections", () => {
       }],
     );
     const details = agentDetails();
-    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details, observations: projection });
     const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
       details,
@@ -89,7 +89,7 @@ describe("inspection job projections", () => {
   });
 
   it("keeps true initial activity as starting without a redundant headline", () => {
-    const document = projectTargetSummary({
+    const document = projectInspectionTargetSummaryView({
       run: agentRun(),
       details: agentDetails(),
       observations: observations([turn(1)], [], [{
@@ -106,7 +106,6 @@ describe("inspection job projections", () => {
     expect(document.pulse).toEqual({
       phase: "starting",
       turn: 1,
-      updatedAt: "2026-07-25T00:00:01.000Z",
     });
   });
 
@@ -132,7 +131,7 @@ describe("inspection job projections", () => {
       completeness: "complete",
     }]);
 
-    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details, observations: projection });
     const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
       details,
@@ -157,7 +156,6 @@ describe("inspection job projections", () => {
       phase: "settled",
       headline: "Reported thought: **Planning JSON structure with diverse angles**",
       turn: 1,
-      updatedAt: "2026-07-25T00:00:01.000Z",
     });
   });
 
@@ -168,7 +166,6 @@ describe("inspection job projections", () => {
     expect(document.pulse).toMatchObject({
       phase: "settled",
       turn: 1,
-      updatedAt: "2026-07-25T00:00:01.000Z",
     });
     expect(document.pulse?.headline).toMatch(/^Response tail: …/);
     expect(document.pulse?.headline).toMatch(/agent harness"\}$/);
@@ -185,7 +182,6 @@ describe("inspection job projections", () => {
       phase: "settled",
       headline: "Response tail: complete response",
       turn: 1,
-      updatedAt: "2026-07-25T00:00:01.000Z",
     });
   });
 
@@ -208,7 +204,7 @@ describe("inspection job projections", () => {
     details.summary.nodeStatus = "cancelled";
     const projection = observations([]);
 
-    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details, observations: projection });
     expect(summary.visibility).toEqual({ state: "degraded", reason: "observation-gap" });
   });
 
@@ -223,16 +219,6 @@ describe("inspection job projections", () => {
         `2026-07-25T00:00:${String(turn).padStart(2, "0")}.000Z`,
       );
     }));
-
-    const projected = projectTimeline({
-      run: agentRun(),
-      details,
-      events: [],
-      observations: projection,
-    });
-    expect(projected.recent.map(entry => entry.id))
-      .toEqual(Array.from({ length: 12 }, (_, index) => `activity-${index + 2}-response`));
-    expect(projected.recent).not.toHaveProperty("page");
 
     const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
@@ -273,7 +259,7 @@ describe("inspection job projections", () => {
     );
     const details = agentDetails();
 
-    const summary = projectTargetSummary({ run: agentRun(), details, observations: projection });
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details, observations: projection });
     const timeline = projectInspectionTargetTimelineView({
       run: agentRun(),
       details,
@@ -288,6 +274,86 @@ describe("inspection job projections", () => {
       expect.objectContaining({ kind: "activity", summary: "report.ger" }),
     ]);
     expect(Array.from(expected)).toHaveLength(240);
+  });
+
+  it("orders visible scheduler transitions and redacts steer bookkeeping in the final Timeline", () => {
+    const details = agentDetails();
+    details.target = { kind: "dynamic-node", id: "agent~1", ref: "@1a2b3c4d5e6f" };
+    details.summary.targetKind = "dynamic-node";
+    details.summary.targetId = "agent~1";
+    const events: CommittedRuntimeEventRow[] = [{
+      runId: "run-1",
+      sequence: 1,
+      type: "instance.started",
+      nodeKey: "agent~1",
+      payload: { nodeKey: "agent~1", nodeId: "agent" },
+      createdAt: "2026-07-25T00:00:01.000Z",
+      idempotencyKey: "instance-started",
+    }, {
+      runId: "run-1",
+      sequence: 2,
+      type: "control.agent_steer_requested",
+      nodeKey: "agent~1",
+      payload: {
+        steerId: "cli:secret-steer-id",
+        requestedTarget: "agent",
+        nodeKey: "agent~1",
+        nodeId: "agent",
+        fencedAttemptId: "attempt-1",
+        instruction: "SECRET correction",
+      },
+      createdAt: "2026-07-25T00:00:02.000Z",
+      idempotencyKey: "steer-requested",
+    }, {
+      runId: "run-1",
+      sequence: 3,
+      type: "attempt.superseded",
+      nodeKey: "agent~1",
+      payload: {
+        nodeKey: "agent~1",
+        nodeId: "agent",
+        attemptId: "attempt-1",
+        cancelReason: "operator_steered",
+      },
+      createdAt: "2026-07-25T00:00:03.000Z",
+      idempotencyKey: "attempt-superseded",
+    }, {
+      runId: "run-1",
+      sequence: 4,
+      type: "instance.requeued",
+      nodeKey: "agent~1",
+      payload: {
+        nodeKey: "agent~1",
+        nodeId: "agent",
+        reason: "steered",
+        steerId: "cli:secret-steer-id",
+      },
+      createdAt: "2026-07-25T00:00:04.000Z",
+      idempotencyKey: "instance-requeued",
+    }, {
+      runId: "run-1",
+      sequence: 5,
+      type: "instance.completed",
+      nodeKey: "agent~1",
+      payload: { nodeKey: "agent~1", nodeId: "agent" },
+      createdAt: "2026-07-25T00:00:05.000Z",
+      idempotencyKey: "instance-completed",
+    }];
+
+    const timeline = projectInspectionTargetTimelineView({
+      run: agentRun(),
+      details,
+      events,
+      observations: observations([]),
+    });
+
+    expect(timeline.recent).toEqual([
+      expect.objectContaining({ kind: "transition", action: "started", status: "running" }),
+      expect.objectContaining({ kind: "control", action: "steered", attempt: 1 }),
+      expect.objectContaining({ kind: "transition", action: "completed", status: "completed" }),
+    ]);
+    expect(JSON.stringify(timeline)).not.toContain("SECRET correction");
+    expect(JSON.stringify(timeline)).not.toContain("secret-steer-id");
   });
 
   it("projects Agent execution from retained Observations, not progress or execution metadata", () => {
@@ -544,7 +610,7 @@ function settledSummary(
 ) {
   const details = agentDetails();
   details.summary.nodeStatus = "completed";
-  return projectTargetSummary({
+  return projectInspectionTargetSummaryView({
     run: agentRun(),
     details,
     observations: observations(turns, entries),

@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonPrimitive, type JsonValue, type TemplateIR } from "@acpus/expression/ir";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
+import type { AgentObservationInspectionProjection } from "../observations/log.js";
 import type {
   ArtifactRecord,
   RunDetails,
@@ -18,20 +19,29 @@ import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, derive
 import { deriveOccurrenceRef, occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
 import { compactSchemaSummary } from "../schema-summary.js";
+import { createAgentActivityProjector } from "./agent-activity-projection.js";
+import { signalBlocksInspectionTarget } from "./signal-boundary.js";
 import type {
   AgentDecisionState,
   AgentInspectionState,
-  RunInspectionOverviewAction,
   RunInspectionChange,
   RunInspectionControl,
   RunInspectionDetailedFailure,
   RunInspectionItem,
   RunInspectionRunSummary,
-  RunInspectionSnapshot,
   RunInspectionStaticNode,
   RunInspectionStatus,
   RunInspectionStatusCounts,
   RunInspectionTarget,
+  InspectionAttention,
+  InspectionCounts,
+  InspectionFailure,
+  InspectionProgress,
+  InspectionPulse,
+  InspectionRun,
+  InspectionTreeEntry,
+  InspectionView,
+  InspectionVisibleState,
 } from "./types.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 
@@ -54,19 +64,20 @@ const schedulerFailureReasons = new Set([
   "signal_timeout",
 ]);
 
-export function projectRunSnapshot(input: {
+export function projectInspectionRunView(input: {
   ir: WorkflowIR;
   run: RunDetails;
-  includeAllTopology?: boolean;
-  availableControls?: readonly RunInspectionControl[];
-}): RunInspectionSnapshot {
-  return projectSnapshot(
-    input.ir,
-    input.run,
-    inspectionStaticNodes(input.ir),
-    input.includeAllTopology === true,
-    input.availableControls ?? [],
-  )!;
+  observations?: AgentObservationInspectionProjection;
+}): Extract<InspectionView, { kind: "run" }> {
+  return projectInspectionRun(input.ir, input.run, createAgentActivityProjector(input.observations), true);
+}
+
+/** Builds the pulse-free run tree used only for incremental decision changes. */
+export function projectInspectionRunDecisionView(input: {
+  ir: WorkflowIR;
+  run: RunDetails;
+}): Extract<InspectionView, { kind: "run" }> {
+  return projectInspectionRun(input.ir, input.run, createAgentActivityProjector(), false);
 }
 
 export function resolveTargetState(input: {
@@ -88,10 +99,10 @@ export function resolveTargetState(input: {
 
 export function semanticChanges(
   events: readonly CommittedRuntimeEventRow[],
-  document: Pick<RunInspectionSnapshot, "items" | "run"> | Pick<ResolvedTargetState, "items" | "run">,
+  document: Pick<ResolvedTargetState, "items" | "run">,
   run?: RunDetails,
 ): RunInspectionChange[] {
-  const items = inspectionItems(document);
+  const items = document.items;
   const itemByIdentity = new Map<string, RunInspectionItem>();
   const itemsByNodeId = new Map<string, RunInspectionItem[]>();
   const itemOccurrenceCounts = new Map<string, number>();
@@ -139,10 +150,6 @@ export function semanticChanges(
   });
 }
 
-function inspectionItems(document: Pick<RunInspectionSnapshot, "items" | "run"> | Pick<ResolvedTargetState, "items" | "run">): RunInspectionItem[] {
-  return document.items;
-}
-
 export function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
   return Array.from(walkNodes(ir.root), ({ node, ancestry }, order) => ({
     nodeId: node.id,
@@ -160,76 +167,294 @@ export function terminalRun(status: string): boolean {
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
-function projectSnapshot(
+function projectInspectionRun(
   ir: WorkflowIR,
   run: RunDetails,
-  staticNodes: RunInspectionStaticNode[],
-  all: boolean,
-  availableControls: readonly RunInspectionControl[],
-  scopeTarget?: string,
-): RunInspectionSnapshot | undefined {
-  const indexes = snapshotIndexes(run, staticNodes);
-  const rawTree = occurrenceTree(ir, indexes);
-  const scoped = scopeTarget === undefined ? undefined : scopedOccurrenceTree(rawTree, run, scopeTarget);
-  if (scopeTarget !== undefined && !scoped) return undefined;
-  const tree = scoped?.tree ?? rawTree;
-  const itemByKey = new Map(tree.items.map(item => [item.key, item]));
-  const actions: RunInspectionOverviewAction[] = [];
-  for (const wait of run.dynamic?.signalWaits ?? []) {
-    if (wait.status === "awaiting") {
-      const itemKey = tree.itemKeyByNodeKey.get(wait.nodeKey);
-      const ref = itemKey ? itemByKey.get(itemKey)?.ref : undefined;
-      if (!itemKey || !ref) continue;
-      const outputSchema = indexes.staticById.get(wait.nodeId)?.outputSchema;
-      actions.push({ kind: "signal", target: ref, itemKey, ...(outputSchema ? { schemaSummary: compactSchemaSummary(outputSchema) } : {}) });
-    }
-  }
-  actions.push(...projectControlActions(availableControls, tree.items));
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+  includePulse: boolean,
+): Extract<InspectionView, { kind: "run" }> {
+  const tree = occurrenceTree(ir, snapshotIndexes(run, inspectionStaticNodes(ir)));
+  const summary = runSummary(ir, run, false);
   return {
-    schemaVersion: 2,
-    kind: "snapshot",
-    run: runSummary(ir, run, false),
-    counts: inspectionStatusCounts(tree.executionStatuses),
-    items: tree.items,
-    availableActions: actions,
-    ...(terminalRun(run.status) && run.hooks.length > 0 ? { hooks: run.hooks } : {}),
+    kind: "run",
+    run: inspectionRun(run, summary.failure),
+    counts: inspectionCounts(inspectionStatusCounts(tree.executionStatuses)),
+    tree: projectTree(tree.items, run, projectAgentActivity, includePulse),
     ...(terminalRun(run.status) && run.output !== undefined ? { output: run.output } : {}),
-    ...(all ? { all: true } : {}),
-    ...(scoped?.ref ? { scope: { ref: scoped.ref } } : {}),
   };
 }
 
-function projectControlActions(
-  controls: readonly RunInspectionControl[],
+function inspectionRun(
+  run: RunDetails,
+  failure?: { origin: InspectionFailure["origin"]; code?: string; message: string },
+): InspectionRun {
+  const end = terminalRun(run.status) ? Date.parse(run.updatedAt) : Date.now();
+  return {
+    id: run.id,
+    name: run.name,
+    status: run.status,
+    ...(Number.isFinite(end) && Number.isFinite(Date.parse(run.createdAt))
+      ? { durationMs: Math.max(0, end - Date.parse(run.createdAt)) }
+      : {}),
+    ...(run.execution.state ? { liveness: run.execution.state } : {}),
+    ...(failure ? { failure: inspectionFailure(failure) } : {}),
+    ...(run.fork ? { fork: { sourceRunId: run.fork.sourceRunId } } : {}),
+  };
+}
+
+function projectTree(
   items: readonly RunInspectionItem[],
-): RunInspectionOverviewAction[] {
-  const itemByTarget = new Map<string, RunInspectionItem>();
+  run: RunDetails,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+  includePulse: boolean,
+): InspectionTreeEntry[] {
+  const byKey = new Map<string, InternalTree>();
+  const roots: InternalTree[] = [];
   for (const item of items) {
-    for (const target of [item.nodeKey, item.frameKey, item.attemptId]) {
-      if (target) itemByTarget.set(target, item);
-    }
+    const node: InternalTree = { item, entry: treeItem(item, run, projectAgentActivity, includePulse), children: [] };
+    byKey.set(item.key, node);
+    const parent = item.parentKey ? byKey.get(item.parentKey) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
   }
-  const actions: RunInspectionOverviewAction[] = [];
-  for (const control of controls) {
-    if (control.type === "cancel" && control.target === undefined) {
-      actions.push({ kind: "cancel" });
+  return foldTree(pruneTree(roots));
+}
+
+type InternalTree = {
+  item: RunInspectionItem;
+  entry: Extract<InspectionTreeEntry, { type: "item" }>;
+  children: InternalTree[];
+};
+
+function pruneTree(nodes: readonly InternalTree[]): InternalTree[] {
+  return nodes.flatMap(node => {
+    if (node.item.scope?.kind === "branch"
+      && node.item.scope.ownerKind !== "parallel"
+      && node.item.scope.selection === "not_selected") return [];
+    const visible = { ...node, children: pruneTree(node.children) };
+    if (completedEmptyBranch(visible.item)) return [];
+    return collapsibleStructure(visible) ? visible.children : [visible];
+  });
+}
+
+function completedEmptyBranch(item: RunInspectionItem): boolean {
+  return item.status === "completed"
+    && item.scope?.kind === "branch"
+    && item.scope.empty;
+}
+
+function collapsibleStructure(node: InternalTree): boolean {
+  const child = node.children[0];
+  return node.children.length === 1
+    && child !== undefined
+    && (node.item.scope?.kind === "branch" || node.item.kind === "if" || node.item.kind === "switch")
+    && node.item.status === child.item.status
+    && node.entry.attention === undefined
+    && node.entry.state.failure === undefined
+    && node.entry.progress === undefined
+    && node.entry.pulse === undefined;
+}
+
+function treeItem(
+  item: RunInspectionItem,
+  run: RunDetails,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+  includePulse: boolean,
+): Extract<InspectionTreeEntry, { type: "item" }> {
+  const selector = item.ref
+    ? item.attemptNo === undefined ? item.ref : occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo)
+    : item.nodeId;
+  const attention = itemAttention(item, selector, run);
+  const elapsed = terminalItemStatus(item.status) ? duration(item.startedAt, item.finishedAt) : undefined;
+  const pulse = includePulse ? itemPulse(item, run.updatedAt, projectAgentActivity) : undefined;
+  return {
+    type: "item",
+    subject: {
+      label: item.label,
+      kind: item.kind,
+      ...(selector === undefined ? {} : { selector }),
+    },
+    state: visibleInspectionState({
+      status: item.status,
+      ...(elapsed === undefined ? {} : { durationMs: elapsed }),
+    }, item.failure),
+    ...(item.composite?.counts ? { progress: progress(item.composite.counts) } : {}),
+    ...(pulse ? { pulse } : {}),
+    ...(attention ? { attention } : {}),
+    children: [],
+  };
+}
+
+function foldTree(nodes: readonly InternalTree[]): InspectionTreeEntry[] {
+  const visible = nodes.map(node => ({
+    ...node,
+    entry: { ...node.entry, children: foldTree(node.children) },
+  }));
+  const result: InspectionTreeEntry[] = [];
+  for (let index = 0; index < visible.length;) {
+    const first = visible[index]!;
+    const scope = repeatScope(first.item);
+    if (!scope || treeAttention(first.entry)) {
+      result.push(first.entry);
+      index += 1;
       continue;
     }
-    if (control.target === undefined) continue;
-    const item = itemByTarget.get(control.target);
-    if (!item?.ref) continue;
-    if (control.type === "steer") {
-      if (item.attemptNo === undefined) continue;
-      actions.push({
-        kind: "steer",
-        target: occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo),
-        itemKey: item.key,
+    let end = index + 1;
+    while (end < visible.length
+      && sameRepeatedScope(repeatScope(visible[end - 1]!.item)!, repeatScope(visible[end]!.item))
+      && equivalentRepeated(first.entry, visible[end]!.entry)) end += 1;
+    if (end - index < 2) {
+      result.push(first.entry);
+      index += 1;
+      continue;
+    }
+    const last = visible[end - 1]!;
+    result.push({
+      type: "fold",
+      scope: scope.kind,
+      range: { start: scope.value, end: repeatScope(last.item)!.value },
+      count: end - index,
+      state: foldState(first.entry.state),
+      children: removeRepeatIdentity(first.entry.children),
+    });
+    index = end;
+  }
+  return result;
+}
+
+function repeatScope(item: RunInspectionItem): { kind: "fanout-items" | "loop-rounds"; value: number } | undefined {
+  if (item.scope?.kind === "fanout_item") return { kind: "fanout-items", value: item.scope.itemIndex };
+  if (item.scope?.kind === "loop_iteration") return { kind: "loop-rounds", value: item.scope.round };
+  return undefined;
+}
+
+function terminalItemStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "timed_out" || status === "cancelled" || status === "not_selected";
+}
+
+function sameRepeatedScope(
+  left: { kind: "fanout-items" | "loop-rounds"; value: number },
+  right: { kind: "fanout-items" | "loop-rounds"; value: number } | undefined,
+): boolean {
+  return right?.kind === left.kind && right.value === left.value + 1;
+}
+
+function equivalentRepeated(left: InspectionTreeEntry, right: InspectionTreeEntry): boolean {
+  return JSON.stringify(stripRepeatIdentity(left, true)) === JSON.stringify(stripRepeatIdentity(right, true));
+}
+
+function treeAttention(entry: InspectionTreeEntry): boolean {
+  return (entry.type === "item" && entry.attention !== undefined)
+    || entry.children.some(treeAttention);
+}
+
+function stripRepeatIdentity(entry: InspectionTreeEntry, root = false): unknown {
+  if (entry.type === "fold") return {
+    type: "fold",
+    scope: entry.scope,
+    range: root ? undefined : entry.range,
+    count: root ? undefined : entry.count,
+    state: foldState(entry.state),
+    children: entry.children.map(child => stripRepeatIdentity(child)),
+  };
+  return {
+    type: "item",
+    subject: root ? { kind: entry.subject.kind } : { label: entry.subject.label, kind: entry.subject.kind },
+    state: foldState(entry.state),
+    ...(entry.progress ? { progress: entry.progress } : {}),
+    ...(entry.pulse ? { pulse: entry.pulse } : {}),
+    ...(entry.attention ? { attention: entry.attention } : {}),
+    children: entry.children.map(child => stripRepeatIdentity(child)),
+  };
+}
+
+function foldState(state: InspectionVisibleState): Omit<InspectionVisibleState, "durationMs"> {
+  const { durationMs: _durationMs, ...visible } = state;
+  return visible;
+}
+
+function removeRepeatIdentity(entries: readonly InspectionTreeEntry[]): InspectionTreeEntry[] {
+  return entries.map(entry => entry.type === "fold"
+    ? { ...entry, state: foldState(entry.state), children: removeRepeatIdentity(entry.children) }
+    : {
+        ...entry,
+        subject: { label: entry.subject.label, kind: entry.subject.kind },
+        state: foldState(entry.state),
+        children: removeRepeatIdentity(entry.children),
       });
-      continue;
-    }
-    actions.push({ kind: control.type, target: item.ref, itemKey: item.key });
+}
+
+function itemPulse(
+  item: RunInspectionItem,
+  runUpdatedAt: string,
+  projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
+): InspectionPulse | undefined {
+  if (!item.agent) return undefined;
+  const activity = projectAgentActivity({
+    status: item.status,
+    updatedAt: item.finishedAt ?? item.updatedAt ?? runUpdatedAt,
+    ...(item.attemptId ? { attemptId: item.attemptId } : {}),
+    ...(item.attemptNo === undefined ? {} : { attemptNo: item.attemptNo }),
+  });
+  if (!activity) return undefined;
+  const tool = activity.current?.tools?.active.at(-1);
+  return {
+    phase: activity.phase,
+    ...(activity.turn === undefined ? {} : { turn: activity.turn }),
+    ...(tool ? { headline: boundedInspectionText(`${tool.name}${tool.status ? ` ${tool.status}` : ""}`) } : {}),
+  };
+}
+
+function itemAttention(item: RunInspectionItem, selector: string | undefined, run: RunDetails): InspectionAttention | undefined {
+  if (item.status === "failed") return { kind: "failure", summary: boundedInspectionText(item.failure?.message ?? "Target failed.") };
+  if (item.status === "timed_out") return { kind: "timed-out", summary: boundedInspectionText(item.failure?.message ?? "Target timed out.") };
+  if (item.status === "awaiting" && item.signal && selector && signalBlocksInspectionTarget(run, item.nodeKey ?? item.signal.target)) {
+    return {
+      kind: "awaiting-input",
+      summary: boundedInspectionText(item.signal.promptPreview ?? "Input is required."),
+      signal: selector,
+      ...(item.signal.promptPreview ? { prompt: boundedInspectionText(item.signal.promptPreview) } : {}),
+      ...(item.signal.schemaSummary ? { expected: boundedInspectionText(item.signal.schemaSummary) } : {}),
+    };
   }
-  return actions;
+  return undefined;
+}
+
+export function boundedInspectionText(value: string, limit = 240): string {
+  return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+export function visibleInspectionState(
+  state: { status: string; durationMs?: number },
+  failure?: { origin: InspectionFailure["origin"]; code?: string; message: string },
+): InspectionVisibleState {
+  return {
+    status: state.status as InspectionVisibleState["status"],
+    ...(state.durationMs === undefined ? {} : { durationMs: state.durationMs }),
+    ...(failure ? { failure: inspectionFailure(failure) } : {}),
+  };
+}
+
+function inspectionFailure(value: { origin: InspectionFailure["origin"]; code?: string; message: string }): InspectionFailure {
+  return {
+    origin: value.origin,
+    ...(value.code ? { code: value.code } : {}),
+    message: boundedInspectionText(value.message),
+  };
+}
+
+export function inspectionCounts(value: RunInspectionStatusCounts): InspectionCounts {
+  return { ...value };
+}
+
+function progress(value: RunInspectionStatusCounts): InspectionProgress {
+  return { completed: value.completed ?? 0, total: value.total };
+}
+
+function duration(start: string | undefined, end: string | undefined): number | undefined {
+  if (!start || !end) return undefined;
+  const value = Date.parse(end) - Date.parse(start);
+  return Number.isFinite(value) ? Math.max(0, value) : undefined;
 }
 
 type SnapshotIndexes = {
@@ -257,43 +482,7 @@ type SnapshotIndexes = {
 type OccurrenceTree = {
   items: RunInspectionItem[];
   executionStatuses: RunInspectionStatus[];
-  executionItemKeys: Set<string>;
-  itemKeyByNodeKey: Map<string, string>;
 };
-
-function scopedOccurrenceTree(
-  tree: OccurrenceTree,
-  run: RunDetails,
-  target: string,
-): { tree: OccurrenceTree; ref?: string } | undefined {
-  const occurrenceTarget = run.dynamic?.attempts.find(attempt => attempt.attemptId === target)?.nodeKey ?? target;
-  const roots = tree.items.filter(item =>
-    item.nodeKey === target
-      || item.frameKey === target
-      || item.attemptId === target
-      || item.nodeKey === occurrenceTarget
-      || item.nodeId === target);
-  if (roots.length !== 1) return undefined;
-  const root = roots[0]!;
-  const keys = new Set([root.key]);
-  for (const item of tree.items) if (item.parentKey && keys.has(item.parentKey)) keys.add(item.key);
-  const items = tree.items.flatMap(item => {
-    if (!keys.has(item.key)) return [];
-    if (item.key !== root.key) return [item];
-    const { parentKey: _parentKey, ...scopedRoot } = item;
-    return [scopedRoot];
-  });
-  const executionItemKeys = new Set([...tree.executionItemKeys].filter(key => keys.has(key)));
-  return {
-    tree: {
-      items,
-      executionStatuses: items.filter(item => executionItemKeys.has(item.key)).map(item => item.status),
-      executionItemKeys,
-      itemKeyByNodeKey: new Map([...tree.itemKeyByNodeKey].filter(([, key]) => keys.has(key))),
-    },
-    ...(root.ref ? { ref: root.ref } : {}),
-  };
-}
 
 function snapshotIndexes(run: RunDetails, staticNodes: RunInspectionStaticNode[]): SnapshotIndexes {
   const dynamic = run.dynamic;
@@ -379,8 +568,6 @@ function snapshotIndexes(run: RunDetails, staticNodes: RunInspectionStaticNode[]
 function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTree {
   const items: RunInspectionItem[] = [];
   const executionStatuses: RunInspectionStatus[] = [];
-  const executionItemKeys = new Set<string>();
-  const itemKeyByNodeKey = new Map<string, string>();
 
   const visitScope = (scope: ScopeIR, basePath: InstancePath, parentKey: string | undefined, parentFrame: RunDynamicFrame | undefined): RunInspectionStatus[] => {
     const scopeStatuses: RunInspectionStatus[] = [];
@@ -391,7 +578,6 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
       const frame = occurrenceNodeFrame(indexes, nodePath, node.id, parentFrame);
       const item = snapshotNodeItem(indexes, node, nodePath, key, parentKey, instance, frame);
       items.push(item);
-      if (item.nodeKey) itemKeyByNodeKey.set(item.nodeKey, key);
 
       let childStatuses: RunInspectionStatus[] = [];
       if (node.kind === "if" || node.kind === "switch") {
@@ -477,7 +663,6 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
       const executable = node.kind === "agent" || node.kind === "task" || node.kind === "signal" || node.kind === "assert";
       if (executable) {
         executionStatuses.push(item.status);
-        executionItemKeys.add(item.key);
         scopeStatuses.push(item.status);
       } else {
         if (!instance && !frame && childStatuses.length > 0) item.status = aggregateInspectionStatus(childStatuses);
@@ -488,7 +673,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
   };
 
   visitScope(ir.root, [], undefined, indexes.rootFrame);
-  return { items, executionStatuses, executionItemKeys, itemKeyByNodeKey };
+  return { items, executionStatuses };
 }
 
 function snapshotNodeItem(
@@ -1360,7 +1545,7 @@ function matchingAttemptEvent(index: EventVisibilityIndex, nodeKey: string | und
 }
 
 function eventSubject(
-  document: Pick<RunInspectionSnapshot, "items" | "run"> | Pick<ResolvedTargetState, "items" | "run">,
+  document: Pick<ResolvedTargetState, "items" | "run">,
   context: EventContext,
   item: RunInspectionItem | undefined,
   itemOccurrenceCounts: ReadonlyMap<string, number>,

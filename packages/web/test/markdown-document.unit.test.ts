@@ -4,9 +4,9 @@ import * as React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MarkdownDocument } from "../src/client/ui/MarkdownDocument.js";
-import { installReactActEnvironment } from "./support/react-act-environment.js";
+import { installReactActEnvironment, waitForReact } from "./support/react-act-environment.js";
 
 describe("MarkdownDocument", () => {
   it("renders complete document structure with GFM extensions", () => {
@@ -122,7 +122,7 @@ const ordinaryFence = true;
 `);
 
     try {
-      await vi.waitFor(() => expect(
+      await waitForReact(() => expect(
         mounted.container.querySelector(".markdown-mermaid[data-mermaid-state='rendered'] svg"),
       ).not.toBeNull());
 
@@ -148,7 +148,7 @@ const ordinaryFence = true;
     const mounted = await mountMarkdown(`\`\`\`mermaid\n${source}\n\`\`\``);
 
     try {
-      await vi.waitFor(() => expect(
+      await waitForReact(() => expect(
         mounted.container.querySelector(".markdown-mermaid")?.getAttribute("data-mermaid-state"),
       ).toBe("error"));
       expect(mounted.container.querySelector(".markdown-mermaid-status")?.textContent)
@@ -169,7 +169,7 @@ flowchart LR
 `);
 
     try {
-      await vi.waitFor(() => expect(
+      await waitForReact(() => expect(
         mounted.container.querySelector(".markdown-mermaid[data-mermaid-state='rendered'] svg"),
       ).not.toBeNull());
       expect(mounted.container.querySelector(".markdown-mermaid script")).toBeNull();
