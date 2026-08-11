@@ -71,7 +71,8 @@ describe("web API contract", () => {
     );
     mockInspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
     mockRepairRuntimeStore.mockReturnValue(okAsync({ changed: true }));
-    mockListRuns.mockResolvedValue([]);
+    mockListRuns.mockReturnValue(okAsync([]));
+    mockEnsureDaemonRunning.mockResolvedValue({ ok: true });
   });
 
   afterEach(async () => {
@@ -127,6 +128,21 @@ describe("web API contract", () => {
       expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
     });
 
+    it("maps an explicitly requested repair blocked by a runtime user to HTTP 409", async () => {
+      mockRepairRuntimeStore.mockReturnValueOnce(errAsync({
+        type: "busy",
+        message: "Runtime store is in use.",
+      }));
+
+      const res = await app.request("/api/runtime-store", { method: "POST" });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        ok: false,
+        error: { code: "runtime_store_fix_failed", message: "Runtime store is in use." },
+      });
+    });
+
     it("protects status and repair with the configured token", async () => {
       const protectedApp = createWebApp({
         cwd: "/tmp/acpus-web-test",
@@ -140,28 +156,23 @@ describe("web API contract", () => {
       expect(mockRepairRuntimeStore).not.toHaveBeenCalled();
     });
 
-    it("blocks stale active reads before opening the store or starting the daemon", async () => {
-      mockInspectRuntimeStore.mockReturnValue(okAsync({
-        state: "repairable",
-        message: "Fix the Runtime store to continue.",
-      }));
+    it.each([
+      ["runtime-store-repair-required", 409, "runtime_store_fix_required"],
+      ["runtime-store-unsupported", 422, "runtime_store_unavailable"],
+      ["runtime-store-unavailable", 503, "runtime_store_unavailable"],
+    ] as const)("maps %s directly from the Runtime read", async (type, status, code) => {
+      mockListRuns.mockReturnValueOnce(errAsync({ type, message: "Runtime read is unavailable." }));
 
       const read = await app.request(runApi());
-      const control = await app.request(runApi("/run_1/controls"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "pause" }),
-      });
 
-      expect(read.status).toBe(409);
+      expect(read.status).toBe(status);
       expect(await read.json()).toEqual({
         ok: false,
-        error: { code: "runtime_store_fix_required", message: "Fix the Runtime store to continue." },
+        error: { code, message: "Runtime read is unavailable." },
       });
-      expect(control.status).toBe(409);
-      expect(mockListRuns).not.toHaveBeenCalled();
+      expect(mockListRuns).toHaveBeenCalledOnce();
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
       expect(mockEnsureDaemonRunning).not.toHaveBeenCalled();
-      expect(mockRequestDaemonControl).not.toHaveBeenCalled();
     });
   });
   it("sanitizes unexpected server failures", async () => {
@@ -253,7 +264,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces/:workspaceKey/runs", () => {
     it("returns the run-card projection without runtime-private data", async () => {
-      mockListRuns.mockResolvedValue([{
+      mockListRuns.mockReturnValue(okAsync([{
         id: "run_1",
         name: "release",
         status: "running",
@@ -264,7 +275,7 @@ describe("web API contract", () => {
         output: { token: "private-output" },
         createdAt: "2026-07-01T00:00:00.000Z",
         updatedAt: "2026-07-01T00:00:01.000Z",
-      }]);
+      }]));
       const res = await app.request(runApi());
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
@@ -279,16 +290,17 @@ describe("web API contract", () => {
         }],
       });
       expect(mockListRuns).toHaveBeenCalledWith("/tmp/acpus-web-test");
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("keeps identical run IDs isolated by resolved workspace", async () => {
-      mockListRuns.mockImplementation(async (cwd: string) => [{
+      mockListRuns.mockImplementation((cwd: string) => okAsync([{
         id: "same_run",
         name: cwd,
         status: "completed",
         createdAt: "2026-07-01T00:00:00.000Z",
         updatedAt: "2026-07-01T00:00:01.000Z",
-      }]);
+      }]));
 
       const current = await (await app.request(runApi())).json() as JsonBody;
       const other = await (await app.request(runApi("", otherWorkspaceKey))).json() as JsonBody;
@@ -316,7 +328,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces/:workspaceKey/runs/:id/runtime-snapshot", () => {
     it("returns run and graph from the same runtime snapshot", async () => {
-      mockGetRunVisualizationSnapshot.mockResolvedValue({
+      mockGetRunVisualizationSnapshot.mockReturnValue(okAsync({
         run: {
           id: "run_1",
           name: "test",
@@ -356,7 +368,7 @@ describe("web API contract", () => {
             runtimeOnly: "not-public",
           }],
         },
-      });
+      }));
       const res = await app.request(runApi("/run_1/runtime-snapshot"));
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
@@ -382,10 +394,11 @@ describe("web API contract", () => {
         retryTargets: [{ target: "step_1#node", kind: "node", nodeId: "step_1" }],
       });
       expect(mockGetRunVisualizationSnapshot).toHaveBeenCalledWith("/tmp/acpus-web-test", "run_1");
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("returns 404 for unknown run", async () => {
-      mockGetRunVisualizationSnapshot.mockResolvedValue(undefined);
+      mockGetRunVisualizationSnapshot.mockReturnValue(okAsync(undefined));
       const res = await app.request(runApi("/run_1/runtime-snapshot"));
       expect(res.status).toBe(404);
       const body = await res.json() as JsonBody;
@@ -437,6 +450,7 @@ describe("web API contract", () => {
         target: "@1a2b3c4d5e6f",
       });
       expect(mockReadArtifact).not.toHaveBeenCalled();
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("maps Runtime execution unavailability to Web-owned copy", async () => {
@@ -513,6 +527,7 @@ describe("web API contract", () => {
         runId: "run_1",
         target: "@1a2b3c4d5e6f",
       });
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("projects composite runtime values from one canonical Forensics read", async () => {
@@ -560,6 +575,7 @@ describe("web API contract", () => {
         detail: "forensics",
       });
       expect(mockInspectNode).not.toHaveBeenCalled();
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("maps ambiguous runtime-values targets to a conflict", async () => {
@@ -621,7 +637,7 @@ describe("web API contract", () => {
         prompt: { kind: "artifact", artifactId: artifact.id, path, mediaType: artifact.mediaType, field: "prompt" },
         artifacts: [artifact],
       })));
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request(runApi("/run_1/nodes/review~abc"));
@@ -703,7 +719,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path,
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request(runApi("/run_1/artifacts/artifact_1/preview"));
@@ -719,10 +735,11 @@ describe("web API contract", () => {
       });
       expect(Buffer.from(await res.arrayBuffer())).toEqual(bytes.subarray(0, 128 * 1024));
       expect(mockReadArtifact).toHaveBeenCalledWith(cwd, "run_1", "artifact_1");
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("returns 404 when the verified reader finds no registered artifact", async () => {
-      mockReadArtifact.mockResolvedValue(undefined);
+      mockReadArtifact.mockReturnValue(okAsync(undefined));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/preview"));
 
@@ -761,7 +778,7 @@ describe("web API contract", () => {
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/report.json",
         mediaType: "application/json",
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -793,7 +810,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: `/tmp/acpus-web-test/runs/run_1/artifacts/${path}`,
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -812,7 +829,7 @@ describe("web API contract", () => {
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/report.html",
         mediaType: "text/html; charset=utf-8",
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
       const csp = res.headers.get("content-security-policy") ?? "";
@@ -834,7 +851,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: "/tmp/acpus-web-other/runs/same_run/artifacts/output.txt",
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
 
       const res = await app.request(runApi("/same_run/artifacts/artifact_1/content", otherWorkspaceKey));
 
@@ -860,7 +877,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/output.txt",
       };
-      mockReadArtifact.mockResolvedValue({ artifact, bytes });
+      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
       const url = runApi("/run_1/artifacts/artifact_1/content");
 
       expect((await protectedApp.request(url)).status).toBe(401);
@@ -870,7 +887,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 when the verified reader finds no registered artifact", async () => {
-      mockReadArtifact.mockResolvedValue(undefined);
+      mockReadArtifact.mockReturnValue(okAsync(undefined));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -1089,6 +1106,31 @@ describe("web API contract", () => {
       const body = await res.json() as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.error).toEqual({ code: "run_not_controllable", message: "Run cannot be paused." });
+    });
+
+    it("maps blocked authority update to HTTP 409 without submitting a control", async () => {
+      mockEnsureDaemonRunning.mockResolvedValueOnce({
+        ok: false,
+        code: "RUNTIME_UPDATE_BLOCKED",
+        message: "Existing runtime work must finish before Acpus can update.",
+      });
+
+      const res = await app.request(runApi("/run_1/controls"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "pause" }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        ok: false,
+        error: {
+          code: "runtime_update_blocked",
+          message: "Existing runtime work must finish before Acpus can update.",
+        },
+      });
+      expect(mockRequestDaemonControl).not.toHaveBeenCalled();
+      expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
     });
 
     it("returns 404 for unknown run", async () => {

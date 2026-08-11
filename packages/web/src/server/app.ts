@@ -8,11 +8,12 @@ import { registerRunRoutes } from "./routes/runs.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { createWorkspaceContext } from "./workspace-context.js";
+import type { EnsureRuntimeAuthority } from "./runtime-authority.js";
 
 export type WebAppOptions = {
   cwd: string;
   access?: AccessPolicy;
-  ensureDaemonRunning(cwd: string): void | Promise<void>;
+  ensureDaemonRunning: EnsureRuntimeAuthority;
 };
 
 export function createWebApp(options: WebAppOptions): Hono {

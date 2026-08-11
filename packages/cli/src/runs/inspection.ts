@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import {
-  inspectRuntimeStore,
   listRuns,
   readInspection,
   type InspectionError,
@@ -12,6 +11,7 @@ import type { RunsCommandContext } from "./context.js";
 import { followExitCode, followRun } from "./follow.js";
 import { formatInspectionCandidates, formatInspectionView } from "./inspection-surface.js";
 import { pickRunId } from "./picker.js";
+import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
 type InspectRunOptions = {
   target?: string;
@@ -69,19 +69,13 @@ async function inspectRunCommand(
   }
   if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
-  const status = await inspectRuntimeStore(ctx.cwd);
-  if (status.isErr()) throw notFoundError(status.error.message, { errorCode: "RUNTIME_STORE_INSPECT_FAILED" });
-  if (status.value.state === "unsupported") {
-    throw notFoundError(`${status.value.message}\nRun: acpus doctor`, { errorCode: "RUNTIME_STORE_UNSUPPORTED" });
-  }
-  if (status.value.state === "repairable") {
-    throw notFoundError(`${status.value.message}\nRun: acpus doctor --fix`, { errorCode: "RUNTIME_STORE_REPAIR_REQUIRED" });
-  }
-
   const runs = await listRuns(ctx.cwd);
-  if (runs.length === 0) throw notFoundError("No active runs found. Inspect archived runs by id.");
+  if (runs.isErr()) throw notFoundError(runtimeReadFailureMessage(runs.error), {
+    errorCode: runtimeReadFailureCode(runs.error),
+  });
+  if (runs.value.length === 0) throw notFoundError("No active runs found. Inspect archived runs by id.");
 
-  const selectedRunId = await pickRunId(runs, ctx);
+  const selectedRunId = await pickRunId(runs.value, ctx);
   if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
   await inspectRun(ctx, selectedRunId, options);
 }
@@ -117,9 +111,17 @@ function inspectionError(
   error: InspectionError,
 ): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
   if (error.type === "invalid-query") return usageError(error.message);
-  const message = error.type === "runtime-store-unsupported"
-    ? `${error.message}\nRun: acpus doctor`
-    : error.message;
+  if (
+    error.type === "runtime-store-repair-required"
+    || error.type === "runtime-store-unsupported"
+    || error.type === "runtime-store-unavailable"
+  ) {
+    return notFoundError(runtimeReadFailureMessage(error), {
+      errorCode: runtimeReadFailureCode(error),
+      inspectionError: error,
+    });
+  }
+  const message = error.message;
   return notFoundError(message, {
     errorCode: error.type.replaceAll("-", "_").toUpperCase(),
     inspectionError: error,

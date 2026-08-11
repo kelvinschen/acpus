@@ -288,7 +288,7 @@ describe("scheduler store attempt fences", () => {
         error: { type: "artifact-not-found", runId: "run_missing", artifactId: "artifact_missing" },
       });
       await expect(lstat(absentShard)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readArtifact(workspace, "run_missing", "artifact_missing")).resolves.toBeUndefined();
+      expect((await readArtifact(workspace, "run_missing", "artifact_missing"))._unsafeUnwrap()).toBeUndefined();
       const store = await openedStore(workspace);
       try {
         const run = await admittedRun(store, workspace);
@@ -311,7 +311,7 @@ describe("scheduler store attempt fences", () => {
         const expected = store.getArtifact(run.id, artifact.id);
         if (!expected) throw new Error("expected registered artifact");
 
-        await expect(readArtifact(workspace, run.id, artifact.id)).resolves.toEqual({
+        expect((await readArtifact(workspace, run.id, artifact.id))._unsafeUnwrap()).toEqual({
           artifact: expected,
           bytes: Buffer.from("x"),
         });
@@ -327,8 +327,8 @@ describe("scheduler store attempt fences", () => {
         await expect(resolveArtifact(workspace, `artifact://${run.id}/artifact_missing`)).resolves.toMatchObject({
           error: { type: "artifact-not-found", runId: run.id, artifactId: "artifact_missing" },
         });
-        await expect(readArtifact(workspace, run.id, "artifact_missing")).resolves.toBeUndefined();
-        await expect(readArtifact(workspace, "run_missing", artifact.id)).resolves.toBeUndefined();
+        expect((await readArtifact(workspace, run.id, "artifact_missing"))._unsafeUnwrap()).toBeUndefined();
+        expect((await readArtifact(workspace, "run_missing", artifact.id))._unsafeUnwrap()).toBeUndefined();
         await writeFile(path, "y");
         await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
           value: {
@@ -336,7 +336,10 @@ describe("scheduler store attempt fences", () => {
             uri: `artifact://${run.id}/${artifact.id}`,
           },
         });
-        await expect(readArtifact(workspace, run.id, artifact.id)).rejects.toThrow("size/digest verification");
+        expect((await readArtifact(workspace, run.id, artifact.id))._unsafeUnwrapErr()).toMatchObject({
+          type: "runtime-store-unavailable",
+          message: expect.stringContaining("size/digest verification"),
+        });
         await rm(path);
         await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
           error: { type: "artifact-path-invalid", runId: run.id, artifactId: artifact.id },

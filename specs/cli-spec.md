@@ -97,12 +97,12 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - `--agents` inline or file-backed values MUST parse as a JSON object before preparation or mutation.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
 - Every workflow run MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
-- The CLI MUST accept a live workspace daemon only when its status protocol version exactly equals the Runtime-exported current protocol version.
-- A daemon protocol mismatch MUST fail actionably without killing, replacing, or spawning around that daemon.
-- Admission MUST probe daemon status before inspecting the Runtime store. A compatible live daemon MUST skip repair.
-- With no live daemon, admission MUST inspect the store, silently apply a repair reported as safe by Runtime, then ensure the daemon. Unsupported storage MUST fail actionably and direct the user to `acpus doctor`; any repair failure MUST preserve Runtime's actionable message.
-- `workflow run` MUST return after daemon acceptance by default.
-- Blocking `workflow run` MUST delegate observation semantics to [Runtime inspection](runtime-spec.md#inspection).
+- The CLI MUST establish one Runtime authority through status and the [Runtime authority update contract](runtime-spec.md#controls-and-daemon). A matching current authority MUST bypass lifecycle inspection; a blocked predecessor or unknown daemon MUST remain unchanged and fail as `RUNTIME_UPDATE_BLOCKED`.
+- Every `workflow run` MUST create one admission request id after preparation and reuse it across pre-admission authority handshakes and reconnects.
+- Every `workflow run` mode MUST use exactly one `submitAndObserve` stream. Default mode MUST stop at admission; `--follow` and `--await-decision` MUST continue on that stream with the corresponding Runtime stop policy and MUST NOT poll the store after daemon admission.
+- Before an admitted frame, the CLI MUST replay the same request id after transport or authority loss until admission has a definite outcome. After admission, abnormal EOF MUST fail as `RUNTIME_AUTHORITY_LOST`, identify the run, and direct the operator to `acpus runs inspect <run-id> --follow`.
+- Workflow admission MAY automatically complete a safe offline store rollover. Unsupported storage MUST fail as `RUNTIME_STORE_UNSUPPORTED`; failed preserved rollover MUST fail as `RUNTIME_STORE_REPAIR_FAILED`; unreadable identity or intent MUST fail as `RUNTIME_STORE_UNREADABLE`.
+- On first Ctrl-C before admission is known, the CLI MUST retain a detach intent, wait for the definite admission result, and exit after admission without canceling it. A second Ctrl-C MAY hard-interrupt and MUST report `ADMISSION_OUTCOME_UNKNOWN`. After admission, Ctrl-C MUST detach immediately with exit 0.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
 - Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.
@@ -130,11 +130,13 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 #### Inspection
 
 - `runs inspect` MUST be text-only, delegate current target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--forensics`, `--follow`, and `--await-decision`.
+- `runs inspect --follow` and `--await-decision` MUST attach through one local bound read session, MUST NOT probe or start a daemon, and MUST remain on the generation selected at attachment.
 - `runs inspect <run-id>` MUST automatically render Runtime's preserved archived summary when no active run matches. The summary contains only `id`, `name`, `status`, `createdAt`, and `updatedAt` and exposes no history identifier.
 - Target, Timeline, Forensics, follow, or await-decision against an archived run MUST fail with `ARCHIVED_RUN_DETAIL_UNAVAILABLE` and direct the user to its plain summary command.
 - If preserved history cannot prove whether a run exists, inspection MUST fail with `ARCHIVED_RUN_LOOKUP_UNAVAILABLE` rather than report `RUN_NOT_FOUND`; the CLI MUST NOT open an archived SQLite database.
 - A repairable current store MUST fail with public code `RUNTIME_STORE_REPAIR_REQUIRED` and direct the user to `acpus doctor --fix`; it MUST NOT degrade to `READ_FAILED`.
 - Unsupported storage MUST fail with public code `RUNTIME_STORE_UNSUPPORTED`, preserve Runtime's guidance, and direct the user to `acpus doctor`; it MUST NOT suggest repair or degrade to `READ_FAILED`.
+- `RUNTIME_UPDATE_BLOCKED` MUST direct the operator to wait for existing work to finish and retry, without suggesting repair or cancellation. `RUNTIME_AUTHORITY_LOST` MUST state that the run remains durable and direct the operator to inspection. `RUNTIME_STORE_REPAIR_FAILED` MUST direct the operator to `acpus doctor --fix`, while `RUNTIME_STORE_UNREADABLE` MUST direct the operator to read-only `acpus doctor`.
 - `--forensics` MUST select one-shot target Forensics and default its omitted `--target` to `root`; explicit `--target root` is equivalent.
 - `--forensics` MUST conflict with `--timeline`, `--follow`, and `--await-decision`.
 - `--timeline` requires `--target`; `--follow` and `--await-decision` are mutually exclusive and map respectively to terminal and decision-boundary observation.
@@ -167,7 +169,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Fork replacement workflow resolution MUST have check/run/viz path, catalog-scope, and stdin parity.
 - The daemon MUST NOT import fork replacement source.
 - Mutating controls MUST start or wake the daemon, dispatch one closed intent, and wait up to 30 seconds for the requested effect to be applied or fail.
-- A mutating control that encounters a repairable store before daemon readiness MUST return public code `RUNTIME_STORE_REPAIR_REQUIRED` and `acpus doctor --fix` as the next command; it MUST NOT repair storage implicitly.
+- A mutating control that encounters a repairable store before daemon readiness MUST return public code `RUNTIME_STORE_REPAIR_REQUIRED` and `acpus doctor --fix` as the next command; it MUST NOT repair storage implicitly. A control blocked by a live predecessor MUST return `RUNTIME_UPDATE_BLOCKED` without canceling work or modifying the store.
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
 - Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; fork results MUST identify source and child separately.
 - A control receipt MUST include a target only when the operator requested one, and that target MUST repeat the requested selector rather than a resolved internal occurrence key.

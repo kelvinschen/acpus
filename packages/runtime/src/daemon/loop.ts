@@ -1,4 +1,5 @@
 import {
+  openRuntimeReadSessionAtLayout,
   openRuntimeStoreAtLayout,
   type RuntimeStore,
 } from "../store/store.js";
@@ -8,13 +9,19 @@ import { createHookRunner } from "../hooks/runner.js";
 import { tryLoadRuntimeConfiguration } from "../configuration.js";
 import { RunExecutionSessions, type RunIncident, type RunSessionControlFailure } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
-import { DAEMON_PROTOCOL_VERSION, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure } from "./protocol.js";
+import {
+  DAEMON_PROTOCOL_VERSION,
+  type DaemonControlIntent,
+  type DaemonErrorCode,
+  type DaemonHandlerFailure,
+  type DaemonRunStreamFrame,
+  type DaemonSubmitAndObserveInput,
+} from "./protocol.js";
 import { startDaemonServer, type DaemonServerHandle } from "./server.js";
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
 import { createManagedAcpExecutor, recoverAcpOwnership, type ManagedAcpExecutor } from "@acpus/agent-executor";
 import {
-  resolveRuntimeLayout,
   resolveRuntimeWorkspaceLayout,
   runAcpStateRoot,
   runtimeLayoutForGeneration,
@@ -25,6 +32,9 @@ import {
   type RuntimeStoreAssessment,
 } from "../runtime-store-lifecycle.js";
 import { acquireRuntimeSharedLock } from "../runtime-lock.js";
+import { createRuntimeAuthorityIdentity, sameRuntimeAuthority } from "./authority.js";
+import type { RuntimeAuthorityIdentity } from "./protocol.js";
+import { observeInspectionAtStore } from "../inspection/use-cases.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
@@ -60,6 +70,8 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     store: RuntimeStore;
     sessions: RunExecutionSessions;
     leaseGeneration: number;
+    authority: RuntimeAuthorityIdentity;
+    layout: ReturnType<typeof runtimeLayoutForGeneration>;
   } | undefined;
   const mutations = new RuntimeMutationQueue();
   let server: DaemonServerHandle;
@@ -70,30 +82,13 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       return ok({
         status: "ok",
         pid: process.pid,
-        generation: runtime.leaseGeneration,
+        leaseGeneration: runtime.leaseGeneration,
         protocolVersion: DAEMON_PROTOCOL_VERSION,
         packageVersion: options.packageVersion,
+        authority: runtime.authority,
       });
     },
-    admitRun: request => {
-      const runtime = readyRuntime;
-      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
-      return new ResultAsync(mutations.enqueue(async () => {
-        try {
-          const admitted = await runtime.store.admitRun({
-            prepared: request.prepared,
-            cwd,
-            input: request.input,
-            ...(request.agentOverrides === undefined ? {} : { agentOverrides: request.agentOverrides }),
-          });
-          if (admitted.isErr()) return err(handlerFailure("INVALID_REQUEST", admitted.error.message));
-          return ok(runtime.sessions.start(admitted.value.id).run);
-        } catch (error) {
-          if (isRuntimeStoreBusyError(error)) return err(handlerFailure("STORE_BUSY", "Runtime store is busy. Retry the request."));
-          throw error;
-        }
-      }));
-    },
+    submitAndObserve: (request, signal) => submitAndObserve(request, signal),
     control: intent => {
       const runtime = readyRuntime;
       if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
@@ -128,12 +123,14 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
     lease: ReturnType<RuntimeStore["claimDaemon"]>;
     sessions: RunExecutionSessions;
     managedAcpExecutor: ManagedAcpExecutor;
+    layout: ReturnType<typeof runtimeLayoutForGeneration>;
   }> => {
     let store: RuntimeStore | undefined;
     let lease: ReturnType<RuntimeStore["claimDaemon"]> | undefined;
     let managedAcpExecutor: ManagedAcpExecutor | undefined;
     try {
-      store = await openReadyDaemonRuntimeStore(cwd);
+      const opened = await openReadyDaemonRuntimeStore(cwd);
+      store = opened.store;
       const hooksConfig = await loadHooksConfig(cwd);
       if (hooksConfig.isErr()) throw new Error(formatHookLoadError(hooksConfig.error));
       const hookRunner = createHookRunner(hooksConfig.value, store);
@@ -146,7 +143,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
         execPath: process.execPath,
         idleStopMs,
       });
-      const layout = resolveRuntimeLayout(cwd);
+      const layout = opened.layout;
       const executorOptions = {
         workersRoot: layout.acpWorkersRoot,
         sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(layout, runId),
@@ -157,7 +154,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       const sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident, managedAcpExecutor);
       await store.observationLog.reconcileTerminalTurns();
       await store.cleanupStagedRunDirectories();
-      return { store, lease, sessions, managedAcpExecutor };
+      return { store, lease, sessions, managedAcpExecutor, layout: opened.layout };
     } catch (error) {
       await settleDaemonResources(
         "Daemon startup failed and its resources could not be fully released.",
@@ -174,8 +171,132 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       throw error;
     }
   })();
-  const { store, lease, sessions, managedAcpExecutor } = initialized;
-  readyRuntime = { store, sessions, leaseGeneration: lease.generation };
+  const { store, lease, sessions, managedAcpExecutor, layout } = initialized;
+  readyRuntime = {
+    store,
+    sessions,
+    leaseGeneration: lease.generation,
+    authority: createRuntimeAuthorityIdentity(layout, lease.generation),
+    layout,
+  };
+
+  async function* submitAndObserve(
+    request: DaemonSubmitAndObserveInput,
+    signal: AbortSignal,
+  ): AsyncIterable<DaemonRunStreamFrame> {
+    const runtime = readyRuntime;
+    if (!runtime) {
+      yield runStreamError("admission", "not-admitted", "EXECUTION_UNAVAILABLE", "Daemon is still initializing.");
+      return;
+    }
+    if (!sameRuntimeAuthority(runtime.authority, request.expectedAuthority)) {
+      yield runStreamError("authority", "not-admitted", "AUTHORITY_MISMATCH", "Runtime authority changed before run admission.");
+      return;
+    }
+
+    let admittedRunId: string | undefined;
+    const admitted = await mutations.enqueue(async () => {
+      try {
+        const result = await runtime.store.admitRun({
+          requestId: request.requestId,
+          prepared: request.prepared,
+          cwd,
+          input: request.input,
+          ...(request.agentOverrides === undefined ? {} : { agentOverrides: request.agentOverrides }),
+        });
+        if (result.isErr()) {
+          return {
+            kind: "failure" as const,
+            phase: "admission" as const,
+            outcome: "not-admitted" as const,
+            failure: handlerFailure(
+              result.error.type === "admission-request-conflict" ? "CONTROL_CONFLICT" : "INVALID_REQUEST",
+              result.error.message,
+            ),
+          };
+        }
+        admittedRunId = result.value.id;
+        try {
+          const run = result.value.status === "pending"
+            ? runtime.sessions.start(result.value.id).run
+            : runtime.store.getRun(result.value.id);
+          if (!run) throw new Error(`Admitted run '${result.value.id}' was not found.`);
+          return { kind: "admitted" as const, run };
+        } catch {
+          return {
+            kind: "failure" as const,
+            phase: "admission" as const,
+            outcome: "admitted" as const,
+            runId: result.value.id,
+            failure: handlerFailure("EXECUTION_UNAVAILABLE", "Run was admitted, but its execution session could not be started."),
+          };
+        }
+      } catch (error) {
+        if (isRuntimeStoreBusyError(error)) {
+          return {
+            kind: "failure" as const,
+            phase: "admission" as const,
+            outcome: admittedRunId === undefined ? "unknown" as const : "admitted" as const,
+            ...(admittedRunId === undefined ? {} : { runId: admittedRunId }),
+            failure: handlerFailure("STORE_BUSY", "Runtime store is busy. Retry the request."),
+          };
+        }
+        return {
+          kind: "failure" as const,
+          phase: "admission" as const,
+          outcome: admittedRunId === undefined ? "unknown" as const : "admitted" as const,
+          ...(admittedRunId === undefined ? {} : { runId: admittedRunId }),
+          failure: handlerFailure("INTERNAL_ERROR", "Run admission failed."),
+        };
+      }
+    });
+    if (admitted.kind === "failure") {
+      yield runStreamError(
+        admitted.phase,
+        admitted.outcome,
+        admitted.failure.code,
+        admitted.failure.message,
+        "runId" in admitted ? admitted.runId : undefined,
+      );
+      return;
+    }
+
+    yield { kind: "admitted", authority: runtime.authority, run: admitted.run };
+    if (request.until === "admitted" || signal.aborted) return;
+
+    const readSession = await openRuntimeReadSessionAtLayout(runtime.layout);
+    if (readSession.isErr()) {
+      yield runStreamError(
+        "observation",
+        "admitted",
+        "STORE_ERROR",
+        readSession.error.message,
+        admitted.run.id,
+      );
+      return;
+    }
+    try {
+      for await (const observation of observeInspectionAtStore(readSession.value.store, {
+        view: { kind: "run", runId: admitted.run.id },
+        until: request.until,
+        signal,
+      })) {
+        if (observation.isErr()) {
+          yield runStreamError(
+            "observation",
+            "admitted",
+            "STORE_ERROR",
+            observation.error.message,
+            admitted.run.id,
+          );
+          return;
+        }
+        yield { kind: "observation", observation: observation.value };
+      }
+    } finally {
+      readSession.value.close();
+    }
+  }
 
   let ticking = false;
   let heartbeating = false;
@@ -290,7 +411,10 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   return { shutdown };
 }
 
-async function openReadyDaemonRuntimeStore(cwd: string): Promise<RuntimeStore> {
+async function openReadyDaemonRuntimeStore(cwd: string): Promise<{
+  store: RuntimeStore;
+  layout: ReturnType<typeof runtimeLayoutForGeneration>;
+}> {
   const first = await inspectRuntimeStoreInternal(cwd);
   if (first.isErr()) throw readinessError(first.error);
   if (first.value.current.state === "absent") await initializeRuntimeStoreIfAbsent(cwd);
@@ -311,10 +435,11 @@ async function openReadyDaemonRuntimeStore(cwd: string): Promise<RuntimeStore> {
     if (checked.value.current.state !== "ready") throw assessmentReadinessError(checked.value);
     const layout = runtimeLayoutForGeneration(workspace, checked.value.current.generationId);
     adopted = true;
-    return await openRuntimeStoreAtLayout(layout, {
+    const store = await openRuntimeStoreAtLayout(layout, {
       lock,
       prevalidated: true,
     });
+    return { store, layout };
   } catch (error) {
     if (!adopted) lock.release();
     if (error instanceof DaemonRuntimeStoreReadinessError) throw error;
@@ -411,4 +536,20 @@ function controlTargetAmbiguity(failure: RunSessionControlFailure): true | undef
 
 function handlerFailure(code: DaemonErrorCode, message: string, ambiguity?: true): DaemonHandlerFailure {
   return { code, message, ...(ambiguity ? { ambiguity } : {}) };
+}
+
+function runStreamError(
+  phase: Extract<DaemonRunStreamFrame, { kind: "error" }>["phase"],
+  outcome: Extract<DaemonRunStreamFrame, { kind: "error" }>["outcome"],
+  code: DaemonErrorCode,
+  message: string,
+  runId?: string,
+): Extract<DaemonRunStreamFrame, { kind: "error" }> {
+  return {
+    kind: "error",
+    phase,
+    outcome,
+    ...(runId === undefined ? {} : { runId }),
+    error: { code, message },
+  };
 }

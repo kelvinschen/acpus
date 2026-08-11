@@ -1,6 +1,10 @@
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getRuntimeHealth, requestDaemonStatus } from "@acpus/runtime";
+import {
+  getRuntimeHealth,
+  requestDaemonShutdown,
+  requestDaemonStatus,
+} from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
 import { getCliPackageInfo } from "../src/platform/package-info.js";
 import { runSourceCli } from "./support/cli-runner.js";
@@ -37,4 +41,65 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
     });
   });
 
+  it("follows a terminal run locally after daemon shutdown without recreating the socket", async () => {
+    await withDaemonTestWorkspace("e2e-offline-follow", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/basic/valid.workflow.ts");
+      const submitted = await runSourceCli(workspace, [
+        "workflow", "run", workflow, "--input", "{\"ready\":true}", "--follow",
+      ]);
+      const [runId] = submitted.stdout.match(/\d{14}[A-F0-9]{20}/gu) ?? [];
+      expect(submitted.exitCode, submitted.stdout || submitted.stderr).toBe(0);
+      expect(runId).toMatch(runIdPattern);
+
+      const shutdown = await requestDaemonShutdown(workspace);
+      expect(shutdown.isOk()).toBe(true);
+      await waitForDaemonUnavailable(workspace);
+
+      const inspected = await runSourceCli(workspace, ["runs", "inspect", runId!, "--follow"]);
+
+      expect(inspected.exitCode, inspected.stdout || inspected.stderr).toBe(0);
+      expect(inspected.stderr).toBe("");
+      expect(inspected.stdout).toContain(`Run ${runId}`);
+      expect(inspected.stdout).toContain("completed");
+      const daemonStatus = await requestDaemonStatus(workspace);
+      expect(daemonStatus.isErr()).toBe(true);
+      if (daemonStatus.isErr()) expect(daemonStatus.error).toMatchObject({ type: "transport" });
+    });
+  });
+
+  it("detaches a nonterminal local follow after daemon shutdown without starting a daemon", async () => {
+    await withDaemonTestWorkspace("e2e-offline-detach", async workspace => {
+      const workflow = await copyWorkflowFixture(workspace, "workflows/signals/signal.workflow.ts");
+      const submitted = await runSourceCli(workspace, ["workflow", "run", workflow, "--await-decision"]);
+      const [runId] = submitted.stdout.match(/\d{14}[A-F0-9]{20}/gu) ?? [];
+      expect(submitted.exitCode, submitted.stdout || submitted.stderr).toBe(0);
+      expect(runId).toMatch(runIdPattern);
+
+      const shutdown = await requestDaemonShutdown(workspace);
+      expect(shutdown.isOk()).toBe(true);
+      await waitForDaemonUnavailable(workspace);
+
+      const followed = await runSourceCli(
+        workspace,
+        ["runs", "inspect", runId!, "--follow"],
+        { interruptAfterStdout: /Attached:/u },
+      );
+
+      expect(followed.exitCode, followed.stdout || followed.stderr).toBe(0);
+      expect(followed.stderr).toBe("");
+      expect(followed.stdout).toContain("Attached:");
+      expect(followed.stdout).toContain(`Detached from run ${runId}.`);
+      const daemonStatus = await requestDaemonStatus(workspace);
+      expect(daemonStatus.isErr()).toBe(true);
+      if (daemonStatus.isErr()) expect(daemonStatus.error).toMatchObject({ type: "transport" });
+    });
+  });
+
 });
+
+async function waitForDaemonUnavailable(workspace: string): Promise<void> {
+  await expect.poll(async () => {
+    const status = await requestDaemonStatus(workspace);
+    return status.isErr();
+  }).toBe(true);
+}

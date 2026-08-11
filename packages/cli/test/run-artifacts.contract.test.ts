@@ -35,7 +35,7 @@ const resolvedArtifact = {
 
 describe("runs artifacts", () => {
   beforeEach(() => {
-    runtime.listArtifacts.mockReset().mockResolvedValue(artifacts);
+    runtime.listArtifacts.mockReset().mockResolvedValue(okList(artifacts));
     runtime.inspectTargetArtifacts.mockReset().mockResolvedValue(okTarget(artifacts));
     runtime.resolveArtifact.mockReset().mockResolvedValue(okArtifact(resolvedArtifact));
   });
@@ -87,7 +87,7 @@ describe("runs artifacts", () => {
   });
 
   it("prints a successful empty result", async () => {
-    runtime.listArtifacts.mockResolvedValue([]);
+    runtime.listArtifacts.mockResolvedValue(okList([]));
 
     await expect(runCommand(["artifacts", "run_1"], false)).resolves.toEqual({
       exitCode: 0,
@@ -101,7 +101,7 @@ describe("runs artifacts", () => {
   });
 
   it("reports missing runs through the structured error envelope", async () => {
-    runtime.listArtifacts.mockResolvedValue(undefined);
+    runtime.listArtifacts.mockResolvedValue(okList(undefined));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     expect(await runCli(["runs", "artifacts", "missing", "--json"], {
@@ -244,6 +244,13 @@ function okTarget(value: ArtifactRecord[]) {
 }
 
 function okArtifact(value: typeof resolvedArtifact | Omit<typeof resolvedArtifact, "mediaType">) {
+  return {
+    isErr: () => false as const,
+    value,
+  };
+}
+
+function okList(value: ArtifactRecord[] | undefined) {
   return {
     isErr: () => false as const,
     value,

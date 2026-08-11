@@ -39,8 +39,8 @@ describe("runtime run deletion", () => {
       expect((await deleteRun(workspace, deletedId))._unsafeUnwrap()).toMatchObject({ id: deletedId });
 
       await expect(access(runDir)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(getRun(workspace, deletedId)).resolves.toBeUndefined();
-      await expect(listRuns(workspace)).resolves.toEqual([expect.objectContaining({ id: keptId })]);
+      expect((await getRun(workspace, deletedId))._unsafeUnwrap()).toBeUndefined();
+      expect((await listRuns(workspace))._unsafeUnwrap()).toEqual([expect.objectContaining({ id: keptId })]);
       expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", deletedId)).toBe(0);
       expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_inputs WHERE run_id = ?", deletedId)).toBe(0);
     });
@@ -61,11 +61,11 @@ describe("runtime run deletion", () => {
       expireRunLease(workspace, runId);
       insertDaemonLease(workspace, new Date(Date.now() - 10_000).toISOString());
 
-      await expect(getRun(workspace, runId)).resolves.toMatchObject({
+      expect((await getRun(workspace, runId))._unsafeUnwrap()).toMatchObject({
         execution: { state: "stale" },
       });
       expect((await deleteRun(workspace, runId))._unsafeUnwrap()).toMatchObject({ id: runId });
-      await expect(getRun(workspace, runId)).resolves.toBeUndefined();
+      expect((await getRun(workspace, runId))._unsafeUnwrap()).toBeUndefined();
     });
   });
 

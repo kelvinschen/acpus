@@ -464,7 +464,7 @@ describe("inspection text surface", () => {
       attention: { kind: "failure", summary: "Review failed." },
     } satisfies InspectionView);
     const update = formatInspectionChanges([{
-      subject: { label: "approve", selector: "@ab12cd34ef56" },
+      subject: { label: "approve", kind: "signal", selector: "@ab12cd34ef56" },
       state: { status: "awaiting" },
       attention: {
         kind: "awaiting-input",
@@ -485,15 +485,15 @@ describe("inspection text surface", () => {
 
   it("renders every decision facet carried by an update", () => {
     const text = formatInspectionChanges([{
-      subject: { label: "design_board", selector: "@2771ef6ac8e9" },
+      subject: { label: "design_board", kind: "agent", selector: "@2771ef6ac8e9" },
       state: { status: "completed" },
     }, {
-      subject: { label: "challenge_panel" },
+      subject: { label: "challenge_panel", kind: "parallel" },
       state: { status: "running" },
       progress: { completed: 1, total: 3 },
       reason: "race-selected",
     }, {
-      subject: { label: "approve", selector: "@1a2b3c4d5e6f" },
+      subject: { label: "approve", kind: "signal", selector: "@1a2b3c4d5e6f" },
       state: { status: "awaiting" },
       occurrences: { total: 3, awaiting: 1, completed: 2 },
       attention: {
@@ -505,7 +505,7 @@ describe("inspection text surface", () => {
       },
       visibility: { state: "degraded", reason: "observation-gap" },
     }, {
-      subject: { label: "failed_review", selector: "@fedcba987654" },
+      subject: { label: "failed_review", kind: "agent", selector: "@fedcba987654" },
       state: {
         status: "failed",
         failure: { origin: "runtime", message: "Review failed." },

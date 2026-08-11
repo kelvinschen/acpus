@@ -11,12 +11,12 @@ import {
 } from "./support/runtime-fixtures.js";
 import {
   activeTaskWorkflow,
-  requestDaemonAdmitRun,
   requestDaemonControl,
   waitForTerminalRun,
   waitUntil,
   withDaemonLeaseWorkspace,
 } from "./support/daemon-lease-fixture.js";
+import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
 describe.concurrent("daemon lease hooks", () => {
   it("runs hooks for daemon-owned active controls", async () => {
@@ -36,7 +36,7 @@ describe.concurrent("daemon lease hooks", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });
@@ -85,7 +85,7 @@ describe.concurrent("daemon lease hooks", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { ready: true },
         });

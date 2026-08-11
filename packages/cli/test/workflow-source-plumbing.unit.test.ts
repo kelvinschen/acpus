@@ -1,19 +1,20 @@
 import { Readable } from "node:stream";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
-import { okAsync } from "neverthrow";
+import { err, errAsync, ok, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const mock = vi.hoisted(() => ({
+  observeInspection: vi.fn(),
   prepareWorkflowForCli: vi.fn(),
-  sendDaemonAdmitRun: vi.fn(),
+  sendDaemonSubmitAndObserve: vi.fn(),
   sendDaemonControl: vi.fn(),
-  followRun: vi.fn(),
   tryNormalizeForkInput: vi.fn(),
 }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
+  observeInspection: mock.observeInspection,
   tryNormalizeForkInput: mock.tryNormalizeForkInput,
 }));
 vi.mock("../src/workflow/preparation.js", async importOriginal => ({
@@ -22,12 +23,8 @@ vi.mock("../src/workflow/preparation.js", async importOriginal => ({
 }));
 vi.mock("../src/daemon/client.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/daemon/client.js")>(),
-  sendDaemonAdmitRun: mock.sendDaemonAdmitRun,
+  sendDaemonSubmitAndObserve: mock.sendDaemonSubmitAndObserve,
   sendDaemonControl: mock.sendDaemonControl,
-}));
-vi.mock("../src/runs/follow.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/runs/follow.js")>(),
-  followRun: mock.followRun,
 }));
 
 import { createRunsCommand } from "../src/runs/command.js";
@@ -42,18 +39,13 @@ describe("workflow source command plumbing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mock.prepareWorkflowForCli.mockResolvedValue({ prepared: snapshotPrepared });
-    mock.sendDaemonAdmitRun.mockReturnValue(okAsync(runDetails()));
+    mock.sendDaemonSubmitAndObserve.mockImplementation(() => daemonFrames(admittedFrame()));
     mock.sendDaemonControl.mockReturnValue(okAsync({
       type: "fork",
       sourceRunId: "run_source",
       run: runDetails("run_child"),
     }));
     mock.tryNormalizeForkInput.mockReturnValue(okAsync({}));
-    mock.followRun.mockResolvedValue({
-      kind: "closed",
-      reason: "subject-terminal",
-      run: { id: "run_admitted", status: "completed" },
-    });
   });
 
   it.each([
@@ -79,10 +71,16 @@ describe("workflow source command plumbing", () => {
       stdin,
     });
     if (action === "run") {
-      expect(mock.sendDaemonAdmitRun).toHaveBeenCalledWith("/workspace", {
-        prepared: snapshotPrepared,
-        input: {},
-      });
+      expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledWith(
+        "/workspace",
+        {
+          requestId: expect.stringMatching(/^cli:/),
+          prepared: snapshotPrepared,
+          input: {},
+          until: "admitted",
+        },
+        { signal: expect.any(AbortSignal) },
+      );
     }
     expect(setExitCode).toHaveBeenLastCalledWith(0);
   });
@@ -108,7 +106,8 @@ describe("workflow source command plumbing", () => {
       "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
       "",
     ].join("\n"));
-    expect(mock.followRun).not.toHaveBeenCalled();
+    expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledOnce();
+    expect(mock.observeInspection).not.toHaveBeenCalled();
   });
 
   it("passes stdin through the shared source preparer for a fork replacement", async () => {
@@ -170,13 +169,44 @@ describe("workflow source command plumbing", () => {
     });
   });
 
-  it("prints preparation warnings before following a workflow run in text mode", async () => {
+  it("preserves the Runtime repair code when fork input normalization cannot bind the store", async () => {
+    mock.tryNormalizeForkInput.mockReturnValueOnce(errAsync({
+      type: "runtime-store-repair-required",
+      command: "acpus doctor --fix",
+      message: "Runtime store repair is required.",
+    }));
+    const command = createRunsCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await expect(command.parseAsync([
+      "fork",
+      "run_source",
+      "--input",
+      "{}",
+    ], { from: "user" })).rejects.toMatchObject({
+      exitCode: 1,
+      result: {
+        phase: "control",
+        errorCode: "RUNTIME_STORE_REPAIR_REQUIRED",
+        message: expect.stringContaining("acpus doctor --fix"),
+        control: { type: "fork", runId: "run_source" },
+      },
+    });
+    expect(mock.sendDaemonControl).not.toHaveBeenCalled();
+  });
+
+  it("uses one daemon stream for admission and terminal observation", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    mock.followRun.mockImplementationOnce(async (_cwd, _query, output) => {
-      output.stdout.write("FOLLOW\n");
-      return { kind: "closed", reason: "subject-terminal", run: { id: "run_admitted", status: "completed" } };
-    });
+    mock.sendDaemonSubmitAndObserve.mockReturnValueOnce(daemonFrames(
+      admittedFrame(),
+      closedFrame("completed", "subject-terminal"),
+    ));
     mock.prepareWorkflowForCli.mockResolvedValue({
       prepared: preparedWorkflow([sourceCaptureWarning()]),
     });
@@ -190,28 +220,26 @@ describe("workflow source command plumbing", () => {
 
     await command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
 
-    expect(stdout.text).toBe([
-      "workflow.ts:2:62 [warning SC001] Dynamic import with a non-literal specifier is outside the statically tracked workflow source graph.",
-      "FOLLOW",
-      "",
-    ].join("\n"));
     expect(stdout.text.match(/\[warning SC001\]/gu)).toHaveLength(1);
-    expect(mock.followRun).toHaveBeenCalledOnce();
-    expect(mock.followRun).toHaveBeenCalledWith(
+    expect(stdout.text).toContain("Run run_admitted  dynamic-source  completed");
+    expect(stdout.text).not.toContain("Inspect: acpus runs inspect run_admitted");
+    expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledOnce();
+    expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledWith(
       "/workspace",
-      { kind: "run", runId: "run_admitted" },
-      { until: "subject-terminal", stdout, stderr },
+      expect.objectContaining({ until: "subject-terminal" }),
+      { signal: expect.any(AbortSignal) },
     );
+    expect(mock.observeInspection).not.toHaveBeenCalled();
   });
 
   it("uses the decision-boundary policy for a blocking workflow run", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     const setExitCode = vi.fn();
-    mock.followRun.mockImplementationOnce(async (_cwd, _view, options) => {
-      options.stdout.write("ATTACHED\n");
-      return { kind: "closed", reason: "awaiting-input", run: { id: "run_admitted", status: "running" } };
-    });
+    mock.sendDaemonSubmitAndObserve.mockReturnValueOnce(daemonFrames(
+      admittedFrame(),
+      closedFrame("running", "awaiting-input"),
+    ));
     const command = createWorkflowCommand({
       cwd: "/workspace",
       stdin: Readable.from([]),
@@ -222,14 +250,149 @@ describe("workflow source command plumbing", () => {
 
     await command.parseAsync(["run", "workflow.ts", "--await-decision"], { from: "user" });
 
-    expect(mock.followRun).toHaveBeenCalledWith(
+    expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledWith(
       "/workspace",
-      { kind: "run", runId: "run_admitted" },
-      { until: "decision-boundary", stdout, stderr },
+      expect.objectContaining({ until: "decision-boundary" }),
+      { signal: expect.any(AbortSignal) },
     );
-    expect(stdout.text).toBe("ATTACHED\n");
-    expect(stdout.text).not.toContain("Run run_admitted");
+    expect(stdout.text).toContain("Run run_admitted  dynamic-source  running");
+    expect(stdout.text).not.toContain("pending");
+    expect(mock.observeInspection).not.toHaveBeenCalled();
     expect(setExitCode).toHaveBeenLastCalledWith(0);
+  });
+
+  it("preserves a post-admission daemon error and its durable run recovery", async () => {
+    mock.sendDaemonSubmitAndObserve.mockReturnValueOnce((async function* () {
+      yield ok(admittedFrame());
+      yield err({
+        type: "request-failed",
+        method: "submitAndObserve",
+        code: "STORE_ERROR",
+        runId: "run_admitted",
+        message: "Observation connection failed.",
+      });
+    })());
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await expect(command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" })).rejects.toMatchObject({
+      exitCode: 1,
+      result: {
+        phase: "run",
+        errorCode: "STORE_ERROR",
+        message: expect.stringMatching(/Observation connection failed.*acpus runs inspect run_admitted --follow/u),
+      },
+    });
+  });
+
+  it("records a pre-admission Ctrl-C and detaches after admission is confirmed", async () => {
+    const releaseAdmission = deferred<void>();
+    mock.sendDaemonSubmitAndObserve.mockImplementationOnce(() => (async function* () {
+      await releaseAdmission.promise;
+      yield ok(admittedFrame());
+    })());
+    const stdout = new CaptureStream();
+    const setExitCode = vi.fn();
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode,
+    });
+
+    const running = command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
+    await vi.waitFor(() => expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledOnce());
+    process.emit("SIGINT");
+    releaseAdmission.resolve();
+
+    await running;
+    expect(setExitCode).toHaveBeenLastCalledWith(0);
+    expect(stdout.text).toContain("Detached from run run_admitted.");
+    expect(stdout.text).toContain("acpus runs inspect run_admitted --follow");
+    expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledOnce();
+  });
+
+  it("reports an unknown admission outcome after a second pre-admission Ctrl-C", async () => {
+    mock.sendDaemonSubmitAndObserve.mockImplementationOnce((
+      _cwd: string,
+      _input: unknown,
+      options: { signal: AbortSignal },
+    ) => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<unknown>>(resolveNext => {
+          options.signal.addEventListener("abort", () => resolveNext({ done: true, value: undefined }), { once: true });
+        }),
+        return: async () => ({ done: true, value: undefined }),
+      }),
+    }));
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    const running = command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
+    await vi.waitFor(() => expect(mock.sendDaemonSubmitAndObserve).toHaveBeenCalledOnce());
+    process.emit("SIGINT");
+    process.emit("SIGINT");
+
+    await expect(running).rejects.toMatchObject({
+      exitCode: 1,
+      result: {
+        phase: "run",
+        errorCode: "ADMISSION_OUTCOME_UNKNOWN",
+      },
+    });
+  });
+
+  it("prefers an admitted Ctrl-C detach over a racing stream error", async () => {
+    let resolveNext!: (result: IteratorResult<unknown>) => void;
+    let nextCount = 0;
+    mock.sendDaemonSubmitAndObserve.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => {
+          nextCount += 1;
+          return nextCount === 1
+            ? Promise.resolve({ done: false as const, value: ok(admittedFrame()) })
+            : new Promise<IteratorResult<unknown>>(resolve => { resolveNext = resolve; });
+        },
+        return: async () => ({ done: true as const, value: undefined }),
+      }),
+    }));
+    const stdout = new CaptureStream();
+    const setExitCode = vi.fn();
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode,
+    });
+
+    const running = command.parseAsync(["run", "workflow.ts", "--follow"], { from: "user" });
+    await vi.waitFor(() => expect(resolveNext).toBeTypeOf("function"));
+    process.emit("SIGINT");
+    resolveNext({
+      done: false,
+      value: err({
+        type: "request-failed",
+        method: "submitAndObserve",
+        code: "STORE_ERROR",
+        message: "late observer failure",
+      }),
+    });
+
+    await running;
+    expect(setExitCode).toHaveBeenLastCalledWith(0);
+    expect(stdout.text).toContain("Detached from run run_admitted.");
   });
 
   it("preserves replacement preparation warnings in fork text", async () => {
@@ -446,4 +609,43 @@ function runDetails(id = "run_admitted") {
       daemonHeartbeatAt: "2026-07-24T00:00:00.000Z",
     },
   };
+}
+
+function admittedFrame() {
+  return {
+    kind: "admitted" as const,
+    authority: {} as never,
+    run: runDetails(),
+  };
+}
+
+function closedFrame(
+  status: "running" | "completed",
+  reason: "subject-terminal" | "awaiting-input",
+) {
+  return {
+    kind: "observation" as const,
+    observation: {
+      kind: "closed" as const,
+      reason,
+      view: {
+        kind: "run" as const,
+        run: { id: "run_admitted", name: "dynamic-source", status },
+        counts: { total: 0 },
+        tree: [],
+      },
+    },
+  };
+}
+
+function daemonFrames(...frames: unknown[]): AsyncIterable<unknown> {
+  return (async function* () {
+    for (const frame of frames) yield ok(frame);
+  })();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(fulfill => { resolve = fulfill; });
+  return { promise, resolve };
 }

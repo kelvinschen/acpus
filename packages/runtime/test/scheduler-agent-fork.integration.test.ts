@@ -81,7 +81,7 @@ describe("scheduler agent overrides and forks", () => {
           expect(store.getRun(run.id)?.agentOverrides).toEqual({
             reviewer: { command: "custom-acp-server", permissionMode: "deny-all" },
           });
-          await expect(getRunVisualizationSnapshot(workspace, run.id)).resolves.toMatchObject({
+          expect((await getRunVisualizationSnapshot(workspace, run.id))._unsafeUnwrap()).toMatchObject({
             workflow: {
               name: "scheduler-node-executor-agent-override",
               description: "Review a change with configured agents.",

@@ -1,5 +1,4 @@
 import {
-  inspectRuntimeStore,
   listKnownWorkspaces,
   resolveKnownWorkspace,
 } from "@acpus/runtime";
@@ -25,16 +24,6 @@ export function createWorkspaceContext(cwd: string) {
         apiError(404, "workspace_not_found", `Workspace '${workspaceKey}' was not found.`);
       }
       return resolved.value;
-    },
-    async requireStoreReady(workspaceDir: string): Promise<void> {
-      const inspected = await inspectRuntimeStore(workspaceDir);
-      if (inspected.isErr()) apiError(500, "runtime_store_unavailable", inspected.error.message);
-      if (inspected.value.state === "ready") return;
-      apiError(
-        inspected.value.state === "unsupported" ? 422 : 409,
-        inspected.value.state === "unsupported" ? "runtime_store_unavailable" : "runtime_store_fix_required",
-        inspected.value.message,
-      );
     },
   };
 }

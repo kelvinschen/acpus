@@ -15,12 +15,13 @@ import {
   type RunInspectionNodeDocument,
 } from "@acpus/runtime";
 import type { WebControlCommand } from "../../api-types.js";
-import { apiError } from "../errors.js";
+import { apiError, runtimeReadError } from "../errors.js";
 import { projectNodeExecution, projectNodeInspection, projectNodeRuntimeValues } from "../node-inspection.js";
+import type { EnsureRuntimeAuthority } from "../runtime-authority.js";
 import type { WebWorkspaceContext } from "../workspace-context.js";
 
 type InspectionControlRouteOptions = {
-  ensureDaemonRunning(cwd: string): void | Promise<void>;
+  ensureDaemonRunning: EnsureRuntimeAuthority;
 };
 
 export function registerInspectionControlRoutes(
@@ -30,7 +31,6 @@ export function registerInspectionControlRoutes(
 ): void {
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target/execution", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const execution = await readNodeExecution(
       workspace.canonicalPath,
       context.req.param("id"),
@@ -41,7 +41,6 @@ export function registerInspectionControlRoutes(
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target/runtime-values", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const view = await readNodeRuntimeValues(
       workspace.canonicalPath,
       context.req.param("id"),
@@ -52,7 +51,6 @@ export function registerInspectionControlRoutes(
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/nodes/:target", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const inspection = await readNodeInspection(
       workspace.canonicalPath,
       context.req.param("id"),
@@ -75,21 +73,31 @@ export function registerInspectionControlRoutes(
     const body = await context.req.json<JsonValue>().catch(() =>
       apiError(400, "invalid_json", "Control body must be JSON."),
     );
-    await submitControl(options, workspaces, workspace.canonicalPath, context.req.param("id"), body);
+    await submitControl(options, workspace.canonicalPath, context.req.param("id"), body);
     return context.json({ ok: true });
   });
 }
 
 async function submitControl(
   options: InspectionControlRouteOptions,
-  workspaces: WebWorkspaceContext,
   cwd: string,
   runId: string,
   body: JsonValue,
 ): Promise<void> {
   const command = parseControlBody(body);
-  await workspaces.requireStoreReady(cwd);
-  await options.ensureDaemonRunning(cwd);
+  const readiness = await options.ensureDaemonRunning(cwd);
+  if (!readiness.ok) {
+    if (readiness.code === "RUNTIME_UPDATE_BLOCKED") {
+      apiError(409, "runtime_update_blocked", readiness.message);
+    }
+    if (readiness.code === "RUNTIME_STORE_REPAIR_REQUIRED") {
+      apiError(409, "runtime_store_fix_required", readiness.message);
+    }
+    if (readiness.code === "RUNTIME_STORE_UNSUPPORTED") {
+      apiError(422, "runtime_store_unavailable", readiness.message);
+    }
+    apiError(503, "runtime_unavailable", readiness.message);
+  }
   const base = { requestId: `web:${randomUUID()}`, runId };
   const intent: DaemonControlIntent = command.type === "signal"
     ? { ...base, type: "signal", nodeId: command.target, payload: command.payload }
@@ -101,7 +109,13 @@ async function submitControl(
   const controlled = await requestDaemonControl(cwd, intent);
   if (controlled.isErr()) {
     if (controlled.error.type === "rejected") {
-      apiError(controlled.error.code === "RUN_NOT_FOUND" ? 404 : 400, controlled.error.code.toLowerCase(), controlled.error.message);
+      apiError(
+        controlled.error.code === "RUN_NOT_FOUND"
+          ? 404
+          : 400,
+        controlled.error.code.toLowerCase(),
+        controlled.error.message,
+      );
     }
     throw new Error(controlled.error.message);
   }
@@ -155,7 +169,9 @@ async function readRunJsonArtifact(
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
   const artifact = artifacts.find(item => item.id === artifactId);
   if (!artifact) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the run projection.`);
-  const verified = await readArtifact(cwd, artifact.runId, artifact.id);
+  const read = await readArtifact(cwd, artifact.runId, artifact.id);
+  if (read.isErr()) runtimeReadError(read.error);
+  const verified = read.value;
   if (!verified) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the runtime registry.`);
   const parsed = JSON.parse(verified.bytes.toString("utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -190,6 +206,7 @@ async function readNodeExecution(cwd: string, runId: string, target: string): Pr
 }
 
 function inspectionError(error: RunInspectionError): never {
+  mapRuntimeReadError(error);
   if (error.type === "run-not-found" || error.type === "runtime-store-not-found") {
     apiError(404, "run_not_found", error.message);
   }
@@ -203,6 +220,7 @@ function inspectionError(error: RunInspectionError): never {
 }
 
 function coherentInspectionError(error: InspectionError): never {
+  mapRuntimeReadError(error);
   if (error.type === "run-not-found" || error.type === "runtime-store-not-found") {
     apiError(404, "run_not_found", error.message);
   }
@@ -210,4 +228,12 @@ function coherentInspectionError(error: InspectionError): never {
   if (error.type === "target-ambiguous") apiError(409, "target_ambiguous", error.message);
   if (error.type === "invalid-query") apiError(400, "invalid_inspection_query", error.message);
   throw new Error(error.message);
+}
+
+function mapRuntimeReadError(error: RunInspectionError | InspectionError): void {
+  if (error.type === "runtime-store-repair-required"
+    || error.type === "runtime-store-unsupported"
+    || error.type === "runtime-store-unavailable") {
+    runtimeReadError(error);
+  }
 }

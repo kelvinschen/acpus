@@ -22,7 +22,11 @@ export function registerTestProcessHome(cwd: string, home: string): () => void {
   };
 }
 
-export async function runSourceCli(cwd: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
+export async function runSourceCli(
+  cwd: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv; interruptAfterStdout?: RegExp } = {},
+): Promise<ProcessResult> {
   const registeredHome = testHomes.get(resolve(cwd));
   const temporaryRoot = join(repoRoot, ".tmp-tests");
   if (!registeredHome) await mkdir(temporaryRoot, { recursive: true });
@@ -41,13 +45,18 @@ export async function runSourceCli(cwd: string, args: string[], options: { env?:
         USERPROFILE: home,
         ...options.env,
       },
+      ...(options.interruptAfterStdout === undefined ? {} : { interruptAfterStdout: options.interruptAfterStdout }),
     });
   } finally {
     if (!registeredHome) await rm(home, { recursive: true, force: true });
   }
 }
 
-function runProcess(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ProcessResult> {
+function runProcess(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; interruptAfterStdout?: RegExp } = {},
+): Promise<ProcessResult> {
   return new Promise(resolveProcess => {
     const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, FORCE_COLOR: "0" };
     delete env.NODE_NO_WARNINGS;
@@ -59,7 +68,14 @@ function runProcess(command: string, args: string[], options: { cwd?: string; en
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout.on("data", chunk => stdout.push(Buffer.from(chunk)));
+    let interrupted = false;
+    child.stdout.on("data", chunk => {
+      stdout.push(Buffer.from(chunk));
+      if (!interrupted && options.interruptAfterStdout?.test(Buffer.concat(stdout).toString("utf8"))) {
+        interrupted = true;
+        child.kill("SIGINT");
+      }
+    });
     child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)));
     child.on("close", exitCode => resolveProcess({
       exitCode,

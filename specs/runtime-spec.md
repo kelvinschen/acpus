@@ -32,6 +32,7 @@
 - The active database MUST use the Acpus SQLite `application_id` and `user_version = 9`.
 - Runtime-owned roots, manifests, databases, run capsules, sources, and trash MUST reject symbolic-link substitution. Existing run/file identity fencing remains scoped to opened store data and MUST fail visibly on an observable replacement.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or store directories.
+- A current-store read session MUST resolve the manifest generation, hold shared ownership of that generation, re-read the manifest before opening SQLite, and fail if the active generation changed. It MUST validate the application and storage versions through that connection's SQLite PRAGMAs so committed WAL state remains visible. Every read performed through that session MUST reuse its one read-only SQLite connection and MUST NOT switch generations.
 - Platform-global daemon endpoints MUST combine the workspace key with a stable Acpus-home scope; filesystem socket parents and sockets MUST remain private and reject unsafe substitution.
 - `listKnownWorkspaces(cwd)` MUST enumerate only direct shard manifests beneath the same Acpus home and MUST always include the current workspace. Entries expose only workspace key, canonical path, optional run count, and optional latest run update; a fresh workspace reports `runCount: 0`, while an unreadable store omits run metadata.
 - Invalid or unavailable shards MUST be omitted from `workspaces`, reported independently in `failures`, and MUST NOT prevent valid candidates from being listed.
@@ -39,13 +40,15 @@
 
 #### Store Inspection And Repair
 
-- The Runtime package root MUST expose only `inspectRuntimeStore(cwd)` and `repairRuntimeStore(cwd)` for store lifecycle work.
-- `inspectRuntimeStore` MUST be read-only and return exactly `ready`, `repairable` with a user-facing message, or `unsupported` with a user-facing message. A missing store is `ready` because ordinary first use initializes it.
-- `repairRuntimeStore` MUST return only `{ changed: boolean }` or a `busy | unsupported | failed` error. It MUST be a no-op for a missing or already-ready store.
+- The Runtime package root lifecycle surface MUST expose `inspectRuntimeStore(cwd)`, `repairRuntimeStore(cwd)`, and `awaitRuntimeStoreOffline(cwd)`.
+- `inspectRuntimeStore` MUST be read-only; a successful inspection returns exactly `ready`, `repairable` with a user-facing message, or `unsupported` with a user-facing message. A missing store is `ready` because ordinary first use initializes it.
+- `repairRuntimeStore` MUST return only `{ changed: boolean }` or a `busy | unsupported | unreadable | failed` error. It MUST be a no-op for a missing or already-ready store.
+- `awaitRuntimeStoreOffline` MUST acquire exclusive workspace ownership and prove that daemon, run-lease, and ACP ownership are absent without modifying store data; it returns only success or a `busy | unavailable` error.
 - Repair MUST request graceful daemon shutdown, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v9 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
 - A durable repair intent MUST contain only the information needed to resume. Repeating repair after interruption MUST converge without caller-supplied planning state.
 - Concurrent first use MUST serialize initialization, re-inspect, and adopt the one store named by the manifest before acquiring normal shared-store ownership.
-- Format inspection and storage-v9 summary export MUST observe committed WAL contents without mutating the inspected source. A newer format, foreign SQLite application, or unrecognized database remains unsupported and unchanged.
+- Format inspection and storage-v9 summary export MUST observe committed WAL contents without mutating the inspected source. A newer format, foreign SQLite application, or unrecognized database remains unsupported and unchanged; a probe whose database or WAL source changes during inspection MUST be reported as unavailable rather than unsupported.
+- Store-backed public read APIs MUST return `ResultAsync<..., RuntimeReadFailure>`, where `RuntimeReadFailure` is exactly `runtime-store-repair-required`, `runtime-store-unsupported`, or `runtime-store-unavailable`. They MUST preserve local absence inside the success value and MUST NOT serialize Result wrappers.
 - Repairing layout v1 MUST preserve its `runtime/` and complete `archives/` entries as archived stores. Valid storage v9 receives a portable run index; storage v1 through v8 remains catalog-only and Runtime MUST NOT add old-schema row readers.
 - Archived history is an internal run-oriented lookup, not a public store catalog. Generic run inspection MAY return one closed archived-run summary; detail and observation queries return `archived-run-detail-unavailable`, and catalog-only uncertainty returns `archived-run-lookup-unavailable` rather than `run-not-found`.
 - Store status, repair messages, Doctor, Web, inspection, and prune output MUST NOT expose store ids, repair-journal mechanics, or archived-store layout as user concepts.
@@ -68,7 +71,8 @@
 - Every repair activity probe and SQLite open MUST reject symbolic-link or non-file database, WAL, and shared-memory paths before reading them.
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
 - `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
-- `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, and `AgentOverrideValidationFailure`; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
+- Admission with a request id MUST use `admission-request:<requestId>` as the `run.admitted` event idempotency key and persist a stable fingerprint of prepared identity, normalized input, and Agent overrides. Repeating the same request id and fingerprint MUST return the original run without another capsule, admitted event, or execution session; reusing it with a different fingerprint MUST return `CONTROL_CONFLICT` without mutation.
+- `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, `AgentOverrideValidationFailure`, and the tagged `admission-request-conflict` failure; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
 - `PreparedRunValidationFailure.reason` MUST distinguish `invalid-ir-json`, `invalid-ir`, `ir-mismatch`, `ir-digest-mismatch`, `source-graph-mismatch`, `source-bundle-mismatch`, `package-lock-mismatch`, and `entry-mismatch`.
 - New-run and replacement-fork admission MUST validate the closed preparation-lock v2 shape, canonical frozen IR, matching lock metadata, and compiler-owned workflow source reference before mutation; daemon failures use `INVALID_REQUEST`.
 - Successful prepared-workflow validation MUST return a Runtime-owned detached value so caller mutation cannot change source, bundle, lock, or IR data after validation and before durable publication.
@@ -431,17 +435,29 @@ type DaemonSteerControlResult = {
 
 - A steer instruction MUST contain non-whitespace text.
 - Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
-- The daemon MUST expose `admitRun(prepared, input, agentOverrides?)`, `control(intent)`, `shutdown()`, and `status()` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
-- The daemon protocol version MUST be exactly `3`, exposed through the public `DAEMON_PROTOCOL_VERSION` constant and daemon status/lease metadata.
-- Requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message, ambiguity?: true } }`.
+- The daemon MUST expose unary `status`, `shutdown`, and `control` methods plus streaming `submitAndObserve` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
+- The current daemon protocol version MUST be `4`, Runtime ABI version MUST be `1`, layout version MUST remain `2`, and storage version MUST remain `9`. Package version is diagnostic metadata and MUST NOT determine compatibility.
+- Daemon status MUST expose one closed `RuntimeAuthorityIdentity` containing `workspaceKey`, `runtimeAbi`, `layoutVersion`, `storageVersion`, per-start `authorityId`, opaque `sha256:` `storeBinding`, and positive `leaseGeneration`. The binding MUST identify the workspace and active generation without exposing the generation id.
+- Unary requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message, ambiguity?: true } }`.
 - A rejected control response MUST set `ambiguity: true` only when target resolution was ambiguous, so a presentation client can replace raw candidate-key diagnostics with an occurrence-reference candidate view.
 - Prepared workflow requests MUST accept only the current workspace-or-snapshot union, lock v2, and bundle v1 shapes; Runtime MUST NOT parse protocol-v1 prepared workflow fields.
-- Daemon clients MUST NOT impose a unilateral response deadline on admission because disconnecting cannot prove that a durable mutation did not commit; idempotent controls MAY retain their bounded transport timeout, and status and shutdown probes MAY retain shorter bounded transport timeouts.
-- Daemon client functions MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures while the socket wire remains ordinary JSON.
-- Successful admission and control responses MUST validate the closed required `RunDetails`, `RunStatus`, execution-state, JSON-value, and control-result shapes; a control result type MUST match the requested intent, and malformed success data is a `protocol/result` failure.
-- Public errors MUST use only `INVALID_REQUEST`, `RUN_NOT_FOUND`, `RUN_NOT_CONTROLLABLE`, `CONTROL_CONFLICT`, `EXECUTION_UNAVAILABLE`, `STORE_BUSY`, `STORE_ERROR`, and `INTERNAL_ERROR`, with actionable text but no lease/SQLite/projection internals.
+- A submission request MUST contain the complete expected authority, one admission request id, prepared workflow, input, optional Agent overrides, and exactly one stop policy: `admitted`, `subject-terminal`, or `decision-boundary`.
+- Before any mutation, submission MUST compare every expected-authority field with the daemon authority and return `AUTHORITY_MISMATCH` with a definite not-admitted outcome on any difference.
+- Submission output MUST be strict NDJSON containing only an `admitted` frame, zero or more `observation` frames, or one terminal `error` frame with phase, admission outcome, optional run id, and daemon error. Frames and their nested run and inspection documents MUST use closed validated shapes; invalid or truncated frames are protocol failures, and an error frame MUST be followed by EOF.
+- The daemon MUST emit `admitted` only after durable idempotent admission and execution-session start. The `admitted` stop policy then closes; blocking policies observe through a separate read-only connection bound to the daemon generation and close after Runtime observation closes.
+- The daemon MUST honor socket backpressure. A client disconnect MUST NOT cancel admission or the run; after admission it terminates only that observer.
+- A client MAY re-handshake and replay the same admission request id only until the admitted outcome is known. After an admitted frame, loss of the stream authority MUST remain `RUNTIME_AUTHORITY_LOST`; Runtime MUST NOT switch the observer to another authority.
+- Daemon submission clients MUST NOT impose a unilateral admission deadline because disconnecting cannot prove that a durable mutation did not commit; idempotent controls MAY retain their bounded transport timeout, and status and shutdown probes MAY retain shorter bounded transport timeouts.
+- Unary daemon clients MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures. The submission client MUST incrementally expose `AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>` without buffering the complete stream.
+- Successful control responses and admitted frames MUST validate the closed required `RunDetails`, `RunStatus`, execution-state, JSON-value, and control-result shapes; a control result type MUST match the requested intent, and malformed success data is a protocol failure.
+- Public daemon errors MUST use only `INVALID_REQUEST`, `AUTHORITY_MISMATCH`, `RUN_NOT_FOUND`, `RUN_NOT_CONTROLLABLE`, `CONTROL_CONFLICT`, `EXECUTION_UNAVAILABLE`, `STORE_BUSY`, `STORE_ERROR`, and `INTERNAL_ERROR`, with actionable text but no lease/SQLite/projection internals.
 - Unknown daemon handler failures MUST become sanitized `INTERNAL_ERROR` responses and MUST NOT be classified as business control failures.
 - Socket binding MUST arbitrate one daemon per workspace; a valid response proves liveness, while stale removal requires local evidence of a dead/expired owner.
+- A current compatible authority MUST be accepted without lifecycle inspection. A recognized protocol-v3 predecessor MAY receive only strict status and graceful shutdown requests; when idle it MUST release its endpoint, lease, and shared ownership before offline store handling and v4 startup, while any active user, conflict, or timeout MUST return `RUNTIME_UPDATE_BLOCKED` without changing the process, run, manifest, journal, or generation.
+- A future or unrecognized daemon MUST NOT receive shutdown or mutation requests and MUST return `RUNTIME_UPDATE_BLOCKED` without kill or spawn-around behavior.
+- With no daemon, workflow admission MAY initialize an absent store or automatically complete recoverable generation rollover before starting the current daemon. A future, foreign, or unrecognized store MUST remain unchanged and return `RUNTIME_STORE_UNSUPPORTED`.
+- Automatic rollover MUST gracefully retire the old daemon, acquire exclusive ownership, revalidate offline, durably record intent, preserve and archive the source generation, create and verify the current generation, atomically publish the manifest, verify publication, and then remove intent. Valid intent replay MUST converge; corrupt intent or changed source identity MUST return `RUNTIME_STORE_UNREADABLE` without guessed recovery.
+- Admission-side rollover failure MUST retain intent and source data and return `RUNTIME_STORE_REPAIR_FAILED`. Pause, resume, retry, cancel, signal, steer, and fork MUST NOT automatically roll over an outdated schema and MUST instead return `RUNTIME_STORE_REPAIR_REQUIRED`.
 - The daemon MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
 - After acquiring its workspace lease and before scheduling, the daemon MUST perform the [Agent Executor](agent-executor-spec.md#ownership-and-cleanup)'s bounded ACP ownership recovery and create the workspace-managed executor.
 - Session start MUST distinguish `started`, `already-active`, `terminal`, and `quarantined`; daemon tick activity counts only `started` executions and dispatched hook work.
@@ -525,6 +541,7 @@ type DaemonSteerControlResult = {
 ### Read APIs And Daemon Operation
 
 - `listRuns`, `getRun`, `resolveArtifact`, `readArtifact`, inspection, health, and visualization overlays MUST read durable projections/frozen data without live workflow source or daemon startup.
+- Store-backed one-shot reads MUST use one bound read session. Observation MUST bind one generation and one read-only connection at attachment, derive every token, view, and Timeline projection from that connection, and close rather than re-resolve when that authority becomes unavailable.
 - Read-only inspection MUST validate persisted frozen IR, lock, and source metadata without resolving or hashing a workflow snapshot; execution and explicit frozen-run source resolution MUST fully verify the snapshot before returning its source root.
 - `getRuntimeHealth` MUST expose the current workspace shard root as `persistence.path` even when the shard is not initialized.
 - `getRuntimeHealth` MUST inspect ACP ownership read-only and add an `acp` warning only when degraded or orphaned ownership evidence exists.
@@ -538,8 +555,8 @@ type DaemonSteerControlResult = {
 Runtime owns generic inspection semantics and public shape.
 
 - Generic inspection MUST provide one coherent run, target Summary, target Timeline, target Forensics, or candidate view.
-- Generic current-store inspection when store inspection reports `repairable` MUST fail without repair using `runtime-store-repair-required` and `acpus doctor --fix`.
-- Generic current-store inspection when store inspection reports `unsupported` MUST fail without opening the database using `runtime-store-unsupported`; one-shot and observation paths MUST NOT collapse it into a generic read failure.
+- Generic current-store inspection against repairable storage MUST fail without repair using `runtime-store-repair-required` and `acpus doctor --fix`.
+- Generic current-store inspection against unsupported storage MUST fail before reading run data using `runtime-store-unsupported`; one-shot and observation paths MUST NOT collapse it into a generic read failure.
 - Read-only observation MUST accept only run, target Summary, and target Timeline queries; target Forensics is a one-shot read.
 - Summary and Timeline expose only views, candidates, observations, and public errors. They omit internal metadata and provider, steering, resource, hook, and raw-identity data; narrow node, Agent-execution, artifact, and Forensics reads remain separate.
 - A target is `root`, an authored id, `@<12-lowercase-hex>`, or that reference with `#<positive-attempt-number>`. Malformed, absent, and colliding references MUST respectively return `invalid-query`, `target-not-found`, and a non-leaking `read-failed` result.

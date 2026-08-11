@@ -4,10 +4,12 @@ import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
-import { getRuntimeHealth } from "../src/runs/use-cases.js";
+import { acquireRuntimeExclusiveLock } from "../src/runtime-lock.js";
+import { getRuntimeHealth, listRuns } from "../src/runs/use-cases.js";
 import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
+  openBoundRuntimeReadSession,
   openRuntimeStore,
   type RuntimeStore,
 } from "../src/store/store.js";
@@ -157,6 +159,10 @@ describe("scheduler store format", () => {
       applicationId: RUNTIME_APPLICATION_ID,
       userVersion: 6,
     });
+    expect((await listRuns(dir))._unsafeUnwrapErr()).toMatchObject({
+      type: "runtime-store-repair-required",
+      command: "acpus doctor --fix",
+    });
     await expect(getRuntimeHealth(dir)).resolves.toEqual({
       ok: true,
       phase: "doctor",
@@ -192,6 +198,10 @@ describe("scheduler store format", () => {
     store = undefined;
     const layout = resolveRuntimeLayout(dir);
     setDatabaseFormat(layout.databasePath, { applicationId, userVersion });
+
+    expect((await listRuns(dir))._unsafeUnwrapErr()).toMatchObject({
+      type: "runtime-store-unsupported",
+    });
 
     await expect(getRuntimeHealth(dir)).resolves.toEqual({
       ok: false,
@@ -238,23 +248,52 @@ describe("scheduler store format", () => {
     expect(store?.getHookDispatchCursor(run.id)).toBe(0);
   });
 
-  it.skipIf(process.platform === "win32")("only treats ENOENT and ENOTDIR store paths as absent", async () => {
+  it("holds one shared runtime lock for the lifetime of a bound read session", async () => {
+    store?.close();
+    store = undefined;
+    const session = (await openBoundRuntimeReadSession(dir))._unsafeUnwrap();
+    if (!session) throw new Error("expected bound runtime read session");
+    let now = 0;
+    try {
+      await expect(acquireRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
+        now: () => now,
+        wait: async () => { now += 1_000; },
+      })).rejects.toMatchObject({ blocker: "runtime users" });
+    } finally {
+      session.close();
+    }
+    const lock = await acquireRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
+      now: () => now,
+      wait: async () => { now += 1_000; },
+    });
+    await lock.release();
+  });
+
+  it.skipIf(process.platform === "win32")("distinguishes a missing active database from invalid runtime paths", async () => {
     store?.close();
     store = undefined;
     const layout = resolveRuntimeLayout(dir);
     await rm(layout.databasePath);
     await symlink("missing.db", layout.databasePath);
     await expect(readRuntimeDatabaseFormat(layout.databasePath)).rejects.toThrow("is not a regular file");
-    await expect(openExistingRuntimeStore(dir)).rejects.toThrow("is not a regular file");
+    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+      failure: { type: "runtime-store-repair-required" },
+      message: expect.stringContaining("entry 'runtime.db' has an invalid file type"),
+    });
 
     const runtimeRoot = layout.runtimeRoot;
     await rm(runtimeRoot, { recursive: true, force: true });
     await writeFile(runtimeRoot, "not a directory");
-    await expect(openExistingRuntimeStore(dir)).resolves.toBeUndefined();
+    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+      failure: { type: "runtime-store-repair-required" },
+    });
 
     await rm(runtimeRoot);
     await symlink(basename(runtimeRoot), runtimeRoot);
-    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({ code: "ELOOP" });
+    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+      failure: { type: "runtime-store-repair-required" },
+      message: expect.stringContaining("generation root is not a regular directory"),
+    });
   });
 
   it.skipIf(process.platform === "win32").each(["-wal", "-shm"])(

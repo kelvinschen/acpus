@@ -1,7 +1,7 @@
 import { basename, extname } from "node:path";
 import type { Context, Hono } from "hono";
 import { readArtifact } from "@acpus/runtime";
-import { apiError } from "../errors.js";
+import { apiError, runtimeReadError } from "../errors.js";
 import type { WebWorkspaceContext } from "../workspace-context.js";
 
 const artifactPreviewLimit = 128 * 1024;
@@ -19,10 +19,11 @@ const artifactHtmlCsp = [
 export function registerArtifactRoutes(app: Hono, workspaces: WebWorkspaceContext): void {
   app.get("/api/workspaces/:workspaceKey/runs/:id/artifacts/:artifactId/preview", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
-    const verified = await readArtifact(workspace.canonicalPath, runId, artifactId);
+    const read = await readArtifact(workspace.canonicalPath, runId, artifactId);
+    if (read.isErr()) runtimeReadError(read.error);
+    const verified = read.value;
     if (!verified) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
     const { artifact, bytes } = verified;
     const previewBytes = bytes.subarray(0, artifactPreviewLimit);
@@ -34,10 +35,11 @@ export function registerArtifactRoutes(app: Hono, workspaces: WebWorkspaceContex
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/artifacts/:artifactId/content", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
-    const verified = await readArtifact(workspace.canonicalPath, runId, artifactId);
+    const read = await readArtifact(workspace.canonicalPath, runId, artifactId);
+    if (read.isErr()) runtimeReadError(read.error);
+    const verified = read.value;
     if (!verified) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
     const { artifact, bytes } = verified;
     setArtifactResponseHeaders(context, artifact.path, artifact.mediaType, bytes.byteLength, {

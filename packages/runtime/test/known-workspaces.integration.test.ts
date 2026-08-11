@@ -13,7 +13,7 @@ import {
 } from "../src/store/store.js";
 import { RUNTIME_STORAGE_VERSION } from "../src/storage/database.js";
 import { withSharedStorageHome, withStorageWorkspace } from "./support/storage-workspace.js";
-import { treeFingerprint } from "./support/tree-fingerprint.js";
+import { runtimeStateFingerprint } from "./support/tree-fingerprint.js";
 
 describe("known runtime workspaces", () => {
   it("includes an uninitialized current workspace without creating runtime state", async () => {
@@ -51,7 +51,7 @@ describe("known runtime workspaces", () => {
       ]);
       const firstLayout = resolveRuntimeLayout(first);
       const secondLayout = resolveRuntimeLayout(second);
-      const before = await treeFingerprint(home);
+      const before = await runtimeStateFingerprint(home);
 
       const listing = await listKnownWorkspaces(first);
 
@@ -73,7 +73,7 @@ describe("known runtime workspaces", () => {
         ],
         failures: [],
       });
-      expect(await treeFingerprint(home)).toBe(before);
+      expect(await runtimeStateFingerprint(home)).toBe(before);
       const resolved = await resolveKnownWorkspace(first, secondLayout.workspaceKey);
       expect(resolved.isOk() && resolved.value).toEqual({
         workspaceKey: secondLayout.workspaceKey,

@@ -3,6 +3,7 @@ import {
   getRuntimeHealth,
   inspectRuntimeStore,
   repairRuntimeStore,
+  type RuntimeStoreFailure,
 } from "@acpus/runtime";
 import type {
   HealthReport,
@@ -56,6 +57,10 @@ function publicRuntimeStoreStatus(
     : { state: "unavailable", message: status.message };
 }
 
-function runtimeStoreRepairError(error: { type: "busy" | "unsupported" | "failed"; message: string }): never {
-  apiError(error.type === "failed" ? 500 : error.type === "unsupported" ? 422 : 409, "runtime_store_fix_failed", error.message);
+function runtimeStoreRepairError(error: RuntimeStoreFailure): never {
+  apiError(
+    error.type === "failed" || error.type === "unreadable" ? 500 : error.type === "unsupported" ? 422 : 409,
+    "runtime_store_fix_failed",
+    error.message,
+  );
 }

@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { getRun, listRuns, readInspection, tryNormalizeWorkflowInput } from "@acpus/runtime";
-import { openExistingRuntimeStore } from "../src/store/store.js";
+import { openExistingRuntimeStore, openRuntimeStore } from "../src/store/store.js";
 import { stableJson } from "../src/stable-json.js";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -34,6 +34,65 @@ const exec = promisify(execFile);
 const runIdPattern = /^\d{14}[A-F0-9]{20}$/;
 
 describe.concurrent("runtime admission use cases", () => {
+  it("replays one admission request without creating another run or event", async () => {
+    await withRuntimeWorkspace("runtime-admission-request-replay", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const request = {
+          prepared,
+          input: { ready: true },
+          cwd: workspace,
+          requestId: "admission-request-replay",
+        } as const;
+        const first = await store.admitRun(request);
+        const replay = await store.admitRun(request);
+
+        expect(first.isOk()).toBe(true);
+        expect(replay.isOk() && first.isOk() ? replay.value.id : undefined).toBe(first.isOk() ? first.value.id : undefined);
+        expect(runtimeRows(workspace, "SELECT run_id FROM run_events WHERE type = 'run.admitted'"))
+          .toEqual([{ run_id: first.isOk() ? first.value.id : undefined }]);
+        expect(await readdir(runtimeRunsRoot(workspace))).toEqual([first.isOk() ? first.value.id : undefined]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("rejects reuse of an admission request for a different fingerprint without writes", async () => {
+    await withRuntimeWorkspace("runtime-admission-request-conflict", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const admitted = await store.admitRun({
+          prepared,
+          input: { ready: true },
+          cwd: workspace,
+          requestId: "admission-request-conflict",
+        });
+        const beforeRuns = await readdir(runtimeRunsRoot(workspace));
+        const conflict = await store.admitRun({
+          prepared,
+          input: { ready: false },
+          cwd: workspace,
+          requestId: "admission-request-conflict",
+        });
+
+        expect(admitted.isOk()).toBe(true);
+        expect(conflict.isErr() ? conflict.error : undefined).toEqual({
+          type: "admission-request-conflict",
+          requestId: "admission-request-conflict",
+          message: "Admission request 'admission-request-conflict' conflicts with a different prepared run.",
+        });
+        expect(await readdir(runtimeRunsRoot(workspace))).toEqual(beforeRuns);
+        expect(runtimeRows(workspace, "SELECT run_id FROM run_events WHERE type = 'run.admitted'"))
+          .toHaveLength(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("admits a pure run and exposes read-only inspection", async () => {
     await withRuntimeWorkspace("runtime-admit-pure", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -41,10 +100,10 @@ describe.concurrent("runtime admission use cases", () => {
 
       expect(admitted.status).toBe("completed");
       expect(admitted.run.id).toMatch(runIdPattern);
-      expect(await listRuns(workspace)).toEqual([
+      expect((await listRuns(workspace))._unsafeUnwrap()).toEqual([
         expect.objectContaining({ id: admitted.run.id, status: "completed", name: "cli-valid" }),
       ]);
-      const inspected = await getRun(workspace, admitted.run.id);
+      const inspected = (await getRun(workspace, admitted.run.id))._unsafeUnwrap();
       expect(inspected).toMatchObject({
         id: admitted.run.id,
         status: "completed",
@@ -154,7 +213,7 @@ describe.concurrent("runtime admission use cases", () => {
       await rename(runsRoot, outsideRunsRoot);
       await symlink(outsideRunsRoot, runsRoot, "dir");
       await expect(frozenReadErrorMessage(workspace, symlinkedRunsRoot.run.id)).resolves.toContain(
-        `Runtime runs root '${runsRoot}' is not a regular directory.`,
+        "is incomplete: entry 'runs' has an invalid file type.",
       );
     });
   });
@@ -163,7 +222,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-meta", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, metaWorkflow());
       expect(admitted.status).toBe("completed");
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, admitted.run.id))._unsafeUnwrap()).toMatchObject({
         output: {
           runId: admitted.run.id,
           workflowPath: "cli-meta.workflow.ts",
@@ -178,7 +237,7 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-task-artifact", async workspace => {
       const admitted = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       expect(admitted.status).toBe("completed");
-      const run = await getRun(workspace, admitted.run.id);
+      const run = (await getRun(workspace, admitted.run.id))._unsafeUnwrap();
       expect(run?.output).toMatchObject({ ok: true, artifact: { kind: "artifact" } });
       const artifacts = runtimeRows(workspace, "SELECT node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY id", admitted.run.id);
       expect(artifacts).toHaveLength(1);
@@ -206,7 +265,7 @@ describe.concurrent("runtime admission use cases", () => {
       });
 
       expect(admitted.status).toBe("completed");
-      const run = await getRun(workspace, admitted.run.id);
+      const run = (await getRun(workspace, admitted.run.id))._unsafeUnwrap();
       expect(run).toMatchObject({
         status: "completed",
         output: {
@@ -246,7 +305,7 @@ describe.concurrent("runtime admission use cases", () => {
         runSlowCommand: true,
       });
       expect(timedOut.status).toBe("failed");
-      const timedOutRun = await getRun(workspace, timedOut.run.id);
+      const timedOutRun = (await getRun(workspace, timedOut.run.id))._unsafeUnwrap();
       expect(timedOutRun?.dynamic?.nodeInstances.find(instance => instance.nodeId === "inspect_invocation")?.status).toBe("failed");
       expect(timedOutRun?.dynamic?.attempts.find(attempt => attempt.nodeId === "inspect_invocation")?.status).toBe("failed");
       const timedOutInvocation = timedOutRun?.dynamic?.executionMetadata.find(entry => entry.kind === "task_attempt")?.metadata;
@@ -261,14 +320,14 @@ describe.concurrent("runtime admission use cases", () => {
     await withRuntimeWorkspace("runtime-failed-state", async workspace => {
       const task = await admitSyntheticWorkflow(workspace, failingTaskWorkflow());
       expect(task.status).toBe("failed");
-      const taskNode = (await getRun(workspace, task.run.id))?.dynamic?.nodeInstances
+      const taskNode = (await getRun(workspace, task.run.id))._unsafeUnwrap()?.dynamic?.nodeInstances
         .find(node => node.nodeId === "boom");
       expect(taskNode).toMatchObject({ status: "failed" });
       expect(taskNode?.output).toBeUndefined();
 
       const pure = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(pure.status).toBe("failed");
-      const failedFrame = (await getRun(workspace, pure.run.id))?.dynamic?.frames
+      const failedFrame = (await getRun(workspace, pure.run.id))._unsafeUnwrap()?.dynamic?.frames
         .find(frame => frame.nodeId === "fail");
       expect(failedFrame).toMatchObject({ status: "failed" });
       expect(failedFrame?.result).toBeUndefined();
@@ -328,7 +387,7 @@ describe.concurrent("runtime admission use cases", () => {
           name: "runtime-same-file-reusable",
         },
       });
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, admitted.run.id))._unsafeUnwrap()).toMatchObject({
         output: { normalized: "src/workflow.ts" },
       });
     }, { authoringEnvironment: true });
@@ -391,7 +450,7 @@ describe.concurrent("runtime admission use cases", () => {
       );
 
       expect(admitted.status).toBe("completed");
-      await expect(getRun(workspace, admitted.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, admitted.run.id))._unsafeUnwrap()).toMatchObject({
         output: {
           worktreePath: worktree,
           baseSha: head,

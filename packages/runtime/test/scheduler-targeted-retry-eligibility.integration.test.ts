@@ -74,7 +74,7 @@ describe("scheduler targeted retry eligibility", () => {
       appendEvents(store, runId, claim, expressionResolutionFailureEvents(runId));
 
       expectRejectedWithoutMutation(store, runId, claim, "target");
-      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
         controls: { canCancelRun: false, retryTargets: [] },
       });
       const details = await inspectNode(workspace, {
@@ -91,7 +91,7 @@ describe("scheduler targeted retry eligibility", () => {
     await withClaimedRun("scheduler-retry-projection-parity", async ({ workspace, store, runId, claim }) => {
       appendEvents(store, runId, claim, retryableFailedTargetEvents(runId));
 
-      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
         controls: {
           canCancelRun: false,
           retryTargets: [{ target: "target", kind: "node", nodeId: "target" }],
@@ -132,7 +132,7 @@ describe("scheduler targeted retry eligibility", () => {
         ],
       });
 
-      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
         run: { status: "running" },
         controls: {
           retryTargets: expect.arrayContaining([
@@ -163,7 +163,7 @@ describe("scheduler targeted retry eligibility", () => {
       expect(before.projection.groupMembers[outerMemberKey]).toMatchObject({ status: "running" });
       const eventCount = store.getRun(runId)?.eventCount;
 
-      await expect(getRunVisualizationSnapshot(workspace, runId)).resolves.toMatchObject({
+      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
         run: { status: "running" },
         controls: {
           retryTargets: expect.arrayContaining([

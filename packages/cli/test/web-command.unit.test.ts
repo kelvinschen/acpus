@@ -7,13 +7,18 @@ import { CaptureStream } from "./support/capture-stream.js";
 type StartWebServer = typeof import("@acpus/web")["startWebServer"];
 
 const mocks = vi.hoisted(() => ({
+  ensureRuntimeAuthority: vi.fn(),
   startWebServer: vi.fn<StartWebServer>(),
 }));
 
 vi.mock("@acpus/web", () => ({ startWebServer: mocks.startWebServer }));
+vi.mock("../src/daemon/client.js", () => ({
+  ensureRuntimeAuthority: mocks.ensureRuntimeAuthority,
+}));
 
 beforeEach(() => {
   mocks.startWebServer.mockReset();
+  mocks.ensureRuntimeAuthority.mockReset().mockReturnValue(okAsync(runtimeAuthority()));
 });
 
 describe("web command options", () => {
@@ -62,6 +67,8 @@ describe("web command options", () => {
       ensureDaemonRunning: expect.any(Function),
     }));
     expect(mocks.startWebServer.mock.calls[0]![0]).not.toHaveProperty("token");
+    await expect(mocks.startWebServer.mock.calls[0]![0].ensureDaemonRunning("/workspace")).resolves.toEqual({ ok: true });
+    expect(mocks.ensureRuntimeAuthority).toHaveBeenCalledWith("/workspace", "control");
     expect(stdout.text).toBe("");
     expect(stderr.text).toBe("Acpus WebUI starting at http://0.0.0.0:4517\nPress Ctrl+C to stop.\n");
 
@@ -109,6 +116,32 @@ describe("web command options", () => {
     expect(signalListenerCounts()).toEqual(listenerCounts);
   });
 
+  it("maps authority update blocking into the Web callback result", async () => {
+    const close = vi.fn(async () => undefined);
+    mocks.ensureRuntimeAuthority.mockReturnValue(errAsync({
+      type: "runtime-update-blocked",
+      message: "The previous daemon still has active work.",
+    }));
+    mocks.startWebServer.mockReturnValue(okAsync({ url: "http://localhost:4517", close }));
+    const listenerCounts = signalListenerCounts();
+
+    const command = createWebCommand({
+      cwd: "/workspace",
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+    }).parseAsync([], { from: "user" });
+    await waitForSignalListeners(listenerCounts);
+
+    await expect(mocks.startWebServer.mock.calls[0]![0].ensureDaemonRunning("/workspace")).resolves.toEqual({
+      ok: false,
+      code: "RUNTIME_UPDATE_BLOCKED",
+      message: "The previous daemon still has active work.",
+    });
+
+    process.emit("SIGINT");
+    await command;
+  });
+
   it("closes once for repeated shutdown signals and resolves naturally", async () => {
     let resolveClose!: () => void;
     const close = vi.fn(() => new Promise<void>(resolve => {
@@ -150,4 +183,16 @@ async function waitForSignalListeners(baseline: ReturnType<typeof signalListener
     expect(process.listenerCount("SIGINT")).toBe(baseline.sigint + 1);
     expect(process.listenerCount("SIGTERM")).toBe(baseline.sigterm + 1);
   });
+}
+
+function runtimeAuthority() {
+  return {
+    workspaceKey: "workspace-key",
+    runtimeAbi: 1,
+    layoutVersion: 2,
+    storageVersion: 9,
+    authorityId: "authority-a",
+    storeBinding: `sha256:${"a".repeat(64)}`,
+    leaseGeneration: 1,
+  };
 }

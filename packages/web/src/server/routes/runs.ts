@@ -11,7 +11,7 @@ import type {
   WorkspaceCatalog,
   WorkspaceSummary,
 } from "../../api-types.js";
-import { apiError } from "../errors.js";
+import { apiError, runtimeReadError } from "../errors.js";
 import { graphFromOverlay } from "../graph.js";
 import type { WebWorkspaceContext } from "../workspace-context.js";
 
@@ -35,8 +35,9 @@ export function registerRunRoutes(app: Hono, workspaces: WebWorkspaceContext): v
 
   app.get("/api/workspaces/:workspaceKey/runs", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
-    const runs = await listRuns(workspace.canonicalPath);
+    const read = await listRuns(workspace.canonicalPath);
+    if (read.isErr()) runtimeReadError(read.error);
+    const runs = read.value;
     return context.json({
       ok: true,
       runs: runs.map(({ id, name, status, createdAt, updatedAt }) => ({
@@ -51,9 +52,10 @@ export function registerRunRoutes(app: Hono, workspaces: WebWorkspaceContext): v
 
   app.get("/api/workspaces/:workspaceKey/runs/:id/runtime-snapshot", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    await workspaces.requireStoreReady(workspace.canonicalPath);
     const runId = context.req.param("id");
-    const snapshot = await getRunVisualizationSnapshot(workspace.canonicalPath, runId);
+    const read = await getRunVisualizationSnapshot(workspace.canonicalPath, runId);
+    if (read.isErr()) runtimeReadError(read.error);
+    const snapshot = read.value;
     if (!snapshot) apiError(404, "run_not_found", `Run '${runId}' was not found.`);
     const run = {
       id: snapshot.run.id,

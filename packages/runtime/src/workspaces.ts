@@ -1,11 +1,9 @@
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, type RuntimeLayout } from "./runtime-layout.js";
-import { inspectRuntimeStore } from "./runtime-store-lifecycle.js";
+import { resolveRuntimeWorkspaceLayout, type RuntimeLayout } from "./runtime-layout.js";
 import {
-  openExistingRuntimeStoreAtLayout,
+  openBoundRuntimeReadSession,
   type RunStoreSummary,
 } from "./store/store.js";
-import { inspectRuntimeGeneration } from "./storage/generation.js";
 import {
   discoverWorkspaceShards,
   isWorkspaceKey,
@@ -149,29 +147,32 @@ async function resolveKnownWorkspaceResult(
   }
 }
 
-async function readRunStoreSummary(layout: RuntimeLayout): Promise<RunStoreSummary | undefined> {
-  layout = resolveRuntimeLayout(layout.canonicalPath);
-  const generation = await inspectRuntimeGeneration(layout);
-  if (generation !== "complete") return undefined;
-  const store = await openExistingRuntimeStoreAtLayout(layout, true, { immutable: true });
-  if (!store) return undefined;
+type RunStoreSummaryRead =
+  | { kind: "absent" }
+  | { kind: "unavailable" }
+  | { kind: "ready"; summary: RunStoreSummary };
+
+async function readRunStoreSummary(layout: RuntimeLayout): Promise<RunStoreSummaryRead> {
+  const session = await openBoundRuntimeReadSession(layout.canonicalPath);
+  if (session.isErr()) {
+    if (session.error.type === "runtime-store-unavailable") throw new Error(session.error.message);
+    return { kind: "unavailable" };
+  }
+  if (!session.value) return { kind: "absent" };
   try {
-    return store.getRunStoreSummary();
+    return { kind: "ready", summary: session.value.store.getRunStoreSummary() };
   } finally {
-    store.close();
+    session.value.close();
   }
 }
 
 async function toKnownWorkspace(layout: RuntimeLayout): Promise<KnownWorkspace> {
-  const status = await inspectRuntimeStore(layout.canonicalPath);
-  if (status.isErr()) throw new Error(status.error.message);
-  const summary = status.value.state === "ready"
-    ? await readRunStoreSummary(layout) ?? { runCount: 0 }
-    : undefined;
+  const read = await readRunStoreSummary(layout);
+  const summary = read.kind === "ready" ? read.summary : undefined;
   return {
     workspaceKey: layout.workspaceKey,
     canonicalPath: layout.canonicalPath,
-    ...(summary === undefined ? {} : { runCount: summary.runCount }),
+    ...(read.kind === "unavailable" ? {} : { runCount: summary?.runCount ?? 0 }),
     ...(summary?.lastRunUpdatedAt === undefined ? {} : { lastRunUpdatedAt: summary.lastRunUpdatedAt }),
   };
 }

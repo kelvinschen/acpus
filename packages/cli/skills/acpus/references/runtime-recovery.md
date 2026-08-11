@@ -23,6 +23,8 @@ Only when diagnosis requires comparing the frozen definition, actual invocation,
 
 Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
 
+For `RUNTIME_UPDATE_BLOCKED`, leave the old daemon and its runs untouched, wait for current work to finish, then retry. For `RUNTIME_AUTHORITY_LOST`, the admitted run remains durable; continue with `acpus runs inspect <run-id> --follow`.
+
 ## Phase-based fixes
 
 | Symptom | Likely phase | Fix |

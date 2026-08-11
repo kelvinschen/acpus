@@ -5,11 +5,13 @@ import {
   resolveArtifact,
   type ArtifactRecord,
   type ArtifactResolutionFailure,
+  type RuntimeReadFailure,
 } from "@acpus/runtime";
 import { notFoundError, usageError } from "../presentation/errors.js";
 import { jsonOutputFor, withJsonOutput, type JsonOutputOptions } from "../presentation/json-output-option.js";
 import { writeJsonLine } from "../presentation/output.js";
 import type { RunsCommandContext } from "./context.js";
+import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
 type ArtifactsRunOptions = JsonOutputOptions & {
   target?: string;
@@ -47,8 +49,9 @@ async function artifactsRunCommand(
   let artifacts: ArtifactRecord[];
   if (options.target === undefined) {
     const listed = await listArtifacts(ctx.cwd, runId);
-    if (listed === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
-    artifacts = listed;
+    if (listed.isErr()) throw runtimeReadError(listed.error);
+    if (listed.value === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
+    artifacts = listed.value;
   } else {
     const inspected = await inspectTargetArtifacts(ctx.cwd, { runId, target: options.target });
     if (inspected.isErr()) throw artifactInspectionError(inspected.error);
@@ -101,10 +104,19 @@ async function artifactRunCommand(
 }
 
 function artifactResolutionError(
-  error: ArtifactResolutionFailure,
+  error: ArtifactResolutionFailure | RuntimeReadFailure,
 ): ReturnType<typeof notFoundError> | ReturnType<typeof usageError> {
+  if (isRuntimeReadFailure(error)) return runtimeReadError(error);
   if (error.type === "invalid-artifact-ref") return usageError(error.message);
   return notFoundError(error.message, { errorCode: error.type.replaceAll("-", "_").toUpperCase() });
+}
+
+function runtimeReadError(error: RuntimeReadFailure): ReturnType<typeof notFoundError> {
+  return notFoundError(runtimeReadFailureMessage(error), { errorCode: runtimeReadFailureCode(error) });
+}
+
+function isRuntimeReadFailure(error: ArtifactResolutionFailure | RuntimeReadFailure): error is RuntimeReadFailure {
+  return error.type.startsWith("runtime-store-");
 }
 
 function artifactInspectionError(

@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 import { Command } from "commander";
-import { ensureDaemonRunning } from "../daemon/client.js";
+import { ensureRuntimeAuthority } from "../daemon/client.js";
 import { runError, usageError } from "../presentation/errors.js";
 
 export type WebCommandContext = {
@@ -29,8 +29,14 @@ export function createWebCommand(ctx: WebCommandContext): Command {
         ...(port !== undefined ? { port } : {}),
         ...(options.token ? { token: true } : {}),
         ensureDaemonRunning: async cwd => {
-          const ready = await ensureDaemonRunning(cwd);
-          if (ready.isErr()) throw usageError(ready.error.message);
+          const ready = await ensureRuntimeAuthority(cwd, "control");
+          return ready.isOk()
+            ? { ok: true as const }
+            : {
+                ok: false as const,
+                code: ready.error.type.replaceAll("-", "_").toUpperCase(),
+                message: ready.error.message,
+              };
         },
       });
       if (started.isErr()) throw runError(started.error.message, { errorCode: "LISTEN_FAILED" });

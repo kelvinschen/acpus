@@ -4,6 +4,7 @@ import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import type { PreparedRunWorkflow } from "../admission/prepared-workflow.js";
 import {
+  ArtifactReadUnavailableError,
   readVerifiedArtifact,
   tryResolveArtifactRef,
 } from "../artifacts/access.js";
@@ -22,13 +23,17 @@ import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../runtime-
 import { inspectRuntimeStore } from "../runtime-store-lifecycle.js";
 import { inspectAcpOwnership } from "@acpus/agent-executor";
 import {
+  openBoundRuntimeReadSession,
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
+  runtimeReadFailureFromError,
   withRunInspectionSnapshot,
   type RuntimeDiagnostics,
   type DaemonDiagnostics,
   type RunDetails,
   type RunDeleteFailure, type RunRecord,
+  type RuntimeReadFailure,
+  type RuntimeStore,
 } from "../store/store.js";
 export type { RunDeleteFailure } from "../store/store.js";
 
@@ -86,24 +91,31 @@ export type ResolvedArtifact = ArtifactRecord & {
   uri: string;
 };
 
-export async function listRuns(cwd: string): Promise<RunRecord[]> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return [];
-  try {
-    return store.listRuns();
-  } finally {
-    store.close();
-  }
+function withBoundRuntimeRead<T>(
+  cwd: string,
+  absent: T,
+  read: (store: RuntimeStore) => T | Promise<T>,
+): ResultAsync<T, RuntimeReadFailure> {
+  return new ResultAsync((async () => {
+    const session = await openBoundRuntimeReadSession(cwd);
+    if (session.isErr()) return err(session.error);
+    if (!session.value) return ok(absent);
+    try {
+      return ok(await read(session.value.store));
+    } catch (error) {
+      return err(runtimeReadFailureFromError(error));
+    } finally {
+      session.value.close();
+    }
+  })());
 }
 
-export async function getRun(cwd: string, runId: string): Promise<RunDetails | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    return store.getRun(runId);
-  } finally {
-    store.close();
-  }
+export function listRuns(cwd: string): ResultAsync<RunRecord[], RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, [] as RunRecord[], store => store.listRuns());
+}
+
+export function getRun(cwd: string, runId: string): ResultAsync<RunDetails | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, store => store.getRun(runId));
 }
 
 export function deleteRun(cwd: string, runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure> {
@@ -118,67 +130,76 @@ export function deleteRun(cwd: string, runId: string): ResultAsync<RunRecord | u
   })());
 }
 
-export async function getArtifact(cwd: string, runId: string, artifactId: string): Promise<ArtifactRecord | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    return store.getArtifact(runId, artifactId);
-  } finally {
-    store.close();
-  }
+export function getArtifact(
+  cwd: string,
+  runId: string,
+  artifactId: string,
+): ResultAsync<ArtifactRecord | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, store => store.getArtifact(runId, artifactId));
 }
 
-export function resolveArtifact(cwd: string, artifactRef: string): ResultAsync<ResolvedArtifact, ArtifactResolutionFailure> {
+export function resolveArtifact(
+  cwd: string,
+  artifactRef: string,
+): ResultAsync<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure> {
   return new ResultAsync((async () => {
     const parsed = parseArtifactUri(artifactRef);
     if (parsed.isErr()) return err(parsed.error);
-    const store = await openExistingRuntimeStore(cwd);
-    if (!store) return err(artifactNotFound(artifactRef, parsed.value));
+    const session = await openBoundRuntimeReadSession(cwd);
+    if (session.isErr()) return err(session.error);
+    if (!session.value) return err(artifactNotFound(artifactRef, parsed.value));
     try {
       const resolved = tryResolveArtifactRef(
         { kind: "artifact", uri: artifactRef },
-        { cwd, runId: parsed.value.runId, store },
+        { cwd, runId: parsed.value.runId, store: session.value.store },
       );
       if (resolved.isErr()) {
         if (resolved.error.type === "artifact-run-mismatch") throw new Error(resolved.error.message);
         return err(resolved.error);
       }
       return ok({ ...resolved.value.artifact, uri: artifactRef });
+    } catch (error) {
+      return err(runtimeReadFailureFromError(error));
     } finally {
-      store.close();
+      session.value.close();
     }
   })());
 }
 
-export async function readArtifact(
+export function readArtifact(
   cwd: string,
   runId: string,
   artifactId: string,
-): Promise<{ artifact: ArtifactRecord; bytes: Buffer } | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
-    return readVerifiedArtifact({ cwd, runId, store }, artifactId);
-  } finally {
-    store.close();
-  }
+): ResultAsync<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure> {
+  return new ResultAsync((async () => {
+    const session = await openBoundRuntimeReadSession(cwd);
+    if (session.isErr()) return err(session.error);
+    if (!session.value) return ok(undefined);
+    try {
+      return ok(readVerifiedArtifact({ cwd, runId, store: session.value.store }, artifactId));
+    } catch (error) {
+      if (error instanceof ArtifactReadUnavailableError) {
+        return err({ type: "runtime-store-unavailable", message: error.message });
+      }
+      return err(runtimeReadFailureFromError(error));
+    } finally {
+      session.value.close();
+    }
+  })());
 }
 
-export async function listArtifacts(cwd: string, runId: string): Promise<ArtifactRecord[] | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
+export function listArtifacts(cwd: string, runId: string): ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, store => {
     if (!store.getRun(runId)) return undefined;
     return store.listArtifacts(runId);
-  } finally {
-    store.close();
-  }
+  });
 }
 
-export async function getRunVisualizationSnapshot(cwd: string, runId: string): Promise<RunVisualizationSnapshot | undefined> {
-  const store = await openExistingRuntimeStore(cwd);
-  if (!store) return undefined;
-  try {
+export function getRunVisualizationSnapshot(
+  cwd: string,
+  runId: string,
+): ResultAsync<RunVisualizationSnapshot | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, async store => {
     return await withRunInspectionSnapshot(store, async () => {
       const run = store.getRun(runId);
       if (!run) return undefined;
@@ -204,22 +225,28 @@ export async function getRunVisualizationSnapshot(cwd: string, runId: string): P
         },
       };
     });
-  } finally {
-    store.close();
-  }
+  });
 }
 
-export function tryNormalizeForkInput(cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow): ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure> {
+export function tryNormalizeForkInput(
+  cwd: string,
+  runId: string,
+  input: JsonValue | undefined,
+  prepared?: PreparedRunWorkflow,
+): ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure | RuntimeReadFailure> {
   return new ResultAsync((async () => {
-    const store = await openExistingRuntimeStore(cwd);
-    if (!store) return err(runNotFound(runId));
+    const session = await openBoundRuntimeReadSession(cwd);
+    if (session.isErr()) return err(session.error);
+    if (!session.value) return err(runNotFound(runId));
     try {
-      const frozen = store.getFrozenRun(runId);
+      const frozen = session.value.store.getFrozenRun(runId);
       if (!frozen) return err(runNotFound(runId));
       if (input !== undefined) return tryNormalizeWorkflowInput(prepared?.ir ?? frozen.ir, input, "Fork input");
       return prepared ? tryNormalizeWorkflowInput(prepared.ir, frozen.input, "Fork input") : ok(undefined);
+    } catch (error) {
+      return err(runtimeReadFailureFromError(error));
     } finally {
-      store.close();
+      session.value.close();
     }
   })());
 }

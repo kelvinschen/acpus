@@ -57,7 +57,7 @@ export async function followRun(
     until: options.until,
     signal: controller.signal,
   })[Symbol.asyncIterator]();
-  const presenter = new InspectionTranscriptPresenter(options.stdout, view.runId);
+  const presenter = new RunInspectionTranscriptPresenter(options.stdout, view.runId);
   let closed: Extract<InspectionObservation, { kind: "closed" }> | undefined;
 
   try {
@@ -121,7 +121,7 @@ function observableInspectionView(view: InspectionViewQuery): view is Observable
   return view.kind === "run" || view.detail !== "forensics";
 }
 
-class InspectionTranscriptPresenter {
+export class RunInspectionTranscriptPresenter {
   private emitted = false;
   private attachedRun?: { durationMs: number; observedAt: number };
   private timelineSelector: string | undefined;

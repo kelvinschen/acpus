@@ -24,9 +24,18 @@ describe.concurrent("daemon lease socket protocol", () => {
         await expect(requestDaemonStatus(dir)).resolves.toMatchObject({
           status: "ok",
           pid: process.pid,
-          generation: expect.any(Number),
-          protocolVersion: 3,
+          leaseGeneration: expect.any(Number),
+          protocolVersion: 4,
           packageVersion: "0.0.0-test",
+          authority: {
+            workspaceKey: expect.any(String),
+            runtimeAbi: 1,
+            layoutVersion: 2,
+            storageVersion: 9,
+            authorityId: expect.any(String),
+            storeBinding: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+            leaseGeneration: expect.any(Number),
+          },
         });
       } finally {
         await loop.shutdown();

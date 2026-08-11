@@ -5,16 +5,12 @@ import { describe, expect, it } from "vitest";
 import type { Result } from "neverthrow";
 import {
   getRun,
-  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
   requestDaemonControl as requestDaemonControlResult,
   startDaemonLoop,
   type DaemonClientFailure,
 } from "../src/index.js";
+import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 import { initializeRuntimeStoreForTest, prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-
-async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
-  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
-}
 
 async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
   return unwrapDaemon(await requestDaemonControlResult(...args));
@@ -34,7 +30,7 @@ describe("daemon execution owner epochs", () => {
       await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, { heartbeatMs: 10, packageVersion: "0.0.0-test" });
       try {
-        const admitted = await requestDaemonAdmitRun(workspace, { prepared, input: { markerPath, releasePath } });
+        const admitted = await submitRunThroughDaemon(workspace, { prepared, input: { markerPath, releasePath } });
         await waitUntil(async () => await readFile(markerPath, "utf8").catch(() => undefined) === "started");
         const first = runtimeRows(workspace, "SELECT attempt_no, owner_epoch FROM node_attempts WHERE run_id = ? ORDER BY attempt_no", admitted.id)[0] as { attempt_no: number; owner_epoch: number };
 
@@ -64,7 +60,7 @@ describe("daemon execution owner epochs", () => {
       await initializeRuntimeStoreForTest(workspace);
       const loop = await startDaemonLoop(workspace, { heartbeatMs: 10, packageVersion: "0.0.0-test" });
       try {
-        const admitted = await requestDaemonAdmitRun(workspace, { prepared, input: { firstFailurePath } });
+        const admitted = await submitRunThroughDaemon(workspace, { prepared, input: { firstFailurePath } });
         await expect(waitForTerminalRun(workspace, admitted.id)).resolves.toMatchObject({ status: "failed" });
         const first = runtimeRows(workspace, "SELECT owner_epoch FROM node_attempts WHERE run_id = ? AND attempt_no = 1", admitted.id)[0] as { owner_epoch: number };
 
@@ -139,9 +135,9 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<v
   throw new Error("condition was not met");
 }
 
-async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<Awaited<ReturnType<typeof getRun>>> }> {
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>> }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = await getRun(cwd, runId);
+    const run = (await getRun(cwd, runId))._unsafeUnwrap();
     if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
     await new Promise(resolve => setTimeout(resolve, 10));
   }

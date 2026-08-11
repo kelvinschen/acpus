@@ -75,7 +75,7 @@ describe.concurrent("runtime controls and recovery", () => {
         .finally(() => store.close());
 
       await expect(controlRun(workspace, run.id, "pause")).resolves.toMatchObject({ status: "paused" });
-      await expect(getRunVisualizationSnapshot(workspace, run.id)).resolves.toMatchObject({
+      expect((await getRunVisualizationSnapshot(workspace, run.id))._unsafeUnwrap()).toMatchObject({
         controls: { canCancelRun: true },
       });
       await expect(controlRun(workspace, run.id, "cancel")).resolves.toMatchObject({ status: "canceled" });
@@ -136,15 +136,15 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(row => String(row.relative_path))).toEqual([
         expect.stringContaining(join("artifacts", ".fork-replay")),
       ]);
-      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true }, fork: { sourceRunId: source.run.id } });
-      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ fork: {
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true }, fork: { sourceRunId: source.run.id } });
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ fork: {
         sourceRunId: source.run.id,
       } });
 
       const forkOfFork = await forkRun(workspace, fork.run.id);
       expect(forkOfFork.run).toMatchObject({ status: "pending", fork: { sourceRunId: fork.run.id } });
       await advanceRun(workspace, forkOfFork.run.id);
-      await expect(getRun(workspace, forkOfFork.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true } });
+      expect((await getRun(workspace, forkOfFork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true } });
     });
   });
 
@@ -247,7 +247,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork.run.output).toBeUndefined();
       await advanceRun(workspace, fork.run.id);
-      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({ status: "completed", output: "ready" });
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: "ready" });
     });
   });
 
@@ -272,7 +272,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       expect(second.run.id).toBe(forkId);
       expect(third.run.id).toBe(forkId);
-      expect((await listRuns(workspace)).map(run => run.id).sort())
+      expect((await listRuns(workspace))._unsafeUnwrap().map(run => run.id).sort())
         .toEqual([source.run.id, forkId].sort());
     });
   });
@@ -304,7 +304,7 @@ describe.concurrent("runtime controls and recovery", () => {
       });
 
       expect(replay.run.id).toBe(first.run.id);
-      expect((await listRuns(workspace)).map(run => run.id).sort())
+      expect((await listRuns(workspace))._unsafeUnwrap().map(run => run.id).sort())
         .toEqual([source.run.id, first.run.id].sort());
     });
   });
@@ -404,7 +404,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork?.run.id).not.toBe(source.run.id);
       await advanceRun(workspace, fork.run.id);
-      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
         status: "completed",
         output: {
           runId: fork.run.id,
@@ -432,8 +432,8 @@ describe.concurrent("runtime controls and recovery", () => {
       } finally {
         store?.close();
       }
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({ status: "completed", output: { ok: true, extra: true } });
-      await expect(getRun(workspace, fork!.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, fork!.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true, extra: true } });
+      expect((await getRun(workspace, fork!.run.id))._unsafeUnwrap()).toMatchObject({
         id: fork!.run.id,
         name: "cli-task-replacement",
       });
@@ -454,7 +454,7 @@ describe.concurrent("runtime controls and recovery", () => {
       } finally {
         store2?.close();
       }
-      await expect(getRun(workspace, inputFork!.run.id)).resolves.toMatchObject({ status: "completed", output: { value: "new" } });
+      expect((await getRun(workspace, inputFork!.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { value: "new" } });
     });
   }, 20_000);
 
@@ -497,7 +497,7 @@ describe.concurrent("runtime controls and recovery", () => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
       expect(awaiting.status).toBe("awaiting");
       const runId = awaiting.run.id;
-      await expect(listRuns(workspace)).resolves.toEqual([
+      expect((await listRuns(workspace))._unsafeUnwrap()).toEqual([
         expect.objectContaining({ id: runId, status: "awaiting" }),
       ]);
 
@@ -507,11 +507,11 @@ describe.concurrent("runtime controls and recovery", () => {
 
       await expect(controlRun(workspace, runId, "resume")).resolves.toMatchObject({ status: "awaiting" });
 
-      const beforeMissingSignal = await getRun(workspace, runId);
+      const beforeMissingSignal = (await getRun(workspace, runId))._unsafeUnwrap();
       await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toMatchObject({
         failure: { type: "signal-target-not-found", runId, target: "missing" },
       });
-      const afterMissingSignal = await getRun(workspace, runId);
+      const afterMissingSignal = (await getRun(workspace, runId))._unsafeUnwrap();
       expect(afterMissingSignal?.eventCount).toBe(beforeMissingSignal?.eventCount);
       expect(afterMissingSignal?.dynamic?.signalWaits).toEqual([
         expect.objectContaining({ status: "awaiting" }),
@@ -525,7 +525,7 @@ describe.concurrent("runtime controls and recovery", () => {
       await expect(signalRun(workspace, runId, "approve", signalPayload, signalCommandIdempotencyKey)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
-      const completedRun = await getRun(workspace, runId);
+      const completedRun = (await getRun(workspace, runId))._unsafeUnwrap();
       expect(completedRun).toMatchObject({ status: "completed", output: { ok: true } });
       const consumedWait = completedRun?.dynamic?.signalWaits[0];
       expect(consumedWait).toMatchObject({
@@ -547,7 +547,7 @@ describe.concurrent("runtime controls and recovery", () => {
       });
 
       await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow();
-      await expect(getRun(workspace, runId)).resolves.toMatchObject({ status: "failed" });
+      expect((await getRun(workspace, runId))._unsafeUnwrap()).toMatchObject({ status: "failed" });
       expect(runtimeRows(workspace, "SELECT status, terminal_reason FROM signal_waits WHERE run_id = ?", runId)).toEqual([
         { status: "timed_out", terminal_reason: "signal_timeout" },
       ]);
@@ -596,10 +596,10 @@ describe.concurrent("runtime controls and recovery", () => {
         expect.objectContaining({ node_id: "approve", status: "awaiting" }),
         expect.objectContaining({ node_id: "approve", status: "awaiting" }),
       ]);
-      const run = await getRun(workspace, awaiting.run.id);
+      const run = (await getRun(workspace, awaiting.run.id))._unsafeUnwrap();
       expect(run?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.status === "awaiting")).toHaveLength(2);
       expect(run?.dynamic?.signalWaits.filter(wait => wait.nodeId === "approve" && wait.status === "awaiting")).toHaveLength(2);
-      const snapshot = await getRunVisualizationSnapshot(workspace, awaiting.run.id);
+      const snapshot = (await getRunVisualizationSnapshot(workspace, awaiting.run.id))._unsafeUnwrap();
       expect(snapshot?.overlay.workflow).toMatchObject({ name: "cli-fanout-signal", runId: awaiting.run.id, status: "awaiting" });
       expect(snapshot?.overlay.nodes.find(node => node.nodeId === "approve")).toMatchObject({
         kind: "signal",
@@ -641,7 +641,7 @@ describe.concurrent("runtime controls and recovery", () => {
       const fork = await forkRun(workspace, source.run.id);
       await advanceRun(workspace, fork.run.id);
 
-      const child = await getRun(workspace, fork.run.id);
+      const child = (await getRun(workspace, fork.run.id))._unsafeUnwrap();
       expect(child?.status).toBe("awaiting");
       expect(child?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.reusedFromRunId === source.run.id)).toHaveLength(1);
       const childWaits = runtimeRows(workspace, "SELECT node_key FROM signal_waits WHERE run_id = ? AND status = 'awaiting' ORDER BY node_key", fork.run.id);
@@ -660,18 +660,18 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const replayed = await forkRun(workspace, source.run.id);
       await advanceRun(workspace, replayed.run.id);
-      await expect(getRun(workspace, replayed.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, replayed.run.id))._unsafeUnwrap()).toMatchObject({
         status: "completed",
         output: { ok: true },
       });
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", replayed.run.id)).toEqual([]);
-      expect((await getRun(workspace, replayed.run.id))?.dynamic?.nodeInstances).toEqual([
+      expect((await getRun(workspace, replayed.run.id))._unsafeUnwrap()?.dynamic?.nodeInstances).toEqual([
         expect.objectContaining({ reusedFromRunId: source.run.id }),
       ]);
 
       const targeted = await forkRun(workspace, source.run.id, { target: "approve" });
       await advanceRun(workspace, targeted.run.id);
-      await expect(getRun(workspace, targeted.run.id)).resolves.toMatchObject({ status: "awaiting" });
+      expect((await getRun(workspace, targeted.run.id))._unsafeUnwrap()).toMatchObject({ status: "awaiting" });
       await expect(signalRun(workspace, targeted.run.id, "approve", { ok: true })).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
@@ -695,7 +695,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork.run.output).toBeUndefined();
       await advanceRun(workspace, fork.run.id);
-      await expect(getRun(workspace, fork.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
         status: "completed",
         output: { approvals: { left: { ok: true }, right: { ok: true } } },
       });
@@ -718,7 +718,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const raceFork = await forkRun(workspace, race.run.id);
       await advanceRun(workspace, raceFork.run.id);
-      await expect(getRun(workspace, raceFork.run.id)).resolves.toMatchObject({
+      expect((await getRun(workspace, raceFork.run.id))._unsafeUnwrap()).toMatchObject({
         status: "completed",
         output: { approval: { winner: "left", result: { ok: true } } },
       });

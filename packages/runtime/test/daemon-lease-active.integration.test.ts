@@ -5,7 +5,6 @@ import { startDaemonLoop } from "../src/index.js";
 import { prepareSyntheticWorkflow, runtimeRows } from "./support/runtime-fixtures.js";
 import {
   activeTaskWorkflow,
-  requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonShutdown,
   requestDaemonStatus,
@@ -14,6 +13,7 @@ import {
   waitUntil,
   withDaemonLeaseWorkspace,
 } from "./support/daemon-lease-fixture.js";
+import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
 describe.concurrent("daemon lease active execution", () => {
   it("applies cancel to daemon-owned active execution without lease conflict", async () => {
@@ -25,7 +25,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });
@@ -61,7 +61,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { leftMarker, rightMarker, rightRelease },
         });
@@ -127,7 +127,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });
@@ -168,7 +168,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });
@@ -198,7 +198,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });
@@ -232,7 +232,7 @@ describe.concurrent("daemon lease active execution", () => {
         packageVersion: "0.0.0-test",
       });
       try {
-        const admitted = await requestDaemonAdmitRun(dir, {
+        const admitted = await submitRunThroughDaemon(dir, {
           prepared,
           input: { markerPath },
         });

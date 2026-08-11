@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createWebApp } from "./app.js";
 import { mountStaticAssets } from "./assets.js";
 import { createAccessPolicy } from "./security.js";
+import type { EnsureRuntimeAuthority } from "./runtime-authority.js";
 import { ResultAsync } from "neverthrow";
 
 export type WebServerOptions = {
@@ -11,7 +12,7 @@ export type WebServerOptions = {
   host?: string;
   port?: number;
   token?: boolean;
-  ensureDaemonRunning(cwd: string): void | Promise<void>;
+  ensureDaemonRunning: EnsureRuntimeAuthority;
 };
 
 export type WebServerHandle = {

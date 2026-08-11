@@ -5,7 +5,6 @@ import { defineWorkflow, z } from "@acpus/core";
 import type { Result } from "neverthrow";
 import {
   getRun,
-  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
   requestDaemonControl as requestDaemonControlResult,
   requestDaemonShutdown as requestDaemonShutdownResult,
   requestDaemonStatus as requestDaemonStatusResult,
@@ -39,12 +38,6 @@ export async function withDaemonLeaseWorkspace<T>(
       rm(home, { recursive: true, force: true }),
     ]);
   }
-}
-
-export async function requestDaemonAdmitRun(
-  ...args: Parameters<typeof requestDaemonAdmitRunResult>
-) {
-  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
 }
 
 export async function requestDaemonControl(
@@ -181,10 +174,10 @@ export async function waitForTerminalRun(
   runId: string,
 ): Promise<{
   status: string;
-  run: NonNullable<Awaited<ReturnType<typeof getRun>>>;
+  run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>>;
 }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = await getRun(cwd, runId);
+    const run = (await getRun(cwd, runId))._unsafeUnwrap();
     if (run && ["completed", "failed", "canceled"].includes(run.status)) {
       return { status: run.status, run };
     }

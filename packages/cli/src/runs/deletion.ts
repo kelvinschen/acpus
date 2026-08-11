@@ -6,6 +6,7 @@ import {
   listRuns,
   pruneRuns as pruneRuntimeRuns,
   type PruneReport,
+  type RuntimeReadFailure,
   type RunRecord,
 } from "@acpus/runtime";
 import { deleteError, usageError } from "../presentation/errors.js";
@@ -19,6 +20,7 @@ import {
   type DeleteRunChoice,
 } from "./picker.js";
 import { toRunRecord } from "./record.js";
+import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
 type PruneRunOptions = {
   olderThan?: string;
@@ -90,10 +92,12 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
 }
 
 async function deleteChoices(ctx: RunsCommandContext): Promise<DeleteRunChoice[]> {
-  const runs = await listRuns(ctx.cwd);
-  return await Promise.all(runs.map(async run => {
+  const listed = await listRuns(ctx.cwd);
+  if (listed.isErr()) throw deleteRuntimeReadError(listed.error);
+  return await Promise.all(listed.value.map(async run => {
     const details = await getRun(ctx.cwd, run.id);
-    const active = details?.execution.state === "active";
+    if (details.isErr()) throw deleteRuntimeReadError(details.error);
+    const active = details.value?.execution.state === "active";
     return {
       run,
       ...(active ? { disabled: true, hint: "active" } : {}),
@@ -112,10 +116,11 @@ async function deleteManyRuns(
   for (const id of runIds) {
     const deleted = await deleteRuntimeRun(ctx.cwd, id);
     if (deleted.isErr()) {
-      const run = await getRun(ctx.cwd, id);
-      if (run && !skippedIds.has(run.id)) {
-        skippedRuns.push(toRunRecord(run));
-        skippedIds.add(run.id);
+      const read = await getRun(ctx.cwd, id);
+      if (read.isErr()) throw deleteRuntimeReadError(read.error);
+      if (read.value && !skippedIds.has(read.value.id)) {
+        skippedRuns.push(toRunRecord(read.value));
+        skippedIds.add(read.value.id);
       }
       continue;
     }
@@ -127,14 +132,19 @@ async function deleteManyRuns(
 async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<RunRecord> {
   const deleted = await deleteRuntimeRun(ctx.cwd, runId);
   if (deleted.isErr()) {
-    const run = await getRun(ctx.cwd, runId);
+    const read = await getRun(ctx.cwd, runId);
+    if (read.isErr()) throw deleteRuntimeReadError(read.error);
     throw deleteError(deleted.error.message, {
       errorCode: "RUN_ACTIVE",
-      ...(run ? { run: toRunRecord(run) } : {}),
+      ...(read.value ? { run: toRunRecord(read.value) } : {}),
     });
   }
   if (!deleted.value) throw deleteError(`Run '${runId}' was not found.`);
   return deleted.value;
+}
+
+function deleteRuntimeReadError(error: RuntimeReadFailure): ReturnType<typeof deleteError> {
+  return deleteError(runtimeReadFailureMessage(error), { errorCode: runtimeReadFailureCode(error) });
 }
 
 async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOptions): Promise<void> {

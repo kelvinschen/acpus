@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,7 +13,12 @@ import {
   resolveRuntimeWorkspaceLayout,
   runtimeLayoutForGeneration,
 } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import {
+  readRuntimeDatabaseFormat,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+} from "../src/storage/database.js";
+import { openRuntimeStore, openRuntimeStoreAtLayout } from "../src/store/store.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 
@@ -65,7 +71,7 @@ describe("Runtime store repair", () => {
     });
   });
 
-  it("keeps older supported stores as catalog-only archives", async () => {
+  it("preserves a v8 database byte-for-byte in its sealed generation before publishing v9", async () => {
     await withStorageWorkspace("runtime-repair-v8", async workspace => {
       await createLegacyStore(workspace, 8, {
         id: "run_old",
@@ -74,14 +80,121 @@ describe("Runtime store repair", () => {
         createdAt: "2026-08-10T00:00:00.000Z",
         updatedAt: "2026-08-10T00:00:01.000Z",
       });
+      const workspaceLayout = resolveRuntimeWorkspaceLayout(workspace);
+      const sourceDatabase = await readFile(workspaceLayout.databasePath);
 
       const repaired = await repairRuntimeStore(workspace);
+
       expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+      const active = resolveRuntimeLayout(workspace);
+      const generationIds = (await readdir(workspaceLayout.generationsRoot)).sort();
+      expect(generationIds).toHaveLength(2);
+      const sourceGenerationId = generationIds.find(id => id !== active.generationId);
+      if (!sourceGenerationId) throw new Error("expected one sealed source generation");
+      const sealed = runtimeLayoutForGeneration(workspaceLayout, sourceGenerationId);
+      expect(await readFile(sealed.databasePath)).toEqual(sourceDatabase);
+      expect(JSON.parse(await readFile(sealed.generationMetadataPath, "utf8"))).toMatchObject({
+        schemaVersion: 1,
+        id: sourceGenerationId,
+        storageVersion: 8,
+        archivedAt: expect.any(String),
+      });
+      expect(await readRuntimeDatabaseFormat(active.databasePath)).toEqual({
+        applicationId: RUNTIME_APPLICATION_ID,
+        userVersion: RUNTIME_STORAGE_VERSION,
+      });
+      expect(JSON.parse(await readFile(workspaceLayout.manifestPath, "utf8"))).toMatchObject({
+        manifestVersion: 2,
+        activeGenerationId: active.generationId,
+      });
+      await expect(access(workspaceLayout.transitionJournalPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
       const lookup = await readInspection(workspace, { kind: "run", runId: "run_old" });
       expect(lookup.isErr() && lookup.error).toMatchObject({
         type: "archived-run-lookup-unavailable",
         runId: "run_old",
       });
+    });
+  });
+
+  it.each([
+    {
+      name: "foreign SQLite application",
+      corrupt: async (path: string) => {
+        const database = new DatabaseSync(path);
+        try {
+          database.exec(`PRAGMA application_id = ${RUNTIME_APPLICATION_ID + 1}; PRAGMA wal_checkpoint(TRUNCATE)`);
+        } finally {
+          database.close();
+        }
+      },
+    },
+    {
+      name: "unrecognized non-SQLite database",
+      corrupt: async (path: string) => writeFile(path, "not a SQLite database\n"),
+    },
+  ])("leaves a $name unchanged as unsupported", async ({ name, corrupt }) => {
+    await withStorageWorkspace(`runtime-repair-${name.replaceAll(" ", "-")}`, async workspace => {
+      await createLegacyStore(workspace, 8);
+      const layout = resolveRuntimeWorkspaceLayout(workspace);
+      await corrupt(layout.databasePath);
+      const before = await treeFingerprint(layout.workspaceRoot);
+
+      const inspected = await inspectRuntimeStore(workspace);
+      expect(inspected.isOk() && inspected.value).toMatchObject({ state: "unsupported" });
+      expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
+
+      const repaired = await repairRuntimeStore(workspace);
+      expect(repaired.isErr() && repaired.error).toMatchObject({ type: "unsupported" });
+      expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
+    });
+  });
+
+  it("retires an idle v3 daemon before repairing its store", async () => {
+    await withStorageWorkspace("runtime-repair-v3-retirement", async workspace => {
+      await createLegacyStore(workspace, 8);
+      const predecessor = await startPredecessorDaemon(workspace);
+      try {
+        const repaired = await repairRuntimeStore(workspace);
+        expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+        expect(predecessor.shutdownRequests()).toBe(1);
+      } finally {
+        await predecessor.close();
+      }
+    });
+  });
+
+  it("leaves a v3 daemon and store unchanged when graceful shutdown is blocked", async () => {
+    await withStorageWorkspace("runtime-repair-v3-blocked", async workspace => {
+      await createLegacyStore(workspace, 8);
+      const predecessor = await startPredecessorDaemon(workspace, { blockShutdown: true });
+      const home = resolveRuntimeWorkspaceLayout(workspace).home;
+      const before = await treeFingerprint(home);
+      try {
+        const repaired = await repairRuntimeStore(workspace);
+        expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "busy" });
+        expect(predecessor.shutdownRequests()).toBe(1);
+        expect(await treeFingerprint(home)).toBe(before);
+      } finally {
+        await predecessor.close();
+      }
+    });
+  });
+
+  it("does not send shutdown to an unknown future daemon", async () => {
+    await withStorageWorkspace("runtime-repair-future-daemon", async workspace => {
+      await createLegacyStore(workspace, 8);
+      const daemon = await startPredecessorDaemon(workspace, { protocolVersion: 5 });
+      const home = resolveRuntimeWorkspaceLayout(workspace).home;
+      const before = await treeFingerprint(home);
+      try {
+        const repaired = await repairRuntimeStore(workspace);
+        expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "busy" });
+        expect(daemon.shutdownRequests()).toBe(0);
+        expect(await treeFingerprint(home)).toBe(before);
+      } finally {
+        await daemon.close();
+      }
     });
   });
 
@@ -137,6 +250,106 @@ describe("Runtime store repair", () => {
 
       expect(first.isOk() && first.value).toEqual({ changed: true });
       expect(second.isOk() && second.value).toEqual({ changed: false });
+    });
+  });
+
+  it.each([
+    "source-sealed",
+    "next-generation-verified",
+    "manifest-published",
+  ] as const)("converges from the %s transition checkpoint", async checkpoint => {
+    await withStorageWorkspace(`runtime-repair-${checkpoint}`, async workspace => {
+      const interrupted = await createInterruptedTransition(workspace, checkpoint);
+
+      const repaired = await repairRuntimeStore(workspace);
+
+      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
+      expect(resolveRuntimeLayout(workspace).generationId).toBe(interrupted.nextGenerationId);
+      await expect(access(interrupted.workspace.transitionJournalPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("classifies a corrupt transition intent as unreadable without modifying it", async () => {
+    await withStorageWorkspace("runtime-repair-corrupt-intent", async workspace => {
+      await createLegacyStore(workspace, 8);
+      const layout = resolveRuntimeWorkspaceLayout(workspace);
+      const corruptIntent = "{ definitely-not-json\n";
+      await writeFile(layout.transitionJournalPath, corruptIntent);
+
+      const inspected = await inspectRuntimeStore(workspace);
+      const repaired = await repairRuntimeStore(workspace);
+
+      expect(inspected.isErr() ? inspected.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(await readFile(layout.transitionJournalPath, "utf8")).toBe(corruptIntent);
+    });
+  });
+
+  it.each([
+    ["generation id", (metadata: Record<string, unknown>) => ({ ...metadata, id: `gen_${randomUUID()}` })],
+    ["storage version", (metadata: Record<string, unknown>) => ({ ...metadata, storageVersion: 7 })],
+    ["creation time", (metadata: Record<string, unknown>) => ({
+      ...metadata,
+      createdAt: "2026-08-09T00:00:00.000Z",
+    })],
+    ["sealed time", (metadata: Record<string, unknown>) => ({
+      ...metadata,
+      archivedAt: "2026-08-11T00:00:00.000Z",
+    })],
+  ] as const)("classifies transition source %s drift as unreadable and preserves the intent", async (_field, drift) => {
+    await withStorageWorkspace(`runtime-repair-source-${_field.replaceAll(" ", "-")}-drift`, async workspace => {
+      const interrupted = await createInterruptedTransition(workspace, "source-sealed");
+      const intent = await readFile(interrupted.workspace.transitionJournalPath, "utf8");
+      const metadata = JSON.parse(
+        await readFile(interrupted.source.generationMetadataPath, "utf8"),
+      ) as Record<string, unknown>;
+      const changed = `${JSON.stringify(drift(metadata), null, 2)}\n`;
+      await writeFile(interrupted.source.generationMetadataPath, changed);
+
+      const repaired = await repairRuntimeStore(workspace);
+
+      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(await readFile(interrupted.source.generationMetadataPath, "utf8")).toBe(changed);
+      expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
+    });
+  });
+
+  it("classifies a disappeared transition source as unreadable without recreating it", async () => {
+    await withStorageWorkspace("runtime-repair-source-disappeared", async workspace => {
+      const interrupted = await createInterruptedTransition(workspace, "source-sealed");
+      const intent = await readFile(interrupted.workspace.transitionJournalPath, "utf8");
+      const manifest = await readFile(interrupted.workspace.manifestPath, "utf8");
+      await rm(interrupted.source.generationRoot!, { recursive: true });
+
+      const repaired = await repairRuntimeStore(workspace);
+
+      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      await expect(access(interrupted.source.generationRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
+      expect(await readFile(interrupted.workspace.manifestPath, "utf8")).toBe(manifest);
+    });
+  });
+
+  it("does not overwrite an existing next-generation identity while resuming", async () => {
+    await withStorageWorkspace("runtime-repair-next-generation-drift", async workspace => {
+      const interrupted = await createInterruptedTransition(workspace, "source-sealed");
+      const next = runtimeLayoutForGeneration(interrupted.workspace, interrupted.nextGenerationId);
+      const conflictingMetadata = `${JSON.stringify({
+        schemaVersion: 1,
+        id: `gen_${randomUUID()}`,
+        storageVersion: 9,
+        createdAt: interrupted.startedAt,
+      }, null, 2)}\n`;
+      await mkdir(next.generationRoot!, { recursive: true });
+      await writeFile(next.generationMetadataPath, conflictingMetadata);
+      const intent = await readFile(interrupted.workspace.transitionJournalPath, "utf8");
+
+      const repaired = await repairRuntimeStore(workspace);
+
+      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(await readFile(next.generationMetadataPath, "utf8")).toBe(conflictingMetadata);
+      expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
     });
   });
 
@@ -203,4 +416,141 @@ async function createLegacyStore(workspace: string, storageVersion: number, run?
     platform: manifest.platform,
     createdAt: manifest.createdAt,
   }, null, 2)}\n`);
+}
+
+type TransitionCheckpoint = "source-sealed" | "next-generation-verified" | "manifest-published";
+
+async function createInterruptedTransition(workspace: string, checkpoint: TransitionCheckpoint): Promise<{
+  workspace: ReturnType<typeof resolveRuntimeWorkspaceLayout>;
+  source: ReturnType<typeof runtimeLayoutForGeneration>;
+  nextGenerationId: string;
+  startedAt: string;
+}> {
+  await createLegacyStore(workspace, 8);
+  const layout = resolveRuntimeWorkspaceLayout(workspace);
+  const legacyManifest = JSON.parse(await readFile(layout.manifestPath, "utf8")) as Record<string, unknown>;
+  const sourceGenerationId = `gen_${randomUUID()}`;
+  const nextGenerationId = `gen_${randomUUID()}`;
+  const startedAt = "2026-08-10T00:00:00.000Z";
+  const source = runtimeLayoutForGeneration(layout, sourceGenerationId);
+  const next = runtimeLayoutForGeneration(layout, nextGenerationId);
+  const journal = {
+    schemaVersion: 1,
+    startedAt,
+    observedLayoutVersion: 1,
+    nextGenerationId,
+    sources: [{
+      kind: "legacy-runtime",
+      generationId: sourceGenerationId,
+      storageVersion: 8,
+      createdAt: startedAt,
+    }],
+  };
+  await writeFile(layout.transitionJournalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  await mkdir(source.generationRoot!, { recursive: true });
+  await rename(layout.legacyRuntimeRoot, source.runtimeRoot);
+  await writeFile(source.generationMetadataPath, `${JSON.stringify({
+    schemaVersion: 1,
+    id: sourceGenerationId,
+    storageVersion: 8,
+    createdAt: startedAt,
+    archivedAt: startedAt,
+  }, null, 2)}\n`);
+
+  if (checkpoint !== "source-sealed") {
+    for (const path of [
+      next.generationRoot,
+      next.runtimeRoot,
+      next.runsRoot,
+      next.sourcesRoot,
+      next.trashRoot,
+      next.acpRoot,
+      next.acpWorkersRoot,
+    ]) await mkdir(path!, { recursive: true });
+    await writeFile(next.generationMetadataPath, `${JSON.stringify({
+      schemaVersion: 1,
+      id: nextGenerationId,
+      storageVersion: 9,
+      createdAt: startedAt,
+    }, null, 2)}\n`);
+    const store = await openRuntimeStoreAtLayout(next, {
+      lock: false,
+      prevalidated: true,
+      unpublished: true,
+    });
+    store.close();
+  }
+
+  if (checkpoint === "manifest-published") {
+    await writeFile(layout.manifestPath, `${JSON.stringify({
+      manifestVersion: 2,
+      workspaceKey: layout.workspaceKey,
+      canonicalPath: layout.canonicalPath,
+      platform: layout.platform,
+      createdAt: legacyManifest.createdAt,
+      activeGenerationId: nextGenerationId,
+    }, null, 2)}\n`);
+  }
+
+  return { workspace: layout, source, nextGenerationId, startedAt };
+}
+
+async function startPredecessorDaemon(
+  workspace: string,
+  options: { blockShutdown?: boolean; protocolVersion?: number } = {},
+): Promise<{
+  shutdownRequests(): number;
+  close(): Promise<void>;
+}> {
+  const endpoint = resolveRuntimeWorkspaceLayout(workspace).daemonEndpoint;
+  let shutdownRequests = 0;
+  let closed = false;
+  const server = createServer({ allowHalfOpen: true }, socket => {
+    const chunks: Buffer[] = [];
+    socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
+    socket.on("end", () => {
+      const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
+      if (request.method === "status") {
+        socket.end(JSON.stringify({
+          ok: true,
+          result: {
+            status: "ok",
+            pid: process.pid,
+            generation: 1,
+            protocolVersion: options.protocolVersion ?? 3,
+            packageVersion: "0.15.0-test",
+          },
+        }));
+        return;
+      }
+      shutdownRequests += 1;
+      if (options.blockShutdown) {
+        socket.end(JSON.stringify({
+          ok: false,
+          error: { code: "CONTROL_CONFLICT", message: "Daemon has active runtime users." },
+        }));
+        return;
+      }
+      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }), () => {
+        if (!closed) {
+          closed = true;
+          server.close();
+        }
+      });
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  return {
+    shutdownRequests: () => shutdownRequests,
+    close: () => closeServer(server, () => { closed = true; }),
+  };
+}
+
+async function closeServer(server: Server, markClosed: () => void): Promise<void> {
+  if (!server.listening) return;
+  markClosed();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 }

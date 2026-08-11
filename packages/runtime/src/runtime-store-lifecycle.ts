@@ -10,7 +10,12 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, ResultAsync } from "neverthrow";
-import { requestDaemonShutdown, requestDaemonStatus } from "./daemon/client.js";
+import {
+  requestDaemonShutdown,
+  requestDaemonStatus,
+  requestDaemonStatusProbe,
+  requestPredecessorDaemonShutdown,
+} from "./daemon/client.js";
 import { probeProcessLiveness } from "./process-liveness.js";
 import {
   RUNTIME_LAYOUT_VERSION,
@@ -36,6 +41,7 @@ import {
   openRuntimeDatabase,
   readRuntimeDatabaseFormat,
   RUNTIME_APPLICATION_ID,
+  RuntimeDatabaseProbeChangedError,
   RUNTIME_STORAGE_VERSION,
   UnrecognizedRuntimeDatabaseError,
 } from "./storage/database.js";
@@ -53,6 +59,7 @@ import {
 import { writePrivateJsonAtomically } from "./storage/private-json.js";
 
 const transitionSchemaVersion = 1;
+const runtimeOfflineWaitMs = 30_000;
 
 type RuntimeStoreBlocker = {
   type: "daemon" | "run-lease" | "acp-ownership" | "activity-unproven";
@@ -100,6 +107,7 @@ export type RuntimeStoreAssessment = {
 
 type RuntimeStoreInspectFailure = {
   type: "inspect-failed";
+  reason: "busy" | "unreadable" | "failed";
   message: string;
 };
 
@@ -109,7 +117,12 @@ export type RuntimeStoreStatus =
   | { state: "unsupported"; message: string };
 
 export type RuntimeStoreFailure = {
-  type: "busy" | "unsupported" | "failed";
+  type: "busy" | "unsupported" | "unreadable" | "failed";
+  message: string;
+};
+
+export type RuntimeStoreOfflineFailure = {
+  type: "busy" | "unavailable";
   message: string;
 };
 
@@ -120,6 +133,13 @@ class RuntimeGenerationActiveError extends Error {
   ) {
     super(`Runtime generation '${path}' has an active ${blocker} and cannot be sealed.`);
     this.name = "RuntimeGenerationActiveError";
+  }
+}
+
+class RuntimeStoreUnreadableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RuntimeStoreUnreadableError";
   }
 }
 
@@ -190,8 +210,10 @@ export function inspectRuntimeStore(
   return new ResultAsync((async () => {
     const inspected = await inspectRuntimeStoreInternal(cwd);
     if (inspected.isErr()) return err({
-      type: "failed" as const,
-      message: "The Runtime store could not be inspected.",
+      type: inspected.error.reason,
+      message: inspected.error.reason === "busy" || inspected.error.reason === "unreadable"
+        ? inspected.error.message
+        : "The Runtime store could not be inspected.",
     });
     const current = inspected.value.current;
     if (current.state === "absent" || current.state === "ready") return ok({ state: "ready" as const });
@@ -210,14 +232,19 @@ export function repairRuntimeStore(
   cwd: string,
 ): ResultAsync<{ changed: boolean }, RuntimeStoreFailure> {
   return ResultAsync.fromPromise(repairRuntimeStoreValue(cwd), error => ({
-    type: error instanceof RuntimeStoreBusyError ? "busy"
-      : error instanceof RuntimeStoreUnsupportedError ? "unsupported"
-        : "failed",
-    message: error instanceof RuntimeStoreBusyError
-      ? "The Runtime store is busy. Stop active runs and try again."
-      : error instanceof RuntimeStoreUnsupportedError
+    type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeDatabaseProbeChangedError ? "busy"
+      : error instanceof RuntimeStoreUnreadableError ? "unreadable"
+        : error instanceof RuntimeStoreUnsupportedError ? "unsupported"
+          : "failed",
+    message: error instanceof RuntimeDatabaseProbeChangedError
+      ? error.message
+      : error instanceof RuntimeStoreUnreadableError
         ? error.message
-        : "The Runtime store could not be repaired.",
+        : error instanceof RuntimeStoreBusyError
+          ? "The Runtime store is busy. Stop active runs and try again."
+          : error instanceof RuntimeStoreUnsupportedError
+            ? error.message
+            : "The Runtime store could not be repaired.",
   }));
 }
 
@@ -226,7 +253,13 @@ export function inspectRuntimeStoreInternal(
 ): ResultAsync<RuntimeStoreAssessment, RuntimeStoreInspectFailure> {
   return ResultAsync.fromPromise(
     inspectRuntimeStoreValue(cwd),
-    error => ({ type: "inspect-failed", message: errorMessage(error) }),
+    error => ({
+      type: "inspect-failed",
+      reason: error instanceof RuntimeDatabaseProbeChangedError ? "busy"
+        : error instanceof RuntimeStoreUnreadableError ? "unreadable"
+          : "failed",
+      message: errorMessage(error),
+    }),
   );
 }
 
@@ -241,10 +274,71 @@ export async function initializeRuntimeStoreIfAbsent(cwd: string): Promise<void>
   }
 }
 
+export function awaitRuntimeStoreOffline(
+  cwd: string,
+): ResultAsync<void, RuntimeStoreOfflineFailure> {
+  return ResultAsync.fromPromise(
+    awaitRuntimeStoreOfflineValue(cwd),
+    error => ({
+      type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeLockTimeoutError
+        ? "busy"
+        : "unavailable",
+      message: errorMessage(error),
+    }),
+  );
+}
+
+async function awaitRuntimeStoreOfflineValue(cwd: string): Promise<void> {
+  const status = await requestDaemonStatus(cwd);
+  if (status.isOk()) throw new RuntimeStoreBusyError("Runtime store has a live daemon.");
+  if (status.error.type !== "transport"
+    || status.error.reason !== "not-found" && status.error.reason !== "refused") {
+    throw new Error(`Runtime daemon activity cannot be proven offline: ${status.error.message}`);
+  }
+  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+  const lock = await acquireOfflineExclusiveLock(workspace);
+  try {
+    let layout: RuntimeLayout;
+    try {
+      layout = resolveRuntimeLayout(cwd);
+    } catch (error) {
+      if (!await pathExists(workspace.workspaceRoot)) return;
+      throw error;
+    }
+    if (!await pathExists(layout.runtimeRoot)) return;
+    await assertRuntimeGenerationSealSafe(layout);
+  } catch (error) {
+    if (error instanceof RuntimeGenerationActiveError) throw new RuntimeStoreBusyError(error.message);
+    throw error;
+  } finally {
+    await lock.release();
+  }
+}
+
+async function acquireOfflineExclusiveLock(layout: RuntimeLayout) {
+  const deadline = Date.now() + runtimeOfflineWaitMs;
+  while (true) {
+    try {
+      return await acquireRuntimeExclusiveLock(layout);
+    } catch (error) {
+      if (!(error instanceof RuntimeLockTimeoutError)) throw error;
+      if (Date.now() >= deadline) throw new RuntimeStoreBusyError(error.message);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+}
+
 async function repairRuntimeStoreValue(cwd: string): Promise<{ changed: boolean }> {
-  const first = await inspectRuntimeStoreValue(cwd);
-  if (first.current.state === "absent" || first.current.state === "ready") return { changed: false };
-  if (first.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(first.current.detail);
+  let first: RuntimeStoreAssessment | undefined;
+  try {
+    first = await inspectRuntimeStoreValue(cwd);
+  } catch (error) {
+    // An online WAL probe is only a no-op/unsupported preflight. If it races a
+    // writer, retire the daemon and make the authoritative decision offline.
+    if (!(error instanceof RuntimeDatabaseProbeChangedError)) throw error;
+  }
+  if (first?.current.state === "absent" || first?.current.state === "ready") return { changed: false };
+  if (first?.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(first.current.detail);
   await stopDaemonGracefully(cwd);
   const workspace = resolveRuntimeWorkspaceLayout(cwd);
   let lock;
@@ -477,8 +571,9 @@ async function inspectLegacyStore(
   let format;
   try {
     format = await readRuntimeDatabaseFormat(layout.databasePath);
-  } catch {
-    return unrecognizedStore(1);
+  } catch (error) {
+    if (error instanceof UnrecognizedRuntimeDatabaseError) return unrecognizedStore(1);
+    throw error;
   }
   if (!format) {
     return {
@@ -586,8 +681,9 @@ async function inspectGenerationStore(
   let format;
   try {
     format = await readRuntimeDatabaseFormat(layout.databasePath);
-  } catch {
-    return unrecognizedStore(2, layout.generationId);
+  } catch (error) {
+    if (error instanceof UnrecognizedRuntimeDatabaseError) return unrecognizedStore(2, layout.generationId);
+    throw error;
   }
   if (!format) {
     return {
@@ -840,8 +936,18 @@ async function resumeTransition(
 
   const next = runtimeLayoutForGeneration(workspace, journal.nextGenerationId);
   await ensureGenerationDirectories(next);
+  const nextMetadataExists = await pathExists(next.generationMetadataPath);
   const nextMetadata = await readGenerationMetadataForRecovery(next.generationMetadataPath);
-  if (nextMetadata?.id !== journal.nextGenerationId) {
+  if (nextMetadataExists) {
+    if (nextMetadata?.id !== journal.nextGenerationId
+      || nextMetadata.storageVersion !== RUNTIME_STORAGE_VERSION
+      || nextMetadata.createdAt !== journal.startedAt
+      || nextMetadata.archivedAt !== undefined) {
+      throw new RuntimeStoreUnreadableError(
+        `New generation '${journal.nextGenerationId}' changed identity during transition.`,
+      );
+    }
+  } else {
     await writeGenerationMetadata(next.generationMetadataPath, {
       schemaVersion: 1,
       id: journal.nextGenerationId,
@@ -873,13 +979,18 @@ async function resumeTransition(
     activeGenerationId: journal.nextGenerationId,
   };
   await writePrivateJsonAtomically(workspace.manifestPath, manifest);
+  await validatePublishedRuntimeGeneration(cwd, journal.nextGenerationId);
   await rm(workspace.transitionJournalPath);
-
-  const after = await inspectRuntimeStoreValue(cwd);
-  if (after.current.state !== "ready") {
-    throw new Error("Published runtime generation did not become ready.");
-  }
   return { changed: true };
+}
+
+async function validatePublishedRuntimeGeneration(cwd: string, expectedGenerationId: string): Promise<void> {
+  const published = await inspectGenerationStore(cwd);
+  if (published.current.state !== "ready"
+    || published.current.generationId !== expectedGenerationId
+    || published.transition.type !== "none") {
+    throw new Error(`Published runtime generation '${expectedGenerationId}' did not become ready.`);
+  }
 }
 
 async function sealTransitionSource(
@@ -889,8 +1000,26 @@ async function sealTransitionSource(
 ): Promise<void> {
   const destination = runtimeLayoutForGeneration(workspace, source.generationId);
   if (!destination.generationRoot) throw new Error("Runtime generation root is unavailable.");
+  const original = source.kind === "legacy-runtime"
+    ? workspace.legacyRuntimeRoot
+    : source.kind === "legacy-archive"
+      ? join(workspace.legacyArchivesRoot, source.legacyName!)
+      : undefined;
+  const originalExists = original === undefined ? false : await pathExists(original);
+  const destinationExists = await pathExists(destination.runtimeRoot);
+  if (source.kind === "generation" && !await pathExists(destination.generationRoot)) {
+    throw new RuntimeStoreUnreadableError(`Generation '${source.generationId}' disappeared during transition.`);
+  }
+  if (original !== undefined && originalExists === destinationExists) {
+    throw new RuntimeStoreUnreadableError(originalExists
+      ? `Both transition source '${original}' and generation '${source.generationId}' exist.`
+      : `Transition source for generation '${source.generationId}' is missing.`);
+  }
   await ensurePrivateDirectory(destination.generationRoot, destination.platform);
-  if (source.kind === "generation" && !await pathExists(destination.runtimeRoot)) {
+  if (source.kind === "generation" && !destinationExists) {
+    if (source.storageVersion !== null || await pathExists(destination.generationMetadataPath)) {
+      throw new RuntimeStoreUnreadableError(`Generation '${source.generationId}' changed identity during transition.`);
+    }
     await writeGenerationMetadata(destination.generationMetadataPath, {
       schemaVersion: 1,
       id: source.generationId,
@@ -900,22 +1029,9 @@ async function sealTransitionSource(
     });
     return;
   }
-  if (source.kind !== "generation") {
-    const original = source.kind === "legacy-runtime"
-      ? workspace.legacyRuntimeRoot
-      : join(workspace.legacyArchivesRoot, source.legacyName!);
-    const originalExists = await pathExists(original);
-    const destinationExists = await pathExists(destination.runtimeRoot);
-    if (originalExists && destinationExists) {
-      throw new Error(`Both transition source '${original}' and generation '${source.generationId}' exist.`);
-    }
-    if (originalExists) {
-      await assertRegularDirectory(original, "Runtime transition source");
-      await rename(original, destination.runtimeRoot);
-    }
-    else if (!destinationExists) throw new Error(`Transition source for generation '${source.generationId}' is missing.`);
-  } else if (!await pathExists(destination.runtimeRoot)) {
-    throw new Error(`Generation '${source.generationId}' disappeared during transition.`);
+  if (original !== undefined && originalExists) {
+    await assertRegularDirectory(original, "Runtime transition source");
+    await rename(original, destination.runtimeRoot);
   }
   await assertRegularDirectory(destination.runtimeRoot, "Runtime generation");
 
@@ -923,14 +1039,24 @@ async function sealTransitionSource(
   const runs = source.storageVersion === RUNTIME_STORAGE_VERSION && generationState === "complete"
     ? await extractPortableRunIndex(destination)
     : undefined;
+  const metadataExists = await pathExists(destination.generationMetadataPath);
   const readExisting = await readGenerationMetadataForRecovery(destination.generationMetadataPath);
-  const existing = readExisting?.id === source.generationId ? readExisting : undefined;
+  if (metadataExists
+    && (!readExisting
+      || readExisting.id !== source.generationId
+      || readExisting.storageVersion !== source.storageVersion
+      || readExisting.createdAt !== source.createdAt
+      || readExisting.archivedAt !== undefined && readExisting.archivedAt !== journal.startedAt)) {
+    throw new RuntimeStoreUnreadableError(
+      `Generation '${source.generationId}' changed identity during transition.`,
+    );
+  }
   await writeGenerationMetadata(destination.generationMetadataPath, {
     schemaVersion: 1,
     id: source.generationId,
     storageVersion: source.storageVersion,
-    createdAt: existing?.createdAt ?? source.createdAt,
-    archivedAt: existing?.archivedAt ?? journal.startedAt,
+    createdAt: source.createdAt,
+    archivedAt: journal.startedAt,
   });
   if (runs !== undefined) await writeRunIndex(destination.runIndexPath, runs);
 }
@@ -1040,17 +1166,22 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
 async function stopDaemonGracefully(
   cwd: string,
 ): Promise<void> {
-  const status = await requestDaemonStatus(cwd);
+  const status = await requestDaemonStatusProbe(cwd);
   if (status.isErr()) {
     if (status.error.type === "transport"
       && (status.error.reason === "not-found" || status.error.reason === "refused")) return;
     throw new RuntimeStoreBusyError(status.error.message);
   }
-  const shutdown = await requestDaemonShutdown(cwd);
+  if (status.value.kind === "unknown") {
+    throw new RuntimeStoreBusyError("The live daemon is not compatible with this version of Acpus and was left unchanged.");
+  }
+  const shutdown = await (status.value.kind === "predecessor"
+    ? requestPredecessorDaemonShutdown(cwd)
+    : requestDaemonShutdown(cwd));
   if (shutdown.isErr()) throw new RuntimeStoreBusyError(shutdown.error.message);
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    const polled = await requestDaemonStatus(cwd);
+    const polled = await requestDaemonStatusProbe(cwd);
     if (polled.isErr() && polled.error.type === "transport"
       && (polled.error.reason === "not-found" || polled.error.reason === "refused")) return;
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -1227,16 +1358,18 @@ async function readTransitionJournal(path: string): Promise<RuntimeStoreTransiti
     throw error;
   }
   if (info.isSymbolicLink() || !info.isFile()) {
-    throw new Error(`Runtime transition journal '${path}' is not a regular file.`);
+    throw new RuntimeStoreUnreadableError(`Runtime transition journal '${path}' is not a regular file.`);
   }
   let value: unknown;
   try {
     value = JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch {
-    throw new Error(`Runtime transition journal '${path}' is not valid JSON.`);
+    throw new RuntimeStoreUnreadableError(`Runtime transition journal '${path}' is not valid JSON.`);
   }
   if (!isTransitionJournal(value)) {
-    throw new Error(`Runtime transition journal '${path}' does not match schema version ${transitionSchemaVersion}.`);
+    throw new RuntimeStoreUnreadableError(
+      `Runtime transition journal '${path}' does not match schema version ${transitionSchemaVersion}.`,
+    );
   }
   return value;
 }

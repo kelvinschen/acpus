@@ -60,17 +60,29 @@ import {
 } from "../admission/prepared-workflow.js";
 import {
   ensureRuntimeLayout,
+  RUNTIME_LAYOUT_VERSION,
   resolveRuntimeLayout,
+  resolveRuntimeWorkspaceLayout,
+  runtimeLayoutForGeneration,
   validateRuntimeLayoutBoundary,
   validateWorkspaceManifest,
+  type AnyWorkspaceManifest,
   type RuntimeLayout,
 } from "../runtime-layout.js";
-import { acquireRuntimeSharedLock, type RuntimeSharedLock } from "../runtime-lock.js";
-import { inspectRuntimeGeneration } from "../storage/generation.js";
+import { acquireRuntimeSharedLock, RuntimeLockTimeoutError, type RuntimeSharedLock } from "../runtime-lock.js";
+import { inspectRuntimeGeneration, PartialRuntimeGenerationError } from "../storage/generation.js";
+import { readGenerationMetadataForRecovery } from "../storage/generation-metadata.js";
 import {
   hasNoPendingRuntimeDatabaseWal,
+  IncompatibleRuntimeDatabaseError,
+  isRuntimeStoreBusyError,
   openRuntimeDatabase,
   rollbackDatabaseTransaction,
+  RuntimeDatabaseProbeChangedError,
+  runtimeDatabaseFormat,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+  UnrecognizedRuntimeDatabaseError,
   validateRuntimeDatabasePaths,
 } from "../storage/database.js";
 import {
@@ -93,7 +105,23 @@ export type RunStatus = SchedulerRunStatus;
 
 export type AdmitRunFailure = PreparedRunValidationFailure
   | SchemaNormalizationFailure
-  | AgentOverrideValidationFailure;
+  | AgentOverrideValidationFailure
+  | { type: "admission-request-conflict"; requestId: string; message: string };
+
+export type RuntimeReadFailure =
+  | {
+      type: "runtime-store-repair-required";
+      command: "acpus doctor --fix";
+      message: string;
+    }
+  | { type: "runtime-store-unsupported"; message: string }
+  | { type: "runtime-store-unavailable"; message: string };
+
+export type RuntimeReadSession = {
+  layout: RuntimeLayout;
+  store: RuntimeStore;
+  close(): void;
+};
 
 export type ForkRunFailure = PreparedRunValidationFailure
   | AgentOverrideValidationFailure
@@ -255,6 +283,7 @@ type AdmitRunInput = {
   input: JsonValue;
   cwd: string;
   agentOverrides?: AgentOverrideMap;
+  requestId?: string;
 };
 
 export type RunRecord = {
@@ -485,7 +514,7 @@ export async function openRuntimeStoreAtLayout(
 }
 
 export async function openExistingRuntimeStore(cwd: string): Promise<RuntimeStore | undefined> {
-  return openExistingStore(cwd, true);
+  return (await openBoundRuntimeReadSessionValue(cwd))?.store;
 }
 
 export async function openExistingWritableRuntimeStore(cwd: string): Promise<RuntimeStore | undefined> {
@@ -496,21 +525,272 @@ async function openExistingStore(cwd: string, readOnly: boolean): Promise<Runtim
   return openExistingRuntimeStoreAtLayout(resolveRuntimeLayout(cwd), readOnly);
 }
 
+export function openBoundRuntimeReadSession(
+  cwd: string,
+): ResultAsync<RuntimeReadSession | undefined, RuntimeReadFailure> {
+  return ResultAsync.fromPromise(
+    openBoundRuntimeReadSessionValue(cwd),
+    runtimeReadOpenFailureFromError,
+  );
+}
+
+export function openRuntimeReadSessionAtLayout(
+  layout: RuntimeLayout,
+): ResultAsync<RuntimeReadSession, RuntimeReadFailure> {
+  return ResultAsync.fromPromise(
+    openRuntimeReadSessionAtLayoutValue(layout),
+    runtimeReadOpenFailureFromError,
+  );
+}
+
+async function openBoundRuntimeReadSessionValue(cwd: string): Promise<RuntimeReadSession | undefined> {
+  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+  const before = await readRuntimeReadManifest(workspace);
+  if (!before) return undefined;
+  if (before.manifestVersion !== RUNTIME_LAYOUT_VERSION) {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("Runtime store layout requires repair for this version of Acpus."));
+  }
+  const layout = runtimeLayoutForGeneration(workspace, before.activeGenerationId);
+  const lock = await acquireRuntimeSharedLock(layout);
+  const after = await readRuntimeReadManifest(workspace).catch(error => {
+    lock.release();
+    throw error;
+  });
+  if (!after || after.manifestVersion !== RUNTIME_LAYOUT_VERSION
+    || after.activeGenerationId !== before.activeGenerationId) {
+    lock.release();
+    throwRuntimeReadFailure({
+      type: "runtime-store-unavailable",
+      message: "The active Runtime generation changed while the read session was bound.",
+    });
+  }
+  return openRuntimeReadSessionAtLayoutValue(layout, lock);
+}
+
+async function openRuntimeReadSessionAtLayoutValue(
+  layout: RuntimeLayout,
+  boundLock?: RuntimeSharedLock,
+): Promise<RuntimeReadSession> {
+  const lock = boundLock ?? await acquireRuntimeSharedLock(layout);
+  try {
+    await validateRuntimeReadManifestBinding(layout);
+    await validateCurrentRuntimeReadGeneration(layout);
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
+  const store = await openExistingRuntimeStoreAtLayout(layout, true, { lock });
+  if (!store) {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("The active Runtime database is missing."));
+  }
+  return {
+    layout,
+    store,
+    close: () => store.close(),
+  };
+}
+
+async function validateRuntimeReadManifestBinding(layout: RuntimeLayout): Promise<void> {
+  const manifest = await readRuntimeReadManifest(layout);
+  if (!manifest || manifest.manifestVersion !== RUNTIME_LAYOUT_VERSION || !layout.generationId) {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("The active Runtime generation is not published by a current workspace manifest."));
+  }
+  if (manifest.activeGenerationId !== layout.generationId) {
+    throwRuntimeReadFailure({
+      type: "runtime-store-unavailable",
+      message: "The active Runtime generation changed while the read session was bound.",
+    });
+  }
+}
+
+async function validateCurrentRuntimeReadGeneration(layout: RuntimeLayout): Promise<void> {
+  if (await pathExists(layout.transitionJournalPath)) {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("A Runtime store update is incomplete."));
+  }
+  let state;
+  try {
+    state = await inspectRuntimeGeneration(layout);
+  } catch (error) {
+    if (error instanceof PartialRuntimeGenerationError) {
+      throwRuntimeReadFailure(runtimeStoreRepairRequired(error.message));
+    }
+    throw error;
+  }
+  if (state !== "complete") {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("The active Runtime generation is incomplete."));
+  }
+  const metadata = await readGenerationMetadataForRecovery(layout.generationMetadataPath);
+  if (!metadata
+    || metadata.id !== layout.generationId
+    || metadata.storageVersion !== RUNTIME_STORAGE_VERSION
+    || metadata.archivedAt !== undefined) {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("The active Runtime generation metadata requires repair."));
+  }
+}
+
+class RuntimeReadSessionError extends Error {
+  constructor(readonly failure: RuntimeReadFailure) {
+    super(failure.message);
+    this.name = "RuntimeReadSessionError";
+  }
+}
+
+async function readRuntimeReadManifest(
+  workspace: RuntimeLayout,
+): Promise<AnyWorkspaceManifest | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(workspace.manifestPath, "utf8");
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+    try {
+      const info = await lstat(workspace.workspaceRoot);
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new Error(`Runtime workspace shard '${workspace.workspaceRoot}' is not a regular directory.`);
+      }
+      throwRuntimeReadFailure(runtimeStoreRepairRequired("The Runtime workspace has state but no workspace manifest."));
+    } catch (workspaceError) {
+      if (!isMissingPathError(workspaceError)) throw workspaceError;
+    }
+    return undefined;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    throwRuntimeReadFailure(runtimeStoreRepairRequired("The Runtime workspace manifest is malformed."));
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).manifestVersion === "number"
+    && Number((value as Record<string, unknown>).manifestVersion) > RUNTIME_LAYOUT_VERSION) {
+    throwRuntimeReadFailure({
+      type: "runtime-store-unsupported",
+      message: `Runtime workspace uses newer layout v${String((value as Record<string, unknown>).manifestVersion)}.`,
+    });
+  }
+  const manifest = validateWorkspaceManifest(value, workspace);
+  if (manifest.isErr()) throwRuntimeReadFailure(runtimeStoreRepairRequired(manifest.error.message));
+  return manifest.value;
+}
+
+function runtimeStoreRepairRequired(message: string): Extract<RuntimeReadFailure, { type: "runtime-store-repair-required" }> {
+  return {
+    type: "runtime-store-repair-required",
+    command: "acpus doctor --fix",
+    message,
+  };
+}
+
+function throwRuntimeReadFailure(failure: RuntimeReadFailure): never {
+  throw new RuntimeReadSessionError(failure);
+}
+
+export function runtimeReadFailureFromError(error: unknown): RuntimeReadFailure {
+  if (error instanceof RuntimeReadSessionError) return error.failure;
+  if (error instanceof IncompatibleRuntimeDatabaseError) {
+    if (error.applicationId !== RUNTIME_APPLICATION_ID
+      || error.userVersion <= 0
+      || error.userVersion > RUNTIME_STORAGE_VERSION) {
+      return {
+        type: "runtime-store-unsupported",
+        message: error.message,
+      };
+    }
+    return runtimeStoreRepairRequired(error.message);
+  }
+  if (error instanceof UnrecognizedRuntimeDatabaseError || isDefinitivelyInvalidSqlite(error)) {
+    return {
+      type: "runtime-store-unsupported",
+      message: error instanceof Error ? error.message : "Runtime database is not valid SQLite.",
+    };
+  }
+  if (error instanceof RuntimeLockTimeoutError
+    || error instanceof RuntimeDatabaseProbeChangedError
+    || isRuntimeStoreBusyError(error)) {
+    return runtimeStoreUnavailable(error, "The Runtime store is busy.");
+  }
+  throw error;
+}
+
+function runtimeReadOpenFailureFromError(error: unknown): RuntimeReadFailure {
+  try {
+    return runtimeReadFailureFromError(error);
+  } catch (unmapped) {
+    if (!(unmapped instanceof TypeError)
+      && (isNodeError(unmapped) || isRuntimeReadSqliteBoundaryError(unmapped))) {
+      return runtimeStoreUnavailable(unmapped, "The Runtime store is unavailable.");
+    }
+    throw unmapped;
+  }
+}
+
+function runtimeStoreUnavailable(
+  error: unknown,
+  fallback: string,
+): Extract<RuntimeReadFailure, { type: "runtime-store-unavailable" }> {
+  return {
+    type: "runtime-store-unavailable",
+    message: error instanceof Error ? error.message : fallback,
+  };
+}
+
+function isDefinitivelyInvalidSqlite(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; errcode?: unknown };
+  return candidate.code === "ERR_SQLITE_ERROR"
+    && (candidate.errcode === 11 || candidate.errcode === 26);
+}
+
+function isRuntimeReadSqliteBoundaryError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; errcode?: unknown };
+  if (candidate.code === "SQLITE_CANTOPEN"
+    || candidate.code === "SQLITE_IOERR"
+    || candidate.code === "SQLITE_READONLY") return true;
+  if (candidate.code !== "ERR_SQLITE_ERROR" || typeof candidate.errcode !== "number") return false;
+  return [8, 10, 14].includes(candidate.errcode & 0xff);
+}
+
 export async function openExistingRuntimeStoreAtLayout(
   layout: RuntimeLayout,
   readOnly: boolean,
-  options: { lock?: boolean; immutable?: boolean } = {},
+  options: { lock?: boolean | RuntimeSharedLock; immutable?: boolean } = {},
 ): Promise<RuntimeStore | undefined> {
+  if (readOnly) {
+    const lock = options.lock === false
+      ? undefined
+      : typeof options.lock === "object"
+        ? options.lock
+        : await acquireRuntimeSharedLock(layout);
+    let db: DatabaseSync | undefined;
+    try {
+      if (!await validateRuntimeDatabasePaths(layout.databasePath)) {
+        lock?.release();
+        return undefined;
+      }
+      await validateExistingLayout(layout);
+      const immutable = options.immutable === true
+        && await hasNoPendingRuntimeDatabaseWal(layout.databasePath);
+      db = await openRuntimeDatabase(layout.databasePath, { readOnly: true, immutable });
+      const format = runtimeDatabaseFormat(db);
+      if (format.applicationId !== RUNTIME_APPLICATION_ID || format.userVersion !== RUNTIME_STORAGE_VERSION) {
+        throw new IncompatibleRuntimeDatabaseError(layout.databasePath, format.applicationId, format.userVersion);
+      }
+      return new SqliteRuntimeStore(db, layout, lock);
+    } catch (error) {
+      db?.close();
+      lock?.release();
+      throw error;
+    }
+  }
   if (!await validateRuntimeDatabasePaths(layout.databasePath)) return undefined;
   await validateExistingLayout(layout);
   await validateDatabaseFileIfPresent(layout.databasePath);
-  if (readOnly) {
-    const immutable = options.immutable === true
-      && await hasNoPendingRuntimeDatabaseWal(layout.databasePath);
-    const db = await openRuntimeDatabase(layout.databasePath, { readOnly: true, immutable });
-    return new SqliteRuntimeStore(db, layout);
-  }
-  const lock = options.lock === false ? undefined : await acquireRuntimeSharedLock(layout);
+  const lock = options.lock === false
+    ? undefined
+    : typeof options.lock === "object"
+      ? options.lock
+      : await acquireRuntimeSharedLock(layout);
   let db: DatabaseSync | undefined;
   try {
     await inspectRuntimeGeneration(layout);
@@ -742,6 +1022,32 @@ class SqliteRuntimeStore implements RuntimeStore {
     if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(this.cwd))) {
       throw new Error("Admission workspace does not match the runtime store workspace.");
     }
+    const requestKey = input.requestId === undefined ? undefined : `admission-request:${input.requestId}`;
+    const requestFingerprint = admissionRequestFingerprint(
+      prepared.value,
+      normalizedInput.value,
+      agentOverrides.value,
+    );
+    if (requestKey) {
+      const existing = this.db.prepare(`
+        SELECT run_id, payload_json
+        FROM run_events
+        WHERE idempotency_key = ? AND type = 'run.admitted'
+      `).get(requestKey) as { run_id: string; payload_json: string } | undefined;
+      if (existing) {
+        const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
+        if (payload.requestFingerprint !== requestFingerprint) {
+          return err({
+            type: "admission-request-conflict",
+            requestId: input.requestId!,
+            message: `Admission request '${input.requestId}' conflicts with a different prepared run.`,
+          });
+        }
+        const admitted = this.getRunRecord(existing.run_id);
+        if (!admitted) throw new Error(`Admission request '${input.requestId}' refers to a missing run.`);
+        return ok(admitted);
+      }
+    }
     await publishWorkflowSource(prepared.value, this.layout, this.generation.sourcesRoot);
     const runId = newRunId();
     const now = new Date().toISOString();
@@ -751,6 +1057,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       workflow: summarizeWorkflowForEvent(prepared.value.ir),
       input: normalizedInput.value,
       ...(Object.keys(agentOverrides.value).length > 0 ? { agentOverrides: agentOverrides.value } : {}),
+      ...(requestKey ? { requestFingerprint } : {}),
     };
     const publishedRun = await publishRunDirectory({
       runsRoot: this.generation.runsRoot,
@@ -790,7 +1097,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.admitted', NULL, ?, ?, ?)
-      `).run(runId, stableJsonLine(eventPayload), now, `admit:${runId}`);
+      `).run(runId, stableJsonLine(eventPayload), now, requestKey ?? `admit:${runId}`);
       this.db.prepare(`
         INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
         VALUES (?, 1, ?, ?)
@@ -2885,6 +3192,23 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
     ...(options.agentOverrides === undefined ? {} : { agentOverrides: options.agentOverrides }),
     ...(options.target === undefined ? {} : { target: options.target }),
   });
+}
+
+function admissionRequestFingerprint(
+  prepared: PreparedRunWorkflow,
+  input: JsonValue,
+  agentOverrides: AgentOverrideMap,
+): string {
+  return sha256Digest(stableJsonLine({
+    prepared: {
+      source: prepared.source,
+      irFileDigest: prepared.lock.ir.digest,
+      sourceGraphDigest: prepared.sourceGraphDigest,
+      ...(prepared.packageLockDigest === undefined ? {} : { packageLockDigest: prepared.packageLockDigest }),
+    },
+    input,
+    agentOverrides,
+  }));
 }
 
 function assertSameDirectory(

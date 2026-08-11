@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { tryPrepareWorkflow } from "@acpus/workflow-compiler";
 import {
   getRun,
-  requestDaemonAdmitRun,
   requestDaemonControl,
   startDaemonLoop,
   type PreparedRunWorkflow,
@@ -27,6 +26,7 @@ import {
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
 import { withSharedStorageHome } from "./support/storage-workspace.js";
+import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
 describe("runtime workflow snapshots", () => {
   it("publishes one digest-addressed snapshot per workspace and reuses it without an original source directory", async () => {
@@ -272,10 +272,8 @@ describe("runtime workflow snapshots", () => {
         });
         let runId: string;
         try {
-          const admission = await requestDaemonAdmitRun(workspace, { prepared, input: {} });
-          if (admission.isErr()) throw new Error(admission.error.message);
-          runId = admission.value.id;
-          await waitUntil(async () => (await getRun(workspace, runId))?.status === "awaiting");
+          runId = (await submitRunThroughDaemon(workspace, { prepared, input: {} })).id;
+          await waitUntil(async () => (await getRun(workspace, runId))._unsafeUnwrap()?.status === "awaiting");
         } finally {
           await firstDaemon.shutdown();
         }

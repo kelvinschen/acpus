@@ -4,4 +4,4 @@
 "@acpus/web": patch
 ---
 
-Preserve older Runtime stores behind layout v2, repair outdated stores with `acpus doctor --fix`, keep archived run summaries inspectable, and let Web fix its launch workspace without exposing storage generations.
+Bind reads and streamed admission to one opaque Runtime authority, safely retire an idle predecessor daemon, preserve active or incompatible stores without mutation, and map typed Runtime availability directly in CLI and Web recovery flows.

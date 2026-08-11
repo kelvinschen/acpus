@@ -7,7 +7,16 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PreparedRunWorkflow, Sha256Digest } from "@acpus/runtime";
-import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus } from "../src/daemon/client.js";
+import {
+  daemonEndpoint,
+  requestDaemonControl,
+  requestDaemonShutdown,
+  requestDaemonStatus,
+  requestDaemonStatusProbe,
+  requestDaemonSubmitAndObserve,
+} from "../src/daemon/client.js";
+import { sameRuntimeAuthority } from "../src/daemon/authority.js";
+import type { DaemonRunStreamFrame, RuntimeAuthorityIdentity } from "../src/daemon/protocol.js";
 import { startDaemonServer } from "../src/daemon/server.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import {
@@ -80,8 +89,8 @@ describe("daemon socket server", () => {
     const shutdownStarted = deferred();
     const releaseShutdown = deferred();
     const server = await startDaemonServer(workspace, {
-      status: () => ok({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
-      admitRun: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+      status: () => ok(daemonStatus()),
+      submitAndObserve: testHandlers().submitAndObserve,
       control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
       shutdown: () => new ResultAsync((async () => {
         shutdownStarted.resolve();
@@ -112,22 +121,25 @@ describe("daemon socket server", () => {
     const release = deferred();
     const server = await startDaemonServer(workspace, {
       ...testHandlers(),
-      admitRun: () => new ResultAsync((async () => {
+      submitAndObserve: async function* () {
         started.resolve();
         await release.promise;
-        return ok(runDetails());
-      })()),
+        yield { kind: "admitted", authority: runtimeAuthority(), run: runDetails() };
+      },
     });
     vi.useFakeTimers();
-    const request = requestDaemonAdmitRun(workspace, {
+    const request = collectStream(requestDaemonSubmitAndObserve(workspace, {
+      expectedAuthority: runtimeAuthority(),
+      requestId: "admission-wait",
       prepared: preparedRunWorkflow(),
       input: {},
-    });
+      until: "admitted",
+    }));
     try {
       await started.promise;
       await vi.advanceTimersByTimeAsync(31_000);
       release.resolve();
-      expect(await request).toEqual(ok(runDetails()));
+      expect(await request).toEqual([ok({ kind: "admitted", authority: runtimeAuthority(), run: runDetails() })]);
     } finally {
       release.resolve();
       vi.useRealTimers();
@@ -286,13 +298,7 @@ describe("daemon socket server", () => {
     let server: Awaited<ReturnType<typeof startDaemonServer>> | undefined;
     try {
       server = await startDaemonServer(workspace, testHandlers());
-      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok({
-        status: "ok",
-        pid: process.pid,
-        generation: 1,
-        protocolVersion: 1,
-        packageVersion: "test",
-      }));
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok(daemonStatus()));
     } finally {
       await server?.close();
       await rm(workspace, { recursive: true, force: true });
@@ -315,13 +321,7 @@ describe("daemon socket server", () => {
       const failures = starts.flatMap(result => result.status === "rejected" ? [result.reason] : []);
       expect(failures).toHaveLength(1);
       expect(failures[0]).toMatchObject({ code: "EADDRINUSE" });
-      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok({
-        status: "ok",
-        pid: process.pid,
-        generation: 1,
-        protocolVersion: 1,
-        packageVersion: "test",
-      }));
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok(daemonStatus()));
     } finally {
       await Promise.allSettled(servers.map(server => server.close()));
       await rm(workspace, { recursive: true, force: true });
@@ -372,8 +372,6 @@ describe("daemon socket server", () => {
         { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "", instruction: "focus" } },
         { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "   ", instruction: "focus" } },
         { method: "control", control: { requestId: "steer", type: "steer", runId: "run_1", target: "review", instruction: "focus", extra: true } },
-        { method: "admitRun", prepared: preparedRunWorkflow(), input: {}, extra: true },
-        { method: "admitRun", prepared: { ...preparedRunWorkflow(), extra: true }, input: {} },
       ];
       for (const request of invalidRequests) {
         await expect(sendRawRequest(daemonEndpoint(workspace), request)).resolves.toMatchObject({
@@ -381,12 +379,76 @@ describe("daemon socket server", () => {
           error: { code: "INVALID_REQUEST" },
         });
       }
+      const validSubmission = { method: "submitAndObserve", ...submitInput("admitted") };
+      const invalidSubmissions = [
+        { ...validSubmission, extra: true },
+        { ...validSubmission, requestId: "" },
+        { ...validSubmission, until: "terminal" },
+        { ...validSubmission, expectedAuthority: { ...runtimeAuthority(), workspaceKey: "workspace-test" } },
+        { ...validSubmission, expectedAuthority: { ...runtimeAuthority(), authorityId: "authority-test" } },
+        { ...validSubmission, expectedAuthority: { ...runtimeAuthority(), storeBinding: "sha256:not-a-digest" } },
+        { ...validSubmission, prepared: { ...preparedRunWorkflow(), extra: true } },
+      ];
+      for (const request of invalidSubmissions) {
+        await expect(sendRawRequest(daemonEndpoint(workspace), request)).resolves.toMatchObject({
+          kind: "error",
+          phase: "admission",
+          outcome: "not-admitted",
+          error: { code: "INVALID_REQUEST" },
+        });
+      }
 
       const response = await sendRawRequest(daemonEndpoint(workspace), { method: "status" });
       expect(response).toEqual({
         ok: true,
-        result: { status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" },
+        result: daemonStatus(),
       });
+    } finally {
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("routes every syntactically valid authority mismatch to pre-admission comparison", async () => {
+    const workspace = await testWorkspace("acpus-daemon-authority-mismatch-");
+    const current = runtimeAuthority();
+    const server = await startDaemonServer(workspace, {
+      ...testHandlers(),
+      submitAndObserve: async function* (request) {
+        if (!sameRuntimeAuthority(request.expectedAuthority, current)) {
+          yield {
+            kind: "error",
+            phase: "authority",
+            outcome: "not-admitted",
+            error: { code: "AUTHORITY_MISMATCH", message: "authority changed" },
+          };
+          return;
+        }
+        yield admittedFrame();
+      },
+    });
+    const mismatches = [
+      { ...current, workspaceKey: "c".repeat(32) },
+      { ...current, runtimeAbi: 2 },
+      { ...current, layoutVersion: 3 },
+      { ...current, storageVersion: 10 },
+      { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
+      { ...current, storeBinding: `sha256:${"c".repeat(64)}` },
+      { ...current, leaseGeneration: 2 },
+    ];
+    try {
+      for (const expectedAuthority of mismatches) {
+        const frames = await collectStream(requestDaemonSubmitAndObserve(workspace, {
+          ...submitInput("admitted"),
+          expectedAuthority: expectedAuthority as RuntimeAuthorityIdentity,
+        }));
+        expect(frames).toEqual([ok({
+          kind: "error",
+          phase: "authority",
+          outcome: "not-admitted",
+          error: { code: "AUTHORITY_MISMATCH", message: "authority changed" },
+        })]);
+      }
     } finally {
       await server.close();
       await rm(workspace, { recursive: true, force: true });
@@ -513,31 +575,262 @@ describe("daemon socket server", () => {
     }
 
     const admissionWorkspace = await testWorkspace("acpus-daemon-socket-admission-result-");
-    const admissionServer = await startRawResponseServer(admissionWorkspace, {
-      ok: true,
-      result: { id: "run_1", status: "running" },
-    });
+    const admissionServer = await startRawStreamServer(admissionWorkspace, [
+      `${JSON.stringify({ kind: "admitted", authority: runtimeAuthority(), run: { id: "run_1", status: "running" } })}\n`,
+    ]);
     try {
-      expect(await requestDaemonAdmitRun(admissionWorkspace, {
-        prepared: preparedRunWorkflow() as never,
-        input: {},
-      })).toEqual(err({
-        type: "protocol",
-        stage: "result",
-        method: "admitRun",
-        message: "Daemon returned an invalid run admission result.",
-      }));
+      expect(await collectStream(requestDaemonSubmitAndObserve(admissionWorkspace, submitInput("admitted"))))
+        .toEqual([err(expect.objectContaining({
+          type: "protocol",
+          stage: "frame",
+          reason: "malformed",
+          method: "submitAndObserve",
+          outcome: "unknown",
+        }))]);
     } finally {
       await closeRawResponseServer(admissionServer);
       await rm(admissionWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes current, predecessor, and unknown daemon status shapes", async () => {
+    const currentWorkspace = await testWorkspace("acpus-daemon-status-current-");
+    const currentServer = await startRawResponseServer(currentWorkspace, { ok: true, result: daemonStatus() });
+    try {
+      await expect(requestDaemonStatusProbe(currentWorkspace)).resolves.toEqual(ok({
+        kind: "current",
+        status: daemonStatus(),
+      }));
+    } finally {
+      await closeRawResponseServer(currentServer);
+      await rm(currentWorkspace, { recursive: true, force: true });
+    }
+
+    const predecessorWorkspace = await testWorkspace("acpus-daemon-status-v3-");
+    const predecessor = { status: "ok", pid: process.pid, generation: 7, protocolVersion: 3, packageVersion: "old" };
+    const predecessorServer = await startRawResponseServer(predecessorWorkspace, { ok: true, result: predecessor });
+    try {
+      await expect(requestDaemonStatusProbe(predecessorWorkspace)).resolves.toEqual(ok({
+        kind: "predecessor",
+        status: predecessor,
+      }));
+    } finally {
+      await closeRawResponseServer(predecessorServer);
+      await rm(predecessorWorkspace, { recursive: true, force: true });
+    }
+
+    const futureWorkspace = await testWorkspace("acpus-daemon-status-future-");
+    const futureServer = await startRawResponseServer(futureWorkspace, {
+      ok: true,
+      result: { status: "ok", pid: process.pid, protocolVersion: 5, packageVersion: "future", authority: {} },
+    });
+    try {
+      await expect(requestDaemonStatusProbe(futureWorkspace)).resolves.toEqual(ok({
+        kind: "unknown",
+        protocolVersion: 5,
+      }));
+    } finally {
+      await closeRawResponseServer(futureServer);
+      await rm(futureWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it("incrementally parses split and coalesced NDJSON frames", async () => {
+    const workspace = await testWorkspace("acpus-daemon-stream-chunks-");
+    const admitted = admittedFrame();
+    const closed = closedFrame();
+    const first = `${JSON.stringify(admitted)}\n`;
+    const second = `${JSON.stringify(closed)}\n`;
+    const server = await startRawStreamServer(workspace, [first.slice(0, 9), `${first.slice(9)}${second}`]);
+    try {
+      expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal"))))
+        .toEqual([ok(admitted), ok(closed)]);
+    } finally {
+      await closeRawResponseServer(server);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies malformed and truncated NDJSON streams without guessing admission", async () => {
+    const malformedWorkspace = await testWorkspace("acpus-daemon-stream-malformed-");
+    const malformedServer = await startRawStreamServer(malformedWorkspace, ["{not-json}\n"]);
+    try {
+      expect(await collectStream(requestDaemonSubmitAndObserve(malformedWorkspace, submitInput("admitted"))))
+        .toEqual([err(expect.objectContaining({
+          type: "protocol",
+          reason: "malformed",
+          outcome: "unknown",
+        }))]);
+    } finally {
+      await closeRawResponseServer(malformedServer);
+      await rm(malformedWorkspace, { recursive: true, force: true });
+    }
+
+    const truncatedWorkspace = await testWorkspace("acpus-daemon-stream-truncated-");
+    const admitted = admittedFrame();
+    const truncatedServer = await startRawStreamServer(truncatedWorkspace, [`${JSON.stringify(admitted)}\n`]);
+    try {
+      expect(await collectStream(requestDaemonSubmitAndObserve(truncatedWorkspace, submitInput("subject-terminal"))))
+        .toEqual([
+          ok(admitted),
+          err(expect.objectContaining({
+            type: "protocol",
+            reason: "truncated",
+            outcome: "admitted",
+            runId: "run_1",
+          })),
+        ]);
+    } finally {
+      await closeRawResponseServer(truncatedServer);
+      await rm(truncatedWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed nested inspection observation shapes", async () => {
+    const malformedObservations = [
+      { kind: "attached", view: {} },
+      {
+        kind: "update",
+        changes: [{ subject: { label: "task" }, state: { status: "not-a-status" } }],
+      },
+      {
+        kind: "update",
+        changes: [],
+        timeline: [{ kind: "activity", at: "2026-08-11T00:00:00.000Z", channel: "thought", summary: "working" }],
+      },
+      {
+        kind: "closed",
+        reason: "subject-terminal",
+        view: { ...runInspectionView(), tree: [{ type: "item", children: [] }] },
+      },
+    ];
+    for (const observation of malformedObservations) {
+      const workspace = await testWorkspace("acpus-daemon-stream-nested-malformed-");
+      const admitted = admittedFrame();
+      const server = await startRawStreamServer(workspace, [
+        `${JSON.stringify(admitted)}\n${JSON.stringify({ kind: "observation", observation })}\n`,
+      ]);
+      try {
+        expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal"))))
+          .toEqual([
+            ok(admitted),
+            err(expect.objectContaining({
+              type: "protocol",
+              stage: "frame",
+              reason: "malformed",
+              outcome: "admitted",
+              runId: "run_1",
+            })),
+          ]);
+      } finally {
+        await closeRawResponseServer(server);
+        await rm(workspace, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("requires EOF immediately after an error frame", async () => {
+    const workspace = await testWorkspace("acpus-daemon-stream-error-eof-");
+    const failure = {
+      kind: "error",
+      phase: "authority",
+      outcome: "not-admitted",
+      error: { code: "AUTHORITY_MISMATCH", message: "authority changed" },
+    } as const;
+    const server = await startRawStreamServer(workspace, [
+      `${JSON.stringify(failure)}\n${JSON.stringify(admittedFrame())}\n`,
+    ]);
+    try {
+      expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("admitted"))))
+        .toEqual([
+          ok(failure),
+          err(expect.objectContaining({ type: "protocol", reason: "unexpected" })),
+        ]);
+    } finally {
+      await closeRawResponseServer(server);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not cancel admission on disconnect and aborts only its observer afterward", async () => {
+    const workspace = await testWorkspace("acpus-daemon-stream-detach-");
+    const admissionStarted = deferred();
+    const releaseAdmission = deferred();
+    const observerAborted = deferred();
+    let observerSignal: AbortSignal | undefined;
+    const server = await startDaemonServer(workspace, {
+      ...testHandlers(),
+      submitAndObserve: async function* (_request, signal) {
+        observerSignal = signal;
+        signal.addEventListener("abort", () => observerAborted.resolve(), { once: true });
+        admissionStarted.resolve();
+        await releaseAdmission.promise;
+        yield admittedFrame();
+      },
+    });
+    const detach = new AbortController();
+    const stream = requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal"), { signal: detach.signal });
+    const reading = collectStream(stream);
+    try {
+      await admissionStarted.promise;
+      detach.abort();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(observerSignal?.aborted).toBe(false);
+      releaseAdmission.resolve();
+      await observerAborted.promise;
+      expect(observerSignal?.aborted).toBe(true);
+      expect(await reading).toEqual([]);
+    } finally {
+      releaseAdmission.resolve();
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("flushes large observation frames under socket backpressure", async () => {
+    const workspace = await testWorkspace("acpus-daemon-stream-backpressure-");
+    const large = "x".repeat(2 * 1024 * 1024);
+    const update: DaemonRunStreamFrame = {
+      kind: "observation",
+      observation: {
+        kind: "update",
+        changes: [{ subject: { label: large, kind: "task" }, state: { status: "running" } }],
+      },
+    };
+    const server = await startDaemonServer(workspace, {
+      ...testHandlers(),
+      submitAndObserve: async function* () {
+        yield admittedFrame();
+        yield update;
+        yield closedFrame();
+      },
+    });
+    try {
+      const frames = await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal")));
+      expect(frames).toHaveLength(3);
+      expect(frames[0]).toEqual(ok(admittedFrame()));
+      expect(frames[1]?.isOk() && frames[1].value.kind === "observation"
+        ? frames[1].value.observation.kind === "update" && frames[1].value.observation.changes[0]?.subject.label.length
+        : 0).toBe(large.length);
+      expect(frames[2]).toEqual(ok(closedFrame()));
+    } finally {
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
     }
   });
 });
 
 function testHandlers(): Parameters<typeof startDaemonServer>[1] {
   return {
-    status: () => ok({ status: "ok", pid: process.pid, generation: 1, protocolVersion: 1, packageVersion: "test" }),
-    admitRun: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
+    status: () => ok(daemonStatus()),
+    submitAndObserve: async function* () {
+      yield {
+        kind: "error",
+        phase: "admission",
+        outcome: "not-admitted",
+        error: { code: "INTERNAL_ERROR", message: "not used" },
+      };
+    },
     control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
     shutdown: () => ok({ status: "shutdown" }),
   };
@@ -602,6 +895,74 @@ function runDetails(): RunDetails {
   };
 }
 
+function runtimeAuthority(): RuntimeAuthorityIdentity {
+  return {
+    workspaceKey: "a".repeat(32),
+    runtimeAbi: 1,
+    layoutVersion: 2,
+    storageVersion: 9,
+    authorityId: "00000000-0000-4000-8000-000000000001",
+    storeBinding: `sha256:${"b".repeat(64)}`,
+    leaseGeneration: 1,
+  };
+}
+
+function daemonStatus() {
+  return {
+    status: "ok" as const,
+    pid: process.pid,
+    leaseGeneration: 1,
+    protocolVersion: 4 as const,
+    packageVersion: "test",
+    authority: runtimeAuthority(),
+  };
+}
+
+function submitInput(until: "admitted" | "subject-terminal" | "decision-boundary") {
+  return {
+    expectedAuthority: runtimeAuthority(),
+    requestId: "request-test",
+    prepared: preparedRunWorkflow(),
+    input: {},
+    until,
+  };
+}
+
+function admittedFrame(): Extract<DaemonRunStreamFrame, { kind: "admitted" }> {
+  return { kind: "admitted", authority: runtimeAuthority(), run: runDetails() };
+}
+
+function closedFrame(): DaemonRunStreamFrame {
+  return {
+    kind: "observation",
+    observation: {
+      kind: "closed",
+      reason: "subject-terminal",
+      view: runInspectionView(),
+    },
+  };
+}
+
+function runInspectionView() {
+  return {
+    kind: "run" as const,
+    run: {
+      id: "run_1",
+      name: "test",
+      status: "completed" as const,
+      liveness: "terminal" as const,
+    },
+    counts: { total: 1, completed: 1 },
+    tree: [],
+  };
+}
+
+async function collectStream<T>(stream: AsyncIterable<T>): Promise<T[]> {
+  const values: T[] = [];
+  for await (const value of stream) values.push(value);
+  return values;
+}
+
 function controlIntent(type: string): Parameters<typeof requestDaemonControl>[1] {
   const base = { requestId: type, runId: "run_1" };
   if (type === "signal") return { ...base, type, nodeId: "approve", payload: "ok" };
@@ -635,6 +996,29 @@ async function startRawResponseServer(workspace: string, response: unknown): Pro
   const server = createServer({ allowHalfOpen: true }, socket => {
     socket.resume();
     socket.once("end", () => socket.end(JSON.stringify(response)));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return server;
+}
+
+async function startRawStreamServer(workspace: string, chunks: string[]): Promise<ReturnType<typeof createServer>> {
+  const endpoint = daemonEndpoint(workspace);
+  await mkdir(dirname(endpoint), { recursive: true });
+  const server = createServer({ allowHalfOpen: true }, socket => {
+    let request = "";
+    socket.on("data", chunk => {
+      request += Buffer.from(chunk).toString("utf8");
+      if (!request.includes("\n")) return;
+      socket.removeAllListeners("data");
+      for (const chunk of chunks) socket.write(chunk);
+      socket.end();
+    });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

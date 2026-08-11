@@ -34,6 +34,13 @@ type BoundRegisteredArtifact = {
   file: RunFileToken;
 };
 
+export class ArtifactReadUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactReadUnavailableError";
+  }
+}
+
 const verifiedReadFlags = fsConstants.O_RDONLY
   | (fsConstants.O_NONBLOCK ?? 0)
   | (fsConstants.O_NOFOLLOW ?? 0);
@@ -89,7 +96,7 @@ export function readVerifiedArtifact(
   if (!artifact) return undefined;
   const uri = `artifact://${context.runId}/${artifactId}`;
   const bound = tryBindRegisteredArtifact(uri, context, artifact);
-  if (bound.isErr()) throw new Error(bound.error.message);
+  if (bound.isErr()) throw new ArtifactReadUnavailableError(bound.error.message);
   const label = `Artifact '${artifactId}'`;
   const descriptor = openSync(bound.value.file.path, verifiedReadFlags);
   try {
@@ -100,7 +107,9 @@ export function readVerifiedArtifact(
     const bytes = readFileSync(descriptor);
     const actualDigest = sha256Digest(bytes);
     if (bytes.byteLength !== artifact.size || actualDigest !== artifact.digest) {
-      throw new Error(`Artifact '${artifactId}' failed size/digest verification for run '${context.runId}'.`);
+      throw new ArtifactReadUnavailableError(
+        `Artifact '${artifactId}' failed size/digest verification for run '${context.runId}'.`,
+      );
     }
     const afterRead = fstatSync(descriptor, { bigint: true });
     assertRegularDescriptor(afterRead, label);

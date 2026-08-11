@@ -25,7 +25,7 @@ describe("inspection observation transcript", () => {
       ok({ kind: "attached", view: runningView() }),
       ok({
         kind: "update",
-        changes: [{ subject: { label: "design_board", selector: "@1a2b3c4d5e6f" }, state: { status: "completed" } }],
+        changes: [{ subject: { label: "design_board", kind: "agent", selector: "@1a2b3c4d5e6f" }, state: { status: "completed" } }],
         timeline: [{ kind: "phase", at: "2026-07-30T00:00:02.000Z", phase: "tool", turn: 1 }],
       }),
       ok({ kind: "closed", reason: "subject-terminal", view: completedView() }),
@@ -61,7 +61,7 @@ describe("inspection observation transcript", () => {
       ok({ kind: "attached", view: targetTimeline() }),
       ok({
         kind: "update",
-        changes: [{ subject: { label: "review", selector: "@1a2b3c4d5e6f#2" }, state: { status: "running" } }],
+        changes: [{ subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" }, state: { status: "running" } }],
       }),
       ok({
         kind: "closed",
@@ -134,7 +134,7 @@ describe("inspection observation transcript", () => {
       ok({ kind: "attached", view: attached }),
       ok({
         kind: "update",
-        changes: [{ subject: { label: "design_board" }, state: { status: "running" } }],
+        changes: [{ subject: { label: "design_board", kind: "agent" }, state: { status: "running" } }],
       }),
       ok({ kind: "closed", reason: "subject-terminal", view: completedView() }),
     ]));

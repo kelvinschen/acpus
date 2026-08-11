@@ -27,20 +27,30 @@ export {
 } from "./configuration.js";
 export {
   daemonEndpoint,
-  requestDaemonAdmitRun,
+  probeDaemonEndpoint,
   requestDaemonControl,
+  requestDaemonStatusProbe,
+  requestDaemonSubmitAndObserve,
+  requestPredecessorDaemonShutdown,
   requestDaemonShutdown,
   requestDaemonStatus,
 } from "./daemon/client.js";
 export {
   DAEMON_PROTOCOL_VERSION,
+  RUNTIME_ABI_VERSION,
   type DaemonControlIntent,
   type DaemonErrorCode,
   type DaemonShutdownResult,
-  type DaemonAdmitRunInput,
   type DaemonControlResult,
   type DaemonClientFailure,
+  type DaemonPredecessorStatus,
+  type DaemonRunObservationUntil,
+  type DaemonRunStreamClientFailure,
+  type DaemonRunStreamFrame,
   type DaemonStatus,
+  type DaemonStatusProbe,
+  type DaemonSubmitAndObserveInput,
+  type RuntimeAuthorityIdentity,
 } from "./daemon/protocol.js";
 export {
   deleteRun,
@@ -109,6 +119,7 @@ export type {
   RunInspectionStatus,
   RuntimeStoreRepairRequiredInspectionError,
   RuntimeStoreUnsupportedInspectionError,
+  RuntimeStoreUnavailableInspectionError,
 } from "./inspection/types.js";
 export {
   hookEvents,
@@ -155,6 +166,7 @@ export {
 } from "./store/inspection-read-model.js";
 export {
   type AdmitRunFailure,
+  type RuntimeReadFailure,
   type RunDetails,
   type RunForkInfo,
   type RunRecord,
@@ -166,8 +178,10 @@ export {
   type AgentOverrideValidationFailure,
 } from "./control/agent-overrides.js";
 export {
+  awaitRuntimeStoreOffline,
   inspectRuntimeStore,
   repairRuntimeStore,
+  type RuntimeStoreOfflineFailure,
   type RuntimeStoreFailure,
   type RuntimeStoreStatus,
 } from "./runtime-store-lifecycle.js";

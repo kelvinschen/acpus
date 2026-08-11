@@ -2,45 +2,80 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  DAEMON_PROTOCOL_VERSION,
+  awaitRuntimeStoreOffline,
   getRun,
   inspectRuntimeStore,
+  probeDaemonEndpoint,
   repairRuntimeStore,
-  requestDaemonAdmitRun,
   requestDaemonControl,
-  requestDaemonStatus,
+  requestDaemonStatusProbe,
+  requestDaemonSubmitAndObserve,
+  requestPredecessorDaemonShutdown,
   tryLoadRuntimeConfiguration,
   type AgentOverrideMap,
   type DaemonClientFailure,
   type DaemonControlIntent,
   type DaemonControlResult,
   type DaemonErrorCode,
+  type DaemonRunObservationUntil,
+  type DaemonRunStreamClientFailure,
+  type DaemonRunStreamFrame,
   type PreparedRunWorkflow,
   type RunDetails,
+  type RuntimeAuthorityIdentity,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 
+export type RuntimeAuthorityMode = "admission" | "control";
+
 export type CliDaemonFailure =
   | { type: "runtime-configuration-invalid"; message: string }
-  | { type: "runtime-preparation-failed"; message: string }
   | { type: "runtime-store-repair-required"; message: string }
   | { type: "runtime-store-unsupported"; message: string }
-  | { type: "daemon-protocol-mismatch"; expectedProtocolVersion: number; actualProtocolVersion: number; message: string }
+  | { type: "runtime-store-unreadable"; message: string }
+  | { type: "runtime-store-repair-failed"; message: string }
+  | { type: "runtime-update-blocked"; message: string }
+  | { type: "runtime-authority-lost"; runId: string; message: string }
+  | { type: "authority-wait-aborted"; message: string }
+  | {
+    type: "daemon-stream-protocol-failed";
+    failure: Extract<DaemonRunStreamClientFailure, { type: "protocol" }>;
+    message: string;
+  }
   | { type: "daemon-status-failed"; failure: DaemonClientFailure; message: string }
   | { type: "daemon-spawn-failed"; errno?: string; message: string }
   | { type: "daemon-exited-before-ready"; exitCode: number | null; signal: NodeJS.Signals | null; message: string }
   | { type: "daemon-start-timeout"; message: string }
-  | { type: "request-failed"; method: "admitRun"; failure: DaemonClientFailure; message: string };
+  | {
+    type: "request-failed";
+    method: "submitAndObserve";
+    code: DaemonErrorCode;
+    runId?: string;
+    message: string;
+  };
 
 export type DaemonControlFailure = {
   type: "control-failed";
-  code: DaemonErrorCode | "RUNTIME_STORE_REPAIR_REQUIRED" | "RUNTIME_STORE_UNSUPPORTED";
+  code: DaemonErrorCode
+    | "RUNTIME_STORE_REPAIR_REQUIRED"
+    | "RUNTIME_STORE_UNSUPPORTED"
+    | "RUNTIME_STORE_UNREADABLE"
+    | "RUNTIME_STORE_REPAIR_FAILED"
+    | "RUNTIME_UPDATE_BLOCKED";
   controlType: DaemonControlIntent["type"];
   runId: string;
   run: RunDetails | undefined;
   cause: CliDaemonFailure | DaemonClientFailure;
   message: string;
+};
+
+export type DaemonSubmitInput = {
+  requestId: string;
+  prepared: PreparedRunWorkflow;
+  input: JsonValue;
+  agentOverrides?: AgentOverrideMap;
+  until: DaemonRunObservationUntil;
 };
 
 type SpawnState = {
@@ -49,21 +84,52 @@ type SpawnState = {
 };
 
 const competingDaemonGraceMs = 5_000;
+const authorityStartTimeoutMs = 30_000;
 
-export function ensureDaemonRunning(cwd: string): ResultAsync<void, CliDaemonFailure> {
-  return new ResultAsync(ensureDaemonRunningResult(cwd));
+export function ensureRuntimeAuthority(
+  cwd: string,
+  mode: RuntimeAuthorityMode,
+  options: { signal?: AbortSignal } = {},
+): ResultAsync<RuntimeAuthorityIdentity, CliDaemonFailure> {
+  return new ResultAsync(ensureRuntimeAuthorityResult(cwd, mode, options.signal));
 }
 
-async function ensureDaemonRunningResult(cwd: string): Promise<Result<void, CliDaemonFailure>> {
-  const deadline = Date.now() + 30_000;
+async function ensureRuntimeAuthorityResult(
+  cwd: string,
+  mode: RuntimeAuthorityMode,
+  signal?: AbortSignal,
+): Promise<Result<RuntimeAuthorityIdentity, CliDaemonFailure>> {
+  const deadline = Date.now() + authorityStartTimeoutMs;
   let child: ChildProcess | undefined;
   let childState: SpawnState | undefined;
+  let storePrepared = false;
+  let predecessorShutdownAccepted = false;
+  let predecessorOffline = false;
 
-  while (Date.now() <= deadline) {
-    const status = await requestDaemonStatus(cwd);
+  while (Date.now() <= deadline && !signal?.aborted) {
+    const status = await requestDaemonStatusProbe(cwd);
     if (status.isOk()) {
-      return daemonProtocolResult(status.value.protocolVersion);
+      if (status.value.kind === "current") return ok(status.value.status.authority);
+      if (status.value.kind === "unknown") return err(runtimeUpdateBlocked(
+        status.value.protocolVersion === undefined
+          ? "The workspace daemon uses an unknown Runtime protocol. Use a matching or newer Acpus version."
+          : `The workspace daemon uses unsupported protocol v${status.value.protocolVersion}. Use a matching or newer Acpus version.`,
+      ));
+      if (!predecessorShutdownAccepted) {
+        const retired = await requestPredecessorDaemonShutdown(cwd);
+        if (retired.isErr()) {
+          return err(runtimeUpdateBlocked(
+            retired.error.type === "rejected" && retired.error.code === "CONTROL_CONFLICT"
+              ? "The previous Acpus daemon still has active work. Wait for it to finish, then retry."
+              : `The previous Acpus daemon could not be retired safely: ${retired.error.message}`,
+          ));
+        }
+        predecessorShutdownAccepted = true;
+      }
+      await delay(100, signal);
+      continue;
     }
+
     if (childState?.error !== undefined) {
       return err({
         type: "daemon-spawn-failed",
@@ -79,98 +145,192 @@ async function ensureDaemonRunningResult(cwd: string): Promise<Result<void, CliD
         message: `Daemon exited before becoming ready${childState.exit.code === null ? "" : ` with code ${childState.exit.code}`}${childState.exit.signal === null ? "" : ` after ${childState.exit.signal}`}.`,
       });
     }
-    if (isStartupConnectionFailure(status.error)) {
-      if (child === undefined) {
-        const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
-        if (runtimeConfiguration.isErr()) {
-          return err({ type: "runtime-configuration-invalid", message: runtimeConfiguration.error.message });
-        }
-        childState = {};
-        try {
-          child = spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" });
-        } catch (cause) {
-          return err({
-            type: "daemon-spawn-failed",
-            ...errnoField(cause),
-            message: errorMessage(cause, "Daemon process could not be spawned."),
-          });
-        }
-        child.once("error", cause => { childState!.error = cause; });
-        child.once("exit", (code, signal) => { childState!.exit = { code, signal, observedAt: Date.now() }; });
-        child.unref();
+    if (isInitializingFailure(status.error)) {
+      await delay(100, signal);
+      continue;
+    }
+    if (!isStartupConnectionFailure(status.error)) {
+      if (await probeDaemonEndpoint(cwd)) {
+        return err(runtimeUpdateBlocked(
+          `The workspace daemon could not be identified safely: ${status.error.message}`,
+        ));
       }
-    } else if (!isInitializingFailure(status.error)) {
       return err({ type: "daemon-status-failed", failure: status.error, message: status.error.message });
     }
-    await delay(100);
+
+    if (predecessorShutdownAccepted && await probeDaemonEndpoint(cwd)) {
+      await delay(100, signal);
+      continue;
+    }
+    if (predecessorShutdownAccepted && !predecessorOffline) {
+      const offline = await awaitRuntimeStoreOffline(cwd);
+      if (offline.isErr()) return err(runtimeUpdateBlocked(
+        `The previous Runtime authority has not released the store safely: ${offline.error.message}`,
+      ));
+      predecessorOffline = true;
+    }
+    if (!storePrepared) {
+      const prepared = await prepareRuntimeStore(cwd, mode);
+      if (prepared.isErr()) return err(prepared.error);
+      storePrepared = true;
+    }
+    if (child === undefined) {
+      const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
+      if (runtimeConfiguration.isErr()) {
+        return err({ type: "runtime-configuration-invalid", message: runtimeConfiguration.error.message });
+      }
+      childState = {};
+      try {
+        child = spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" });
+      } catch (cause) {
+        return err({
+          type: "daemon-spawn-failed",
+          ...errnoField(cause),
+          message: errorMessage(cause, "Daemon process could not be spawned."),
+        });
+      }
+      child.once("error", cause => { childState!.error = cause; });
+      child.once("exit", (code, signal) => { childState!.exit = { code, signal, observedAt: Date.now() }; });
+      child.unref();
+    }
+    await delay(100, signal);
   }
-  return err({ type: "daemon-start-timeout", message: "Daemon did not become ready within 30 seconds." });
+  if (signal?.aborted) return err({ type: "authority-wait-aborted", message: "Runtime authority wait was interrupted." });
+  if (predecessorShutdownAccepted) {
+    return err(runtimeUpdateBlocked(
+      "The previous Acpus daemon did not release its endpoint and Runtime store before the update deadline. Wait for existing work to finish, then retry.",
+    ));
+  }
+  return err({ type: "daemon-start-timeout", message: "Runtime authority did not become ready within 30 seconds." });
 }
 
-export function sendDaemonControl(cwd: string, intent: DaemonControlIntent): ResultAsync<DaemonControlResult, DaemonControlFailure> {
+export function sendDaemonControl(
+  cwd: string,
+  intent: DaemonControlIntent,
+): ResultAsync<DaemonControlResult, DaemonControlFailure> {
   return new ResultAsync(sendDaemonControlResult(cwd, intent));
 }
 
-async function sendDaemonControlResult(cwd: string, intent: DaemonControlIntent): Promise<Result<DaemonControlResult, DaemonControlFailure>> {
-  const assessment = await inspectRuntimeStore(cwd);
-  if (assessment.isErr()) {
-    return err(await controlFailure(cwd, intent, "EXECUTION_UNAVAILABLE", {
-      type: "runtime-preparation-failed",
-      message: assessment.error.message,
-    }));
+async function sendDaemonControlResult(
+  cwd: string,
+  intent: DaemonControlIntent,
+): Promise<Result<DaemonControlResult, DaemonControlFailure>> {
+  const ready = await ensureRuntimeAuthority(cwd, "control");
+  if (ready.isErr()) {
+    return err(await controlFailure(cwd, intent, publicFailureCode(ready.error), ready.error));
   }
-  if (assessment.value.state === "unsupported") {
-    return err(await controlFailure(cwd, intent, "RUNTIME_STORE_UNSUPPORTED", {
-      type: "runtime-store-unsupported",
-      message: `${assessment.value.message} Run 'acpus doctor'.`,
-    }));
-  }
-  if (assessment.value.state === "repairable") {
-    return err(await controlFailure(cwd, intent, "RUNTIME_STORE_REPAIR_REQUIRED", {
-      type: "runtime-store-repair-required",
-      message: `${assessment.value.message} Run 'acpus doctor --fix'.`,
-    }));
-  }
-  const ready = await ensureDaemonRunning(cwd);
-  if (ready.isErr()) return err(await controlFailure(cwd, intent, "EXECUTION_UNAVAILABLE", ready.error));
   const controlled = await requestDaemonControl(cwd, intent);
   if (controlled.isOk()) return ok(controlled.value);
   const code = controlled.error.type === "rejected" ? controlled.error.code : "EXECUTION_UNAVAILABLE";
   return err(await controlFailure(cwd, intent, code, controlled.error));
 }
 
-export function sendDaemonAdmitRun(
+export async function* sendDaemonSubmitAndObserve(
   cwd: string,
-  input: { prepared: PreparedRunWorkflow; input: JsonValue; agentOverrides?: AgentOverrideMap },
-): ResultAsync<RunDetails, CliDaemonFailure> {
-  return new ResultAsync((async () => {
-    const status = await requestDaemonStatus(cwd);
-    let ready: Result<void, CliDaemonFailure>;
-    if (status.isOk()) {
-      ready = daemonProtocolResult(status.value.protocolVersion);
-    } else if (isStartupConnectionFailure(status.error)) {
-      const prepared = await prepareRuntimeStore(cwd);
-      if (prepared.isErr()) return err(prepared.error);
-      ready = await ensureDaemonRunning(cwd);
-    } else if (isInitializingFailure(status.error)) {
-      ready = await ensureDaemonRunning(cwd);
-    } else {
-      ready = err({ type: "daemon-status-failed", failure: status.error, message: status.error.message });
+  input: DaemonSubmitInput,
+  options: { signal?: AbortSignal } = {},
+): AsyncIterable<Result<DaemonRunStreamFrame, CliDaemonFailure>> {
+  while (!options.signal?.aborted) {
+    const authority = await ensureRuntimeAuthority(cwd, "admission", options);
+    if (options.signal?.aborted) return;
+    if (authority.isErr()) {
+      yield err(authority.error);
+      return;
     }
-    if (ready.isErr()) return err(ready.error);
-    return requestDaemonAdmitRun(cwd, input).mapErr(failure => ({
-      type: "request-failed" as const,
-      method: "admitRun" as const,
-      failure,
-      message: failure.message,
-    }));
-  })());
+    let admittedRunId: string | undefined;
+    let retry = false;
+    let terminal = false;
+    let frameFailure: Extract<CliDaemonFailure, { type: "request-failed" }> | undefined;
+    const stream = requestDaemonSubmitAndObserve(cwd, {
+      expectedAuthority: authority.value,
+      requestId: input.requestId,
+      prepared: input.prepared,
+      input: input.input,
+      ...(input.agentOverrides === undefined ? {} : { agentOverrides: input.agentOverrides }),
+      until: input.until,
+    }, options);
+    for await (const result of stream) {
+      if (result.isErr()) {
+        if (result.error.type === "transport") {
+          if (admittedRunId === undefined) {
+            retry = true;
+            break;
+          }
+          yield err(runtimeAuthorityLost(admittedRunId));
+          return;
+        }
+        if (result.error.reason === "truncated" && admittedRunId !== undefined) {
+          yield err(runtimeAuthorityLost(admittedRunId));
+          return;
+        }
+        yield err({
+          type: "daemon-stream-protocol-failed",
+          failure: result.error,
+          message: result.error.message,
+        });
+        return;
+      }
+      const frame = result.value;
+      if (frame.kind === "admitted") {
+        admittedRunId = frame.run.id;
+        terminal = input.until === "admitted";
+        yield ok(frame);
+        continue;
+      }
+      if (frame.kind === "observation") {
+        terminal = frame.observation.kind === "closed";
+        yield ok(frame);
+        continue;
+      }
+      terminal = true;
+      if (frame.phase === "authority"
+        && frame.outcome === "not-admitted"
+        && frame.error.code === "AUTHORITY_MISMATCH") {
+        retry = true;
+        continue;
+      }
+      if (frame.outcome === "unknown") {
+        retry = true;
+        continue;
+      }
+      const runId = frame.runId ?? admittedRunId;
+      frameFailure = {
+        type: "request-failed",
+        method: "submitAndObserve",
+        code: frame.error.code,
+        ...(runId === undefined ? {} : { runId }),
+        message: frame.error.message,
+      };
+    }
+    if (options.signal?.aborted) return;
+    if (frameFailure !== undefined) {
+      yield err(frameFailure);
+      return;
+    }
+    if (retry) {
+      await delay(100, options.signal);
+      continue;
+    }
+    if (terminal) return;
+    if (admittedRunId !== undefined) {
+      yield err(runtimeAuthorityLost(admittedRunId));
+      return;
+    }
+  }
 }
 
-async function prepareRuntimeStore(cwd: string): Promise<Result<void, CliDaemonFailure>> {
+async function prepareRuntimeStore(
+  cwd: string,
+  mode: RuntimeAuthorityMode,
+): Promise<Result<void, CliDaemonFailure>> {
   const inspected = await inspectRuntimeStore(cwd);
   if (inspected.isErr()) {
-    return err({ type: "runtime-preparation-failed", message: inspected.error.message });
+    return err(inspected.error.type === "busy"
+      ? runtimeUpdateBlocked("The Runtime store is currently in use. Wait for existing work to finish, then retry.")
+      : {
+          type: "runtime-store-unreadable",
+          message: "The Runtime store could not be read. Run 'acpus doctor'.",
+        });
   }
   if (inspected.value.state === "unsupported") {
     return err({
@@ -178,22 +338,41 @@ async function prepareRuntimeStore(cwd: string): Promise<Result<void, CliDaemonF
       message: `${inspected.value.message} Run 'acpus doctor'.`,
     });
   }
-  if (inspected.value.state === "repairable") {
-    const repaired = await repairRuntimeStore(cwd);
-    if (repaired.isErr()) {
-      if (repaired.error.type === "unsupported") {
-        return err({
-          type: "runtime-store-unsupported",
-          message: `${repaired.error.message} Run 'acpus doctor'.`,
-        });
-      }
-      return err({ type: "runtime-preparation-failed", message: repaired.error.message });
-    }
+  if (inspected.value.state !== "repairable") return ok(undefined);
+  if (mode === "control") {
+    return err({
+      type: "runtime-store-repair-required",
+      message: `${inspected.value.message} Run 'acpus doctor --fix'.`,
+    });
   }
-  return ok(undefined);
+  const repaired = await repairRuntimeStore(cwd);
+  if (repaired.isOk()) return ok(undefined);
+  if (repaired.error.type === "unsupported") {
+    return err({
+      type: "runtime-store-unsupported",
+      message: `${repaired.error.message} Run 'acpus doctor'.`,
+    });
+  }
+  if (repaired.error.type === "busy") {
+    return err(runtimeUpdateBlocked("The Runtime store still has active users. Wait for existing work to finish, then retry."));
+  }
+  if (repaired.error.type === "unreadable") {
+    return err({
+      type: "runtime-store-unreadable",
+      message: `${repaired.error.message} Run 'acpus doctor'.`,
+    });
+  }
+  return err({
+    type: "runtime-store-repair-failed",
+    message: "The Runtime store update did not complete. Its transition intent and original data were preserved. Run 'acpus doctor --fix'.",
+  });
 }
 
 export function daemonControlRequestId(): string {
+  return `cli:${randomUUID()}`;
+}
+
+export function daemonAdmissionRequestId(): string {
   return `cli:${randomUUID()}`;
 }
 
@@ -213,15 +392,25 @@ function isInitializingFailure(failure: DaemonClientFailure): boolean {
   return failure.type === "rejected" && failure.code === "EXECUTION_UNAVAILABLE";
 }
 
-function daemonProtocolResult(actualProtocolVersion: number): Result<void, CliDaemonFailure> {
-  return actualProtocolVersion === DAEMON_PROTOCOL_VERSION
-    ? ok(undefined)
-    : err({
-        type: "daemon-protocol-mismatch",
-        expectedProtocolVersion: DAEMON_PROTOCOL_VERSION,
-        actualProtocolVersion,
-        message: `Workspace daemon protocol version ${actualProtocolVersion} does not match this CLI's version ${DAEMON_PROTOCOL_VERSION}. Wait for the existing daemon to exit or restart it with the current Acpus version, then retry.`,
-      });
+function runtimeUpdateBlocked(message: string): Extract<CliDaemonFailure, { type: "runtime-update-blocked" }> {
+  return { type: "runtime-update-blocked", message };
+}
+
+function runtimeAuthorityLost(runId: string): Extract<CliDaemonFailure, { type: "runtime-authority-lost" }> {
+  return {
+    type: "runtime-authority-lost",
+    runId,
+    message: `Runtime authority was lost after run '${runId}' was admitted. The run remains durable. Run 'acpus runs inspect ${runId} --follow'.`,
+  };
+}
+
+function publicFailureCode(failure: CliDaemonFailure): DaemonControlFailure["code"] {
+  if (failure.type === "runtime-store-repair-required") return "RUNTIME_STORE_REPAIR_REQUIRED";
+  if (failure.type === "runtime-store-unsupported") return "RUNTIME_STORE_UNSUPPORTED";
+  if (failure.type === "runtime-store-unreadable") return "RUNTIME_STORE_UNREADABLE";
+  if (failure.type === "runtime-store-repair-failed") return "RUNTIME_STORE_REPAIR_FAILED";
+  if (failure.type === "runtime-update-blocked") return "RUNTIME_UPDATE_BLOCKED";
+  return "EXECUTION_UNAVAILABLE";
 }
 
 async function controlFailure(
@@ -232,7 +421,8 @@ async function controlFailure(
 ): Promise<DaemonControlFailure> {
   let run: RunDetails | undefined;
   try {
-    run = await getRun(cwd, intent.runId);
+    const read = await getRun(cwd, intent.runId);
+    run = read.isOk() ? read.value : undefined;
   } catch {
     run = undefined;
   }
@@ -247,7 +437,13 @@ async function controlFailure(
   };
 }
 
-function controlFailureMessage(code: DaemonControlFailure["code"], controlType: string, runId: string, run: RunDetails | undefined, cause: CliDaemonFailure | DaemonClientFailure): string {
+function controlFailureMessage(
+  code: DaemonControlFailure["code"],
+  controlType: string,
+  runId: string,
+  run: RunDetails | undefined,
+  cause: CliDaemonFailure | DaemonClientFailure,
+): string {
   const current = run ? ` Current run: ${run.id} ${run.name} ${run.status} updated ${run.updatedAt}.` : " Current run: unavailable.";
   return `Control '${controlType}' for run '${runId}' failed with ${code}: ${cause.message}.${current}`;
 }
@@ -262,6 +458,16 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const timeout = setTimeout(finish, ms);
+    const onAbort = (): void => finish();
+    function finish(): void {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

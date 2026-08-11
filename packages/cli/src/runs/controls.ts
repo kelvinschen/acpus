@@ -5,9 +5,11 @@ import {
   tryNormalizeForkInput,
   type DaemonControlIntent,
   type DaemonControlResult,
+  type ForkInputNormalizationFailure,
   type InspectionCandidates,
   type PreparedRunWorkflow,
   type RunDetails,
+  type RuntimeReadFailure,
 } from "@acpus/runtime";
 import type { WorkflowCatalogScopeOptions } from "../workflow/catalog.js";
 import { controlError, usageError, validationError } from "../presentation/errors.js";
@@ -22,6 +24,7 @@ import { prepareWorkflowForCli } from "../workflow/preparation.js";
 import type { RunsCommandContext } from "./context.js";
 import { formatInspectionCandidates } from "./inspection-surface.js";
 import { toRunRecord } from "./record.js";
+import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
 type Target = {
   target?: string;
@@ -304,8 +307,26 @@ async function maybeNormalizeForkInput(
 ): Promise<JsonValue | undefined> {
   if (replacementInput === undefined && !prepared) return undefined;
   const normalized = await tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
-  if (normalized.isErr()) throw validationError(normalized.error.message);
+  if (normalized.isErr()) {
+    if (isRuntimeReadFailure(normalized.error)) {
+      throw controlError(runtimeReadFailureMessage(normalized.error), {
+        errorCode: runtimeReadFailureCode(normalized.error),
+        control: { type: "fork", runId },
+      });
+    }
+    throw validationError(normalized.error.message);
+  }
   return normalized.value;
+}
+
+function isRuntimeReadFailure(
+  failure: ForkInputNormalizationFailure | RuntimeReadFailure,
+): failure is RuntimeReadFailure {
+  return typeof failure === "object"
+    && failure !== null
+    && "type" in failure
+    && typeof failure.type === "string"
+    && failure.type.startsWith("runtime-store-");
 }
 
 async function runControlError(

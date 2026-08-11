@@ -1,9 +1,11 @@
 import { expectTypeOf, test } from "vitest";
 import {
   DAEMON_PROTOCOL_VERSION,
+  RUNTIME_ABI_VERSION,
   createWorkflowVisualizationOverlay,
   daemonEndpoint,
   deleteRun,
+  getArtifact,
   getRun,
   getRuntimeHealth,
   getRunVisualizationSnapshot,
@@ -18,9 +20,12 @@ import {
   resolveArtifact,
   resolveKnownWorkspace,
   readInspection,
+  readArtifact,
   repairRuntimeStore,
-  requestDaemonAdmitRun,
   requestDaemonControl,
+  requestDaemonStatusProbe,
+  requestDaemonSubmitAndObserve,
+  requestPredecessorDaemonShutdown,
   requestDaemonShutdown,
   requestDaemonStatus,
   startDaemonLoop,
@@ -40,14 +45,19 @@ import type {
   ArtifactResolutionFailure,
   ArtifactRecord,
   ArchivedRunInspection,
-  DaemonAdmitRunInput,
   DaemonClientFailure,
   DaemonControlIntent,
   DaemonControlResult,
   DaemonLoopHandle,
   DaemonLoopOptions,
+  DaemonPredecessorStatus,
+  DaemonRunObservationUntil,
+  DaemonRunStreamClientFailure,
+  DaemonRunStreamFrame,
   DaemonShutdownResult,
   DaemonStatus,
+  DaemonStatusProbe,
+  DaemonSubmitAndObserveInput,
   ForkInputNormalizationFailure,
   InspectAgentExecutionQuery,
   InspectionAttention,
@@ -95,6 +105,8 @@ import type {
   RuntimeHealthCheck,
   RuntimeHealthReport,
   RuntimePersistence,
+  RuntimeReadFailure,
+  RuntimeAuthorityIdentity,
   RuntimeStoreFailure,
   RuntimeStoreStatus,
   ResolvedArtifact,
@@ -177,7 +189,7 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
   }>();
   expectTypeOf<InspectionForensicsView>().toEqualTypeOf<Extract<InspectionView, { kind: "target"; detail: "forensics" }>>();
   expectTypeOf<Extract<InspectionObservation, { kind: "update" }>["changes"][number]>().toMatchTypeOf<{
-    subject: { label: string; selector?: string };
+    subject: { label: string; kind: string; selector?: string };
     state: { status: RunInspectionStatus };
     occurrences?: InspectionCounts;
     attention?: InspectionAttention;
@@ -204,6 +216,11 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
       }
     | {
         type: "runtime-store-unsupported";
+        runId: string;
+        message: string;
+      }
+    | {
+        type: "runtime-store-unavailable";
         runId: string;
         message: string;
       }
@@ -241,10 +258,30 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { type: "workspace-not-found"; workspaceKey: string; message: string }
     | { type: "workspace-unavailable"; workspaceKey: string; message: string }
   >();
-  expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Promise<RunRecord[]>>();
-  expectTypeOf(listArtifacts).toEqualTypeOf<(cwd: string, runId: string) => Promise<ArtifactRecord[] | undefined>>();
+  expectTypeOf<RuntimeReadFailure>().toEqualTypeOf<
+    | {
+        type: "runtime-store-repair-required";
+        command: "acpus doctor --fix";
+        message: string;
+      }
+    | { type: "runtime-store-unsupported"; message: string }
+    | { type: "runtime-store-unavailable"; message: string }
+  >();
+  expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => ResultAsync<RunRecord[], RuntimeReadFailure>>();
+  expectTypeOf(listArtifacts).toEqualTypeOf<
+    (cwd: string, runId: string) => ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure>
+  >();
+  expectTypeOf(getArtifact).toEqualTypeOf<
+    (cwd: string, runId: string, artifactId: string) => ResultAsync<ArtifactRecord | undefined, RuntimeReadFailure>
+  >();
+  expectTypeOf(readArtifact).toEqualTypeOf<
+    (cwd: string, runId: string, artifactId: string) => ResultAsync<
+      { artifact: ArtifactRecord; bytes: Buffer } | undefined,
+      RuntimeReadFailure
+    >
+  >();
   expectTypeOf(resolveArtifact).toEqualTypeOf<
-    (cwd: string, artifactRef: string) => ResultAsync<ResolvedArtifact, ArtifactResolutionFailure>
+    (cwd: string, artifactRef: string) => ResultAsync<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure>
   >();
   expectTypeOf<ResolvedArtifact>().toEqualTypeOf<ArtifactRecord & { uri: string }>();
   expectTypeOf<ArtifactResolutionFailure>().toEqualTypeOf<
@@ -252,11 +289,18 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { type: "artifact-not-found"; runId: string; artifactId: string; message: string }
     | { type: "artifact-path-invalid"; runId: string; artifactId: string; message: string }
   >();
-  expectTypeOf(getRun).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunDetails | undefined>>();
+  expectTypeOf(getRun).toEqualTypeOf<
+    (cwd: string, runId: string) => ResultAsync<RunDetails | undefined, RuntimeReadFailure>
+  >();
   expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
-  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<(cwd: string, runId: string) => Promise<RunVisualizationSnapshot | undefined>>();
+  expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<
+    (cwd: string, runId: string) => ResultAsync<RunVisualizationSnapshot | undefined, RuntimeReadFailure>
+  >();
   expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<
-    (cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure>
+    (cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<
+      JsonValue | undefined,
+      ForkInputNormalizationFailure | RuntimeReadFailure
+    >
   >();
   expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<
     (ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>
@@ -265,7 +309,10 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     (ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>
   >();
   expectTypeOf<AdmitRunFailure>().toEqualTypeOf<
-    PreparedRunValidationFailure | SchemaNormalizationFailure | AgentOverrideValidationFailure
+    | PreparedRunValidationFailure
+    | SchemaNormalizationFailure
+    | AgentOverrideValidationFailure
+    | { type: "admission-request-conflict"; requestId: string; message: string }
   >();
   expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => ResultAsync<RunRecord | undefined, RunDeleteFailure>>();
 
@@ -290,11 +337,19 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<3>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<4>();
+  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<1>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
-  expectTypeOf(requestDaemonAdmitRun).toEqualTypeOf<
-    (cwd: string, input: DaemonAdmitRunInput) => ResultAsync<RunDetails, DaemonClientFailure>
+  expectTypeOf(requestDaemonStatusProbe).toEqualTypeOf<
+    (cwd: string) => ResultAsync<DaemonStatusProbe, DaemonClientFailure>
+  >();
+  expectTypeOf(requestDaemonSubmitAndObserve).toEqualTypeOf<
+    (
+      cwd: string,
+      input: DaemonSubmitAndObserveInput,
+      options?: { signal?: AbortSignal },
+    ) => AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>
   >();
   expectTypeOf(requestDaemonControl).toEqualTypeOf<
     (cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>
@@ -302,6 +357,34 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(requestDaemonShutdown).toEqualTypeOf<
     (cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>
   >();
+  expectTypeOf(requestPredecessorDaemonShutdown).toEqualTypeOf<
+    (cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>
+  >();
+  expectTypeOf<DaemonStatus>().toEqualTypeOf<{
+    status: "ok";
+    pid: number;
+    leaseGeneration: number;
+    protocolVersion: 4;
+    packageVersion: string;
+    authority: RuntimeAuthorityIdentity;
+  }>();
+  expectTypeOf<DaemonPredecessorStatus>().toEqualTypeOf<{
+    status: "ok";
+    pid: number;
+    generation: number;
+    protocolVersion: 3;
+    packageVersion: string;
+  }>();
+  expectTypeOf<DaemonRunObservationUntil>().toEqualTypeOf<"admitted" | "subject-terminal" | "decision-boundary">();
+  expectTypeOf<RuntimeAuthorityIdentity>().toEqualTypeOf<{
+    workspaceKey: string;
+    runtimeAbi: 1;
+    layoutVersion: 2;
+    storageVersion: 9;
+    authorityId: string;
+    storeBinding: `sha256:${string}`;
+    leaseGeneration: number;
+  }>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<
     (ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay
   >();
@@ -369,13 +452,6 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<RunDynamicGroupMember["completionSequence"]>().toEqualTypeOf<number | undefined>();
   expectTypeOf<RunStatus>().toEqualTypeOf<"pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled">();
 
-  expectTypeOf<DaemonStatus>().toMatchTypeOf<{
-    status: "ok";
-    pid: number;
-    generation: number;
-    protocolVersion: number;
-    packageVersion: string;
-  }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "pause" | "resume" }>>().toEqualTypeOf<{
     requestId: string;
     type: "pause" | "resume";
@@ -485,7 +561,7 @@ test("@acpus/runtime exposes a minimal Runtime store repair interface", () => {
     | { state: "unsupported"; message: string }
   >();
   expectTypeOf<RuntimeStoreFailure>().toEqualTypeOf<{
-    type: "busy" | "unsupported" | "failed";
+    type: "busy" | "unsupported" | "unreadable" | "failed";
     message: string;
   }>();
 });

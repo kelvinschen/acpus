@@ -24,7 +24,14 @@ export class UnrecognizedRuntimeDatabaseError extends Error {
   }
 }
 
-class IncompatibleRuntimeDatabaseError extends Error {
+export class RuntimeDatabaseProbeChangedError extends Error {
+  constructor(readonly path: string, readonly sourcePath: string) {
+    super(`Runtime database probe source '${sourcePath}' changed while '${path}' was inspected.`);
+    this.name = "RuntimeDatabaseProbeChangedError";
+  }
+}
+
+export class IncompatibleRuntimeDatabaseError extends Error {
   constructor(
     readonly path: string,
     readonly applicationId: number,
@@ -122,15 +129,70 @@ export async function readRuntimeDatabaseFormat(
   path: string,
 ): Promise<RuntimeDatabaseFormat | undefined> {
   if (!await validateRuntimeDatabasePaths(path)) return undefined;
-  const mainFormat = await readMainDatabaseFormat(path);
-  if (await hasNoPendingRuntimeDatabaseWal(path)) return mainFormat;
+  let mainIdentity: RegularFileIdentity;
+  try {
+    mainIdentity = (await regularFileIdentity(path, "Runtime database", false))!;
+  } catch (error) {
+    if (isMissing(error)) throw new RuntimeDatabaseProbeChangedError(path, path);
+    throw error;
+  }
+  let mainFormat: RuntimeDatabaseFormat;
+  try {
+    mainFormat = await readMainDatabaseFormat(path);
+  } catch (error) {
+    if (isMissing(error)) throw new RuntimeDatabaseProbeChangedError(path, path);
+    if (error instanceof UnrecognizedRuntimeDatabaseError) {
+      await verifyProbeSources(path, [{
+        path,
+        destination: path,
+        label: "Runtime database",
+        optional: false,
+        identity: mainIdentity,
+      }]);
+    }
+    throw error;
+  }
+  const walPath = `${path}-wal`;
+  const walIdentity = await regularFileIdentity(walPath, "Runtime database WAL", true);
+  if (!walIdentity || walIdentity.size === 0n) {
+    await verifyProbeSources(path, [
+      {
+        path,
+        destination: path,
+        label: "Runtime database",
+        optional: false,
+        identity: mainIdentity,
+      },
+      {
+        path: walPath,
+        destination: walPath,
+        label: "Runtime database WAL",
+        optional: true,
+        identity: walIdentity,
+      },
+    ]);
+    return mainFormat;
+  }
 
   const probeRoot = await mkdtemp(join(tmpdir(), "acpus-runtime-store-probe-"));
   const probeDatabasePath = join(probeRoot, "runtime.db");
   try {
-    const sources = await captureProbeSources(path, probeDatabasePath);
-    await Promise.all(sources.map(source => copyFile(source.path, source.destination)));
-    await verifyProbeSources(sources);
+    let sources: ProbeSource[];
+    try {
+      sources = await captureProbeSources(path, probeDatabasePath);
+    } catch (error) {
+      if (isMissing(error)) throw new RuntimeDatabaseProbeChangedError(path, path);
+      throw error;
+    }
+    try {
+      await Promise.all(sources.flatMap(source => source.identity
+        ? [copyFile(source.path, source.destination)]
+        : []));
+    } catch (error) {
+      if (isMissing(error)) throw new RuntimeDatabaseProbeChangedError(path, path);
+      throw error;
+    }
+    await verifyProbeSources(path, sources);
     const database = openRuntimeDatabaseUnchecked(probeDatabasePath, { readOnly: true });
     try {
       return runtimeDatabaseFormat(database);
@@ -163,7 +225,8 @@ type ProbeSource = {
   path: string;
   destination: string;
   label: string;
-  identity: RegularFileIdentity;
+  optional: boolean;
+  identity: RegularFileIdentity | undefined;
 };
 
 type RegularFileIdentity = {
@@ -183,20 +246,36 @@ async function captureProbeSources(databasePath: string, probeDatabasePath: stri
   const sources: ProbeSource[] = [];
   for (const candidate of candidates) {
     const identity = await regularFileIdentity(candidate.path, candidate.label, candidate.optional);
-    if (identity) sources.push({ ...candidate, identity });
+    sources.push({ ...candidate, identity });
   }
   return sources;
 }
 
-async function verifyProbeSources(sources: ProbeSource[]): Promise<void> {
+async function verifyProbeSources(databasePath: string, sources: ProbeSource[]): Promise<void> {
   for (const source of sources) {
-    const current = await regularFileIdentity(source.path, source.label, false);
-    if (!current || current.dev !== source.identity.dev || current.ino !== source.identity.ino
-      || current.size !== source.identity.size || current.mtimeNs !== source.identity.mtimeNs
-      || current.ctimeNs !== source.identity.ctimeNs) {
-      throw new Error(`${source.label} '${source.path}' changed while its format was inspected.`);
+    let current: RegularFileIdentity | undefined;
+    try {
+      current = await regularFileIdentity(source.path, source.label, source.optional);
+    } catch (error) {
+      if (isMissing(error)) throw new RuntimeDatabaseProbeChangedError(databasePath, source.path);
+      throw error;
+    }
+    if (!sameRegularFileIdentity(current, source.identity)) {
+      throw new RuntimeDatabaseProbeChangedError(databasePath, source.path);
     }
   }
+}
+
+function sameRegularFileIdentity(
+  left: RegularFileIdentity | undefined,
+  right: RegularFileIdentity | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
 }
 
 async function regularFileIdentity(

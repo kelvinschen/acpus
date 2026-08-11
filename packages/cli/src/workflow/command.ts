@@ -2,15 +2,19 @@ import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
-import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
+import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type InspectionObservation, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import { importError, runError, usageError, validationError, vizError } from "../presentation/errors.js";
-import { followExitCode, followRun } from "../runs/follow.js";
+import { RunInspectionTranscriptPresenter } from "../runs/follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "./catalog.js";
 import { summarizeWorkflow, writeDiagnostics, writeResult } from "../presentation/output.js";
 import { prepareWorkflowForCli, workflowPreparationCliError } from "./preparation.js";
 import { parseAgents, parseInput } from "../presentation/json-input.js";
-import { sendDaemonAdmitRun, type CliDaemonFailure } from "../daemon/client.js";
+import {
+  daemonAdmissionRequestId,
+  sendDaemonSubmitAndObserve,
+  type CliDaemonFailure,
+} from "../daemon/client.js";
 import { toRunRecord } from "../runs/record.js";
 import { importWorkflowPackage } from "./import/index.js";
 import { renderWorkflowTerminalViz } from "./terminal-viz.js";
@@ -232,48 +236,142 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
   if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
   const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
-  const admitted = await admitWorkflowThroughDaemon(ctx.cwd, prepared, normalizedInput.value, admittedOverrides);
+  const until = options.follow
+    ? "subject-terminal" as const
+    : options.awaitDecision
+      ? "decision-boundary" as const
+      : "admitted" as const;
+  const submitted = await submitWorkflowThroughDaemon(
+    ctx,
+    prepared,
+    normalizedInput.value,
+    admittedOverrides,
+    until,
+  );
 
-  if (!options.follow && !options.awaitDecision) {
+  if (until === "admitted") {
     ctx.setExitCode(writeResult({
       ok: true,
       phase: "run",
       diagnostics: prepared.ir.diagnostics,
-      run: toRunRecord(admitted),
+      run: toRunRecord(submitted.run),
     }, ctx, 0));
     return;
   }
-
-  writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
-  const outcome = await followRun(ctx.cwd, {
-    kind: "run",
-    runId: admitted.id,
-  }, {
-    until: options.follow ? "subject-terminal" : "decision-boundary",
-    stdout: ctx.stdout,
-    stderr: ctx.stderr,
-  });
-  if (outcome.kind !== "closed") {
-    ctx.setExitCode(followExitCode(outcome));
+  if (submitted.kind === "detached") {
+    ctx.setExitCode(0);
     return;
   }
-  ctx.setExitCode(outcome.run.status === "failed" || outcome.run.status === "canceled" ? 1 : 0);
+  ctx.setExitCode(submitted.run.status === "failed" || submitted.run.status === "canceled" ? 1 : 0);
 }
 
-async function admitWorkflowThroughDaemon(cwd: string, prepared: PreparedRunWorkflow, input: JsonValue, agentOverrides?: AgentOverrideMap): Promise<RunDetails> {
-  const admitted = await sendDaemonAdmitRun(cwd, { prepared, input, ...(agentOverrides === undefined ? {} : { agentOverrides }) });
-  if (admitted.isOk()) return admitted.value;
-  if (admitted.error.type === "request-failed"
-    && admitted.error.failure.type === "rejected"
-    && admitted.error.failure.code === "STORE_BUSY") {
-    throw runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
+type SubmitWorkflowOutcome =
+  | { kind: "admitted"; run: RunDetails }
+  | { kind: "closed"; run: RunDetails }
+  | { kind: "detached"; run: RunDetails };
+
+async function submitWorkflowThroughDaemon(
+  ctx: WorkflowCommandContext,
+  prepared: PreparedRunWorkflow,
+  input: JsonValue,
+  agentOverrides: AgentOverrideMap | undefined,
+  until: "admitted" | "subject-terminal" | "decision-boundary",
+): Promise<SubmitWorkflowOutcome> {
+  const controller = new AbortController();
+  let interruptCount = 0;
+  let detachRequested = false;
+  let hardInterrupted = false;
+  let admitted: RunDetails | undefined;
+  let closed: Extract<InspectionObservation, { kind: "closed" }> | undefined;
+  let presenter: RunInspectionTranscriptPresenter | undefined;
+  const onInterrupt = (): void => {
+    interruptCount += 1;
+    if (admitted !== undefined || interruptCount > 1) {
+      hardInterrupted = admitted === undefined;
+      detachRequested = admitted !== undefined;
+      controller.abort();
+      return;
+    }
+    detachRequested = true;
+  };
+  process.on("SIGINT", onInterrupt);
+  const iterator = sendDaemonSubmitAndObserve(ctx.cwd, {
+    requestId: daemonAdmissionRequestId(),
+    prepared,
+    input,
+    ...(agentOverrides === undefined ? {} : { agentOverrides }),
+    until,
+  }, { signal: controller.signal })[Symbol.asyncIterator]();
+  try {
+    while (!controller.signal.aborted) {
+      const next = await iterator.next();
+      if (controller.signal.aborted) break;
+      if (next.done) break;
+      if (next.value.isErr()) throw daemonRunError(next.value.error);
+      const frame = next.value.value;
+      if (frame.kind === "admitted") {
+        admitted = frame.run;
+        if (until !== "admitted") {
+          writeDiagnostics(ctx.stdout, prepared.ir.diagnostics, ctx.cwd);
+          presenter = new RunInspectionTranscriptPresenter(ctx.stdout, admitted.id);
+        }
+        if (detachRequested) controller.abort();
+        continue;
+      }
+      if (frame.kind === "observation") {
+        presenter?.observation(frame.observation);
+        if (frame.observation.kind === "closed") closed = frame.observation;
+        continue;
+      }
+      throw runError(frame.error.message, { errorCode: frame.error.code });
+    }
+  } finally {
+    controller.abort();
+    process.off("SIGINT", onInterrupt);
+    try {
+      await iterator.return?.();
+    } catch {}
   }
-  throw runError(admitted.error.message, { errorCode: daemonFailureCode(admitted.error) });
+
+  if (hardInterrupted && admitted === undefined) {
+    throw runError(
+      "Run admission was interrupted before its durable outcome could be confirmed. Inspect recent runs before submitting again.",
+      { errorCode: "ADMISSION_OUTCOME_UNKNOWN" },
+    );
+  }
+  if (!admitted) {
+    throw runError("Run submission ended before admission was confirmed.", { errorCode: "ADMISSION_OUTCOME_UNKNOWN" });
+  }
+  if (until === "admitted") return { kind: "admitted", run: admitted };
+  if (detachRequested) {
+    presenter?.block(`Detached from run ${admitted.id}. Background daemon continues running.\nInspect: acpus runs inspect ${admitted.id} --follow\n`);
+    return { kind: "detached", run: admitted };
+  }
+  if (!closed) throw runError(
+    `Runtime authority was lost after run '${admitted.id}' was admitted. The run remains durable. Run 'acpus runs inspect ${admitted.id} --follow'.`,
+    { errorCode: "RUNTIME_AUTHORITY_LOST" },
+  );
+  return { kind: "closed", run: { ...admitted, status: closed.view.run.status } };
+}
+
+function daemonRunError(failure: CliDaemonFailure): Error {
+  if (failure.type === "request-failed" && failure.code === "STORE_BUSY" && failure.runId === undefined) {
+    return runError("Workspace runtime store is busy; retry the command or let the daemon finish current runtime writes.", { errorCode: "STORE_BUSY" });
+  }
+  const runId = failure.type === "request-failed"
+    ? failure.runId
+    : failure.type === "daemon-stream-protocol-failed" && failure.failure.outcome === "admitted"
+      ? failure.failure.runId
+      : undefined;
+  const message = runId !== undefined
+    ? `${failure.message} Run '${runId}' remains durable. Run 'acpus runs inspect ${runId} --follow'.`
+    : failure.message;
+  return runError(message, { errorCode: daemonFailureCode(failure) });
 }
 
 function daemonFailureCode(failure: CliDaemonFailure): string {
-  return failure.type === "request-failed" && failure.failure.type === "rejected"
-    ? failure.failure.code
+  return failure.type === "request-failed"
+    ? failure.code
     : failure.type.replaceAll("-", "_").toUpperCase();
 }
 

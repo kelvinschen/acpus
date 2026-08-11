@@ -335,11 +335,15 @@ describe("daemon loop", () => {
     });
 
     const handlers = daemonServer.handlers!;
+    const status = handlers.status() as { value: { authority: Parameters<typeof handlers.submitAndObserve>[0]["expectedAuthority"] } };
     const accepted = handlers.shutdown();
-    const admissionAfterAcceptance = handlers.admitRun({
+    const admissionAfterAcceptance = await handlers.submitAndObserve({
+      expectedAuthority: status.value.authority,
+      requestId: "after-shutdown",
       prepared: undefined as never,
       input: null,
-    });
+      until: "admitted",
+    }, new AbortController().signal)[Symbol.asyncIterator]().next();
     const controlAfterAcceptance = handlers.control({
       requestId: "after-shutdown",
       type: "cancel",
@@ -347,10 +351,12 @@ describe("daemon loop", () => {
     });
 
     expect(accepted).not.toBeInstanceOf(ResultAsync);
-    expect(admissionAfterAcceptance).not.toBeInstanceOf(ResultAsync);
     expect(controlAfterAcceptance).not.toBeInstanceOf(ResultAsync);
     expect((accepted as { isOk(): boolean }).isOk()).toBe(true);
-    expect((admissionAfterAcceptance as { error: { code: string } }).error.code).toBe("EXECUTION_UNAVAILABLE");
+    expect(admissionAfterAcceptance.value).toMatchObject({
+      kind: "error",
+      error: { code: "EXECUTION_UNAVAILABLE" },
+    });
     expect((controlAfterAcceptance as { error: { code: string } }).error.code).toBe("EXECUTION_UNAVAILABLE");
     await loop.shutdown();
   });

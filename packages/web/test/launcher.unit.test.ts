@@ -8,7 +8,7 @@ vi.mock("@acpus/runtime", async importOriginal => ({
   inspectRuntimeStore: () => okAsync({ state: "ready" as const }),
 }));
 
-const daemonReady = () => {};
+const daemonReady = async () => ({ ok: true as const });
 
 describe("startWebServer access policy", () => {
   it("does not generate a token for network hosts by default", async () => {

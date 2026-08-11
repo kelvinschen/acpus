@@ -10,7 +10,6 @@ import {
   DAEMON_PROTOCOL_VERSION,
   daemonEndpoint,
   getRun,
-  requestDaemonAdmitRun as requestDaemonAdmitRunResult,
   requestDaemonControl as requestDaemonControlResult,
   requestDaemonShutdown as requestDaemonShutdownResult,
   requestDaemonStatus as requestDaemonStatusResult,
@@ -32,10 +31,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { initializeRuntimeStoreForTest, admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, preparedWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
-
-async function requestDaemonAdmitRun(...args: Parameters<typeof requestDaemonAdmitRunResult>) {
-  return unwrapDaemon(await requestDaemonAdmitRunResult(...args));
-}
+import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
 async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
   return unwrapDaemon(await requestDaemonControlResult(...args));
@@ -68,7 +64,7 @@ describe.concurrent("runtime daemon ticks", () => {
         expect(await requestDaemonStatus(workspace)).toMatchObject({
           protocolVersion: DAEMON_PROTOCOL_VERSION,
         });
-        const admitted = await requestDaemonAdmitRun(workspace, {
+        const admitted = await submitRunThroughDaemon(workspace, {
           prepared,
           input: { ready: true },
         });
@@ -104,7 +100,7 @@ describe.concurrent("runtime daemon ticks", () => {
         packageVersion: "test",
       });
       try {
-        await expect(requestDaemonAdmitRun(workspace, {
+        await expect(submitRunThroughDaemon(workspace, {
           prepared: {
             ...prepared,
             irJson: `${JSON.stringify({ ...prepared.ir, name: "different" })}\n`,
@@ -115,7 +111,7 @@ describe.concurrent("runtime daemon ticks", () => {
           message: expect.stringContaining("does not match prepared IR"),
         });
         const invalidIr = { ...prepared.ir, irVersion: 6 } as any;
-        await expect(requestDaemonAdmitRun(workspace, {
+        await expect(submitRunThroughDaemon(workspace, {
           prepared: preparedWorkflow(invalidIr, join(workspace, prepared.source.entry), workspace),
           input: { ready: true },
         })).rejects.toMatchObject({
@@ -163,12 +159,12 @@ describe.concurrent("runtime daemon ticks", () => {
           },
         ];
         for (const candidate of malformed) {
-          await expect(requestDaemonAdmitRun(workspace, {
+          await expect(submitRunThroughDaemon(workspace, {
             prepared: candidate as unknown as typeof prepared,
             input: { ready: true },
           })).rejects.toMatchObject({
             code: "INVALID_REQUEST",
-            message: "Invalid daemon admission request.",
+            message: "Invalid daemon submission request.",
           });
         }
         expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
@@ -218,7 +214,7 @@ describe.concurrent("runtime daemon ticks", () => {
           },
         ];
         for (const { candidate, message } of inconsistent) {
-          await expect(requestDaemonAdmitRun(workspace, {
+          await expect(submitRunThroughDaemon(workspace, {
             prepared: candidate,
             input: { ready: true },
           })).rejects.toMatchObject({
@@ -243,7 +239,7 @@ describe.concurrent("runtime daemon ticks", () => {
         packageVersion: "test",
       });
       try {
-        const source = await requestDaemonAdmitRun(workspace, { prepared, input: { ready: true } });
+        const source = await submitRunThroughDaemon(workspace, { prepared, input: { ready: true } });
         await expect(requestDaemonControl(workspace, {
           requestId: "fork-inconsistent-lock",
           type: "fork",
@@ -805,9 +801,9 @@ describe.concurrent("runtime daemon ticks", () => {
   });
 });
 
-async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<Awaited<ReturnType<typeof getRun>>> }> {
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>> }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = await getRun(cwd, runId);
+    const run = (await getRun(cwd, runId))._unsafeUnwrap();
     if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
     await new Promise(resolve => setTimeout(resolve, 10));
   }
