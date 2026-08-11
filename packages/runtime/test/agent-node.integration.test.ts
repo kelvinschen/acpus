@@ -15,7 +15,7 @@ import { tryCaptureRunFile } from "../src/store/run-file.js";
 import { prepareSyntheticWorkflow, runtimeRow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
-import type { HookContext } from "../src/hooks/context.js";
+import type { HookContext } from "../src/hooks/dispatch.js";
 import type { HookRunner } from "../src/hooks/runner.js";
 import { agentSummary, agentTiming, completedAgentTurn, segmentedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";

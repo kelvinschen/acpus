@@ -1,12 +1,12 @@
 import type {
   AgentObservationInspectionProjection,
 } from "../observations/log.js";
-import type { CommittedRuntimeEventRow } from "../hooks/events.js";
+import type { CommittedRuntimeEventRow } from "../store/committed-event.js";
 import type {
-  RunDetails,
   RunDynamicAttempt,
   RunNodeProgress,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
+import type { RunDetails } from "../store/store.js";
 import {
   boundedInspectionText,
   inspectionCounts,

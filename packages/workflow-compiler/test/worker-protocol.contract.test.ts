@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
+import { classifyCompileWorkerResultReadFailure } from "../src/compiler/worker.js";
 import {
-  classifyCompileWorkerResultReadFailure,
   interpretCompileWorkerOutput,
   parseCompileWorkerEnvelope,
-} from "../src/compiler/worker.js";
+} from "../src/compiler/worker-protocol.js";
 
 const compiled = {
   sourceDigest: `sha256:${"a".repeat(64)}` as const,

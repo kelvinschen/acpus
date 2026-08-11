@@ -1,9 +1,5 @@
-export {
-  createManagedAcpExecutor,
-  inspectAcpOwnership,
-  recoverAcpOwnership,
-  type ManagedAcpExecutorOptions,
-} from "./managed-executor.js";
+export { createManagedAcpExecutor } from "./managed-executor.js";
+export { inspectAcpOwnership, recoverAcpOwnership } from "./ownership.js";
 export { acpxSessionProjectionPath } from "./session-store.js";
 export type {
   AcpOwnershipHealth,
@@ -29,4 +25,5 @@ export type {
   ManagedAcpAttempt,
   ManagedAcpAttemptInput,
   ManagedAcpExecutor,
+  ManagedAcpExecutorOptions,
 } from "./types.js";

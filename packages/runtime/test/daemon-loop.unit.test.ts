@@ -2,8 +2,12 @@ import { access, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ResultAsync } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { daemonEndpoint } from "../src/daemon/socket.js";
+import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import { daemonEndpoint } from "../src/daemon/client.js";
+import type { DaemonHandlers } from "../src/daemon/server.js";
+import { RunExecutionSessions } from "../src/daemon/sessions.js";
 import type { DaemonTickResult } from "../src/daemon/tick.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import { openRuntimeStore } from "../src/store/store.js";
@@ -11,6 +15,12 @@ import { treeFingerprint } from "./support/tree-fingerprint.js";
 
 const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
 const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
+const daemonServer = vi.hoisted(() => ({ handlers: undefined as DaemonHandlers | undefined }));
+const cleanupTrace = vi.hoisted(() => ({
+  calls: [] as string[],
+  executorFailure: undefined as Error | undefined,
+  releaseFailure: undefined as Error | undefined,
+}));
 const startupRecovery = vi.hoisted(() => ({
   claimed: false,
   claimedAtRecovery: false,
@@ -20,6 +30,41 @@ const startupRecovery = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
+vi.mock("../src/daemon/server.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/daemon/server.js")>();
+  return {
+    ...actual,
+    startDaemonServer: async (...args: Parameters<typeof actual.startDaemonServer>) => {
+      daemonServer.handlers = args[1];
+      const server = await actual.startDaemonServer(...args);
+      return {
+        ...server,
+        close: async () => {
+          cleanupTrace.calls.push("server:close");
+          await server.close();
+        },
+      };
+    },
+  };
+});
+vi.mock("@acpus/agent-executor", async importOriginal => {
+  const actual = await importOriginal<typeof import("@acpus/agent-executor")>();
+  return {
+    ...actual,
+    createManagedAcpExecutor: async (...args: Parameters<typeof actual.createManagedAcpExecutor>): Promise<ManagedAcpExecutor> => {
+      const executor = await actual.createManagedAcpExecutor(...args);
+      const shutdown = executor.shutdown.bind(executor);
+      return {
+        ...executor,
+        shutdown: async () => {
+          cleanupTrace.calls.push("executor:shutdown");
+          await shutdown();
+          if (cleanupTrace.executorFailure) throw cleanupTrace.executorFailure;
+        },
+      };
+    },
+  };
+});
 vi.mock("../src/store/store.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/store/store.js")>();
   const instrument = (store: Awaited<ReturnType<typeof actual.openRuntimeStoreAtLayout>>) => {
@@ -40,6 +85,18 @@ vi.mock("../src/store/store.js", async importOriginal => {
     store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
       ? cleanup()
       : Promise.reject(startupCleanup.failure);
+    const releaseDaemon = store.releaseDaemon.bind(store);
+    store.releaseDaemon = input => {
+      cleanupTrace.calls.push("store:release");
+      const released = releaseDaemon(input);
+      if (cleanupTrace.releaseFailure) throw cleanupTrace.releaseFailure;
+      return released;
+    };
+    const close = store.close.bind(store);
+    store.close = () => {
+      cleanupTrace.calls.push("store:close");
+      close();
+    };
     return store;
   };
   return {
@@ -66,6 +123,10 @@ beforeEach(async () => {
   ]);
   restoreRuntimeHome = setRuntimeHomeForTest(dir, runtimeHome);
   startupCleanup.failure = undefined;
+  daemonServer.handlers = undefined;
+  cleanupTrace.calls = [];
+  cleanupTrace.executorFailure = undefined;
+  cleanupTrace.releaseFailure = undefined;
   startupRecovery.claimed = false;
   startupRecovery.claimedAtRecovery = false;
   startupRecovery.calls = 0;
@@ -105,6 +166,7 @@ describe("daemon loop", () => {
         command: "acpus doctor --fix",
       },
     });
+    await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await treeFingerprint(runtimeHome)).toBe(outdated);
   });
 
@@ -149,6 +211,32 @@ describe("daemon loop", () => {
     } finally {
       db.close();
     }
+    await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("attempts every startup cleanup stage and reports all failures", async () => {
+    await initializeReadyStore();
+    const startupFailure = new Error("startup cleanup failed");
+    const executorFailure = new Error("executor shutdown failed");
+    const releaseFailure = new Error("lease release failed");
+    startupCleanup.failure = startupFailure;
+    cleanupTrace.executorFailure = executorFailure;
+    cleanupTrace.releaseFailure = releaseFailure;
+
+    const rejected = await startDaemonLoop(dir, { packageVersion: "test" }).catch(error => error);
+
+    expect(rejected).toBeInstanceOf(AggregateError);
+    expect((rejected as AggregateError).errors).toEqual([
+      startupFailure,
+      executorFailure,
+      releaseFailure,
+    ]);
+    expect(cleanupTrace.calls).toEqual([
+      "server:close",
+      "executor:shutdown",
+      "store:release",
+      "store:close",
+    ]);
     await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -235,6 +323,83 @@ describe("daemon loop", () => {
     finishTick();
     await shutdown;
     expect(shutdownResolved).toBe(true);
+  });
+
+  it("withdraws request authority as soon as protocol shutdown is accepted", async () => {
+    await initializeReadyStore();
+    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 50,
+      idleStopMs: 1_000,
+      packageVersion: "test",
+    });
+
+    const handlers = daemonServer.handlers!;
+    const accepted = handlers.shutdown();
+    const admissionAfterAcceptance = handlers.admitRun({
+      prepared: undefined as never,
+      input: null,
+    });
+    const controlAfterAcceptance = handlers.control({
+      requestId: "after-shutdown",
+      type: "cancel",
+      runId: "run_missing",
+    });
+
+    expect(accepted).not.toBeInstanceOf(ResultAsync);
+    expect(admissionAfterAcceptance).not.toBeInstanceOf(ResultAsync);
+    expect(controlAfterAcceptance).not.toBeInstanceOf(ResultAsync);
+    expect((accepted as { isOk(): boolean }).isOk()).toBe(true);
+    expect((admissionAfterAcceptance as { error: { code: string } }).error.code).toBe("EXECUTION_UNAVAILABLE");
+    expect((controlAfterAcceptance as { error: { code: string } }).error.code).toBe("EXECUTION_UNAVAILABLE");
+    await loop.shutdown();
+  });
+
+  it("continues normal shutdown cleanup after independent stage failures", async () => {
+    await initializeReadyStore();
+    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    const stopFailure = new Error("session stop failed");
+    const executorFailure = new Error("executor shutdown failed");
+    const hooksFailure = new Error("hook drain failed");
+    cleanupTrace.executorFailure = executorFailure;
+    const stopExecutorsImplementation = RunExecutionSessions.prototype.stopExecutors;
+    const drainHooksImplementation = RunExecutionSessions.prototype.drainHooks;
+    const stopExecutors = vi.spyOn(RunExecutionSessions.prototype, "stopExecutors")
+      .mockImplementation(async function(this: RunExecutionSessions, timeoutMs) {
+        cleanupTrace.calls.push("sessions:stop");
+        await stopExecutorsImplementation.call(this, timeoutMs);
+        throw stopFailure;
+      });
+    const drainHooks = vi.spyOn(RunExecutionSessions.prototype, "drainHooks")
+      .mockImplementation(async function(this: RunExecutionSessions) {
+        cleanupTrace.calls.push("sessions:drain-hooks");
+        await drainHooksImplementation.call(this);
+        throw hooksFailure;
+      });
+    const loop = await startDaemonLoop(dir, {
+      heartbeatMs: 50,
+      idleStopMs: 1_000,
+      packageVersion: "test",
+    });
+    cleanupTrace.calls = [];
+
+    try {
+      const rejected = await loop.shutdown().catch(error => error);
+      expect(rejected).toBeInstanceOf(AggregateError);
+      expect((rejected as AggregateError).errors).toEqual([stopFailure, executorFailure, hooksFailure]);
+      expect(cleanupTrace.calls).toEqual([
+        "server:close",
+        "sessions:stop",
+        "executor:shutdown",
+        "sessions:drain-hooks",
+        "store:release",
+        "store:close",
+      ]);
+      await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      stopExecutors.mockRestore();
+      drainHooks.mockRestore();
+    }
   });
 
   it("retries transient store-busy tick failures", async () => {

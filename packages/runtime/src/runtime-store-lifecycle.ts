@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { err, ok, ResultAsync } from "neverthrow";
-import { requestDaemonShutdown, requestDaemonStatus } from "./daemon/socket.js";
+import { requestDaemonShutdown, requestDaemonStatus } from "./daemon/client.js";
 import { probeProcessLiveness } from "./process-liveness.js";
 import {
   RUNTIME_LAYOUT_VERSION,

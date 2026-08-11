@@ -1,34 +1,25 @@
 import { lstat, mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { DiagnosticIR } from "@acpus/core/ir";
+import { pathToFileURL } from "node:url";
+import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
-import { sha256Digest, stableJsonLine, type Sha256Digest } from "../digest.js";
-import type { WorkflowCheckResult } from "../check/runner.js";
+import { checkWorkflow, type WorkflowCheckResult } from "../check/runner.js";
+import type { Sha256Digest } from "../digest.js";
+import {
+  canonicalizeFilesSource,
+  canonicalizeSourcePath,
+  mergeSourceDiagnostics,
+  portableSourcePath,
+  remapSourceDiagnostics,
+  sourceGraphDigest,
+  type SourcePreparationFailure,
+  type WorkflowSourceBundle,
+  type WorkflowSourceFile,
+  type WorkflowSourceInput,
+  type WorkflowSourceRef,
+} from "./source-model.js";
 
-export type WorkflowSourceFile = {
-  path: string;
-  content: string;
-};
-
-export type WorkflowSourceInput =
-  | { kind: "path"; entry: string }
-  | { kind: "files"; entry: string; files: readonly WorkflowSourceFile[] };
-
-export type WorkflowSourceRef =
-  | { kind: "workspace"; entry: string }
-  | { kind: "snapshot"; entry: string; digest: Sha256Digest };
-
-export type WorkflowSourceBundle = {
-  kind: "acpus_workflow_source_bundle";
-  version: 1;
-  files: readonly WorkflowSourceFile[];
-};
-
-export type SourcePreparationFailure =
-  | { type: "source-invalid"; phase: "source"; message: string }
-  | { type: "source-changed"; phase: "source"; message: string };
-
-export type ResolvedPathSource =
+type ResolvedPathSource =
   | {
       kind: "workspace";
       entryPath: string;
@@ -41,7 +32,7 @@ export type ResolvedPathSource =
       displayEntry: string;
     };
 
-export type FrozenSource = {
+type FrozenSource = {
   entryPath: string;
   displayEntry: string;
   sourceRoot: string;
@@ -61,9 +52,168 @@ type CapturedSource = {
   diagnostics: DiagnosticIR[];
 };
 
+type PreparedWorkflowSourceBase = {
+  check: WorkflowCheckResult;
+  entryPath: string;
+  sourceRoot: string;
+  sourceGraphDigest: Sha256Digest;
+  displayEntry: string;
+  diagnosticSourceRoot?: string;
+};
+
+type PreparedWorkflowSource =
+  | PreparedWorkflowSourceBase & {
+      source: Extract<WorkflowSourceRef, { kind: "workspace" }>;
+      sourceBundle?: never;
+    }
+  | PreparedWorkflowSourceBase & {
+      source: Extract<WorkflowSourceRef, { kind: "snapshot" }>;
+      sourceBundle: WorkflowSourceBundle;
+      diagnosticSourceRoot: string;
+    };
+
+export type WorkflowSourcePreparationFailure =
+  | SourcePreparationFailure
+  | {
+      type: "check-failed";
+      phase: "check";
+      message: string;
+      diagnostics: WorkflowIR["diagnostics"];
+    };
+
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-export async function resolvePathSource(
+export async function prepareWorkflowSource(input: {
+  workspaceDir: string;
+  scratchDir: string;
+  source: WorkflowSourceInput;
+}): Promise<Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
+  if (input.source.kind === "files") {
+    const validated = canonicalizeFilesSource(input.source);
+    if (validated.isErr()) return err(validated.error);
+    const modulePaths = new Set(
+      validated.value.files
+        .filter(file => isSourceGraphTypeScript(file.path))
+        .map(file => file.path),
+    );
+    const frozen = await materializeSource(
+      input.scratchDir,
+      input.workspaceDir,
+      {
+        entry: validated.value.entry,
+        files: validated.value.files,
+        modulePaths,
+        displayEntry: validated.value.entry,
+      },
+    );
+    return prepareFrozenSource(input.workspaceDir, input.scratchDir, frozen);
+  }
+
+  const resolved = await resolvePathSource(input.workspaceDir, input.source.entry);
+  if (resolved.isErr()) return err(resolved.error);
+  if (resolved.value.kind === "workspace") {
+    const checkedWorkflow = await checkWorkflow(
+      resolved.value.entryPath,
+      input.workspaceDir,
+      input.scratchDir,
+    );
+    const check = {
+      ...checkedWorkflow,
+      diagnostics: sanitizeDiagnostics(checkedWorkflow.diagnostics, input.scratchDir),
+    };
+    const checked = checkFailure(check);
+    if (checked) return err(checked);
+    const graph = await workspaceSourceGraph(
+      check,
+      resolved.value.sourceRoot,
+      resolved.value.source.entry,
+    );
+    if (graph.isErr()) return err(graph.error);
+    return ok({
+      check,
+      entryPath: resolved.value.entryPath,
+      sourceRoot: resolved.value.sourceRoot,
+      source: resolved.value.source,
+      sourceGraphDigest: graph.value.sourceGraphDigest,
+      displayEntry: resolved.value.entryPath,
+    });
+  }
+
+  await exposeWorkspaceDependencies(input.scratchDir, input.workspaceDir);
+  const discoveredWorkflow = await checkWorkflow(
+    resolved.value.entryPath,
+    input.workspaceDir,
+    input.scratchDir,
+    { dependencyFallback: true },
+  );
+  const discovery = {
+    ...discoveredWorkflow,
+    diagnostics: sanitizeDiagnostics(discoveredWorkflow.diagnostics, input.scratchDir),
+  };
+  const discoveryFailure = checkFailure(discovery);
+  if (discoveryFailure) return err(discoveryFailure);
+  const captured = await capturePathSource(discovery, resolved.value.entryPath);
+  if (captured.isErr()) return err(captured.error);
+  const frozen = await materializeSource(
+    input.scratchDir,
+    input.workspaceDir,
+    {
+      entry: captured.value.entry,
+      files: captured.value.files,
+      modulePaths: captured.value.modulePaths,
+      expectedModulePaths: captured.value.modulePaths,
+      diagnostics: captured.value.diagnostics,
+      displayEntry: resolved.value.displayEntry,
+    },
+  );
+  return prepareFrozenSource(input.workspaceDir, input.scratchDir, frozen);
+}
+
+async function prepareFrozenSource(
+  workspaceDir: string,
+  scratchDir: string,
+  frozen: FrozenSource,
+): Promise<Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
+  const checkedWorkflow = await checkWorkflow(frozen.entryPath, workspaceDir, scratchDir);
+  const authoritativeDiagnostics = sanitizeDiagnostics(
+    remapSourceDiagnostics(checkedWorkflow.diagnostics, frozen.sourceRoot),
+    scratchDir,
+  );
+  const diagnostics = mergeSourceDiagnostics(
+    frozen.discoveryDiagnostics ?? [],
+    authoritativeDiagnostics,
+  );
+  const check = { ...checkedWorkflow, diagnostics };
+  const checked = checkFailure(check);
+  if (checked) return err(checked);
+  const closure = validateFrozenClosure(check, frozen);
+  if (closure.isErr()) return err(closure.error);
+  return ok({
+    check,
+    entryPath: frozen.entryPath,
+    sourceRoot: frozen.sourceRoot,
+    source: frozen.source,
+    sourceBundle: frozen.sourceBundle,
+    sourceGraphDigest: frozen.sourceGraphDigest,
+    diagnosticSourceRoot: frozen.sourceRoot,
+    displayEntry: frozen.displayEntry,
+  });
+}
+
+function checkFailure(
+  check: WorkflowCheckResult,
+): Extract<WorkflowSourcePreparationFailure, { type: "check-failed" }> | undefined {
+  return check.diagnostics.some(diagnostic => diagnostic.severity === "error")
+    ? {
+        type: "check-failed",
+        phase: "check",
+        message: "Workflow check failed.",
+        diagnostics: check.diagnostics,
+      }
+    : undefined;
+}
+
+async function resolvePathSource(
   workspaceDir: string,
   entry: string,
 ): Promise<Result<ResolvedPathSource, SourcePreparationFailure>> {
@@ -79,9 +229,9 @@ export async function resolvePathSource(
   try {
     const physicalEntry = await realpath(entryPath);
     if (isContained(physicalWorkspace, physicalEntry)) {
-      const sourceEntry = portableRelative(physicalWorkspace, physicalEntry);
+      const sourceEntry = portableSourcePath(physicalWorkspace, physicalEntry);
       if (!sourceEntry) return err(sourceInvalid(`Workflow entry '${entryPath}' must be a file inside workspace '${workspace}'.`));
-      const validatedEntry = validatePortablePath(sourceEntry);
+      const validatedEntry = canonicalizeSourcePath(sourceEntry);
       if (validatedEntry.isErr()) return err(validatedEntry.error);
       return ok({
         kind: "workspace",
@@ -95,9 +245,9 @@ export async function resolvePathSource(
     if (!isMissingPathError(cause)) {
       return err(sourceInvalid(`Workflow entry '${entryPath}' could not be resolved: ${causeMessage(cause)}`));
     }
-    const lexicalEntry = portableRelative(workspace, entryPath);
+    const lexicalEntry = portableSourcePath(workspace, entryPath);
     if (lexicalEntry) {
-      const validatedEntry = validatePortablePath(lexicalEntry);
+      const validatedEntry = canonicalizeSourcePath(lexicalEntry);
       if (validatedEntry.isErr()) return err(validatedEntry.error);
       return ok({
         kind: "workspace",
@@ -110,33 +260,7 @@ export async function resolvePathSource(
   }
 }
 
-export function validateFilesSource(
-  input: Extract<WorkflowSourceInput, { kind: "files" }>,
-): Result<{ entry: string; files: WorkflowSourceFile[] }, SourcePreparationFailure> {
-  if (!Array.isArray(input.files)) return err(sourceInvalid("Workflow source files must be an array."));
-  if (typeof input.entry !== "string") return err(sourceInvalid("Workflow source entry must be a string."));
-  const entry = validatePortablePath(input.entry);
-  if (entry.isErr()) return err(entry.error);
-
-  const files: WorkflowSourceFile[] = [];
-  for (const file of input.files) {
-    if (!file || typeof file !== "object" || typeof file.path !== "string" || typeof file.content !== "string") {
-      return err(sourceInvalid("Every workflow source file must contain string path and content fields."));
-    }
-    const path = validatePortablePath(file.path);
-    if (path.isErr()) return err(path.error);
-    files.push({ path: path.value, content: file.content });
-  }
-  files.sort(compareSourceFiles);
-  const collision = sourcePathCollision(files.map(file => file.path));
-  if (collision) return err(sourceInvalid(collision));
-  if (!files.some(file => file.path === entry.value)) {
-    return err(sourceInvalid(`Workflow source entry '${entry.value}' is not present in files.`));
-  }
-  return ok({ entry: entry.value, files });
-}
-
-export async function capturePathSource(
+async function capturePathSource(
   check: WorkflowCheckResult,
   entryPath: string,
 ): Promise<Result<CapturedSource, SourcePreparationFailure>> {
@@ -171,80 +295,75 @@ export async function capturePathSource(
     .map(dirname);
   const root = commonAncestor([...captured.keys()].map(dirname).concat(packageRoots));
   const files = [...captured].map(([path, content]) => ({
-    path: portableRelative(root, path),
+    path: portableSourcePath(root, path) ?? "",
     content,
   }));
   for (const [path, content] of manifests) {
     files.push({
-      path: portableRelative(root, path) || "package.json",
+      path: portableSourcePath(root, path) ?? "package.json",
       content,
     });
   }
   if (files.some(file => !file.path)) {
     return err(sourceInvalid("Workflow source graph could not be projected beneath one source root."));
   }
-  for (const file of files) {
-    const path = validatePortablePath(file.path);
-    if (path.isErr()) return err(path.error);
+  const entry = portableSourcePath(root, entryPath);
+  if (!entry) {
+    return err(sourceInvalid(`Workflow entry '${entryPath}' could not be projected into its source bundle.`));
   }
-  files.sort(compareSourceFiles);
-  const collision = sourcePathCollision(files.map(file => file.path));
-  if (collision) return err(sourceInvalid(collision));
-  const entry = portableRelative(root, resolve(entryPath));
-  if (!entry) return err(sourceInvalid(`Workflow entry '${entryPath}' could not be projected into its source bundle.`));
-  const validatedEntry = validatePortablePath(entry);
-  if (validatedEntry.isErr()) return err(validatedEntry.error);
+  const canonical = canonicalizeFilesSource({ kind: "files", entry, files });
+  if (canonical.isErr()) return err(canonical.error);
   return ok({
     root,
-    entry: validatedEntry.value,
-    files,
-    modulePaths: new Set([...captured.keys()].map(path => portableRelative(root, path))),
-    diagnostics: remapDiagnostics(
+    entry: canonical.value.entry,
+    files: canonical.value.files,
+    modulePaths: new Set(
+      [...captured.keys()]
+        .map(path => portableSourcePath(root, path))
+        .filter((path): path is string => path !== undefined),
+    ),
+    diagnostics: remapSourceDiagnostics(
       check.diagnostics.filter(diagnostic => diagnostic.code === "SC001"),
       root,
     ),
   });
 }
 
-export async function materializeFilesSource(
+async function materializeSource(
   scratchDir: string,
   workspaceDir: string,
-  entry: string,
-  files: readonly WorkflowSourceFile[],
+  source: {
+    entry: string;
+    files: readonly WorkflowSourceFile[];
+    modulePaths: ReadonlySet<string>;
+    displayEntry: string;
+    expectedModulePaths?: ReadonlySet<string>;
+    diagnostics?: readonly DiagnosticIR[];
+  },
 ): Promise<FrozenSource> {
   const sourceRoot = join(scratchDir, "source");
   await exposeWorkspaceDependencies(scratchDir, workspaceDir);
-  await materializeFiles(sourceRoot, files);
-  return frozenSource(
+  await materializeFiles(sourceRoot, source.files);
+  const files = [...source.files];
+  const digest = sourceGraphDigest(source.entry, files);
+  return {
+    entryPath: join(sourceRoot, ...source.entry.split("/")),
+    displayEntry: source.displayEntry,
     sourceRoot,
-    entry,
-    files,
-    new Set(files.filter(file => isSourceGraphTypeScript(file.path)).map(file => file.path)),
-    entry,
-  );
+    source: { kind: "snapshot", entry: source.entry, digest },
+    sourceBundle: {
+      kind: "acpus_workflow_source_bundle",
+      version: 1,
+      files,
+    },
+    sourceGraphDigest: digest,
+    availableModulePaths: source.modulePaths,
+    ...(source.expectedModulePaths ? { expectedModulePaths: source.expectedModulePaths } : {}),
+    ...(source.diagnostics ? { discoveryDiagnostics: source.diagnostics } : {}),
+  };
 }
 
-export async function materializeCapturedSource(
-  scratchDir: string,
-  workspaceDir: string,
-  captured: CapturedSource,
-  displayEntry: string,
-): Promise<FrozenSource> {
-  const sourceRoot = join(scratchDir, "source");
-  await exposeWorkspaceDependencies(scratchDir, workspaceDir);
-  await materializeFiles(sourceRoot, captured.files);
-  return frozenSource(
-    sourceRoot,
-    captured.entry,
-    captured.files,
-    captured.modulePaths,
-    displayEntry,
-    captured.modulePaths,
-    captured.diagnostics,
-  );
-}
-
-export async function workspaceSourceGraph(
+async function workspaceSourceGraph(
   check: WorkflowCheckResult,
   sourceRoot: string,
   entry: string,
@@ -261,11 +380,15 @@ export async function workspaceSourceGraph(
     if (manifest.value) files.set(manifest.value.path, manifest.value.content);
   }
   if (!files.has(entry)) return err(sourceChanged(`Workspace workflow entry '${entry}' was not present in its static source graph.`));
-  const canonical = [...files].map(([path, content]) => ({ path, content })).sort(compareSourceFiles);
-  return ok({ sourceGraphDigest: sourceGraphDigest(entry, canonical) });
+  return ok({
+    sourceGraphDigest: sourceGraphDigest(
+      entry,
+      [...files].map(([path, content]) => ({ path, content })),
+    ),
+  });
 }
 
-export function validateFrozenClosure(
+function validateFrozenClosure(
   check: WorkflowCheckResult,
   frozen: FrozenSource,
 ): Result<void, SourcePreparationFailure> {
@@ -273,7 +396,7 @@ export function validateFrozenClosure(
   const actual = new Set<string>();
   for (const sourceFile of check.sourceFiles) {
     if (!isSourceGraphTypeScript(sourceFile.path)) continue;
-    const path = portableRelative(frozen.sourceRoot, resolve(sourceFile.path));
+    const path = portableSourcePath(frozen.sourceRoot, resolve(sourceFile.path));
     if (!path) {
       return err(sourceChanged(`Frozen workflow discovered local source '${sourceFile.path}' outside its source bundle.`));
     }
@@ -288,62 +411,6 @@ export function validateFrozenClosure(
     if (!actual.has(path)) return err(sourceChanged(`Frozen workflow source '${path}' disappeared after capture.`));
   }
   return ok(undefined);
-}
-
-export function remapDiagnostics(
-  diagnostics: readonly DiagnosticIR[],
-  sourceRoot: string,
-): DiagnosticIR[] {
-  return diagnostics.map(diagnostic => {
-    const source = diagnostic.source;
-    if (!source?.file) return diagnostic;
-    const path = portableRelative(sourceRoot, resolve(source.file));
-    if (!path) return diagnostic;
-    return {
-      ...diagnostic,
-      source: {
-        ...source,
-        file: path,
-      },
-    };
-  });
-}
-
-export function sourceGraphDigest(entry: string, files: readonly WorkflowSourceFile[]): Sha256Digest {
-  return sha256Digest(stableJsonLine({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
-    entry,
-    files: files.map(file => ({ path: file.path, digest: sha256Digest(file.content) })),
-  }));
-}
-
-function frozenSource(
-  sourceRoot: string,
-  entry: string,
-  files: readonly WorkflowSourceFile[],
-  availableModulePaths: ReadonlySet<string>,
-  displayEntry: string,
-  expectedModulePaths?: ReadonlySet<string>,
-  discoveryDiagnostics?: readonly DiagnosticIR[],
-): FrozenSource {
-  const canonicalFiles = [...files].sort(compareSourceFiles);
-  const digest = sourceGraphDigest(entry, canonicalFiles);
-  return {
-    entryPath: join(sourceRoot, ...entry.split("/")),
-    displayEntry,
-    sourceRoot,
-    source: { kind: "snapshot", entry, digest },
-    sourceBundle: {
-      kind: "acpus_workflow_source_bundle",
-      version: 1,
-      files: canonicalFiles,
-    },
-    sourceGraphDigest: digest,
-    availableModulePaths,
-    ...(expectedModulePaths ? { expectedModulePaths } : {}),
-    ...(discoveryDiagnostics ? { discoveryDiagnostics } : {}),
-  };
 }
 
 async function nearestWorkspacePackageManifest(
@@ -424,7 +491,7 @@ async function readStableText(
   }
 }
 
-export async function exposeWorkspaceDependencies(scratchDir: string, workspaceDir: string): Promise<void> {
+async function exposeWorkspaceDependencies(scratchDir: string, workspaceDir: string): Promise<void> {
   const dependencies = join(resolve(workspaceDir), "node_modules");
   const target = join(scratchDir, "node_modules");
   try {
@@ -451,45 +518,6 @@ async function materializeFiles(root: string, files: readonly WorkflowSourceFile
   }
 }
 
-function validatePortablePath(path: string): Result<string, SourcePreparationFailure> {
-  if (path.length === 0
-    || path.includes("\0")
-    || path.includes("\\")
-    || path.startsWith("/")
-    || /^[A-Za-z]:/.test(path)
-    || path.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
-    return err(sourceInvalid(`Workflow source path '${path}' must be a portable POSIX relative path.`));
-  }
-  return ok(path);
-}
-
-function sourcePathCollision(paths: readonly string[]): string | undefined {
-  const exact = new Set<string>();
-  const folded = new Map<string, string>();
-  for (const path of paths) {
-    if (exact.has(path)) return `Workflow source path '${path}' is duplicated.`;
-    exact.add(path);
-    const segments = path.split("/");
-    for (let length = 1; length <= segments.length; length += 1) {
-      const prefix = segments.slice(0, length).join("/");
-      const key = portableCaseFold(prefix);
-      const existing = folded.get(key);
-      if (existing && existing !== prefix) {
-        return `Workflow source paths '${existing}' and '${prefix}' collide after portable normalization.`;
-      }
-      folded.set(key, prefix);
-      if (length < segments.length && exact.has(prefix)) {
-        return `Workflow source path '${prefix}' collides with descendant '${path}'.`;
-      }
-    }
-  }
-  return undefined;
-}
-
-function portableCaseFold(value: string): string {
-  return value.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
-}
-
 function commonAncestor(paths: readonly string[]): string {
   if (paths.length === 0) throw new Error("Cannot derive a common source ancestor without files.");
   let current = resolve(paths[0]!);
@@ -502,12 +530,6 @@ function commonAncestor(paths: readonly string[]): string {
     }
   }
   return current;
-}
-
-function portableRelative(root: string, path: string): string {
-  const child = relative(resolve(root), resolve(path));
-  if (child === "" || isAbsolute(child) || child.split(sep).includes("..")) return "";
-  return child.split(sep).join("/");
 }
 
 function workspaceGraphRelative(
@@ -532,10 +554,6 @@ function isSourceGraphTypeScript(path: string): boolean {
   return /\.(?:[cm]?ts|tsx)$/i.test(path);
 }
 
-function compareSourceFiles(left: WorkflowSourceFile, right: WorkflowSourceFile): number {
-  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
-}
-
 function sourceInvalid(message: string): SourcePreparationFailure {
   return { type: "source-invalid", phase: "source", message };
 }
@@ -551,4 +569,26 @@ function causeMessage(cause: unknown): string {
 function isMissingPathError(cause: unknown): boolean {
   const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
   return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function sanitizeDiagnostics(
+  diagnostics: readonly DiagnosticIR[],
+  scratchDir: string,
+): DiagnosticIR[] {
+  const absolute = resolve(scratchDir);
+  const references = [pathToFileURL(absolute).href, absolute];
+  return replaceStrings(
+    diagnostics,
+    value => references.reduce(
+      (current, reference) => current.replaceAll(reference, "<workflow-scratch>"),
+      value,
+    ),
+  ) as DiagnosticIR[];
+}
+
+function replaceStrings(value: unknown, replace: (value: string) => string): unknown {
+  if (typeof value === "string") return replace(value);
+  if (Array.isArray(value)) return value.map(item => replaceStrings(item, replace));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceStrings(item, replace)]));
 }

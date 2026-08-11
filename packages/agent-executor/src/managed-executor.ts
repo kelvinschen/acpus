@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
@@ -10,8 +10,16 @@ import {
   type AcpxAgentLaunch,
   type AcpxAgentResolutionFailure,
 } from "./acpx-agent-resolution.js";
+import {
+  finishAcpOwnership,
+  writeAcpOwnershipManifest,
+} from "./ownership.js";
+import {
+  processStartToken,
+  PROCESS_TREE_CLEANUP_BUDGET_MS,
+  stopProcessTree,
+} from "./process-tree.js";
 import type {
-  AcpOwnershipHealth,
   AcpOwnershipManifest,
   AgentBackendFailure,
   AgentTurnProgress,
@@ -20,6 +28,7 @@ import type {
   ManagedAcpAttempt,
   ManagedAcpAttemptInput,
   ManagedAcpExecutor,
+  ManagedAcpExecutorOptions,
 } from "./types.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
@@ -29,23 +38,8 @@ import {
 } from "./worker-protocol.js";
 
 const WORKER_READY_TIMEOUT_MS = 5_000;
-const CLEANUP_BUDGET_MS = 5_000;
 const COOPERATIVE_CLOSE_GRACE_MS = 1_000;
-const TERM_GRACE_MS = 1_000;
-const MANIFEST_MODE = 0o600;
 const WORKERS_DIRECTORY_MODE = 0o700;
-
-export type ManagedAcpExecutorOptions = {
-  workersRoot: string;
-  sessionStateDirectoryForRun(runId: string): string;
-  daemon: { generation: string | number; pid?: number };
-  onDegraded?: (manifest: AcpOwnershipManifest) => void;
-};
-
-export type AcpOwnershipInspectionInput = {
-  workersRoot: string;
-  daemon?: { generation: string | number; pid?: number };
-};
 
 type WorkerState = {
   workerId: string;
@@ -133,60 +127,6 @@ export async function createManagedAcpExecutor(options: ManagedAcpExecutorOption
   };
 }
 
-/** Reads residual ownership evidence without creating, changing, or signalling anything. */
-export async function inspectAcpOwnership(input: AcpOwnershipInspectionInput): Promise<AcpOwnershipHealth> {
-  const manifests = await readOwnershipManifests(input.workersRoot);
-  const current = input.daemon && {
-    pid: input.daemon.pid ?? process.pid,
-    generation: String(input.daemon.generation),
-  };
-  let degraded = 0;
-  let orphaned = 0;
-  const records: AcpOwnershipHealth["manifests"] = [];
-  for (const manifest of manifests) {
-    if (manifest.state === "degraded") {
-      degraded += 1;
-      records.push(manifestReference(manifest));
-      continue;
-    }
-    const belongsToCurrentDaemon = current !== undefined
-      && manifest.daemon.pid === current.pid
-      && manifest.daemon.generation === current.generation;
-    const workerLiveness = await matchesProcessStartToken(manifest.worker.pid, manifest.worker.startToken);
-    if (!belongsToCurrentDaemon || workerLiveness === false) {
-      orphaned += 1;
-      records.push(manifestReference(manifest));
-    }
-  }
-  return { degraded, orphaned, manifests: records.slice(0, 12) };
-}
-
-/** Performs the single bounded daemon-startup sweep for the current workspace. */
-export async function recoverAcpOwnership(input: ManagedAcpExecutorOptions): Promise<void> {
-  const manifests = await readOwnershipManifestFiles(input.workersRoot);
-  const deadline = performance.now() + CLEANUP_BUDGET_MS;
-  for (const entry of manifests) {
-    await recoverManifest(input, entry, deadline).catch(() => {});
-  }
-}
-
-async function recoverManifest(
-  input: ManagedAcpExecutorOptions,
-  entry: { path: string; manifest: AcpOwnershipManifest },
-  deadline: number,
-): Promise<void> {
-  const { manifest, path } = entry;
-  const liveness = await matchesProcessStartToken(manifest.worker.pid, manifest.worker.startToken);
-  if (liveness === false) {
-    await removeManifest(path);
-    return;
-  }
-  if (liveness !== true || performance.now() >= deadline) return;
-  const alive = await stopKnownTree(manifest.worker.pid, deadline);
-  if (alive) await markDegraded(input, path, manifest, "startup recovery");
-  else await removeManifest(path);
-}
-
 async function startWorker(
   state: ManagedAcpExecutorState,
   input: ManagedAcpAttemptInput,
@@ -241,7 +181,7 @@ async function startResolvedWorker(
       createdAt: new Date().toISOString(),
     };
     manifestPath = join(state.options.workersRoot, `${workerId}.json`);
-    await writeManifest(manifestPath, manifest);
+    await writeAcpOwnershipManifest(manifestPath, manifest);
     if (earlyError) throw earlyError;
     if (closedEarly) throw new Error("ACP worker exited before initialization.");
     let readyResolve!: () => void;
@@ -307,10 +247,12 @@ async function cleanupUnmanagedWorker(
   reason: string,
 ): Promise<void> {
   if (child.pid === undefined) return;
-  const alive = await stopKnownTree(child.pid, performance.now() + CLEANUP_BUDGET_MS);
+  const alive = await stopProcessTree(
+    child.pid,
+    performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS,
+  );
   if (!manifestPath || !manifest) return;
-  if (alive) await markDegraded(options, manifestPath, manifest, reason);
-  else await removeManifest(manifestPath);
+  await finishAcpOwnership(options, manifestPath, manifest, alive, reason);
 }
 
 function onWorkerMessage(worker: WorkerState, value: unknown): void {
@@ -448,8 +390,7 @@ async function cleanupWorker(state: ManagedAcpExecutorState, worker: WorkerState
 async function cleanupWorkerValue(state: ManagedAcpExecutorState, worker: WorkerState, reason: string): Promise<void> {
   try {
     const alive = await stopWorkerTree(worker, reason);
-    if (alive) await markDegraded(state.options, worker.manifestPath, worker.manifest, reason);
-    else await removeManifest(worker.manifestPath);
+    await finishAcpOwnership(state.options, worker.manifestPath, worker.manifest, alive, reason);
   } finally {
     state.workers.delete(worker.workerId);
   }
@@ -577,7 +518,7 @@ function safeWorkerEnvironment(): NodeJS.ProcessEnv {
 }
 
 async function stopWorkerTree(worker: WorkerState, reason: string): Promise<boolean> {
-  const deadline = performance.now() + CLEANUP_BUDGET_MS;
+  const deadline = performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS;
   if (worker.active) {
     send(worker, {
       type: "abort-turn",
@@ -597,169 +538,7 @@ async function stopWorkerTree(worker: WorkerState, reason: string): Promise<bool
     reason,
   });
   await settleWithin(worker.closed, Math.min(COOPERATIVE_CLOSE_GRACE_MS, remaining(deadline)));
-  return stopKnownTree(worker.manifest.worker.pid, deadline);
-}
-
-async function stopKnownTree(pid: number, deadline: number): Promise<boolean> {
-  if (!await treeAlive(pid)) return false;
-  terminateKnownTree(pid, "SIGTERM");
-  await waitForTreeDeath(pid, Math.min(TERM_GRACE_MS, remaining(deadline)));
-  if (!await treeAlive(pid)) return false;
-  terminateKnownTree(pid, "SIGKILL");
-  await waitForTreeDeath(pid, remaining(deadline));
-  return await treeAlive(pid);
-}
-
-async function markDegraded(
-  options: ManagedAcpExecutorOptions,
-  path: string,
-  manifest: AcpOwnershipManifest,
-  reason: string,
-): Promise<void> {
-  const degraded = withCleanup(manifest, reason);
-  await writeManifest(path, degraded).catch(() => {});
-  notify(options.onDegraded, degraded);
-}
-
-function terminateKnownTree(pid: number, signal: NodeJS.Signals): void {
-  try {
-    if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])], { stdio: "ignore" }).unref();
-      return;
-    }
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {}
-  }
-}
-
-async function processAlive(pid: number): Promise<boolean> {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
-    return code === "EPERM";
-  }
-}
-
-async function treeAlive(pid: number): Promise<boolean> {
-  if (process.platform === "win32") return processAlive(pid);
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
-    return code === "EPERM";
-  }
-}
-
-async function matchesProcessStartToken(pid: number, expected: string | undefined): Promise<boolean | undefined> {
-  if (expected === undefined) return await processAlive(pid) ? undefined : false;
-  const actual = await processStartToken(pid);
-  if (actual === undefined) return await processAlive(pid) ? undefined : false;
-  return actual === expected;
-}
-
-async function processStartToken(pid: number): Promise<string | undefined> {
-  if (process.platform !== "linux") return undefined;
-  try {
-    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-    const close = stat.lastIndexOf(")");
-    const fields = stat.slice(close + 2).trim().split(/\s+/u);
-    const startTime = fields[19];
-    return startTime ? `linux:${startTime}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function readOwnershipManifests(workersRoot: string): Promise<AcpOwnershipManifest[]> {
-  return (await readOwnershipManifestFiles(workersRoot)).map(entry => entry.manifest);
-}
-
-async function readOwnershipManifestFiles(workersRoot: string): Promise<Array<{ path: string; manifest: AcpOwnershipManifest }>> {
-  let names: string[];
-  try {
-    names = await readdir(workersRoot);
-  } catch (error) {
-    if (isMissing(error)) return [];
-    return [];
-  }
-  const files = names.filter(name => /^acp_worker_[0-9a-f-]+\.json$/u.test(name)).sort();
-  const parsed = await Promise.all(files.map(async name => {
-    const path = join(workersRoot, name);
-    try {
-      const value = JSON.parse(await readFile(path, "utf8")) as unknown;
-      return validManifest(value) ? { path, manifest: value } : undefined;
-    } catch {
-      return undefined;
-    }
-  }));
-  return parsed.filter((entry): entry is { path: string; manifest: AcpOwnershipManifest } => entry !== undefined);
-}
-
-async function writeManifest(path: string, manifest: AcpOwnershipManifest): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(manifest)}\n`, { encoding: "utf8", mode: MANIFEST_MODE });
-    await rename(temporary, path);
-  } finally {
-    await unlink(temporary).catch(() => {});
-  }
-}
-
-async function removeManifest(path: string): Promise<void> {
-  await unlink(path).catch(error => {
-    if (!isMissing(error)) throw error;
-  });
-}
-
-function validManifest(value: unknown): value is AcpOwnershipManifest {
-  if (!record(value)) return false;
-  const manifest = value as Record<string, unknown>;
-  return manifest.schemaVersion === 1
-    && typeof manifest.workerId === "string"
-    && typeof manifest.runId === "string"
-    && typeof manifest.attemptId === "string"
-    && typeof manifest.sessionName === "string"
-    && daemonIdentity(manifest.daemon)
-    && workerIdentity(manifest.worker)
-    && (manifest.state === "active" || manifest.state === "degraded");
-}
-
-function daemonIdentity(value: unknown): value is { pid: number; startToken?: string; generation: string } {
-  if (!record(value) || !positiveProcessId(value.pid)) return false;
-  return typeof value.generation === "string"
-    && (value.startToken === undefined || typeof value.startToken === "string");
-}
-
-function workerIdentity(value: unknown): value is { pid: number; startToken?: string; pgid?: number } {
-  if (!record(value) || !positiveProcessId(value.pid)) return false;
-  return (value.startToken === undefined || typeof value.startToken === "string")
-    && (value.pgid === undefined || positiveProcessId(value.pgid));
-}
-
-function positiveProcessId(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function withCleanup(manifest: AcpOwnershipManifest, reason: string): AcpOwnershipManifest {
-  return {
-    ...manifest,
-    state: "degraded",
-    cleanup: { attemptedAt: new Date().toISOString(), reason },
-  };
-}
-
-function manifestReference(manifest: AcpOwnershipManifest) {
-  return { workerId: manifest.workerId, runId: manifest.runId, attemptId: manifest.attemptId, state: manifest.state };
+  return stopProcessTree(worker.manifest.worker.pid, deadline);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -781,19 +560,8 @@ async function settleWithin(promise: Promise<void>, timeoutMs: number): Promise<
   await withTimeout(promise, timeoutMs, "cleanup wait elapsed").catch(() => {});
 }
 
-async function waitForTreeDeath(pid: number, timeoutMs: number): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  while (performance.now() < deadline && await treeAlive(pid)) {
-    await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, deadline - performance.now()))));
-  }
-}
-
 function remaining(deadline: number): number {
   return Math.max(0, Math.floor(deadline - performance.now()));
-}
-
-function isMissing(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
 }
 
 function errorMessage(error: unknown): string {

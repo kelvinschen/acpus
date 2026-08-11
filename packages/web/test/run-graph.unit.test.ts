@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { activeEdgeIds, activeFocus, canStartPan, compositeBadge, compositeStrategy, graphItemZIndex, graphNodeTarget, isPanPastThreshold, normalizeSelections, planGraphNavigation, safeParents, selectionsForActiveRuntime, selectorOptionLabel, toRenderModel } from "../src/graph-renderer.js";
+import {
+  activeFocus,
+  compositeBadge,
+  compositeStrategy,
+  graphNodeTarget,
+  normalizeSelections,
+  selectionsForActiveRuntime,
+  selectorOptionLabel,
+  toRenderModel,
+} from "../src/client/graph/model.js";
+import { activeEdgeIds, graphItemZIndex } from "../src/client/graph/layout.js";
+import {
+  canStartPan,
+  isPanPastThreshold,
+  planGraphNavigation,
+} from "../src/client/graph/viewport.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 import type { WebGraphRuntimeState } from "../src/graph-types.js";
 
@@ -40,36 +55,33 @@ function graphOf(partial: GraphInput): WebGraph {
   };
 }
 
-describe("safeParents cycle safety", () => {
-  const ids = (nodes: Array<{ id: string }>) => new Set(nodes.map(n => n.id));
-
+describe("toRenderModel parent safety", () => {
   it("drops a self-referential parent", () => {
-    const nodes = [{ id: "a", parentId: "a" }];
-    expect(safeParents(nodes, ids(nodes)).has("a")).toBe(false);
+    const model = toRenderModel(graphOf({ nodes: [node({ id: "a", parentId: "a" })] }));
+    expect(model.parentOf.has("a")).toBe(false);
   });
 
   it("drops a two-node cycle", () => {
-    const nodes = [
-      { id: "a", parentId: "b" },
-      { id: "b", parentId: "a" },
-    ];
-    expect(safeParents(nodes, ids(nodes)).size).toBe(1);
+    const model = toRenderModel(graphOf({ nodes: [
+      node({ id: "a", parentId: "b" }),
+      node({ id: "b", parentId: "a" }),
+    ] }));
+    expect([...model.parentOf]).toEqual([["a", "b"]]);
   });
 
   it("drops a dangling parent that is not known", () => {
-    const nodes = [{ id: "a", parentId: "ghost" }];
-    expect(safeParents(nodes, ids(nodes)).has("a")).toBe(false);
+    const model = toRenderModel(graphOf({ nodes: [node({ id: "a", parentId: "ghost" })] }));
+    expect(model.parentOf.has("a")).toBe(false);
   });
 
   it("keeps a valid acyclic parent chain", () => {
-    const nodes = [
-      { id: "root_group" },
-      { id: "child", parentId: "root_group" },
-      { id: "grandchild", parentId: "child" },
-    ];
-    const parents = safeParents(nodes, ids(nodes));
-    expect(parents.get("child")).toBe("root_group");
-    expect(parents.get("grandchild")).toBe("child");
+    const model = toRenderModel(graphOf({ nodes: [
+      node({ id: "root_group" }),
+      node({ id: "child", parentId: "root_group" }),
+      node({ id: "grandchild", parentId: "child" }),
+    ] }));
+    expect(model.parentOf.get("child")).toBe("root_group");
+    expect(model.parentOf.get("grandchild")).toBe("child");
   });
 });
 

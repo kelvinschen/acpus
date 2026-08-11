@@ -6,11 +6,11 @@ export type {
   PreparedRunValidationFailure,
   PreparedRunWorkflow,
   RunWorkflowLockArtifact,
-  Sha256Digest,
   WorkflowSourceBundle,
   WorkflowSourceFile,
   WorkflowSourceRef,
 } from "./admission/prepared-workflow.js";
+export type { Sha256Digest } from "./content-digest.js";
 export type { ArtifactRecord } from "./artifacts/types.js";
 export {
   startDaemonLoop,
@@ -26,12 +26,14 @@ export {
   type RuntimeConfigurationFailure,
 } from "./configuration.js";
 export {
-  DAEMON_PROTOCOL_VERSION,
   daemonEndpoint,
   requestDaemonAdmitRun,
   requestDaemonControl,
   requestDaemonShutdown,
   requestDaemonStatus,
+} from "./daemon/client.js";
+export {
+  DAEMON_PROTOCOL_VERSION,
   type DaemonControlIntent,
   type DaemonErrorCode,
   type DaemonShutdownResult,
@@ -39,7 +41,7 @@ export {
   type DaemonControlResult,
   type DaemonClientFailure,
   type DaemonStatus,
-} from "./daemon/socket.js";
+} from "./daemon/protocol.js";
 export {
   deleteRun,
   getArtifact,
@@ -143,7 +145,6 @@ export {
   type WorkflowVisualizationSignalWait,
 } from "./visualization/overlay.js";
 export {
-  type AdmitRunFailure,
   type RunDynamicAttempt,
   type RunDynamicDetails,
   type RunDynamicFrame,
@@ -151,6 +152,9 @@ export {
   type RunDynamicNodeInstance,
   type RunNodeProgress,
   type RunDynamicSignalWait,
+} from "./store/inspection-read-model.js";
+export {
+  type AdmitRunFailure,
   type RunDetails,
   type RunForkInfo,
   type RunRecord,

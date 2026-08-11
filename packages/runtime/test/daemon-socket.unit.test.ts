@@ -1,10 +1,14 @@
+import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { connect, createServer } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PreparedRunWorkflow, Sha256Digest } from "@acpus/runtime";
-import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus, startDaemonServer } from "../src/daemon/socket.js";
+import { daemonEndpoint, requestDaemonAdmitRun, requestDaemonControl, requestDaemonShutdown, requestDaemonStatus } from "../src/daemon/client.js";
+import { startDaemonServer } from "../src/daemon/server.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import {
   openRuntimeStore,
@@ -13,6 +17,7 @@ import {
 import { err, ok, ResultAsync } from "neverthrow";
 
 const runtimeHomeCleanups: Array<() => Promise<void>> = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(runtimeHomeCleanups.splice(0).map(cleanup => cleanup()));
@@ -219,6 +224,106 @@ describe("daemon socket server", () => {
       expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
     } finally {
       await first.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("releases its connection after detecting an occupied endpoint", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-connected-probe-");
+    const endpoint = daemonEndpoint(workspace);
+    await mkdir(dirname(endpoint), { recursive: true });
+    let acceptedSocket: Socket | undefined;
+    const server = createServer({ allowHalfOpen: true }, socket => {
+      acceptedSocket = socket;
+      socket.resume();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(endpoint, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    try {
+      const clientModule = pathToFileURL(join(import.meta.dirname, "../src/daemon/client.ts")).href;
+      const layoutModule = pathToFileURL(join(import.meta.dirname, "../src/runtime-layout.ts")).href;
+      const script = `
+        import { probeDaemonEndpoint } from ${JSON.stringify(clientModule)};
+        import { setRuntimeHomeForTest } from ${JSON.stringify(layoutModule)};
+        const restore = setRuntimeHomeForTest(process.argv[1], process.argv[2]);
+        try {
+          process.stdout.write(String(await probeDaemonEndpoint(process.argv[1])));
+        } finally {
+          restore();
+        }
+      `;
+      const result = await execFileAsync(process.execPath, [
+        "--conditions=development",
+        "--import",
+        import.meta.resolve("tsx"),
+        "--input-type=module",
+        "--eval",
+        script,
+        workspace,
+        resolveRuntimeLayout(workspace).home,
+      ], { timeout: 2_000 });
+      expect(result.stdout).toBe("true");
+    } finally {
+      acceptedSocket?.destroy();
+      await closeRawResponseServer(server);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("ignores an abandoned lock while recovering a stale socket", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-stale-lock-");
+    const endpoint = daemonEndpoint(workspace);
+    await mkdir(dirname(endpoint), { recursive: true });
+    await Promise.all([
+      writeFile(endpoint, "stale socket evidence"),
+      writeFile(`${endpoint}.lock`, "abandoned arbitration"),
+    ]);
+    let server: Awaited<ReturnType<typeof startDaemonServer>> | undefined;
+    try {
+      server = await startDaemonServer(workspace, testHandlers());
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok({
+        status: "ok",
+        pid: process.pid,
+        generation: 1,
+        protocolVersion: 1,
+        packageVersion: "test",
+      }));
+    } finally {
+      await server?.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("serializes competing stale socket recovery", async () => {
+    const workspace = await testWorkspace("acpus-daemon-socket-stale-race-");
+    const endpoint = daemonEndpoint(workspace);
+    await mkdir(dirname(endpoint), { recursive: true });
+    await writeFile(endpoint, "stale socket evidence");
+
+    const starts = await Promise.allSettled([
+      startDaemonServer(workspace, testHandlers()),
+      startDaemonServer(workspace, testHandlers()),
+    ]);
+    const servers = starts.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+    try {
+      expect(servers).toHaveLength(1);
+      const failures = starts.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({ code: "EADDRINUSE" });
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok({
+        status: "ok",
+        pid: process.pid,
+        generation: 1,
+        protocolVersion: 1,
+        packageVersion: "test",
+      }));
+    } finally {
+      await Promise.allSettled(servers.map(server => server.close()));
       await rm(workspace, { recursive: true, force: true });
     }
   });

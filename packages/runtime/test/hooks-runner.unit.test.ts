@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { LoadedHookConfig } from "../src/hooks/config.js";
-import type { HookContext } from "../src/hooks/context.js";
+import type { HookContext } from "../src/hooks/dispatch.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { createHookRunner } from "../src/hooks/runner.js";
 

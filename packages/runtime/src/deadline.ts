@@ -22,3 +22,10 @@ export function tryParsePersistedDeadline(value: string): Result<Date, Persisted
     ? ok(deadline)
     : err({ type: "invalid-persisted-deadline", value });
 }
+
+export function requirePersistedDeadline(value: string, subject: string): string {
+  if (tryParsePersistedDeadline(value).isErr()) {
+    throw new Error(`${subject} has invalid persisted deadline ${JSON.stringify(value)}.`);
+  }
+  return value;
+}

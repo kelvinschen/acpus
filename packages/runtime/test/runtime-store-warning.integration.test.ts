@@ -14,16 +14,18 @@ describe("runtime SQLite warning", () => {
     await Promise.all(temporaryPaths.splice(0).map(path => rm(path, { recursive: true, force: true })));
   });
 
-  it("suppresses only the SQLite experimental warning during store initialization", async () => {
+  it("suppresses only the SQLite experimental warning during package import and store initialization", async () => {
     const [workspace, home] = await Promise.all([
       mkdtemp(join(tmpdir(), "acpus-runtime-sqlite-warning-")),
       mkdtemp(join(tmpdir(), "acpus-runtime-sqlite-warning-home-")),
     ]);
     temporaryPaths.push(workspace, home);
+    const runtimeModule = pathToFileURL(join(import.meta.dirname, "../src/index.ts")).href;
     const storeModule = pathToFileURL(join(import.meta.dirname, "../src/store/store.ts")).href;
     const script = `
-      import { openRuntimeStore } from ${JSON.stringify(storeModule)};
       const emitWarning = process.emitWarning;
+      await import(${JSON.stringify(runtimeModule)});
+      const { openRuntimeStore } = await import(${JSON.stringify(storeModule)});
       const store = await openRuntimeStore(process.argv[1]);
       store.close();
       if (process.emitWarning !== emitWarning) throw new Error("process.emitWarning was not restored");

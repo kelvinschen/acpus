@@ -3,25 +3,21 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { checkWorkflow, type WorkflowCheckResult } from "../check/runner.js";
+import type { WorkflowCheckResult } from "../check/runner.js";
 import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
 import { sha256Digest, type Sha256Digest } from "../digest.js";
 import {
-  capturePathSource,
-  exposeWorkspaceDependencies,
-  materializeCapturedSource,
-  materializeFilesSource,
-  remapDiagnostics,
-  resolvePathSource,
+  mergeSourceDiagnostics,
+  remapSourceDiagnostics,
   type SourcePreparationFailure,
-  validateFilesSource,
-  validateFrozenClosure,
-  workspaceSourceGraph,
-  type FrozenSource,
   type WorkflowSourceBundle,
   type WorkflowSourceInput,
   type WorkflowSourceRef,
-} from "./source.js";
+} from "./source-model.js";
+import {
+  prepareWorkflowSource,
+  type WorkflowSourcePreparationFailure,
+} from "./source-preparation.js";
 import { createScratchDir } from "./temp.js";
 
 export type { Sha256Digest } from "../digest.js";
@@ -30,7 +26,7 @@ export type {
   WorkflowSourceFile,
   WorkflowSourceInput,
   WorkflowSourceRef,
-} from "./source.js";
+} from "./source-model.js";
 
 export type WorkflowPreparationOptions = {
   workspaceDir: string;
@@ -71,8 +67,7 @@ export type PreparedWorkflow =
     };
 
 export type WorkflowPreparationFailure =
-  | SourcePreparationFailure
-  | { type: "check-failed"; phase: "check"; message: string; diagnostics: WorkflowIR["diagnostics"] }
+  | WorkflowSourcePreparationFailure
   | { type: "compile-failed"; phase: "compile"; message: string; failure: CompileWorkerFailure }
   | (PackageLockFailure & { phase: "lock" })
   | { type: "validate-failed"; phase: "validate"; message: string; diagnostics: WorkflowIR["diagnostics"]; ir: WorkflowIR };
@@ -112,102 +107,20 @@ async function prepareWorkflowResult(
   if (input.isErr()) return err(input.error);
   const scratchDir = await createScratchDir();
   try {
-    if (input.value.source.kind === "files") {
-      const validated = validateFilesSource(input.value.source);
-      if (validated.isErr()) return err(validated.error);
-      const frozen = await materializeFilesSource(
-        scratchDir,
-        input.value.workspaceDir,
-        validated.value.entry,
-        validated.value.files,
-      );
-      return await prepareFrozenWorkflow(input.value.workspaceDir, scratchDir, frozen);
-    }
-
-    const resolved = await resolvePathSource(input.value.workspaceDir, input.value.source.entry);
-    if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "workspace") {
-      const checkedWorkflow = await checkWorkflow(resolved.value.entryPath, input.value.workspaceDir, scratchDir);
-      const check = {
-        ...checkedWorkflow,
-        diagnostics: sanitizeDiagnostics(checkedWorkflow.diagnostics, scratchDir),
-      };
-      const checked = checkFailure(check);
-      if (checked) return err(checked);
-      const graph = await workspaceSourceGraph(
-        check,
-        resolved.value.sourceRoot,
-        resolved.value.source.entry,
-      );
-      if (graph.isErr()) return err(graph.error);
-      return await compilePreparedWorkflow({
-        workspaceDir: input.value.workspaceDir,
-        scratchDir,
-        check,
-        entryPath: resolved.value.entryPath,
-        sourceRoot: resolved.value.sourceRoot,
-        source: resolved.value.source,
-        sourceGraphDigest: graph.value.sourceGraphDigest,
-      });
-    }
-
-    await exposeWorkspaceDependencies(scratchDir, input.value.workspaceDir);
-    const discoveredWorkflow = await checkWorkflow(
-      resolved.value.entryPath,
-      input.value.workspaceDir,
+    const source = await prepareWorkflowSource({
+      workspaceDir: input.value.workspaceDir,
       scratchDir,
-      { dependencyFallback: true },
-    );
-    const discovery = {
-      ...discoveredWorkflow,
-      diagnostics: sanitizeDiagnostics(discoveredWorkflow.diagnostics, scratchDir),
-    };
-    const discoveryFailure = checkFailure(discovery);
-    if (discoveryFailure) return err(discoveryFailure);
-    const captured = await capturePathSource(discovery, resolved.value.entryPath);
-    if (captured.isErr()) return err(captured.error);
-    const frozen = await materializeCapturedSource(
+      source: input.value.source,
+    });
+    if (source.isErr()) return err(source.error);
+    return await compilePreparedWorkflow({
+      workspaceDir: input.value.workspaceDir,
       scratchDir,
-      input.value.workspaceDir,
-      captured.value,
-      resolved.value.displayEntry,
-    );
-    return await prepareFrozenWorkflow(input.value.workspaceDir, scratchDir, frozen);
+      ...source.value,
+    });
   } finally {
     await rm(scratchDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   }
-}
-
-async function prepareFrozenWorkflow(
-  workspaceDir: string,
-  scratchDir: string,
-  frozen: FrozenSource,
-): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
-  const check = await checkWorkflow(frozen.entryPath, workspaceDir, scratchDir);
-  const authoritativeDiagnostics = sanitizeDiagnostics(
-    remapDiagnostics(check.diagnostics, frozen.sourceRoot),
-    scratchDir,
-  );
-  const diagnostics = mergeDiagnostics(
-    frozen.discoveryDiagnostics ?? [],
-    authoritativeDiagnostics,
-  );
-  const checked = checkFailure({ ...check, diagnostics });
-  if (checked) return err(checked);
-  const closure = validateFrozenClosure(check, frozen);
-  if (closure.isErr()) return err(closure.error);
-  return compilePreparedWorkflow({
-    workspaceDir,
-    scratchDir,
-    check: { ...check, diagnostics },
-    entryPath: frozen.entryPath,
-    sourceRoot: frozen.sourceRoot,
-    source: frozen.source,
-    sourceBundle: frozen.sourceBundle,
-    sourceGraphDigest: frozen.sourceGraphDigest,
-    diagnosticSourceRoot: frozen.sourceRoot,
-    displayEntry: frozen.displayEntry,
-  });
 }
 
 async function compilePreparedWorkflow(input: {
@@ -246,12 +159,12 @@ async function compilePreparedWorkflow(input: {
   }
 
   const rawCompilerDiagnostics = input.diagnosticSourceRoot
-    ? remapDiagnostics(compiled.value.ir.diagnostics, input.diagnosticSourceRoot)
+    ? remapSourceDiagnostics(compiled.value.ir.diagnostics, input.diagnosticSourceRoot)
     : compiled.value.ir.diagnostics;
   const compilerDiagnostics = sanitizeDiagnostics(rawCompilerDiagnostics, input.scratchDir);
   const ir: WorkflowIR = {
     ...compiled.value.ir,
-    diagnostics: mergeDiagnostics(
+    diagnostics: mergeSourceDiagnostics(
       input.check.diagnostics.filter(diagnostic => diagnostic.severity === "warning"),
       compilerDiagnostics,
     ),
@@ -315,19 +228,6 @@ function validatePreparationOptions(
   return ok({ workspaceDir: resolve(options.workspaceDir), source });
 }
 
-function checkFailure(
-  check: WorkflowCheckResult,
-): Extract<WorkflowPreparationFailure, { type: "check-failed" }> | undefined {
-  return check.diagnostics.some(diagnostic => diagnostic.severity === "error")
-    ? {
-        type: "check-failed",
-        phase: "check",
-        message: "Workflow check failed.",
-        diagnostics: check.diagnostics,
-      }
-    : undefined;
-}
-
 function buildLock(
   source: WorkflowSourceRef,
   entryDigest: Sha256Digest,
@@ -349,28 +249,6 @@ function buildLock(
     sourceGraphDigest: graphDigest,
     ...(packageLockDigest ? { packageLockDigest } : {}),
   };
-}
-
-function mergeDiagnostics(
-  first: readonly DiagnosticIR[],
-  second: readonly DiagnosticIR[],
-): DiagnosticIR[] {
-  const seen = new Set<string>();
-  return [...first, ...second].filter(diagnostic => {
-    const key = JSON.stringify([
-      diagnostic.code,
-      diagnostic.severity,
-      diagnostic.message,
-      diagnostic.path,
-      diagnostic.source?.file,
-      diagnostic.source?.line,
-      diagnostic.source?.column,
-      diagnostic.hint,
-    ]);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 function remapCompileFailure(

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentExecutionRefetchInterval,
   commandForControl,
   confirmationForControl,
   controlStateForRun,
-  nodeInspectionRefetchInterval,
   retryCommandTarget,
   retryTargetsForControls,
-} from "../src/client/ui/App.js";
+} from "../src/client/ui/RunControls.js";
+import {
+  agentExecutionRefetchInterval,
+  nodeInspectionRefetchInterval,
+} from "../src/client/ui/RunInspector.js";
 
 describe("runtime run controls", () => {
   it("shows pause and cancel for active runs", () => {

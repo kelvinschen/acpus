@@ -6,7 +6,7 @@ import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { stableJson } from "../src/stable-json.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { awaitingSignal, dbRow, dbScalar } from "./support/store-port-fixtures.js";
+import { awaitingSignal, dbRow, dbRun, dbScalar } from "./support/store-port-fixtures.js";
 
 describe("scheduler store signals and timeout settlement", () => {
   it("consumes signal waits idempotently through scheduler events", async () => {
@@ -401,6 +401,33 @@ describe("scheduler store signals and timeout settlement", () => {
         expect(projection.signalWaits[nodeKey]).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
         expect(projection.frames.root).toMatchObject({ status: "failed", terminalReason: "signal_timeout" });
         expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("preserves the scheduler diagnostic for missing frozen workflows", async () => {
+    await withRuntimeWorkspace("scheduler-store-signal-timeout-missing-frozen-workflow", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const nodeKey = awaitingRootSignal(store, run.id, claim, "signal-timeout-corrupt-awaiting", {
+          deadlineAt: "2026-07-01T00:00:00.000Z",
+        });
+        dbRun(workspace, "DELETE FROM run_inputs WHERE run_id = ?", run.id);
+
+        expect(() => throwingSchedulerStore(store.scheduler).consumeSignal({
+          runId: run.id,
+          nodeKey,
+          ownerEpoch: claim.ownerEpoch,
+          payload: { ok: true },
+          commandIdempotencyKey: "late-signal-command",
+          idempotencyKey: "signal-timeout:corrupt-consume",
+          now: new Date("2026-07-01T00:00:01.000Z"),
+        })).toThrow(`Run '${run.id}' has no frozen workflow.`);
       } finally {
         store.close();
       }

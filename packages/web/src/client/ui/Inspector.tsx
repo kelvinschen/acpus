@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { collapseAllNested, defaultStyles, JsonView } from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
 import Copy from "lucide-react/dist/esm/icons/copy.js";
+import Boxes from "lucide-react/dist/esm/icons/boxes.js";
+import CircleAlert from "lucide-react/dist/esm/icons/circle-alert.js";
+import LoaderCircle from "lucide-react/dist/esm/icons/loader-circle.js";
 import XCircle from "lucide-react/dist/esm/icons/circle-x.js";
+import { Alert } from "./shadcn/alert.js";
 import { Button } from "./shadcn/button.js";
 import { Card } from "./shadcn/card.js";
 
@@ -135,5 +139,32 @@ export function KeyValue({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+export function StateBlock({ tone, title, detail }: { tone: "loading" | "empty" | "error"; title: string; detail?: string }) {
+  const icon = tone === "loading"
+    ? <LoaderCircle size={16} />
+    : tone === "error"
+      ? <CircleAlert size={16} />
+      : <Boxes size={16} />;
+  return (
+    <Alert
+      className={`state-block ${tone}`}
+      role={tone === "error" ? "alert" : tone === "loading" ? "status" : undefined}
+      aria-busy={tone === "loading" ? true : undefined}
+    >
+      <span className="state-block-icon">{icon}</span>
+      <div>
+        <strong>{title}</strong>
+        {detail && <p>{detail}</p>}
+        {tone === "loading" && (
+          <div className="state-skeleton" aria-hidden="true">
+            <span className="state-skeleton-line" />
+            <span className="state-skeleton-line short" />
+          </div>
+        )}
+      </div>
+    </Alert>
   );
 }

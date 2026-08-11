@@ -6,7 +6,7 @@ import type {
   RunDynamicSignalWait,
   RunExecutionMetadata,
   RunNodeProgress,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
 import type {
   RunInspectionControl,
   RunInspectionItem,

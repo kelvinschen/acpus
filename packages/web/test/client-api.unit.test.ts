@@ -56,6 +56,19 @@ describe("Web API transport", () => {
     });
   });
 
+  it("classifies unreadable JSON response bodies as network failures", async () => {
+    const response = new Response("");
+    vi.spyOn(response, "text").mockRejectedValue(new Error("response stream lost"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const failure = await listRuns().catch(error => error);
+    expect(failure).toBeInstanceOf(WebApiError);
+    expect(failure.failure).toEqual({
+      type: "network-failed",
+      message: "response stream lost",
+    });
+  });
+
   it("preserves a valid server error envelope", async () => {
     respondJson({
       ok: false,
@@ -362,6 +375,17 @@ describe("Web API transport", () => {
 
     await expect(getArtifactPreview("run_1", "artifact_1")).rejects.toMatchObject({
       failure: { type: "request-failed", status: 500, code: "artifact_corrupt", message: "Artifact is corrupt." },
+    });
+  });
+
+  it("uses the public Web API error for artifact network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("artifact connection lost")));
+
+    const failure = await getArtifactContent("run_1", "artifact_1").catch(error => error);
+    expect(failure).toBeInstanceOf(WebApiError);
+    expect(failure.failure).toEqual({
+      type: "network-failed",
+      message: "artifact connection lost",
     });
   });
 });

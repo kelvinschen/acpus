@@ -1,4 +1,5 @@
-import type { RunDetails, RunDynamicFrame } from "../store/store.js";
+import type { RunDynamicFrame } from "../store/inspection-read-model.js";
+import type { RunDetails } from "../store/store.js";
 
 /** Whether an awaiting Signal prevents this subject from making progress. */
 export function signalBlocksInspectionTarget(run: RunDetails, nodeKey: string): boolean {

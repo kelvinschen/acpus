@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import type { Sha256Digest } from "../digest.js";
 import { tryCompileWorkflowModule } from "./module.js";
-import type { CompileWorkerEnvelope } from "./worker.js";
+import type { CompileWorkerEnvelope } from "./worker-protocol.js";
 
 const [entry, out, sourceRoot, dependencyRoot, expectedSourceDigest] = process.argv.slice(2);
 

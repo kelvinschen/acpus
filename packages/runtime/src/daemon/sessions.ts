@@ -1,15 +1,15 @@
 import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect, type SchedulerControlFailure } from "../scheduler/control.js";
 import {
   createRuntimeRunScheduler,
-  dispatchCommittedHooksForRun,
   type RunExecution,
   type RunExecutionExit,
   type RunExecutionFailure,
   type RuntimeRunScheduler,
 } from "../scheduler/runtime-runner.js";
+import { dispatchCommittedHooksForRun } from "../hooks/dispatch.js";
 import type { HookRunner } from "../hooks/runner.js";
 import type { ForkRunFailure, RunDetails, RuntimeStore } from "../store/store.js";
-import type { DaemonControlIntent, DaemonControlResult } from "./socket.js";
+import type { DaemonControlIntent, DaemonControlResult } from "./protocol.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";

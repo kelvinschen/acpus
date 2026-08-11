@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Boxes from "lucide-react/dist/esm/icons/boxes.js";
 import type { WebGraph, WorkflowVisualizationResult } from "../api.js";
-import { graphContextLabel } from "../../graph-renderer.js";
+import { graphContextLabel } from "../graph/model.js";
 import { GraphWorkspace, type GraphInspectionTarget } from "./GraphWorkspace.js";
 import { InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
 import { NodeDefinitionSection } from "./NodeDefinition.js";

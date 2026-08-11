@@ -6,9 +6,9 @@ import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.j
 import { resolutionErrorPayload, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "./identity.js";
 import type { SchedulerEvent } from "./events.js";
+import { parseLoopTransition } from "./loop-transition.js";
 import type { FrameKind, GroupMember, InstancePath, InstancePathSegment, SchedulerFrame, SchedulerProjection } from "./types.js";
 import { baseScopeForFrame, completedScopeForFrame, scopeWithFanoutItem, scopeWithLoopIteration, scopeWithNodeOutput } from "./scope.js";
-import { nextLoopStep } from "./transitions.js";
 
 type ScopeIR = WorkflowIR["root"];
 type ScopeFrame = {
@@ -24,6 +24,19 @@ type NodeState =
   | { status: "completed"; output?: JsonValue }
   | { status: "failed"; error?: JsonObject; reason?: string }
   | { status: "cancelled"; reason?: string };
+
+type LoopNextStep =
+  | { action: "start_iteration"; iter: number; state?: JsonValue }
+  | { action: "complete"; output: JsonValue; terminalReason: "stopped" }
+  | { action: "fail"; error: JsonObject; terminalReason: "invalid_loop_transition" };
+
+function nextLoopStep(input: { iter: number; transition?: JsonValue }): LoopNextStep {
+  const transition = parseLoopTransition(input.transition);
+  if (!transition.ok) return { action: "fail", error: { reason: "invalid_loop_transition", message: transition.message }, terminalReason: "invalid_loop_transition" };
+  return transition.stop
+    ? { action: "complete", output: transition.state, terminalReason: "stopped" }
+    : { action: "start_iteration", iter: input.iter + 1, state: transition.state };
+}
 
 export function bootstrapRootEvents(runId: string, ir: WorkflowIR, scope: EvaluationScope = {}): SchedulerEvent[] {
   const rootFrame = {

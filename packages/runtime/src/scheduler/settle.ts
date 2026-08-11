@@ -3,8 +3,10 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { continueRootEvents } from "./materialize.js";
 import type { SchedulerEvent } from "./events.js";
+import { attemptTimeoutEvents, signalTimeoutEvents } from "./deadline-events.js";
+import { nextGroupCompletionBatchEvents } from "./group-policy.js";
 import type { SchedulerSnapshot } from "./store-port.js";
-import { applySchedulerEvents, attemptTimeoutEvents, nextGroupCompletionBatchEvents, signalTimeoutEvents } from "./transitions.js";
+import { applySchedulerEvents } from "./transitions.js";
 import type { SchedulerProjection } from "./types.js";
 
 export type FrozenSchedulerRun = {

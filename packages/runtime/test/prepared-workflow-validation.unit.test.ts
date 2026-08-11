@@ -8,9 +8,9 @@ import {
   tryValidatePreparedRunWorkflow,
   type PreparedRunValidationFailure,
   type PreparedRunWorkflow,
-  type Sha256Digest,
   type WorkflowSourceFile,
 } from "../src/admission/prepared-workflow.js";
+import type { Sha256Digest } from "../src/content-digest.js";
 import { stableJson } from "../src/stable-json.js";
 
 type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;

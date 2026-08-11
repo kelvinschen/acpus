@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventEmitter as NodeEventEmitter } from "node:events";
 import type { LoadedHookConfig } from "../src/hooks/config.js";
-import type { HookContext } from "../src/hooks/context.js";
+import type { HookContext } from "../src/hooks/dispatch.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 
 const fake = vi.hoisted(() => ({

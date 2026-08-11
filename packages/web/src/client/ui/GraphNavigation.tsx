@@ -2,8 +2,14 @@ import { useMemo, useState } from "react";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.js";
 import Rows3 from "lucide-react/dist/esm/icons/rows-3.js";
 import Search from "lucide-react/dist/esm/icons/search.js";
-import type { GraphNavigationIntent, GraphViewport, PlacedBox, RenderLayout, RenderModel, RenderItem } from "../../graph-renderer.js";
-import { graphContextLabel, isCompositeKind } from "../../graph-renderer.js";
+import {
+  graphContextLabel,
+  isCompositeKind,
+  type RenderItem,
+  type RenderModel,
+} from "../graph/model.js";
+import type { PlacedBox, RenderLayout } from "../graph/layout.js";
+import type { GraphNavigationIntent, GraphViewport } from "../graph/viewport.js";
 import { Breadcrumb, BreadcrumbButton, BreadcrumbItem, BreadcrumbList, BreadcrumbSeparator } from "./shadcn/breadcrumb.js";
 import { Button } from "./shadcn/button.js";
 import { Input } from "./shadcn/input.js";

@@ -1,17 +1,11 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
-import { staticExprShape } from "@acpus/expression/ir";
-import { tryPrepareWorkflow, type WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type {
   ProjectWorkflowCatalogEntry,
   WorkflowFiles,
-  WorkflowVisualizationResult,
   WorkflowVisualizationSource,
-} from "../api-types.js";
-import { workflowIrToWebGraph } from "./graph.js";
-import { staticVizCss, staticVizJs } from "./static-viz-assets.generated.js";
+} from "../../api-types.js";
 
 export type WorkflowBrowseFailure = {
   type: "workflow-browse-invalid";
@@ -19,16 +13,12 @@ export type WorkflowBrowseFailure = {
   message: string;
 };
 
-type WorkflowSourceFailure = {
+export type WorkflowSourceFailure = {
   type: "workflow-source-invalid";
   reason: "outside-workspace" | "not-found" | "not-file" | "unsupported-extension";
   phase: "source";
   message: string;
 };
-
-type WorkflowVisualizationFailure = WorkflowSourceFailure | WorkflowPreparationFailure;
-
-type ReadyWorkflowVisualization = Extract<WorkflowVisualizationResult, { status: "ready" }>;
 
 const workflowCatalogName = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -97,72 +87,7 @@ async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result
   });
 }
 
-export function tryVisualizeWorkflowSource(
-  cwd: string,
-  source: WorkflowVisualizationSource,
-): ResultAsync<ReadyWorkflowVisualization, WorkflowVisualizationFailure> {
-  return resolveWorkflowSource(cwd, source)
-    .andThen(workflow => tryPrepareWorkflow({
-      workspaceDir: cwd,
-      source: { kind: "path", entry: workflow },
-    }))
-    .map(prepared => staticWorkflowVisualization(prepared.ir, prepared.sourceGraphDigest));
-}
-
-function staticWorkflowVisualization(ir: WorkflowIR, sourceGraphDigest: string): ReadyWorkflowVisualization {
-  return {
-    status: "ready",
-    graph: workflowIrToWebGraph(ir),
-    workflow: {
-      name: ir.name,
-      ...(ir.description === undefined ? {} : { description: ir.description }),
-      agents: ir.agents,
-      irVersion: ir.irVersion,
-      nodeCount: Array.from(walkNodes(ir.root)).length,
-    },
-    contract: {
-      ...(ir.inputSchema === undefined ? {} : { inputSchema: ir.inputSchema }),
-      output: ir.root.output,
-      outputShape: staticExprShape(ir.root.output),
-    },
-    sourceGraphDigest,
-  };
-}
-
-export type WorkflowVizHtmlOptions = {
-  ir: WorkflowIR;
-  sourceGraphDigest: string;
-};
-
-export function renderWorkflowVizHtml(options: WorkflowVizHtmlOptions): string {
-  const { graph, workflow, contract, sourceGraphDigest } =
-    staticWorkflowVisualization(options.ir, options.sourceGraphDigest);
-  const bundle = { graph, workflow, contract, sourceGraphDigest };
-  const bundleJson = JSON.stringify(bundle).replaceAll("</", "<\\/");
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(workflow.name)}</title>
-<style>
-${staticVizCss}
-</style>
-</head>
-<body>
-<div id="root"></div>
-<script>
-window.__ACPUS_WORKFLOW_VIZ__=${bundleJson};
-</script>
-<script>
-${staticVizJs}
-</script>
-</body>
-</html>
-`;
-}
-
-function resolveWorkflowSource(
+export function resolveWorkflowSource(
   cwd: string,
   source: WorkflowVisualizationSource,
 ): ResultAsync<string, WorkflowSourceFailure> {
@@ -254,10 +179,6 @@ async function isContainedFile(path: string, root: string): Promise<boolean> {
 function isContainedPath(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\"", "&quot;");
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

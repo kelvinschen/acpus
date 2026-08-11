@@ -57,16 +57,27 @@ function openRuntimeDatabaseUnchecked(
   path: string,
   options: { readOnly?: boolean; immutable?: boolean },
 ): DatabaseSync {
-  const DatabaseSync = loadDatabaseSync();
   const location = options.immutable ? pathToFileURL(path) : path;
   if (location instanceof URL) location.searchParams.set("immutable", "1");
-  const db = new DatabaseSync(location, {
+  const db = openSqliteDatabase(location, {
     enableForeignKeyConstraints: true,
     readOnly: options.readOnly ?? false,
     timeout: RUNTIME_STORE_BUSY_TIMEOUT_MS,
   });
   db.exec("PRAGMA foreign_keys = ON;");
   return db;
+}
+
+export function openSqliteDatabase(
+  location: string | URL,
+  options: {
+    enableForeignKeyConstraints?: boolean;
+    readOnly?: boolean;
+    timeout?: number;
+  } = {},
+): DatabaseSync {
+  const DatabaseSync = loadDatabaseSync();
+  return new DatabaseSync(location, options);
 }
 
 export async function validateRuntimeDatabasePaths(path: string): Promise<boolean> {
@@ -223,6 +234,20 @@ export function runtimeDatabaseFormat(db: DatabaseSync): RuntimeDatabaseFormat {
 export function assertRuntimeDatabaseFormat(format: RuntimeDatabaseFormat, path: string): void {
   if (format.applicationId === RUNTIME_APPLICATION_ID && format.userVersion === RUNTIME_STORAGE_VERSION) return;
   throw new IncompatibleRuntimeDatabaseError(path, format.applicationId, format.userVersion);
+}
+
+export function rollbackDatabaseTransaction(
+  db: DatabaseSync,
+  transactionStarted: boolean,
+  failure: unknown,
+): unknown {
+  if (!transactionStarted) return failure;
+  try {
+    db.exec("ROLLBACK");
+    return failure;
+  } catch (rollbackError) {
+    return new AggregateError([failure, rollbackError], "Operation failed and its database transaction could not be rolled back.");
+  }
 }
 
 function loadDatabaseSync(): typeof import("node:sqlite").DatabaseSync {

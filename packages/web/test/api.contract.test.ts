@@ -35,8 +35,8 @@ vi.mock("@acpus/runtime", () => ({
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
 }));
 
-vi.mock("../src/server/workflows.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/server/workflows.js")>(),
+vi.mock("../src/server/workflows/visualization.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/server/workflows/visualization.js")>(),
   tryVisualizeWorkflowSource: (...args: unknown[]) => mockTryVisualizeWorkflowSource(...args),
 }));
 

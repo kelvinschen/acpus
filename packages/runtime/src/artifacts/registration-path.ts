@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { isContainedPath } from "../path-containment.js";
 
 export function resolveArtifactRegistrationPath(input: {
   runDir: string;
@@ -27,9 +28,4 @@ export function resolveArtifactRegistrationPath(input: {
     return undefined;
   }
   return artifactPath;
-}
-
-function isContainedPath(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }

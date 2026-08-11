@@ -138,9 +138,11 @@ type SignalWait = {
   terminalReason?: string;
 };
 
+export type SchedulerRunStatus = "pending" | "running" | "awaiting" | "paused" | "completed" | "failed" | "canceled";
+
 type SchedulerRunProjection = {
   runId: string;
-  status: "pending" | "running" | "awaiting" | "paused" | "completed" | "failed" | "canceled";
+  status: SchedulerRunStatus;
   paused: boolean;
 };
 

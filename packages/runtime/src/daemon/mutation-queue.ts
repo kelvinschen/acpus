@@ -19,4 +19,8 @@ export class RuntimeMutationQueue {
   isIdle(): boolean {
     return this.depth === 0;
   }
+
+  async drain(): Promise<void> {
+    await this.tail;
+  }
 }

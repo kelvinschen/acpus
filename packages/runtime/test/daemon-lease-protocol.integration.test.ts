@@ -123,12 +123,12 @@ describe.concurrent("daemon lease socket protocol", () => {
   it("uses socket binding as the single-instance authority", async () => {
     await withDaemonLeaseWorkspace(async ({ dir }) => {
       const loop = await startDaemonLoop(dir, {
-        heartbeatMs: 50,
+        heartbeatMs: 1,
         packageVersion: "0.0.0-test",
       });
       try {
         await expect(startDaemonLoop(dir, {
-          heartbeatMs: 50,
+          heartbeatMs: 1,
           packageVersion: "0.0.0-test",
         })).rejects.toMatchObject({ code: "EADDRINUSE" });
         await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });

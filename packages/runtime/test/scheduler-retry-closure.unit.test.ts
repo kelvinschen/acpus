@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { appendBranch, appendFanoutItem, appendNode } from "../src/scheduler/identity.js";
-import { applySchedulerEvents, createSchedulerProjection, nextGroupCompletionBatchEvents, targetedRetryDependencyBlocker, targetedRetryGroupAssessment, targetedRetryGroupBlocker } from "../src/scheduler/transitions.js";
+import { nextGroupCompletionBatchEvents, targetedRetryGroupAssessment } from "../src/scheduler/group-policy.js";
+import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { GroupMember, GroupMemberStatus, GroupProjection } from "../src/scheduler/types.js";
 
 describe("scheduler retry completion closure", () => {
@@ -285,70 +286,34 @@ describe("scheduler retry completion closure", () => {
 
   it("rejects only prospective group states that cannot run the retried path", () => {
     const all = parallelGroup("all");
-    expect(targetedRetryGroupBlocker(
+    expect(targetedRetryGroupAssessment(
       all,
       [branchMember("target", "failed"), branchMember("independent", "failed")],
-      new Set(["target"]),
-    )).toEqual({ status: "failed", reason: "member_failed" });
-    expect(targetedRetryGroupBlocker(
+      new Set(),
+    ).blockerFor("target")).toEqual({ status: "failed", reason: "member_failed" });
+    expect(targetedRetryGroupAssessment(
       all,
       [branchMember("target", "failed"), branchMember("dependency", "cancelled", { terminalReason: "parent_failed" })],
-      new Set(["target", "dependency"]),
-    )).toBeUndefined();
+      new Set(["dependency"]),
+    ).blockerFor("target")).toBeUndefined();
 
-    expect(targetedRetryGroupBlocker(
+    expect(targetedRetryGroupAssessment(
       parallelGroup("race"),
       [branchMember("target", "failed"), branchMember("winner", "completed", { completionSequence: 1 })],
-      new Set(["target"]),
-    )).toEqual({ status: "completed", reason: "group_would_complete_without_retry" });
+      new Set(),
+    ).blockerFor("target")).toEqual({ status: "completed", reason: "group_would_complete_without_retry" });
 
     const quorum = fanoutQuorum(2);
-    expect(targetedRetryGroupBlocker(
+    expect(targetedRetryGroupAssessment(
       quorum,
       [fanoutMember("target", 0, "failed"), fanoutMember("done", 1, "completed", { completionSequence: 1 }), fanoutMember("independent", 2, "failed")],
-      new Set(["target"]),
-    )).toBeUndefined();
-    expect(targetedRetryGroupBlocker(
+      new Set(),
+    ).blockerFor("target")).toBeUndefined();
+    expect(targetedRetryGroupAssessment(
       fanoutQuorum(3),
       [fanoutMember("target", 0, "failed"), fanoutMember("done", 1, "completed", { completionSequence: 1 }), fanoutMember("independent", 2, "failed")],
-      new Set(["target"]),
-    )).toEqual({ status: "failed", reason: "quorum_impossible" });
-
-    for (const [group, members, dependencies] of [
-      [
-        all,
-        [
-          branchMember("target", "failed", { terminalReason: "target_failed" }),
-          branchMember("independent", "failed", { terminalReason: "independent_failed" }),
-          branchMember("dependency", "cancelled", { terminalReason: "parent_failed" }),
-        ],
-        new Set(["dependency"]),
-      ],
-      [
-        parallelGroup("race"),
-        [
-          branchMember("target", "failed"),
-          branchMember("winner", "completed", { completionSequence: 1 }),
-        ],
-        new Set<string>(),
-      ],
-      [
-        fanoutQuorum(3),
-        [
-          fanoutMember("target", 0, "failed"),
-          fanoutMember("done", 1, "completed", { completionSequence: 1 }),
-          fanoutMember("dependency", 2, "cancelled", { terminalReason: "parent_failed" }),
-        ],
-        new Set(["dependency"]),
-      ],
-    ] satisfies Array<[GroupProjection, GroupMember[], Set<string>]>) {
-      expect(targetedRetryGroupAssessment(group, members, dependencies).blockerFor("target"))
-        .toEqual(targetedRetryGroupBlocker(
-          group,
-          members,
-          new Set(["target", ...dependencies]),
-        ));
-    }
+      new Set(),
+    ).blockerFor("target")).toEqual({ status: "failed", reason: "quorum_impossible" });
   });
 
   it("preserves corruption invariants in the batched assessment", () => {
@@ -369,29 +334,6 @@ describe("scheduler retry completion closure", () => {
       .toThrow("Retry group 'group' contains duplicate member identity 'target'.");
   });
 
-  it("rejects retry dependencies whose backing state cannot be scheduled", () => {
-    const frameDependency = applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "group.started", payload: { runId: "run_1", groupKey: "group", nodeKey: "group", nodeId: "group", kind: "parallel", strategy: "all" } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "member", frameKind: "branch", parentFrameKey: "group" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "group", memberKey: "member", childFrameKey: "member", memberKind: "branch", branchId: "member", readinessSequence: 1 } },
-    ]);
-    frameDependency.frames.member!.status = "ready";
-    expect(() => targetedRetryDependencyBlocker(frameDependency, ["member"]))
-      .toThrow("Retry dependency frame 'member' has non-runnable status 'ready'.");
-
-    const instanceDependency = applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "group.started", payload: { runId: "run_1", groupKey: "group", nodeKey: "group", nodeId: "group", kind: "parallel", strategy: "all" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "group", memberKey: "member", memberKind: "branch", branchId: "member", readinessSequence: 1 } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "member", nodeId: "member", instancePath: [] } },
-    ]);
-    instanceDependency.instances.member!.status = "pending";
-    expect(() => targetedRetryDependencyBlocker(instanceDependency, ["member"]))
-      .toThrow("Retry dependency instance 'member' has non-runnable status 'pending'.");
-
-    delete instanceDependency.instances.member;
-    expect(() => targetedRetryDependencyBlocker(instanceDependency, ["member"]))
-      .toThrow("Retry dependency member 'member' has no runnable backing state.");
-  });
 });
 
 function parallelGroup(strategy: "all" | "race"): GroupProjection {

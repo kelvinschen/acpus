@@ -4,6 +4,10 @@ export function stableJson(value: unknown): string {
   return json;
 }
 
+export function stableJsonLine(value: unknown): string {
+  return `${stableJson(value)}\n`;
+}
+
 export function pruneUndefined(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(pruneUndefined);
   if (!value || typeof value !== "object") return value;

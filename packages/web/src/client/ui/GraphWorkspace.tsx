@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { WebGraph } from "../api.js";
-import type { GraphNodeTarget } from "../../graph-renderer.js";
+import type { GraphNodeTarget } from "../graph/model.js";
 import { InspectorPanel } from "./Inspector.js";
 import { RunGraph } from "./RunGraph.js";
 import { useInspectorPresence } from "./useInspectorPresence.js";

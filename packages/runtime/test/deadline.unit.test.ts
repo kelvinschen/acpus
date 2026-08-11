@@ -1,6 +1,6 @@
 import { err, ok } from "neverthrow";
 import { describe, expect, it } from "vitest";
-import { tryCreateDeadline, tryParsePersistedDeadline } from "../src/deadline.js";
+import { requirePersistedDeadline, tryCreateDeadline, tryParsePersistedDeadline } from "../src/deadline.js";
 
 describe("persisted deadlines", () => {
   it("creates canonical four-digit-year ISO dates", () => {
@@ -27,5 +27,12 @@ describe("persisted deadlines", () => {
     ]) {
       expect(tryParsePersistedDeadline(invalid)).toEqual(err({ type: "invalid-persisted-deadline", value: invalid }));
     }
+  });
+
+  it("requires canonical persisted values without changing them", () => {
+    const value = "2026-01-01T00:00:00.000Z";
+    expect(requirePersistedDeadline(value, "Attempt 'a1'")).toBe(value);
+    expect(() => requirePersistedDeadline("not-a-deadline", "Attempt 'a1'"))
+      .toThrow("Attempt 'a1' has invalid persisted deadline \"not-a-deadline\".");
   });
 });

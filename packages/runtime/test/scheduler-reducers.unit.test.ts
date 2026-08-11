@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { attemptTimeoutEvents, signalTimeoutEvents } from "../src/scheduler/deadline-events.js";
+import { nextGroupCompletionBatchEvents } from "../src/scheduler/group-policy.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { applySchedulerEvents, attemptTimeoutEvents, createSchedulerProjection, groupCompletionEvents, nextLoopStep, signalTimeoutEvents, targetedRetryDependencyBlocker } from "../src/scheduler/transitions.js";
+import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 
 describe("scheduler identity and reducers", () => {
   it("produces the same projection from every checkpoint and tail split", () => {
@@ -352,7 +354,7 @@ describe("scheduler identity and reducers", () => {
     const itemFrameKey = deriveInstanceKey(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0));
     const leafKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0), "leaf"));
     const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "frame.started", payload: { runId: "run_1", frameKey: groupKey, frameKind: "node", nodeKey: groupKey, nodeId: "race", instancePath: appendNode([], "race") } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: groupKey, frameKind: "node", nodeKey: groupKey, nodeId: "race", instancePath: appendNode([], "race"), strategy: "race" } },
       { type: "group.started", payload: { runId: "run_1", groupKey, nodeKey: groupKey, nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: winnerKey, frameKind: "branch", parentFrameKey: groupKey, instancePath: appendBranch([], "race", "winner") } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey, memberKey: winnerKey, childFrameKey: winnerKey, memberKind: "branch", branchId: "winner", readinessSequence: 1 } },
@@ -360,7 +362,7 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.started", payload: { runId: "run_1", frameKey: loserKey, frameKind: "branch", parentFrameKey: groupKey, instancePath: appendBranch([], "race", "loser") } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey, memberKey: loserKey, childFrameKey: loserKey, memberKind: "branch", branchId: "loser", readinessSequence: 3 } },
       { type: "group.member_started", payload: { memberKey: loserKey } },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: nestedKey, frameKind: "node", parentFrameKey: loserKey, nodeKey: nestedKey, nodeId: "inner", instancePath: appendNode(appendBranch([], "race", "loser"), "inner") } },
+      { type: "frame.started", payload: { runId: "run_1", frameKey: nestedKey, frameKind: "node", parentFrameKey: loserKey, nodeKey: nestedKey, nodeId: "inner", instancePath: appendNode(appendBranch([], "race", "loser"), "inner"), strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: nestedKey, nodeKey: nestedKey, nodeId: "inner", kind: "fanout", strategy: "all" } },
       { type: "frame.started", payload: { runId: "run_1", frameKey: itemFrameKey, frameKind: "fanout_item", parentFrameKey: nestedKey, instancePath: appendFanoutItem(appendBranch([], "race", "loser"), "inner", 0) } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: nestedKey, memberKey: itemFrameKey, childFrameKey: itemFrameKey, memberKind: "fanout_item", itemIndex: 0, item: null, readinessSequence: 4 } },
@@ -370,7 +372,7 @@ describe("scheduler identity and reducers", () => {
       { type: "attempt.started", payload: { runId: "run_1", attemptId: "attempt_loser", nodeKey: leafKey, nodeId: "leaf", attemptNo: 1, ownerEpoch: 1 } },
     ]);
 
-    const events = groupCompletionEvents(projection, groupKey);
+    const events = nextGroupCompletionBatchEvents(projection);
     expect(events).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: loserKey, cancelReason: "race_lost" } },
       { type: "group.member_cancelled", payload: { memberKey: itemFrameKey, cancelReason: "race_lost" } },
@@ -489,7 +491,6 @@ describe("scheduler identity and reducers", () => {
     expect(restored.instances.failed).toMatchObject({ status: "failed", error: { reason: "kept_failure" } });
     expect(restored.groupMembers.loser).toMatchObject({ status: "cancelled", terminalReason: "race_lost" });
     expect(restored.instances.loser).toMatchObject({ status: "cancelled", statusReason: "race_lost" });
-    expect(targetedRetryDependencyBlocker(restored, ["outer.right"])).toEqual({ memberKey: "outer.right" });
   });
 
   it("requeues active instances and group members for pause without reopening terminals", () => {
@@ -632,6 +633,7 @@ describe("scheduler identity and reducers", () => {
 
   it("derives composite terminal and cancellation events from group state", () => {
     const all = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "all", frameKind: "node", nodeKey: "all", nodeId: "all", instancePath: appendNode([], "all"), strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "all", nodeKey: "all", nodeId: "all", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "all", memberKey: "all.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       { type: "group.member_failed", payload: { memberKey: "all.left", error: { reason: "boom" }, terminalReason: "branch_failed" } },
@@ -640,13 +642,14 @@ describe("scheduler identity and reducers", () => {
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "all.right", nodeId: "right", instancePath: appendBranch([], "all", "right"), readinessSequence: 2 } },
       { type: "instance.started", payload: { nodeKey: "all.right" } },
     ]);
-    expect(groupCompletionEvents(all, "all")).toEqual([
+    expect(nextGroupCompletionBatchEvents(all)).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: "all.right", cancelReason: "parent_failed" } },
       { type: "instance.cancelled", payload: { nodeKey: "all.right", cancelReason: "parent_failed" } },
       { type: "group.failed", payload: { groupKey: "all", error: { reason: "branch_failed" } } },
     ]);
 
     const race = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "race", frameKind: "node", nodeKey: "race", nodeId: "race", instancePath: appendNode([], "race"), strategy: "race" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "race", nodeKey: "race", nodeId: "race", kind: "parallel", strategy: "race" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "race", memberKey: "race.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "race.left" } },
@@ -656,13 +659,14 @@ describe("scheduler identity and reducers", () => {
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "race.right", nodeId: "right", instancePath: appendBranch([], "race", "right"), readinessSequence: 2 } },
       { type: "instance.started", payload: { nodeKey: "race.right" } },
     ]);
-    expect(groupCompletionEvents(race, "race")).toEqual([
+    expect(nextGroupCompletionBatchEvents(race)).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: "race.right", cancelReason: "race_lost" } },
       { type: "instance.cancelled", payload: { nodeKey: "race.right", cancelReason: "race_lost" } },
       { type: "group.completed", payload: { groupKey: "race", result: { acceptedMemberKeys: ["race.left"] } } },
     ]);
 
     const quorum = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "quorum", frameKind: "node", nodeKey: "quorum", nodeId: "quorum", instancePath: appendNode([], "quorum"), strategy: "quorum" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "quorum", nodeKey: "quorum", nodeId: "quorum", kind: "fanout", strategy: "quorum", quorumCount: 2 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
       { type: "group.member_started", payload: { memberKey: "quorum[0]" } },
@@ -673,7 +677,7 @@ describe("scheduler identity and reducers", () => {
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "quorum", memberKey: "quorum[2]", memberKind: "fanout_item", itemIndex: 2, item: 2, readinessSequence: 3 } },
       { type: "instance.ready", payload: { runId: "run_1", nodeKey: "quorum[2]", nodeId: "item", instancePath: appendFanoutItem([], "quorum", 2), readinessSequence: 3 } },
     ]);
-    expect(groupCompletionEvents(quorum, "quorum")).toEqual([
+    expect(nextGroupCompletionBatchEvents(quorum)).toEqual([
       { type: "group.member_cancelled", payload: { memberKey: "quorum[2]", cancelReason: "quorum_reached" } },
       { type: "instance.cancelled", payload: { nodeKey: "quorum[2]", cancelReason: "quorum_reached" } },
       { type: "group.completed", payload: { groupKey: "quorum", result: { acceptedMemberKeys: ["quorum[1]", "quorum[0]"] } } },
@@ -682,43 +686,28 @@ describe("scheduler identity and reducers", () => {
 
   it("fails all-strategy groups when a required member is already cancelled", () => {
     const parallel = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "parallel", frameKind: "node", nodeKey: "parallel", nodeId: "parallel", instancePath: appendNode([], "parallel"), strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "parallel", nodeKey: "parallel", nodeId: "parallel", kind: "parallel", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parallel", memberKey: "parallel.left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
       { type: "group.member_completed", payload: { memberKey: "parallel.left", completionSequence: 1 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "parallel", memberKey: "parallel.right", memberKind: "branch", branchId: "right", readinessSequence: 2 } },
       { type: "group.member_cancelled", payload: { memberKey: "parallel.right", cancelReason: "parent_failed" } },
     ]);
-    expect(groupCompletionEvents(parallel, "parallel")).toEqual([
+    expect(nextGroupCompletionBatchEvents(parallel)).toEqual([
       { type: "group.failed", payload: { groupKey: "parallel", error: { reason: "parent_failed" } } },
     ]);
 
     const fanout = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      { type: "frame.started", payload: { runId: "run_1", frameKey: "fanout", frameKind: "node", nodeKey: "fanout", nodeId: "fanout", instancePath: appendNode([], "fanout"), strategy: "all" } },
       { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all" } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "fanout[0]", memberKind: "fanout_item", itemIndex: 0, item: 0, readinessSequence: 1 } },
       { type: "group.member_completed", payload: { memberKey: "fanout[0]", completionSequence: 1 } },
       { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "fanout[1]", memberKind: "fanout_item", itemIndex: 1, item: 1, readinessSequence: 2 } },
       { type: "group.member_cancelled", payload: { memberKey: "fanout[1]", cancelReason: "operator_cancelled" } },
     ]);
-    expect(groupCompletionEvents(fanout, "fanout")).toEqual([
+    expect(nextGroupCompletionBatchEvents(fanout)).toEqual([
       { type: "group.failed", payload: { groupKey: "fanout", error: { reason: "operator_cancelled" } } },
     ]);
   });
 
-  it("classifies loop transitions", () => {
-    expect(nextLoopStep({ iter: 0, transition: { state: { iter: 0 }, stop: false } })).toEqual({
-      action: "start_iteration",
-      iter: 1,
-      state: { iter: 0 },
-    });
-    expect(nextLoopStep({ iter: 1, transition: { state: { done: true }, stop: true } })).toEqual({
-      action: "complete",
-      output: { done: true },
-      terminalReason: "stopped",
-    });
-    expect(nextLoopStep({ iter: 2, transition: { state: { done: false }, stop: "no" } as any })).toEqual({
-      action: "fail",
-      error: { reason: "invalid_loop_transition", message: "Loop body transition 'stop' must be boolean." },
-      terminalReason: "invalid_loop_transition",
-    });
-  });
 });

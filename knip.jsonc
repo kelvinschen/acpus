@@ -35,8 +35,9 @@
       "vitest": false,
       "ignoreIssues": {
         // tsx is loaded only when the managed executor runs workspace TypeScript sources.
+        "src/managed-executor.ts": ["unlisted"],
         // taskkill is a Windows system executable, not an npm binary.
-        "src/managed-executor.ts": ["unlisted", "binaries"]
+        "src/process-tree.ts": ["binaries"]
       }
     },
     "packages/cli": {

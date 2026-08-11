@@ -1,7 +1,7 @@
 import { ok } from "neverthrow";
 import { describe, expect, it, vi } from "vitest";
 import type { HookRunner } from "../src/hooks/runner.js";
-import { dispatchCommittedHooksForRun } from "../src/scheduler/runtime-runner.js";
+import { dispatchCommittedHooksForRun } from "../src/hooks/dispatch.js";
 import { createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { FrozenRun, RuntimeStore } from "../src/store/store.js";
 

@@ -2,11 +2,11 @@ import { err, ok, type Result } from "neverthrow";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "./membership.js";
 import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import {
-  applySchedulerEvents,
   cancellationEventsForFrame,
   cancellationEventsForNode,
   targetedRetryGroupAssessment,
-} from "./transitions.js";
+} from "./group-policy.js";
+import { applySchedulerEvents } from "./transitions.js";
 import type { SchedulerEvent } from "./events.js";
 import { settleFrozenSnapshot, type FrozenSchedulerRun } from "./settle.js";
 import {

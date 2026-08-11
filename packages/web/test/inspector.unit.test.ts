@@ -6,11 +6,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NodeInspection } from "../src/api-types.js";
-import { AgentExecutionTab, Inspector } from "../src/client/ui/App.js";
 import { ArtifactViewer, type ArtifactViewerArtifact } from "../src/client/ui/ArtifactViewer.js";
 import { InspectorPanel, InspectorSection, JsonSection, KeyValue } from "../src/client/ui/Inspector.js";
 import { NodeDefinitionSection } from "../src/client/ui/NodeDefinition.js";
 import { NodeKindBadge } from "../src/client/ui/NodeKind.js";
+import { AgentExecutionTab, Inspector } from "../src/client/ui/RunInspector.js";
 import { useInspectorPresence } from "../src/client/ui/useInspectorPresence.js";
 import { installReactActEnvironment, waitForReact } from "./support/react-act-environment.js";
 

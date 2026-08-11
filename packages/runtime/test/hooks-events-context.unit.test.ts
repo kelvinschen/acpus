@@ -1,33 +1,13 @@
 import type { WorkflowIR } from "@acpus/core/ir";
+import { ok } from "neverthrow";
 import { describe, expect, it } from "vitest";
-import { buildHookContext } from "../src/hooks/context.js";
-import { decodeCommittedRuntimeEventRow, mapRuntimeEventToHookEvent, type CommittedRuntimeEventRow } from "../src/hooks/events.js";
+import type { HookEvent } from "../src/hooks/config.js";
+import { dispatchCommittedHooksForRun, type HookContext } from "../src/hooks/dispatch.js";
 import type { SchedulerProjection } from "../src/scheduler/types.js";
+import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../src/store/committed-event.js";
+import type { FrozenRun, RuntimeStore } from "../src/store/store.js";
 
 describe("hooks events and context", () => {
-  it("maps supported committed runtime rows to hook events", () => {
-    expect(mapRuntimeEventToHookEvent(row("frame.started", { runId: "run_1", frameKey: "root", frameKind: "root" }))).toBe("run.started");
-    expect(mapRuntimeEventToHookEvent(row("run.completed", { output: { ok: true } }))).toBe("run.completed");
-    expect(mapRuntimeEventToHookEvent(row("run.failed", { message: "bad" }))).toBe("run.failed");
-    expect(mapRuntimeEventToHookEvent(row("run.canceled", { reason: "operator_cancelled" }))).toBe("run.canceled");
-    expect(mapRuntimeEventToHookEvent(row("instance.started", { nodeKey: "build" }))).toBe("node.started");
-    expect(mapRuntimeEventToHookEvent(row("instance.completed", { nodeKey: "build" }))).toBe("node.completed");
-    expect(mapRuntimeEventToHookEvent(row("instance.failed", { nodeKey: "build" }))).toBe("node.failed");
-    expect(mapRuntimeEventToHookEvent(row("signal.awaiting", { nodeKey: "approve", nodeId: "approve" }))).toBe("run.awaiting");
-  });
-
-  it("does not map unrelated scheduler rows", () => {
-    expect(mapRuntimeEventToHookEvent(row("frame.started", { runId: "run_1", frameKey: "node", frameKind: "node" }))).toBeUndefined();
-    expect(mapRuntimeEventToHookEvent(row("attempt.completed", { attemptId: "attempt_1" }))).toBeUndefined();
-    expect(mapRuntimeEventToHookEvent(row("control.agent_steer_requested", {
-      steerId: "steer-1",
-      requestedTarget: "review",
-      nodeKey: "review~1",
-      fencedAttemptId: "attempt_1",
-      instruction: "SECRET correction",
-    }))).toBeUndefined();
-  });
-
   it("decodes scheduler envelopes and public run event payloads", () => {
     const decode = (type: string, payload: unknown) => decodeCommittedRuntimeEventRow({
       run_id: "run_1",
@@ -42,52 +22,69 @@ describe("hooks events and context", () => {
     expect(decode("run.completed", { output: { ok: true } })).toEqual({ output: { ok: true } });
   });
 
-  it("builds run, task, agent, and signal hook context fields", () => {
-    const ir = workflow();
-    const projection = schedulerProjection();
+  it("maps committed events and builds contexts only through the durable dispatch seam", () => {
+    const events = [
+      row("frame.started", { runId: "run_1", frameKey: "root", frameKind: "root" }, 1),
+      row("frame.started", { runId: "run_1", frameKey: "nested", frameKind: "node" }, 2),
+      row("run.completed", { output: { shipped: true } }, 3),
+      row("run.failed", { message: "bad" }, 4),
+      row("run.canceled", { reason: "operator_cancelled" }, 5),
+      row("instance.started", { nodeKey: "build~1", attemptId: "attempt-task" }, 6, "build~1"),
+      row("instance.completed", { nodeKey: "build~1", attemptId: "attempt-task", output: { ok: true } }, 7, "build~1"),
+      row("instance.completed", { nodeKey: "build~1", output: { inherited: true } }, 8, "build~1"),
+      row("instance.failed", { nodeKey: "review~1", error: { reason: "expression_resolution_failed" } }, 9, "review~1"),
+      row("instance.started", { nodeKey: "review~1", attemptId: "attempt-agent", output: { ignored: true }, error: { message: "ignored" } }, 10, "review~1"),
+      row("signal.awaiting", { nodeKey: "approve~1" }, 11, "approve~1"),
+      row("attempt.completed", { attemptId: "attempt-task" }, 12),
+      row("control.agent_steer_requested", {
+        steerId: "steer-1",
+        requestedTarget: "review",
+        nodeKey: "review~1",
+        fencedAttemptId: "attempt-agent",
+        instruction: "SECRET correction",
+      }, 13),
+    ];
     const executionMetadata = [
       { id: 1, attemptId: "attempt-task", kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
       { id: 2, attemptId: "attempt-agent", kind: "agent_attempt", metadata: { nodeKey: "review~1" }, createdAt: "2026-07-04T00:00:02.000Z" },
-    ];
+    ] satisfies ReturnType<RuntimeStore["getExecutionMetadata"]>;
+    const calls: Array<{ event: HookEvent; context: HookContext }> = [];
+    const store = runtimeStore(events, executionMetadata);
+    const hookRunner = {
+      trigger(event: HookEvent, context: HookContext) {
+        calls.push({ event, context });
+      },
+    };
 
-    expect(buildHookContext({
-      row: row("frame.started", { runId: "run_1", frameKey: "root", frameKind: "root" }, 41),
-      hookEvent: "run.started",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    })).toMatchObject({
+    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(ok({
+      runId: "run_1",
+      eventSequence: 13,
+      dispatched: 10,
+    }));
+    expect(calls.map(call => call.event)).toEqual([
+      "run.started",
+      "run.completed",
+      "run.failed",
+      "run.canceled",
+      "node.started",
+      "node.completed",
+      "node.completed",
+      "node.failed",
+      "node.started",
+      "run.awaiting",
+    ]);
+    expect(contextAt(calls, 1)).toMatchObject({
       event: "run.started",
-      eventSequence: 41,
+      eventSequence: 1,
       run: { id: "run_1", workflowName: "release", workflowPath: "/workspace/workflow.ts", status: "running" },
     });
-
-    expect(buildHookContext({
-      row: row("run.completed", { output: { shipped: true } }, 42),
-      hookEvent: "run.completed",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    })).toMatchObject({
+    expect(contextAt(calls, 3)).toMatchObject({
       event: "run.completed",
-      eventSequence: 42,
+      eventSequence: 3,
       run: { id: "run_1", workflowName: "release", workflowPath: "/workspace/workflow.ts", status: "completed" },
       output: { shipped: true },
     });
-
-    expect(buildHookContext({
-      row: row("instance.completed", { nodeKey: "build~1", attemptId: "attempt-task", output: { ok: true } }, 43, "build~1"),
-      hookEvent: "node.completed",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    }).node).toMatchObject({
+    expect(contextAt(calls, 7).node).toMatchObject({
       id: "build",
       key: "build~1",
       kind: "task",
@@ -95,70 +92,69 @@ describe("hooks events and context", () => {
       output: { ok: true },
       taskInput: { packageName: "core" },
     });
-
-    expect(buildHookContext({
-      row: row("instance.completed", { nodeKey: "build~1", output: { inherited: true } }, 43, "build~1"),
-      hookEvent: "node.completed",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    }).node).not.toHaveProperty("taskInput");
-
-    expect(buildHookContext({
-      row: row("instance.started", { nodeKey: "review~1", attemptId: "attempt-agent", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
-      hookEvent: "node.started",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-      agentPrompts: new Map([["attempt-agent", "Review ready"]]),
-    }).node).toMatchObject({
+    expect(contextAt(calls, 8).node).not.toHaveProperty("taskInput");
+    expect(contextAt(calls, 10).node).toMatchObject({
       id: "review",
       key: "review~1",
       kind: "agent",
       status: "running",
-      agentPrompt: "Review ready",
     });
-    expect(buildHookContext({
-      row: row("instance.started", { nodeKey: "review~1", attemptId: "attempt-agent", output: { ignored: true }, error: { message: "ignored" } }, 44, "review~1"),
-      hookEvent: "node.started",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    }).node).not.toMatchObject({ output: expect.anything(), error: expect.anything() });
-
-    const unresolvedAgent = buildHookContext({
-      row: row("instance.failed", { nodeKey: "review~1", error: { reason: "expression_resolution_failed" } }, 45, "review~1"),
-      hookEvent: "node.failed",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata: [],
-    });
-    expect(unresolvedAgent.node).toMatchObject({ id: "review", status: "failed" });
-    expect(unresolvedAgent.node).not.toHaveProperty("agentPrompt");
-
-    expect(buildHookContext({
-      row: row("signal.awaiting", { nodeKey: "approve~1" }, 46, "approve~1"),
-      hookEvent: "run.awaiting",
-      projection,
-      ir,
-      workspaceDir: "/workspace",
-      workflowPath: "/workspace/workflow.ts",
-      executionMetadata,
-    })).toMatchObject({
+    expect(contextAt(calls, 10).node).not.toMatchObject({ output: expect.anything(), error: expect.anything() });
+    expect(contextAt(calls, 9).node).toMatchObject({ id: "review", status: "failed", error: { message: "expression_resolution_failed" } });
+    expect(contextAt(calls, 9).node).not.toHaveProperty("agentPrompt");
+    expect(contextAt(calls, 11)).toMatchObject({
       run: { status: "awaiting" },
       signal: { nodeId: "approve", nodeKey: "approve~1", prompt: "Approve release?" },
       node: { id: "approve", key: "approve~1", kind: "signal", status: "awaiting" },
     });
+
+    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(ok({
+      runId: "run_1",
+      eventSequence: 13,
+      dispatched: 0,
+    }));
+    expect(calls).toHaveLength(10);
   });
 });
+
+function runtimeStore(
+  events: readonly CommittedRuntimeEventRow[],
+  executionMetadata: ReturnType<RuntimeStore["getExecutionMetadata"]>,
+): RuntimeStore {
+  let cursor = 0;
+  return {
+    getFrozenRun: () => frozenRun(),
+    getHookDispatchCursor: () => cursor,
+    readHookDispatchEvents: (_runId: string, afterSequence: number) => ({
+      lastSequence: events.at(-1)?.sequence ?? 0,
+      events: events.filter(event => event.sequence > afterSequence).slice(0, 1),
+    }),
+    compareAndSetHookDispatchCursor: (_runId: string, expectedSequence: number, nextSequence: number) => {
+      if (cursor !== expectedSequence) return false;
+      cursor = nextSequence;
+      return true;
+    },
+    getExecutionMetadata: () => executionMetadata,
+    scheduler: {
+      tryLoadRunSnapshot: () => ok({ runId: "run_1", version: events.length, projection: schedulerProjection() }),
+    },
+  } as unknown as RuntimeStore;
+}
+
+function frozenRun(): FrozenRun {
+  return {
+    ir: workflow(),
+    input: {},
+    agentOverrides: {},
+    meta: { runId: "run_1", workflowName: "release", workflowPath: "workflow.ts", workspaceDir: "/workspace" },
+  };
+}
+
+function contextAt(calls: readonly { context: HookContext }[], eventSequence: number): HookContext {
+  const context = calls.find(call => call.context.eventSequence === eventSequence)?.context;
+  if (!context) throw new Error(`Missing hook context for event sequence ${eventSequence}.`);
+  return context;
+}
 
 function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeKey?: string): CommittedRuntimeEventRow {
   return {

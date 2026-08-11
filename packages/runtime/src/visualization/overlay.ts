@@ -6,7 +6,7 @@ import type {
   RunDynamicGroupMember,
   RunDynamicNodeInstance,
   RunDynamicSignalWait,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
 import { deriveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 
 export type WorkflowVisualizationInstance = RunDynamicNodeInstance & { target: string };

@@ -1,12 +1,10 @@
-import { resolve } from "node:path";
 import type { NodeIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
 import { resolutionErrorPayload, tryCreateDeadline, tryResolveDuration, tryResolveString } from "../evaluation/resolvable.js";
-import { buildHookContext } from "../hooks/context.js";
-import { mapRuntimeEventToHookEvent } from "../hooks/events.js";
+import { dispatchHooksAtCheckpoint } from "../hooks/dispatch.js";
 import type { HookRunner } from "../hooks/runner.js";
 import type { NodeProgressWriter } from "../progress/writer.js";
-import type { FrozenRun, RuntimeStore } from "../store/store.js";
+import type { RuntimeStore } from "../store/store.js";
 import { isRuntimeStoreBusyError } from "../storage/database.js";
 import { advanceRun, type AdvanceRunInput, type AdvanceRunSummary } from "./advance.js";
 import { bootstrapRootEvents, continueRootEvents } from "./materialize.js";
@@ -17,7 +15,6 @@ import { frozenRunScope, settleFrozenSnapshot } from "./settle.js";
 import { throwSchedulerStoreResult } from "./store-port.js";
 import type { SchedulerSnapshot } from "./store-port.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../configuration.js";
-import { readVerifiedArtifact } from "../artifacts/access.js";
 import { parseArtifactUri } from "../artifacts/reference.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
@@ -260,154 +257,6 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
     resolve = settle;
   });
   return { promise, resolve };
-}
-
-export type HookDispatchRetry = {
-  type: "hook-dispatch-retry";
-  runId: string;
-  stage: "read-cursor" | "read-events" | "load-projection" | "load-metadata" | "advance-cursor";
-  message: string;
-};
-
-export type HookDispatchProgress = {
-  runId: string;
-  eventSequence: number;
-  dispatched: number;
-};
-
-function dispatchCommittedHooks(input: {
-  cwd: string;
-  runId: string;
-  store: RuntimeStore;
-  hookRunner?: HookRunner;
-  frozen: FrozenRun;
-}): Result<HookDispatchProgress, HookDispatchRetry> {
-  let dispatched = 0;
-  for (;;) {
-    const cursor = hookDispatchStage(input.runId, "read-cursor", () => input.store.getHookDispatchCursor(input.runId));
-    if (cursor.isErr()) return err(cursor.error);
-    const read = hookDispatchStage(input.runId, "read-events", () => input.store.readHookDispatchEvents(input.runId, cursor.value));
-    if (read.isErr()) return err(read.error);
-    if (cursor.value > read.value.lastSequence) {
-      throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.value} exceeds committed event sequence ${read.value.lastSequence}.`);
-    }
-    const row = read.value.events[0];
-    if (!row) {
-      if (cursor.value !== read.value.lastSequence) {
-        throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.value} has no next committed event before sequence ${read.value.lastSequence}.`);
-      }
-      return ok({ runId: input.runId, eventSequence: cursor.value, dispatched });
-    }
-    if (row.sequence !== cursor.value + 1) {
-      throw new Error(`Run '${input.runId}' hook dispatch event sequence jumps from ${cursor.value} to ${row.sequence}.`);
-    }
-
-    const hookEvent = mapRuntimeEventToHookEvent(row);
-    let prepared: { event: NonNullable<typeof hookEvent>; context: ReturnType<typeof buildHookContext> } | undefined;
-    if (hookEvent && input.hookRunner) {
-      const projection = hookDispatchStage(input.runId, "load-projection", () => throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId)).projection);
-      if (projection.isErr()) return err(projection.error);
-      const context = hookDispatchStage(input.runId, "load-metadata", () => {
-        const metadata = input.store.getExecutionMetadata(input.runId);
-        const payload = objectValue(row.payload);
-        const attemptId = typeof payload?.attemptId === "string" ? payload.attemptId : undefined;
-        const agentPrompts = loadAgentPrompts(input.cwd, input.store, input.runId, metadata, attemptId);
-        return buildHookContext({
-          row,
-          hookEvent,
-          projection: projection.value,
-          ir: input.frozen.ir,
-          workspaceDir: input.frozen.meta.workspaceDir ?? input.cwd,
-          workflowPath: resolve(input.cwd, input.frozen.meta.workflowPath ?? ""),
-          executionMetadata: metadata,
-          agentPrompts,
-        });
-      });
-      if (context.isErr()) return err(context.error);
-      prepared = {
-        event: hookEvent,
-        context: context.value,
-      };
-    }
-
-    const advanced = hookDispatchStage(input.runId, "advance-cursor", () => input.store.compareAndSetHookDispatchCursor(input.runId, cursor.value, row.sequence));
-    if (advanced.isErr()) return err(advanced.error);
-    if (!advanced.value) continue;
-    if (prepared) {
-      try {
-        input.hookRunner!.trigger(prepared.event, prepared.context);
-      } catch {
-        // Hook observers are terminal side effects; their failure never rolls back the durable cursor.
-      }
-      dispatched += 1;
-    }
-  }
-}
-
-function loadAgentPrompts(
-  cwd: string,
-  store: RuntimeStore,
-  runId: string,
-  rows: ReturnType<RuntimeStore["getExecutionMetadata"]>,
-  attemptId: string | undefined,
-): Map<string, string> {
-  const prompts = new Map<string, string>();
-  if (!attemptId) return prompts;
-  for (const row of rows) {
-    if (row.kind !== "agent_attempt" || row.attemptId !== attemptId) continue;
-    const metadata = objectValue(row.metadata);
-    const firstTurn = Array.isArray(metadata?.turns) ? objectValue(metadata.turns[0]) : undefined;
-    const turnArtifact = objectValue(firstTurn?.turnArtifact);
-    const artifactId = typeof turnArtifact?.artifactId === "string" ? turnArtifact.artifactId : undefined;
-    if (!artifactId) continue;
-    const read = readVerifiedArtifact({ cwd, runId, store }, artifactId);
-    if (!read) throw new Error(`Agent turn artifact '${artifactId}' is not registered for run '${runId}'.`);
-    const artifact = objectValue(JSON.parse(read.bytes.toString("utf8")));
-    if (!artifact || typeof artifact.prompt !== "string") throw new Error(`Agent turn artifact '${artifactId}' has an invalid prompt.`);
-    prompts.set(attemptId, artifact.prompt);
-    break;
-  }
-  return prompts;
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-export function dispatchCommittedHooksForRun(input: {
-  cwd: string;
-  runId: string;
-  store: RuntimeStore;
-  hookRunner?: HookRunner;
-}): Result<HookDispatchProgress, HookDispatchRetry> {
-  const frozen = hookDispatchStage(input.runId, "load-projection", () => input.store.getFrozenRun(input.runId));
-  if (frozen.isErr()) return err(frozen.error);
-  if (!frozen.value) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
-  return dispatchCommittedHooks({
-    ...input,
-    frozen: frozen.value,
-  });
-}
-
-function hookDispatchStage<T>(runId: string, stage: HookDispatchRetry["stage"], read: () => T): Result<T, HookDispatchRetry> {
-  try {
-    return ok(read());
-  } catch (error) {
-    if (isRuntimeStoreBusyError(error)) {
-      return err({ type: "hook-dispatch-retry", runId, stage, message: "Runtime store is busy. Retry hook dispatch on a later daemon tick." });
-    }
-    throw error;
-  }
-}
-
-function dispatchHooksAtCheckpoint(input: Parameters<typeof dispatchCommittedHooks>[0] & Pick<AdvanceFrozenRunInput, "shouldDispatchHooks" | "onHookIncident">): void {
-  if (input.shouldDispatchHooks?.(input.runId) === false) return;
-  try {
-    dispatchCommittedHooks(input);
-  } catch (error) {
-    if (!input.onHookIncident) throw error;
-    input.onHookIncident(input.runId, error);
-  }
 }
 
 export function settleFrozenRunTransitions(input: {

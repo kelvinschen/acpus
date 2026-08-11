@@ -3,12 +3,11 @@ import { isJsonValue, type JsonPrimitive } from "@acpus/expression/ir";
 import { appendNode, deriveInstanceKey } from "../scheduler/identity.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
 import type {
-  FrozenRun,
-  RunDetails,
   RunDynamicAttempt,
   RunDynamicFrame,
   RunDynamicNodeInstance,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
+import type { FrozenRun, RunDetails } from "../store/store.js";
 import { inspectionViewSubject } from "./decision-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
 import type {

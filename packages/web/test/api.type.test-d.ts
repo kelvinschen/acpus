@@ -15,14 +15,17 @@ import {
 } from "../src/client/api.js";
 import type {
   ArtifactContent,
+  ArtifactPreview,
   NodeInspection,
   NodeInspectionFailure,
   NodeRuntimeValues,
   RunRecord,
   RuntimeStoreStatus,
+  WebApiFailure,
   WebControlCommand,
   WorkspaceCatalog,
   WorkspaceSummary,
+  WorkflowFiles,
   WorkflowVisualizationResult,
 } from "../src/client/api.js";
 
@@ -40,6 +43,12 @@ test("Web transport contracts preserve their semantic shapes", () => {
   expectTypeOf(getArtifactContent).parameter(2).toEqualTypeOf<string>();
   expectTypeOf(getArtifactContent).parameter(3).toEqualTypeOf<AbortSignal | undefined>();
   expectTypeOf<Awaited<ReturnType<typeof getArtifactContent>>>().toEqualTypeOf<ArtifactContent>();
+  expectTypeOf<ArtifactPreview>().toEqualTypeOf<{
+    text: string;
+    mediaType: string;
+    size: number;
+    truncated: boolean;
+  }>();
   expectTypeOf<Awaited<ReturnType<typeof getNodeInspection>>>().toEqualTypeOf<NodeInspection>();
   expectTypeOf<Awaited<ReturnType<typeof getNodeRuntimeValues>>>().toEqualTypeOf<NodeRuntimeValues>();
   expectTypeOf<Awaited<ReturnType<typeof listRuns>>>().toEqualTypeOf<RunRecord[]>();
@@ -60,6 +69,13 @@ test("Web transport contracts preserve their semantic shapes", () => {
     runCount?: number;
     lastRunUpdatedAt?: string;
   }>();
+  expectTypeOf<WorkflowFiles>().toEqualTypeOf<{
+    dir: string;
+    entries: Array<{ name: string; path: string; kind: "directory" | "workflow" }>;
+  }>();
+  expectTypeOf<WebApiFailure["type"]>().toEqualTypeOf<
+    "network-failed" | "response-invalid-json" | "response-invalid-envelope" | "request-failed"
+  >();
   expectTypeOf<NodeInspectionFailure>().toExtend<RunInspectionDetailedFailure>();
   expectTypeOf<RunInspectionDetailedFailure>().toExtend<NodeInspectionFailure>();
   expectTypeOf<Parameters<typeof renderWorkflowVizHtml>[0]>().toEqualTypeOf<{

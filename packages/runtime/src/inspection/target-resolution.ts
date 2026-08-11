@@ -3,12 +3,12 @@ import {
   resolveOccurrenceRefCandidate,
 } from "../scheduler/occurrence-ref.js";
 import type {
-  RunDetails,
   RunDynamicAttempt,
   RunDynamicFrame,
   RunDynamicNodeInstance,
   RunDynamicSignalWait,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
+import type { RunDetails } from "../store/store.js";
 import type {
   InspectionCandidates,
   RunInspectionStaticNode,

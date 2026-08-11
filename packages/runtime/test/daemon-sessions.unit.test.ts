@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tryLoadRuntimeConfiguration } from "../src/configuration.js";
+import type { dispatchCommittedHooksForRun as DispatchCommittedHooksForRun } from "../src/hooks/dispatch.js";
 import type { applySchedulerControlIntent as ApplySchedulerControlIntent } from "../src/scheduler/control.js";
 import type { createRuntimeRunScheduler as CreateRuntimeRunScheduler, RunExecution, RunExecutionExit, RuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
 import type { SchedulerSnapshot } from "../src/scheduler/store-port.js";
@@ -8,10 +9,11 @@ import { ok } from "neverthrow";
 
 const applySchedulerControlIntent = vi.fn<typeof ApplySchedulerControlIntent>();
 const createRuntimeRunScheduler = vi.fn<typeof CreateRuntimeRunScheduler>();
-const dispatchCommittedHooksForRun = vi.fn(() => ok({ runId: "run-a", eventSequence: 0, dispatched: 0 }));
+const dispatchCommittedHooksForRun = vi.fn<typeof DispatchCommittedHooksForRun>(() => ok({ runId: "run-a", eventSequence: 0, dispatched: 0 }));
 
 vi.mock("../src/scheduler/control.js", () => ({ applySchedulerControlIntent }));
-vi.mock("../src/scheduler/runtime-runner.js", () => ({ createRuntimeRunScheduler, dispatchCommittedHooksForRun }));
+vi.mock("../src/scheduler/runtime-runner.js", () => ({ createRuntimeRunScheduler }));
+vi.mock("../src/hooks/dispatch.js", () => ({ dispatchCommittedHooksForRun }));
 
 const { RunExecutionSessions } = await import("../src/daemon/sessions.js");
 

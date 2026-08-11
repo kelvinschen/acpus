@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { centerViewportAt, clampViewport, fitScale, fitView, fitViewportPadding, focusView, isLosslessZoom, keepBoxInViewport, layoutWorkflow, minZoomScale, projectBox, projectEdgePath, projectPoint, renderableEdges, toRenderModel, visualBoundsForLayout, wheelZoomScale } from "../src/graph-renderer.js";
+import { toRenderModel } from "../src/client/graph/model.js";
+import { layoutWorkflow, renderableEdges } from "../src/client/graph/layout.js";
+import {
+  buildProjectedEdgePaths,
+  clampViewport,
+  fitScale,
+  fitView,
+  focusView,
+  isLosslessZoom,
+  keepBoxInViewport,
+  minZoomScale,
+  planGraphNavigation,
+  projectBoxes,
+  wheelZoomScale,
+} from "../src/client/graph/viewport.js";
 import type { WebGraph, WebGraphNode } from "../src/client/api.js";
 
 describe("workflow graph layout", () => {
@@ -182,9 +196,8 @@ describe("workflow graph layout", () => {
     expect(fitView({ width: 100, height: 80 }, { width: 600, height: 360 }).scale).toBe(1);
     expect(fitView({ width: 10_000, height: 10_000 }, { width: 600, height: 360 }).scale).toBeCloseTo(0.03276);
     expect(fitScale({ width: 1000, height: 500 }, { width: 600, height: 360 })).toBe(0.5676);
-    expect(fitViewportPadding({ width: 600, height: 360 })).toBe(16.2);
-    expect(fitViewportPadding({ width: 200, height: 160 })).toBe(12);
-    expect(fitViewportPadding({ width: 2000, height: 1200 })).toBe(32);
+    expect(fitScale({ width: 1000, height: 500 }, { width: 200, height: 160 })).toBe(0.176);
+    expect(fitScale({ width: 3000, height: 2000 }, { width: 2000, height: 1200 })).toBe(0.568);
     expect(minZoomScale(0.5676)).toBeCloseTo(0.4257);
   });
 
@@ -240,16 +253,22 @@ describe("workflow graph layout", () => {
   });
 
   it("recenters the local viewport at a graph coordinate without changing zoom", () => {
-    expect(centerViewportAt(
+    const model = toRenderModel(undefined);
+    const layout = { boxes: new Map() };
+    expect(planGraphNavigation(
+      model,
+      layout,
       { x: 12, y: 20, scale: 0.8 },
       { width: 900, height: 600 },
-      { x: 500, y: 300 },
-    )).toEqual({ x: 50, y: 60, scale: 0.8 });
-    expect(centerViewportAt(
+      { type: "recenter", point: { x: 500, y: 300 } },
+    )?.viewport).toEqual({ x: 50, y: 60, scale: 0.8 });
+    expect(planGraphNavigation(
+      model,
+      layout,
       { x: 12, y: 20, scale: 0 },
       { width: 900, height: 600 },
-      { x: 500, y: 300 },
-    )).toEqual({ x: 12, y: 20, scale: 0 });
+      { type: "recenter", point: { x: 500, y: 300 } },
+    )?.viewport).toEqual({ x: 12, y: 20, scale: 0 });
   });
 
   it("clamps a large graph to a finite viewport range", () => {
@@ -281,19 +300,10 @@ describe("workflow graph layout", () => {
     const node = source.nodes[0]!;
     const layout = layoutWorkflow(toRenderModel({ ...source, nodes: [node], containers: [], edges: [] }));
     const viewport = clampViewport({ x: 10_000, y: -10_000, scale: 1 }, layout, { width: 900, height: 600 });
-    const box = projectBox(layout.boxes.get(node.id)!, viewport);
+    const box = projectBoxes(layout.boxes, viewport).get(node.id)!;
 
     expect(box.x + box.width / 2).toBe(450);
     expect(box.y + box.height / 2).toBe(300);
-  });
-
-  it("expands visual fit bounds for labels, borders, shadows, and arrows", () => {
-    expect(visualBoundsForLayout({ width: 1000, height: 500 })).toEqual({
-      x: -24,
-      y: -24,
-      width: 1048,
-      height: 548,
-    });
   });
 
   it("projects boxes and edge paths for lossless zoom-in", () => {
@@ -306,16 +316,25 @@ describe("workflow graph layout", () => {
 
     expect(isLosslessZoom(0.99)).toBe(false);
     expect(isLosslessZoom(1)).toBe(true);
-    expect(projectPoint({ x: 20, y: 30 }, viewport)).toEqual({ x: 40, y: 65 });
-    expect(projectBox(box, viewport)).toEqual({ id: "a", x: 160, y: 140, width: 300, height: 108, flowY: 54 });
-    expect(projectEdgePath({ id: "a->b", source: "a", target: "b", kind: "sequence" }, boxes, viewport)?.d)
+    expect(projectBoxes(boxes, viewport).get("a")).toEqual({ id: "a", x: 160, y: 140, width: 300, height: 108, flowY: 54 });
+    expect(buildProjectedEdgePaths(
+      [{ id: "a->b", source: "a", target: "b", kind: "sequence" }],
+      boxes,
+      new Map(),
+      viewport,
+    )[0]?.d)
       .toBe("M 460 194 H 579");
 
     const alignedFlow = new Map([
       ["a", { id: "a", x: 100, y: 60, width: 200, height: 200, flowY: 150 }],
       ["b", { id: "b", x: 380, y: 160, width: 200, height: 100, flowY: 50 }],
     ]);
-    expect(projectEdgePath({ id: "a->b", source: "a", target: "b", kind: "sequence" }, alignedFlow, viewport)?.d)
+    expect(buildProjectedEdgePaths(
+      [{ id: "a->b", source: "a", target: "b", kind: "sequence" }],
+      alignedFlow,
+      new Map(),
+      viewport,
+    )[0]?.d)
       .toBe("M 460 335 H 579");
   });
 });

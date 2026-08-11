@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
 import { createDollar, type ArtifactRef, type CommandBuilder, type Dollar, type TaskContext, type TaskFunction } from "@acpus/core/runtime";
 import type { TaskExecutionTargetIR } from "@acpus/core/ir";
+import { sha256Digest } from "../content-digest.js";
 import {
   removeRunFile,
   verifyRunFile,
@@ -140,7 +141,7 @@ function createArtifactApi(args: TaskProcessRequest["artifact"], signal: AbortSi
         attempt: args.attempt,
         ownerEpoch: args.ownerEpoch,
         ...(mediaType === undefined ? {} : { mediaType }),
-        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        digest: sha256Digest(bytes),
         size: bytes.byteLength,
         relativePath,
         file,

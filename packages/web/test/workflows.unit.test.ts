@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { WorkflowVisualizationResult } from "../src/api-types.js";
-import { renderWorkflowVizHtml, tryVisualizeWorkflowSource } from "../src/server/workflows.js";
+import { renderWorkflowVizHtml } from "../src/server/workflows/offline-html.js";
+import { tryVisualizeWorkflowSource } from "../src/server/workflows/visualization.js";
 
 describe("workflow visualization helpers", () => {
   it("classifies a workspace path escape as a source failure before preparation", async () => {

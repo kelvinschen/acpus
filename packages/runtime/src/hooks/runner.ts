@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { tryParseDurationMs } from "@acpus/core/ir";
 import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
 import type { HookEvent, HookMatch, LoadedHookConfig } from "./config.js";
-import type { HookContext } from "./context.js";
+import type { HookContext } from "./dispatch.js";
 import type { HookJournalEntry } from "./journal.js";
 
 export type HookRunner = {

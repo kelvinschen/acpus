@@ -2,10 +2,9 @@ import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonPrimitive, type JsonValue, type TemplateIR } from "@acpus/expression/ir";
 import type { ArtifactRecord } from "../artifacts/types.js";
-import type { CommittedRuntimeEventRow } from "../hooks/events.js";
+import type { CommittedRuntimeEventRow } from "../store/committed-event.js";
 import type { AgentObservationInspectionProjection } from "../observations/log.js";
 import type {
-  RunDetails,
   RunDynamicAttempt,
   RunDynamicFrame,
   RunDynamicGroup,
@@ -14,7 +13,8 @@ import type {
   RunDynamicSignalWait,
   RunExecutionMetadata,
   RunNodeProgress,
-} from "../store/store.js";
+} from "../store/inspection-read-model.js";
+import type { RunDetails } from "../store/store.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../scheduler/identity.js";
 import { deriveOccurrenceRef, occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";

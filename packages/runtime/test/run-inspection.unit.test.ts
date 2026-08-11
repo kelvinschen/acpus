@@ -17,7 +17,8 @@ import {
   deriveInstanceKey,
 } from "../src/scheduler/identity.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
-import type { RunDetails, RunDynamicNodeInstance } from "../src/store/store.js";
+import type { RunDynamicNodeInstance } from "../src/store/inspection-read-model.js";
+import type { RunDetails } from "../src/store/store.js";
 
 describe("run inspection projection", () => {
   it("projects the public run contract directly without a legacy snapshot envelope", () => {

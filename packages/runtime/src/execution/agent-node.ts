@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { sha256Digest } from "../content-digest.js";
 import {
   removeRunFile,
   verifyRunFile,
@@ -593,7 +594,7 @@ async function writeAgentArtifact(
       attempt,
       ownerEpoch: options.ownerEpoch,
       mediaType,
-      digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      digest: sha256Digest(bytes),
       size: bytes.byteLength,
       relativePath,
       file,

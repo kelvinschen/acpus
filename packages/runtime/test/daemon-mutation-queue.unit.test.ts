@@ -42,6 +42,27 @@ describe.concurrent("runtime mutation queue", () => {
     await expect(recovered).resolves.toBe("ok");
     expect(queue.isIdle()).toBe(true);
   });
+
+  it("provides a completion barrier for accepted mutations", async () => {
+    const queue = new RuntimeMutationQueue();
+    let release!: () => void;
+    let drained = false;
+    const mutation = queue.enqueue(() => new Promise<void>(resolve => {
+      release = resolve;
+    }));
+
+    await waitUntil(() => release !== undefined);
+    const draining = queue.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    release();
+    await mutation;
+    await draining;
+    expect(drained).toBe(true);
+  });
 });
 
 async function waitUntil(predicate: () => boolean): Promise<void> {

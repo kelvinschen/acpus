@@ -229,3 +229,10 @@ export type AcpOwnershipHealth = {
   orphaned: number;
   manifests: Array<Pick<AcpOwnershipManifest, "workerId" | "runId" | "attemptId" | "state">>;
 };
+
+export type ManagedAcpExecutorOptions = {
+  workersRoot: string;
+  sessionStateDirectoryForRun(runId: string): string;
+  daemon: { generation: string | number; pid?: number };
+  onDegraded?: (manifest: AcpOwnershipManifest) => void;
+};

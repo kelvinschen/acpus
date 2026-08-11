@@ -1,39 +1,32 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  type AgentContextSummary,
-  type AgentObservationEvent,
-  type AgentTokenUsageSummary,
   type AgentTurnObservation,
   type AgentTurnRequest,
   type AgentTurnResult,
 } from "@acpus/agent-executor";
 import { ResultAsync } from "neverthrow";
-import { utf8Head, utf8Tail } from "../utf8.js";
+import {
+  AgentObservationSemanticReducer,
+  boundAgentObservationTimelineTool,
+  limitAgentObservationExcerpt,
+  type AgentObservationCompleteness,
+  type AgentObservationCurrent,
+  type AgentObservationEntryBase,
+  type AgentObservationExcerpt,
+  type AgentObservationSemanticEntry,
+  type AgentObservationState,
+  type AgentObservationToolActivity,
+  type AgentPromptKind,
+  type PendingSemanticEntry,
+  type SemanticMutation,
+} from "./turn-semantics.js";
+
+export type { AgentObservationCurrent } from "./turn-semantics.js";
 
 const semanticEntryLimit = 128;
 const semanticPayloadLimit = 128 * 1024;
 const semanticReadPayloadLimit = 8 * 1024;
 const currentPayloadLimit = 16 * 1024;
-const responseCheckpointBytes = 512;
-const checkpointIntervalMs = 10_000;
-const currentResponseBytes = 1536;
-const currentIntentBytes = 768;
-const currentToolBytes = 768;
-const timelineEntryBytes = 512;
-const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
-
-type AgentPromptKind = "task" | "continuation" | "steer" | "repair";
-type AgentObservationState = "recording" | "settled" | "incomplete";
-type AgentObservationCompleteness = "complete" | "degraded";
-type AgentObservationPhase =
-  | "starting"
-  | "responding"
-  | "thinking"
-  | "planning"
-  | "tool"
-  | "repairing"
-  | "between"
-  | "settled";
 
 export type AgentObservationTurnContext = {
   runId: string;
@@ -57,69 +50,6 @@ export type AgentObservationFenceInput = {
 type AgentObservationUnavailableFenceInput = Omit<AgentObservationFenceInput, "eventSequence"> & {
   eventSequence?: number;
 };
-
-type AgentObservationExcerpt = {
-  text: string;
-  originalBytes: number;
-  truncated: boolean;
-};
-
-type AgentObservationToolActivity = {
-  toolCallId?: string;
-  name: string;
-  status?: string;
-  input?: AgentObservationExcerpt;
-  output?: AgentObservationExcerpt;
-  startedAt?: string;
-  updatedAt: string;
-  finishedAt?: string;
-};
-
-export type AgentObservationCurrent = {
-  attemptId: string;
-  turn: number;
-  promptKind: AgentPromptKind;
-  phase: AgentObservationPhase;
-  updatedAt: string;
-  postFence?: true;
-  response?: AgentObservationExcerpt;
-  context?: AgentContextSummary;
-  tokenUsage?: AgentTokenUsageSummary;
-  intent?: {
-    kind: "plan" | "reported-thought";
-    excerpt: AgentObservationExcerpt;
-  };
-  tools?: {
-    active: AgentObservationToolActivity[];
-    recent?: AgentObservationToolActivity;
-    omittedActive: number;
-  };
-  state: AgentObservationState;
-  completeness: AgentObservationCompleteness;
-};
-
-type AgentObservationEntryBase = {
-  id: string;
-  observationVersion: number;
-  attemptId: string;
-  turn: number;
-  sourceSequence: number;
-  at: string;
-};
-
-type AgentObservationSemanticEntry =
-  | AgentObservationEntryBase & {
-      kind: "activity";
-      channel: "response" | "reported-thought" | "plan" | "tool";
-      summary: AgentObservationExcerpt;
-      tool?: AgentObservationToolActivity;
-      postFence?: true;
-    }
-  | AgentObservationEntryBase & {
-      kind: "gap";
-      dropped: number;
-      reason: string;
-    };
 
 export type AgentObservationTurn = {
   runId: string;
@@ -222,17 +152,6 @@ type EntryRow = {
   kind: "activity" | "gap";
   payload_json: string;
   payload_bytes: number;
-};
-
-type PendingSemanticEntry =
-  | Omit<Extract<AgentObservationSemanticEntry, { kind: "activity" }>, "observationVersion">
-  | Omit<Extract<AgentObservationSemanticEntry, { kind: "gap" }>, "observationVersion">;
-
-type SemanticMutation = {
-  entries: PendingSemanticEntry[];
-  checkpoint: boolean;
-  current: AgentObservationCurrent | undefined;
-  observedAt: string;
 };
 
 type FenceOperation = {
@@ -1113,7 +1032,7 @@ export class AgentObservationLog {
   }
 }
 
-export class AgentTurnWriter {
+class AgentTurnWriter {
   fenced = false;
   providerEventCount = 0;
   unknownEventCount = 0;
@@ -1130,7 +1049,11 @@ export class AgentTurnWriter {
     private readonly log: AgentObservationLog,
     readonly context: AgentObservationTurnContext,
   ) {
-    this.reducer = new AgentObservationSemanticReducer(context);
+    this.reducer = new AgentObservationSemanticReducer({
+      attemptId: context.attemptId,
+      turn: context.turn,
+      promptKind: context.promptKind,
+    });
   }
 
   start(): void {
@@ -1240,361 +1163,13 @@ export class AgentTurnWriter {
   }
 }
 
-class AgentObservationSemanticReducer {
-  private segment: {
-    channel: "response" | "reported-thought" | "plan";
-    sourceSequence: number;
-    at: string;
-    text: string;
-    originalBytes: number;
-  } | undefined;
-  private readonly tools = new Map<string, AgentObservationToolActivity & { sourceSequence: number }>();
-  private recentTool: AgentObservationToolActivity | undefined;
-  private updatedAt: string;
-  private lastCheckpointAt = 0;
-  private lastCheckpointTextBytes = 0;
-  private unknownSeen = false;
-  private fenced = false;
-  private context?: AgentContextSummary;
-  private tokenUsage?: AgentTokenUsageSummary;
-
-  constructor(private readonly contextIdentity: AgentObservationTurnContext) {
-    this.updatedAt = new Date().toISOString();
-  }
-
-  initialCurrent(observedAt: string): AgentObservationCurrent {
-    this.updatedAt = observedAt;
-    this.lastCheckpointAt = Date.parse(observedAt);
-    return this.current(false);
-  }
-
-  observe(
-    observation: AgentTurnObservation,
-    degraded: boolean,
-  ): SemanticMutation {
-    const { event } = observation;
-    const telemetryChanged = this.updateTelemetry(observation.progress.summary);
-    if (event.type === "usage") {
-      this.updatedAt = event.observedAt;
-      return {
-        entries: [],
-        checkpoint: telemetryChanged,
-        current: telemetryChanged ? this.current(degraded) : undefined,
-        observedAt: event.observedAt,
-      };
-    }
-    this.updatedAt = event.observedAt;
-    const beforePhase = this.phase();
-    const entries: PendingSemanticEntry[] = [];
-    let toolBoundary = false;
-    const firstUnknown = event.type === "unknown" && !this.unknownSeen;
-    if (event.type === "unknown") this.unknownSeen = true;
-    if (event.type === "message") {
-      const channel = event.channel === "assistant" ? "response" : "reported-thought";
-      if (this.segment?.channel !== channel) entries.push(...this.closeSegment());
-      this.segment ??= {
-        channel,
-        sourceSequence: event.sequence,
-        at: event.observedAt,
-        text: "",
-        originalBytes: 0,
-      };
-      appendSemanticText(this.segment, eventText(event.content));
-      this.segment.at = event.observedAt;
-    } else if (event.type === "plan") {
-      if (this.segment?.channel !== "plan") entries.push(...this.closeSegment());
-      this.segment ??= {
-        channel: "plan",
-        sourceSequence: event.sequence,
-        at: event.observedAt,
-        text: "",
-        originalBytes: 0,
-      };
-      appendSemanticText(this.segment, eventText(event.value));
-      this.segment.at = event.observedAt;
-    } else if (event.type === "tool") {
-      entries.push(...this.closeSegment());
-      const id = event.toolCallId ?? `anonymous-${event.sequence}`;
-      const previous = this.tools.get(id);
-      const tool = mergeTool(previous, event);
-      if (terminalToolStatuses.has(tool.status ?? "")) {
-        toolBoundary = true;
-        entries.push(toolEntry(
-          this.contextIdentity,
-          tool,
-          previous?.sourceSequence ?? event.sequence,
-          this.fenced,
-        ));
-        this.tools.delete(id);
-        this.recentTool = tool;
-      } else {
-        toolBoundary = previous === undefined;
-        this.tools.set(id, { ...tool, sourceSequence: previous?.sourceSequence ?? event.sequence });
-      }
-    } else if (event.type === "turn_end") {
-      entries.push(...this.closeAll());
-    }
-    const afterPhase = this.phase();
-    const now = Date.parse(event.observedAt);
-    const textBytes = this.segment?.originalBytes ?? 0;
-    const checkpoint = entries.length > 0
-      || beforePhase !== afterPhase
-      || toolBoundary
-      || firstUnknown
-      || event.type === "turn_end"
-      || telemetryChanged
-      || textBytes - this.lastCheckpointTextBytes >= responseCheckpointBytes
-      || Number.isFinite(now) && now - this.lastCheckpointAt >= checkpointIntervalMs;
-    if (checkpoint) {
-      this.lastCheckpointAt = Number.isFinite(now) ? now : this.lastCheckpointAt;
-      this.lastCheckpointTextBytes = textBytes;
-    }
-    return {
-      entries,
-      checkpoint,
-      current: event.type === "turn_end" ? undefined : this.current(degraded),
-      observedAt: event.observedAt,
-    };
-  }
-
-  boundary(at: string): SemanticMutation {
-    this.updatedAt = at;
-    const entries = this.closeAll();
-    this.fenced = true;
-    return { entries, checkpoint: true, current: undefined, observedAt: at };
-  }
-
-  terminal(
-    result: AgentTurnResult,
-    degraded: boolean,
-  ): SemanticMutation {
-    const at = result.timing.finishedAt;
-    this.updatedAt = at;
-    this.updateTelemetry(result.summary);
-    const entries = this.closeAll();
-    const response = result.status === "completed" ? result.finalResponse : result.responses.at(-1) ?? "";
-    return {
-      entries,
-      checkpoint: true,
-      current: this.current(degraded, {
-        phase: "settled",
-        state: "settled",
-        ...(response.length === 0
-          ? {}
-          : { response: excerpt(response, currentResponseBytes, "tail") }),
-      }),
-      observedAt: at,
-    };
-  }
-
-  gap(
-    at: string,
-    sourceSequence: number,
-    dropped: number,
-    reason: string,
-  ): SemanticMutation {
-    this.updatedAt = at;
-    const entries = this.closeAll();
-    entries.push({
-      id: `observation:${this.contextIdentity.attemptId}:${this.contextIdentity.turn}:${sourceSequence}:gap`,
-      kind: "gap",
-      attemptId: this.contextIdentity.attemptId,
-      turn: this.contextIdentity.turn,
-      sourceSequence,
-      at,
-      dropped,
-      reason,
-    });
-    return { entries, checkpoint: true, current: undefined, observedAt: at };
-  }
-
-  checkpoint(
-    entries: PendingSemanticEntry[],
-    degraded: boolean,
-  ): SemanticMutation {
-    return {
-      entries,
-      checkpoint: true,
-      current: this.current(degraded),
-      observedAt: this.updatedAt,
-    };
-  }
-
-  private current(
-    degraded: boolean,
-    terminal: Partial<Pick<AgentObservationCurrent, "phase" | "response" | "state">> = {},
-  ): AgentObservationCurrent {
-    const active = [...this.tools.values()]
-      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
-    const selected = active.slice(-2).map(({ sourceSequence: _sourceSequence, ...tool }) => tool);
-    const phase = this.phase();
-    const segment = this.segment;
-    return {
-      attemptId: this.contextIdentity.attemptId,
-      turn: this.contextIdentity.turn,
-      promptKind: this.contextIdentity.promptKind,
-      phase: terminal.phase ?? phase,
-      updatedAt: this.updatedAt,
-      ...(this.fenced ? { postFence: true } : {}),
-      ...(terminal.response
-        ? { response: terminal.response }
-        : segment?.channel === "response" && segment.text
-        ? { response: semanticExcerpt(segment, currentResponseBytes) }
-        : {}),
-      ...(this.context === undefined ? {} : { context: this.context }),
-      ...(this.tokenUsage === undefined ? {} : { tokenUsage: this.tokenUsage }),
-      ...(segment && segment.channel !== "response" && segment.text
-        ? {
-            intent: {
-              kind: segment.channel,
-              excerpt: semanticExcerpt(segment, currentIntentBytes),
-            },
-          }
-        : {}),
-      ...(active.length > 0 || this.recentTool
-        ? {
-            tools: {
-              active: selected,
-              ...(active.length === 0 && this.recentTool ? { recent: this.recentTool } : {}),
-              omittedActive: Math.max(0, active.length - selected.length),
-            },
-          }
-        : {}),
-      state: terminal.state ?? "recording",
-      completeness: degraded ? "degraded" : "complete",
-    };
-  }
-
-  private updateTelemetry(summary: AgentTurnObservation["progress"]["summary"]): boolean {
-    const changed = !equalTelemetry(this.context, summary.context)
-      || !equalTelemetry(this.tokenUsage, summary.tokenUsage);
-    if (summary.context === undefined) delete this.context;
-    else this.context = summary.context;
-    if (summary.tokenUsage === undefined) delete this.tokenUsage;
-    else this.tokenUsage = summary.tokenUsage;
-    return changed;
-  }
-
-  private phase(): AgentObservationPhase {
-    if (this.tools.size > 0) return "tool";
-    if (this.segment?.channel === "plan") return "planning";
-    if (this.segment?.channel === "reported-thought") return "thinking";
-    if (this.segment?.channel === "response" && this.segment.text) return "responding";
-    if (this.recentTool) return "between";
-    return this.contextIdentity.promptKind === "repair" ? "repairing" : "starting";
-  }
-
-  private closeAll(): PendingSemanticEntry[] {
-    const entries = this.closeSegment();
-    for (const tool of this.tools.values()) {
-      entries.push(toolEntry(this.contextIdentity, tool, tool.sourceSequence, this.fenced));
-    }
-    this.tools.clear();
-    return entries;
-  }
-
-  private closeSegment(): PendingSemanticEntry[] {
-    const segment = this.segment;
-    this.segment = undefined;
-    if (!segment?.text) return [];
-    return [{
-      id: `observation:${this.contextIdentity.attemptId}:${this.contextIdentity.turn}:${segment.sourceSequence}:${segment.channel}`,
-      kind: "activity",
-      attemptId: this.contextIdentity.attemptId,
-      turn: this.contextIdentity.turn,
-      sourceSequence: segment.sourceSequence,
-      at: segment.at,
-      channel: segment.channel,
-      summary: semanticExcerpt(segment, timelineEntryBytes),
-      ...(this.fenced ? { postFence: true } : {}),
-    }];
-  }
-}
-
-function equalTelemetry(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function mergeTool(
-  previous: (AgentObservationToolActivity & { sourceSequence: number }) | undefined,
-  event: Extract<AgentObservationEvent, { type: "tool" }>,
-): AgentObservationToolActivity {
-  const inputText = event.rawInput === undefined ? undefined : eventText(event.rawInput);
-  const outputValue = event.rawOutput ?? event.content;
-  const outputText = outputValue === undefined ? undefined : eventText(outputValue);
-  const [inputBudget, outputBudget] = inputText !== undefined && outputText !== undefined
-    ? [Math.floor(currentToolBytes / 2), Math.ceil(currentToolBytes / 2)]
-    : [currentToolBytes, currentToolBytes];
-  const status = event.status ?? previous?.status;
-  const toolCallId = event.toolCallId ?? previous?.toolCallId;
-  return {
-    ...(toolCallId ? { toolCallId } : {}),
-    name: visibleToolName(event.toolName ?? event.title ?? event.kind ?? previous?.name ?? "tool"),
-    ...(status ? { status: visible(status, 64) } : {}),
-    ...(inputText === undefined
-      ? previous?.input ? { input: previous.input } : {}
-      : { input: excerpt(inputText, inputBudget, "head") }),
-    ...(outputText === undefined
-      ? previous?.output ? { output: previous.output } : {}
-      : { output: excerpt(outputText, outputBudget, "tail") }),
-    startedAt: previous?.startedAt ?? event.observedAt,
-    updatedAt: event.observedAt,
-    ...(terminalToolStatuses.has(status ?? "") ? { finishedAt: event.observedAt } : {}),
-  };
-}
-
-function toolEntry(
-  context: AgentObservationTurnContext,
-  tool: AgentObservationToolActivity,
-  sourceSequence: number,
-  postFence: boolean,
-): PendingSemanticEntry {
-  const { sourceSequence: _sourceSequence, ...activity } =
-    tool as AgentObservationToolActivity & { sourceSequence?: number };
-  const bounded = boundedTimelineTool(activity);
-  return {
-    id: `observation:${context.attemptId}:${context.turn}:${sourceSequence}:tool`,
-    kind: "activity",
-    attemptId: context.attemptId,
-    turn: context.turn,
-    sourceSequence,
-    at: activity.updatedAt,
-    channel: "tool",
-    summary: bounded.summary,
-    tool: bounded.tool,
-    ...(postFence ? { postFence: true } : {}),
-  };
-}
-
-function boundedTimelineTool(tool: AgentObservationToolActivity): {
-  summary: AgentObservationExcerpt;
-  tool: AgentObservationToolActivity;
-} {
-  const summary = excerpt(
-    `${tool.name}${tool.status ? ` ${tool.status}` : ""}`,
-    timelineEntryBytes,
-    "head",
-  );
-  const remaining = Math.max(0, timelineEntryBytes - Buffer.byteLength(summary.text));
-  const inputBudget = tool.input && tool.output ? Math.floor(remaining / 2) : remaining;
-  const outputBudget = tool.input && tool.output ? remaining - inputBudget : remaining;
-  return {
-    summary,
-    tool: {
-      ...tool,
-      ...(tool.input ? { input: limitExcerpt(tool.input, inputBudget, "head") } : {}),
-      ...(tool.output ? { output: limitExcerpt(tool.output, outputBudget, "tail") } : {}),
-    },
-  };
-}
-
 function entryFromCurrent(
   current: AgentObservationCurrent,
   sourceSequence: number,
 ): PendingSemanticEntry | undefined {
   const tool = current.tools?.active.at(-1) ?? current.tools?.recent;
   if (tool) {
-    const bounded = boundedTimelineTool(tool);
+    const bounded = boundAgentObservationTimelineTool(tool);
     return {
       id: `observation:${current.attemptId}:${current.turn}:${sourceSequence}:recovered-tool`,
       kind: "activity",
@@ -1640,9 +1215,16 @@ function boundedCurrentJson(current: AgentObservationCurrent): string {
   if (Buffer.byteLength(json) <= currentPayloadLimit) return json;
   const smaller: AgentObservationCurrent = {
     ...current,
-    ...(current.response ? { response: limitExcerpt(current.response, 512, "tail") } : {}),
+    ...(current.response
+      ? { response: limitAgentObservationExcerpt(current.response, 512, "tail") }
+      : {}),
     ...(current.intent
-      ? { intent: { ...current.intent, excerpt: limitExcerpt(current.intent.excerpt, 256, "tail") } }
+      ? {
+          intent: {
+            ...current.intent,
+            excerpt: limitAgentObservationExcerpt(current.intent.excerpt, 256, "tail"),
+          },
+        }
       : {}),
     ...(current.tools
       ? {
@@ -1704,8 +1286,6 @@ function rowContext(row: TurnRow): Pick<AgentObservationTurnContext, "runId" | "
   return { runId: row.run_id, attemptId: row.attempt_id, turn: row.turn_no };
 }
 
-
-
 function gapEntry(
   row: Pick<TurnRow, "attempt_id" | "turn_no">,
   sourceSequence: number,
@@ -1747,72 +1327,6 @@ function observationTurn(row: TurnRow): AgentObservationTurn {
   };
 }
 
-function excerpt(value: string, maxBytes: number, side: "head" | "tail"): AgentObservationExcerpt {
-  const originalBytes = Buffer.byteLength(value);
-  return {
-    text: originalBytes <= maxBytes
-      ? value
-      : side === "head" ? utf8Head(value, maxBytes) : utf8Tail(value, maxBytes),
-    originalBytes,
-    truncated: originalBytes > maxBytes,
-  };
-}
-
-export function appendSemanticText(
-  segment: { text: string; originalBytes: number },
-  value: string,
-): void {
-  segment.originalBytes += Buffer.byteLength(value);
-  segment.text = utf8Tail(segment.text + value, currentResponseBytes);
-}
-
-function semanticExcerpt(
-  segment: { text: string; originalBytes: number },
-  maxBytes: number,
-): AgentObservationExcerpt {
-  return {
-    text: utf8Tail(segment.text, maxBytes),
-    originalBytes: segment.originalBytes,
-    truncated: segment.originalBytes > maxBytes,
-  };
-}
-
-function limitExcerpt(
-  value: AgentObservationExcerpt,
-  maxBytes: number,
-  side: "head" | "tail",
-): AgentObservationExcerpt {
-  const bytes = Buffer.byteLength(value.text);
-  return {
-    text: bytes <= maxBytes
-      ? value.text
-      : side === "head" ? utf8Head(value.text, maxBytes) : utf8Tail(value.text, maxBytes),
-    originalBytes: value.originalBytes,
-    truncated: value.truncated || bytes > maxBytes,
-  };
-}
-
-function visible(value: string, maxCharacters: number): string {
-  return [...value.replace(/\s+/g, " ").trim()].slice(0, maxCharacters).join("");
-}
-
-export function visibleToolName(value: string): string {
-  const characters = [...value.replace(/\s+/g, " ").trim()];
-  return characters.length <= 160 ? characters.join("") : `${characters.slice(0, 159).join("")}…`;
-}
-
-function eventText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(eventText).join("");
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.content === "string") return record.content;
-    if (typeof record.value === "string") return record.value;
-  }
-  return value === undefined ? "" : JSON.stringify(value);
-}
-
 function cancelledBeforeProviderDispatch(): AgentTurnResult {
   const observedAt = new Date().toISOString();
   return {
@@ -1836,8 +1350,6 @@ function cancelledBeforeProviderDispatch(): AgentTurnResult {
 function providerOutcome(result: AgentTurnResult): NonNullable<AgentObservationTurn["providerStatus"]> {
   return result.status === "failed" && result.failure.kind === "timeout" ? "timed_out" : result.status;
 }
-
-
 
 function activeKey(runId: string, attemptId: string, turn: number): string {
   return `${runId}\0${attemptId}\0${turn}`;

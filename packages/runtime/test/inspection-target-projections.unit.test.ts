@@ -11,7 +11,7 @@ import type {
   AgentObservationTurn,
 } from "../src/observations/log.js";
 import type { RunDetails } from "../src/store/store.js";
-import type { CommittedRuntimeEventRow } from "../src/hooks/events.js";
+import type { CommittedRuntimeEventRow } from "../src/store/committed-event.js";
 
 describe("inspection target projections", () => {
   it("keeps ordinary target summaries free of private journal details", () => {

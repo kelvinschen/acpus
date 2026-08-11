@@ -8,7 +8,8 @@ import { createHookRunner } from "../hooks/runner.js";
 import { tryLoadRuntimeConfiguration } from "../configuration.js";
 import { RunExecutionSessions, type RunIncident, type RunSessionControlFailure } from "./sessions.js";
 import { RuntimeMutationQueue } from "./mutation-queue.js";
-import { DAEMON_PROTOCOL_VERSION, startDaemonServer, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure, type DaemonServerHandle } from "./socket.js";
+import { DAEMON_PROTOCOL_VERSION, type DaemonControlIntent, type DaemonErrorCode, type DaemonHandlerFailure } from "./protocol.js";
+import { startDaemonServer, type DaemonServerHandle } from "./server.js";
 import { runDaemonTick } from "./tick.js";
 import { err, ok, ResultAsync } from "neverthrow";
 import { createManagedAcpExecutor, recoverAcpOwnership, type ManagedAcpExecutor } from "@acpus/agent-executor";
@@ -55,115 +56,126 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   if (runtimeConfiguration.isErr()) throw new Error(runtimeConfiguration.error.message);
   const heartbeatMs = options.heartbeatMs ?? 1_000;
   const idleStopMs = options.idleStopMs ?? 30_000;
-  let leaseGeneration: number | undefined;
-  const store = await openReadyDaemonRuntimeStore(cwd);
-  const hooksConfig = await loadHooksConfig(cwd);
-  if (hooksConfig.isErr()) {
-    store.close();
-    throw new Error(formatHookLoadError(hooksConfig.error));
-  }
-  const hookRunner = createHookRunner(hooksConfig.value, store);
-  let sessions: RunExecutionSessions | undefined;
-  let managedAcpExecutor: ManagedAcpExecutor | undefined;
+  let readyRuntime: {
+    store: RuntimeStore;
+    sessions: RunExecutionSessions;
+    leaseGeneration: number;
+  } | undefined;
   const mutations = new RuntimeMutationQueue();
   let server: DaemonServerHandle;
-  try {
-    server = await startDaemonServer(cwd, {
-      status: () => {
-        if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
-        return ok({
-          status: "ok",
-          pid: process.pid,
-          generation: leaseGeneration,
-          protocolVersion: DAEMON_PROTOCOL_VERSION,
-          packageVersion: options.packageVersion,
-        });
-      },
-      admitRun: request => new ResultAsync(mutations.enqueue(async () => {
-        if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+  server = await startDaemonServer(cwd, {
+    status: () => {
+      const runtime = readyRuntime;
+      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+      return ok({
+        status: "ok",
+        pid: process.pid,
+        generation: runtime.leaseGeneration,
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
+        packageVersion: options.packageVersion,
+      });
+    },
+    admitRun: request => {
+      const runtime = readyRuntime;
+      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+      return new ResultAsync(mutations.enqueue(async () => {
         try {
-          const admitted = await store.admitRun({
+          const admitted = await runtime.store.admitRun({
             prepared: request.prepared,
             cwd,
             input: request.input,
             ...(request.agentOverrides === undefined ? {} : { agentOverrides: request.agentOverrides }),
           });
           if (admitted.isErr()) return err(handlerFailure("INVALID_REQUEST", admitted.error.message));
-          return ok(sessions!.start(admitted.value.id).run);
+          return ok(runtime.sessions.start(admitted.value.id).run);
         } catch (error) {
           if (isRuntimeStoreBusyError(error)) return err(handlerFailure("STORE_BUSY", "Runtime store is busy. Retry the request."));
           throw error;
         }
-      })),
-      control: intent => new ResultAsync(mutations.enqueue(async () => {
-        if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
-        if (!store.getRun(intent.runId)) return err(handlerFailure("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`));
+      }));
+    },
+    control: intent => {
+      const runtime = readyRuntime;
+      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+      return new ResultAsync(mutations.enqueue(async () => {
+        if (!runtime.store.getRun(intent.runId)) return err(handlerFailure("RUN_NOT_FOUND", `Run '${intent.runId}' was not found.`));
         try {
-          const result = await sessions!.control(intent);
+          const result = await runtime.sessions.control(intent);
           if (result.isErr()) return err(daemonControlFailure(intent, result.error));
           return ok(result.value);
         } catch (error) {
           if (isRuntimeStoreBusyError(error)) return err(handlerFailure("STORE_BUSY", "Runtime store is busy. Retry the request."));
           throw error;
         }
-      })),
-      shutdown: () => {
-        if (leaseGeneration === undefined) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
-        if (server.activeConnections() > 1) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active client requests."));
-        if (!mutations.isIdle()) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active runtime mutations."));
-        if ((sessions?.activeCount() ?? 0) > 0) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active run sessions."));
-        setImmediate(() => {
-          requestShutdown("external");
-        });
-        return ok({ status: "shutdown" as const });
-      },
-    });
-  } catch (error) {
-    store.close();
-    throw error;
-  }
-  let lease: ReturnType<typeof store.claimDaemon>;
-  try {
-    lease = store.claimDaemon({
-      workspaceRealpath: cwd,
-      pid: process.pid,
-      protocolVersion: DAEMON_PROTOCOL_VERSION,
-      packageVersion: options.packageVersion,
-      nodeVersion: process.version,
-      execPath: process.execPath,
-      idleStopMs,
-    });
-  } catch (error) {
-    await closeDaemonServer(server);
-    store.close();
-    throw error;
-  }
-  try {
-    const layout = resolveRuntimeLayout(cwd);
-    const executorOptions = {
-      workersRoot: layout.acpWorkersRoot,
-      sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(layout, runId),
-      daemon: { generation: lease.generation, pid: process.pid },
-    };
-    await recoverAcpOwnership(executorOptions);
-    managedAcpExecutor = await createManagedAcpExecutor(executorOptions);
-    sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident, managedAcpExecutor);
-    await store.observationLog.reconcileTerminalTurns();
-    await store.cleanupStagedRunDirectories();
-  } catch (error) {
-    await closeDaemonServer(server);
-    try {
-      await managedAcpExecutor?.shutdown();
-      store.releaseDaemon({
-        workspaceRealpath: cwd,
-        generation: lease.generation,
+      }));
+    },
+    shutdown: () => {
+      const runtime = readyRuntime;
+      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+      if (server.activeConnections() > 1) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active client requests."));
+      if (!mutations.isIdle()) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active runtime mutations."));
+      if (runtime.sessions.activeCount() > 0) return err(handlerFailure("CONTROL_CONFLICT", "Daemon has active run sessions."));
+      readyRuntime = undefined;
+      setImmediate(() => {
+        requestShutdown("external");
       });
-    } finally {
-      store.close();
+      return ok({ status: "shutdown" as const });
+    },
+  });
+
+  const initialized = await (async (): Promise<{
+    store: RuntimeStore;
+    lease: ReturnType<RuntimeStore["claimDaemon"]>;
+    sessions: RunExecutionSessions;
+    managedAcpExecutor: ManagedAcpExecutor;
+  }> => {
+    let store: RuntimeStore | undefined;
+    let lease: ReturnType<RuntimeStore["claimDaemon"]> | undefined;
+    let managedAcpExecutor: ManagedAcpExecutor | undefined;
+    try {
+      store = await openReadyDaemonRuntimeStore(cwd);
+      const hooksConfig = await loadHooksConfig(cwd);
+      if (hooksConfig.isErr()) throw new Error(formatHookLoadError(hooksConfig.error));
+      const hookRunner = createHookRunner(hooksConfig.value, store);
+      lease = store.claimDaemon({
+        workspaceRealpath: cwd,
+        pid: process.pid,
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
+        packageVersion: options.packageVersion,
+        nodeVersion: process.version,
+        execPath: process.execPath,
+        idleStopMs,
+      });
+      const layout = resolveRuntimeLayout(cwd);
+      const executorOptions = {
+        workersRoot: layout.acpWorkersRoot,
+        sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(layout, runId),
+        daemon: { generation: lease.generation, pid: process.pid },
+      };
+      await recoverAcpOwnership(executorOptions);
+      managedAcpExecutor = await createManagedAcpExecutor(executorOptions);
+      const sessions = new RunExecutionSessions(cwd, store, hookRunner, runtimeConfiguration.value, options.onRunIncident, managedAcpExecutor);
+      await store.observationLog.reconcileTerminalTurns();
+      await store.cleanupStagedRunDirectories();
+      return { store, lease, sessions, managedAcpExecutor };
+    } catch (error) {
+      await settleDaemonResources(
+        "Daemon startup failed and its resources could not be fully released.",
+        [error],
+        [
+          () => server.close(),
+          () => managedAcpExecutor?.shutdown(),
+          () => {
+            if (store && lease) store.releaseDaemon({ workspaceRealpath: cwd, generation: lease.generation });
+          },
+          () => store?.close(),
+        ],
+      );
+      throw error;
     }
-    throw error;
-  }
-  leaseGeneration = lease.generation;
+  })();
+  const { store, lease, sessions, managedAcpExecutor } = initialized;
+  readyRuntime = { store, sessions, leaseGeneration: lease.generation };
 
   let ticking = false;
   let heartbeating = false;
@@ -187,26 +199,32 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   async function shutdown(source: "external" | "tick" | "heartbeat" = "external"): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
     stopped = true;
+    readyRuntime = undefined;
     clearInterval(heartbeatTimer);
     clearInterval(tickTimer);
     shutdownPromise = (async () => {
-      try {
-        if (source !== "tick") await activeTick;
-        if (source !== "heartbeat") await activeHeartbeat;
-        await closeDaemonServer(server);
-        await sessions?.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS);
-        await managedAcpExecutor?.shutdown();
-        await sessions?.drainHooks();
-      } finally {
-        try {
-          store.releaseDaemon({
+      await settleDaemonResources(
+        "Daemon shutdown failed and its resources could not be fully released.",
+        [],
+        [
+          async () => {
+            if (source !== "tick") await activeTick;
+          },
+          async () => {
+            if (source !== "heartbeat") await activeHeartbeat;
+          },
+          () => server.close(),
+          () => mutations.drain(),
+          () => sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS),
+          () => managedAcpExecutor.shutdown(),
+          () => sessions.drainHooks(),
+          () => store.releaseDaemon({
             workspaceRealpath: cwd,
             generation: lease.generation,
-          });
-        } finally {
-          store.close();
-        }
-      }
+          }),
+          () => store.close(),
+        ],
+      );
     })();
     return shutdownPromise;
   }
@@ -337,12 +355,20 @@ function isInspectFailure(value: unknown): value is { type: "inspect-failed"; me
     && typeof (value as { message?: unknown }).message === "string";
 }
 
-async function closeDaemonServer(server: DaemonServerHandle): Promise<void> {
-  try {
-    await server.close();
-  } catch {
-    // Shutdown should still release the daemon lease and close the store.
+async function settleDaemonResources(
+  message: string,
+  failures: unknown[],
+  steps: Array<() => void | Promise<void> | undefined>,
+): Promise<void> {
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, message);
 }
 
 function daemonControlFailure(intent: DaemonControlIntent, failure: RunSessionControlFailure): DaemonHandlerFailure {

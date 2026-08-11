@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, type BigIntStats } from "node:fs";
 import { isAbsolute } from "node:path";
 import { err, ok, type Result } from "neverthrow";
+import { sha256Digest } from "../content-digest.js";
 import { resolveRuntimeLayout } from "../runtime-layout.js";
 import {
   assertRunFileIdentity,
@@ -98,7 +98,7 @@ export function readVerifiedArtifact(
     assertRunFileIdentity(bound.value.file, beforeRead, label);
     verifyRunFile(bound.value.run, bound.value.file, label);
     const bytes = readFileSync(descriptor);
-    const actualDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const actualDigest = sha256Digest(bytes);
     if (bytes.byteLength !== artifact.size || actualDigest !== artifact.digest) {
       throw new Error(`Artifact '${artifactId}' failed size/digest verification for run '${context.runId}'.`);
     }

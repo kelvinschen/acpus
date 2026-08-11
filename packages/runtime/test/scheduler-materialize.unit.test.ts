@@ -3,7 +3,8 @@ import type { ExprIR, NodeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
 import { completedScopeForFrame } from "../src/scheduler/scope.js";
-import { applySchedulerEvents, createSchedulerProjection, groupCompletionEvents } from "../src/scheduler/transitions.js";
+import { nextGroupCompletionBatchEvents } from "../src/scheduler/group-policy.js";
+import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 
 describe("scheduler materialization", () => {
   it("completes an empty root scope with a scalar output", () => {
@@ -544,7 +545,7 @@ describe("scheduler materialization", () => {
     ]);
 
     const completedBranch = applySchedulerEvents(afterSecond, continueRootEvents(workflow, afterSecond, {}));
-    expect(groupCompletionEvents(completedBranch, deriveInstanceKey(appendNode([], "parallel")))).toEqual([
+    expect(nextGroupCompletionBatchEvents(completedBranch)).toEqual([
       { type: "group.completed", payload: { groupKey: deriveInstanceKey(appendNode([], "parallel")), result: { acceptedMemberKeys: [branchKey] } } },
     ]);
   });
@@ -564,7 +565,7 @@ describe("scheduler materialization", () => {
 
     expect(projection.frames[branchKey]).toMatchObject({ status: "completed", result: { value: "done" } });
     expect(projection.groupMembers[branchKey]).toMatchObject({ status: "completed", output: { value: "done" } });
-    expect(groupCompletionEvents(projection, parallelKey)).toEqual([
+    expect(nextGroupCompletionBatchEvents(projection)).toEqual([
       { type: "group.completed", payload: { groupKey: parallelKey, result: { acceptedMemberKeys: [branchKey] } } },
     ]);
   });
@@ -589,9 +590,8 @@ describe("scheduler materialization", () => {
           output: { kind: "ref", path: ["nodes", "parallel", "output"] },
         },
       };
-      const groupKey = deriveInstanceKey(appendNode([], "parallel"));
       let projection = applySchedulerEvents(createSchedulerProjection(`run_${strategy}`), bootstrapRootEvents(`run_${strategy}`, workflow));
-      projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+      projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
       projection = applySchedulerEvents(projection, continueRootEvents(workflow, projection, {}));
 
       expect(continueRootEvents(workflow, projection, {})).toEqual([
@@ -614,9 +614,8 @@ describe("scheduler materialization", () => {
         output: { kind: "ref", path: ["nodes", "items", "output"] },
       },
     };
-    const groupKey = deriveInstanceKey(appendNode([], "items"));
     let projection = applySchedulerEvents(createSchedulerProjection("run_fanout_scalars"), bootstrapRootEvents("run_fanout_scalars", workflow));
-    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
     projection = applySchedulerEvents(projection, continueRootEvents(workflow, projection, {}));
 
     expect(continueRootEvents(workflow, projection, {})).toEqual([
@@ -759,7 +758,7 @@ describe("scheduler materialization", () => {
 
     expect(projection.frames[itemFrameKey]).toMatchObject({ status: "completed", result: { item: "a" } });
     expect(projection.groupMembers[itemFrameKey]).toMatchObject({ status: "completed", output: { item: "a" } });
-    expect(groupCompletionEvents(projection, fanoutKey)).toEqual([
+    expect(nextGroupCompletionBatchEvents(projection)).toEqual([
       { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [itemFrameKey] } } },
     ]);
   });
@@ -774,10 +773,9 @@ describe("scheduler materialization", () => {
       ? fanout
       : { ...fanout, strategy: "quorum" as const, count: { kind: "literal" as const, value: 1 } };
     const workflow = workflowWithRootNode(node);
-    const fanoutKey = deriveInstanceKey(appendNode([], "items"));
     const itemKey = deriveInstanceKey(appendFanoutItem([], "items", 0));
     let projection = applySchedulerEvents(createSchedulerProjection(`run_${strategy}`), bootstrapRootEvents(`run_${strategy}`, workflow));
-    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, fanoutKey));
+    projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
     delete projection.groupMembers[itemKey]!.output;
 
     expect(() => continueRootEvents(workflow, projection, {})).toThrow("Fanout item 0 did not produce an output.");
@@ -790,7 +788,7 @@ describe("scheduler materialization", () => {
       createSchedulerProjection("run_1"),
       bootstrapRootEvents("run_1", workflow),
     );
-    const groupEvents = groupCompletionEvents(bootstrapped, fanoutKey);
+    const groupEvents = nextGroupCompletionBatchEvents(bootstrapped);
 
     expect(groupEvents).toEqual([
       { type: "group.completed", payload: { groupKey: fanoutKey, result: { acceptedMemberKeys: [] } } },
@@ -842,7 +840,7 @@ describe("scheduler materialization", () => {
       { type: "group.member_completed", payload: { memberKey: firstKey, completionSequence: 2, output: { value: "first" } } },
     ]);
     projection = applySchedulerEvents(projection, firstCompletion);
-    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, fanoutKey));
+    projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
 
     expect(continueRootEvents(workflow, projection, {})).toEqual([
       { type: "frame.completed", payload: { frameKey: fanoutKey, result: [{ value: "first" }, { value: "second" }], terminalReason: "group_completed" } },
@@ -959,6 +957,46 @@ describe("scheduler materialization", () => {
       { type: "frame.loop_advanced", payload: { frameKey: loopKey, iter: 1, state: { done: false } } },
       expect.objectContaining({ type: "frame.started", payload: expect.objectContaining({ frameKey: deriveInstanceKey(appendLoopIteration([], "retry", 1)), frameKind: "loop_iteration" }) }),
       expect.objectContaining({ type: "instance.ready", payload: expect.objectContaining({ nodeKey: secondNodeKey }) }),
+    ]);
+  });
+
+  it("fails a loop through materialization when its body returns an invalid transition", () => {
+    const workflow = workflowWithRootNode(loopNode());
+    const loopKey = deriveInstanceKey(appendNode([], "retry"));
+    const firstNodeKey = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "loop_task"));
+    const firstIterationKey = deriveInstanceKey(appendLoopIteration([], "retry", 0));
+    const bootstrapped = bootstrapRootEvents("run_1", workflow, {});
+    const projection = applySchedulerEvents(createSchedulerProjection("run_1"), [
+      ...bootstrapped,
+      { type: "instance.completed", payload: { nodeKey: firstNodeKey, output: { done: false } } },
+      {
+        type: "frame.completed",
+        payload: {
+          frameKey: firstIterationKey,
+          result: { state: { done: false }, stop: "no" },
+          terminalReason: "frame_completed",
+        },
+      },
+    ]);
+
+    expect(continueRootEvents(workflow, projection, {})).toEqual([
+      {
+        type: "frame.loop_advanced",
+        payload: {
+          frameKey: loopKey,
+          iter: 0,
+          state: { done: false },
+          transition: { state: { done: false }, stop: "no" },
+        },
+      },
+      {
+        type: "frame.failed",
+        payload: {
+          frameKey: loopKey,
+          error: { reason: "invalid_loop_transition", message: "Loop body transition 'stop' must be boolean." },
+          terminalReason: "invalid_loop_transition",
+        },
+      },
     ]);
   });
 
@@ -1134,7 +1172,7 @@ describe("scheduler materialization", () => {
     const groupKey = deriveInstanceKey(appendNode([], "parallel"));
     const leftKey = deriveInstanceKey(appendBranch([], "parallel", "left"));
     let projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
-    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
     projection.groups[groupKey]!.result = { acceptedMemberKeys: [leftKey] };
 
     expect(() => continueRootEvents(workflow, projection, {})).toThrow(
@@ -1154,7 +1192,7 @@ describe("scheduler materialization", () => {
     });
     const groupKey = deriveInstanceKey(appendNode([], "parallel"));
     let projection = applySchedulerEvents(createSchedulerProjection("run_corrupt"), bootstrapRootEvents("run_corrupt", workflow));
-    projection = applySchedulerEvents(projection, groupCompletionEvents(projection, groupKey));
+    projection = applySchedulerEvents(projection, nextGroupCompletionBatchEvents(projection));
     const acceptedMemberKeys = (projection.groups[groupKey]!.result as { acceptedMemberKeys: string[] }).acceptedMemberKeys;
     const winner = projection.groupMembers[acceptedMemberKeys[0]!]!;
     if (winner.memberKind !== "branch") throw new Error("Expected a branch winner.");
