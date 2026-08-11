@@ -16,22 +16,22 @@ vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
   tryNormalizeForkInput: mock.tryNormalizeForkInput,
 }));
-vi.mock("../src/workflow-preparation.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/workflow-preparation.js")>(),
+vi.mock("../src/workflow/preparation.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/workflow/preparation.js")>(),
   prepareWorkflowForCli: mock.prepareWorkflowForCli,
 }));
-vi.mock("../src/commands/daemon.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/commands/daemon.js")>(),
+vi.mock("../src/daemon/client.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/daemon/client.js")>(),
   sendDaemonAdmitRun: mock.sendDaemonAdmitRun,
   sendDaemonControl: mock.sendDaemonControl,
 }));
-vi.mock("../src/run-follow.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/run-follow.js")>(),
+vi.mock("../src/runs/follow.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/runs/follow.js")>(),
   followRun: mock.followRun,
 }));
 
-import { createRunsCommand } from "../src/commands/runs.js";
-import { createWorkflowCommand } from "../src/commands/workflow.js";
+import { createRunsCommand } from "../src/runs/command.js";
+import { createWorkflowCommand } from "../src/workflow/command.js";
 
 const preparedSourceGraphDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const preparedEntryDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";

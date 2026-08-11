@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunDetails } from "@acpus/runtime";
-import { toRunRecord } from "../src/run-record.js";
+import { toRunRecord } from "../src/runs/record.js";
 
 describe("run record projection", () => {
   it("preserves compact progress freshness", () => {

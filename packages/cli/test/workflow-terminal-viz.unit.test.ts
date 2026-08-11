@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExprIR, NodeIR, ScopeIR, SchemaIR, WorkflowIR } from "@acpus/core/ir";
-import { renderWorkflowTerminalViz } from "../src/workflow-terminal-viz.js";
+import { renderWorkflowTerminalViz } from "../src/workflow/terminal-viz.js";
 
 const emptyOutput = { kind: "object", fields: {} } satisfies ExprIR;
 const truthy = { kind: "literal", value: true } satisfies ExprIR;

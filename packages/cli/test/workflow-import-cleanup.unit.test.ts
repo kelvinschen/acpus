@@ -7,12 +7,12 @@ const mock = vi.hoisted(() => ({
   removePrivateTree: vi.fn<() => Promise<void>>(),
 }));
 
-vi.mock("../src/private-directory.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/private-directory.js")>(),
+vi.mock("../src/platform/private-directory.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/platform/private-directory.js")>(),
   removePrivateTree: mock.removePrivateTree,
 }));
 
-import { importWorkflowPackage } from "../src/workflow-import.js";
+import { importWorkflowPackage } from "../src/workflow/import/index.js";
 
 afterEach(() => {
   vi.clearAllMocks();

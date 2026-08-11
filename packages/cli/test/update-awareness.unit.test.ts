@@ -11,7 +11,7 @@ import {
   isUpdateAwarenessEligible,
   isUpdateCheckDue,
   runUpdateAwarenessWorker,
-} from "../src/update-awareness.js";
+} from "../src/update/awareness.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 class TtyCaptureStream extends CaptureStream {

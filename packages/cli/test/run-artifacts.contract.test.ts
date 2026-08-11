@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactRecord, RunInspectionTargetArtifactsDocument } from "@acpus/runtime";
-import { createRunsCommand } from "../src/commands/runs.js";
+import { createRunsCommand } from "../src/runs/command.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 

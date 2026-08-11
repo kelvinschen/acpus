@@ -2,7 +2,7 @@ import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getRuntimeHealth, requestDaemonStatus } from "@acpus/runtime";
 import { describe, expect, it } from "vitest";
-import { getCliPackageInfo } from "../src/package-info.js";
+import { getCliPackageInfo } from "../src/platform/package-info.js";
 import { runSourceCli } from "./support/cli-runner.js";
 import { copyWorkflowFixture } from "./support/fixtures.js";
 import { withDaemonTestWorkspace } from "./support/workspace.js";

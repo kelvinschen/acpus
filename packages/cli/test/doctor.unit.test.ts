@@ -16,11 +16,11 @@ vi.mock("@acpus/runtime", async importOriginal => ({
   repairRuntimeStore: mock.repairRuntimeStore,
 }));
 
-vi.mock("../src/authoring-environment.js", () => ({
+vi.mock("../src/doctor/authoring-health.js", () => ({
   getAuthoringHealth: mock.getAuthoringHealth,
 }));
 
-import { createDoctorCommand } from "../src/commands/doctor.js";
+import { createDoctorCommand } from "../src/doctor/command.js";
 
 describe("Doctor repair", () => {
   beforeEach(() => {

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { prepareWorkflowForCli } from "../src/workflow-preparation.js";
+import { prepareWorkflowForCli } from "../src/workflow/preparation.js";
 import { withAuthoringTestWorkspace } from "./support/workspace.js";
 
 describe("CLI workflow source classification contracts", () => {

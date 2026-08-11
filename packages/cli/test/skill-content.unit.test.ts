@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   readAcpusSkillResource,
   type SkillResourceFailure,
-} from "../src/skill-content.js";
+} from "../src/skill/content.js";
 
 describe("skill resource reader", () => {
   it("does not alter default-entry bytes or expand the resource tree below direct children", async () => {

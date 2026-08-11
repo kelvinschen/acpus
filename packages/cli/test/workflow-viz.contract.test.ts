@@ -11,8 +11,8 @@ const mock = vi.hoisted(() => ({
   prepareWorkflowForCli: vi.fn(),
 }));
 
-vi.mock("../src/workflow-preparation.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/workflow-preparation.js")>(),
+vi.mock("../src/workflow/preparation.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/workflow/preparation.js")>(),
   prepareWorkflowForCli: mock.prepareWorkflowForCli,
 }));
 

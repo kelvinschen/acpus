@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { resolveWorkflowSourceForCli } from "../src/workflow-preparation.js";
+import { resolveWorkflowSourceForCli } from "../src/workflow/preparation.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("CLI workflow source resolution", () => {

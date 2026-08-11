@@ -1,16 +1,16 @@
 import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
-import { createDoctorCommand } from "./commands/doctor.js";
-import { createHooksCommand } from "./commands/hooks.js";
-import { selectedJsonOutput } from "./commands/output-option.js";
-import { createRunsCommand } from "./commands/runs.js";
-import { createSkillCommand } from "./commands/skill.js";
-import { createWebCommand } from "./commands/web.js";
-import { createWorkflowCommand } from "./commands/workflow.js";
-import { CliError, usageError } from "./errors.js";
-import { writeJsonLine, writeResult } from "./output.js";
-import { getCliPackageInfo } from "./package-info.js";
-import { createUpdateAwareness } from "./update-awareness.js";
+import { createDoctorCommand } from "./doctor/command.js";
+import { createHooksCommand } from "./hooks/command.js";
+import { getCliPackageInfo } from "./platform/package-info.js";
+import { CliError, usageError } from "./presentation/errors.js";
+import { selectedJsonOutput } from "./presentation/json-output-option.js";
+import { writeJsonLine, writeResult } from "./presentation/output.js";
+import { createRunsCommand } from "./runs/command.js";
+import { createSkillCommand } from "./skill/command.js";
+import { createUpdateAwareness } from "./update/awareness.js";
+import { createWebCommand } from "./web/command.js";
+import { createWorkflowCommand } from "./workflow/command.js";
 
 export type CliIo = {
   cwd: string;

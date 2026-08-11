@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { getCliPackageInfo } from "../src/package-info.js";
+import { getCliPackageInfo } from "../src/platform/package-info.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";

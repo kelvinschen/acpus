@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { discoverWorkflowCatalog, prepareWorkflowCatalogCommit } from "../src/catalog.js";
+import { discoverWorkflowCatalog, prepareWorkflowCatalogCommit } from "../src/workflow/catalog.js";
 import { repoRoot } from "./support/cli-runner.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
 

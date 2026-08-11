@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PruneReport } from "@acpus/runtime";
-import { createRunsCommand } from "../src/commands/runs.js";
+import { createRunsCommand } from "../src/runs/command.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({

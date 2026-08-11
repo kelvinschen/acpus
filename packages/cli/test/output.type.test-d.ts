@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "vitest";
-import type { CliResult } from "../src/output.js";
+import type { CliResult } from "../src/presentation/output.js";
 
 const catalog = {
   scope: "project",

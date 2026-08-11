@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { stripVTControlCharacters } from "node:util";
 import type { WorkflowIR } from "@acpus/core/ir";
-import { summarizeWorkflow, writeResult, type CliResult } from "../src/output.js";
+import { summarizeWorkflow, writeResult, type CliResult } from "../src/presentation/output.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 describe("CLI result output contracts", () => {

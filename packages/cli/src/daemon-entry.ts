@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { startDaemonLoop } from "@acpus/runtime";
-import { getCliPackageInfo } from "./package-info.js";
+import { getCliPackageInfo } from "./platform/package-info.js";
 
 const [cwdArg, heartbeatMsArg] = process.argv.slice(2);
 const cwd = cwdArg ?? process.cwd();

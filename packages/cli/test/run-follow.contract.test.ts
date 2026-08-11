@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionError, InspectionObservation, InspectionView } from "@acpus/runtime";
-import { followRun } from "../src/run-follow.js";
+import { followRun } from "../src/runs/follow.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({ observeInspection: vi.fn() }));

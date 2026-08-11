@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensurePrivateAcpusDirectory, removePrivateTree } from "../src/private-directory.js";
+import { ensurePrivateAcpusDirectory, removePrivateTree } from "../src/platform/private-directory.js";
 
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;

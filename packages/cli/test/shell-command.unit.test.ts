@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { renderShellCommand } from "../src/shell-command.js";
+import { renderShellCommand } from "../src/presentation/shell-command.js";
 
 describe("shell command rendering", () => {
   it("round-trips exact argv through a POSIX shell", () => {

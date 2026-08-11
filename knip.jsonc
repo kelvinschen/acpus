@@ -56,7 +56,7 @@
       "vitest": false,
       "ignoreIssues": {
         // tsx is used only by the workspace source-mode daemon branch.
-        "src/commands/daemon.ts": ["unlisted"],
+        "src/daemon/client.ts": ["unlisted"],
         // These modules are loaded by path and their default exports are the
         // workflow compiler contract, not statically imported symbols.
         "skills/acpus/workflows/**/workflow.ts": ["exports"],

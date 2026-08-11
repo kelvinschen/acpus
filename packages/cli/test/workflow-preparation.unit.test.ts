@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workflowPreparationCliError } from "../src/workflow-preparation.js";
+import { workflowPreparationCliError } from "../src/workflow/preparation.js";
 
 describe("workflow preparation CLI adapter", () => {
   it("preserves compile and package-lock phases", () => {

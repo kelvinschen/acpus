@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { create as createTar } from "tar";
 import { describe, expect, it } from "vitest";
-import { importWorkflowPackage } from "../src/workflow-import.js";
+import { importWorkflowPackage } from "../src/workflow/import/index.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { repoRoot } from "./support/cli-runner.js";

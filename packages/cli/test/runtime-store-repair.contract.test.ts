@@ -13,7 +13,7 @@ import {
   RUNTIME_STORAGE_VERSION,
 } from "../../runtime/src/storage/database.js";
 import { runCli } from "../src/program.js";
-import { followRun } from "../src/run-follow.js";
+import { followRun } from "../src/runs/follow.js";
 import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
 

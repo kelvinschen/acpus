@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { errAsync, ok, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionCandidates } from "@acpus/runtime";
-import { createRunsCommand } from "../src/commands/runs.js";
+import { createRunsCommand } from "../src/runs/command.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
@@ -12,8 +12,8 @@ const daemon = vi.hoisted(() => ({
 }));
 const runtime = vi.hoisted(() => ({ readInspection: vi.fn() }));
 
-vi.mock("../src/commands/daemon.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../src/commands/daemon.js")>(),
+vi.mock("../src/daemon/client.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../src/daemon/client.js")>(),
   sendDaemonControl: daemon.sendDaemonControl,
   daemonControlRequestId: daemon.daemonControlRequestId,
 }));

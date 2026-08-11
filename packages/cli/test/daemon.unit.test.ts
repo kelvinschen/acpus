@@ -26,7 +26,7 @@ vi.mock("@acpus/runtime", () => ({
   tryLoadRuntimeConfiguration: mock.tryLoadRuntimeConfiguration,
 }));
 
-import { ensureDaemonRunning, sendDaemonAdmitRun, sendDaemonControl } from "../src/commands/daemon.js";
+import { ensureDaemonRunning, sendDaemonAdmitRun, sendDaemonControl } from "../src/daemon/client.js";
 
 describe("CLI daemon client", () => {
   beforeEach(() => {

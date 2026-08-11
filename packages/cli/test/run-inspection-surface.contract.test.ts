@@ -6,7 +6,7 @@ import {
   formatTimelineEntries,
   formatInspectionView,
   inspectionRecoveryCommand,
-} from "../src/run-inspection-surface.js";
+} from "../src/runs/inspection-surface.js";
 
 type RunInspectionView = Extract<InspectionView, { kind: "run" }>;
 

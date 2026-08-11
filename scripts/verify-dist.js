@@ -491,8 +491,8 @@ async function verifyPackage(packageDirectory, manifest, files) {
   if (name === "acpus") {
     for (const path of [
       "skills/acpus/SKILL.md",
-      "dist/commands/skill.js",
-      "dist/commands/skill.d.ts",
+      "dist/skill/command.js",
+      "dist/skill/command.d.ts",
       "dist/update-awareness-worker.js",
       "dist/update-awareness-worker.d.ts",
     ]) {
